@@ -1,0 +1,19 @@
+# Glossary
+
+Project-specific terms used in `src/cli.ts`, the schemas, and downstream tooling.
+
+- **Pillar** — One of 11 quality dimensions a finding belongs to: `size`, `complexity`, `dead-code`, `waste`, `naming`, `documentation`, `modernisation`, `security`, `sensitive-data`, `test-quality`, `design`. Defined as the `Pillar` union in `src/cli.ts` (search: `export type Pillar`).
+- **Severity** — `advisory` | `warning` | `error`. Drives `--fail-on` exit-code logic (`exitFor` in `src/cli.ts`, search: `function exitFor`) and pillar score penalty in `severityPenalty` (search: `function severityPenalty`).
+- **Confidence** — `low` | `medium` | `high`. Recorded on each `Finding` so consumers can filter; not currently used in scoring.
+- **Finding** — One reported issue. Shape declared in `src/cli.ts` (search: `export interface Finding`). Required: `ruleId`, `message`, `filePath`, `severity`, `pillar`, `secondaryPillars`, `tier`, `confidence`, `metadata`, `fingerprint`. Optional: `line`, `endLine`, `column`, `symbol`, `remediation`.
+- **Fingerprint** — 16-char sha256 prefix of `ruleId\0filePath\0line\0symbol`, computed in `makeFinding` (`src/cli.ts`, search: `function makeFinding`). Stable across runs and the dedupe / baseline-match key.
+- **Rule ID** — Dot-namespaced string of the form `<pillar>.<rule>` (e.g., `size.file-length`, `security.eval-call`, `naming.short-variable`). Used as `Finding.ruleId`, in baseline entries, and in config `rules` overrides.
+- **Tier** — Currently fixed at `"v0.1"` on every finding; placeholder for future rule-set versioning.
+- **Baseline** — A `gruff.baseline.v1` JSON file (default path `gruff-baseline.json`) that suppresses matching findings on subsequent runs. Match key is `(fingerprint, ruleId, filePath)`. Written by `writeBaseline` (`src/cli.ts`, search: `function writeBaseline`), applied by `applyBaseline` (search: `function applyBaseline`).
+- **Diagnostic** — Non-finding run-time issue: `parse-error` (unbalanced braces/parens/brackets), `read-error`, `missing-path`, `history-error`. Diagnostics force exit code 2 regardless of `--fail-on`.
+- **Function block** — A regex-matched function unit returned by `functionBlocks` (`src/cli.ts`, search: `function functionBlocks`). Carries `name`, `params`, `startLine`, `lineCount`, `body`, `isPublic`, `isTest`. Powers all per-function rules (size, complexity, naming, doc, test-quality).
+- **Schema versions** — Three public string contracts: `gruff.analysis.v1` (full report), `gruff.baseline.v1` (suppression file), `gruff.hotspot.v1` (trimmed top-offenders payload). Bump only on breaking changes.
+- **Hotspot output** — Compact format emitted by `--format hotspot`: `{ schemaVersion, tool, score, files: topOffenders }`. Designed for dashboards that want one number + worst files per project.
+- **Default-ignored directory** — Hardcoded list in `isDefaultIgnoredDir` (`src/cli.ts`, search: `function isDefaultIgnoredDir`): `.git`, `.hg`, `.svn`, `.idea`, `.vscode`, `build`, `cache`, `coverage`, `dist`, `generated`, `node_modules`, `target`, `tmp`, `vendor`. Bypassed by `--include-ignored`.
+- **Accepted abbreviation** — Two-char-or-shorter variable names normally tripped by `naming.short-variable` are exempted if listed here. Defaults: `id`, `db`, `io`, `ui`, `tx`, `rx` (plus loop counters `i`, `j`, `k`). Extendable via config `allowlists.acceptedAbbreviations`.
+- **Secret preview** — Redacted, truncated form of a sensitive-data match (`<first4>...<last4> (redacted, N chars)`) used for both finding metadata and the `allowlists.secretPreviews` allowlist. Computed by `redact` (`src/cli.ts`, search: `function redact`).

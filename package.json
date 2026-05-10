@@ -1,0 +1,23 @@
+{
+  "name": "gruff-ts",
+  "version": "0.1.0",
+  "description": "TypeScript project quality analyzer.",
+  "license": "proprietary",
+  "type": "module",
+  "bin": {
+    "gruff-ts": "./bin/gruff-ts"
+  },
+  "scripts": {
+    "check": "tsc --noEmit && npm test",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "start-dev": "tsx src/cli.ts dashboard"
+  },
+  "dependencies": {
+    "commander": "^14.0.2",
+    "tsx": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "typescript": "^5.9.3"
+  }
+}

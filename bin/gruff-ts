@@ -1,0 +1,25 @@
+#!/usr/bin/env sh
+set -eu
+
+PRG="$0"
+while [ -h "$PRG" ]; do
+	SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$PRG")" && pwd)"
+	PRG="$(readlink "$PRG")"
+	case "$PRG" in
+		/*) ;;
+		*) PRG="$SCRIPT_DIR/$PRG" ;;
+	esac
+done
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$PRG")" && pwd)"
+PACKAGE_DIR="$SCRIPT_DIR/.."
+
+if [ -f "$PACKAGE_DIR/node_modules/tsx/dist/loader.mjs" ]; then
+	TSX_LOADER="$PACKAGE_DIR/node_modules/tsx/dist/loader.mjs"
+elif [ -f "$PACKAGE_DIR/../tsx/dist/loader.mjs" ]; then
+	TSX_LOADER="$PACKAGE_DIR/../tsx/dist/loader.mjs"
+else
+	TSX_LOADER="tsx"
+fi
+
+exec node --import "$TSX_LOADER" "$PACKAGE_DIR/src/cli.ts" "$@"
