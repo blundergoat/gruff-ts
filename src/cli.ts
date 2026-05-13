@@ -10,6 +10,8 @@ import { pathToFileURL } from "node:url";
 
 const VERSION = "0.1.0-dev";
 const DEFAULT_BASELINE = "gruff-baseline.json";
+const DEFAULT_CONFIG_FILES = [".gruff.json", ".gruff.yaml", ".gruff.yml"] as const;
+const NPATH_CAP = 1_000_000;
 
 export type Severity = "advisory" | "warning" | "error";
 export type Pillar =
@@ -223,16 +225,12 @@ function loadConfig(projectRoot: string, options: AnalysisOptions): Config {
   if (options.noConfig) {
     return config;
   }
-  const path = options.config
-    ? absolutize(projectRoot, options.config)
-    : existsSync(join(projectRoot, ".gruff.json"))
-      ? join(projectRoot, ".gruff.json")
-      : undefined;
+  const path = options.config ? absolutize(projectRoot, options.config) : defaultConfigPath(projectRoot);
   if (!path) {
     return config;
   }
 
-  const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  const raw = parseConfigFile(path);
   const paths = objectValue(raw.paths);
   config.ignoredPaths = arrayValue(paths?.ignore).filter(isString);
 
@@ -267,6 +265,296 @@ function loadConfig(projectRoot: string, options: AnalysisOptions): Config {
   }
 
   return config;
+}
+
+function defaultConfigPath(projectRoot: string): string | undefined {
+  for (const fileName of DEFAULT_CONFIG_FILES) {
+    const candidate = join(projectRoot, fileName);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function parseConfigFile(path: string): Record<string, unknown> {
+  const source = readFileSync(path, "utf8");
+  const extension = extname(path).toLowerCase();
+  const parsed = extension === ".yaml" || extension === ".yml" ? parseYamlConfig(source) : (JSON.parse(source) as unknown);
+  const config = objectValue(parsed);
+  if (!config) {
+    throw new Error(`Config file must contain an object: ${path}`);
+  }
+  return config;
+}
+
+interface YamlLine {
+  indent: number;
+  content: string;
+}
+
+function parseYamlConfig(source: string): Record<string, unknown> {
+  const lines = yamlLines(source);
+  let index = 0;
+
+  function parseBlock(indent: number): unknown {
+    const line = lines[index];
+    if (!line || line.indent < indent) {
+      return {};
+    }
+    return line.content.startsWith("- ") || line.content === "-" ? parseYamlArray(line.indent) : parseYamlObject(line.indent);
+  }
+
+  function parseYamlObject(indent: number): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    while (index < lines.length) {
+      const line = lines[index];
+      if (!line || line.indent < indent) {
+        break;
+      }
+      if (line.indent > indent) {
+        throw new Error(`Invalid YAML indentation near "${line.content}".`);
+      }
+      if (line.content.startsWith("- ") || line.content === "-") {
+        break;
+      }
+
+      const pair = splitYamlKeyValue(line.content);
+      if (!pair) {
+        throw new Error(`Invalid YAML mapping line: "${line.content}".`);
+      }
+      const [rawKey, rawValue] = pair;
+      const key = unquoteYaml(rawKey.trim());
+      const value = rawValue.trim();
+      index += 1;
+
+      if (value.length > 0) {
+        result[key] = parseYamlScalar(value);
+        continue;
+      }
+
+      const next = lines[index];
+      result[key] = next && next.indent > indent ? parseBlock(next.indent) : {};
+    }
+    return result;
+  }
+
+  function parseYamlArray(indent: number): unknown[] {
+    const result: unknown[] = [];
+    while (index < lines.length) {
+      const line = lines[index];
+      if (!line || line.indent < indent) {
+        break;
+      }
+      if (line.indent > indent) {
+        throw new Error(`Invalid YAML indentation near "${line.content}".`);
+      }
+      if (!line.content.startsWith("- ") && line.content !== "-") {
+        break;
+      }
+
+      const item = line.content === "-" ? "" : line.content.slice(2).trim();
+      index += 1;
+      if (item.length === 0) {
+        const next = lines[index];
+        result.push(next && next.indent > indent ? parseBlock(next.indent) : null);
+        continue;
+      }
+
+      const pair = splitYamlKeyValue(item);
+      if (pair) {
+        const [rawKey, rawValue] = pair;
+        const value = rawValue.trim();
+        const entry: Record<string, unknown> = {};
+        const next = lines[index];
+        entry[unquoteYaml(rawKey.trim())] = value.length > 0 ? parseYamlScalar(value) : next && next.indent > indent ? parseBlock(next.indent) : {};
+        result.push(entry);
+        continue;
+      }
+
+      result.push(parseYamlScalar(item));
+    }
+    return result;
+  }
+
+  const parsed = lines.length === 0 ? {} : parseBlock(lines[0]?.indent ?? 0);
+  const config = objectValue(parsed);
+  if (!config) {
+    throw new Error("Config YAML must contain a mapping object.");
+  }
+  return config;
+}
+
+function yamlLines(source: string): YamlLine[] {
+  const lines: YamlLine[] = [];
+  for (const rawLine of source.replace(/\r\n/g, "\n").split("\n")) {
+    const withoutComment = stripYamlComment(rawLine).trimEnd();
+    if (withoutComment.trim().length === 0) {
+      continue;
+    }
+    const indentText = withoutComment.match(/^\s*/)?.[0] ?? "";
+    if (indentText.includes("\t")) {
+      throw new Error("Tabs are not supported in gruff YAML config indentation.");
+    }
+    lines.push({ indent: indentText.length, content: withoutComment.trimStart() });
+  }
+  return lines;
+}
+
+function stripYamlComment(line: string): string {
+  let quote: string | undefined;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (!character) {
+      continue;
+    }
+    if (quote) {
+      if (quote === "\"" && character === "\\" && !escaped) {
+        escaped = true;
+        continue;
+      }
+      if (character === quote && !escaped) {
+        quote = undefined;
+      }
+      escaped = false;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "#") {
+      return line.slice(0, index);
+    }
+  }
+  return line;
+}
+
+function splitYamlKeyValue(value: string): [string, string] | undefined {
+  let quote: string | undefined;
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (!character) {
+      continue;
+    }
+    if (quote) {
+      if (quote === "\"" && character === "\\" && !escaped) {
+        escaped = true;
+        continue;
+      }
+      if (character === quote && !escaped) {
+        quote = undefined;
+      }
+      escaped = false;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    const next = value[index + 1];
+    if (character === ":" && (!next || /\s/.test(next))) {
+      return [value.slice(0, index), value.slice(index + 1)];
+    }
+  }
+  return undefined;
+}
+
+function parseYamlScalar(value: string): unknown {
+  const trimmed = value.trim();
+  if (trimmed === "[]") {
+    return [];
+  }
+  if (trimmed === "{}") {
+    return {};
+  }
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    return parseYamlInlineArray(trimmed);
+  }
+  if (isQuotedYaml(trimmed)) {
+    return unquoteYaml(trimmed);
+  }
+  if (/^(?:true|false)$/i.test(trimmed)) {
+    return trimmed.toLowerCase() === "true";
+  }
+  if (/^(?:null|~)$/i.test(trimmed)) {
+    return null;
+  }
+  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(trimmed)) {
+    return Number(trimmed);
+  }
+  return trimmed;
+}
+
+function parseYamlInlineArray(value: string): unknown[] {
+  const inner = value.slice(1, -1).trim();
+  if (inner.length === 0) {
+    return [];
+  }
+  return splitYamlInlineItems(inner).map((item) => parseYamlScalar(item));
+}
+
+function splitYamlInlineItems(value: string): string[] {
+  const items: string[] = [];
+  let quote: string | undefined;
+  let escaped = false;
+  let start = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (!character) {
+      continue;
+    }
+    if (quote) {
+      if (quote === "\"" && character === "\\" && !escaped) {
+        escaped = true;
+        continue;
+      }
+      if (character === quote && !escaped) {
+        quote = undefined;
+      }
+      escaped = false;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === ",") {
+      items.push(value.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  items.push(value.slice(start).trim());
+  return items;
+}
+
+function isQuotedYaml(value: string): boolean {
+  return value.length >= 2 && ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'")));
+}
+
+function unquoteYaml(value: string): string {
+  if (!isQuotedYaml(value)) {
+    return value;
+  }
+  const quote = value[0];
+  const body = value.slice(1, -1);
+  if (quote === "'") {
+    return body.replace(/''/g, "'");
+  }
+  return body.replace(/\\(["\\nrt])/g, (_match, escaped: string) => {
+    if (escaped === "n") {
+      return "\n";
+    }
+    if (escaped === "r") {
+      return "\r";
+    }
+    if (escaped === "t") {
+      return "\t";
+    }
+    return escaped;
+  });
 }
 
 function discoverSources(projectRoot: string, options: AnalysisOptions, config: Config) {
@@ -338,9 +626,82 @@ function parseDiagnostics(file: SourceFile, source: string): RunDiagnostic[] {
   let braces = 0;
   let parentheses = 0;
   let brackets = 0;
+  const scan: DelimiterScanState = {
+    quote: undefined,
+    escaped: false,
+    blockComment: false,
+    regex: false,
+    regexCharClass: false,
+    regexEscaped: false,
+    previousCode: "",
+  };
   const lines = source.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
-    for (const character of line) {
+    for (let offset = 0; offset < line.length; offset += 1) {
+      const character = line[offset] ?? "";
+      const next = line[offset + 1] ?? "";
+      if (scan.blockComment) {
+        if (character === "*" && next === "/") {
+          scan.blockComment = false;
+          offset += 1;
+        }
+        continue;
+      }
+      if (scan.quote) {
+        if (scan.escaped) {
+          scan.escaped = false;
+          continue;
+        }
+        if (character === "\\") {
+          scan.escaped = true;
+          continue;
+        }
+        if (character === scan.quote) {
+          scan.quote = undefined;
+        }
+        continue;
+      }
+      if (scan.regex) {
+        if (scan.regexEscaped) {
+          scan.regexEscaped = false;
+          continue;
+        }
+        if (character === "\\") {
+          scan.regexEscaped = true;
+          continue;
+        }
+        if (character === "[") {
+          scan.regexCharClass = true;
+          continue;
+        }
+        if (character === "]") {
+          scan.regexCharClass = false;
+          continue;
+        }
+        if (character === "/" && !scan.regexCharClass) {
+          scan.regex = false;
+          scan.previousCode = "x";
+        }
+        continue;
+      }
+      if (character === "/" && next === "/") {
+        break;
+      }
+      if (character === "/" && next === "*") {
+        scan.blockComment = true;
+        offset += 1;
+        continue;
+      }
+      if (character === "\"" || character === "'" || character === "`") {
+        scan.quote = character;
+        continue;
+      }
+      if (character === "/" && isRegexLiteralStart(scan.previousCode, line.slice(0, offset))) {
+        scan.regex = true;
+        scan.regexCharClass = false;
+        scan.regexEscaped = false;
+        continue;
+      }
       if (character === "{") {
         braces += 1;
       } else if (character === "}") {
@@ -353,6 +714,9 @@ function parseDiagnostics(file: SourceFile, source: string): RunDiagnostic[] {
         brackets += 1;
       } else if (character === "]") {
         brackets -= 1;
+      }
+      if (character.trim() !== "") {
+        scan.previousCode = character;
       }
     }
     if (braces < 0 || parentheses < 0 || brackets < 0) {
@@ -377,6 +741,20 @@ function parseDiagnostics(file: SourceFile, source: string): RunDiagnostic[] {
     ];
   }
   return [];
+}
+
+interface DelimiterScanState {
+  quote: string | undefined;
+  escaped: boolean;
+  blockComment: boolean;
+  regex: boolean;
+  regexCharClass: boolean;
+  regexEscaped: boolean;
+  previousCode: string;
+}
+
+function isRegexLiteralStart(previousCode: string, beforeSlash: string): boolean {
+  return previousCode === "" || "([{=,:!&|?;".includes(previousCode) || /\breturn$/.test(beforeSlash.trimEnd());
 }
 
 function analyseSource(file: SourceFile, source: string, config: Config): Finding[] {
@@ -412,37 +790,108 @@ function analyseSensitiveData(file: SourceFile, source: string, config: Config, 
     ["sensitive-data.private-key", /BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY/g, "Private key block detected."],
     ["sensitive-data.jwt-token", /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "JWT-looking token detected."],
     ["sensitive-data.database-url-password", /[a-z]+:\/\/[^:\s]+:[^@\s]+@/g, "Database URL appears to include a password."],
-    ["sensitive-data.api-key-pattern", /(sk_live_|ghp_|sk-ant-|xox[baprs]-|OPENAI_API_KEY)/g, "API key pattern detected."],
+    ["sensitive-data.api-key-pattern", /\b(?:sk_live_[A-Za-z0-9_-]{12,}|sk_test_[A-Za-z0-9_-]{12,}|sk-proj-[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g, "API key pattern detected."],
+    ["sensitive-data.pii-pattern", /\b\d{3}-\d{2}-\d{4}\b/g, "PII-like identifier pattern detected."],
   ];
 
   for (const [ruleId, pattern, message] of patterns) {
     for (const match of source.matchAll(pattern)) {
       const raw = match[0] ?? "";
-      const preview = redact(raw);
-      if (config.secretPreviews.has(preview)) {
-        continue;
-      }
-      findings.push(
-        makeFinding({
-          ruleId,
-          message,
-          filePath: file.displayPath,
-          line: byteLine(source, match.index ?? 0),
-          severity: "error",
-          pillar: "sensitive-data",
-          confidence: "high",
-          remediation: "Remove the secret and load it from a secure runtime source.",
-          metadata: { preview },
-        }),
-      );
+      pushSensitiveFinding(config, findings, file, ruleId, message, byteLine(source, match.index ?? 0), raw, "high");
     }
   }
+
+  const hardcodedEnvMinLength = threshold(config, "sensitive-data.hardcoded-env-value", "minLength", 16);
+  const lines = source.split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
+    const envValue = hardcodedEnvValue(line, hardcodedEnvMinLength);
+    if (!envValue) {
+      continue;
+    }
+    pushSensitiveFinding(
+      config,
+      findings,
+      file,
+      "sensitive-data.hardcoded-env-value",
+      `Environment-style value \`${envValue.keyName}\` appears to be hardcoded with secret-like content.`,
+      index + 1,
+      envValue.value,
+      "medium",
+      { keyName: envValue.keyName, length: envValue.value.length },
+    );
+  }
+
+  const minLength = threshold(config, "sensitive-data.high-entropy-string", "minLength", 32);
+  for (const match of source.matchAll(/(["'`])([A-Za-z0-9_+=./-]{32,})\1/g)) {
+    const raw = match[2] ?? "";
+    if (!isHighEntropySecretCandidate(raw, minLength)) {
+      continue;
+    }
+    pushSensitiveFinding(
+      config,
+      findings,
+      file,
+      "sensitive-data.high-entropy-string",
+      "High-entropy string literal may be an embedded secret.",
+      byteLine(source, match.index ?? 0),
+      raw,
+      "medium",
+      { length: raw.length, detector: "high-entropy-string" },
+    );
+  }
+}
+
+function pushSensitiveFinding(
+  config: Config,
+  findings: Finding[],
+  file: SourceFile,
+  ruleId: string,
+  message: string,
+  line: number,
+  raw: string,
+  confidence: Finding["confidence"],
+  metadata: Record<string, unknown> = {},
+): void {
+  const preview = redact(raw);
+  if (config.secretPreviews.has(preview)) {
+    return;
+  }
+  findings.push(
+    makeFinding({
+      ruleId,
+      message: `${message} Redacted preview: ${preview}.`,
+      filePath: file.displayPath,
+      line,
+      severity: "error",
+      pillar: "sensitive-data",
+      confidence,
+      remediation: "Remove the sensitive value and load it from a secure runtime source.",
+      metadata: { ...metadata, preview },
+    }),
+  );
+}
+
+function hardcodedEnvValue(line: string, minLength: number): { keyName: string; value: string } | undefined {
+  const match = line.match(/^\s*([A-Z][A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)[A-Z0-9_]*)\s*[:=]\s*["']?([^"'\s#]+)["']?/i);
+  const keyName = match?.[1] ?? "";
+  const value = match?.[2] ?? "";
+  if (!keyName || value.length < minLength) {
+    return undefined;
+  }
+  if (/^(?:x-api-key|token|secret|password|example|sample|placeholder)$/i.test(value)) {
+    return undefined;
+  }
+  if (!/[A-Za-z]/.test(value) || !/[0-9]/.test(value)) {
+    return undefined;
+  }
+  return { keyName, value };
 }
 
 function analyseTypeScriptRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
   const blocks = functionBlocks(source);
   analyseBlocks(file, blocks, config, findings);
   analyseLineRules(file, source, config, findings);
+  analyseDocRules(file, source, findings);
   analyseClassRules(file, source, findings);
   analyseDeadCode(file, source, findings);
 }
@@ -474,6 +923,34 @@ function analyseBlocks(file: SourceFile, blocks: FunctionBlock[], config: Config
     if (cognitive > threshold(config, "complexity.cognitive", "warn", 15)) {
       findings.push(blockFinding("complexity.cognitive", `Function \`${block.name}\` has cognitive complexity ${cognitive}.`, file, block, "warning", "complexity"));
     }
+    const npath = approximateNpath(functionBodyContent(block.body));
+    const npathWarn = threshold(config, "complexity.npath", "warn", 20);
+    const npathError = threshold(config, "complexity.npath", "error", 80);
+    if (npath.value > npathError) {
+      findings.push(
+        blockFindingWithMetadata(
+          "complexity.npath",
+          `Function \`${block.name}\` has approximate NPath complexity ${npath.value} (capped at ${NPATH_CAP}).`,
+          file,
+          block,
+          "error",
+          "complexity",
+          { npath: npath.value, capped: npath.capped, cap: NPATH_CAP },
+        ),
+      );
+    } else if (npath.value > npathWarn) {
+      findings.push(
+        blockFindingWithMetadata(
+          "complexity.npath",
+          `Function \`${block.name}\` has approximate NPath complexity ${npath.value} (capped at ${NPATH_CAP}).`,
+          file,
+          block,
+          "warning",
+          "complexity",
+          { npath: npath.value, capped: npath.capped, cap: NPATH_CAP },
+        ),
+      );
+    }
     if (block.lineCount > 45 && cyclomatic > 10) {
       findings.push(blockFinding("design.god-function", `Function \`${block.name}\` is both long and complex.`, file, block, "warning", "design"));
     }
@@ -483,15 +960,106 @@ function analyseBlocks(file: SourceFile, blocks: FunctionBlock[], config: Config
     if (block.isPublic && !hasDocCommentBefore(block.body)) {
       findings.push(blockFinding("docs.missing-public-doc", `Exported function \`${block.name}\` is missing a doc comment.`, file, block, "advisory", "documentation"));
     }
+    if (isEmptyFunctionBody(block.body)) {
+      findings.push(blockFinding("waste.empty-function", `Function \`${block.name}\` has no executable body.`, file, block, "advisory", "waste"));
+    }
+    for (const parameter of parameterNames(block.params)) {
+      if (!parameter.name.startsWith("_") && !new RegExp(`\\b${escapeRegex(parameter.name)}\\b`).test(functionBodyContent(block.body))) {
+        findings.push(
+          makeFinding({
+            ruleId: "waste.unused-parameter",
+            message: `Parameter \`${parameter.name}\` does not appear to be used.`,
+            filePath: file.displayPath,
+            line: block.startLine,
+            severity: "advisory",
+            pillar: "waste",
+            confidence: "medium",
+            symbol: block.name,
+            remediation: "Remove the parameter or prefix it with _ if it is intentionally unused.",
+            metadata: { parameter: parameter.name },
+          }),
+        );
+      }
+    }
+    for (const redundant of redundantVariableReturns(block.body)) {
+      findings.push(
+        makeFinding({
+          ruleId: "waste.redundant-variable",
+          message: `Variable \`${redundant.name}\` is returned immediately after assignment.`,
+          filePath: file.displayPath,
+          line: block.startLine + redundant.lineOffset,
+          severity: "advisory",
+          pillar: "waste",
+          confidence: "medium",
+          symbol: redundant.name,
+          remediation: "Return the expression directly.",
+          metadata: { variable: redundant.name },
+        }),
+      );
+    }
     if (block.isTest) {
-      analyseTestBlock(file, block, findings);
+      analyseTestBlock(file, block, config, findings);
     }
   }
 }
 
-function analyseTestBlock(file: SourceFile, block: FunctionBlock, findings: Finding[]): void {
-  if (!/\b(expect\s*\(|assert\.|assert\s*\()/.test(block.body)) {
+function analyseTestBlock(file: SourceFile, block: FunctionBlock, config: Config, findings: Finding[]): void {
+  if (!hasAssertion(block.body)) {
     findings.push(blockFinding("test-quality.no-assertions", `Test \`${block.name}\` does not appear to make an assertion.`, file, block, "warning", "test-quality"));
+  }
+  if (hasTrivialAssertion(block.body)) {
+    findings.push(blockFinding("test-quality.trivial-assertion", `Test \`${block.name}\` contains an assertion that compares a value to itself.`, file, block, "warning", "test-quality"));
+  }
+  for (const assertion of magicNumberAssertions(block.body)) {
+    findings.push(
+      blockFindingWithMetadata(
+        "test-quality.magic-number-assertion",
+        `Test \`${block.name}\` asserts against unexplained numeric literal ${assertion.value}.`,
+        file,
+        block,
+        "advisory",
+        "test-quality",
+        { value: assertion.value },
+      ),
+    );
+  }
+  const unusedMocks = unusedMockVariables(block.body);
+  for (const mock of unusedMocks) {
+    findings.push(
+      blockFindingWithMetadata(
+        "test-quality.unused-mock",
+        `Mock \`${mock}\` is created but not used.`,
+        file,
+        block,
+        "advisory",
+        "test-quality",
+        { mockName: mock },
+      ),
+    );
+  }
+  if (isMockOnlyTest(block.body)) {
+    findings.push(blockFinding("test-quality.mock-only-test", `Test \`${block.name}\` only verifies mock interaction.`, file, block, "advisory", "test-quality"));
+  }
+  if (hasExceptionTypeOnlyAssertion(block.body)) {
+    findings.push(blockFinding("test-quality.exception-type-only", `Test \`${block.name}\` checks only the exception type.`, file, block, "advisory", "test-quality"));
+  }
+  if (hasGlobalStateMutation(block.body)) {
+    findings.push(blockFinding("test-quality.global-state-mutation", `Test \`${block.name}\` mutates global process or runtime state.`, file, block, "warning", "test-quality"));
+  }
+  const setupLines = setupLineCount(block.body);
+  const maxSetupLines = threshold(config, "test-quality.setup-bloat", "maxSetupLines", 8);
+  if (setupLines > maxSetupLines) {
+    findings.push(
+      blockFindingWithMetadata(
+        "test-quality.setup-bloat",
+        `Test \`${block.name}\` has ${setupLines} setup lines before its first assertion.`,
+        file,
+        block,
+        "advisory",
+        "test-quality",
+        { setupLines, maxSetupLines },
+      ),
+    );
   }
   const checks: Array<[string, RegExp, string]> = [
     ["test-quality.sleep-in-test", /\b(setTimeout|sleep|waitForTimeout)\s*\(/, "Test sleeps instead of synchronising on behaviour."],
@@ -507,11 +1075,20 @@ function analyseTestBlock(file: SourceFile, block: FunctionBlock, findings: Find
 }
 
 function analyseLineRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
-  const literalChecks: Array<[string, RegExp, string, Severity, Pillar]> = [
+  analyseUnusedImports(file, source, findings);
+  const codeChecks: Array<[string, RegExp, string, Severity, Pillar]> = [
     ["security.eval-call", /\beval\s*\(/, "eval() executes dynamic code.", "error", "security"],
+    ["security.new-function", /\bnew\s+Function\s*\(|(?:^|[=(:,])\s*Function\s*\(/, "Function constructor executes dynamic code.", "error", "security"],
+    ["security.string-timer", /\bset(?:Timeout|Interval)\s*\(\s*["'`]/, "Timer callback is provided as a string.", "warning", "security"],
     ["security.process-exec", /\b(exec|spawn|execFile)\s*\(/, "Child-process execution is used; validate arguments are not user-controlled.", "warning", "security"],
+    ["security.insecure-random", /\bMath\.random\s*\(/, "Math.random() is not suitable for security-sensitive randomness.", "warning", "security"],
     ["security.inner-html", /\.innerHTML\s*=/, "innerHTML assignment can introduce XSS.", "warning", "security"],
     ["security.document-write", /\bdocument\.write\s*\(/, "document.write() can introduce injection risks.", "warning", "security"],
+  ];
+  const literalChecks: Array<[string, RegExp, string, Severity, Pillar]> = [
+    ["security.weak-crypto", /\b(?:createHash|createHmac)\s*\(\s*["'](?:md5|sha1)["']|\bcreateCipher\s*\(/, "Weak cryptographic primitive is used.", "warning", "security"],
+    ["security.disabled-tls-verification", /\b(?:process\.env\.)?NODE_TLS_REJECT_UNAUTHORIZED\b\s*=\s*["']0["']/, "TLS certificate verification is disabled.", "error", "security"],
+    ["security.sql-concatenation", /\b(?:query|execute|raw)\s*\(\s*(?:`[^`]*(?:SELECT|INSERT|UPDATE|DELETE)[^`]*\$\{|["'][^"']*(?:SELECT|INSERT|UPDATE|DELETE)[^"']*["']\s*\+)/i, "SQL text is composed with runtime string interpolation.", "warning", "security"],
     ["waste.console-log", /\bconsole\.(log|debug)\s*\(/, "console logging is committed in source.", "advisory", "waste"],
     ["waste.any-type", /:\s*any\b|as\s+any\b/, "any weakens TypeScript's type guarantees.", "warning", "waste"],
     ["modernisation.var-declaration", /\bvar\s+[A-Za-z_$]/, "var declaration should usually be let or const.", "advisory", "modernisation"],
@@ -520,6 +1097,81 @@ function analyseLineRules(file: SourceFile, source: string, config: Config, find
 
   source.split(/\r?\n/).forEach((line, index) => {
     const lineNumber = index + 1;
+    const codeLine = codeLineForMatching(line);
+    if (isCommentedOutCode(line)) {
+      findings.push(finding("waste.commented-out-code", "Comment appears to contain disabled source code.", file, lineNumber, "advisory", "waste"));
+    }
+    const booleanDeclaration = line.match(/\b(?:const|let|var|public|private|protected)\s+([A-Za-z_$][A-Za-z0-9_$]*)\??(?:\s*:\s*boolean|\s*=\s*(?:true|false)\b)/);
+    if (booleanDeclaration?.[1] && !hasBooleanPrefix(booleanDeclaration[1])) {
+      findings.push(
+        makeFinding({
+          ruleId: "naming.boolean-prefix",
+          message: `Boolean identifier \`${booleanDeclaration[1]}\` should use an intent-revealing prefix.`,
+          filePath: file.displayPath,
+          line: lineNumber,
+          severity: "advisory",
+          pillar: "naming",
+          confidence: "medium",
+          symbol: booleanDeclaration[1],
+          remediation: "Use a prefix such as is, has, can, should, or will.",
+          metadata: { identifierName: booleanDeclaration[1] },
+        }),
+      );
+    }
+    for (const hungarian of line.matchAll(/\b(?:const|let|var|public|private|protected)\s+((?:str|obj|arr|bool|int|num)[A-Z][A-Za-z0-9_$]*)/g)) {
+      const name = hungarian[1] ?? "";
+      findings.push(
+        makeFinding({
+          ruleId: "naming.hungarian-notation",
+          message: `Identifier \`${name}\` uses type-style Hungarian notation.`,
+          filePath: file.displayPath,
+          line: lineNumber,
+          severity: "advisory",
+          pillar: "naming",
+          confidence: "medium",
+          symbol: name,
+          remediation: "Name the domain concept instead of the storage type.",
+          metadata: { identifierName: name },
+        }),
+      );
+    }
+    for (const optional of line.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*)\s*&&\s*\1\.[A-Za-z_$][A-Za-z0-9_$]*/g)) {
+      const name = optional[1] ?? "";
+      findings.push(
+        makeFinding({
+          ruleId: "modernisation.optional-chaining-candidate",
+          message: `Guarded property access on \`${name}\` can usually use optional chaining.`,
+          filePath: file.displayPath,
+          line: lineNumber,
+          severity: "advisory",
+          pillar: "modernisation",
+          confidence: "medium",
+          symbol: name,
+          remediation: "Use optional chaining for the guarded property access.",
+        }),
+      );
+    }
+    for (const fallback of line.matchAll(/=\s*([A-Za-z_$][A-Za-z0-9_$.]*)\s*\|\|\s*(["'`][^"'`]*["'`]|\d+|true|false)/g)) {
+      const name = fallback[1] ?? "";
+      findings.push(
+        makeFinding({
+          ruleId: "modernisation.nullish-coalescing-candidate",
+          message: `Fallback for \`${name}\` can usually use nullish coalescing to preserve falsy values.`,
+          filePath: file.displayPath,
+          line: lineNumber,
+          severity: "advisory",
+          pillar: "modernisation",
+          confidence: "medium",
+          symbol: name,
+          remediation: "Use ?? when only null or undefined should trigger the fallback.",
+        }),
+      );
+    }
+    for (const [ruleId, pattern, message, severity, pillar] of codeChecks) {
+      if (pattern.test(codeLine)) {
+        findings.push(finding(ruleId, message, file, lineNumber, severity, pillar));
+      }
+    }
     for (const [ruleId, pattern, message, severity, pillar] of literalChecks) {
       if (pattern.test(line)) {
         findings.push(finding(ruleId, message, file, lineNumber, severity, pillar));
@@ -543,14 +1195,67 @@ function analyseLineRules(file: SourceFile, source: string, config: Config, find
           }),
         );
       }
+      const variant = identifierQualityVariant(name);
+      if (variant) {
+        findings.push(
+          makeFinding({
+            ruleId: "naming.identifier-quality",
+            message: `Identifier \`${name}\` is a ${variant} name that does not explain domain intent.`,
+            filePath: file.displayPath,
+            line: lineNumber,
+            severity: "advisory",
+            pillar: "naming",
+            confidence: "medium",
+            symbol: name,
+            remediation: "Use an identifier that names the domain role.",
+            metadata: { identifierName: name, variant },
+          }),
+        );
+      }
     }
   });
 
   analyseUnreachable(file, source, findings);
 }
 
+function codeLineForMatching(line: string): string {
+  let result = "";
+  let quote: string | undefined;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index] ?? "";
+    const next = line[index + 1] ?? "";
+    if (!quote && character === "/" && next === "/") {
+      break;
+    }
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (character === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (character === quote) {
+        result += character;
+        quote = undefined;
+      }
+      continue;
+    }
+    if (character === "\"" || character === "'" || character === "`") {
+      quote = character;
+      result += character;
+      continue;
+    }
+    result += character;
+  }
+  return result;
+}
+
 function analyseClassRules(file: SourceFile, source: string, findings: Finding[]): void {
   for (const match of source.matchAll(/\bexport\s+(class|interface|type|enum|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+    const kind = match[1] ?? "";
     const name = match[2] ?? "";
     const line = byteLine(source, match.index ?? 0);
     if (!hasDocCommentBeforeLine(source, line)) {
@@ -568,12 +1273,89 @@ function analyseClassRules(file: SourceFile, source: string, findings: Finding[]
         }),
       );
     }
+    if (kind === "class" && normalizedIdentifier(name) !== normalizedIdentifier(fileBaseName(file.displayPath))) {
+      findings.push(
+        makeFinding({
+          ruleId: "naming.class-file-mismatch",
+          message: `Exported class \`${name}\` does not match file name \`${fileBaseName(file.displayPath)}\`.`,
+          filePath: file.displayPath,
+          line,
+          severity: "advisory",
+          pillar: "naming",
+          confidence: "medium",
+          symbol: name,
+          remediation: "Rename the class or file so the primary export is easy to locate.",
+          metadata: { className: name, fileName: fileBaseName(file.displayPath) },
+        }),
+      );
+    }
   }
 
   const publicProperty = /\bpublic\s+[A-Za-z_$][A-Za-z0-9_$]*\s*[=:]/g;
   for (const match of source.matchAll(publicProperty)) {
     findings.push(finding("modernisation.public-property", "Public class property exposes representation; prefer readonly or accessors when invariants matter.", file, byteLine(source, match.index ?? 0), "advisory", "modernisation"));
   }
+
+  const readonlyCandidate = /\b(?:public|private|protected)\s+(?!readonly\b)([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*[^;=\n]+;/g;
+  for (const match of source.matchAll(readonlyCandidate)) {
+    const name = match[1] ?? "";
+    findings.push(
+      makeFinding({
+        ruleId: "modernisation.readonly-property-candidate",
+        message: `Property \`${name}\` can be marked readonly if it is only assigned during construction.`,
+        filePath: file.displayPath,
+        line: byteLine(source, match.index ?? 0),
+        severity: "advisory",
+        pillar: "modernisation",
+        confidence: "medium",
+        symbol: name,
+        remediation: "Mark the property readonly when mutation is not part of the type contract.",
+      }),
+    );
+  }
+}
+
+function analyseDocRules(file: SourceFile, source: string, findings: Finding[]): void {
+  const documentedExport = /\/\*\*([\s\S]*?)\*\/\s*export\s+function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*(?::\s*([^\x7b\n]+))?/g;
+  for (const match of source.matchAll(documentedExport)) {
+    const doc = match[1] ?? "";
+    const name = match[2] ?? "";
+    const params = parameterNames(match[3] ?? "").map((parameter) => parameter.name);
+    const paramTags = docParamTags(doc);
+    const line = byteLine(source, match.index ?? 0);
+    for (const tag of paramTags) {
+      if (!params.includes(tag)) {
+        findings.push(docFinding("docs.stale-param-tag", `Docblock for \`${name}\` has stale @param tag \`${tag}\`.`, file, line, name, tag));
+      }
+    }
+    for (const param of params) {
+      if (!paramTags.includes(param)) {
+        findings.push(docFinding("docs.missing-param-tag", `Docblock for \`${name}\` is missing @param for \`${param}\`.`, file, line, name, param));
+      }
+    }
+    const returnType = (match[4] ?? "").trim();
+    if (returnType && !/^void\b/.test(returnType) && !/@returns?\b/.test(doc)) {
+      findings.push(docFinding("docs.missing-return-tag", `Docblock for \`${name}\` is missing @returns.`, file, line, name));
+    }
+    if (isUselessDocblock(doc, name)) {
+      findings.push(docFinding("docs.useless-docblock", `Docblock for \`${name}\` only restates the signature.`, file, line, name));
+    }
+  }
+}
+
+function docFinding(ruleId: string, message: string, file: SourceFile, line: number, symbol: string, parameter?: string): Finding {
+  return makeFinding({
+    ruleId,
+    message,
+    filePath: file.displayPath,
+    line,
+    severity: "advisory",
+    pillar: "documentation",
+    confidence: "medium",
+    symbol,
+    remediation: "Update the JSDoc so it documents the current signature and return value.",
+    metadata: { ...(parameter ? { parameter } : {}) },
+  });
 }
 
 function analyseDeadCode(file: SourceFile, source: string, findings: Finding[]): void {
@@ -601,11 +1383,282 @@ function analyseUnreachable(file: SourceFile, source: string, findings: Finding[
   let previousTerminated = false;
   source.split(/\r?\n/).forEach((line, index) => {
     const trimmed = line.trim();
-    if (previousTerminated && /\S/.test(trimmed) && !trimmed.startsWith("}")) {
+    if (previousTerminated && /\S/.test(trimmed) && !trimmed.startsWith(String.fromCharCode(125))) {
       findings.push(finding("waste.unreachable-code", "Statement appears after a terminating statement.", file, index + 1, "warning", "waste"));
     }
     previousTerminated = /\b(return|throw|process\.exit)\b/.test(trimmed) && trimmed.endsWith(";");
   });
+}
+
+function analyseUnusedImports(file: SourceFile, source: string, findings: Finding[]): void {
+  const lines = source.split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("import ") || !trimmed.includes(" from ")) {
+      continue;
+    }
+    const openBrace = trimmed.indexOf(String.fromCharCode(123));
+    const closeBrace = trimmed.indexOf(String.fromCharCode(125), openBrace + 1);
+    if (openBrace === -1 || closeBrace === -1 || closeBrace <= openBrace) {
+      continue;
+    }
+    for (const specifier of trimmed.slice(openBrace + 1, closeBrace).split(",")) {
+      const name = localImportName(specifier);
+      if (!name || countMatches(source, new RegExp(`\\b${escapeRegex(name)}\\b`, "g")) > 1) {
+        continue;
+      }
+      findings.push(
+        makeFinding({
+          ruleId: "waste.unused-import",
+          message: `Imported symbol \`${name}\` does not appear to be used.`,
+          filePath: file.displayPath,
+          line: index + 1,
+          severity: "advisory",
+          pillar: "waste",
+          confidence: "medium",
+          symbol: name,
+          remediation: "Remove the unused import.",
+          metadata: { importName: name },
+        }),
+      );
+    }
+  }
+}
+
+function localImportName(specifier: string): string | undefined {
+  const parts = specifier.trim().split(/\s+as\s+/);
+  const candidate = parts[1] ?? parts[0] ?? "";
+  const match = candidate.trim().match(/^[A-Za-z_$][A-Za-z0-9_$]*/);
+  return match?.[0];
+}
+
+function approximateNpath(source: string): { value: number; capped: boolean } {
+  let value = 1;
+  let capped = false;
+  const normalized = source.replace(/\?\./g, "").replace(/\?\?/g, "");
+  const decisionCount = countMatches(normalized, /\b(if|else if|case|catch|for|while)\b|\?|&&|\|\|/g);
+  for (let index = 0; index < decisionCount; index += 1) {
+    value *= 2;
+    if (value >= NPATH_CAP) {
+      value = NPATH_CAP;
+      capped = true;
+      break;
+    }
+  }
+  return { value, capped };
+}
+
+function isEmptyFunctionBody(source: string): boolean {
+  const body = functionBodyContent(source)
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .trim();
+  return body === "";
+}
+
+function functionBodyContent(source: string): string {
+  const start = source.indexOf("{");
+  const end = source.lastIndexOf("}");
+  if (start === -1 || end <= start) {
+    return "";
+  }
+  return source.slice(start + 1, end);
+}
+
+function parameterNames(params: string): Array<{ name: string }> {
+  return params
+    .split(",")
+    .map((parameter) => parameter.trim())
+    .filter(Boolean)
+    .map((parameter) => parameter.replace(/^(?:public|private|protected|readonly)\s+/, "").replace(/^\.\.\./, "").split(/[?:=]/)[0]?.trim() ?? "")
+    .filter((name): name is string => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name))
+    .map((name) => ({ name }));
+}
+
+function redundantVariableReturns(source: string): Array<{ name: string; lineOffset: number }> {
+  const results: Array<{ name: string; lineOffset: number }> = [];
+  for (const match of source.matchAll(/\b(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*[^;]+;\s*return\s+\1\s*;/g)) {
+    results.push({ name: match[1] ?? "", lineOffset: lineOffset(source, match.index ?? 0) });
+  }
+  return results.filter((result) => result.name !== "");
+}
+
+function lineOffset(source: string, index: number): number {
+  return source.slice(0, Math.max(0, index)).split("\n").length - 1;
+}
+
+function isCommentedOutCode(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("//")) {
+    return false;
+  }
+  const uncommented = trimmed.replace(/^\/\/+\s?/, "");
+  if (/^(const|let|var|function|class|interface|type|enum|import|export|if|for|while|switch|return|throw|await)\b/.test(uncommented)) {
+    return true;
+  }
+  return /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?\s*\([^)]*\);?$/.test(uncommented);
+}
+
+function identifierQualityVariant(name: string): string | undefined {
+  const lower = name.toLowerCase();
+  if (["foo", "bar", "baz", "tmp", "temp", "thing", "stuff", "data", "value", "item"].includes(lower)) {
+    return "generic";
+  }
+  if (/^[A-Za-z_$]+[0-9]+$/.test(name)) {
+    return "numbered";
+  }
+  return undefined;
+}
+
+function hasBooleanPrefix(name: string): boolean {
+  return /^(?:is|has|can|should|does|did|was|will)[A-Z_]/.test(name);
+}
+
+function fileBaseName(path: string): string {
+  return basename(path).replace(/\.[^.]+$/, "");
+}
+
+function normalizedIdentifier(value: string): string {
+  return value.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
+}
+
+function docParamTags(doc: string): string[] {
+  const names: string[] = [];
+  for (const line of doc.split(/\r?\n/)) {
+    const marker = line.indexOf("@param");
+    if (marker === -1) {
+      continue;
+    }
+    let rest = line.slice(marker + "@param".length).trim();
+    if (rest.startsWith(String.fromCharCode(123))) {
+      const end = rest.indexOf(String.fromCharCode(125));
+      rest = end === -1 ? "" : rest.slice(end + 1).trim();
+    }
+    const match = rest.match(/^([A-Za-z_$][A-Za-z0-9_$]*)/);
+    if (match?.[1]) {
+      names.push(match[1]);
+    }
+  }
+  return names;
+}
+
+function isUselessDocblock(doc: string, symbol: string): boolean {
+  const words = doc
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*\*\s?/, "").trim())
+    .filter((line) => line !== "" && !line.startsWith("@"))
+    .join(" ")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!words) {
+    return true;
+  }
+  return words === splitIdentifierWords(symbol).join(" ") || normalizedIdentifier(words) === normalizedIdentifier(symbol);
+}
+
+function splitIdentifierWords(value: string): string[] {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .map((word) => word.toLowerCase())
+    .filter(Boolean);
+}
+
+function hasTrivialAssertion(source: string): boolean {
+  if (/\bassert\.ok\s*\(\s*true\s*\)/.test(source)) {
+    return true;
+  }
+  if (/\bassert\.(?:equal|strictEqual|deepEqual)\s*\(\s*(true|false|null|undefined|\d+|["'][^"']*["'])\s*,\s*\1\s*\)/.test(source)) {
+    return true;
+  }
+  for (const match of source.matchAll(/\bassert\.(?:equal|strictEqual|deepEqual)\s*\(\s*([^,\n]+?)\s*,\s*([^,\n)]+?)(?:\s*,|\s*\))/g)) {
+    if (normalizeAssertionExpression(match[1] ?? "") === normalizeAssertionExpression(match[2] ?? "")) {
+      return true;
+    }
+  }
+  for (const match of source.matchAll(/\bexpect\s*\(\s*([^)]+?)\s*\)\s*\.\s*to(?:Be|Equal|StrictEqual)\s*\(\s*([^)]+?)\s*\)/g)) {
+    if (normalizeAssertionExpression(match[1] ?? "") === normalizeAssertionExpression(match[2] ?? "")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeAssertionExpression(expression: string): string {
+  return expression.trim().replace(/;$/, "");
+}
+
+function hasAssertion(source: string): boolean {
+  return /\bassert(?:\.[A-Za-z]+)?\s*\(/.test(source) || /\bexpect(?:\.(?:assertions|hasAssertions))?\s*\(/.test(source);
+}
+
+function magicNumberAssertions(source: string): Array<{ value: number }> {
+  const results: Array<{ value: number }> = [];
+  const ignored = new Set([-1, 0, 1]);
+  const patterns = [
+    /\bexpect\s*\([^)]+\)\s*\.\s*to(?:Be|Equal|HaveLength|HaveCount)\s*\(\s*(-?\d+(?:\.\d+)?)\s*\)/g,
+    /\bassert\.(?:equal|strictEqual|deepEqual)\s*\(\s*[^,\n]+,\s*(-?\d+(?:\.\d+)?)(?:\s*,|\s*\))/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      const value = Number(match[1] ?? "0");
+      if (!ignored.has(value)) {
+        results.push({ value });
+      }
+    }
+  }
+  return results;
+}
+
+function unusedMockVariables(source: string): string[] {
+  const names: string[] = [];
+  for (const match of source.matchAll(/\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:(?:vi|jest)\.fn|sinon\.stub|createMock|mock)\s*\(/g)) {
+    const name = match[1] ?? "";
+    if (name && countMatches(source, new RegExp(`\\b${escapeRegex(name)}\\b`, "g")) <= 1) {
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+function isMockOnlyTest(source: string): boolean {
+  if (!/\b(?:vi|jest)\.fn\s*\(|\b(?:createMock|mock|sinon\.stub)\s*\(/.test(source)) {
+    return false;
+  }
+  if (!/\.(?:toHaveBeenCalled|toHaveBeenCalledWith|toHaveBeenNthCalledWith|toBeCalled|toBeCalledWith)\s*\(/.test(source)) {
+    return false;
+  }
+  const targets = [...source.matchAll(/\bexpect\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)/g)].map((match) => match[1] ?? "");
+  return targets.length > 0 && targets.every((target) => /(?:mock|stub|spy)$/i.test(target));
+}
+
+function hasExceptionTypeOnlyAssertion(source: string): boolean {
+  return /\.toThrow\s*\(\s*(?:Error|[A-Z][A-Za-z0-9_$]*Error)\s*\)/.test(source) || /\bassert\.throws\s*\([^,\n]+,\s*(?:Error|[A-Z][A-Za-z0-9_$]*Error)\s*\)/.test(source);
+}
+
+function hasGlobalStateMutation(source: string): boolean {
+  return /\bprocess\.env\.[A-Za-z0-9_]+\s*=/.test(source) || /\bglobalThis\.[A-Za-z0-9_$]+\s*=/.test(source) || /\b(?:Date\.now|Math\.random)\s*=/.test(source);
+}
+
+function setupLineCount(source: string): number {
+  let count = 0;
+  for (const line of functionBodyContent(source).split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed === "});" || trimmed === "}") {
+      continue;
+    }
+    if (hasAssertion(trimmed)) {
+      break;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function isTestInvocationLine(line: string): boolean {
+  return /^\s*(?:test|it)\s*\(/.test(line);
 }
 
 function functionBlocks(source: string): FunctionBlock[] {
@@ -620,6 +1673,9 @@ function functionBlocks(source: string): FunctionBlock[] {
   lines.forEach((line, index) => {
     const match = patterns.map((pattern) => line.match(pattern)).find(Boolean);
     if (!match?.[1]) {
+      return;
+    }
+    if (isControlBlockName(match[1])) {
       return;
     }
     const start = functionStartIndex(lines, index);
@@ -648,10 +1704,14 @@ function functionBlocks(source: string): FunctionBlock[] {
       lineCount: end - start + 1,
       body,
       isPublic: /\bexport\b|\bpublic\b/.test(lines.slice(start, index + 1).join("\n")),
-      isTest: /\b(test|it|describe)\s*\(/.test(lines.slice(start, index + 1).join("\n")) || match[1].startsWith("test"),
+      isTest: isTestInvocationLine(lines[index] ?? ""),
     });
   });
   return blocks;
+}
+
+function isControlBlockName(name: string): boolean {
+  return ["if", "for", "while", "switch", "catch"].includes(name);
 }
 
 function functionStartIndex(lines: string[], index: number): number {
@@ -706,6 +1766,10 @@ function finding(ruleId: string, message: string, file: SourceFile, line: number
 
 function blockFinding(ruleId: string, message: string, file: SourceFile, block: FunctionBlock, severity: Severity, pillar: Pillar): Finding {
   return makeFinding({ ruleId, message, filePath: file.displayPath, line: block.startLine, severity, pillar, confidence: "high", symbol: block.name });
+}
+
+function blockFindingWithMetadata(ruleId: string, message: string, file: SourceFile, block: FunctionBlock, severity: Severity, pillar: Pillar, metadata: Record<string, unknown>): Finding {
+  return makeFinding({ ruleId, message, filePath: file.displayPath, line: block.startLine, severity, pillar, confidence: "medium", symbol: block.name, metadata });
 }
 
 function renderReport(report: AnalysisReport, format: OutputFormat): string {
@@ -938,8 +2002,8 @@ function buildProgram(): Command {
     .command("analyse")
     .description("Run gruff analysis.")
     .argument("[paths...]", "Files or directories to analyse.")
-    .option("--config <path>", "Path to a gruff JSON config file.")
-    .option("--no-config", "Skip auto-applying the default .gruff.json file for this run.")
+    .option("--config <path>", "Path to a gruff JSON/YAML config file.")
+    .option("--no-config", "Skip auto-applying the default .gruff.json/.gruff.yaml/.gruff.yml file for this run.")
     .option("--format <format>", "Output format: text, json, html, markdown, github, or hotspot.", "text")
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
     .option("--include-ignored", "Include files under default ignored directories.")
@@ -961,8 +2025,8 @@ function buildProgram(): Command {
     .argument("[paths...]", "Files or directories to analyse.")
     .option("--format <format>", "Report format: html or json.", "html")
     .option("--output <path>", "Write report to a file.")
-    .option("--config <path>", "Path to a gruff JSON config file.")
-    .option("--no-config", "Skip auto-applying the default .gruff.json file for this run.")
+    .option("--config <path>", "Path to a gruff JSON/YAML config file.")
+    .option("--no-config", "Skip auto-applying the default .gruff.json/.gruff.yaml/.gruff.yml file for this run.")
     .option("--fail-on <severity>", "Finding severity that fails the run.", "none")
     .option("--include-ignored", "Include files under default ignored directories.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
@@ -1157,6 +2221,30 @@ function hasDocCommentBeforeLine(source: string, line: number): boolean {
 
 function isGenericName(name: string): boolean {
   return ["process", "handle", "doit", "run", "execute", "manage"].includes(name.toLowerCase());
+}
+
+function isHighEntropySecretCandidate(value: string, minLength: number): boolean {
+  if (value.length < minLength || /^[0-9a-f]+$/i.test(value) || /^sha(?:256|384|512)-[A-Za-z0-9+/=]+$/.test(value)) {
+    return false;
+  }
+  if (!/[a-z]/.test(value) || !/[A-Z]/.test(value) || !/[0-9]/.test(value)) {
+    return false;
+  }
+  if (new Set(value).size < Math.min(12, Math.ceil(value.length / 3))) {
+    return false;
+  }
+  return shannonEntropy(value) >= 4;
+}
+
+function shannonEntropy(value: string): number {
+  const counts = new Map<string, number>();
+  for (const character of value) {
+    counts.set(character, (counts.get(character) ?? 0) + 1);
+  }
+  return [...counts.values()].reduce((sum, count) => {
+    const probability = count / value.length;
+    return sum - probability * Math.log2(probability);
+  }, 0);
 }
 
 function countMatches(source: string, pattern: RegExp): number {

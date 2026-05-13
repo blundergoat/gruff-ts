@@ -1,0 +1,37 @@
+paths:
+  ignore:
+    - ".goat-flow/scratchpad/**"
+
+allowlists:
+  acceptedAbbreviations:
+    - id
+    - db
+    - io
+    - ui
+    - tx
+    - rx
+    - ts
+    - ast
+    - cli
+    - api
+    - env
+    - npath
+  secretPreviews: []
+
+rules:
+  complexity.npath:
+    thresholds:
+      warn: 20
+      error: 80
+  docs.todo-density:
+    thresholds:
+      markers: 4
+  sensitive-data.hardcoded-env-value:
+    thresholds:
+      minLength: 16
+  sensitive-data.high-entropy-string:
+    thresholds:
+      minLength: 32
+  test-quality.setup-bloat:
+    thresholds:
+      maxSetupLines: 8

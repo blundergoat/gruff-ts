@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-10
+last_reviewed: 2026-05-13
 ---
 
 # Verification lessons
@@ -22,3 +22,43 @@ last_reviewed: 2026-05-10
 **Created:** 2026-05-10
 
 `.claude/hooks/deny-dangerous.sh` blocks "pipe to interpreter" patterns. When summarising audit JSON or processing tool output with a one-liner, write to `/tmp/<file>.json` first and then run the interpreter against the file path. Trying to retry the same pipeline after a block triggers the same hook — the lesson is to switch to a file-based intermediate, not to keep retrying.
+
+## Lesson: threshold fixtures must exceed the threshold they are proving
+
+**Created:** 2026-05-13
+
+**What happened:** The M01 high-entropy sensitive-data fixture initially used a 31-character secret-like value while the rule default required 32 characters, so the targeted test failed after implementation until the fixture value was corrected.
+
+**Evidence:** `src/cli.test.ts` + `(search: "const secret =")` - the first-slice fixture owns the candidate value for `sensitive-data.high-entropy-string`.
+
+**Prevention:** When adding threshold-backed rule fixtures, count or otherwise prove the fixture value crosses the threshold before treating a missing finding as an implementation bug.
+
+## Lesson: self-analysis smoke catches scanner regressions that fixtures miss
+
+**Created:** 2026-05-13
+
+**What happened:** M02 unit fixtures passed, but `./bin/gruff-ts analyse src --format=json --fail-on=none --no-config` exposed a `parse-error` in `src/cli.ts` and false positives where control statements were treated as function blocks.
+
+**Evidence:** `src/cli.ts` + `(search: "function parseDiagnostics")` and `(search: "function functionBlocks")`; `src/cli.test.ts` now includes clean control-flow coverage and delimiter-looking literal coverage.
+
+**Prevention:** For regex-heavy rule work, run the analyzer against `src` before declaring the milestone gate done, and check the output for diagnostics plus impossible symbols such as `if`, `switch`, or `catch`.
+
+## Lesson: inspect smoke output, not just exit status
+
+**Created:** 2026-05-13
+
+**What happened:** M03 tests and the HTML smoke command exited 0, but the first HTML inspection showed obvious sensitive-data false positives on `package-lock.json` SRI hashes and the detector string `OPENAI_API_KEY` inside `src/cli.ts`.
+
+**Evidence:** `src/cli.ts` + `(search: "function isHighEntropySecretCandidate")` and `(search: "sensitive-data.api-key-pattern")`; `src/cli.test.ts` now includes `risk expansion ignores package integrity hashes`.
+
+**Prevention:** When adding source-text detectors, inspect a small slice of CLI smoke output for noisy rule ids and filenames. Exit code 0 only proves the command ran; it does not prove the detector is useful.
+
+## Lesson: do not mutate the scanned tree during determinism checks
+
+**Created:** 2026-05-13
+
+**What happened:** The M04 determinism smoke was first run in parallel with baseline generation. The baseline command created `.goat-flow/scratchpad/gruff-ts-expanded-baseline.json` between the two `analyse .` runs, so the comparison reported one extra finding even though the analyzer output was deterministic for a stable tree.
+
+**Evidence:** M04 verification commands; rerunning `./bin/gruff-ts analyse . --format=json --fail-on=none --no-config` twice after baseline generation completed produced identical reports after ignoring `run.generatedAt`.
+
+**Prevention:** Run determinism checks by themselves, or generate any scratchpad/baseline artifacts before the first compared run. Parallel verification is fine only when none of the commands write into paths being scanned.

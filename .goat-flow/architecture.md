@@ -32,7 +32,7 @@ Three top-level command surfaces, all defined in `buildProgram` (in `src/cli.ts`
 
 State is filesystem-only — there is no database, queue, or external API.
 
-- **Inputs:** source files matched by `discoverSources` (search: `function discoverSources`) with hardcoded ignore set in `isDefaultIgnoredDir` (search: `function isDefaultIgnoredDir`); optional `.gruff.json` config; optional baseline JSON; optional history JSON.
+- **Inputs:** source files matched by `discoverSources` (search: `function discoverSources`) with hardcoded ignore set in `isDefaultIgnoredDir` (search: `function isDefaultIgnoredDir`); optional `.gruff.json`, `.gruff.yaml`, or `.gruff.yml` config; optional baseline JSON; optional history JSON.
 - **Outputs:** stdout (`text`/`json`/`markdown`/`github`/`hotspot`), HTML (also stdout unless `report --output`), `gruff-baseline.json` when `--generate-baseline` is set, `.gruff-history.json` when `--history-file` is passed.
 - **Schemas (public contract):** `gruff.analysis.v1` (the `AnalysisReport`), `gruff.baseline.v1` (the suppression file written by `writeBaseline`, search: `function writeBaseline`), `gruff.hotspot.v1` (the trimmed top-offenders payload in `renderReport`'s `hotspot` branch). Bumping any of these is a breaking change for downstream consumers.
 - **Determinism:** `Finding.fingerprint` (sha256 of `ruleId\0filePath\0line\0symbol`, sliced to 16 chars in `makeFinding`, search: `function makeFinding`) is the dedupe and baseline-match key. Findings are sorted by `(filePath, line, ruleId, message)` before dedupe so the report bytes are stable across runs.

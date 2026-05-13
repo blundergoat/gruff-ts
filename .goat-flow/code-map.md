@@ -7,6 +7,7 @@ gruff-ts/
 ├── package.json                   = npm manifest; declares bin "gruff-ts" → bin/gruff-ts; deps: commander, tsx
 ├── package-lock.json              = npm lockfile
 ├── tsconfig.json                  = strict + noUncheckedIndexedAccess + exactOptionalPropertyTypes
+├── .gruff.yaml                    = repo-level gruff-ts config; YAML counterpart to supported JSON config
 ├── .gitignore                     = ignores node_modules, dist, .gruff-history.json, gruff-baseline.json, .claude/settings.local.json
 ├── .npmignore                     = npm publish ignore list
 │
