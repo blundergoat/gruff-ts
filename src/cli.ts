@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { argv, chdir, cwd } from "node:process";
-import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname as dirnamePath, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const VERSION = "0.1.0-dev";
@@ -782,6 +782,227 @@ function analyseTextRules(file: SourceFile, source: string, config: Config, find
   }
 
   analyseSensitiveData(file, source, config, findings);
+  analyseProjectConfigRules(file, source, findings);
+}
+
+function analyseProjectConfigRules(file: SourceFile, source: string, findings: Finding[]): void {
+  const name = basename(file.displayPath);
+  if (name !== "package.json" && name !== "tsconfig.json") {
+    return;
+  }
+  const data = parseJsonObject(source);
+  if (!data) {
+    return;
+  }
+  if (name === "package.json") {
+    analysePackageJson(file, source, data, findings);
+  } else {
+    analyseTsconfigJson(file, source, data, findings);
+  }
+}
+
+function analysePackageJson(file: SourceFile, source: string, pkg: Record<string, unknown>, findings: Finding[]): void {
+  const scripts = objectValue(pkg.scripts);
+  if (scripts) {
+    for (const [scriptName, value] of Object.entries(scripts)) {
+      if (!isString(value)) {
+        continue;
+      }
+      const line = jsonKeyLine(source, scriptName);
+      if (isRemoteInstallScript(value)) {
+        findings.push(
+          makeFinding({
+            ruleId: "security.remote-install-script",
+            message: `Package script \`${scriptName}\` downloads and executes remote shell content.`,
+            filePath: file.displayPath,
+            line,
+            severity: "error",
+            pillar: "security",
+            confidence: "medium",
+            symbol: scriptName,
+            remediation: "Vendor the installer, pin an audited package, or remove remote shell execution.",
+            metadata: { scriptName },
+          }),
+        );
+      }
+      if (isLifecycleScript(scriptName)) {
+        findings.push(
+          makeFinding({
+            ruleId: "security.risky-lifecycle-script",
+            message: `Package lifecycle script \`${scriptName}\` runs automatically during install or publish flows.`,
+            filePath: file.displayPath,
+            line,
+            severity: "warning",
+            pillar: "security",
+            confidence: "medium",
+            symbol: scriptName,
+            remediation: "Move setup behind an explicit command unless lifecycle execution is required.",
+            metadata: { scriptName },
+          }),
+        );
+      }
+    }
+  }
+
+  for (const section of ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"]) {
+    const dependencies = objectValue(pkg[section]);
+    if (!dependencies) {
+      continue;
+    }
+    const runtimeDependency = section !== "devDependencies";
+    for (const [packageName, value] of Object.entries(dependencies)) {
+      if (!isString(value)) {
+        continue;
+      }
+      const line = jsonKeyLine(source, packageName);
+      if (isUrlDependency(value)) {
+        findings.push(
+          makeFinding({
+            ruleId: "security.url-dependency",
+            message: `Dependency \`${packageName}\` in \`${section}\` installs from a URL or git spec.`,
+            filePath: file.displayPath,
+            line,
+            severity: "warning",
+            pillar: "security",
+            confidence: "medium",
+            symbol: packageName,
+            remediation: "Prefer a registry package version that can be locked and audited.",
+            metadata: { packageName, section, runtimeDependency },
+          }),
+        );
+      }
+      if (runtimeDependency && isBroadRuntimeVersion(value)) {
+        findings.push(
+          makeFinding({
+            ruleId: "waste.broad-runtime-version",
+            message: `Runtime dependency \`${packageName}\` uses overly broad version spec \`${value}\`.`,
+            filePath: file.displayPath,
+            line,
+            severity: "advisory",
+            pillar: "waste",
+            confidence: "medium",
+            symbol: packageName,
+            remediation: "Use a bounded semver range and rely on the lockfile for repeatable installs.",
+            metadata: { packageName, section, versionSpec: value },
+          }),
+        );
+      }
+    }
+  }
+
+  analysePackageBins(file, source, pkg, findings);
+}
+
+function analysePackageBins(file: SourceFile, source: string, pkg: Record<string, unknown>, findings: Finding[]): void {
+  const bins = packageBinEntries(pkg);
+  for (const [command, target] of bins) {
+    const line = jsonKeyLine(source, command);
+    const absolute = isAbsolute(target) ? target : join(dirnamePath(file.absolutePath), target);
+    if (!existsSync(absolute)) {
+      findings.push(
+        makeFinding({
+          ruleId: "design.package-bin-missing",
+          message: `Package bin \`${command}\` points to missing file \`${target}\`.`,
+          filePath: file.displayPath,
+          line,
+          severity: "warning",
+          pillar: "design",
+          confidence: "high",
+          symbol: command,
+          remediation: "Update the bin path or add the executable file.",
+          metadata: { command, target },
+        }),
+      );
+      continue;
+    }
+    const stats = statSync(absolute);
+    if (!stats.isFile() || (stats.mode & 0o111) === 0) {
+      findings.push(
+        makeFinding({
+          ruleId: "design.package-bin-not-executable",
+          message: `Package bin \`${command}\` points to a file that is not executable.`,
+          filePath: file.displayPath,
+          line,
+          severity: "warning",
+          pillar: "design",
+          confidence: "high",
+          symbol: command,
+          remediation: "Make the bin target executable and keep its shebang valid.",
+          metadata: { command, target },
+        }),
+      );
+    }
+  }
+}
+
+function analyseTsconfigJson(file: SourceFile, source: string, data: Record<string, unknown>, findings: Finding[]): void {
+  const compilerOptions = objectValue(data.compilerOptions) ?? {};
+  const checks: Array<[string, string, string]> = [
+    ["strict", "modernisation.tsconfig-strict-disabled", "`strict` is disabled, reducing TypeScript's baseline safety checks."],
+    ["noUncheckedIndexedAccess", "modernisation.tsconfig-index-safety-disabled", "`noUncheckedIndexedAccess` is disabled, so indexed reads can silently ignore undefined."],
+    ["exactOptionalPropertyTypes", "modernisation.tsconfig-exact-optional-disabled", "`exactOptionalPropertyTypes` is disabled, weakening optional property contracts."],
+  ];
+  for (const [optionName, ruleId, message] of checks) {
+    if (compilerOptions[optionName] === true) {
+      continue;
+    }
+    findings.push(
+      makeFinding({
+        ruleId,
+        message,
+        filePath: file.displayPath,
+        line: jsonKeyLine(source, optionName),
+        severity: "warning",
+        pillar: "modernisation",
+        confidence: "high",
+        symbol: optionName,
+        remediation: `Set compilerOptions.${optionName} to true unless a documented migration blocker exists.`,
+        metadata: { optionName, currentValue: compilerOptions[optionName] ?? null },
+      }),
+    );
+  }
+}
+
+function parseJsonObject(source: string): Record<string, unknown> | undefined {
+  try {
+    return objectValue(JSON.parse(source));
+  } catch {
+    return undefined;
+  }
+}
+
+function jsonKeyLine(source: string, key: string): number {
+  return firstLine(source, new RegExp(`"${escapeRegex(key)}"\\s*:`));
+}
+
+function isRemoteInstallScript(command: string): boolean {
+  return /\b(?:curl|wget)\b[^\n|;&]*https?:\/\/[^\n|;&]*(?:\|\s*(?:sh|bash|zsh)\b|\b(?:sh|bash|zsh)\b)/i.test(command);
+}
+
+function isLifecycleScript(scriptName: string): boolean {
+  return ["preinstall", "install", "postinstall", "prepare", "prepublish", "prepublishOnly"].includes(scriptName);
+}
+
+function isUrlDependency(versionSpec: string): boolean {
+  return /^(?:https?:\/\/|git(?:\+https?|\+ssh)?:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:)/i.test(versionSpec);
+}
+
+function isBroadRuntimeVersion(versionSpec: string): boolean {
+  const normalized = versionSpec.trim().toLowerCase();
+  return normalized === "*" || normalized === "x" || normalized === "latest" || /^>=\s*\d/.test(normalized) || normalized.includes("||");
+}
+
+function packageBinEntries(pkg: Record<string, unknown>): Array<[string, string]> {
+  const bin = pkg.bin;
+  if (isString(bin)) {
+    const name = isString(pkg.name) ? pkg.name : "bin";
+    return [[name, bin]];
+  }
+  const bins = objectValue(bin);
+  if (!bins) {
+    return [];
+  }
+  return Object.entries(bins).filter((entry): entry is [string, string] => isString(entry[1]));
 }
 
 function analyseSensitiveData(file: SourceFile, source: string, config: Config, findings: Finding[]): void {

