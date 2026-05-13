@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.6.0"
+goat-flow-reference-version: "1.6.4"
 ---
 # Skill Conventions
 
