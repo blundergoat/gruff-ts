@@ -12,18 +12,24 @@ const expandedRuleIds = new Set([
   "docs.missing-return-tag",
   "docs.stale-param-tag",
   "docs.useless-docblock",
+  "modernisation.double-cast",
   "modernisation.nullish-coalescing-candidate",
+  "modernisation.non-null-assertion",
   "modernisation.optional-chaining-candidate",
   "modernisation.readonly-property-candidate",
+  "modernisation.ts-comment-without-rationale",
   "naming.boolean-prefix",
   "naming.class-file-mismatch",
   "naming.hungarian-notation",
   "naming.identifier-quality",
+  "security.async-foreach",
   "security.disabled-tls-verification",
+  "security.floating-promise",
   "security.insecure-random",
   "security.new-function",
   "security.sql-concatenation",
   "security.string-timer",
+  "security.throw-non-error",
   "security.weak-crypto",
   "sensitive-data.api-key-pattern",
   "sensitive-data.hardcoded-env-value",
@@ -38,7 +44,9 @@ const expandedRuleIds = new Set([
   "test-quality.unused-mock",
   "waste.commented-out-code",
   "waste.empty-function",
+  "waste.exported-any",
   "waste.redundant-variable",
+  "waste.swallowed-catch",
   "waste.unused-import",
   "waste.unused-parameter",
 ]);
@@ -353,6 +361,102 @@ rules:
     { noConfig: false },
   );
   assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
+});
+
+test("extended type-safety rubric finds explicit unsafety without false positives", () => {
+  const tsIgnore = "@ts-ignore";
+  const unsafeReport = analyseFixture(`export function unsafeApi(input: ${"any"}): ${"any"} {
+  // ${tsIgnore}
+  const user = input as ${"unknown"} as { profile?: { name: string } };
+  return user${"!"}.profile${"!"}.name;
+}
+`);
+  const unsafeRuleIds = new Set(unsafeReport.findings.map((finding) => finding.ruleId));
+  for (const ruleId of [
+    "modernisation.ts-comment-without-rationale",
+    "modernisation.non-null-assertion",
+    "modernisation.double-cast",
+    "waste.exported-any",
+  ]) {
+    assert.equal(unsafeRuleIds.has(ruleId), true, `expected ${ruleId}`);
+  }
+
+  const cleanReport = analyseFixture(`function acceptsString(value: string): string {
+  return value;
+}
+
+export function safeApi(input: unknown): string {
+  // ${"@ts-expect-error"} -- third-party overload rejects this documented regression fixture
+  acceptsString(123);
+  const user = input as { profile?: { name?: string } };
+  return user.profile?.name ?? "anonymous";
+}
+`);
+  for (const ruleId of [
+    "modernisation.ts-comment-without-rationale",
+    "modernisation.non-null-assertion",
+    "modernisation.double-cast",
+    "waste.exported-any",
+  ]) {
+    assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
+  }
+});
+
+test("extended reliability rubric finds unsafe async patterns without false positives", () => {
+  const unsafeReport = analyseFixture(`async function unreliable(userIds: string[]): Promise<void> {
+  userIds.forEach(${"async"} (userId) => {
+    await sendEmailAsync(userId);
+  });
+  ${"sendEmailAsync"}(userIds[0]);
+  try {
+    await sendEmailAsync("primary");
+  } catch (error) {
+    // ignored
+  }
+  throw ${JSON.stringify("failed")};
+}
+`);
+  const unsafeRuleIds = new Set(unsafeReport.findings.map((finding) => finding.ruleId));
+  for (const ruleId of ["security.async-foreach", "security.floating-promise", "waste.swallowed-catch", "security.throw-non-error"]) {
+    assert.equal(unsafeRuleIds.has(ruleId), true, `expected ${ruleId}`);
+  }
+
+  const cleanReport = analyseFixture(`async function reliable(userIds: string[]): Promise<void> {
+  for (const userId of userIds) {
+    await sendEmailAsync(userId);
+  }
+  void sendEmailAsync("queued");
+  return fetch("https://example.test/health").then(() => undefined);
+}
+
+async function reportsFailure(): Promise<void> {
+  try {
+    await sendEmailAsync("primary");
+  } catch (error) {
+    throw error;
+  }
+  throw new Error("failed");
+}
+`);
+  for (const ruleId of ["security.async-foreach", "security.floating-promise", "waste.swallowed-catch", "security.throw-non-error"]) {
+    assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
+  }
+});
+
+test("extended type-safety config can disable new rules", () => {
+  // Config contract: modernisation.non-null-assertion | no thresholds |
+  // metadata expression | disabled fixture below.
+  const source = `function readName(profile?: { name: string }): string {
+  return profile${"!"}.name;
+}
+`;
+  const defaultReport = analyseFixture(source);
+  assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "modernisation.non-null-assertion"), true);
+
+  const disabledReport = analyseFixture(source, {
+    config: { rules: { "modernisation.non-null-assertion": { enabled: false } } },
+  });
+  assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "modernisation.non-null-assertion"), false);
 });
 
 test("core expansion finds naming and documentation rules", () => {
@@ -822,13 +926,29 @@ function redundantResult(): string {
   return calculatedResult;
 }
 
-function unsafe(userInput: string, userId: string): void {
+export function unsafePublicApi(input: ${"any"}): ${"any"} {
+  // ${"@ts-ignore"}
+  const user = input as ${"unknown"} as { name?: string };
+  return user${"!"}.name;
+}
+
+async function unsafe(userInput: string, userId: string, userIds: string[]): Promise<void> {
   new Function(userInput)();
   setTimeout("alert(1)", 10);
   Math.random();
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
   db.query("SELECT * FROM users WHERE id = " + userId);
   createHash("md5").update(userInput);
+  userIds.forEach(${"async"} (userId) => {
+    await sendEmailAsync(userId);
+  });
+  ${"sendEmailAsync"}(userIds[0]);
+  try {
+    await sendEmailAsync("primary");
+  } catch (error) {
+    // ignored
+  }
+  throw ${JSON.stringify("dynamic failure")};
 }
 
 /**

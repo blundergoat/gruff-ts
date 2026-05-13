@@ -1098,6 +1098,8 @@ function analyseLineRules(file: SourceFile, source: string, config: Config, find
   source.split(/\r?\n/).forEach((line, index) => {
     const lineNumber = index + 1;
     const codeLine = codeLineForMatching(line);
+    analyseTypeSafetyLine(file, line, codeLine, lineNumber, findings);
+    analyseReliabilityLine(file, codeLine, lineNumber, findings);
     if (isCommentedOutCode(line)) {
       findings.push(finding("waste.commented-out-code", "Comment appears to contain disabled source code.", file, lineNumber, "advisory", "waste"));
     }
@@ -1215,7 +1217,217 @@ function analyseLineRules(file: SourceFile, source: string, config: Config, find
     }
   });
 
+  analyseSwallowedCatches(file, source, findings);
   analyseUnreachable(file, source, findings);
+}
+
+function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: string, lineNumber: number, findings: Finding[]): void {
+  const directive = tsDirectiveWithoutRationale(line);
+  if (directive) {
+    findings.push(
+      makeFinding({
+        ruleId: "modernisation.ts-comment-without-rationale",
+        message: `${directive.directive} suppresses TypeScript without a nearby rationale.`,
+        filePath: file.displayPath,
+        line: lineNumber,
+        severity: "warning",
+        pillar: "modernisation",
+        confidence: "medium",
+        remediation: "Add a short reason after the directive or remove the suppression.",
+        metadata: { directive: directive.directive },
+      }),
+    );
+  }
+
+  for (const match of codeLine.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)!(?=\.|\[|\)|,|;|\s+(?:as|in|instanceof)\b|\s*$)/g)) {
+    const expression = match[1] ?? "";
+    findings.push(
+      makeFinding({
+        ruleId: "modernisation.non-null-assertion",
+        message: `Non-null assertion on \`${expression}\` bypasses TypeScript's null checks.`,
+        filePath: file.displayPath,
+        line: lineNumber,
+        severity: "warning",
+        pillar: "modernisation",
+        confidence: "medium",
+        symbol: expression,
+        remediation: "Narrow the value with a guard or handle the null/undefined case explicitly.",
+        metadata: { expression },
+      }),
+    );
+  }
+
+  for (const match of codeLine.matchAll(/\bas\s+(unknown|any)\s+as\s+([^;,\n]+)/g)) {
+    const sourceType = match[1] ?? "";
+    const targetType = (match[2] ?? "").trim().replace(/[.)]+$/, "");
+    findings.push(
+      makeFinding({
+        ruleId: "modernisation.double-cast",
+        message: `Double cast through \`${sourceType}\` bypasses structural type checks.`,
+        filePath: file.displayPath,
+        line: lineNumber,
+        severity: "warning",
+        pillar: "modernisation",
+        confidence: "medium",
+        remediation: "Prefer a typed parser, type guard, or narrower assertion at the trust boundary.",
+        metadata: { sourceType, targetType },
+      }),
+    );
+  }
+
+  const exportedAny = exportedAnySymbol(codeLine);
+  if (exportedAny) {
+    findings.push(
+      makeFinding({
+        ruleId: "waste.exported-any",
+        message: `Exported API \`${exportedAny}\` exposes \`any\` in its public contract.`,
+        filePath: file.displayPath,
+        line: lineNumber,
+        severity: "warning",
+        pillar: "waste",
+        confidence: "medium",
+        symbol: exportedAny,
+        remediation: "Use a named interface, unknown plus validation, or a precise generic type.",
+        metadata: { symbolName: exportedAny },
+      }),
+    );
+  }
+}
+
+function analyseReliabilityLine(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
+  if (/\.forEach\s*\(\s*async\b/.test(codeLine)) {
+    findings.push(
+      makeFinding({
+        ruleId: "security.async-foreach",
+        message: "async callbacks passed to forEach are not awaited by the caller.",
+        filePath: file.displayPath,
+        line: lineNumber,
+        severity: "warning",
+        pillar: "security",
+        confidence: "medium",
+        remediation: "Use for...of with await, Promise.all, or an explicit queue.",
+        metadata: { callName: "forEach" },
+      }),
+    );
+  }
+
+  const floating = floatingPromiseCall(codeLine);
+  if (floating) {
+    findings.push(
+      makeFinding({
+        ruleId: "security.floating-promise",
+        message: `Promise-like call \`${floating}\` is started without await, return, or void.`,
+        filePath: file.displayPath,
+        line: lineNumber,
+        severity: "warning",
+        pillar: "security",
+        confidence: "medium",
+        symbol: floating,
+        remediation: "Await it, return it, or prefix with void when fire-and-forget is intentional.",
+        metadata: { callName: floating },
+      }),
+    );
+  }
+
+  const thrown = nonErrorThrowExpression(codeLine);
+  if (thrown) {
+    findings.push(
+      makeFinding({
+        ruleId: "security.throw-non-error",
+        message: "Throwing non-Error values loses stack and error-shape information.",
+        filePath: file.displayPath,
+        line: lineNumber,
+        severity: "warning",
+        pillar: "security",
+        confidence: "medium",
+        remediation: "Throw an Error subclass with a clear message and structured properties.",
+        metadata: { expression: thrown },
+      }),
+    );
+  }
+}
+
+function analyseSwallowedCatches(file: SourceFile, source: string, findings: Finding[]): void {
+  for (const match of source.matchAll(/\bcatch\s*(?:\(([^)]*)\))?\s*\{([\s\S]*?)\}/g)) {
+    const body = match[2] ?? "";
+    if (!isSwallowedCatchBody(body)) {
+      continue;
+    }
+    const binding = (match[1] ?? "").trim();
+    findings.push(
+      makeFinding({
+        ruleId: "waste.swallowed-catch",
+        message: "catch block swallows an error without rethrowing, returning, or reporting it.",
+        filePath: file.displayPath,
+        line: byteLine(source, match.index ?? 0),
+        severity: "warning",
+        pillar: "waste",
+        confidence: "medium",
+        remediation: "Handle the error explicitly, rethrow it, or document an intentional ignore path.",
+        metadata: { ...(binding ? { binding } : {}) },
+      }),
+    );
+  }
+}
+
+function tsDirectiveWithoutRationale(line: string): { directive: string } | undefined {
+  const match = line.match(/@ts-(ignore|expect-error)\b(.*)$/);
+  if (!match?.[1]) {
+    return undefined;
+  }
+  const rationale = match[2] ?? "";
+  if (hasDirectiveRationale(rationale)) {
+    return undefined;
+  }
+  return { directive: `@ts-${match[1]}` };
+}
+
+function hasDirectiveRationale(value: string): boolean {
+  const cleaned = value.replace(/^[-:\s]+/, "").trim();
+  const words = cleaned.match(/[A-Za-z]{3,}/g) ?? [];
+  return words.length >= 3;
+}
+
+function exportedAnySymbol(codeLine: string): string | undefined {
+  if (!/\bexport\b/.test(codeLine) || !/\bany\b/.test(codeLine)) {
+    return undefined;
+  }
+  const match = codeLine.match(/\bexport\s+(?:async\s+)?(?:function|const|let|var|class|interface|type)\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
+  return match?.[1];
+}
+
+function floatingPromiseCall(codeLine: string): string | undefined {
+  const trimmed = codeLine.trim();
+  if (!trimmed || /^(?:await|return|void|throw|yield)\b/.test(trimmed) || /^(?:const|let|var)\s+/.test(trimmed)) {
+    return undefined;
+  }
+  const match = trimmed.match(/^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*\(/);
+  const callName = match?.[1] ?? "";
+  if (!callName) {
+    return undefined;
+  }
+  const localName = callName.split(".").at(-1) ?? callName;
+  return callName === "fetch" || /(?:Async|Promise)$/.test(localName) ? callName : undefined;
+}
+
+function nonErrorThrowExpression(codeLine: string): string | undefined {
+  const match = codeLine.match(/\bthrow\s+(.+?);?$/);
+  const expression = (match?.[1] ?? "").trim();
+  if (!expression) {
+    return undefined;
+  }
+  if (/^(?:new\s+[A-Za-z_$][A-Za-z0-9_$]*Error\b|[A-Za-z_$][A-Za-z0-9_$]*)/.test(expression)) {
+    return undefined;
+  }
+  return /^(?:["'`]|\d|\{|\[|true\b|false\b|null\b|undefined\b)/.test(expression) ? expression.slice(0, 40) : undefined;
+}
+
+function isSwallowedCatchBody(body: string): boolean {
+  const meaningful = body
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .trim();
+  return meaningful === "";
 }
 
 function codeLineForMatching(line: string): string {
