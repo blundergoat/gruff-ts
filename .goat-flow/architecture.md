@@ -2,12 +2,13 @@
 
 ## System Overview
 
-`gruff-ts` is a single-binary Node.js CLI that statically analyses TypeScript/JavaScript projects and emits findings, reports, and baselines. The whole runtime lives in one file — `src/cli.ts` (~1.2k lines) — so the "boundary" between subsystems is *function clusters within one module*, not separate services. That choice is deliberate: keeps the dependency surface to `commander` + `tsx` only, ships as a single `npm i -g` install, and lets baselines be deterministic byte-stable JSON.
+`gruff-ts` is a single-binary Node.js CLI that statically analyses TypeScript/JavaScript projects and emits findings, reports, baselines, and rule catalogue metadata. The whole runtime lives in one file — `src/cli.ts` (~3.2k lines) — so the "boundary" between subsystems is *function clusters within one module*, not separate services. That choice is deliberate: keeps the dependency surface to `commander` + `tsx` only, ships as a single `npm i -g` install, and lets baselines be deterministic byte-stable JSON.
 
 Three top-level command surfaces, all defined in `buildProgram` (in `src/cli.ts`, search: `function buildProgram`):
 
 - **`analyse`** — discover files, run rules, print/serialise findings, set exit code from `--fail-on`.
 - **`report`** — same pipeline, render-only output (`html` or `json`), optionally write to disk via `--output`.
+- **`list-rules`** — print rule descriptor metadata from the in-file catalogue (`RULE_DESCRIPTORS` / `renderRuleList` in `src/cli.ts`, search: `const RULE_DESCRIPTORS`).
 - **`dashboard`** — boot a local HTTP server (`startDashboard` in `src/cli.ts`, search: `function startDashboard`) that re-runs `analyse` on demand.
 
 `bin/gruff-ts` is a POSIX shell shim that resolves the local `tsx` loader and execs `node --import <tsx-loader> src/cli.ts "$@"`.
@@ -15,10 +16,11 @@ Three top-level command surfaces, all defined in `buildProgram` (in `src/cli.ts`
 ## Request Flow (analyse path)
 
 1. `buildProgram` (search: `function buildProgram`) wires Commander; the `.action(...)` callback for `analyse` calls `normalizeOptions` then `analyse`.
-2. `analyse(options)` (search: `export function analyse`) — load config → discover sources → optional git-diff filter → per-file `parseDiagnostics` + `analyseSource` → optional baseline apply / generate → sort + dedupe by `fingerprint` → optional history append → return `AnalysisReport`.
+2. `analyse(options)` (search: `export function analyse`) — load config → discover sources → optional git-diff filter → per-file `parseDiagnostics` + `analyseSource` → project-level `analyseProjectIndex` → optional baseline apply / generate → sort + dedupe by `fingerprint` → optional history append → return `AnalysisReport`.
 3. `analyseSource` (search: `function analyseSource`) fans out to `analyseTextRules` (file-length, TODO density, sensitive data) and, for TypeScript/JavaScript extensions, `analyseTypeScriptRules` (function blocks, line patterns, class rules, dead code).
-4. `functionBlocks` (search: `function functionBlocks`) is a regex-based lexer over four function-shape patterns; `analyseBlocks` (search: `function analyseBlocks`) applies size/complexity/naming/doc rules per block.
-5. `renderReport` (search: `function renderReport`) switches on `OutputFormat`; `exitFor` (search: `function exitFor`) maps severities to exit codes (2 if any diagnostic, 1 if `--fail-on` tripped, else 0).
+4. `analyseProjectIndex` (search: `function analyseProjectIndex`) builds a deterministic index from already-read discovered files for cross-file architecture/test-adequacy rules such as relative import depth, simple cycles, large-module concentration, and nearby-test checks.
+5. `functionBlocks` (search: `function functionBlocks`) is a regex-based lexer over four function-shape patterns; `analyseBlocks` (search: `function analyseBlocks`) applies size/complexity/naming/doc rules per block.
+6. `renderReport` (search: `function renderReport`) switches on `OutputFormat`; `exitFor` (search: `function exitFor`) maps severities to exit codes (2 if any diagnostic, 1 if `--fail-on` tripped, else 0).
 
 ## Trust Boundaries
 
@@ -33,7 +35,7 @@ Three top-level command surfaces, all defined in `buildProgram` (in `src/cli.ts`
 State is filesystem-only — there is no database, queue, or external API.
 
 - **Inputs:** source files matched by `discoverSources` (search: `function discoverSources`) with hardcoded ignore set in `isDefaultIgnoredDir` (search: `function isDefaultIgnoredDir`); optional `.gruff.json`, `.gruff.yaml`, or `.gruff.yml` config; optional baseline JSON; optional history JSON.
-- **Outputs:** stdout (`text`/`json`/`markdown`/`github`/`hotspot`), HTML (also stdout unless `report --output`), `gruff-baseline.json` when `--generate-baseline` is set, `.gruff-history.json` when `--history-file` is passed.
+- **Outputs:** stdout (`text`/`json`/`markdown`/`github`/`hotspot`), HTML (also stdout unless `report --output`), `list-rules` text or unversioned JSON catalogue output, `gruff-baseline.json` when `--generate-baseline` is set, `.gruff-history.json` when `--history-file` is passed.
 - **Schemas (public contract):** `gruff.analysis.v1` (the `AnalysisReport`), `gruff.baseline.v1` (the suppression file written by `writeBaseline`, search: `function writeBaseline`), `gruff.hotspot.v1` (the trimmed top-offenders payload in `renderReport`'s `hotspot` branch). Bumping any of these is a breaking change for downstream consumers.
 - **Determinism:** `Finding.fingerprint` (sha256 of `ruleId\0filePath\0line\0symbol`, sliced to 16 chars in `makeFinding`, search: `function makeFinding`) is the dedupe and baseline-match key. Findings are sorted by `(filePath, line, ruleId, message)` before dedupe so the report bytes are stable across runs.
 

@@ -19,10 +19,25 @@ allowlists:
   secretPreviews: []
 
 rules:
+  complexity.cognitive:
+    thresholds:
+      warn: 15
+  complexity.cyclomatic:
+    thresholds:
+      warn: 10
+      error: 20
   complexity.npath:
     thresholds:
       warn: 20
       error: 80
+  design.deep-relative-import:
+    thresholds:
+      maxParentSegments: 2
+  design.large-module-concentration:
+    thresholds:
+      minFiles: 4
+      minLines: 80
+      maxSharePercent: 55
   docs.todo-density:
     thresholds:
       markers: 4
@@ -32,6 +47,17 @@ rules:
   sensitive-data.high-entropy-string:
     thresholds:
       minLength: 32
+  size.file-length:
+    thresholds:
+      warn: 400
+      error: 800
+  size.function-length:
+    thresholds:
+      warn: 30
+      error: 60
+  size.parameter-count:
+    thresholds:
+      warn: 5
   test-quality.setup-bloat:
     thresholds:
       maxSetupLines: 8

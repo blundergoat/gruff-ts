@@ -29,6 +29,7 @@ export type Pillar =
 type Confidence = "low" | "medium" | "high";
 type OutputFormat = "text" | "json" | "html" | "markdown" | "github" | "hotspot";
 type FailThreshold = "none" | "advisory" | "warning" | "error";
+type RuleListFormat = "text" | "json";
 
 export interface Finding {
   ruleId: string;
@@ -99,6 +100,26 @@ interface SourceFile {
   isTypeScript: boolean;
 }
 
+interface ProjectSource {
+  file: SourceFile;
+  source: string;
+  lines: string[];
+}
+
+interface ProjectIndex {
+  sources: ProjectSource[];
+  typeScriptSources: ProjectSource[];
+  sourcePaths: Set<string>;
+  importsByFile: Map<string, ImportEdge[]>;
+}
+
+interface ImportEdge {
+  specifier: string;
+  line: number;
+  parentSegments: number;
+  targetPath?: string;
+}
+
 interface FunctionBlock {
   name: string;
   params: string;
@@ -111,6 +132,110 @@ interface FunctionBlock {
 
 interface NormalizeContext {
   allowBaselineFlag: boolean;
+}
+
+export interface RuleDescriptor {
+  ruleId: string;
+  pillar: Pillar;
+  severity: Severity;
+  confidence: Confidence;
+  description: string;
+  remediation: string;
+  thresholdKeys?: readonly string[];
+  fixtureExemption?: string;
+}
+
+const RULE_DESCRIPTORS: readonly RuleDescriptor[] = [
+  { ruleId: "complexity.cognitive", pillar: "complexity", severity: "warning", confidence: "high", description: "Flags functions with high combined branch and nesting complexity.", remediation: "Split nested decisions into smaller named functions.", thresholdKeys: ["warn"] },
+  { ruleId: "complexity.cyclomatic", pillar: "complexity", severity: "warning", confidence: "high", description: "Flags functions with many independent branch paths.", remediation: "Reduce branching or move policy tables out of imperative code.", thresholdKeys: ["error", "warn"] },
+  { ruleId: "complexity.npath", pillar: "complexity", severity: "warning", confidence: "medium", description: "Flags functions with high approximate NPath complexity.", remediation: "Break apart compound branch combinations.", thresholdKeys: ["error", "warn"] },
+  { ruleId: "dead-code.unused-private-method", pillar: "dead-code", severity: "advisory", confidence: "low", description: "Flags private methods without an apparent same-file call site.", remediation: "Remove the method or add a direct call site." },
+  { ruleId: "design.circular-import", pillar: "design", severity: "warning", confidence: "medium", description: "Flags simple relative import cycles inside the discovered source set.", remediation: "Extract the shared contract or invert one dependency." },
+  { ruleId: "design.deep-relative-import", pillar: "design", severity: "advisory", confidence: "medium", description: "Flags relative imports that climb too many parent directories.", remediation: "Move the shared module closer or add a local boundary.", thresholdKeys: ["maxParentSegments"] },
+  { ruleId: "design.god-function", pillar: "design", severity: "warning", confidence: "high", description: "Flags functions that are both long and complex.", remediation: "Split responsibilities into smaller functions." },
+  { ruleId: "design.large-module-concentration", pillar: "design", severity: "advisory", confidence: "medium", description: "Flags a production module that dominates project source lines.", remediation: "Split unrelated responsibilities once stable seams are visible.", thresholdKeys: ["maxSharePercent", "minFiles", "minLines"] },
+  { ruleId: "design.package-bin-missing", pillar: "design", severity: "warning", confidence: "high", description: "Flags package bin entries that point at missing files.", remediation: "Update the bin path or add the executable file." },
+  { ruleId: "design.package-bin-not-executable", pillar: "design", severity: "warning", confidence: "high", description: "Flags package bin targets that are not executable.", remediation: "Make the bin target executable and keep its shebang valid." },
+  { ruleId: "docs.missing-param-tag", pillar: "documentation", severity: "advisory", confidence: "medium", description: "Flags documented exports with parameters missing @param tags.", remediation: "Document every current parameter in the JSDoc." },
+  { ruleId: "docs.missing-public-doc", pillar: "documentation", severity: "advisory", confidence: "medium", description: "Flags exported APIs without a nearby doc comment.", remediation: "Add a short comment explaining the public API contract." },
+  { ruleId: "docs.missing-return-tag", pillar: "documentation", severity: "advisory", confidence: "medium", description: "Flags documented non-void exports without @returns.", remediation: "Document the returned value or remove stale JSDoc." },
+  { ruleId: "docs.stale-param-tag", pillar: "documentation", severity: "advisory", confidence: "medium", description: "Flags @param tags for parameters no longer in the signature.", remediation: "Remove stale tags or update the function signature." },
+  { ruleId: "docs.todo-density", pillar: "documentation", severity: "advisory", confidence: "high", description: "Flags files with a high count of TODO/FIXME markers.", remediation: "Resolve stale markers or link them to tracked work.", thresholdKeys: ["markers"] },
+  { ruleId: "docs.useless-docblock", pillar: "documentation", severity: "advisory", confidence: "medium", description: "Flags docblocks that only restate the symbol name.", remediation: "Replace the comment with useful contract or behavior detail." },
+  { ruleId: "modernisation.double-cast", pillar: "modernisation", severity: "warning", confidence: "medium", description: "Flags casts through unknown or any into another type.", remediation: "Use a parser, type guard, or narrower assertion." },
+  { ruleId: "modernisation.non-null-assertion", pillar: "modernisation", severity: "warning", confidence: "medium", description: "Flags non-null assertions that bypass null checks.", remediation: "Narrow the value or handle null and undefined explicitly." },
+  { ruleId: "modernisation.nullish-coalescing-candidate", pillar: "modernisation", severity: "advisory", confidence: "medium", description: "Flags || fallbacks that may erase valid falsy values.", remediation: "Use ?? when only null or undefined should fall back." },
+  { ruleId: "modernisation.optional-chaining-candidate", pillar: "modernisation", severity: "advisory", confidence: "medium", description: "Flags repeated guard-and-property access patterns.", remediation: "Use optional chaining for clearer null-safe access." },
+  { ruleId: "modernisation.public-property", pillar: "modernisation", severity: "advisory", confidence: "high", description: "Flags public class properties that expose representation.", remediation: "Prefer readonly properties or accessors when invariants matter." },
+  { ruleId: "modernisation.readonly-property-candidate", pillar: "modernisation", severity: "advisory", confidence: "medium", description: "Flags class properties that appear readonly-worthy.", remediation: "Mark the property readonly when mutation is not part of the contract." },
+  { ruleId: "modernisation.ts-comment-without-rationale", pillar: "modernisation", severity: "warning", confidence: "medium", description: "Flags TypeScript suppression comments without a rationale.", remediation: "Add a short reason or remove the suppression." },
+  { ruleId: "modernisation.tsconfig-exact-optional-disabled", pillar: "modernisation", severity: "warning", confidence: "high", description: "Flags tsconfig files without exactOptionalPropertyTypes enabled.", remediation: "Enable exactOptionalPropertyTypes unless migration is blocked." },
+  { ruleId: "modernisation.tsconfig-index-safety-disabled", pillar: "modernisation", severity: "warning", confidence: "high", description: "Flags tsconfig files without noUncheckedIndexedAccess enabled.", remediation: "Enable noUncheckedIndexedAccess unless migration is blocked." },
+  { ruleId: "modernisation.tsconfig-strict-disabled", pillar: "modernisation", severity: "warning", confidence: "high", description: "Flags tsconfig files without strict mode enabled.", remediation: "Enable strict unless migration is blocked." },
+  { ruleId: "modernisation.var-declaration", pillar: "modernisation", severity: "advisory", confidence: "high", description: "Flags var declarations.", remediation: "Use let or const with the narrowest useful scope." },
+  { ruleId: "naming.boolean-prefix", pillar: "naming", severity: "advisory", confidence: "medium", description: "Flags boolean names without intent-revealing prefixes.", remediation: "Use prefixes such as is, has, can, should, or will." },
+  { ruleId: "naming.class-file-mismatch", pillar: "naming", severity: "advisory", confidence: "medium", description: "Flags exported classes whose name differs from the file name.", remediation: "Rename the class or file so the primary export is easy to locate." },
+  { ruleId: "naming.generic-function", pillar: "naming", severity: "advisory", confidence: "high", description: "Flags generic function names that hide intent.", remediation: "Name the domain action instead of a generic operation." },
+  { ruleId: "naming.hungarian-notation", pillar: "naming", severity: "advisory", confidence: "medium", description: "Flags identifiers named after storage type prefixes.", remediation: "Name the domain concept instead of the storage type." },
+  { ruleId: "naming.identifier-quality", pillar: "naming", severity: "advisory", confidence: "medium", description: "Flags placeholder or numbered identifiers.", remediation: "Use names that explain domain role or intent." },
+  { ruleId: "naming.short-variable", pillar: "naming", severity: "advisory", confidence: "medium", description: "Flags very short variable names outside common loop counters.", remediation: "Use a name that describes the domain role." },
+  { ruleId: "security.async-foreach", pillar: "security", severity: "warning", confidence: "medium", description: "Flags async callbacks passed to forEach.", remediation: "Use for...of with await, Promise.all, or an explicit queue." },
+  { ruleId: "security.disabled-tls-verification", pillar: "security", severity: "error", confidence: "high", description: "Flags code that disables TLS certificate verification.", remediation: "Remove the override and fix certificate trust at the source." },
+  { ruleId: "security.document-write", pillar: "security", severity: "warning", confidence: "high", description: "Flags document.write usage.", remediation: "Use safe DOM APIs and encode untrusted content." },
+  { ruleId: "security.eval-call", pillar: "security", severity: "error", confidence: "high", description: "Flags eval() dynamic code execution.", remediation: "Replace eval with explicit parsing or a safe dispatch table." },
+  { ruleId: "security.floating-promise", pillar: "security", severity: "warning", confidence: "medium", description: "Flags promise-like calls without await, return, or void.", remediation: "Await it, return it, or mark intentional fire-and-forget with void." },
+  { ruleId: "security.inner-html", pillar: "security", severity: "warning", confidence: "high", description: "Flags innerHTML assignment.", remediation: "Use safe DOM APIs or sanitize trusted HTML centrally." },
+  { ruleId: "security.insecure-random", pillar: "security", severity: "warning", confidence: "high", description: "Flags Math.random usage in source.", remediation: "Use crypto-backed randomness for security-sensitive values." },
+  { ruleId: "security.new-function", pillar: "security", severity: "error", confidence: "high", description: "Flags Function constructor dynamic code execution.", remediation: "Replace dynamic construction with explicit functions or dispatch." },
+  { ruleId: "security.process-exec", pillar: "security", severity: "warning", confidence: "high", description: "Flags child-process execution calls.", remediation: "Validate arguments and prefer fixed command vectors." },
+  { ruleId: "security.remote-install-script", pillar: "security", severity: "error", confidence: "medium", description: "Flags package scripts that pipe remote content to a shell.", remediation: "Vendor, pin, or remove remote shell execution." },
+  { ruleId: "security.risky-lifecycle-script", pillar: "security", severity: "warning", confidence: "medium", description: "Flags package lifecycle scripts that run automatically.", remediation: "Move setup behind an explicit command when possible." },
+  { ruleId: "security.sql-concatenation", pillar: "security", severity: "warning", confidence: "high", description: "Flags SQL text composed with runtime string interpolation.", remediation: "Use parameterized queries or query builders." },
+  { ruleId: "security.string-timer", pillar: "security", severity: "warning", confidence: "high", description: "Flags string callbacks passed to timers.", remediation: "Pass a function callback instead of source text." },
+  { ruleId: "security.throw-non-error", pillar: "security", severity: "warning", confidence: "medium", description: "Flags thrown non-Error values.", remediation: "Throw an Error subclass with a clear message." },
+  { ruleId: "security.url-dependency", pillar: "security", severity: "warning", confidence: "medium", description: "Flags dependencies installed from URL or git specs.", remediation: "Prefer registry versions that can be locked and audited." },
+  { ruleId: "security.weak-crypto", pillar: "security", severity: "warning", confidence: "high", description: "Flags weak crypto primitives such as md5, sha1, or createCipher.", remediation: "Use modern algorithms and authenticated encryption." },
+  { ruleId: "sensitive-data.api-key-pattern", pillar: "sensitive-data", severity: "error", confidence: "high", description: "Flags vendor API key patterns.", remediation: "Remove the secret and load it from a secure runtime source." },
+  { ruleId: "sensitive-data.aws-access-key", pillar: "sensitive-data", severity: "error", confidence: "high", description: "Flags AWS access key looking values.", remediation: "Remove the key and rotate it immediately." },
+  { ruleId: "sensitive-data.database-url-password", pillar: "sensitive-data", severity: "error", confidence: "high", description: "Flags database URLs that include passwords.", remediation: "Move credentials into a secret store or runtime environment." },
+  { ruleId: "sensitive-data.hardcoded-env-value", pillar: "sensitive-data", severity: "error", confidence: "medium", description: "Flags environment-style secret values committed in text.", remediation: "Load secret-like values from secure runtime configuration.", thresholdKeys: ["minLength"] },
+  { ruleId: "sensitive-data.high-entropy-string", pillar: "sensitive-data", severity: "error", confidence: "medium", description: "Flags high-entropy string literals that may be secrets.", remediation: "Remove the value and load it from a secure runtime source.", thresholdKeys: ["minLength"] },
+  { ruleId: "sensitive-data.jwt-token", pillar: "sensitive-data", severity: "error", confidence: "high", description: "Flags JWT-looking token literals.", remediation: "Remove the token and rotate the credential if real." },
+  { ruleId: "sensitive-data.pii-pattern", pillar: "sensitive-data", severity: "error", confidence: "high", description: "Flags PII-like identifier patterns.", remediation: "Remove personal data from source and fixtures." },
+  { ruleId: "sensitive-data.private-key", pillar: "sensitive-data", severity: "error", confidence: "high", description: "Flags private key block markers.", remediation: "Remove the key material and rotate affected credentials." },
+  { ruleId: "size.file-length", pillar: "size", severity: "warning", confidence: "high", description: "Flags files longer than configured thresholds.", remediation: "Split unrelated responsibilities into smaller files.", thresholdKeys: ["error", "warn"] },
+  { ruleId: "size.function-length", pillar: "size", severity: "warning", confidence: "high", description: "Flags functions longer than configured thresholds.", remediation: "Extract named helpers or split workflows.", thresholdKeys: ["error", "warn"] },
+  { ruleId: "size.parameter-count", pillar: "size", severity: "warning", confidence: "high", description: "Flags functions with too many parameters.", remediation: "Group related options or reduce the function's responsibility.", thresholdKeys: ["warn"] },
+  { ruleId: "test-quality.conditional-logic", pillar: "test-quality", severity: "advisory", confidence: "high", description: "Flags tests with conditional logic.", remediation: "Split branch-specific expectations into separate tests." },
+  { ruleId: "test-quality.exception-type-only", pillar: "test-quality", severity: "advisory", confidence: "high", description: "Flags tests that only assert exception type.", remediation: "Assert message, code, or observable behavior as well." },
+  { ruleId: "test-quality.global-state-mutation", pillar: "test-quality", severity: "warning", confidence: "high", description: "Flags tests mutating process or global runtime state.", remediation: "Isolate state changes and restore them around the test." },
+  { ruleId: "test-quality.loop-in-test", pillar: "test-quality", severity: "advisory", confidence: "high", description: "Flags loops inside test bodies.", remediation: "Use table tests or separate named cases." },
+  { ruleId: "test-quality.magic-number-assertion", pillar: "test-quality", severity: "advisory", confidence: "medium", description: "Flags assertions against unexplained numeric literals.", remediation: "Name expected values or assert domain-specific outcomes." },
+  { ruleId: "test-quality.missing-nearby-test", pillar: "test-quality", severity: "advisory", confidence: "medium", description: "Flags exported production files without nearby tests.", remediation: "Add a focused test beside the source or in a nearby test directory." },
+  { ruleId: "test-quality.mock-only-test", pillar: "test-quality", severity: "advisory", confidence: "high", description: "Flags tests that only verify mock interaction.", remediation: "Assert observable behavior in addition to collaboration." },
+  { ruleId: "test-quality.no-assertions", pillar: "test-quality", severity: "warning", confidence: "high", description: "Flags tests without apparent assertions.", remediation: "Add assertions for observable behavior." },
+  { ruleId: "test-quality.no-throw-only-test", pillar: "test-quality", severity: "advisory", confidence: "high", description: "Flags tests that only assert code does not throw.", remediation: "Assert the observable result or state change." },
+  { ruleId: "test-quality.only-skip", pillar: "test-quality", severity: "advisory", confidence: "high", description: "Flags focused or skipped test markers.", remediation: "Remove .only and either enable or delete skipped tests." },
+  { ruleId: "test-quality.setup-bloat", pillar: "test-quality", severity: "advisory", confidence: "medium", description: "Flags tests with too much setup before the first assertion.", remediation: "Extract builders or reduce fixture setup.", thresholdKeys: ["maxSetupLines"] },
+  { ruleId: "test-quality.sleep-in-test", pillar: "test-quality", severity: "advisory", confidence: "high", description: "Flags sleeps in tests.", remediation: "Synchronize on behavior instead of wall-clock time." },
+  { ruleId: "test-quality.snapshot-only-test", pillar: "test-quality", severity: "advisory", confidence: "high", description: "Flags tests that rely only on snapshots.", remediation: "Add targeted assertions for important behavior." },
+  { ruleId: "test-quality.trivial-assertion", pillar: "test-quality", severity: "warning", confidence: "high", description: "Flags tautological assertions.", remediation: "Assert a real result from the system under test." },
+  { ruleId: "test-quality.unused-mock", pillar: "test-quality", severity: "advisory", confidence: "medium", description: "Flags mocks created but not used.", remediation: "Remove unused mocks or wire them into the behavior under test." },
+  { ruleId: "waste.any-type", pillar: "waste", severity: "warning", confidence: "high", description: "Flags any type usage.", remediation: "Use unknown with validation or a precise type." },
+  { ruleId: "waste.broad-runtime-version", pillar: "waste", severity: "advisory", confidence: "medium", description: "Flags broad runtime dependency version ranges.", remediation: "Use bounded semver ranges and lockfiles." },
+  { ruleId: "waste.commented-out-code", pillar: "waste", severity: "advisory", confidence: "high", description: "Flags comments that appear to contain disabled code.", remediation: "Delete dead code or restore it behind a real feature path." },
+  { ruleId: "waste.console-log", pillar: "waste", severity: "advisory", confidence: "high", description: "Flags console log/debug calls in source.", remediation: "Remove debug logging or route through structured logging." },
+  { ruleId: "waste.empty-function", pillar: "waste", severity: "advisory", confidence: "high", description: "Flags functions with no executable body.", remediation: "Delete the function or add the missing implementation." },
+  { ruleId: "waste.exported-any", pillar: "waste", severity: "warning", confidence: "medium", description: "Flags exported APIs exposing any.", remediation: "Use a named interface, unknown with validation, or precise generics." },
+  { ruleId: "waste.redundant-variable", pillar: "waste", severity: "advisory", confidence: "medium", description: "Flags variables returned immediately after assignment.", remediation: "Return the expression directly." },
+  { ruleId: "waste.swallowed-catch", pillar: "waste", severity: "warning", confidence: "medium", description: "Flags empty catch blocks.", remediation: "Handle, report, rethrow, or document intentional ignore paths." },
+  { ruleId: "waste.unreachable-code", pillar: "waste", severity: "warning", confidence: "high", description: "Flags statements after terminating statements.", remediation: "Delete unreachable code or restructure the control flow." },
+  { ruleId: "waste.unused-import", pillar: "waste", severity: "advisory", confidence: "medium", description: "Flags named imports with no apparent usage.", remediation: "Remove unused imports." },
+  { ruleId: "waste.unused-parameter", pillar: "waste", severity: "advisory", confidence: "medium", description: "Flags parameters with no apparent usage.", remediation: "Remove the parameter or prefix it with _ if intentional." },
+];
+
+export function ruleDescriptors(): RuleDescriptor[] {
+  return [...RULE_DESCRIPTORS].sort((left, right) => left.ruleId.localeCompare(right.ruleId));
 }
 
 export function analyse(options: AnalysisOptions): AnalysisReport {
@@ -133,9 +258,12 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
   }
 
   let findings: Finding[] = [];
+  const projectSources: ProjectSource[] = [];
   for (const file of discovery.files) {
     try {
       const source = readFileSync(file.absolutePath, "utf8");
+      const lines = source.split(/\r?\n/);
+      projectSources.push({ file, source, lines });
       diagnostics.push(...parseDiagnostics(file, source));
       findings.push(...analyseSource(file, source, config));
     } catch (error) {
@@ -147,6 +275,7 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
       });
     }
   }
+  findings.push(...analyseProjectIndex(projectSources, config).filter((finding) => ruleEnabled(config, finding.ruleId)));
 
   let baseline: AnalysisReport["baseline"];
   if (options.generateBaseline) {
@@ -766,6 +895,294 @@ function analyseSource(file: SourceFile, source: string, config: Config): Findin
   return findings.filter((finding) => ruleEnabled(config, finding.ruleId));
 }
 
+function analyseProjectIndex(projectSources: ProjectSource[], config: Config): Finding[] {
+  const index = buildProjectIndex(projectSources);
+  const findings: Finding[] = [];
+  analyseArchitectureRules(index, config, findings);
+  analyseTestAdequacyRules(index, findings);
+  return findings;
+}
+
+function buildProjectIndex(projectSources: ProjectSource[]): ProjectIndex {
+  const sources = [...projectSources].sort((left, right) => left.file.displayPath.localeCompare(right.file.displayPath));
+  const typeScriptSources = sources.filter((source) => source.file.isTypeScript);
+  const sourcePaths = new Set(typeScriptSources.map((source) => source.file.displayPath));
+  const importsByFile = new Map<string, ImportEdge[]>();
+  for (const source of typeScriptSources) {
+    importsByFile.set(source.file.displayPath, importEdgesForSource(source, sourcePaths));
+  }
+  return { sources, typeScriptSources, sourcePaths, importsByFile };
+}
+
+function analyseArchitectureRules(index: ProjectIndex, config: Config, findings: Finding[]): void {
+  analyseDeepRelativeImports(index, config, findings);
+  analyseCircularImports(index, findings);
+  analyseLargeModuleConcentration(index, config, findings);
+}
+
+function analyseTestAdequacyRules(index: ProjectIndex, findings: Finding[]): void {
+  analyseMissingNearbyTests(index, findings);
+}
+
+function analyseDeepRelativeImports(index: ProjectIndex, config: Config, findings: Finding[]): void {
+  const maxParentSegments = threshold(config, "design.deep-relative-import", "maxParentSegments", 2);
+  for (const source of index.typeScriptSources) {
+    const edges = index.importsByFile.get(source.file.displayPath) ?? [];
+    for (const edge of edges) {
+      if (edge.parentSegments <= maxParentSegments) {
+        continue;
+      }
+      findings.push(
+        makeFinding({
+          ruleId: "design.deep-relative-import",
+          message: `Relative import \`${edge.specifier}\` climbs ${edge.parentSegments} directories.`,
+          filePath: source.file.displayPath,
+          line: edge.line,
+          severity: "advisory",
+          pillar: "design",
+          confidence: "medium",
+          symbol: edge.specifier,
+          remediation: "Move the shared module closer to the caller or introduce a local barrel/module boundary.",
+          metadata: { specifier: edge.specifier, parentSegments: edge.parentSegments, maxParentSegments },
+        }),
+      );
+    }
+  }
+}
+
+function analyseCircularImports(index: ProjectIndex, findings: Finding[]): void {
+  const cycles = importCycles(index);
+  for (const cycle of cycles) {
+    const anchorPath = cycle.files[0] ?? "";
+    const anchorSource = index.typeScriptSources.find((source) => source.file.displayPath === anchorPath);
+    if (!anchorSource) {
+      continue;
+    }
+    const anchorEdges = index.importsByFile.get(anchorPath) ?? [];
+    const line = anchorEdges.find((edge) => edge.targetPath && cycle.files.includes(edge.targetPath))?.line ?? 1;
+    const cycleLabel = cycle.files.join(" -> ");
+    findings.push(
+      makeFinding({
+        ruleId: "design.circular-import",
+        message: `Import cycle detected among ${cycle.files.join(", ")}.`,
+        filePath: anchorSource.file.displayPath,
+        line,
+        severity: "warning",
+        pillar: "design",
+        confidence: "medium",
+        symbol: cycleLabel,
+        remediation: "Extract the shared contract or move one dependency behind an explicit boundary.",
+        metadata: { files: cycle.files },
+      }),
+    );
+  }
+}
+
+function analyseLargeModuleConcentration(index: ProjectIndex, config: Config, findings: Finding[]): void {
+  const minFiles = threshold(config, "design.large-module-concentration", "minFiles", 4);
+  const minLines = threshold(config, "design.large-module-concentration", "minLines", 80);
+  const maxSharePercent = threshold(config, "design.large-module-concentration", "maxSharePercent", 55);
+  const modules = index.typeScriptSources
+    .filter((source) => isProductionSourcePath(source.file.displayPath))
+    .map((source) => ({ source, lines: source.lines.length }))
+    .sort((left, right) => right.lines - left.lines || left.source.file.displayPath.localeCompare(right.source.file.displayPath));
+  if (modules.length < minFiles) {
+    return;
+  }
+  const totalLines = modules.reduce((sum, module) => sum + module.lines, 0);
+  const largest = modules[0];
+  if (!largest || totalLines === 0) {
+    return;
+  }
+  const sharePercent = Math.round((largest.lines / totalLines) * 1000) / 10;
+  if (largest.lines < minLines || sharePercent <= maxSharePercent) {
+    return;
+  }
+  findings.push(
+    makeFinding({
+      ruleId: "design.large-module-concentration",
+      message: `Module \`${largest.source.file.displayPath}\` contains ${sharePercent}% of production source lines.`,
+      filePath: largest.source.file.displayPath,
+      line: 1,
+      severity: "advisory",
+      pillar: "design",
+      confidence: "medium",
+      symbol: fileBaseName(largest.source.file.displayPath),
+      remediation: "Split unrelated responsibilities into smaller modules once stable seams are visible.",
+      metadata: { lines: largest.lines, totalLines, sharePercent, minFiles, minLines, maxSharePercent },
+    }),
+  );
+}
+
+function importEdgesForSource(source: ProjectSource, sourcePaths: Set<string>): ImportEdge[] {
+  const edges: ImportEdge[] = [];
+  for (const [index, line] of source.lines.entries()) {
+    for (const match of line.matchAll(/\b(?:import|export)\b(?:[^"'`]*?\bfrom\s*)?\s*["']([^"']+)["']/g)) {
+      const specifier = match[1] ?? "";
+      if (!specifier.startsWith(".")) {
+        continue;
+      }
+      const targetPath = resolveRelativeImport(source.file.displayPath, specifier, sourcePaths);
+      edges.push({
+        specifier,
+        line: index + 1,
+        parentSegments: specifier.split("/").filter((segment) => segment === "..").length,
+        ...(targetPath ? { targetPath } : {}),
+      });
+    }
+  }
+  return edges.sort((left, right) => left.line - right.line || left.specifier.localeCompare(right.specifier));
+}
+
+function resolveRelativeImport(importerPath: string, specifier: string, sourcePaths: Set<string>): string | undefined {
+  const basePath = normalizeDisplayPath(join(dirnamePath(importerPath), specifier));
+  for (const candidate of importPathCandidates(basePath)) {
+    if (sourcePaths.has(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function importPathCandidates(basePath: string): string[] {
+  const extensions = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
+  const candidates = new Set<string>();
+  if (extname(basePath)) {
+    candidates.add(basePath);
+    const withoutExtension = basePath.slice(0, -extname(basePath).length);
+    for (const extension of extensions) {
+      candidates.add(`${withoutExtension}${extension}`);
+    }
+  } else {
+    for (const extension of extensions) {
+      candidates.add(`${basePath}${extension}`);
+      candidates.add(`${basePath}/index${extension}`);
+    }
+  }
+  return [...candidates].map(normalizeDisplayPath);
+}
+
+function importCycles(index: ProjectIndex): Array<{ files: string[] }> {
+  const cycles = new Map<string, string[]>();
+  const paths = [...index.importsByFile.keys()].sort();
+  for (const start of paths) {
+    visitImportCycle(index, start, start, [start], new Set([start]), cycles);
+  }
+  return [...cycles.values()]
+    .map((files) => ({ files }))
+    .sort((left, right) => left.files.join("\0").localeCompare(right.files.join("\0")));
+}
+
+function visitImportCycle(
+  index: ProjectIndex,
+  start: string,
+  current: string,
+  path: string[],
+  seen: Set<string>,
+  cycles: Map<string, string[]>,
+): void {
+  const targets = [...new Set((index.importsByFile.get(current) ?? []).map((edge) => edge.targetPath).filter(isString))].sort();
+  for (const target of targets) {
+    if (target === start && path.length > 1) {
+      const files = [...path].sort();
+      cycles.set(files.join("\0"), files);
+      continue;
+    }
+    if (seen.has(target) || path.length >= 12) {
+      continue;
+    }
+    seen.add(target);
+    visitImportCycle(index, start, target, [...path, target], seen, cycles);
+    seen.delete(target);
+  }
+}
+
+function isProductionSourcePath(path: string): boolean {
+  return !isTestPath(path) && !isDeclarationPath(path) && !isFixtureLikePath(path) && !path.split("/").includes("generated");
+}
+
+function analyseMissingNearbyTests(index: ProjectIndex, findings: Finding[]): void {
+  const testPaths = new Set(index.typeScriptSources.filter((source) => isTestPath(source.file.displayPath)).map((source) => source.file.displayPath));
+  for (const source of index.typeScriptSources.filter((candidate) => isProductionSourcePath(candidate.file.displayPath))) {
+    const exported = exportedSurface(source.source);
+    if (!exported || hasNearbyTest(source.file.displayPath, testPaths)) {
+      continue;
+    }
+    findings.push(
+      makeFinding({
+        ruleId: "test-quality.missing-nearby-test",
+        message: `Exported source file \`${source.file.displayPath}\` has no nearby test file.`,
+        filePath: source.file.displayPath,
+        line: exported.line,
+        severity: "advisory",
+        pillar: "test-quality",
+        confidence: "medium",
+        symbol: exported.symbol,
+        remediation: "Add a focused test beside the source file or under a nearby __tests__/tests directory.",
+        metadata: { expectedTestBase: fileBaseName(source.file.displayPath) },
+      }),
+    );
+  }
+}
+
+function exportedSurface(source: string): { symbol: string; line: number } | undefined {
+  const match = source.match(/\bexport\s+(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
+  if (!match?.[1]) {
+    return undefined;
+  }
+  return { symbol: match[1], line: byteLine(source, match.index ?? 0) };
+}
+
+function hasNearbyTest(sourcePath: string, testPaths: Set<string>): boolean {
+  const sourceBase = stripSourceExtension(sourcePath);
+  const sourceName = basename(sourceBase);
+  const sourceDir = displayDir(sourcePath);
+  const nearbyDirs = new Set([sourceDir, joinDisplay(sourceDir, "__tests__"), joinDisplay(sourceDir, "tests"), "test", "tests"]);
+  for (const testPath of testPaths) {
+    const testBase = stripTestMarker(stripSourceExtension(testPath));
+    if (basename(testBase) !== sourceName) {
+      continue;
+    }
+    if (testBase === sourceBase || nearbyDirs.has(displayDir(testPath))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function stripSourceExtension(path: string): string {
+  return path.replace(/\.[cm]?[tj]sx?$/, "");
+}
+
+function stripTestMarker(path: string): string {
+  return path.replace(/\.(?:test|spec)$/, "");
+}
+
+function displayDir(path: string): string {
+  const dir = normalizeDisplayPath(dirnamePath(path));
+  return dir === "." ? "" : dir;
+}
+
+function joinDisplay(left: string, right: string): string {
+  return left ? `${left}/${right}` : right;
+}
+
+function isTestPath(path: string): boolean {
+  return /(?:^|\/)(?:__tests__|tests?|spec)\//.test(path) || /\.(?:test|spec)\.[cm]?[tj]sx?$/.test(path);
+}
+
+function isDeclarationPath(path: string): boolean {
+  return /\.d\.[cm]?ts$/.test(path);
+}
+
+function isFixtureLikePath(path: string): boolean {
+  return /(?:^|\/)(?:__fixtures__|fixtures?|testdata)\//.test(path);
+}
+
+function normalizeDisplayPath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/^\.\//, "");
+}
+
 function analyseTextRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
   const lines = source.split(/\r?\n/).length;
   const warn = threshold(config, "size.file-length", "warn", 400);
@@ -1230,6 +1647,12 @@ function analyseTestBlock(file: SourceFile, block: FunctionBlock, config: Config
   }
   if (hasTrivialAssertion(block.body)) {
     findings.push(blockFinding("test-quality.trivial-assertion", `Test \`${block.name}\` contains an assertion that compares a value to itself.`, file, block, "warning", "test-quality"));
+  }
+  if (isSnapshotOnlyTest(block.body)) {
+    findings.push(blockFinding("test-quality.snapshot-only-test", `Test \`${block.name}\` relies only on snapshot assertions.`, file, block, "advisory", "test-quality"));
+  }
+  if (isNoThrowOnlyTest(block.body)) {
+    findings.push(blockFinding("test-quality.no-throw-only-test", `Test \`${block.name}\` only verifies that code does not throw.`, file, block, "advisory", "test-quality"));
   }
   for (const assertion of magicNumberAssertions(block.body)) {
     findings.push(
@@ -2027,6 +2450,27 @@ function hasAssertion(source: string): boolean {
   return /\bassert(?:\.[A-Za-z]+)?\s*\(/.test(source) || /\bexpect(?:\.(?:assertions|hasAssertions))?\s*\(/.test(source);
 }
 
+function isSnapshotOnlyTest(source: string): boolean {
+  if (!/\.\s*toMatch(?:Inline)?Snapshot\s*\(/.test(source)) {
+    return false;
+  }
+  const withoutSnapshots = source
+    .replace(/\bexpect\s*\([\s\S]*?\)\s*\.\s*toMatch(?:Inline)?Snapshot\s*\([^)]*\)\s*;?/g, "")
+    .replace(/\bexpect\.(?:assertions|hasAssertions)\s*\([^)]*\)\s*;?/g, "");
+  return !hasAssertion(withoutSnapshots);
+}
+
+function isNoThrowOnlyTest(source: string): boolean {
+  if (!/\bassert\.doesNotThrow\s*\(|\.\s*not\s*\.\s*toThrow\s*\(/.test(source)) {
+    return false;
+  }
+  const withoutNoThrow = source
+    .replace(/\bassert\.doesNotThrow\s*\([\s\S]*?\)\s*;?/g, "")
+    .replace(/\bexpect\s*\([\s\S]*?\)\s*\.\s*not\s*\.\s*toThrow\s*\([^)]*\)\s*;?/g, "")
+    .replace(/\bexpect\.(?:assertions|hasAssertions)\s*\([^)]*\)\s*;?/g, "");
+  return !hasAssertion(withoutNoThrow);
+}
+
 function magicNumberAssertions(source: string): Array<{ value: number }> {
   const results: Array<{ value: number }> = [];
   const ignored = new Set([-1, 0, 1]);
@@ -2220,6 +2664,19 @@ function renderReport(report: AnalysisReport, format: OutputFormat): string {
     case "text":
       return renderText(report);
   }
+}
+
+function renderRuleList(format: RuleListFormat): string {
+  const descriptors = ruleDescriptors();
+  if (format === "json") {
+    return `${JSON.stringify({ tool: { name: "gruff-ts", version: VERSION }, rules: descriptors }, null, 2)}\n`;
+  }
+  const lines = [`gruff-ts ${VERSION} rules (${descriptors.length})`, ""];
+  for (const descriptor of descriptors) {
+    const thresholds = descriptor.thresholdKeys && descriptor.thresholdKeys.length > 0 ? ` | thresholds: ${descriptor.thresholdKeys.join(",")}` : "";
+    lines.push(`${descriptor.ruleId} | ${descriptor.pillar} | ${descriptor.severity} | ${descriptor.confidence} | ${descriptor.description}${thresholds}`);
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function renderText(report: AnalysisReport): string {
@@ -2474,6 +2931,15 @@ function buildProgram(): Command {
         console.log(rendered);
       }
       process.exitCode = exitFor(report, options.failOn);
+    });
+
+  program
+    .command("list-rules")
+    .description("List rule catalogue metadata.")
+    .option("--format <format>", "Output format: text or json.", "text")
+    .action((rawOptions: Record<string, unknown>) => {
+      const format: RuleListFormat = rawOptions.format === "json" ? "json" : "text";
+      console.log(renderRuleList(format));
     });
 
   program
