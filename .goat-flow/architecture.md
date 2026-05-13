@@ -4,7 +4,7 @@
 
 `gruff-ts` is a single-binary Node.js CLI that statically analyses TypeScript/JavaScript projects and emits findings, reports, baselines, and rule catalogue metadata. The whole runtime lives in one file — `src/cli.ts` (~3.2k lines) — so the "boundary" between subsystems is *function clusters within one module*, not separate services. That choice is deliberate: keeps the dependency surface to `commander` + `tsx` only, ships as a single `npm i -g` install, and lets baselines be deterministic byte-stable JSON.
 
-Three top-level command surfaces, all defined in `buildProgram` (in `src/cli.ts`, search: `function buildProgram`):
+Four top-level command surfaces, all defined in `buildProgram` (in `src/cli.ts`, search: `function buildProgram`):
 
 - **`analyse`** — discover files, run rules, print/serialise findings, set exit code from `--fail-on`.
 - **`report`** — same pipeline, render-only output (`html` or `json`), optionally write to disk via `--output`.

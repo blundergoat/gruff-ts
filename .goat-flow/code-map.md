@@ -3,7 +3,7 @@
 ```
 gruff-ts/
 ├── CLAUDE.md                      = agent instruction file (hot path)
-├── README.md                      = repo readme (currently a stub)
+├── README.md                      = user-facing CLI overview, workflows, config, safety notes, and development commands
 ├── package.json                   = npm manifest; declares bin "gruff-ts" → bin/gruff-ts; deps: commander, tsx
 ├── package-lock.json              = npm lockfile
 ├── tsconfig.json                  = strict + noUncheckedIndexedAccess + exactOptionalPropertyTypes
