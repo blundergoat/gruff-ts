@@ -659,6 +659,94 @@ function ok(value: string): string {
   assert.deepEqual(report.diagnostics, []);
 });
 
+test("scanner ignores code-like text in literals for structural rules", () => {
+  const report = analyseProject({
+    "src/example.test.ts": `import assert from "node:assert/strict";
+import test from "node:test";
+
+const fixtureSource = \`export class BadName {
+  public value = "visible";
+  public process(input: string): string {
+    console.log(input);
+    eval(input);
+    new Function(input)();
+    var legacyName = input;
+    return legacyName;
+  }
+}\`;
+const matcher = /\\bvar\\s+legacyName/;
+
+test("fixture source text remains inert", () => {
+  assert.equal(fixtureSource.includes("eval"), true);
+  assert.equal(matcher.test("var legacyName"), true);
+});
+`,
+  });
+  const noisyRules = new Set([
+    "docs.missing-public-doc",
+    "modernisation.public-property",
+    "modernisation.var-declaration",
+    "naming.class-file-mismatch",
+    "security.eval-call",
+    "security.new-function",
+    "waste.console-log",
+  ]);
+  assert.deepEqual(
+    report.findings.filter((finding) => noisyRules.has(finding.ruleId)).map((finding) => finding.ruleId),
+    [],
+  );
+});
+
+test("unreachable-code ignores reachable switch cases after returns", () => {
+  const report = analyseFixture(`function renderFormat(format: string): string {
+  switch (format) {
+    case "json":
+      return "json";
+    case "html":
+      return "html";
+    default:
+      return "text";
+  }
+}
+`);
+
+  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unreachable-code"), false);
+});
+
+test("function parser ignores calls inside ternary expressions", () => {
+  const report = analyseFixture(`function chooseParser(useArray: boolean): string {
+  return useArray ? parseYamlArray(1) : parseYamlScalar("value");
+}
+
+function parseYamlArray(indent: number): string {
+  return String(indent);
+}
+
+function parseYamlScalar(value: string): string {
+  return value.trim();
+}
+`);
+
+  assert.deepEqual(
+    report.findings.filter((finding) => finding.ruleId === "waste.empty-function" && (finding.symbol === "parseYamlArray" || finding.symbol === "parseYamlScalar")),
+    [],
+  );
+});
+
+test("missing public docs are reported once per exported symbol", () => {
+  const report = analyseFixture(`export function loadValue(): string {
+  return "ok";
+}
+`);
+  assert.equal(report.findings.filter((finding) => finding.ruleId === "docs.missing-public-doc" && finding.symbol === "loadValue").length, 1);
+});
+
+test("size file-length skips generated lockfiles", () => {
+  const lockfile = Array.from({ length: 900 }, (_, index) => `"entry-${index}": "value"`).join("\n");
+  const report = analyseProject({ "package-lock.json": lockfile });
+  assert.equal(report.findings.some((finding) => finding.ruleId === "size.file-length" && finding.filePath === "package-lock.json"), false);
+});
+
 test("risk expansion redacts sensitive data in all render formats", () => {
   const apiToken = "rN7pQ4sV9xY2zA5bC8dG9hK2mN5pQ8sR1";
   const databaseUrl = "postgres://app:superSecretPassword@db.internal/app";
@@ -811,6 +899,10 @@ test("setup bloat", () => {
   const seven = buildSeven();
   const eight = buildEight();
   const nine = buildNine();
+  const ten = buildTen();
+  const eleven = buildEleven();
+  const twelve = buildTwelve();
+  const thirteen = buildThirteen();
   expect(one).toBeDefined();
 });
 
@@ -843,7 +935,7 @@ function testBuildsLibraryValue(): void {
 
 test("risk expansion respects test-quality config", () => {
   // Config contract: test-quality.setup-bloat | threshold maxSetupLines |
-  // default 8 | metadata setupLines,maxSetupLines | disabled and override fixtures below.
+  // default 12 | metadata setupLines,maxSetupLines | disabled and override fixtures below.
   const source = `test("compact setup", () => {
   const one = buildOne();
   const two = buildTwo();
@@ -1351,6 +1443,10 @@ test("setup bloat", () => {
   const seven = buildSeven();
   const eight = buildEight();
   const nine = buildNine();
+  const ten = buildTen();
+  const eleven = buildEleven();
+  const twelve = buildTwelve();
+  const thirteen = buildThirteen();
   expect(one).toBeDefined();
 });
 `,

@@ -60,4 +60,4 @@ rules:
       warn: 5
   test-quality.setup-bloat:
     thresholds:
-      maxSetupLines: 8
+      maxSetupLines: 12

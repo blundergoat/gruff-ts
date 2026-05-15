@@ -160,5 +160,5 @@ rules:
       error: 60
   test-quality.setup-bloat:
     thresholds:
-      maxSetupLines: 8
+      maxSetupLines: 12
 ```

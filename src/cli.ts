@@ -145,6 +145,7 @@ interface FunctionBlock {
   startLine: number;
   lineCount: number;
   body: string;
+  codeBody: string;
   isPublic: boolean;
   isTest: boolean;
 }
@@ -296,6 +297,15 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
   }
   findings.push(...analyseProjectIndex(projectSources, config).filter((finding) => ruleEnabled(config, finding.ruleId)));
 
+  findings.sort(
+    (left, right) =>
+      left.filePath.localeCompare(right.filePath) ||
+      (left.line ?? 0) - (right.line ?? 0) ||
+      left.ruleId.localeCompare(right.ruleId) ||
+      left.message.localeCompare(right.message),
+  );
+  findings = dedupeFindings(findings);
+
   let baseline: AnalysisReport["baseline"];
   if (options.generateBaseline) {
     const baselinePath = absolutize(projectRoot, options.generateBaseline);
@@ -323,15 +333,6 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
       };
     }
   }
-
-  findings.sort(
-    (left, right) =>
-      left.filePath.localeCompare(right.filePath) ||
-      (left.line ?? 0) - (right.line ?? 0) ||
-      left.ruleId.localeCompare(right.ruleId) ||
-      left.message.localeCompare(right.message),
-  );
-  findings = dedupeFindings(findings);
 
   if (options.historyFile) {
     recordHistory(projectRoot, options.historyFile, findings, diagnostics);
@@ -905,6 +906,127 @@ function isRegexLiteralStart(previousCode: string, beforeSlash: string): boolean
   return previousCode === "" || "([{=,:!&|?;".includes(previousCode) || /\breturn$/.test(beforeSlash.trimEnd());
 }
 
+function maskNonCode(source: string): string {
+  let result = "";
+  let quote: string | undefined;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  let regex = false;
+  let regexCharClass = false;
+  let regexEscaped = false;
+  let previousCode = "";
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index] ?? "";
+    const next = source[index + 1] ?? "";
+    if (character === "\n") {
+      result += character;
+      lineComment = false;
+      if (quote !== "`") {
+        quote = undefined;
+      }
+      regex = false;
+      regexCharClass = false;
+      regexEscaped = false;
+      continue;
+    }
+    if (lineComment) {
+      result += " ";
+      continue;
+    }
+    if (blockComment) {
+      if (character === "*" && next === "/") {
+        result += "  ";
+        index += 1;
+        blockComment = false;
+      } else {
+        result += " ";
+      }
+      continue;
+    }
+    if (quote) {
+      if (escaped) {
+        result += " ";
+        escaped = false;
+        continue;
+      }
+      if (character === "\\") {
+        result += " ";
+        escaped = true;
+        continue;
+      }
+      if (character === quote) {
+        result += character;
+        previousCode = character;
+        quote = undefined;
+        continue;
+      }
+      result += " ";
+      continue;
+    }
+    if (regex) {
+      if (regexEscaped) {
+        result += " ";
+        regexEscaped = false;
+        continue;
+      }
+      if (character === "\\") {
+        result += " ";
+        regexEscaped = true;
+        continue;
+      }
+      if (character === "[") {
+        result += " ";
+        regexCharClass = true;
+        continue;
+      }
+      if (character === "]") {
+        result += " ";
+        regexCharClass = false;
+        continue;
+      }
+      if (character === "/" && !regexCharClass) {
+        result += character;
+        regex = false;
+        previousCode = character;
+        continue;
+      }
+      result += " ";
+      continue;
+    }
+    if (character === "/" && next === "/") {
+      result += "  ";
+      index += 1;
+      lineComment = true;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      result += "  ";
+      index += 1;
+      blockComment = true;
+      continue;
+    }
+    if (character === "/" && isRegexLiteralStart(previousCode, source.slice(Math.max(0, index - 80), index))) {
+      result += character;
+      regex = true;
+      previousCode = character;
+      continue;
+    }
+    if (character === "\"" || character === "'" || character === "`") {
+      result += character;
+      quote = character;
+      previousCode = character;
+      continue;
+    }
+    result += character;
+    if (/\S/.test(character)) {
+      previousCode = character;
+    }
+  }
+  return result;
+}
+
 function analyseSource(file: SourceFile, source: string, config: Config): Finding[] {
   const findings: Finding[] = [];
   analyseTextRules(file, source, config, findings);
@@ -1206,10 +1328,12 @@ function analyseTextRules(file: SourceFile, source: string, config: Config, find
   const lines = source.split(/\r?\n/).length;
   const warn = threshold(config, "size.file-length", "warn", 400);
   const error = threshold(config, "size.file-length", "error", 800);
-  if (lines > error) {
-    findings.push(finding("size.file-length", `File has ${lines} lines, above the error threshold of ${error}.`, file, 1, "error", "size"));
-  } else if (lines > warn) {
-    findings.push(finding("size.file-length", `File has ${lines} lines, above the warning threshold of ${warn}.`, file, 1, "warning", "size"));
+  if (!isGeneratedLockfile(file.displayPath)) {
+    if (lines > error) {
+      findings.push(finding("size.file-length", `File has ${lines} lines, above the error threshold of ${error}.`, file, 1, "error", "size"));
+    } else if (lines > warn) {
+      findings.push(finding("size.file-length", `File has ${lines} lines, above the warning threshold of ${warn}.`, file, 1, "warning", "size"));
+    }
   }
 
   const todoCount = countMatches(source, /\b(TODO|FIXME)\b/g);
@@ -1219,6 +1343,11 @@ function analyseTextRules(file: SourceFile, source: string, config: Config, find
 
   analyseSensitiveData(file, source, config, findings);
   analyseProjectConfigRules(file, source, findings);
+}
+
+function isGeneratedLockfile(path: string): boolean {
+  const name = basename(path);
+  return name === "package-lock.json" || name === "npm-shrinkwrap.json" || name === "yarn.lock" || name === "pnpm-lock.yaml" || name === "bun.lockb";
 }
 
 function analyseProjectConfigRules(file: SourceFile, source: string, findings: Finding[]): void {
@@ -1545,12 +1674,13 @@ function hardcodedEnvValue(line: string, minLength: number): { keyName: string; 
 }
 
 function analyseTypeScriptRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
-  const blocks = functionBlocks(source);
+  const codeSource = maskNonCode(source);
+  const blocks = functionBlocks(source, codeSource);
   analyseBlocks(file, blocks, config, findings);
-  analyseLineRules(file, source, config, findings);
-  analyseDocRules(file, source, findings);
-  analyseClassRules(file, source, findings);
-  analyseDeadCode(file, source, findings);
+  analyseLineRules(file, source, codeSource, config, findings);
+  analyseDocRules(file, source, codeSource, findings);
+  analyseClassRules(file, source, codeSource, findings);
+  analyseDeadCode(file, codeSource, findings);
 }
 
 function analyseBlocks(file: SourceFile, blocks: FunctionBlock[], config: Config, findings: Finding[]): void {
@@ -1568,19 +1698,19 @@ function analyseBlocks(file: SourceFile, blocks: FunctionBlock[], config: Config
       findings.push(blockFinding("size.parameter-count", `Function \`${block.name}\` declares ${params} parameters.`, file, block, "warning", "size"));
     }
 
-    const cyclomatic = countMatches(block.body, /\b(if|else if|switch|case|for|while|catch)\b|\?|&&|\|\|/g) + 1;
+    const cyclomatic = countMatches(block.codeBody, /\b(if|else if|switch|case|for|while|catch)\b|\?|&&|\|\|/g) + 1;
     if (cyclomatic > threshold(config, "complexity.cyclomatic", "error", 20)) {
       findings.push(blockFinding("complexity.cyclomatic", `Function \`${block.name}\` has cyclomatic complexity ${cyclomatic}.`, file, block, "error", "complexity"));
     } else if (cyclomatic > threshold(config, "complexity.cyclomatic", "warn", 10)) {
       findings.push(blockFinding("complexity.cyclomatic", `Function \`${block.name}\` has cyclomatic complexity ${cyclomatic}.`, file, block, "warning", "complexity"));
     }
 
-    const nesting = maxNestingDepth(block.body);
+    const nesting = maxNestingDepth(block.codeBody);
     const cognitive = cyclomatic + nesting;
     if (cognitive > threshold(config, "complexity.cognitive", "warn", 15)) {
       findings.push(blockFinding("complexity.cognitive", `Function \`${block.name}\` has cognitive complexity ${cognitive}.`, file, block, "warning", "complexity"));
     }
-    const npath = approximateNpath(functionBodyContent(block.body));
+    const npath = approximateNpath(functionBodyContent(block.codeBody));
     const npathWarn = threshold(config, "complexity.npath", "warn", 20);
     const npathError = threshold(config, "complexity.npath", "error", 80);
     if (npath.value > npathError) {
@@ -1617,11 +1747,11 @@ function analyseBlocks(file: SourceFile, blocks: FunctionBlock[], config: Config
     if (block.isPublic && !hasDocCommentBefore(block.body)) {
       findings.push(blockFinding("docs.missing-public-doc", `Exported function \`${block.name}\` is missing a doc comment.`, file, block, "advisory", "documentation"));
     }
-    if (isEmptyFunctionBody(block.body)) {
+    if (isEmptyFunctionBody(block.codeBody)) {
       findings.push(blockFinding("waste.empty-function", `Function \`${block.name}\` has no executable body.`, file, block, "advisory", "waste"));
     }
     for (const parameter of parameterNames(block.params)) {
-      if (!parameter.name.startsWith("_") && !new RegExp(`\\b${escapeRegex(parameter.name)}\\b`).test(functionBodyContent(block.body))) {
+      if (!parameter.name.startsWith("_") && !new RegExp(`\\b${escapeRegex(parameter.name)}\\b`).test(functionBodyContent(block.codeBody))) {
         findings.push(
           makeFinding({
             ruleId: "waste.unused-parameter",
@@ -1638,7 +1768,7 @@ function analyseBlocks(file: SourceFile, blocks: FunctionBlock[], config: Config
         );
       }
     }
-    for (const redundant of redundantVariableReturns(block.body)) {
+    for (const redundant of redundantVariableReturns(block.codeBody)) {
       findings.push(
         makeFinding({
           ruleId: "waste.redundant-variable",
@@ -1661,19 +1791,20 @@ function analyseBlocks(file: SourceFile, blocks: FunctionBlock[], config: Config
 }
 
 function analyseTestBlock(file: SourceFile, block: FunctionBlock, config: Config, findings: Finding[]): void {
-  if (!hasAssertion(block.body)) {
+  const body = block.codeBody;
+  if (!hasAssertion(body)) {
     findings.push(blockFinding("test-quality.no-assertions", `Test \`${block.name}\` does not appear to make an assertion.`, file, block, "warning", "test-quality"));
   }
-  if (hasTrivialAssertion(block.body)) {
+  if (hasTrivialAssertion(body)) {
     findings.push(blockFinding("test-quality.trivial-assertion", `Test \`${block.name}\` contains an assertion that compares a value to itself.`, file, block, "warning", "test-quality"));
   }
-  if (isSnapshotOnlyTest(block.body)) {
+  if (isSnapshotOnlyTest(body)) {
     findings.push(blockFinding("test-quality.snapshot-only-test", `Test \`${block.name}\` relies only on snapshot assertions.`, file, block, "advisory", "test-quality"));
   }
-  if (isNoThrowOnlyTest(block.body)) {
+  if (isNoThrowOnlyTest(body)) {
     findings.push(blockFinding("test-quality.no-throw-only-test", `Test \`${block.name}\` only verifies that code does not throw.`, file, block, "advisory", "test-quality"));
   }
-  for (const assertion of magicNumberAssertions(block.body)) {
+  for (const assertion of magicNumberAssertions(body)) {
     findings.push(
       blockFindingWithMetadata(
         "test-quality.magic-number-assertion",
@@ -1686,7 +1817,7 @@ function analyseTestBlock(file: SourceFile, block: FunctionBlock, config: Config
       ),
     );
   }
-  const unusedMocks = unusedMockVariables(block.body);
+  const unusedMocks = unusedMockVariables(body);
   for (const mock of unusedMocks) {
     findings.push(
       blockFindingWithMetadata(
@@ -1700,17 +1831,17 @@ function analyseTestBlock(file: SourceFile, block: FunctionBlock, config: Config
       ),
     );
   }
-  if (isMockOnlyTest(block.body)) {
+  if (isMockOnlyTest(body)) {
     findings.push(blockFinding("test-quality.mock-only-test", `Test \`${block.name}\` only verifies mock interaction.`, file, block, "advisory", "test-quality"));
   }
-  if (hasExceptionTypeOnlyAssertion(block.body)) {
+  if (hasExceptionTypeOnlyAssertion(body)) {
     findings.push(blockFinding("test-quality.exception-type-only", `Test \`${block.name}\` checks only the exception type.`, file, block, "advisory", "test-quality"));
   }
-  if (hasGlobalStateMutation(block.body)) {
+  if (hasGlobalStateMutation(body)) {
     findings.push(blockFinding("test-quality.global-state-mutation", `Test \`${block.name}\` mutates global process or runtime state.`, file, block, "warning", "test-quality"));
   }
-  const setupLines = setupLineCount(block.body);
-  const maxSetupLines = threshold(config, "test-quality.setup-bloat", "maxSetupLines", 8);
+  const setupLines = setupLineCount(body);
+  const maxSetupLines = threshold(config, "test-quality.setup-bloat", "maxSetupLines", 12);
   if (setupLines > maxSetupLines) {
     findings.push(
       blockFindingWithMetadata(
@@ -1731,14 +1862,14 @@ function analyseTestBlock(file: SourceFile, block: FunctionBlock, config: Config
     ["test-quality.only-skip", /\.(only|skip)\s*\(/, "Focused or skipped test is committed."],
   ];
   for (const [ruleId, pattern, message] of checks) {
-    if (pattern.test(block.body)) {
+    if (pattern.test(body)) {
       findings.push(blockFinding(ruleId, message, file, block, "advisory", "test-quality"));
     }
   }
 }
 
-function analyseLineRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
-  analyseUnusedImports(file, source, findings);
+function analyseLineRules(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[]): void {
+  analyseUnusedImports(file, codeSource, findings);
   const codeChecks: Array<[string, RegExp, string, Severity, Pillar]> = [
     ["security.eval-call", /\beval\s*\(/, "eval() executes dynamic code.", "error", "security"],
     ["security.new-function", /\bnew\s+Function\s*\(|(?:^|[=(:,])\s*Function\s*\(/, "Function constructor executes dynamic code.", "error", "security"],
@@ -1758,15 +1889,17 @@ function analyseLineRules(file: SourceFile, source: string, config: Config, find
   ];
   const variables = /\b(?:const|let|for\s*\(\s*const|for\s*\(\s*let)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
 
-  source.split(/\r?\n/).forEach((line, index) => {
+  const sourceLines = source.split(/\r?\n/);
+  const codeLines = codeSource.split(/\r?\n/);
+  sourceLines.forEach((line, index) => {
     const lineNumber = index + 1;
-    const codeLine = codeLineForMatching(line);
+    const codeLine = codeLines[index] ?? codeLineForMatching(line);
     analyseTypeSafetyLine(file, line, codeLine, lineNumber, findings);
     analyseReliabilityLine(file, codeLine, lineNumber, findings);
     if (isCommentedOutCode(line)) {
       findings.push(finding("waste.commented-out-code", "Comment appears to contain disabled source code.", file, lineNumber, "advisory", "waste"));
     }
-    const booleanDeclaration = line.match(/\b(?:const|let|var|public|private|protected)\s+([A-Za-z_$][A-Za-z0-9_$]*)\??(?:\s*:\s*boolean|\s*=\s*(?:true|false)\b)/);
+    const booleanDeclaration = codeLine.match(/\b(?:const|let|var|public|private|protected)\s+([A-Za-z_$][A-Za-z0-9_$]*)\??(?:\s*:\s*boolean|\s*=\s*(?:true|false)\b)/);
     if (booleanDeclaration?.[1] && !hasBooleanPrefix(booleanDeclaration[1])) {
       findings.push(
         makeFinding({
@@ -1783,7 +1916,7 @@ function analyseLineRules(file: SourceFile, source: string, config: Config, find
         }),
       );
     }
-    for (const hungarian of line.matchAll(/\b(?:const|let|var|public|private|protected)\s+((?:str|obj|arr|bool|int|num)[A-Z][A-Za-z0-9_$]*)/g)) {
+    for (const hungarian of codeLine.matchAll(/\b(?:const|let|var|public|private|protected)\s+((?:str|obj|arr|bool|int|num)[A-Z][A-Za-z0-9_$]*)/g)) {
       const name = hungarian[1] ?? "";
       findings.push(
         makeFinding({
@@ -1800,7 +1933,7 @@ function analyseLineRules(file: SourceFile, source: string, config: Config, find
         }),
       );
     }
-    for (const optional of line.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*)\s*&&\s*\1\.[A-Za-z_$][A-Za-z0-9_$]*/g)) {
+    for (const optional of codeLine.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*)\s*&&\s*\1\.[A-Za-z_$][A-Za-z0-9_$]*/g)) {
       const name = optional[1] ?? "";
       findings.push(
         makeFinding({
@@ -1816,7 +1949,7 @@ function analyseLineRules(file: SourceFile, source: string, config: Config, find
         }),
       );
     }
-    for (const fallback of line.matchAll(/=\s*([A-Za-z_$][A-Za-z0-9_$.]*)\s*\|\|\s*(["'`][^"'`]*["'`]|\d+|true|false)/g)) {
+    for (const fallback of codeLine.matchAll(/=\s*([A-Za-z_$][A-Za-z0-9_$.]*)\s*\|\|\s*(["'`]\s*["'`]|\d+|true|false)/g)) {
       const name = fallback[1] ?? "";
       findings.push(
         makeFinding({
@@ -1838,12 +1971,12 @@ function analyseLineRules(file: SourceFile, source: string, config: Config, find
       }
     }
     for (const [ruleId, pattern, message, severity, pillar] of literalChecks) {
-      if (pattern.test(line)) {
+      if (rawPatternStartsInCode(line, codeLine, pattern)) {
         findings.push(finding(ruleId, message, file, lineNumber, severity, pillar));
       }
     }
 
-    for (const match of line.matchAll(variables)) {
+    for (const match of codeLine.matchAll(variables)) {
       const name = match[1] ?? "";
       if (name.length <= 2 && !["i", "j", "k"].includes(name) && !config.acceptedAbbreviations.has(name.toLowerCase())) {
         findings.push(
@@ -1880,8 +2013,20 @@ function analyseLineRules(file: SourceFile, source: string, config: Config, find
     }
   });
 
-  analyseSwallowedCatches(file, source, findings);
-  analyseUnreachable(file, source, findings);
+  analyseSwallowedCatches(file, codeSource, findings);
+  analyseUnreachable(file, codeSource, findings);
+}
+
+function rawPatternStartsInCode(rawLine: string, codeLine: string, pattern: RegExp): boolean {
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  const globalPattern = new RegExp(pattern.source, flags);
+  for (const match of rawLine.matchAll(globalPattern)) {
+    const index = match.index ?? 0;
+    if (/\S/.test(codeLine[index] ?? "")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: string, lineNumber: number, findings: Finding[]): void {
@@ -2128,8 +2273,8 @@ function codeLineForMatching(line: string): string {
   return result;
 }
 
-function analyseClassRules(file: SourceFile, source: string, findings: Finding[]): void {
-  for (const match of source.matchAll(/\bexport\s+(class|interface|type|enum|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+function analyseClassRules(file: SourceFile, source: string, codeSource: string, findings: Finding[]): void {
+  for (const match of codeSource.matchAll(/\bexport\s+(class|interface|type|enum|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
     const kind = match[1] ?? "";
     const name = match[2] ?? "";
     const line = byteLine(source, match.index ?? 0);
@@ -2167,12 +2312,12 @@ function analyseClassRules(file: SourceFile, source: string, findings: Finding[]
   }
 
   const publicProperty = /\bpublic\s+[A-Za-z_$][A-Za-z0-9_$]*\s*[=:]/g;
-  for (const match of source.matchAll(publicProperty)) {
+  for (const match of codeSource.matchAll(publicProperty)) {
     findings.push(finding("modernisation.public-property", "Public class property exposes representation; prefer readonly or accessors when invariants matter.", file, byteLine(source, match.index ?? 0), "advisory", "modernisation"));
   }
 
   const readonlyCandidate = /\b(?:public|private|protected)\s+(?!readonly\b)([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*[^;=\n]+;/g;
-  for (const match of source.matchAll(readonlyCandidate)) {
+  for (const match of codeSource.matchAll(readonlyCandidate)) {
     const name = match[1] ?? "";
     findings.push(
       makeFinding({
@@ -2190,9 +2335,13 @@ function analyseClassRules(file: SourceFile, source: string, findings: Finding[]
   }
 }
 
-function analyseDocRules(file: SourceFile, source: string, findings: Finding[]): void {
+function analyseDocRules(file: SourceFile, source: string, codeSource: string, findings: Finding[]): void {
   const documentedExport = /\/\*\*([\s\S]*?)\*\/\s*export\s+function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*(?::\s*([^\x7b\n]+))?/g;
   for (const match of source.matchAll(documentedExport)) {
+    const exportIndex = source.indexOf("export", match.index ?? 0);
+    if (exportIndex < 0 || codeSource[exportIndex] !== "e") {
+      continue;
+    }
     const doc = match[1] ?? "";
     const name = match[2] ?? "";
     const params = parameterNames(match[3] ?? "").map((parameter) => parameter.name);
@@ -2258,7 +2407,11 @@ function analyseUnreachable(file: SourceFile, source: string, findings: Finding[
   let previousTerminated = false;
   source.split(/\r?\n/).forEach((line, index) => {
     const trimmed = line.trim();
-    if (previousTerminated && /\S/.test(trimmed) && !trimmed.startsWith(String.fromCharCode(125))) {
+    const branchLabel = /^(?:case\b.*:|default\s*:)$/.test(trimmed);
+    if (branchLabel) {
+      previousTerminated = false;
+    }
+    if (previousTerminated && /\S/.test(trimmed) && !trimmed.startsWith(String.fromCharCode(125)) && !branchLabel) {
       findings.push(finding("waste.unreachable-code", "Statement appears after a terminating statement.", file, index + 1, "warning", "waste"));
     }
     previousTerminated = /\b(return|throw|process\.exit)\b/.test(trimmed) && trimmed.endsWith(";");
@@ -2557,17 +2710,19 @@ function isTestInvocationLine(line: string): boolean {
   return /^\s*(?:test|it)\s*\(/.test(line);
 }
 
-function functionBlocks(source: string): FunctionBlock[] {
+function functionBlocks(source: string, codeSource = source): FunctionBlock[] {
   const lines = source.split(/\r?\n/);
+  const codeLines = codeSource.split(/\r?\n/);
   const blocks: FunctionBlock[] = [];
   const patterns = [
-    /(?:test|it)\s*\(\s*["'`]([^"'`]+)["'`]\s*,\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
-    /(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)/,
-    /(?:public|private|protected)?\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*[:{]/,
-    /(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
+    /^\s*(?:test|it)\s*\(\s*["'`]([^"'`]+)["'`]\s*,\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
+    /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)/,
+    /^\s*(?:public|private|protected)?\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*[:{]/,
+    /^\s*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
   ];
-  lines.forEach((line, index) => {
-    const match = patterns.map((pattern) => line.match(pattern)).find(Boolean);
+  codeLines.forEach((line, index) => {
+    const rawLine = lines[index] ?? "";
+    const match = patterns.map((pattern, patternIndex) => (patternIndex === 0 && isTestInvocationLine(line) ? rawLine.match(pattern) : line.match(pattern))).find(Boolean);
     if (!match?.[1]) {
       return;
     }
@@ -2579,7 +2734,7 @@ function functionBlocks(source: string): FunctionBlock[] {
     let seenOpen = false;
     let end = index;
     for (let current = index; current < lines.length; current += 1) {
-      for (const character of lines[current] ?? "") {
+      for (const character of codeLines[current] ?? "") {
         if (character === "{") {
           depth += 1;
           seenOpen = true;
@@ -2593,14 +2748,16 @@ function functionBlocks(source: string): FunctionBlock[] {
       }
     }
     const body = lines.slice(start, end + 1).join("\n");
+    const codeBody = codeLines.slice(start, end + 1).join("\n");
     blocks.push({
       name: match[1],
       params: match[2] ?? "",
       startLine: start + 1,
       lineCount: end - start + 1,
       body,
-      isPublic: /\bexport\b|\bpublic\b/.test(lines.slice(start, index + 1).join("\n")),
-      isTest: isTestInvocationLine(lines[index] ?? ""),
+      codeBody,
+      isPublic: /\bexport\b|\bpublic\b/.test(codeLines.slice(start, index + 1).join("\n")),
+      isTest: isTestInvocationLine(codeLines[index] ?? ""),
     });
   });
   return blocks;
@@ -3459,10 +3616,11 @@ function threshold(config: Config, ruleId: string, name: string, defaultValue: n
 function dedupeFindings(findings: Finding[]): Finding[] {
   const seen = new Set<string>();
   return findings.filter((finding) => {
-    if (seen.has(finding.fingerprint)) {
+    const key = finding.ruleId === "docs.missing-public-doc" && finding.symbol ? [finding.ruleId, finding.filePath, finding.symbol].join("\0") : finding.fingerprint;
+    if (seen.has(key)) {
       return false;
     }
-    seen.add(finding.fingerprint);
+    seen.add(key);
     return true;
   });
 }
