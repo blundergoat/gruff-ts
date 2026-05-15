@@ -1464,6 +1464,36 @@ test("rule descriptor threshold keys match implementation and config defaults", 
   }
 });
 
+test("root CLI exposes gruff console command and option parity", () => {
+  const list = execFileSync("./bin/gruff-ts", [], { encoding: "utf8" });
+  const help = execFileSync("./bin/gruff-ts", ["--help"], { encoding: "utf8" });
+  const explicitList = execFileSync("./bin/gruff-ts", ["list"], { encoding: "utf8" });
+
+  assert.equal(help, list);
+  assert.equal(explicitList, list);
+  assert.match(list, /^gruff-ts 0\.1\.0\n\nUsage:\n  command \[options\] \[arguments\]/);
+  for (const option of ["-h, --help", "--silent", "-q, --quiet", "-V, --version", "--ansi|--no-ansi", "-n, --no-interaction", "-v|vv|vvv, --verbose"]) {
+    assert.match(list, new RegExp(option.replace(/[|]/g, "\\|")));
+  }
+  for (const command of ["analyse", "completion", "dashboard", "help", "list", "list-rules", "report", "summary"]) {
+    assert.match(list, new RegExp(`^  ${command}\\s+`, "m"));
+  }
+});
+
+test("root CLI mirrors gruff php ANSI menu styling", () => {
+  const ansiMenu = execFileSync("./bin/gruff-ts", ["--ansi"], { encoding: "utf8" });
+  const plainMenu = execFileSync("./bin/gruff-ts", ["--no-ansi"], { encoding: "utf8" });
+
+  assert.match(ansiMenu, /gruff-ts \u001b\[32m0\.1\.0\u001b\[39m/);
+  assert.match(ansiMenu, /\u001b\[33mUsage:\u001b\[39m/);
+  assert.match(ansiMenu, /\u001b\[33mOptions:\u001b\[39m/);
+  assert.match(ansiMenu, /\u001b\[32m-h, --help\u001b\[39m/);
+  assert.match(ansiMenu, /display help for the \u001b\[32mlist\u001b\[39m command/i);
+  assert.match(ansiMenu, /\u001b\[33mAvailable commands:\u001b\[39m/);
+  assert.match(ansiMenu, /\u001b\[32manalyse\u001b\[39m/);
+  assert.equal(/\u001b\[[0-9;]*m/.test(plainMenu), false);
+});
+
 test("list-rules CLI prints text and deterministic json", () => {
   const text = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
   assert.match(text, /gruff-ts 0\.1\.0 rules \(\d+\)/);
@@ -1481,6 +1511,24 @@ test("list-rules CLI prints text and deterministic json", () => {
   assert.equal(parsed.schemaVersion, undefined);
   assert.equal(parsed.tool?.name, "gruff-ts");
   assert.equal(parsed.rules?.some((rule) => rule.ruleId === "design.deep-relative-import" && rule.thresholdKeys?.includes("maxParentSegments")), true);
+});
+
+test("console globals suppress normal output and completion emits a script", () => {
+  const quietRules = execFileSync("./bin/gruff-ts", ["--quiet", "list-rules"], { encoding: "utf8" });
+  assert.equal(quietRules, "");
+
+  const completion = execFileSync("./bin/gruff-ts", ["completion"], { encoding: "utf8" });
+  assert.match(completion, /complete -F _gruff_ts_completion gruff-ts/);
+  assert.match(completion, /commands="analyse completion dashboard list list-rules report summary"/);
+});
+
+test("summary CLI prints compact scan digest without per-finding spam", () => {
+  const output = execFileSync("./bin/gruff-ts", ["summary", "fixtures/sample.ts", "--fail-on=none", "--no-config", "--no-baseline"], { encoding: "utf8" });
+  assert.match(output, /^gruff-ts 0\.1\.0 summary/);
+  assert.match(output, /Per-pillar counts:/);
+  assert.match(output, /Top rules:/);
+  assert.match(output, /Top file offenders:/);
+  assert.equal(output.includes("Findings:\n- ["), false);
 });
 
 test("json report uses schema version", () => {

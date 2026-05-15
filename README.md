@@ -82,18 +82,28 @@ gruff-ts list-rules --format=json
 | Command | Purpose |
 | --- | --- |
 | `analyse [paths...]` | Run the scanner and print findings. |
+| `summary [paths...]` | Print per-pillar counts, top rules, and top file offenders without per-finding output. |
 | `report [paths...]` | Render an HTML or JSON report, optionally to a file. |
 | `list-rules` | Print rule catalogue metadata. |
-| `dashboard` | Start a local HTTP dashboard. |
+| `dashboard` | Serve the local HTTP dashboard. |
+| `completion [shell]` | Print a shell completion script for `bash`, `zsh`, or `fish`. |
+| `list` | Print the Symfony-style command catalogue. |
 
 Useful help commands:
 
 ```bash
 gruff-ts --help
+gruff-ts list
 gruff-ts analyse --help
+gruff-ts summary --help
 gruff-ts report --help
 gruff-ts dashboard --help
 ```
+
+Global console options match the `gruff` PHP CLI surface: `--silent`,
+`--quiet`, `--ansi` / `--no-ansi`, `--no-interaction`, and `-v` / `-vv` /
+`-vvv`. The command menu uses the same ANSI colour treatment as `gruff` when
+stdout is a TTY; `--ansi` forces colour and `--no-ansi` disables it.
 
 ## Output Formats
 

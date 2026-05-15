@@ -34,6 +34,12 @@ Hotspot summary:
 gruff-ts analyse . --format=hotspot --fail-on=none > gruff-hotspots.json
 ```
 
+Human scan digest:
+
+```bash
+gruff-ts summary . --fail-on=none
+```
+
 Schema strings:
 
 - `gruff.analysis.v1` for full analysis reports.

@@ -4,12 +4,15 @@
 
 `gruff-ts` is a single-binary Node.js CLI that statically analyses TypeScript/JavaScript projects and emits findings, reports, baselines, and rule catalogue metadata. The whole runtime lives in one file — `src/cli.ts` (~3.4k lines) — so the "boundary" between subsystems is *function clusters within one module*, not separate services. That choice is deliberate: keeps the dependency surface to `commander` + `tsx` only, ships as a single `npm i -g` install, and lets baselines be deterministic byte-stable JSON.
 
-Four top-level command surfaces, all defined in `buildProgram` (in `src/cli.ts`, search: `function buildProgram`):
+Seven primary command surfaces, all defined in `buildProgram` (in `src/cli.ts`, search: `function buildProgram`):
 
 - **`analyse`** — discover files, run rules, print/serialise findings, set exit code from `--fail-on`.
 - **`report`** — same pipeline, render-only output (`html` or `json`), optionally write to disk via `--output`; HTML uses the self-contained dark inspection-report renderer in `renderHtml`.
 - **`list-rules`** — print rule descriptor metadata from the in-file catalogue (`RULE_DESCRIPTORS` / `renderRuleList` in `src/cli.ts`, search: `const RULE_DESCRIPTORS`).
 - **`dashboard`** — boot a local HTTP server (`startDashboard` in `src/cli.ts`, search: `function startDashboard`) with a dark iframe shell and controls panel that re-runs `analyse` on demand.
+- **`summary`** — run the same scanner once and render a compact per-pillar/top-rule/top-offender digest without per-finding output.
+- **`completion`** — emit lightweight shell completion scripts for bash, zsh, or fish.
+- **`list`** — print the Symfony-style command catalogue used when no command is supplied.
 
 `bin/gruff-ts` is a POSIX shell shim that resolves the local `tsx` loader and execs `node --import <tsx-loader> src/cli.ts "$@"`.
 
@@ -35,7 +38,7 @@ Four top-level command surfaces, all defined in `buildProgram` (in `src/cli.ts`,
 State is filesystem-only — there is no database, queue, or external API.
 
 - **Inputs:** source files matched by `discoverSources` (search: `function discoverSources`) with hardcoded ignore set in `isDefaultIgnoredDir` (search: `function isDefaultIgnoredDir`); optional `.gruff.json`, `.gruff.yaml`, or `.gruff.yml` config; optional baseline JSON; optional history JSON.
-- **Outputs:** stdout (`text`/`json`/`markdown`/`github`/`hotspot`), self-contained dark HTML reports (also stdout unless `report --output`), the local dashboard shell/scan HTML, `list-rules` text or unversioned JSON catalogue output, `gruff-baseline.json` when `--generate-baseline` is set, `.gruff-history.json` when `--history-file` is passed.
+- **Outputs:** stdout (`text`/`json`/`markdown`/`github`/`hotspot`), self-contained dark HTML reports (also stdout unless `report --output`), compact summary text, shell completion scripts, the local dashboard shell/scan HTML, `list-rules` text or unversioned JSON catalogue output, `gruff-baseline.json` when `--generate-baseline` is set, `.gruff-history.json` when `--history-file` is passed.
 - **Schemas (public contract):** `gruff.analysis.v1` (the `AnalysisReport`), `gruff.baseline.v1` (the suppression file written by `writeBaseline`, search: `function writeBaseline`), `gruff.hotspot.v1` (the trimmed top-offenders payload in `renderReport`'s `hotspot` branch). Bumping any of these is a breaking change for downstream consumers.
 - **Determinism:** `Finding.fingerprint` (sha256 of `ruleId\0filePath\0line\0symbol`, sliced to 16 chars in `makeFinding`, search: `function makeFinding`) is the dedupe and baseline-match key. Findings are sorted by `(filePath, line, ruleId, message)` before dedupe so the report bytes are stable across runs.
 
@@ -43,5 +46,5 @@ State is filesystem-only — there is no database, queue, or external API.
 
 - Distributed as an npm package (`package.json` declares `bin.gruff-ts → ./bin/gruff-ts`). License is `proprietary`.
 - No CI workflow files (the `.github` directory is absent). `scripts/check.sh` and `scripts/start-dev.sh` are the only orchestration entry points beyond `npm run`.
-- Local validation gate: `npm run check` runs `tsc --noEmit && npm test` (Node test runner via `node --import tsx --test`). `src/cli.test.ts` covers analyser rules, baselines, determinism, rule descriptors, report rendering, dashboard shell anchors, and JSON schema markers.
+- Local validation gate: `npm run check` runs `tsc --noEmit && npm test` (Node test runner via `node --import tsx --test`). `src/cli.test.ts` covers analyser rules, baselines, determinism, rule descriptors, console command parity, summary output, report rendering, dashboard shell anchors, and JSON schema markers.
 - Runtime targets Node 25 / ESM (`"type": "module"`) and TypeScript 5.9 with `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `allowImportingTsExtensions`.

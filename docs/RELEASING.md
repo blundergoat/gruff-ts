@@ -17,7 +17,9 @@ This checklist is for preparing a public 0.1.x release.
 - [ ] Run a local smoke scan:
 
 ```bash
+./bin/gruff-ts
 ./bin/gruff-ts analyse fixtures/sample.ts --fail-on=none
+./bin/gruff-ts summary fixtures/sample.ts --fail-on=none
 ./bin/gruff-ts report fixtures/sample.ts --output /tmp/gruff-ts-report.html
 ./bin/gruff-ts list-rules
 ```
@@ -64,6 +66,7 @@ Use the appropriate npm access flag for the package ownership model.
 - [ ] Install the published package in a temporary project.
 - [ ] Run `gruff-ts --help`.
 - [ ] Run `gruff-ts analyse . --fail-on=none`.
+- [ ] Run `gruff-ts summary . --fail-on=none`.
 - [ ] Run `gruff-ts list-rules`.
 - [ ] Verify README install instructions from a clean checkout.
 - [ ] Create or update the public release notes from `CHANGELOG.md`.

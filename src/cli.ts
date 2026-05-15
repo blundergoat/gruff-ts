@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Command } from "commander";
+import { Command, Help } from "commander";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
@@ -12,6 +12,9 @@ const VERSION = "0.1.0";
 const DEFAULT_BASELINE = "gruff-baseline.json";
 const DEFAULT_CONFIG_FILES = [".gruff.json", ".gruff.yaml", ".gruff.yml"] as const;
 const NPATH_CAP = 1_000_000;
+const ANSI_GREEN = "\u001b[32m";
+const ANSI_YELLOW = "\u001b[33m";
+const ANSI_RESET_FG = "\u001b[39m";
 
 export type Severity = "advisory" | "warning" | "error";
 export type Pillar =
@@ -30,6 +33,22 @@ type Confidence = "low" | "medium" | "high";
 type OutputFormat = "text" | "json" | "html" | "markdown" | "github" | "hotspot";
 type FailThreshold = "none" | "advisory" | "warning" | "error";
 type RuleListFormat = "text" | "json";
+type CompletionShell = "bash" | "fish" | "zsh";
+
+const CONSOLE_COMMANDS = [
+  { name: "analyse", description: "Run gruff analysis." },
+  { name: "completion", description: "Dump the shell completion script" },
+  { name: "dashboard", description: "Serve the local gruff dashboard." },
+  { name: "help", description: "Display help for a command" },
+  { name: "list", description: "List commands" },
+  { name: "list-rules", description: "List gruff rule metadata." },
+  { name: "report", description: "Render a gruff report to stdout or a file." },
+  {
+    name: "summary",
+    description:
+      "Print a compact digest of a scan: per-pillar finding counts, top rules, and top file offenders. Runs the analyser once and renders only the summary; no per-finding spam.",
+  },
+] as const;
 
 export interface Finding {
   ruleId: string;
@@ -2679,6 +2698,52 @@ function renderRuleList(format: RuleListFormat): string {
   return `${lines.join("\n")}\n`;
 }
 
+function renderSummary(report: AnalysisReport): string {
+  const pillarCounts = countBy(report.findings, (finding) => finding.pillar);
+  const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
+  const lines = [
+    `gruff-ts ${report.tool.version} summary`,
+    `Score: ${report.score.composite.toFixed(1)} (${report.score.grade})`,
+    `Findings: ${report.summary.total} total, ${report.summary.error} error, ${report.summary.warning} warning, ${report.summary.advisory} advisory`,
+    `Analysed files: ${report.paths.analysedFiles}`,
+  ];
+  if (report.diagnostics.length > 0) {
+    lines.push("", "Diagnostics:", ...report.diagnostics.map((diagnostic) => `- ${diagnostic.diagnosticType}: ${diagnostic.message}${diagnostic.filePath ? ` (${diagnostic.filePath})` : ""}`));
+  }
+  lines.push("", "Per-pillar counts:");
+  lines.push(...renderRankedCounts(pillarCounts, "No findings by pillar."));
+  lines.push("", "Top rules:");
+  lines.push(...renderRankedCounts(ruleCounts, "No rule findings."));
+  lines.push("", "Top file offenders:");
+  lines.push(
+    ...(
+      report.score.topOffenders.length === 0
+        ? ["- No file offenders."]
+        : report.score.topOffenders.map((offender) => `- ${offender.filePath}: ${offender.findings} findings, score ${offender.score.toFixed(1)}`)
+    ),
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+function countBy<T extends string>(findings: Finding[], keyFor: (finding: Finding) => T): Map<T, number> {
+  const counts = new Map<T, number>();
+  for (const finding of findings) {
+    const key = keyFor(finding);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText: string): string[] {
+  if (counts.size === 0) {
+    return [`- ${emptyText}`];
+  }
+  return [...counts.entries()]
+    .sort(([leftKey, leftCount], [rightKey, rightCount]) => rightCount - leftCount || leftKey.localeCompare(rightKey))
+    .slice(0, 10)
+    .map(([key, count]) => `- ${key}: ${count}`);
+}
+
 function renderText(report: AnalysisReport): string {
   const lines = [
     `gruff-ts ${report.tool.version}`,
@@ -2944,7 +3009,7 @@ function thresholdTriggered(thresholdValue: FailThreshold, severity: Severity): 
   return severity === "error";
 }
 
-function startDashboard(host: string, port: number, projectRoot: string): void {
+function startDashboard(host: string, port: number, projectRoot: string, outputEnabled = true): void {
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", `http://${host}:${port}`);
     if (url.pathname === "/health") {
@@ -2987,7 +3052,9 @@ function startDashboard(host: string, port: number, projectRoot: string): void {
     response.end(dashboardHomeHtml(root, scanPath));
   });
   server.listen(port, host, () => {
-    console.log(`gruff-ts dashboard listening at http://${host}:${port}`);
+    if (outputEnabled) {
+      console.log(`gruff-ts dashboard listening at http://${host}:${port}`);
+    }
   });
 }
 
@@ -3059,9 +3126,147 @@ function dashboardJs(): string {
   return `const form=document.querySelector("[data-scan-form]");const frame=document.querySelector(".report-frame");const toggle=document.querySelector(".controls-toggle");const panel=document.querySelector(".controls-panel");const refresh=document.querySelector("[data-refresh]");const status=document.querySelector("[data-scan-status]");function setOpen(open){panel.hidden=!open;toggle.setAttribute("aria-expanded",String(open));if(open){const input=form.querySelector("input");if(input){input.focus();}}}function params(){return new URLSearchParams(new FormData(form));}function runScan(){const query=params();status.textContent="Scanning";refresh.disabled=true;form.querySelector("button[type=submit]").disabled=true;frame.src="/scan?"+query.toString();history.replaceState(null,"","/?"+query.toString());}toggle.addEventListener("click",()=>setOpen(panel.hidden));document.addEventListener("keydown",(event)=>{if(event.key==="Escape"){setOpen(false);}});form.addEventListener("submit",(event)=>{event.preventDefault();runScan();});refresh.addEventListener("click",runScan);frame.addEventListener("load",()=>{status.textContent="Ready";refresh.disabled=false;form.querySelector("button[type=submit]").disabled=false;});`;
 }
 
+function renderConsoleList(useAnsi = false): string {
+  const listCommand = ansiWrap("list", ANSI_GREEN, useAnsi);
+  return [
+    `gruff-ts ${ansiWrap(VERSION, ANSI_GREEN, useAnsi)}`,
+    "",
+    ansiWrap("Usage:", ANSI_YELLOW, useAnsi),
+    "  command [options] [arguments]",
+    "",
+    ansiWrap("Options:", ANSI_YELLOW, useAnsi),
+    formatConsoleRow("-h, --help", `Display help for the given command. When no command is given display help for the ${listCommand} command`, 22, useAnsi),
+    formatConsoleRow("    --silent", "Do not output any message", 22, useAnsi),
+    formatConsoleRow("-q, --quiet", "Only errors are displayed. All other output is suppressed", 22, useAnsi),
+    formatConsoleRow("-V, --version", "Display this application version", 22, useAnsi),
+    formatConsoleRow("    --ansi|--no-ansi", "Force (or disable --no-ansi) ANSI output", 22, useAnsi),
+    formatConsoleRow("-n, --no-interaction", "Do not ask any interactive question", 22, useAnsi),
+    formatConsoleRow("-v|vv|vvv, --verbose", "Increase the verbosity of messages: 1 for normal output, 2 for more verbose output and 3 for debug", 22, useAnsi),
+    "",
+    ansiWrap("Available commands:", ANSI_YELLOW, useAnsi),
+    ...CONSOLE_COMMANDS.map((command) => formatConsoleRow(command.name, command.description, 12, useAnsi)),
+  ].join("\n") + "\n";
+}
+
+function formatConsoleRow(label: string, description: string, width: number, useAnsi: boolean): string {
+  return `  ${ansiWrap(label, ANSI_GREEN, useAnsi)}${" ".repeat(Math.max(1, width - label.length))}${description}`;
+}
+
+function ansiWrap(value: string, color: string, useAnsi: boolean): string {
+  return useAnsi ? `${color}${value}${ANSI_RESET_FG}` : value;
+}
+
+function renderCompletionScript(shell: CompletionShell): string {
+  const commands = CONSOLE_COMMANDS.filter((command) => command.name !== "help").map((command) => command.name).join(" ");
+  const options = "-h --help --silent -q --quiet -V --version --ansi --no-ansi -n --no-interaction -v -vv -vvv --verbose";
+  if (shell === "fish") {
+    return [
+      "complete -c gruff-ts -f",
+      ...commands.split(" ").map((command) => `complete -c gruff-ts -n '__fish_use_subcommand' -a '${command}'`),
+      ...options.split(" ").map((option) => `complete -c gruff-ts -a '${option}'`),
+      "",
+    ].join("\n");
+  }
+  if (shell === "zsh") {
+    return [
+      "#compdef gruff-ts",
+      "_gruff_ts() {",
+      "  local -a commands",
+      `  commands=(${commands})`,
+      "  _arguments '1:command:->commands' '*::arg:->args'",
+      "  case $state in",
+      "    commands) _describe 'command' commands ;;",
+      "    args) _values 'option' " + options.split(" ").map((option) => `'${option}'`).join(" ") + " ;;",
+      "  esac",
+      "}",
+      "_gruff_ts \"$@\"",
+      "",
+    ].join("\n");
+  }
+  return [
+    "_gruff_ts_completion() {",
+    "  local current previous commands options",
+    "  COMPREPLY=()",
+    "  current=\"${COMP_WORDS[COMP_CWORD]}\"",
+    "  previous=\"${COMP_WORDS[COMP_CWORD-1]}\"",
+    `  commands=\"${commands}\"`,
+    `  options=\"${options}\"`,
+    "  if [ \"$COMP_CWORD\" -eq 1 ]; then",
+    "    COMPREPLY=( $(compgen -W \"$commands $options\" -- \"$current\") )",
+    "  else",
+    "    case \"$previous\" in",
+    "      --format) COMPREPLY=( $(compgen -W \"text json html markdown github hotspot\" -- \"$current\") ) ;;",
+    "      --fail-on) COMPREPLY=( $(compgen -W \"none advisory warning error\" -- \"$current\") ) ;;",
+    "      *) COMPREPLY=( $(compgen -W \"$options\" -- \"$current\") ) ;;",
+    "    esac",
+    "  fi",
+    "}",
+    "complete -F _gruff_ts_completion gruff-ts",
+    "",
+  ].join("\n");
+}
+
+function completionShell(value: unknown): CompletionShell {
+  return value === "fish" || value === "zsh" ? value : "bash";
+}
+
+function writeCommandOutput(program: Command, output: string): void {
+  if (outputSuppressed(program)) {
+    return;
+  }
+  process.stdout.write(output.endsWith("\n") ? output : `${output}\n`);
+}
+
+function outputSuppressed(program: Command): boolean {
+  const options = program.opts() as { quiet?: boolean; silent?: boolean };
+  return options.quiet === true || options.silent === true;
+}
+
+function ansiEnabled(program: Command): boolean {
+  const options = program.opts() as { ansi?: boolean };
+  if (options.ansi === true) {
+    return true;
+  }
+  if (options.ansi === false) {
+    return false;
+  }
+  return process.stdout.isTTY === true;
+}
+
 function buildProgram(): Command {
   const program = new Command();
-  program.name("gruff-ts").version(VERSION);
+  program
+    .name("gruff-ts")
+    .usage("command [options] [arguments]")
+    .helpOption("-h, --help", "Display help for the given command. When no command is given display help for the list command")
+    .version(VERSION, "-V, --version", "Display this application version")
+    .option("--silent", "Do not output any message")
+    .option("-q, --quiet", "Only errors are displayed. All other output is suppressed")
+    .option("--ansi", "Force ANSI output")
+    .option("--no-ansi", "Disable ANSI output")
+    .option("-n, --no-interaction", "Do not ask any interactive question")
+    .option("-v, --verbose", "Increase the verbosity of messages: 1 for normal output, 2 for more verbose output and 3 for debug", (_value, previous: number) => previous + 1, 0)
+    .addHelpCommand("help [command]", "Display help for a command")
+    .showHelpAfterError()
+    .configureHelp({
+      formatHelp(command, helper) {
+        if (command === program) {
+          return renderConsoleList(ansiEnabled(program));
+        }
+        const defaultHelp = new Help();
+        defaultHelp.showGlobalOptions = true;
+        if (helper.helpWidth !== undefined) {
+          defaultHelp.helpWidth = helper.helpWidth;
+        }
+        if (helper.minWidthToWrap !== undefined) {
+          defaultHelp.minWidthToWrap = helper.minWidthToWrap;
+        }
+        return defaultHelp.formatHelp(command, defaultHelp);
+      },
+    })
+    .action(() => {
+      writeCommandOutput(program, renderConsoleList(ansiEnabled(program)));
+    });
 
   program
     .command("analyse")
@@ -3080,13 +3285,47 @@ function buildProgram(): Command {
     .action((paths: string[], rawOptions: Record<string, unknown>) => {
       const options = normalizeOptions(paths, rawOptions, { allowBaselineFlag: true });
       const report = analyse(options);
-      console.log(renderReport(report, options.format));
+      writeCommandOutput(program, renderReport(report, options.format));
       process.exitCode = exitFor(report, options.failOn);
     });
 
   program
+    .command("completion")
+    .description("Dump the shell completion script")
+    .argument("[shell]", "Shell to generate completion for: bash, zsh, or fish.", "bash")
+    .action((shell: string) => {
+      writeCommandOutput(program, renderCompletionScript(completionShell(shell)));
+    });
+
+  program
+    .command("dashboard")
+    .description("Serve the local gruff dashboard.")
+    .option("--host <host>", "Host to bind.", "127.0.0.1")
+    .option("--port <port>", "Port to bind.", "8767")
+    .option("--project-root <path>", "Default project root.", ".")
+    .action((rawOptions: Record<string, unknown>) => {
+      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), resolve(String(rawOptions.projectRoot ?? ".")), !outputSuppressed(program));
+    });
+
+  program
+    .command("list")
+    .description("List commands")
+    .action(() => {
+      writeCommandOutput(program, renderConsoleList(ansiEnabled(program)));
+    });
+
+  program
+    .command("list-rules")
+    .description("List gruff rule metadata.")
+    .option("--format <format>", "Output format: text or json.", "text")
+    .action((rawOptions: Record<string, unknown>) => {
+      const format: RuleListFormat = rawOptions.format === "json" ? "json" : "text";
+      writeCommandOutput(program, renderRuleList(format));
+    });
+
+  program
     .command("report")
-    .description("Render a static gruff report.")
+    .description("Render a gruff report to stdout or a file.")
     .argument("[paths...]", "Files or directories to analyse.")
     .option("--format <format>", "Report format: html or json.", "html")
     .option("--output <path>", "Write report to a file.")
@@ -3103,28 +3342,31 @@ function buildProgram(): Command {
       if (typeof rawOptions.output === "string") {
         writeFileSync(rawOptions.output, rendered);
       } else {
-        console.log(rendered);
+        writeCommandOutput(program, rendered);
       }
       process.exitCode = exitFor(report, options.failOn);
     });
 
   program
-    .command("list-rules")
-    .description("List rule catalogue metadata.")
-    .option("--format <format>", "Output format: text or json.", "text")
-    .action((rawOptions: Record<string, unknown>) => {
-      const format: RuleListFormat = rawOptions.format === "json" ? "json" : "text";
-      console.log(renderRuleList(format));
-    });
-
-  program
-    .command("dashboard")
-    .description("Start the local gruff dashboard.")
-    .option("--host <host>", "Host to bind.", "127.0.0.1")
-    .option("--port <port>", "Port to bind.", "8767")
-    .option("--project-root <path>", "Default project root.", ".")
-    .action((rawOptions: Record<string, unknown>) => {
-      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), resolve(String(rawOptions.projectRoot ?? ".")));
+    .command("summary")
+    .description(
+      "Print a compact digest of a scan: per-pillar finding counts, top rules, and top file offenders. Runs the analyser once and renders only the summary; no per-finding spam.",
+    )
+    .argument("[paths...]", "Files or directories to analyse.")
+    .option("--config <path>", "Path to a gruff JSON/YAML config file.")
+    .option("--no-config", "Skip auto-applying the default .gruff.json/.gruff.yaml/.gruff.yml file for this run.")
+    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
+    .option("--include-ignored", "Include files under default ignored directories.")
+    .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
+    .option("--history-file <path>", "Append score trend history to this JSON file.")
+    .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
+    .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
+    .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
+    .action((paths: string[], rawOptions: Record<string, unknown>) => {
+      const options = normalizeOptions(paths, { ...rawOptions, format: "text" }, { allowBaselineFlag: true });
+      const report = analyse(options);
+      writeCommandOutput(program, renderSummary(report));
+      process.exitCode = exitFor(report, options.failOn);
     });
 
   return program;
