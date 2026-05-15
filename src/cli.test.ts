@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { chdir, cwd } from "node:process";
 import test from "node:test";
-import { analyse, renderReport, ruleDescriptors } from "./cli.ts";
+import { analyse, renderReport, ruleDescriptors, type AnalysisReport } from "./cli.ts";
+
+const REPO_ROOT = cwd();
 
 const expandedRuleIds = new Set([
   "complexity.npath",
@@ -1493,6 +1496,124 @@ test("json report uses schema version", () => {
   assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v1"/);
 });
 
+test("html report uses dashboard parity anchors and escapes values", () => {
+  const report: AnalysisReport = {
+    schemaVersion: "gruff.analysis.v1",
+    tool: { name: "gruff-ts", version: "0.1.0-test<script>" },
+    run: { projectRoot: "/tmp/project", format: "html", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
+    summary: { advisory: 0, warning: 1, error: 1, total: 2 },
+    paths: { analysedFiles: 1, ignoredPaths: [], missingPaths: [] },
+    diagnostics: [],
+    findings: [
+      {
+        ruleId: "docs.<script>",
+        message: "Message with <script>alert(1)</script>",
+        filePath: "src/<bad>.ts",
+        line: 7,
+        severity: "warning",
+        pillar: "documentation",
+        secondaryPillars: [],
+        tier: "v0.1",
+        confidence: "high",
+        symbol: "badSymbol",
+        metadata: {},
+        fingerprint: "abc123",
+      },
+      {
+        ruleId: "complexity.cyclomatic",
+        message: "Function has cyclomatic complexity 12.",
+        filePath: "src/Complex.ts",
+        line: 11,
+        severity: "error",
+        pillar: "complexity",
+        secondaryPillars: [],
+        tier: "v0.1",
+        confidence: "high",
+        symbol: "run",
+        metadata: {},
+        fingerprint: "def456",
+      },
+    ],
+    score: {
+      composite: 82.5,
+      grade: "B",
+      pillars: [{ pillar: "documentation", score: 84, findings: 1 }],
+      topOffenders: [{ filePath: "src/<bad>.ts", score: 88, findings: 1 }],
+    },
+  };
+
+  const rendered = renderReport(report, "html");
+
+  for (const anchor of ["paper", "masthead", "wordmark", "verdict", "grade-stamp", "pillar-grid", "offender-list", "chart-section", "finding"]) {
+    assert.match(rendered, new RegExp(`class="${anchor}`));
+  }
+  assert.match(rendered, /gruff-ts/);
+  assert.match(rendered, /ts\/js code quality/);
+  assert.match(rendered, /src\/&lt;bad&gt;\.ts/);
+  assert.match(rendered, /docs\.&lt;script&gt;/);
+  assert.match(rendered, /Message with &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.equal(rendered.includes("0.1.0-test<script>"), false);
+  assert.equal(rendered.includes("src/<bad>.ts"), false);
+  assert.equal(rendered.includes("<script>alert(1)</script>"), false);
+});
+
+test("html report rendering does not mutate json report output", () => {
+  const report = analyseFixture(`export function process(value: string): string {
+  return value;
+}
+`);
+  const before = renderReport(report, "json");
+
+  renderReport(report, "html");
+
+  assert.equal(renderReport(report, "json"), before);
+  assert.match(before, /"schemaVersion": "gruff\.analysis\.v1"/);
+});
+
+test("dashboard root uses parity shell and escapes controls", async () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-dashboard-<bad>-"));
+  try {
+    writeFileSync(join(projectRoot, "sample.ts"), `export function sample(): string {
+  return "ok";
+}
+`);
+    await withDashboard(projectRoot, async (baseUrl) => {
+      const rootHtml = await fetchText(`${baseUrl}/?projectRoot=${encodeURIComponent(projectRoot)}&path=sample.ts`);
+      for (const anchor of ["controls-toggle", "controls-panel", "report-frame", "scan-form"]) {
+        assert.match(rootHtml, new RegExp(`class="${anchor}`));
+      }
+      assert.match(rootHtml, /Project root/);
+      assert.match(rootHtml, /Paths/);
+      assert.match(rootHtml, /&lt;bad&gt;/);
+      assert.match(rootHtml, /src="\/scan\?projectRoot=/);
+      assert.equal(rootHtml.includes("<bad>"), false);
+    });
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("dashboard scan returns report shell with escaped dashboard context", async () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-dashboard-<bad>-"));
+  try {
+    writeFileSync(join(projectRoot, "sample.ts"), `export function sample(): string {
+  return "ok";
+}
+`);
+    await withDashboard(projectRoot, async (baseUrl) => {
+      const scanHtml = await fetchText(`${baseUrl}/scan?projectRoot=${encodeURIComponent(projectRoot)}&path=sample.ts`);
+      assert.match(scanHtml, /class="paper"/);
+      assert.match(scanHtml, /class="dashboard-context"/);
+      assert.match(scanHtml, /Project root/);
+      assert.match(scanHtml, /sample\.ts/);
+      assert.match(scanHtml, /&lt;bad&gt;/);
+      assert.equal(scanHtml.includes("<bad>"), false);
+    });
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
 interface AnalyseProjectOptions {
   config?: Record<string, unknown>;
   configPath?: string;
@@ -1544,6 +1665,80 @@ function analyseProject(files: Record<string, string>, options: AnalyseProjectOp
     chdir(previous);
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+async function withDashboard(projectRoot: string, run: (baseUrl: string) => Promise<void>): Promise<void> {
+  const port = await freePort();
+  const child = spawn("./bin/gruff-ts", ["dashboard", "--host", "127.0.0.1", "--port", String(port), "--project-root", projectRoot], {
+    cwd: REPO_ROOT,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    output += chunk;
+  });
+  child.stderr.on("data", (chunk: string) => {
+    output += chunk;
+  });
+  const baseUrl = `http://127.0.0.1:${port}`;
+  try {
+    await waitForUrl(`${baseUrl}/health`, output);
+    await run(baseUrl);
+  } finally {
+    child.kill();
+    await new Promise<void>((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        resolve();
+        return;
+      }
+      child.once("exit", () => resolve());
+      setTimeout(resolve, 1000);
+    });
+  }
+}
+
+async function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createNetServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (typeof address !== "object" || address === null) {
+        server.close();
+        reject(new Error("unable to allocate dashboard test port"));
+        return;
+      }
+      const { port } = address;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+async function waitForUrl(url: string, output: string): Promise<void> {
+  const deadline = Date.now() + 5000;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) {
+        return;
+      }
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`timed out waiting for ${url}: ${String(lastError)}\n${output}`);
+}
+
+async function fetchText(url: string): Promise<string> {
+  const response = await fetch(url);
+  const text = await response.text();
+  assert.equal(response.ok, true, `${url} returned ${response.status}: ${text}`);
+  return text;
 }
 
 function ruleCatalogueCoverageRuleIds(): Set<string> {

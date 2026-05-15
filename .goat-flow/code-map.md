@@ -15,8 +15,8 @@ gruff-ts/
 │   └── gruff-ts                   = POSIX shell shim; resolves tsx loader and execs node --import <loader> src/cli.ts
 │
 ├── src/
-│   ├── cli.ts                     = entire runtime (~3233 lines): analyse(), project index, rule descriptors, buildProgram(), all rule fns, dashboard server
-│   └── cli.test.ts                = node --test tests; covers analyse() rules, baselines, determinism, descriptors, list-rules, and JSON schemaVersion marker
+│   ├── cli.ts                     = entire runtime (~3408 lines): analyse(), project index, rule descriptors, buildProgram(), report renderer, all rule fns, dashboard server
+│   └── cli.test.ts                = node --test tests; covers analyse() rules, baselines, determinism, descriptors, list-rules, HTML report parity, dashboard shell anchors, and JSON schemaVersion marker
 │
 ├── scripts/
 │   ├── check.sh                   = wrapper for `npm run check` (tsc --noEmit && npm test)

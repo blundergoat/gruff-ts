@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-14
+last_reviewed: 2026-05-15
 ---
 
 # Verification lessons
@@ -82,3 +82,23 @@ last_reviewed: 2026-05-14
 **Evidence:** `src/cli.test.ts` + `(search: "rule descriptors cover emitted rules and fixture-backed coverage")`; failing runs of `node --import tsx --test src/cli.test.ts` reported missing positive fixture coverage for those rule ids.
 
 **Prevention:** For catalogue coverage, make each fixture intentionally boring and shaped exactly like the scanner pattern: simple variables for assertion arguments, deliberately long blocks for composite size/complexity rules, and no accidental symbol references that mask unused-import coverage.
+
+## Lesson: restart browser-visible servers after source edits
+
+**Created:** 2026-05-15
+
+**What happened:** During M13 dashboard parity verification, screenshots were first captured against a dashboard server that had been started before the final `src/cli.ts` CSS tweak. The evidence was structurally valid, but it did not prove the current source until the server was stopped, restarted, and the captures were rerun.
+
+**Evidence:** `src/cli.ts` + `(search: "function startDashboard")`; `.goat-flow/scratchpad/dashboard-parity/capture_m13.py` captured the current-source screenshots only after the dashboard was restarted on `127.0.0.1:8877`.
+
+**Prevention:** For browser-visible code, restart any long-running dev server after every source edit before taking final screenshots or claiming visual verification.
+
+## Lesson: wait for post-interaction UI state, not just selectors
+
+**Created:** 2026-05-15
+
+**What happened:** The M13 screenshot script initially clicked dashboard Refresh and then read `[data-scan-status]` before the iframe `load` handler had settled, producing a false failure with status `Scanning`.
+
+**Evidence:** `.goat-flow/scratchpad/dashboard-parity/capture_m13.py` + `(search: "wait_for_function")`; the corrected script waits until the status text is `Ready` before asserting refresh completion.
+
+**Prevention:** Browser evidence scripts should wait for the user-visible postcondition after an interaction, not only for a reused selector or iframe to exist.
