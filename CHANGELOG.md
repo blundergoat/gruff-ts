@@ -34,5 +34,3 @@ This project follows semantic versioning once public releases begin.
 
 - Public schema strings are `gruff.analysis.v1`, `gruff.baseline.v1`, and
   `gruff.hotspot.v1`.
-- The CLI version constant currently reports `0.1.0-dev` in local builds; clear
-  that suffix before publishing a final 0.1.0 package.

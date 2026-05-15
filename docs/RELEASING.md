@@ -8,8 +8,8 @@ This checklist is for preparing a public 0.1.x release.
       `LICENSE` file and update package metadata if this is intended to be open
       source.
 - [ ] Ensure `package.json` has the intended version.
-- [ ] Ensure the CLI `VERSION` constant in `src/cli.ts` no longer contains a
-      development suffix for a final release.
+- [ ] Confirm the CLI `VERSION` constant in `src/cli.ts` matches
+      `package.json`.
 - [ ] Update `CHANGELOG.md`.
 - [ ] Review `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, and docs under
       `docs/`.

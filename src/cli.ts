@@ -8,7 +8,7 @@ import { argv, chdir, cwd } from "node:process";
 import { basename, dirname as dirnamePath, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const VERSION = "0.1.0-dev";
+const VERSION = "0.1.0";
 const DEFAULT_BASELINE = "gruff-baseline.json";
 const DEFAULT_CONFIG_FILES = [".gruff.json", ".gruff.yaml", ".gruff.yml"] as const;
 const NPATH_CAP = 1_000_000;

@@ -1466,7 +1466,7 @@ test("rule descriptor threshold keys match implementation and config defaults", 
 
 test("list-rules CLI prints text and deterministic json", () => {
   const text = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
-  assert.match(text, /gruff-ts 0\.1\.0-dev rules \(\d+\)/);
+  assert.match(text, /gruff-ts 0\.1\.0 rules \(\d+\)/);
   assert.match(text, /security\.eval-call \| security \| error \| high \|/);
   assert.match(text, /complexity\.npath \| complexity \| warning \| medium \| .*thresholds: error,warn/);
 
