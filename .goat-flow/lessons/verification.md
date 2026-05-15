@@ -1,9 +1,17 @@
 ---
 category: verification
-last_reviewed: 2026-05-15
+last_reviewed: 2026-05-16
 ---
 
 # Verification lessons
+
+## Lesson: keep verification wrappers visible to the deny hook
+
+**Created:** 2026-05-16
+
+The local deny-dangerous hook blocks verification wrappers that obscure nested execution. During M14 verification, one `node` heredoc was blocked because JavaScript template-literal backticks looked like hidden command substitution, and a later `node -e` wrapper around `spawnSync("./bin/gruff-ts", ...)` was blocked because the shell-executing primitive hid the real command from hook review.
+
+Run the target command directly, save output to `/tmp` if parsing is needed, then use a non-spawning parser command against that file.
 
 ## Lesson: run `npm run check` after every `src/cli.ts` edit, not just before commit
 

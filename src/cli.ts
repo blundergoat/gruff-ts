@@ -129,6 +129,15 @@ interface ProjectSource {
   lines: string[];
 }
 
+interface GitIgnoreRule {
+  basePath: string;
+  pattern: string;
+  negated: boolean;
+  directoryOnly: boolean;
+  anchored: boolean;
+  hasSlash: boolean;
+}
+
 interface ProjectIndex {
   sources: ProjectSource[];
   typeScriptSources: ProjectSource[];
@@ -739,7 +748,8 @@ function discoverSources(projectRoot: string, options: AnalysisOptions, config: 
       pushSourceFile(projectRoot, absolute, files);
       continue;
     }
-    walk(projectRoot, absolute, options, config, ignoredPaths, files);
+    const gitIgnoreRules = options.includeIgnored ? [] : gitIgnoreRulesForDirectory(projectRoot, absolute);
+    walk(projectRoot, absolute, options, config, ignoredPaths, files, gitIgnoreRules);
   }
 
   files.sort((left, right) => left.displayPath.localeCompare(right.displayPath));
@@ -753,19 +763,19 @@ function walk(
   config: Config,
   ignoredPaths: Set<string>,
   files: SourceFile[],
+  gitIgnoreRules: GitIgnoreRule[],
 ): void {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const absolute = join(directory, entry.name);
     const display = displayPath(projectRoot, absolute);
-    if (entry.isDirectory()) {
-      if (
-        (!options.includeIgnored && isDefaultIgnoredDir(display)) ||
-        config.ignoredPaths.some((pattern) => pathMatches(pattern, display))
-      ) {
+    if (entry.isDirectory() || entry.isFile()) {
+      if (isIgnoredDiscoveryPath(display, entry.isDirectory(), options, config, gitIgnoreRules)) {
         ignoredPaths.add(display);
         continue;
       }
-      walk(projectRoot, absolute, options, config, ignoredPaths, files);
+    }
+    if (entry.isDirectory()) {
+      walk(projectRoot, absolute, options, config, ignoredPaths, files, options.includeIgnored ? gitIgnoreRules : appendGitIgnoreRules(projectRoot, absolute, gitIgnoreRules));
     } else if (entry.isFile()) {
       pushSourceFile(projectRoot, absolute, files);
     }
@@ -3477,7 +3487,7 @@ function buildProgram(): Command {
     .option("--no-config", "Skip auto-applying the default .gruff.json/.gruff.yaml/.gruff.yml file for this run.")
     .option("--format <format>", "Output format: text, json, html, markdown, github, or hotspot.", "text")
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
-    .option("--include-ignored", "Include files under default ignored directories.")
+    .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
     .option("--history-file <path>", "Append score trend history to this JSON file.")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
@@ -3533,7 +3543,7 @@ function buildProgram(): Command {
     .option("--config <path>", "Path to a gruff JSON/YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff.json/.gruff.yaml/.gruff.yml file for this run.")
     .option("--fail-on <severity>", "Finding severity that fails the run.", "none")
-    .option("--include-ignored", "Include files under default ignored directories.")
+    .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action((paths: string[], rawOptions: Record<string, unknown>) => {
       const format = rawOptions.format === "json" ? "json" : "html";
@@ -3557,7 +3567,7 @@ function buildProgram(): Command {
     .option("--config <path>", "Path to a gruff JSON/YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff.json/.gruff.yaml/.gruff.yml file for this run.")
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
-    .option("--include-ignored", "Include files under default ignored directories.")
+    .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
     .option("--history-file <path>", "Append score trend history to this JSON file.")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
@@ -3672,6 +3682,171 @@ function dedupeFindings(findings: Finding[]): Finding[] {
 function isDefaultIgnoredDir(path: string): boolean {
   const first = path.split("/")[0] ?? path;
   return [".git", ".hg", ".svn", ".idea", ".vscode", "build", "cache", "coverage", "dist", "generated", "node_modules", "target", "tmp", "vendor"].includes(first);
+}
+
+function isIgnoredDiscoveryPath(display: string, isDirectory: boolean, options: AnalysisOptions, config: Config, gitIgnoreRules: GitIgnoreRule[]): boolean {
+  if (!options.includeIgnored && isDirectory && isDefaultIgnoredDir(display)) {
+    return true;
+  }
+  if (!options.includeIgnored && isGitIgnoredPath(gitIgnoreRules, display, isDirectory)) {
+    return true;
+  }
+  return config.ignoredPaths.some((pattern) => pathMatches(pattern, display));
+}
+
+function gitIgnoreRulesForDirectory(projectRoot: string, directory: string): GitIgnoreRule[] {
+  if (!isInsideProject(projectRoot, directory)) {
+    return [];
+  }
+
+  const relativeDirectory = displayPath(projectRoot, directory);
+  const segments = relativeDirectory === "." ? [] : relativeDirectory.split("/");
+  let current = projectRoot;
+  let rules = appendGitIgnoreRules(projectRoot, current, []);
+  for (const segment of segments) {
+    current = join(current, segment);
+    rules = appendGitIgnoreRules(projectRoot, current, rules);
+  }
+  return rules;
+}
+
+function appendGitIgnoreRules(projectRoot: string, directory: string, inheritedRules: GitIgnoreRule[]): GitIgnoreRule[] {
+  const ignoreFile = join(directory, ".gitignore");
+  if (!existsSync(ignoreFile) || !statSync(ignoreFile).isFile()) {
+    return inheritedRules;
+  }
+
+  const basePath = displayPath(projectRoot, directory);
+  const parsedRules = parseGitIgnoreRules(readFileSync(ignoreFile, "utf8"), basePath === "." ? "" : basePath);
+  return parsedRules.length > 0 ? [...inheritedRules, ...parsedRules] : inheritedRules;
+}
+
+function parseGitIgnoreRules(source: string, basePath: string): GitIgnoreRule[] {
+  const rules: GitIgnoreRule[] = [];
+  for (const rawLine of source.replace(/\r\n/g, "\n").split("\n")) {
+    let line = rawLine.trimEnd();
+    if (line.length === 0 || line.startsWith("#")) {
+      continue;
+    }
+    if (line.startsWith("\\#") || line.startsWith("\\!")) {
+      line = line.slice(1);
+    }
+
+    const negated = line.startsWith("!");
+    if (negated) {
+      line = line.slice(1);
+    }
+    if (line.length === 0) {
+      continue;
+    }
+
+    const anchored = line.startsWith("/");
+    line = line.replace(/^\/+/, "");
+    const directoryOnly = line.endsWith("/");
+    line = line.replace(/\/+$/, "");
+    if (line.length === 0) {
+      continue;
+    }
+
+    const pattern = line
+      .split("/")
+      .filter((segment) => segment.length > 0)
+      .join("/");
+    rules.push({ basePath, pattern, negated, directoryOnly, anchored, hasSlash: pattern.includes("/") });
+  }
+  return rules;
+}
+
+function isGitIgnoredPath(rules: GitIgnoreRule[], display: string, isDirectory: boolean): boolean {
+  let ignored = false;
+  for (const rule of rules) {
+    if (gitIgnoreRuleMatches(rule, display, isDirectory)) {
+      ignored = !rule.negated;
+    }
+  }
+  return ignored;
+}
+
+function gitIgnoreRuleMatches(rule: GitIgnoreRule, display: string, isDirectory: boolean): boolean {
+  const relativePath = pathRelativeToBase(rule.basePath, display);
+  if (relativePath === undefined || relativePath.length === 0) {
+    return false;
+  }
+
+  if (rule.directoryOnly) {
+    return gitIgnoreDirectoryRuleMatches(rule, relativePath, isDirectory);
+  }
+  if (rule.anchored || rule.hasSlash) {
+    return gitIgnorePathCandidates(relativePath, isDirectory, true).some((candidate) => gitIgnoreGlobMatches(rule.pattern, candidate));
+  }
+  return relativePath.split("/").some((segment) => gitIgnoreGlobMatches(rule.pattern, segment));
+}
+
+function gitIgnoreDirectoryRuleMatches(rule: GitIgnoreRule, relativePath: string, isDirectory: boolean): boolean {
+  if (rule.anchored || rule.hasSlash) {
+    return gitIgnorePathCandidates(relativePath, isDirectory, false).some((candidate) => gitIgnoreGlobMatches(rule.pattern, candidate));
+  }
+  const segments = relativePath.split("/");
+  const directorySegments = isDirectory ? segments : segments.slice(0, -1);
+  return directorySegments.some((segment) => gitIgnoreGlobMatches(rule.pattern, segment));
+}
+
+function gitIgnorePathCandidates(relativePath: string, isDirectory: boolean, includeFilePath: boolean): string[] {
+  const segments = relativePath.split("/");
+  const limit = isDirectory || includeFilePath ? segments.length : segments.length - 1;
+  const candidates: string[] = [];
+  for (let index = 1; index <= limit; index += 1) {
+    candidates.push(segments.slice(0, index).join("/"));
+  }
+  return candidates;
+}
+
+function gitIgnoreGlobMatches(pattern: string, value: string): boolean {
+  return gitIgnoreGlobRegex(pattern).test(value);
+}
+
+function gitIgnoreGlobRegex(pattern: string): RegExp {
+  let source = "^";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    if (character === "*") {
+      const next = pattern[index + 1];
+      const afterNext = pattern[index + 2];
+      if (next === "*") {
+        if (afterNext === "/") {
+          source += "(?:.*/)?";
+          index += 2;
+        } else {
+          source += ".*";
+          index += 1;
+        }
+      } else {
+        source += "[^/]*";
+      }
+      continue;
+    }
+    if (character === "?") {
+      source += "[^/]";
+      continue;
+    }
+    source += escapeRegex(character ?? "");
+  }
+  return new RegExp(`${source}$`);
+}
+
+function pathRelativeToBase(basePath: string, display: string): string | undefined {
+  if (basePath.length === 0) {
+    return display === "." ? "" : display;
+  }
+  if (display === basePath) {
+    return "";
+  }
+  return display.startsWith(`${basePath}/`) ? display.slice(basePath.length + 1) : undefined;
+}
+
+function isInsideProject(projectRoot: string, path: string): boolean {
+  const relativePath = relative(projectRoot, path).replaceAll("\\", "/");
+  return relativePath === "" || (!relativePath.startsWith("../") && relativePath !== ".." && !isAbsolute(relativePath));
 }
 
 function pathMatches(pattern: string, path: string): boolean {

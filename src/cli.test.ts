@@ -365,6 +365,128 @@ rules:
   assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
 });
 
+test("directory discovery respects root and nested gitignore rules", () => {
+  const report = analyseProject(
+    {
+      ".gitignore": "ignored.ts\nignored-dir/\n*.ignored.ts\n!keep.ignored.ts\n",
+      "tracked.ts": `eval("tracked");
+`,
+      "ignored.ts": `eval("ignored");
+`,
+      "skip.ignored.ts": `eval("skip");
+`,
+      "keep.ignored.ts": `eval("keep");
+`,
+      "ignored-dir/bad.ts": `eval("dir");
+`,
+      "nested/.gitignore": "*.ts\n!allowed.ts\n",
+      "nested/blocked.ts": `eval("blocked");
+`,
+      "nested/allowed.ts": `eval("allowed");
+`,
+    },
+    { noConfig: true },
+  );
+
+  assert.deepEqual([...evalFindingFiles(report)].sort(), ["keep.ignored.ts", "nested/allowed.ts", "tracked.ts"]);
+  assert.equal(report.paths.analysedFiles, 3);
+  assert.deepEqual(
+    report.paths.ignoredPaths.filter((path) => ["ignored-dir", "ignored.ts", "nested/blocked.ts", "skip.ignored.ts"].includes(path)).sort(),
+    ["ignored-dir", "ignored.ts", "nested/blocked.ts", "skip.ignored.ts"],
+  );
+});
+
+test("gitignore fixture expectations match git check-ignore when git is available", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ts-gitignore-"));
+  try {
+    writeFixtureFiles(dir, {
+      ".gitignore": "ignored.ts\nignored-dir/\n*.ignored.ts\n!keep.ignored.ts\n",
+      "tracked.ts": "",
+      "ignored.ts": "",
+      "skip.ignored.ts": "",
+      "keep.ignored.ts": "",
+      "ignored-dir/bad.ts": "",
+      "nested/.gitignore": "*.ts\n!allowed.ts\n",
+      "nested/blocked.ts": "",
+      "nested/allowed.ts": "",
+    });
+    execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+
+    for (const path of ["ignored.ts", "skip.ignored.ts", "ignored-dir/bad.ts", "nested/blocked.ts"]) {
+      assert.equal(isGitIgnoredByGit(dir, path), true);
+    }
+    for (const path of ["tracked.ts", "keep.ignored.ts", "nested/allowed.ts"]) {
+      assert.equal(isGitIgnoredByGit(dir, path), false);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("include ignored scans default and Git ignored paths but keeps config policy ignores", () => {
+  const files = {
+    ".gitignore": "ignored.ts\n",
+    ".gruff.json": JSON.stringify({ paths: { ignore: ["policy/**"] } }),
+    "visible.ts": `eval("visible");
+`,
+    "ignored.ts": `eval("ignored");
+`,
+    "node_modules/pkg/index.ts": `eval("dependency");
+`,
+    "policy/bad.ts": `eval("policy");
+`,
+  };
+
+  const normalReport = analyseProject(files, { noConfig: false });
+  assert.deepEqual([...evalFindingFiles(normalReport)].sort(), ["visible.ts"]);
+  assert.deepEqual(
+    normalReport.paths.ignoredPaths.filter((path) => ["ignored.ts", "node_modules", "policy"].includes(path)).sort(),
+    ["ignored.ts", "node_modules", "policy"],
+  );
+
+  const includeReport = analyseProject(files, { includeIgnored: true, noConfig: false });
+  assert.deepEqual([...evalFindingFiles(includeReport)].sort(), ["ignored.ts", "node_modules/pkg/index.ts", "visible.ts"]);
+  assert.deepEqual(includeReport.paths.ignoredPaths.filter((path) => ["ignored.ts", "node_modules", "policy"].includes(path)).sort(), ["policy"]);
+});
+
+test("directory discovery includes non-gitignored repository config surfaces", () => {
+  const report = analyseProject(
+    {
+      ".gitignore": ".claude/settings.local.json\n.codex/local.json\n",
+      ".agents/config.json": "{}\n",
+      ".claude/settings.json": "{}\n",
+      ".claude/settings.local.json": "{}\n",
+      ".codex/config.toml": "sandbox_mode = \"danger-full-access\"\n",
+      ".codex/local.json": "{}\n",
+      ".github/workflows/ci.yaml": "name: ci\n",
+      ".goat-flow/config.yaml": "version: 1\n",
+    },
+    { noConfig: true },
+  );
+
+  assert.equal(report.paths.analysedFiles, 5);
+  assert.deepEqual(report.paths.ignoredPaths.sort(), [".claude/settings.local.json", ".codex/local.json"]);
+});
+
+test("explicit file inputs are scanned even when gitignored", () => {
+  const report = analyseProject(
+    {
+      ".gitignore": "ignored.ts\n",
+      "ignored.ts": `eval("ignored");
+`,
+    },
+    { noConfig: true, paths: ["ignored.ts"] },
+  );
+
+  assert.deepEqual([...evalFindingFiles(report)], ["ignored.ts"]);
+  assert.equal(report.paths.analysedFiles, 1);
+  assert.deepEqual(report.paths.ignoredPaths, []);
+});
+
 test("prefers default gruff json config over yaml", () => {
   const report = analyseProject(
     {
@@ -1763,7 +1885,9 @@ interface AnalyseProjectOptions {
   config?: Record<string, unknown>;
   configPath?: string;
   executableFiles?: string[];
+  includeIgnored?: boolean;
   noConfig?: boolean;
+  paths?: string[];
 }
 
 interface AnalyseFixtureOptions extends AnalyseProjectOptions {
@@ -1785,11 +1909,7 @@ function analyseProject(files: Record<string, string>, options: AnalyseProjectOp
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-"));
   const previous = cwd();
   try {
-    for (const [fileName, source] of Object.entries(files)) {
-      const path = join(dir, fileName);
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, source);
-    }
+    writeFixtureFiles(dir, files);
     for (const fileName of options.executableFiles ?? []) {
       chmodSync(join(dir, fileName), 0o755);
     }
@@ -1798,17 +1918,51 @@ function analyseProject(files: Record<string, string>, options: AnalyseProjectOp
     }
     chdir(dir);
     return analyse({
-      paths: ["."],
+      paths: options.paths ?? ["."],
       ...(typeof options.configPath === "string" ? { config: options.configPath } : {}),
       noConfig: options.noConfig ?? !(options.config || options.configPath),
       format: "json",
       failOn: "none",
-      includeIgnored: false,
+      includeIgnored: options.includeIgnored ?? false,
       noBaseline: true,
     });
   } finally {
     chdir(previous);
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function writeFixtureFiles(dir: string, files: Record<string, string>): void {
+  for (const [fileName, source] of Object.entries(files)) {
+    const path = join(dir, fileName);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, source);
+  }
+}
+
+function evalFindingFiles(report: AnalysisReport): Set<string> {
+  return new Set(report.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.filePath));
+}
+
+function gitAvailable(): boolean {
+  try {
+    execFileSync("git", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isGitIgnoredByGit(projectRoot: string, path: string): boolean {
+  try {
+    execFileSync("git", ["check-ignore", "--quiet", path], { cwd: projectRoot });
+    return true;
+  } catch (error) {
+    const status = typeof error === "object" && error !== null && "status" in error ? (error as { status?: unknown }).status : undefined;
+    if (status === 1) {
+      return false;
+    }
+    throw error;
   }
 }
 

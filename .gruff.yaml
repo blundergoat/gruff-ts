@@ -1,6 +1,6 @@
 paths:
   ignore:
-    - ".goat-flow/scratchpad/**"
+    - "fixtures/**"
 
 allowlists:
   acceptedAbbreviations:

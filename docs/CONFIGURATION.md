@@ -48,6 +48,11 @@ The same shape works as JSON.
 
 ## Ignored Paths
 
+Recursive directory scans respect root and nested `.gitignore` files before
+adding supported source and config files to a run. `paths.ignore` is an extra
+project policy layer for paths that should remain out of normal scans even when
+they are not ignored by Git.
+
 `paths.ignore` accepts exact paths, prefix-style paths, and simple glob
 patterns. Examples:
 
@@ -66,7 +71,9 @@ Default ignored directories are matched by first path segment:
 generated, node_modules, target, tmp, vendor
 ```
 
-Use `--include-ignored` when you intentionally want to scan those directories.
+Use `--include-ignored` when you intentionally want to scan default ignored
+directories and Git-ignored paths. Configured `paths.ignore` entries still
+apply.
 
 ## Allowlists
 
@@ -130,7 +137,7 @@ gruff-ts list-rules --format=json
 paths:
   ignore:
     - "generated/**"
-    - ".goat-flow/scratchpad/**"
+    - "fixtures/**"
 
 allowlists:
   acceptedAbbreviations:

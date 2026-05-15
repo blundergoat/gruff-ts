@@ -196,6 +196,10 @@ gruff-ts analyse . --config .gruff.yaml
 gruff-ts analyse . --no-config
 ```
 
+Recursive scans respect root and nested `.gitignore` files. Use
+`--include-ignored` to include default and Git-ignored paths for a run;
+`paths.ignore` entries still apply as project policy.
+
 Minimal YAML example:
 
 ```yaml
