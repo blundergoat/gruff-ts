@@ -16,7 +16,9 @@ const ANSI_GREEN = "\u001b[32m";
 const ANSI_YELLOW = "\u001b[33m";
 const ANSI_RESET_FG = "\u001b[39m";
 
+/** Finding impact level used for scoring, output, and fail-on thresholds. */
 export type Severity = "advisory" | "warning" | "error";
+/** High-level rubric category assigned to every finding. */
 export type Pillar =
   | "size"
   | "complexity"
@@ -50,6 +52,7 @@ const CONSOLE_COMMANDS = [
   },
 ] as const;
 
+/** Stable analysis finding emitted by a rule. */
 export interface Finding {
   ruleId: string;
   message: string;
@@ -75,6 +78,7 @@ interface RunDiagnostic {
   line?: number;
 }
 
+/** Versioned report payload returned by analyse and JSON report commands. */
 export interface AnalysisReport {
   schemaVersion: "gruff.analysis.v1";
   tool: { name: "gruff-ts"; version: string };
@@ -154,6 +158,7 @@ interface NormalizeContext {
   allowBaselineFlag: boolean;
 }
 
+/** Static catalogue entry describing a rule's purpose and configuration knobs. */
 export interface RuleDescriptor {
   ruleId: string;
   pillar: Pillar;
@@ -254,10 +259,21 @@ const RULE_DESCRIPTORS: readonly RuleDescriptor[] = [
   { ruleId: "waste.unused-parameter", pillar: "waste", severity: "advisory", confidence: "medium", description: "Flags parameters with no apparent usage.", remediation: "Remove the parameter or prefix it with _ if intentional." },
 ];
 
+/**
+ * Return the deterministic rule catalogue used by list-rules.
+ *
+ * @returns Sorted rule descriptor metadata.
+ */
 export function ruleDescriptors(): RuleDescriptor[] {
   return [...RULE_DESCRIPTORS].sort((left, right) => left.ruleId.localeCompare(right.ruleId));
 }
 
+/**
+ * Analyse the configured paths and return findings, diagnostics, and scores.
+ *
+ * @param options Normalised analysis options from the CLI or direct callers.
+ * @returns Versioned analysis report with findings, diagnostics, paths, and score data.
+ */
 export function analyse(options: AnalysisOptions): AnalysisReport {
   const projectRoot = cwd();
   const config = loadConfig(projectRoot, options);
@@ -474,16 +490,16 @@ function parseYamlConfig(source: string): Record<string, unknown> {
       }
       const [rawKey, rawValue] = pair;
       const key = unquoteYaml(rawKey.trim());
-      const value = rawValue.trim();
+      const scalarText = rawValue.trim();
       index += 1;
 
-      if (value.length > 0) {
-        result[key] = parseYamlScalar(value);
+      if (scalarText.length > 0) {
+        result[key] = parseYamlScalar(scalarText);
         continue;
       }
 
-      const next = lines[index];
-      result[key] = next && next.indent > indent ? parseBlock(next.indent) : {};
+      const nestedIndent = lines[index]?.indent;
+      result[key] = nestedIndent !== undefined && nestedIndent > indent ? parseBlock(nestedIndent) : {};
     }
     return result;
   }
@@ -502,26 +518,26 @@ function parseYamlConfig(source: string): Record<string, unknown> {
         break;
       }
 
-      const item = line.content === "-" ? "" : line.content.slice(2).trim();
+      const itemText = line.content === "-" ? "" : line.content.slice(2).trim();
       index += 1;
-      if (item.length === 0) {
-        const next = lines[index];
-        result.push(next && next.indent > indent ? parseBlock(next.indent) : null);
+      if (itemText.length === 0) {
+        const nestedIndent = lines[index]?.indent;
+        result.push(nestedIndent !== undefined && nestedIndent > indent ? parseBlock(nestedIndent) : null);
         continue;
       }
 
-      const pair = splitYamlKeyValue(item);
+      const pair = splitYamlKeyValue(itemText);
       if (pair) {
         const [rawKey, rawValue] = pair;
-        const value = rawValue.trim();
+        const scalarText = rawValue.trim();
         const entry: Record<string, unknown> = {};
-        const next = lines[index];
-        entry[unquoteYaml(rawKey.trim())] = value.length > 0 ? parseYamlScalar(value) : next && next.indent > indent ? parseBlock(next.indent) : {};
+        const nestedIndent = lines[index]?.indent;
+        entry[unquoteYaml(rawKey.trim())] = scalarText.length > 0 ? parseYamlScalar(scalarText) : nestedIndent !== undefined && nestedIndent > indent ? parseBlock(nestedIndent) : {};
         result.push(entry);
         continue;
       }
 
-      result.push(parseYamlScalar(item));
+      result.push(parseYamlScalar(itemText));
     }
     return result;
   }
@@ -552,21 +568,21 @@ function yamlLines(source: string): YamlLine[] {
 
 function stripYamlComment(line: string): string {
   let quote: string | undefined;
-  let escaped = false;
+  let isEscaped = false;
   for (let index = 0; index < line.length; index += 1) {
     const character = line[index];
     if (!character) {
       continue;
     }
     if (quote) {
-      if (quote === "\"" && character === "\\" && !escaped) {
-        escaped = true;
+      if (quote === "\"" && character === "\\" && !isEscaped) {
+        isEscaped = true;
         continue;
       }
-      if (character === quote && !escaped) {
+      if (character === quote && !isEscaped) {
         quote = undefined;
       }
-      escaped = false;
+      isEscaped = false;
       continue;
     }
     if (character === "\"" || character === "'") {
@@ -582,21 +598,21 @@ function stripYamlComment(line: string): string {
 
 function splitYamlKeyValue(value: string): [string, string] | undefined {
   let quote: string | undefined;
-  let escaped = false;
+  let isEscaped = false;
   for (let index = 0; index < value.length; index += 1) {
     const character = value[index];
     if (!character) {
       continue;
     }
     if (quote) {
-      if (quote === "\"" && character === "\\" && !escaped) {
-        escaped = true;
+      if (quote === "\"" && character === "\\" && !isEscaped) {
+        isEscaped = true;
         continue;
       }
-      if (character === quote && !escaped) {
+      if (character === quote && !isEscaped) {
         quote = undefined;
       }
-      escaped = false;
+      isEscaped = false;
       continue;
     }
     if (character === "\"" || character === "'") {
@@ -648,7 +664,7 @@ function parseYamlInlineArray(value: string): unknown[] {
 function splitYamlInlineItems(value: string): string[] {
   const items: string[] = [];
   let quote: string | undefined;
-  let escaped = false;
+  let isEscaped = false;
   let start = 0;
   for (let index = 0; index < value.length; index += 1) {
     const character = value[index];
@@ -656,14 +672,14 @@ function splitYamlInlineItems(value: string): string[] {
       continue;
     }
     if (quote) {
-      if (quote === "\"" && character === "\\" && !escaped) {
-        escaped = true;
+      if (quote === "\"" && character === "\\" && !isEscaped) {
+        isEscaped = true;
         continue;
       }
-      if (character === quote && !escaped) {
+      if (character === quote && !isEscaped) {
         quote = undefined;
       }
-      escaped = false;
+      isEscaped = false;
       continue;
     }
     if (character === "\"" || character === "'") {
@@ -909,12 +925,12 @@ function isRegexLiteralStart(previousCode: string, beforeSlash: string): boolean
 function maskNonCode(source: string): string {
   let result = "";
   let quote: string | undefined;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-  let regex = false;
-  let regexCharClass = false;
-  let regexEscaped = false;
+  let isEscaped = false;
+  let isLineComment = false;
+  let isBlockComment = false;
+  let isRegex = false;
+  let isRegexCharClass = false;
+  let isRegexEscaped = false;
   let previousCode = "";
 
   for (let index = 0; index < source.length; index += 1) {
@@ -922,38 +938,38 @@ function maskNonCode(source: string): string {
     const next = source[index + 1] ?? "";
     if (character === "\n") {
       result += character;
-      lineComment = false;
+      isLineComment = false;
       if (quote !== "`") {
         quote = undefined;
       }
-      regex = false;
-      regexCharClass = false;
-      regexEscaped = false;
+      isRegex = false;
+      isRegexCharClass = false;
+      isRegexEscaped = false;
       continue;
     }
-    if (lineComment) {
+    if (isLineComment) {
       result += " ";
       continue;
     }
-    if (blockComment) {
+    if (isBlockComment) {
       if (character === "*" && next === "/") {
         result += "  ";
         index += 1;
-        blockComment = false;
+        isBlockComment = false;
       } else {
         result += " ";
       }
       continue;
     }
     if (quote) {
-      if (escaped) {
+      if (isEscaped) {
         result += " ";
-        escaped = false;
+        isEscaped = false;
         continue;
       }
       if (character === "\\") {
         result += " ";
-        escaped = true;
+        isEscaped = true;
         continue;
       }
       if (character === quote) {
@@ -965,30 +981,30 @@ function maskNonCode(source: string): string {
       result += " ";
       continue;
     }
-    if (regex) {
-      if (regexEscaped) {
+    if (isRegex) {
+      if (isRegexEscaped) {
         result += " ";
-        regexEscaped = false;
+        isRegexEscaped = false;
         continue;
       }
       if (character === "\\") {
         result += " ";
-        regexEscaped = true;
+        isRegexEscaped = true;
         continue;
       }
       if (character === "[") {
         result += " ";
-        regexCharClass = true;
+        isRegexCharClass = true;
         continue;
       }
       if (character === "]") {
         result += " ";
-        regexCharClass = false;
+        isRegexCharClass = false;
         continue;
       }
-      if (character === "/" && !regexCharClass) {
+      if (character === "/" && !isRegexCharClass) {
         result += character;
-        regex = false;
+        isRegex = false;
         previousCode = character;
         continue;
       }
@@ -998,18 +1014,18 @@ function maskNonCode(source: string): string {
     if (character === "/" && next === "/") {
       result += "  ";
       index += 1;
-      lineComment = true;
+      isLineComment = true;
       continue;
     }
     if (character === "/" && next === "*") {
       result += "  ";
       index += 1;
-      blockComment = true;
+      isBlockComment = true;
       continue;
     }
     if (character === "/" && isRegexLiteralStart(previousCode, source.slice(Math.max(0, index - 80), index))) {
       result += character;
-      regex = true;
+      isRegex = true;
       previousCode = character;
       continue;
     }
@@ -1355,14 +1371,14 @@ function analyseProjectConfigRules(file: SourceFile, source: string, findings: F
   if (name !== "package.json" && name !== "tsconfig.json") {
     return;
   }
-  const data = parseJsonObject(source);
-  if (!data) {
+  const configObject = parseJsonObject(source);
+  if (!configObject) {
     return;
   }
   if (name === "package.json") {
-    analysePackageJson(file, source, data, findings);
+    analysePackageJson(file, source, configObject, findings);
   } else {
-    analyseTsconfigJson(file, source, data, findings);
+    analyseTsconfigJson(file, source, configObject, findings);
   }
 }
 
@@ -1537,7 +1553,8 @@ function parseJsonObject(source: string): Record<string, unknown> | undefined {
 }
 
 function jsonKeyLine(source: string, key: string): number {
-  return firstLine(source, new RegExp(`"${escapeRegex(key)}"\\s*:`));
+  const escapedKey = escapeRegex(key);
+  return firstLine(source, new RegExp(`"${escapedKey}"\\s*:`));
 }
 
 function isRemoteInstallScript(command: string): boolean {
@@ -1660,17 +1677,17 @@ function pushSensitiveFinding(
 function hardcodedEnvValue(line: string, minLength: number): { keyName: string; value: string } | undefined {
   const match = line.match(/^\s*([A-Z][A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)[A-Z0-9_]*)\s*[:=]\s*["']?([^"'\s#]+)["']?/i);
   const keyName = match?.[1] ?? "";
-  const value = match?.[2] ?? "";
-  if (!keyName || value.length < minLength) {
+  const candidateValue = match?.[2] ?? "";
+  if (!keyName || candidateValue.length < minLength) {
     return undefined;
   }
-  if (/^(?:x-api-key|token|secret|password|example|sample|placeholder)$/i.test(value)) {
+  if (/^(?:x-api-key|token|secret|password|example|sample|placeholder)$/i.test(candidateValue)) {
     return undefined;
   }
-  if (!/[A-Za-z]/.test(value) || !/[0-9]/.test(value)) {
+  if (!/[A-Za-z]/.test(candidateValue) || !/[0-9]/.test(candidateValue)) {
     return undefined;
   }
-  return { keyName, value };
+  return { keyName, value: candidateValue };
 }
 
 function analyseTypeScriptRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
@@ -2241,7 +2258,7 @@ function isSwallowedCatchBody(body: string): boolean {
 function codeLineForMatching(line: string): string {
   let result = "";
   let quote: string | undefined;
-  let escaped = false;
+  let isEscaped = false;
   for (let index = 0; index < line.length; index += 1) {
     const character = line[index] ?? "";
     const next = line[index + 1] ?? "";
@@ -2249,12 +2266,12 @@ function codeLineForMatching(line: string): string {
       break;
     }
     if (quote) {
-      if (escaped) {
-        escaped = false;
+      if (isEscaped) {
+        isEscaped = false;
         continue;
       }
       if (character === "\\") {
-        escaped = true;
+        isEscaped = true;
         continue;
       }
       if (character === quote) {
@@ -2336,7 +2353,7 @@ function analyseClassRules(file: SourceFile, source: string, codeSource: string,
 }
 
 function analyseDocRules(file: SourceFile, source: string, codeSource: string, findings: Finding[]): void {
-  const documentedExport = /\/\*\*([\s\S]*?)\*\/\s*export\s+function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*(?::\s*([^\x7b\n]+))?/g;
+  const documentedExport = /\/\*\*((?:(?!\*\/)[\s\S])*?)\*\/\s*export\s+function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*(?::\s*([^\x7b\n]+))?/g;
   for (const match of source.matchAll(documentedExport)) {
     const exportIndex = source.indexOf("export", match.index ?? 0);
     if (exportIndex < 0 || codeSource[exportIndex] !== "e") {
@@ -2404,17 +2421,17 @@ function analyseDeadCode(file: SourceFile, source: string, findings: Finding[]):
 }
 
 function analyseUnreachable(file: SourceFile, source: string, findings: Finding[]): void {
-  let previousTerminated = false;
+  let didPreviousTerminate = false;
   source.split(/\r?\n/).forEach((line, index) => {
     const trimmed = line.trim();
     const branchLabel = /^(?:case\b.*:|default\s*:)$/.test(trimmed);
     if (branchLabel) {
-      previousTerminated = false;
+      didPreviousTerminate = false;
     }
-    if (previousTerminated && /\S/.test(trimmed) && !trimmed.startsWith(String.fromCharCode(125)) && !branchLabel) {
+    if (didPreviousTerminate && /\S/.test(trimmed) && !trimmed.startsWith(String.fromCharCode(125)) && !branchLabel) {
       findings.push(finding("waste.unreachable-code", "Statement appears after a terminating statement.", file, index + 1, "warning", "waste"));
     }
-    previousTerminated = /\b(return|throw|process\.exit)\b/.test(trimmed) && trimmed.endsWith(";");
+    didPreviousTerminate = /\b(return|throw|process\.exit)\b/.test(trimmed) && trimmed.endsWith(";");
   });
 }
 
@@ -2461,19 +2478,19 @@ function localImportName(specifier: string): string | undefined {
 }
 
 function approximateNpath(source: string): { value: number; capped: boolean } {
-  let value = 1;
-  let capped = false;
+  let pathCount = 1;
+  let isCapped = false;
   const normalized = source.replace(/\?\./g, "").replace(/\?\?/g, "");
   const decisionCount = countMatches(normalized, /\b(if|else if|case|catch|for|while)\b|\?|&&|\|\|/g);
   for (let index = 0; index < decisionCount; index += 1) {
-    value *= 2;
-    if (value >= NPATH_CAP) {
-      value = NPATH_CAP;
-      capped = true;
+    pathCount *= 2;
+    if (pathCount >= NPATH_CAP) {
+      pathCount = NPATH_CAP;
+      isCapped = true;
       break;
     }
   }
-  return { value, capped };
+  return { value: pathCount, capped: isCapped };
 }
 
 function isEmptyFunctionBody(source: string): boolean {
@@ -2652,9 +2669,9 @@ function magicNumberAssertions(source: string): Array<{ value: number }> {
   ];
   for (const pattern of patterns) {
     for (const match of source.matchAll(pattern)) {
-      const value = Number(match[1] ?? "0");
-      if (!ignored.has(value)) {
-        results.push({ value });
+      const expectedNumber = Number(match[1] ?? "0");
+      if (!ignored.has(expectedNumber)) {
+        results.push({ value: expectedNumber });
       }
     }
   }
@@ -2731,19 +2748,19 @@ function functionBlocks(source: string, codeSource = source): FunctionBlock[] {
     }
     const start = functionStartIndex(lines, index);
     let depth = 0;
-    let seenOpen = false;
+    let hasSeenOpen = false;
     let end = index;
     for (let current = index; current < lines.length; current += 1) {
       for (const character of codeLines[current] ?? "") {
         if (character === "{") {
           depth += 1;
-          seenOpen = true;
+          hasSeenOpen = true;
         } else if (character === "}") {
           depth -= 1;
         }
       }
       end = current;
-      if (seenOpen && depth <= 0) {
+      if (hasSeenOpen && depth <= 0) {
         break;
       }
     }
@@ -2939,6 +2956,17 @@ interface DashboardRenderContext {
 }
 
 function renderHtml(report: AnalysisReport, dashboardContext?: DashboardRenderContext): string {
+  const bodySections = [
+    htmlMasthead(report),
+    htmlDiagnostics(report),
+    dashboardContext ? htmlDashboardContext(dashboardContext) : "",
+    htmlVerdict(report),
+    htmlPillars(report),
+    htmlOffenders(report),
+    htmlDistribution(report),
+    htmlFindings(report),
+    htmlFooter(report),
+  ].join("\n");
   return `<!doctype html>
 <html lang="en-NZ">
 <head>
@@ -2949,15 +2977,7 @@ function renderHtml(report: AnalysisReport, dashboardContext?: DashboardRenderCo
 </head>
 <body>
 <main class="paper"><span class="corner-tr"></span><span class="corner-bl"></span>
-${htmlMasthead(report)}
-${htmlDiagnostics(report)}
-${dashboardContext ? htmlDashboardContext(dashboardContext) : ""}
-${htmlVerdict(report)}
-${htmlPillars(report)}
-${htmlOffenders(report)}
-${htmlDistribution(report)}
-${htmlFindings(report)}
-${htmlFooter(report)}
+${bodySections}
 </main>
 </body>
 </html>`;
@@ -2969,7 +2989,9 @@ function htmlMasthead(report: AnalysisReport): string {
 }
 
 function htmlMetaRow(label: string, value: string): string {
-  return `<div><span class="label">${escapeHtml(label)}</span><span class="val">${escapeHtml(value)}</span></div>`;
+  const escapedLabel = escapeHtml(label);
+  const escapedValue = escapeHtml(value);
+  return `<div><span class="label">${escapedLabel}</span><span class="val">${escapedValue}</span></div>`;
 }
 
 function htmlDiagnostics(report: AnalysisReport): string {
@@ -2986,11 +3008,18 @@ function htmlDiagnostics(report: AnalysisReport): string {
 }
 
 function htmlDashboardContext(context: DashboardRenderContext): string {
-  return `<section class="dashboard-context"><h2 class="section-head">dashboard scan <span class="aside">local run</span></h2><div class="dashboard-context-grid"><div><span class="label">Project root</span><span class="val">${escapeHtml(context.projectRoot)}</span></div><div><span class="label">Path</span><span class="val">${escapeHtml(context.scanPath)}</span></div></div></section>`;
+  const escapedProjectRoot = escapeHtml(context.projectRoot);
+  const escapedScanPath = escapeHtml(context.scanPath);
+  return `<section class="dashboard-context"><h2 class="section-head">dashboard scan <span class="aside">local run</span></h2><div class="dashboard-context-grid"><div><span class="label">Project root</span><span class="val">${escapedProjectRoot}</span></div><div><span class="label">Path</span><span class="val">${escapedScanPath}</span></div></div></section>`;
 }
 
 function htmlVerdict(report: AnalysisReport): string {
-  return `<section class="verdict"><div class="grade-stamp ${gradeClass(report.score.grade)}"><div class="grade-letter">${escapeHtml(report.score.grade)}</div><div class="grade-score">${report.score.composite.toFixed(1)} / 100</div></div><div class="verdict-body"><div class="verdict-headline">Inspection complete.<br><em>${escapeHtml(verdictSummary(report))}</em></div><div class="verdict-stats">${htmlStat(String(report.summary.total), "findings", "")}${htmlStat(String(report.summary.error), "errors", "fail")}${htmlStat(String(report.summary.warning), "warnings", "warn")}${htmlStat(String(report.summary.advisory), "advisories", "note")}</div></div></section>`;
+  const gradeCssClass = gradeClass(report.score.grade);
+  const escapedGrade = escapeHtml(report.score.grade);
+  const scoreText = report.score.composite.toFixed(1);
+  const escapedSummary = escapeHtml(verdictSummary(report));
+  const stats = `${htmlStat(String(report.summary.total), "findings", "")}${htmlStat(String(report.summary.error), "errors", "fail")}${htmlStat(String(report.summary.warning), "warnings", "warn")}${htmlStat(String(report.summary.advisory), "advisories", "note")}`;
+  return `<section class="verdict"><div class="grade-stamp ${gradeCssClass}"><div class="grade-letter">${escapedGrade}</div><div class="grade-score">${scoreText} / 100</div></div><div class="verdict-body"><div class="verdict-headline">Inspection complete.<br><em>${escapedSummary}</em></div><div class="verdict-stats">${stats}</div></div></section>`;
 }
 
 function verdictSummary(report: AnalysisReport): string {
@@ -3003,7 +3032,10 @@ function verdictSummary(report: AnalysisReport): string {
 }
 
 function htmlStat(number: string, label: string, className: string): string {
-  return `<div class="stat"><div class="num ${escapeHtml(className)}">${escapeHtml(number)}</div><div class="lbl">${escapeHtml(label)}</div></div>`;
+  const escapedClassName = escapeHtml(className);
+  const escapedNumber = escapeHtml(number);
+  const escapedLabel = escapeHtml(label);
+  return `<div class="stat"><div class="num ${escapedClassName}">${escapedNumber}</div><div class="lbl">${escapedLabel}</div></div>`;
 }
 
 function htmlPillars(report: AnalysisReport): string {
@@ -3055,8 +3087,8 @@ function cyclomaticDistribution(report: AnalysisReport): Record<string, number> 
       continue;
     }
     const match = finding.message.match(/cyclomatic complexity (\d+)/);
-    const value = match?.[1] ? Number(match[1]) : 0;
-    const bucket = value >= 21 ? "21+" : value >= 16 ? "16-20" : value >= 11 ? "11-15" : value >= 6 ? "6-10" : value > 0 ? "1-5" : "";
+    const complexityValue = match?.[1] ? Number(match[1]) : 0;
+    const bucket = complexityValue >= 21 ? "21+" : complexityValue >= 16 ? "16-20" : complexityValue >= 11 ? "11-15" : complexityValue >= 6 ? "6-10" : complexityValue > 0 ? "1-5" : "";
     if (bucket !== "") {
       distribution[bucket] = (distribution[bucket] ?? 0) + 1;
     }
@@ -3088,7 +3120,9 @@ function htmlFindings(report: AnalysisReport): string {
 }
 
 function htmlFooter(report: AnalysisReport): string {
-  return `<footer class="footer"><div class="left">gruff-ts - v${escapeHtml(report.tool.version)}</div><div class="center">strong opinions, opinionated defaults</div><div class="right">schema - ${escapeHtml(report.schemaVersion)}</div></footer>`;
+  const escapedVersion = escapeHtml(report.tool.version);
+  const escapedSchemaVersion = escapeHtml(report.schemaVersion);
+  return `<footer class="footer"><div class="left">gruff-ts - v${escapedVersion}</div><div class="center">strong opinions, opinionated defaults</div><div class="right">schema - ${escapedSchemaVersion}</div></footer>`;
 }
 
 function htmlLocation(filePath: string, line?: number): string {
@@ -3254,6 +3288,9 @@ function dashboardScanUrl(projectRoot: string, scanPath: string): string {
 }
 
 function dashboardErrorHtml(message: string, projectRoot: string, scanPath: string): string {
+  const escapedMessage = escapeHtml(message);
+  const escapedProjectRoot = escapeHtml(projectRoot);
+  const escapedScanPath = escapeHtml(scanPath);
   return `<!doctype html>
 <html lang="en-NZ">
 <head>
@@ -3265,10 +3302,10 @@ function dashboardErrorHtml(message: string, projectRoot: string, scanPath: stri
 <body class="error-page">
   <main class="scan-error">
     <h1>Scan failed</h1>
-    <p>${escapeHtml(message)}</p>
+    <p>${escapedMessage}</p>
     <dl>
-      <dt>Project root</dt><dd>${escapeHtml(projectRoot)}</dd>
-      <dt>Paths</dt><dd>${escapeHtml(scanPath)}</dd>
+      <dt>Project root</dt><dd>${escapedProjectRoot}</dd>
+      <dt>Paths</dt><dd>${escapedScanPath}</dd>
     </dl>
   </main>
 </body>
@@ -3306,11 +3343,18 @@ function renderConsoleList(useAnsi = false): string {
 }
 
 function formatConsoleRow(label: string, description: string, width: number, useAnsi: boolean): string {
-  return `  ${ansiWrap(label, ANSI_GREEN, useAnsi)}${" ".repeat(Math.max(1, width - label.length))}${description}`;
+  const paddedLabel = ansiWrap(label, ANSI_GREEN, useAnsi);
+  const padding = " ".repeat(Math.max(1, width - label.length));
+  const rowDescription = description;
+  return `  ${paddedLabel}${padding}${rowDescription}`;
 }
 
 function ansiWrap(value: string, color: string, useAnsi: boolean): string {
-  return useAnsi ? `${color}${value}${ANSI_RESET_FG}` : value;
+  if (!useAnsi) {
+    return value;
+  }
+  const ansiColor = color;
+  return `${ansiColor}${value}${ANSI_RESET_FG}`;
 }
 
 function renderCompletionScript(shell: CompletionShell): string {
@@ -3586,11 +3630,11 @@ function writeBaseline(path: string, findings: Finding[]): void {
 }
 
 function applyBaseline(path: string, findings: Finding[]): Finding[] {
-  const data = JSON.parse(readFileSync(path, "utf8")) as { schemaVersion?: string; entries?: Array<{ fingerprint: string; ruleId: string; filePath: string }> };
-  if (data.schemaVersion !== "gruff.baseline.v1") {
+  const baselineFile = JSON.parse(readFileSync(path, "utf8")) as { schemaVersion?: string; entries?: Array<{ fingerprint: string; ruleId: string; filePath: string }> };
+  if (baselineFile.schemaVersion !== "gruff.baseline.v1") {
     throw new Error(`unsupported baseline schema in ${path}`);
   }
-  const keys = new Set((data.entries ?? []).map((entry) => [entry.fingerprint, entry.ruleId, entry.filePath].join("\0")));
+  const keys = new Set((baselineFile.entries ?? []).map((entry) => [entry.fingerprint, entry.ruleId, entry.filePath].join("\0")));
   return findings.filter((finding) => !keys.has([finding.fingerprint, finding.ruleId, finding.filePath].join("\0")));
 }
 
@@ -3781,8 +3825,8 @@ function absolutize(projectRoot: string, path: string): string {
 }
 
 function displayPath(projectRoot: string, path: string): string {
-  const value = relative(projectRoot, path).replaceAll("\\", "/");
-  return value === "" ? "." : value;
+  const relativePath = relative(projectRoot, path).replaceAll("\\", "/");
+  return relativePath === "" ? "." : relativePath;
 }
 
 function stringChoice<T extends string>(value: unknown, choices: readonly T[], fallback: T): T {

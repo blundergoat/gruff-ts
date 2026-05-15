@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { chdir, cwd } from "node:process";
 import test from "node:test";
-import { analyse, renderReport, ruleDescriptors, type AnalysisReport } from "./cli.ts";
+import { analyse, renderReport, ruleDescriptors } from "./cli.ts";
+import type { AnalysisReport } from "./cli.ts";
 
 const REPO_ROOT = cwd();
 
@@ -1862,6 +1863,7 @@ async function freePort(): Promise<number> {
 
 async function waitForUrl(url: string, output: string): Promise<void> {
   const deadline = Date.now() + 5000;
+  const processOutput = output;
   let lastError: unknown;
   while (Date.now() < deadline) {
     try {
@@ -1875,7 +1877,7 @@ async function waitForUrl(url: string, output: string): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error(`timed out waiting for ${url}: ${String(lastError)}\n${output}`);
+  throw new Error(`timed out waiting for ${url}: ${String(lastError)}\n${processOutput}`);
 }
 
 async function fetchText(url: string): Promise<string> {
@@ -2151,30 +2153,30 @@ function thresholdUsages(source: string): Map<string, string[]> {
 
 function yamlThresholdDefaults(source: string): Map<string, string[]> {
   const result = new Map<string, string[]>();
-  let inRules = false;
+  let isInRules = false;
   let currentRule = "";
-  let inThresholds = false;
+  let isInThresholds = false;
   for (const line of source.split(/\r?\n/)) {
     if (line.trim() === "rules:") {
-      inRules = true;
+      isInRules = true;
       continue;
     }
-    if (!inRules) {
+    if (!isInRules) {
       continue;
     }
     const ruleMatch = line.match(/^  ([a-z-]+\.[a-z0-9-]+):\s*$/);
     if (ruleMatch?.[1]) {
       currentRule = ruleMatch[1];
-      inThresholds = false;
+      isInThresholds = false;
       continue;
     }
     if (currentRule && line.match(/^    thresholds:\s*$/)) {
-      inThresholds = true;
+      isInThresholds = true;
       result.set(currentRule, []);
       continue;
     }
     const keyMatch = line.match(/^      ([A-Za-z0-9_-]+):/);
-    if (currentRule && inThresholds && keyMatch?.[1]) {
+    if (currentRule && isInThresholds && keyMatch?.[1]) {
       result.get(currentRule)?.push(keyMatch[1]);
     }
   }
