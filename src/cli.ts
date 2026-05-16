@@ -196,9 +196,12 @@ const RULE_DESCRIPTORS: readonly RuleDescriptor[] = [
   { ruleId: "docs.stale-param-tag", pillar: "documentation", severity: "advisory", confidence: "medium", description: "Flags @param tags for parameters no longer in the signature.", remediation: "Remove stale tags or update the function signature." },
   { ruleId: "docs.todo-density", pillar: "documentation", severity: "advisory", confidence: "high", description: "Flags files with a high count of TODO/FIXME markers.", remediation: "Resolve stale markers or link them to tracked work.", thresholdKeys: ["markers"] },
   { ruleId: "docs.useless-docblock", pillar: "documentation", severity: "advisory", confidence: "medium", description: "Flags docblocks that only restate the symbol name.", remediation: "Replace the comment with useful contract or behavior detail." },
+  { ruleId: "modernisation.date-now-candidate", pillar: "modernisation", severity: "advisory", confidence: "high", description: "Flags verbose current-time expressions that can use Date.now().", remediation: "Use Date.now() for current epoch milliseconds." },
   { ruleId: "modernisation.double-cast", pillar: "modernisation", severity: "warning", confidence: "medium", description: "Flags casts through unknown or any into another type.", remediation: "Use a parser, type guard, or narrower assertion." },
+  { ruleId: "modernisation.loose-equality", pillar: "modernisation", severity: "advisory", confidence: "medium", description: "Flags loose equality comparisons that may coerce values.", remediation: "Use === or !== unless intentionally checking nullish values." },
   { ruleId: "modernisation.non-null-assertion", pillar: "modernisation", severity: "warning", confidence: "medium", description: "Flags non-null assertions that bypass null checks.", remediation: "Narrow the value or handle null and undefined explicitly." },
   { ruleId: "modernisation.nullish-coalescing-candidate", pillar: "modernisation", severity: "advisory", confidence: "medium", description: "Flags || fallbacks that may erase valid falsy values.", remediation: "Use ?? when only null or undefined should fall back." },
+  { ruleId: "modernisation.object-spread-candidate", pillar: "modernisation", severity: "advisory", confidence: "medium", description: "Flags Object.assign({}, ...) cloning that can use object spread.", remediation: "Use object spread when shallow-cloning plain objects." },
   { ruleId: "modernisation.optional-chaining-candidate", pillar: "modernisation", severity: "advisory", confidence: "medium", description: "Flags repeated guard-and-property access patterns.", remediation: "Use optional chaining for clearer null-safe access." },
   { ruleId: "modernisation.public-property", pillar: "modernisation", severity: "advisory", confidence: "high", description: "Flags public class properties that expose representation.", remediation: "Prefer readonly properties or accessors when invariants matter." },
   { ruleId: "modernisation.readonly-property-candidate", pillar: "modernisation", severity: "advisory", confidence: "medium", description: "Flags class properties that appear readonly-worthy.", remediation: "Mark the property readonly when mutation is not part of the contract." },
@@ -220,8 +223,10 @@ const RULE_DESCRIPTORS: readonly RuleDescriptor[] = [
   { ruleId: "security.floating-promise", pillar: "security", severity: "warning", confidence: "medium", description: "Flags promise-like calls without await, return, or void.", remediation: "Await it, return it, or mark intentional fire-and-forget with void." },
   { ruleId: "security.inner-html", pillar: "security", severity: "warning", confidence: "high", description: "Flags innerHTML assignment.", remediation: "Use safe DOM APIs or sanitize trusted HTML centrally." },
   { ruleId: "security.insecure-random", pillar: "security", severity: "warning", confidence: "high", description: "Flags Math.random usage in source.", remediation: "Use crypto-backed randomness for security-sensitive values." },
+  { ruleId: "security.javascript-url", pillar: "security", severity: "error", confidence: "high", description: "Flags javascript: URL literals that execute script.", remediation: "Use safe routes or event handlers instead of executable URL strings." },
   { ruleId: "security.new-function", pillar: "security", severity: "error", confidence: "high", description: "Flags Function constructor dynamic code execution.", remediation: "Replace dynamic construction with explicit functions or dispatch." },
   { ruleId: "security.process-exec", pillar: "security", severity: "warning", confidence: "high", description: "Flags child-process execution calls.", remediation: "Validate arguments and prefer fixed command vectors." },
+  { ruleId: "security.proto-access", pillar: "security", severity: "warning", confidence: "medium", description: "Flags direct __proto__ access that can enable prototype pollution.", remediation: "Use Object.getPrototypeOf, Object.create(null), or validated keys." },
   { ruleId: "security.remote-install-script", pillar: "security", severity: "error", confidence: "medium", description: "Flags package scripts that pipe remote content to a shell.", remediation: "Vendor, pin, or remove remote shell execution." },
   { ruleId: "security.risky-lifecycle-script", pillar: "security", severity: "warning", confidence: "medium", description: "Flags package lifecycle scripts that run automatically.", remediation: "Move setup behind an explicit command when possible." },
   { ruleId: "security.sql-concatenation", pillar: "security", severity: "warning", confidence: "high", description: "Flags SQL text composed with runtime string interpolation.", remediation: "Use parameterized queries or query builders." },
@@ -261,8 +266,11 @@ const RULE_DESCRIPTORS: readonly RuleDescriptor[] = [
   { ruleId: "waste.console-log", pillar: "waste", severity: "advisory", confidence: "high", description: "Flags console log/debug calls in source.", remediation: "Remove debug logging or route through structured logging." },
   { ruleId: "waste.empty-function", pillar: "waste", severity: "advisory", confidence: "high", description: "Flags functions with no executable body.", remediation: "Delete the function or add the missing implementation." },
   { ruleId: "waste.exported-any", pillar: "waste", severity: "warning", confidence: "medium", description: "Flags exported APIs exposing any.", remediation: "Use a named interface, unknown with validation, or precise generics." },
+  { ruleId: "waste.redundant-boolean-cast", pillar: "waste", severity: "advisory", confidence: "medium", description: "Flags redundant boolean casts in condition expressions.", remediation: "Use the condition value directly or name the boolean conversion." },
   { ruleId: "waste.redundant-variable", pillar: "waste", severity: "advisory", confidence: "medium", description: "Flags variables returned immediately after assignment.", remediation: "Return the expression directly." },
   { ruleId: "waste.swallowed-catch", pillar: "waste", severity: "warning", confidence: "medium", description: "Flags empty catch blocks.", remediation: "Handle, report, rethrow, or document intentional ignore paths." },
+  { ruleId: "waste.useless-catch", pillar: "waste", severity: "advisory", confidence: "high", description: "Flags catch blocks that only rethrow the caught value.", remediation: "Remove the catch block or add meaningful handling." },
+  { ruleId: "waste.useless-return", pillar: "waste", severity: "advisory", confidence: "medium", description: "Flags terminal bare return statements in void functions.", remediation: "Remove the final return statement." },
   { ruleId: "waste.unreachable-code", pillar: "waste", severity: "warning", confidence: "high", description: "Flags statements after terminating statements.", remediation: "Delete unreachable code or restructure the control flow." },
   { ruleId: "waste.unused-import", pillar: "waste", severity: "advisory", confidence: "medium", description: "Flags named imports with no apparent usage.", remediation: "Remove unused imports." },
   { ruleId: "waste.unused-parameter", pillar: "waste", severity: "advisory", confidence: "medium", description: "Flags parameters with no apparent usage.", remediation: "Remove the parameter or prefix it with _ if intentional." },
@@ -1811,6 +1819,21 @@ function analyseBlocks(file: SourceFile, blocks: FunctionBlock[], config: Config
         }),
       );
     }
+    for (const lineOffset of terminalBareReturnLines(block.codeBody)) {
+      findings.push(
+        makeFinding({
+          ruleId: "waste.useless-return",
+          message: `Function \`${block.name}\` ends with a redundant bare return.`,
+          filePath: file.displayPath,
+          line: block.startLine + lineOffset,
+          severity: "advisory",
+          pillar: "waste",
+          confidence: "medium",
+          symbol: block.name,
+          remediation: "Remove the final return statement.",
+        }),
+      );
+    }
     if (block.isTest) {
       analyseTestBlock(file, block, config, findings);
     }
@@ -1900,16 +1923,20 @@ function analyseLineRules(file: SourceFile, source: string, codeSource: string, 
   const codeChecks: Array<[string, RegExp, string, Severity, Pillar]> = [
     ["security.eval-call", /\beval\s*\(/, "eval() executes dynamic code.", "error", "security"],
     ["security.new-function", /\bnew\s+Function\s*\(|(?:^|[=(:,])\s*Function\s*\(/, "Function constructor executes dynamic code.", "error", "security"],
-    ["security.string-timer", /\bset(?:Timeout|Interval)\s*\(\s*["'`]/, "Timer callback is provided as a string.", "warning", "security"],
-    ["security.process-exec", /\b(exec|spawn|execFile)\s*\(/, "Child-process execution is used; validate arguments are not user-controlled.", "warning", "security"],
     ["security.insecure-random", /\bMath\.random\s*\(/, "Math.random() is not suitable for security-sensitive randomness.", "warning", "security"],
-    ["security.inner-html", /\.innerHTML\s*=/, "innerHTML assignment can introduce XSS.", "warning", "security"],
+    ["security.inner-html", /\.innerHTML\s*=|\bdangerouslySetInnerHTML\b/, "HTML injection sink can introduce XSS.", "warning", "security"],
+    ["security.proto-access", /\.__proto__\b/, "Direct __proto__ access can enable prototype pollution.", "warning", "security"],
     ["security.document-write", /\bdocument\.write\s*\(/, "document.write() can introduce injection risks.", "warning", "security"],
+    ["waste.redundant-boolean-cast", /\b(?:if|while)\s*\(\s*(?:!!\s*[A-Za-z_$][A-Za-z0-9_$.]*|Boolean\s*\()/, "Condition contains a redundant boolean cast.", "advisory", "waste"],
   ];
   const literalChecks: Array<[string, RegExp, string, Severity, Pillar]> = [
-    ["security.weak-crypto", /\b(?:createHash|createHmac)\s*\(\s*["'](?:md5|sha1)["']|\bcreateCipher\s*\(/, "Weak cryptographic primitive is used.", "warning", "security"],
-    ["security.disabled-tls-verification", /\b(?:process\.env\.)?NODE_TLS_REJECT_UNAUTHORIZED\b\s*=\s*["']0["']/, "TLS certificate verification is disabled.", "error", "security"],
+    ["security.weak-crypto", /\b(?:createHash|createHmac)\s*\(\s*["'](?:md5|sha1)["']|\bcreateCipher\s*\(|\b(?:secureProtocol|minVersion|maxVersion)\s*:\s*["'](?:SSLv2_method|SSLv3_method|TLSv1(?:_method)?|TLSv1\.1)["']/i, "Weak cryptographic primitive is used.", "warning", "security"],
+    ["security.disabled-tls-verification", /\b(?:process\.env\.)?NODE_TLS_REJECT_UNAUTHORIZED\b\s*=\s*["']0["']|\brejectUnauthorized\s*:\s*false\b/i, "TLS certificate verification is disabled.", "error", "security"],
+    ["security.javascript-url", /["'`]\s*javascript\s*:(?!\s+URL\b)/i, "javascript: URL literal can execute script.", "error", "security"],
+    ["security.proto-access", /\[\s*["']__proto__["']\s*\]/, "Direct __proto__ access can enable prototype pollution.", "warning", "security"],
     ["security.sql-concatenation", /\b(?:query|execute|raw)\s*\(\s*(?:`[^`]*(?:SELECT|INSERT|UPDATE|DELETE)[^`]*\$\{|["'][^"']*(?:SELECT|INSERT|UPDATE|DELETE)[^"']*["']\s*\+)/i, "SQL text is composed with runtime string interpolation.", "warning", "security"],
+    ["modernisation.date-now-candidate", /\bnew\s+Date\s*\(\s*\)\s*\.getTime\s*\(\s*\)|\bNumber\s*\(\s*new\s+Date\s*\(\s*\)\s*\)/, "Current-time expression can use Date.now().", "advisory", "modernisation"],
+    ["modernisation.object-spread-candidate", /\bObject\.assign\s*\(\s*\{\s*\}\s*,/, "Object.assign clone can usually use object spread.", "advisory", "modernisation"],
     ["waste.console-log", /\bconsole\.(log|debug)\s*\(/, "console logging is committed in source.", "advisory", "waste"],
     ["waste.any-type", /:\s*any\b|as\s+any\b/, "any weakens TypeScript's type guarantees.", "warning", "waste"],
     ["modernisation.var-declaration", /\bvar\s+[A-Za-z_$]/, "var declaration should usually be let or const.", "advisory", "modernisation"],
@@ -1992,6 +2019,16 @@ function analyseLineRules(file: SourceFile, source: string, codeSource: string, 
         }),
       );
     }
+    const looseOperator = looseEqualityOperator(codeLine);
+    if (looseOperator) {
+      findings.push(finding("modernisation.loose-equality", `Loose equality operator ${looseOperator} may coerce values.`, file, lineNumber, "advisory", "modernisation"));
+    }
+    if (stringTimerCandidate(codeLine)) {
+      findings.push(finding("security.string-timer", "Timer callback is provided as a string.", file, lineNumber, "warning", "security"));
+    }
+    if (processExecCandidate(codeLine) && !isFixedLocalProcessHarness(file, line, codeLine)) {
+      findings.push(finding("security.process-exec", "Child-process execution is used; validate arguments are not user-controlled.", file, lineNumber, "warning", "security"));
+    }
     for (const [ruleId, pattern, message, severity, pillar] of codeChecks) {
       if (pattern.test(codeLine)) {
         findings.push(finding(ruleId, message, file, lineNumber, severity, pillar));
@@ -2040,6 +2077,7 @@ function analyseLineRules(file: SourceFile, source: string, codeSource: string, 
     }
   });
 
+  analyseUselessCatches(file, codeSource, findings);
   analyseSwallowedCatches(file, codeSource, findings);
   analyseUnreachable(file, codeSource, findings);
 }
@@ -2054,6 +2092,40 @@ function rawPatternStartsInCode(rawLine: string, codeLine: string, pattern: RegE
     }
   }
   return false;
+}
+
+function looseEqualityOperator(codeLine: string): string | undefined {
+  for (const match of codeLine.matchAll(/[=!]=/g)) {
+    const index = match.index ?? 0;
+    const operator = match[0] ?? "";
+    const before = codeLine[index - 1] ?? "";
+    const after = codeLine[index + operator.length] ?? "";
+    if (before === "=" || before === "!" || after === "=") {
+      continue;
+    }
+    const left = codeLine.slice(Math.max(0, index - 24), index).trimEnd();
+    const right = codeLine.slice(index + operator.length, Math.min(codeLine.length, index + operator.length + 24)).trimStart();
+    if (/\bnull$/.test(left) || /^null\b/.test(right)) {
+      continue;
+    }
+    return operator;
+  }
+  return undefined;
+}
+
+function stringTimerCandidate(codeLine: string): boolean {
+  return (
+    /(?:^|[^.\w$])(?:setTimeout|setInterval|execScript)\s*\(\s*["'`]/.test(codeLine) ||
+    /\b(?:window|self|globalThis)\.(?:setTimeout|setInterval|execScript)\s*\(\s*["'`]/.test(codeLine)
+  );
+}
+
+function processExecCandidate(codeLine: string): boolean {
+  return /\b(?:exec|spawn|execFile)\s*\(/.test(codeLine);
+}
+
+function isFixedLocalProcessHarness(file: SourceFile, rawLine: string, codeLine: string): boolean {
+  return isTestPath(file.displayPath) && /\b(?:spawn|execFile)\s*\(/.test(codeLine) && /\b(?:spawn|execFile)\s*\(\s*["']\.{1,2}\/[^"']*["']\s*,\s*\[/.test(rawLine);
 }
 
 function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: string, lineNumber: number, findings: Finding[]): void {
@@ -2177,6 +2249,25 @@ function analyseReliabilityLine(file: SourceFile, codeLine: string, lineNumber: 
         confidence: "medium",
         remediation: "Throw an Error subclass with a clear message and structured properties.",
         metadata: { expression: thrown },
+      }),
+    );
+  }
+}
+
+function analyseUselessCatches(file: SourceFile, source: string, findings: Finding[]): void {
+  for (const match of source.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)\s*\{\s*throw\s+\1\s*;?\s*\}/g)) {
+    const binding = match[1] ?? "";
+    findings.push(
+      makeFinding({
+        ruleId: "waste.useless-catch",
+        message: `catch block only rethrows \`${binding}\` without adding handling.`,
+        filePath: file.displayPath,
+        line: byteLine(source, match.index ?? 0),
+        severity: "advisory",
+        pillar: "waste",
+        confidence: "high",
+        remediation: "Remove the catch block or add meaningful handling.",
+        metadata: { binding },
       }),
     );
   }
@@ -2515,9 +2606,24 @@ function functionBodyContent(source: string): string {
   const start = source.indexOf("{");
   const end = source.lastIndexOf("}");
   if (start === -1 || end <= start) {
-    return "";
+    const arrow = source.indexOf("=>");
+    return arrow === -1 ? "" : source.slice(arrow + 2).replace(/;?\s*$/, "");
   }
   return source.slice(start + 1, end);
+}
+
+function terminalBareReturnLines(source: string): number[] {
+  const lines = source.split(/\r?\n/);
+  let current = lines.length - 1;
+  while (current >= 0) {
+    const trimmed = lines[current]?.trim() ?? "";
+    if (trimmed === "" || trimmed === "}") {
+      current -= 1;
+      continue;
+    }
+    return /^return\s*;?$/.test(trimmed) ? [current] : [];
+  }
+  return [];
 }
 
 function parameterNames(params: string): Array<{ name: string }> {
@@ -2757,21 +2863,24 @@ function functionBlocks(source: string, codeSource = source): FunctionBlock[] {
       return;
     }
     const start = functionStartIndex(lines, index);
+    const expressionArrowEnd = expressionArrowEndIndex(codeLines, index);
     let depth = 0;
     let hasSeenOpen = false;
-    let end = index;
-    for (let current = index; current < lines.length; current += 1) {
-      for (const character of codeLines[current] ?? "") {
-        if (character === "{") {
-          depth += 1;
-          hasSeenOpen = true;
-        } else if (character === "}") {
-          depth -= 1;
+    let end = expressionArrowEnd ?? index;
+    if (expressionArrowEnd === undefined) {
+      for (let current = index; current < lines.length; current += 1) {
+        for (const character of codeLines[current] ?? "") {
+          if (character === "{") {
+            depth += 1;
+            hasSeenOpen = true;
+          } else if (character === "}") {
+            depth -= 1;
+          }
         }
-      }
-      end = current;
-      if (hasSeenOpen && depth <= 0) {
-        break;
+        end = current;
+        if (hasSeenOpen && depth <= 0) {
+          break;
+        }
       }
     }
     const body = lines.slice(start, end + 1).join("\n");
@@ -2788,6 +2897,31 @@ function functionBlocks(source: string, codeSource = source): FunctionBlock[] {
     });
   });
   return blocks;
+}
+
+function expressionArrowEndIndex(codeLines: string[], index: number): number | undefined {
+  const line = codeLines[index] ?? "";
+  const arrowIndex = line.indexOf("=>");
+  if (arrowIndex === -1 || line.slice(arrowIndex + 2).includes("{")) {
+    return undefined;
+  }
+  for (let current = index; current < codeLines.length; current += 1) {
+    const trimmed = (codeLines[current] ?? "").trim();
+    if (current === index) {
+      const tail = line.slice(arrowIndex + 2).trim();
+      if (tail.endsWith(";")) {
+        return current;
+      }
+      continue;
+    }
+    if (trimmed === "") {
+      return current - 1;
+    }
+    if (trimmed.endsWith(";")) {
+      return current;
+    }
+  }
+  return index;
 }
 
 function isControlBlockName(name: string): boolean {

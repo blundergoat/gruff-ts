@@ -120,3 +120,23 @@ Run the target command directly, save output to `/tmp` if parsing is needed, the
 **Evidence:** `src/cli.test.ts` + `(search: "test(\"setup bloat\"")`; failing test names were `risk expansion finds scoped test-quality rules` and `cumulative expanded fixture covers every new rule with unique fingerprints`.
 
 **Prevention:** When changing a default threshold, update every positive fixture owned by that rule in the same patch and count the candidate lines against the new default before rerunning the full gate.
+
+## Lesson: verification commands must account for local artifact directories
+
+**Created:** 2026-05-16
+
+**What happened:** During M15, the clone inventory command originally listed every directory under `.goat-flow/scratchpad/related-projects`, but the milestone itself creates `.goat-flow/scratchpad/related-projects/study`, so the command no longer proved "exactly the ten cloned projects" after the first artifact write.
+
+**Evidence:** `.goat-flow/tasks/0.1/M15-related-project-study-intake.md` + `(search: "find .goat-flow/scratchpad/related-projects")` - the verified command now excludes `study`; commands that grep ignored `.goat-flow` artifacts use `rg -uuu`.
+
+**Prevention:** When a milestone writes verification artifacts inside the tree being enumerated, either exclude the artifact directory in the proof command or write artifacts outside the enumerated scope. Use `rg -uuu` for checks that intentionally inspect gitignored `.goat-flow/tasks` or `.goat-flow/scratchpad` files.
+
+## Lesson: widen typed test maps when one list has documented exceptions
+
+**Created:** 2026-05-16
+
+**What happened:** During M21, the first `npm run check` failed in `tsc` because a rule-quality self-check built one `Map` from doctrine entries and another from exception entries. TypeScript inferred each `Map` with only its literal key union, so looking up the full risky-rule union failed for the exception-only rule.
+
+**Evidence:** `src/cli.test.ts` + `(search: "rule quality doctrine covers risky scanner descriptors")`; the failing command reported `sensitive-data.api-key-pattern` was not assignable to the doctrine-only map key union.
+
+**Prevention:** For test metadata split across coverage and exception lists, widen lookup maps to `Map<string, ...>` before iterating the combined rule-id list. This preserves useful literal data in the source arrays while keeping strict TypeScript from rejecting intentional exception-only entries.

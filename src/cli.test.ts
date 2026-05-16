@@ -22,9 +22,12 @@ const expandedRuleIds = new Set([
   "design.large-module-concentration",
   "design.package-bin-missing",
   "design.package-bin-not-executable",
+  "modernisation.date-now-candidate",
   "modernisation.double-cast",
+  "modernisation.loose-equality",
   "modernisation.nullish-coalescing-candidate",
   "modernisation.non-null-assertion",
+  "modernisation.object-spread-candidate",
   "modernisation.optional-chaining-candidate",
   "modernisation.readonly-property-candidate",
   "modernisation.tsconfig-exact-optional-disabled",
@@ -39,7 +42,10 @@ const expandedRuleIds = new Set([
   "security.disabled-tls-verification",
   "security.floating-promise",
   "security.insecure-random",
+  "security.javascript-url",
   "security.new-function",
+  "security.process-exec",
+  "security.proto-access",
   "security.remote-install-script",
   "security.sql-concatenation",
   "security.string-timer",
@@ -64,11 +70,230 @@ const expandedRuleIds = new Set([
   "waste.empty-function",
   "waste.exported-any",
   "waste.broad-runtime-version",
+  "waste.redundant-boolean-cast",
   "waste.redundant-variable",
   "waste.swallowed-catch",
+  "waste.useless-catch",
+  "waste.useless-return",
   "waste.unused-import",
   "waste.unused-parameter",
 ]);
+
+const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "missing-invalid"] as const;
+
+type RuleQualityCategory = (typeof RULE_QUALITY_FIXTURE_CATEGORIES)[number];
+type RuleQualityDescriptor = ReturnType<typeof ruleDescriptors>[number];
+
+interface RuleQualityDoctrineCase {
+  ruleId: string;
+  signalSource: string;
+  expectedPillar: RuleQualityDescriptor["pillar"];
+  expectedSeverity: RuleQualityDescriptor["severity"];
+  expectedConfidence: RuleQualityDescriptor["confidence"];
+  fixtureCategories: readonly RuleQualityCategory[];
+  invalidFixture: string;
+  noisyValidFixture: string;
+  missingInvalidFixture: string;
+  falsePositiveEscapeHatch: string;
+  fingerprintStability: string;
+}
+
+const riskyRuleIdsRequiringNoisyValidProof = [
+  "docs.todo-density",
+  "security.disabled-tls-verification",
+  "security.eval-call",
+  "security.new-function",
+  "security.string-timer",
+  "security.inner-html",
+  "security.javascript-url",
+  "security.process-exec",
+  "security.proto-access",
+  "security.weak-crypto",
+  "sensitive-data.api-key-pattern",
+  "sensitive-data.high-entropy-string",
+  "test-quality.only-skip",
+  "waste.commented-out-code",
+] as const;
+
+const riskyRuleQualityDoctrine = [
+  {
+    ruleId: "docs.todo-density",
+    signalSource: "comment-text scanner with raw line anchors",
+    expectedPillar: "documentation",
+    expectedSeverity: "advisory",
+    expectedConfidence: "high",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "comment markers over the configured threshold",
+    noisyValidFixture: "marker words inside strings, regex bodies, and template text",
+    missingInvalidFixture: "real comment markers just below and at threshold",
+    falsePositiveEscapeHatch: "count only comment text, not executable literals",
+    fingerprintStability: "anchor to the first real marker line",
+  },
+  {
+    ruleId: "security.eval-call",
+    signalSource: "masked source executable-line scan",
+    expectedPillar: "security",
+    expectedSeverity: "error",
+    expectedConfidence: "high",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "direct eval call in executable code",
+    noisyValidFixture: "eval text inside comments, strings, regex bodies, and templates",
+    missingInvalidFixture: "direct eval remains reported when noisy fixtures are present",
+    falsePositiveEscapeHatch: "run only against masked executable source",
+    fingerprintStability: "keep file path, rule id, executable line, and symbol identity stable",
+  },
+  {
+    ruleId: "security.new-function",
+    signalSource: "masked source executable-line scan",
+    expectedPillar: "security",
+    expectedSeverity: "error",
+    expectedConfidence: "high",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "direct Function constructor in executable code",
+    noisyValidFixture: "constructor text inside comments, strings, regex bodies, and templates",
+    missingInvalidFixture: "constructor call remains reported when noisy fixtures are present",
+    falsePositiveEscapeHatch: "run only against masked executable source",
+    fingerprintStability: "keep the executable line as the finding anchor",
+  },
+  {
+    ruleId: "security.disabled-tls-verification",
+    signalSource: "raw text scan anchored to executable TLS-disable tokens",
+    expectedPillar: "security",
+    expectedSeverity: "error",
+    expectedConfidence: "high",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "NODE_TLS_REJECT_UNAUTHORIZED zero or rejectUnauthorized false",
+    noisyValidFixture: "safe TLS settings and prose references to rejectUnauthorized",
+    missingInvalidFixture: "literal TLS-disable tokens remain reported alongside safe settings",
+    falsePositiveEscapeHatch: "require an exact disable assignment or object-property value",
+    fingerprintStability: "keep the concrete TLS-disable line as the finding anchor",
+  },
+  {
+    ruleId: "security.string-timer",
+    signalSource: "masked source executable-line scan",
+    expectedPillar: "security",
+    expectedSeverity: "warning",
+    expectedConfidence: "high",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "timer call with a string callback",
+    noisyValidFixture: "timer text inside comments, strings, regex bodies, templates, and arbitrary receiver methods",
+    missingInvalidFixture: "string timer remains reported when noisy fixtures are present",
+    falsePositiveEscapeHatch: "require a global or browser timer call with a string-like first argument",
+    fingerprintStability: "keep the timer call line as the finding anchor",
+  },
+  {
+    ruleId: "security.inner-html",
+    signalSource: "masked source executable-line scan",
+    expectedPillar: "security",
+    expectedSeverity: "warning",
+    expectedConfidence: "high",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "innerHTML assignment in executable code",
+    noisyValidFixture: "innerHTML text inside comments, strings, regex bodies, and templates",
+    missingInvalidFixture: "assignment remains reported when noisy fixtures are present",
+    falsePositiveEscapeHatch: "require an executable assignment token",
+    fingerprintStability: "keep the assignment line as the finding anchor",
+  },
+  {
+    ruleId: "security.javascript-url",
+    signalSource: "raw string-literal scan guarded by executable-code position",
+    expectedPillar: "security",
+    expectedSeverity: "error",
+    expectedConfidence: "high",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "string literal that begins with javascript:",
+    noisyValidFixture: "plain text mentioning javascript URLs in comments or nonmatching strings",
+    missingInvalidFixture: "javascript URL literal remains reported with noisy strings present",
+    falsePositiveEscapeHatch: "require the javascript: token to start in executable code",
+    fingerprintStability: "anchor to the literal line without including the URL body",
+  },
+  {
+    ruleId: "security.process-exec",
+    signalSource: "masked source executable-line scan with fixed test harness exemption",
+    expectedPillar: "security",
+    expectedSeverity: "warning",
+    expectedConfidence: "high",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "spawn, exec, or execFile called with runtime-controlled command input",
+    noisyValidFixture: "fixed local spawn or execFile command vectors inside test harness files",
+    missingInvalidFixture: "dynamic child-process calls remain reported when fixed harnesses are present",
+    falsePositiveEscapeHatch: "exempt only fixed local command vectors in test-like files",
+    fingerprintStability: "keep the child-process call line as the finding anchor",
+  },
+  {
+    ruleId: "security.proto-access",
+    signalSource: "masked executable-line and guarded raw bracket-property scans",
+    expectedPillar: "security",
+    expectedSeverity: "warning",
+    expectedConfidence: "medium",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "direct dot or bracket __proto__ property access",
+    noisyValidFixture: "__proto__ text inside comments and unrelated string literals",
+    missingInvalidFixture: "direct prototype access remains reported beside noisy strings",
+    falsePositiveEscapeHatch: "require a real property access token in code",
+    fingerprintStability: "keep the prototype access line as the finding anchor",
+  },
+  {
+    ruleId: "security.weak-crypto",
+    signalSource: "raw text scan anchored to executable crypto API tokens",
+    expectedPillar: "security",
+    expectedSeverity: "warning",
+    expectedConfidence: "high",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "md5, sha1, createCipher, or legacy TLS protocol options",
+    noisyValidFixture: "sha256 and modern TLS options plus prose references to old algorithms",
+    missingInvalidFixture: "weak crypto tokens remain reported with safe crypto nearby",
+    falsePositiveEscapeHatch: "require exact weak algorithm or legacy protocol tokens",
+    fingerprintStability: "keep the weak crypto line as the finding anchor",
+  },
+  {
+    ruleId: "sensitive-data.high-entropy-string",
+    signalSource: "raw text literal scanner with redacted preview metadata",
+    expectedPillar: "sensitive-data",
+    expectedSeverity: "error",
+    expectedConfidence: "medium",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "secret-like high-entropy literal",
+    noisyValidFixture: "package integrity hash and obvious placeholder literals",
+    missingInvalidFixture: "secret-like literal remains reported with redacted output",
+    falsePositiveEscapeHatch: "allowlist known non-secret encodings before reporting",
+    fingerprintStability: "anchor to the literal line without including raw secret text",
+  },
+  {
+    ruleId: "test-quality.only-skip",
+    signalSource: "test block scan against masked executable body",
+    expectedPillar: "test-quality",
+    expectedSeverity: "advisory",
+    expectedConfidence: "high",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "focused or skipped test marker in executable test code",
+    noisyValidFixture: "focused/skipped marker text inside fixtures and documentation",
+    missingInvalidFixture: "focused or skipped test remains reported when noisy fixtures are present",
+    falsePositiveEscapeHatch: "run against masked test block source only",
+    fingerprintStability: "anchor to the test block start line",
+  },
+  {
+    ruleId: "waste.commented-out-code",
+    signalSource: "raw line comment scanner",
+    expectedPillar: "waste",
+    expectedSeverity: "advisory",
+    expectedConfidence: "high",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "single-line comment that starts with disabled source syntax",
+    noisyValidFixture: "ordinary prose comments that mention code tokens",
+    missingInvalidFixture: "disabled source line remains reported when prose comments are present",
+    falsePositiveEscapeHatch: "require the uncommented text to look like a statement, declaration, or call",
+    fingerprintStability: "anchor to the commented-out source line",
+  },
+] as const satisfies readonly RuleQualityDoctrineCase[];
+
+const riskyRuleQualityExceptions = [
+  {
+    ruleId: "sensitive-data.api-key-pattern",
+    reason:
+      "Vendor key patterns intentionally scan raw text so committed secrets in comments, fixtures, and config are still findings; noisy-valid proof is deferred to rule-specific allowlist refinements.",
+  },
+] as const;
 
 test("analysis finds core TypeScript smells", () => {
   const report = analyseFixture(`export class Bad {
@@ -820,6 +1045,69 @@ test("fixture source text remains inert", () => {
   );
 });
 
+test("scanner guardrail fixtures keep noisy-valid comments strings regex templates inert", () => {
+  const report = analyseProject({
+    "src/generated/noisy-valid.ts": `// @generated by scanner guardrail fixture.
+// Prose mentions eval(input), new Function(input), setTimeout("alert(1)"), console.log(value), and var legacyName.
+const literalMention = "eval(input); new Function(input)(); setTimeout(\\"alert(1)\\", 10); console.log(input); var legacyName = input;";
+const templateMention = \`if (ready) { return "ok"; } setInterval("tick()", 10);\`;
+const matcher = /\\beval\\s*\\(|setTimeout\\("alert\\(1\\)"\\)|var\\s+legacyName/;
+
+function safeRender(inputText: string): string {
+  const cleanedText = inputText.trim();
+  return matcher.test(literalMention) ? templateMention : cleanedText;
+}
+`,
+    "src/no-trigger.ts": `const localNumber = 1;
+
+function computeValue(inputText: string): string {
+  const paddedText = inputText.padStart(2, "0");
+  return paddedText.slice(0, localNumber);
+}
+`,
+  });
+  const noisyRules = new Set([
+    "docs.todo-density",
+    "modernisation.var-declaration",
+    "security.eval-call",
+    "security.new-function",
+    "security.string-timer",
+    "waste.commented-out-code",
+    "waste.console-log",
+  ]);
+  assert.deepEqual(report.diagnostics, []);
+  assert.deepEqual(
+    report.findings.filter((finding) => noisyRules.has(finding.ruleId)).map((finding) => `${finding.ruleId}:${finding.filePath}:${finding.line ?? 0}`),
+    [],
+  );
+});
+
+test("scanner guardrail fixtures keep live finding fingerprints stable", () => {
+  const base = analyseFixture(`function executeInput(userInput: string): void {
+  eval(userInput);
+  setTimeout("alert(1)", 10);
+}
+`);
+  const noisy = analyseFixture(`function executeInput(userInput: string): void {
+  eval(userInput);
+  setTimeout("alert(1)", 10);
+  const literalMention = "eval(userInput); setTimeout(\\"alert(1)\\", 10);";
+  const regexMention = /\\beval\\s*\\(|setTimeout\\("alert\\(1\\)"\\)/;
+  const templateMention = \`eval(userInput); setTimeout("alert(1)", 10);\`;
+  void literalMention;
+  void regexMention;
+  void templateMention;
+}
+`);
+  const ruleIds = new Set(["security.eval-call", "security.string-timer"]);
+  const identity = (report: AnalysisReport) =>
+    report.findings
+      .filter((finding) => ruleIds.has(finding.ruleId))
+      .map((finding) => `${finding.ruleId}:${finding.filePath}:${finding.line ?? 0}:${finding.fingerprint}`)
+      .sort();
+  assert.deepEqual(identity(noisy), identity(base));
+});
+
 test("todo density counts comment markers without literal false positives", () => {
   const source = `const descriptor = "TODO/FIXME markers";
 const matcher = /TODO|FIXME/;
@@ -878,6 +1166,31 @@ function parseYamlScalar(value: string): string {
     report.findings.filter((finding) => finding.ruleId === "waste.empty-function" && (finding.symbol === "parseYamlArray" || finding.symbol === "parseYamlScalar")),
     [],
   );
+});
+
+test("function parser handles multiline expression-bodied arrows without empty-body noise", () => {
+  const report = analyseFixture(`interface AnalysisReport {
+  findings: Array<{ ruleId: string }>;
+}
+
+const identity = (report: AnalysisReport) =>
+  report.findings
+    .map((finding) => finding.ruleId)
+    .join(",");
+
+function emptyWork(): void {}
+
+function unusedParam(value: string): void {
+  return;
+}
+`);
+
+  assert.deepEqual(
+    report.findings.filter((finding) => finding.symbol === "identity" && ["waste.empty-function", "waste.unused-parameter"].includes(finding.ruleId)),
+    [],
+  );
+  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.empty-function" && finding.symbol === "emptyWork"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unused-parameter" && finding.symbol === "unusedParam"), true);
 });
 
 test("missing public docs are reported once per exported symbol", () => {
@@ -965,30 +1278,53 @@ test("risk expansion ignores package integrity hashes", () => {
 
 test("risk expansion finds security rules with safe non-candidates", () => {
   const report = analyseFixture(`import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 
 function unsafe(userInput: string, userId: string): void {
   new Function(userInput)();
   setTimeout("alert(1)", 10);
+  window.setInterval("alert(1)", 10);
+  execScript("alert(1)");
+  spawn(userInput, []);
   Math.random();
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  const insecureAgent = { rejectUnauthorized: false, minVersion: "TLSv1" };
+  location.href = "javascript:alert(1)";
+  element.dangerouslySetInnerHTML = { __html: userInput };
+  element.__proto__ = {};
+  element["__proto__"] = {};
   db.query("SELECT * FROM users WHERE id = " + userId);
   createHash("sha1").update(userInput);
+  void insecureAgent;
 }
 
 function safe(userId: string): void {
   const docs = "new Function(userInput)";
+  const urlText = "xjavascript:alert(1)";
+  const urlDocs = "javascript: URL literal can execute script.";
+  const protoText = "__proto__";
+  const secureAgent = { rejectUnauthorized: true, minVersion: "TLSv1.2" };
+  timer.setTimeout("not global code", 10);
   setTimeout(() => alert("ok"), 10);
   crypto.getRandomValues(new Uint32Array(1));
   db.query("SELECT * FROM users WHERE id = ?", [userId]);
   createHash("sha256").update(userId);
+  void urlText;
+  void urlDocs;
+  void protoText;
+  void secureAgent;
 }
 `);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   for (const ruleId of [
     "security.new-function",
     "security.string-timer",
+    "security.process-exec",
     "security.insecure-random",
     "security.disabled-tls-verification",
+    "security.javascript-url",
+    "security.inner-html",
+    "security.proto-access",
     "security.sql-concatenation",
     "security.weak-crypto",
   ]) {
@@ -997,6 +1333,83 @@ function safe(userId: string): void {
 
   const newFunctionFindings = report.findings.filter((finding) => finding.ruleId === "security.new-function");
   assert.equal(newFunctionFindings.length, 1);
+  assert.equal(report.findings.filter((finding) => finding.ruleId === "security.string-timer").length, 3);
+  assert.equal(report.findings.filter((finding) => finding.ruleId === "security.javascript-url").length, 1);
+  assert.equal(report.findings.filter((finding) => finding.ruleId === "security.proto-access").length, 2);
+});
+
+test("process exec exempts fixed local test harnesses but reports dynamic commands", () => {
+  const report = analyseProject({
+    "src/harness.test.ts": `import { spawn } from "node:child_process";
+
+const child = spawn("./bin/gruff-ts", ["summary"]);
+void child;
+`,
+    "src/runner.ts": `import { spawn, execFile } from "node:child_process";
+
+function run(userCommand: string): void {
+  spawn(userCommand, []);
+  execFile(userCommand, []);
+}
+`,
+  });
+
+  const processExecFindings = report.findings.filter((finding) => finding.ruleId === "security.process-exec");
+  assert.equal(processExecFindings.some((finding) => finding.filePath === "src/harness.test.ts"), false);
+  assert.equal(processExecFindings.filter((finding) => finding.filePath === "src/runner.ts").length, 2);
+});
+
+test("risk expansion finds direct modernisation and waste rules with safe non-candidates", () => {
+  const report = analyseFixture(`function risky(value: unknown, source: Record<string, string>): number {
+  if (!!source.ready) {
+    observe(source);
+  }
+  if (Boolean(source.ready)) {
+    observe(source);
+  }
+  if (value == "1") {
+    observe(source);
+  }
+  const timestamp = new Date().getTime();
+  const copy = Object.assign({}, source);
+  try {
+    return timestamp + Object.keys(copy).length;
+  } catch (error) {
+    throw error;
+  }
+}
+
+function safe(value: unknown, source: Record<string, string>): void {
+  if (source.ready) {
+    observe(source);
+  }
+  if (value == null) {
+    observe(source);
+  }
+  const timestamp = Date.now();
+  const copy = { ...source };
+  void timestamp;
+  void copy;
+}
+
+function finish(): void {
+  doWork();
+  return;
+}
+`);
+  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
+  for (const ruleId of [
+    "modernisation.loose-equality",
+    "modernisation.date-now-candidate",
+    "modernisation.object-spread-candidate",
+    "waste.redundant-boolean-cast",
+    "waste.useless-catch",
+    "waste.useless-return",
+  ]) {
+    assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
+  }
+  assert.equal(report.findings.filter((finding) => finding.ruleId === "modernisation.loose-equality").length, 1);
+  assert.equal(report.findings.filter((finding) => finding.ruleId === "waste.redundant-boolean-cast").length, 2);
 });
 
 test("risk expansion finds scoped test-quality rules", () => {
@@ -1438,6 +1851,7 @@ function branchLightly(input: string): string {
 test("cumulative expanded fixture covers every new rule with unique fingerprints", () => {
   const report = analyseProject({
     "Widget.ts": `import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -1491,20 +1905,45 @@ export function unsafePublicApi(input: ${"any"}): ${"any"} {
 async function unsafe(userInput: string, userId: string, userIds: string[]): Promise<void> {
   new Function(userInput)();
   setTimeout("alert(1)", 10);
+  window.setInterval("alert(1)", 10);
+  spawn(userInput, []);
   Math.random();
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  const insecureAgent = { rejectUnauthorized: false, minVersion: "TLSv1" };
+  location.href = "javascript:alert(1)";
+  element.dangerouslySetInnerHTML = { __html: userInput };
+  element.__proto__ = {};
   db.query("SELECT * FROM users WHERE id = " + userId);
   createHash("md5").update(userInput);
+  const timestamp = new Date().getTime();
+  const copy = Object.assign({}, { userId });
+  if (!!userId) {
+    observe(copy);
+  }
+  if (userId == "legacy") {
+    observe(timestamp);
+  }
   userIds.forEach(${"async"} (userId) => {
     await sendEmailAsync(userId);
   });
   ${"sendEmailAsync"}(userIds[0]);
   try {
+    riskyWork();
+  } catch (error) {
+    throw error;
+  }
+  try {
     await sendEmailAsync("primary");
   } catch (error) {
     // ignored
   }
+  void insecureAgent;
   throw ${JSON.stringify("dynamic failure")};
+}
+
+function finish(): void {
+  doWork();
+  return;
 }
 
 const packageJsonFixture = ${JSON.stringify(JSON.stringify({
@@ -1689,6 +2128,43 @@ test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
       continue;
     }
     assert.equal(coverageIds.has(descriptor.ruleId), true, `missing positive fixture coverage for ${descriptor.ruleId}`);
+  }
+});
+
+test("rule quality doctrine covers risky scanner descriptors", () => {
+  const descriptors = new Map(ruleDescriptors().map((descriptor) => [descriptor.ruleId, descriptor]));
+  const doctrine = new Map<string, RuleQualityDoctrineCase>(riskyRuleQualityDoctrine.map((entry) => [entry.ruleId, entry]));
+  const exceptions = new Map<string, string>(riskyRuleQualityExceptions.map((entry) => [entry.ruleId, entry.reason]));
+  const categoryVocabulary = [...RULE_QUALITY_FIXTURE_CATEGORIES].sort();
+
+  for (const ruleId of riskyRuleIdsRequiringNoisyValidProof) {
+    const descriptor = descriptors.get(ruleId);
+    assert.notEqual(descriptor, undefined, `risky rule has no descriptor: ${ruleId}`);
+
+    const entry = doctrine.get(ruleId);
+    const exception = exceptions.get(ruleId);
+    assert.equal(Boolean(entry) || Boolean(exception), true, `risky rule missing noisy-valid doctrine or exception: ${ruleId}`);
+
+    if (!entry) {
+      assert.ok((exception ?? "").length > 80, `risky rule exception is too terse: ${ruleId}`);
+      continue;
+    }
+    assert.equal(exception, undefined, `risky rule should use doctrine or exception, not both: ${ruleId}`);
+    assert.equal(descriptor?.pillar, entry.expectedPillar, `pillar drift for ${ruleId}`);
+    assert.equal(descriptor?.severity, entry.expectedSeverity, `severity drift for ${ruleId}`);
+    assert.equal(descriptor?.confidence, entry.expectedConfidence, `confidence drift for ${ruleId}`);
+    assert.deepEqual([...entry.fixtureCategories].sort(), categoryVocabulary, `fixture vocabulary for ${ruleId}`);
+
+    for (const [field, value] of [
+      ["signalSource", entry.signalSource],
+      ["invalidFixture", entry.invalidFixture],
+      ["noisyValidFixture", entry.noisyValidFixture],
+      ["missingInvalidFixture", entry.missingInvalidFixture],
+      ["falsePositiveEscapeHatch", entry.falsePositiveEscapeHatch],
+      ["fingerprintStability", entry.fingerprintStability],
+    ] as const) {
+      assert.ok(value.length > 20, `${field} is too terse for ${ruleId}`);
+    }
   }
 });
 
@@ -2069,7 +2545,7 @@ function ruleCatalogueCoverageRuleIds(): Set<string> {
   const report = analyseProject(
     {
       "src/catalogue.ts": `import { createHash } from "node:crypto";
-import { exec } from "node:child_process";
+import { exec, spawn } from "node:child_process";
 import { unusedThing } from "./dep";
 
 // TODO: collapse this coverage fixture when generated rule docs exist.
@@ -2104,17 +2580,36 @@ export function process(flag: boolean, userInput: string, userId: string, userId
   eval(userInput);
   new Function(userInput)();
   setTimeout("alert(1)", 10);
+  window.setInterval("alert(1)", 10);
   exec(userInput);
+  spawn(userInput, []);
   Math.random();
   document.write(userInput);
   element.innerHTML = userInput;
+  element.dangerouslySetInnerHTML = { __html: userInput };
+  element.__proto__ = {};
   createHash("md5").update(userInput);
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  const insecureAgent = { rejectUnauthorized: false, minVersion: "TLSv1" };
+  location.href = "javascript:alert(1)";
   db.query("SELECT * FROM users WHERE id = " + userId);
+  const timestamp = new Date().getTime();
+  const copy = Object.assign({}, { userId });
+  if (!!userId) {
+    observe(copy);
+  }
+  if (userId == "legacy") {
+    observe(timestamp);
+  }
   userIds.forEach(async (id) => {
     await sendEmailAsync(id);
   });
   sendEmailAsync(userIds[0]);
+  try {
+    riskyWork();
+  } catch (error) {
+    throw error;
+  }
   try {
     riskyWork();
   } catch (error) {
@@ -2154,8 +2649,14 @@ export function process(flag: boolean, userInput: string, userId: string, userId
   if (userId === "i") {
     return "i";
   }
+  void insecureAgent;
   throw "dynamic failure";
   console.log(unsafeAny);
+}
+
+function finish(): void {
+  doWork();
+  return;
 }
 
 function emptyWork(): void {}
