@@ -820,6 +820,30 @@ test("fixture source text remains inert", () => {
   );
 });
 
+test("todo density counts comment markers without literal false positives", () => {
+  const source = `const descriptor = "TODO/FIXME markers";
+const matcher = /TODO|FIXME/;
+const template = \`TODO inside a fixture string\`;
+// TODO first real marker
+function work(): void {
+  /*
+   * FIXME second real marker
+   */
+}
+`;
+  const report = analyseFixture(source, {
+    config: { rules: { "docs.todo-density": { thresholds: { markers: 2 } } } },
+  });
+  const finding = report.findings.find((candidate) => candidate.ruleId === "docs.todo-density");
+  assert.equal(finding?.message, "File contains 2 TODO/FIXME markers.");
+  assert.equal(finding?.line, 4);
+
+  const relaxedReport = analyseFixture(source, {
+    config: { rules: { "docs.todo-density": { thresholds: { markers: 3 } } } },
+  });
+  assert.equal(relaxedReport.findings.some((finding) => finding.ruleId === "docs.todo-density"), false);
+});
+
 test("unreachable-code ignores reachable switch cases after returns", () => {
   const report = analyseFixture(`function renderFormat(format: string): string {
   switch (format) {
