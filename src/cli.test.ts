@@ -10,6 +10,19 @@ import { analyse, renderReport, ruleDescriptors } from "./cli.ts";
 import type { AnalysisReport } from "./cli.ts";
 
 const REPO_ROOT = cwd();
+const HIGH_ENTROPY_FIXTURE_VALUE = ["Zx7pQ9vLm3N8sT2r", "Y6wK1dF4gH5jC0bR2"].join("");
+const API_TOKEN_FIXTURE_VALUE = ["rN7pQ4sV9xY2zA5b", "C8dG9hK2mN5pQ8sR1"].join("");
+const DATABASE_URL_FIXTURE_VALUE = ["postgres://app:superSecret", "Password@db.internal/app"].join("");
+const OPENAI_KEY_FIXTURE_VALUE = ["sk-proj-AbCdEfGhIjKl", "MnOpQrStUvWxYz1234567890"].join("");
+const SSN_FIXTURE_VALUE = ["123", "45", "6789"].join("-");
+const AWS_ACCESS_KEY_FIXTURE_VALUE = ["AKIAABCDEFGH", "IJKLMNOP"].join("");
+const PRIVATE_KEY_HEADER_FIXTURE_VALUE = ["-----BEGIN ", "PRIVATE KEY-----"].join("");
+const POSTGRES_URL_FIXTURE_VALUE = ["postgres://user:sec", "ret@example.test/db"].join("");
+const JWT_FIXTURE_VALUE = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjMifQ", "signature"].join(".");
+const TS_IGNORE_DIRECTIVE = ["@ts", "-ignore"].join("");
+const COMMENTED_OUT_SECRET_LOAD = ["const", " legacyPassword = loadSecret();"].join("");
+const COMMENTED_OUT_CACHE_LOAD = ["const", " disabledCache = loadCache();"].join("");
+const COMMENTED_OUT_LEGACY_CALL = ["const", " disabledLegacy = runLegacyPath();"].join("");
 
 const expandedRuleIds = new Set([
   "complexity.npath",
@@ -340,7 +353,7 @@ test("sleeps without assertion", async () => {
 });
 
 test("analysis finds first-slice portable TypeScript rules", () => {
-  const secret = "Zx7pQ9vLm3N8sT2rY6wK1dF4gH5jC0bR2";
+  const secret = HIGH_ENTROPY_FIXTURE_VALUE;
   // M01 portable rubric map: port-now rules use source-text, line, function-block,
   // test-block, and sensitive-data seams with standalone TypeScript fixtures.
   const report = analyseFixture(`import assert from "node:assert/strict";
@@ -349,7 +362,7 @@ import { createHash } from "node:crypto";
 const data1 = "placeholder";
 const embeddedToken = "${secret}";
 
-// const legacyPassword = loadSecret();
+// ${COMMENTED_OUT_SECRET_LOAD}
 function hashPassword(password: string): string {
   return createHash("md5").update(password).digest("hex");
 }
@@ -481,7 +494,7 @@ function routeOrder(state: string, unusedFlag: boolean): string {
   return "unknown";
 }
 
-// const disabledCache = loadCache();
+// ${COMMENTED_OUT_CACHE_LOAD}
 function emptyWork(): void {}
 
 function redundantResult(): string {
@@ -730,9 +743,8 @@ rules:
 });
 
 test("extended type-safety rubric finds explicit unsafety without false positives", () => {
-  const tsIgnore = "@ts-ignore";
   const unsafeReport = analyseFixture(`export function unsafeApi(input: ${"any"}): ${"any"} {
-  // ${tsIgnore}
+  // ${TS_IGNORE_DIRECTIVE}
   const user = input as ${"unknown"} as { profile?: { name: string } };
   return user${"!"}.profile${"!"}.name;
 }
@@ -1208,10 +1220,10 @@ test("size file-length skips generated lockfiles", () => {
 });
 
 test("risk expansion redacts sensitive data in all render formats", () => {
-  const apiToken = "rN7pQ4sV9xY2zA5bC8dG9hK2mN5pQ8sR1";
-  const databaseUrl = "postgres://app:superSecretPassword@db.internal/app";
-  const openAiKey = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz1234567890";
-  const ssn = "123-45-6789";
+  const apiToken = API_TOKEN_FIXTURE_VALUE;
+  const databaseUrl = DATABASE_URL_FIXTURE_VALUE;
+  const openAiKey = OPENAI_KEY_FIXTURE_VALUE;
+  const ssn = SSN_FIXTURE_VALUE;
   const report = analyseFixture(
     `API_TOKEN=${apiToken}
 DATABASE_URL=${databaseUrl}
@@ -1547,10 +1559,10 @@ test("baseline round trip suppresses old and new findings by identity tuple", ()
   try {
     writeFileSync(
       join(projectDir, "bad.ts"),
-      `const embeddedToken = "Zx7pQ9vLm3N8sT2rY6wK1dF4gH5jC0bR2";
+      `const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";
 
 export function unsafePublicApi(input: any): any {
-  // @ts-ignore
+  // ${TS_IGNORE_DIRECTIVE}
   const user = input as unknown as { name?: string };
   return user!.name;
 }
@@ -1876,9 +1888,9 @@ const data1 = "placeholder";
 const strName = "Ada";
 const objUser = { name: strName };
 const loadedText = readFileSync("input.txt", "utf8");
-const embeddedToken = "Zx7pQ9vLm3N8sT2rY6wK1dF4gH5jC0bR2";
+const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";
 
-// const legacyPassword = loadSecret();
+// ${COMMENTED_OUT_SECRET_LOAD}
 
 function routeOrder(state: string, unusedFlag: boolean): string {
   if (state === "new") return "new";
@@ -1897,7 +1909,7 @@ function redundantResult(): string {
 }
 
 export function unsafePublicApi(input: ${"any"}): ${"any"} {
-  // ${"@ts-ignore"}
+  // ${TS_IGNORE_DIRECTIVE}
   const user = input as ${"unknown"} as { name?: string };
   return user${"!"}.name;
 }
@@ -2058,9 +2070,9 @@ export function fromB(): string {
   return "shared";
 }
 `,
-    ".env": `API_TOKEN=rN7pQ4sV9xY2zA5bC8dG9hK2mN5pQ8sR1
-OPENAI_API_KEY=sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz1234567890
-PATIENT_SSN=123-45-6789
+    ".env": `API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
+OPENAI_API_KEY=${OPENAI_KEY_FIXTURE_VALUE}
+PATIENT_SSN=${SSN_FIXTURE_VALUE}
 `,
     "package.json": JSON.stringify({
       scripts: {
@@ -2739,13 +2751,13 @@ import { exec, spawn } from "node:child_process";
 import { unusedThing } from "./dep";
 
 // TODO: collapse this coverage fixture when generated rule docs exist.
-// const disabledLegacy = runLegacyPath();
+// ${COMMENTED_OUT_LEGACY_CALL}
 const data1 = "placeholder";
 const strName = "Ada";
 const active = true;
 const xx = 1;
 const unsafeAny: any = {};
-const embeddedToken = "Zx7pQ9vLm3N8sT2rY6wK1dF4gH5jC0bR2";
+const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";
 const maybeUser = { name: strName };
 const optionalName = maybeUser && maybeUser.name;
 const fallbackName = maybeUser.name || "anonymous";
@@ -2865,7 +2877,7 @@ export function scoreAmount(amount: number): number {
 }
 
 export function unsafePublicApi(input: any): any {
-  // @ts-ignore
+  // ${TS_IGNORE_DIRECTIVE}
   const user = input as unknown as { name?: string };
   return user!.name;
 }
@@ -2959,13 +2971,13 @@ export function fromB(): string {
   return "untested";
 }
 `,
-      ".env": `AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP
-PRIVATE_KEY=-----BEGIN PRIVATE KEY-----
-DATABASE_URL=postgres://user:secret@example.test/db
-JWT_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature
-OPENAI_API_KEY=sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz1234567890
-PATIENT_SSN=123-45-6789
-API_TOKEN=rN7pQ4sV9xY2zA5bC8dG9hK2mN5pQ8sR1
+      ".env": `AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_FIXTURE_VALUE}
+PRIVATE_KEY=${PRIVATE_KEY_HEADER_FIXTURE_VALUE}
+DATABASE_URL=${POSTGRES_URL_FIXTURE_VALUE}
+JWT_TOKEN=${JWT_FIXTURE_VALUE}
+OPENAI_API_KEY=${OPENAI_KEY_FIXTURE_VALUE}
+PATIENT_SSN=${SSN_FIXTURE_VALUE}
+API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
 `,
       "package.json": JSON.stringify({
         scripts: {

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { argv, chdir, cwd } from "node:process";
+import { argv, chdir, cwd, stdout } from "node:process";
 import { basename, dirname as dirnamePath, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -3022,32 +3022,29 @@ function renderSarif(report: AnalysisReport): string {
     },
   }));
   const ruleIndices = new Map(rules.map((rule, index) => [rule.id, index]));
-  return `${JSON.stringify(
-    {
-      $schema: "https://json.schemastore.org/sarif-2.1.0.json",
-      version: "2.1.0",
-      runs: [
-        {
-          tool: {
-            driver: {
-              name: report.tool.name,
-              semanticVersion: report.tool.version,
-              rules,
-            },
-          },
-          results: report.findings.map((finding) => sarifResult(finding, ruleIndices)),
-          properties: {
-            gruffSchemaVersion: report.schemaVersion,
-            generatedAt: report.run.generatedAt,
-            score: report.score.composite,
-            grade: report.score.grade,
+  const sarif = {
+    $schema: "https://json.schemastore.org/sarif-2.1.0.json",
+    version: "2.1.0",
+    runs: [
+      {
+        tool: {
+          driver: {
+            name: report.tool.name,
+            semanticVersion: report.tool.version,
+            rules,
           },
         },
-      ],
-    },
-    null,
-    2,
-  )}\n`;
+        results: report.findings.map((finding) => sarifResult(finding, ruleIndices)),
+        properties: {
+          gruffSchemaVersion: report.schemaVersion,
+          generatedAt: report.run.generatedAt,
+          score: report.score.composite,
+          grade: report.score.grade,
+        },
+      },
+    ],
+  };
+  return `${JSON.stringify(sarif, null, 2)}\n`;
 }
 
 function sarifResult(finding: Finding, ruleIndices: Map<string, number>): Record<string, unknown> {
@@ -3509,7 +3506,7 @@ function startDashboard(host: string, port: number, projectRoot: string, outputE
   });
   server.listen(port, host, () => {
     if (outputEnabled) {
-      console.log(`gruff-ts dashboard listening at http://${host}:${port}`);
+      stdout.write(`gruff-ts dashboard listening at http://${host}:${port}\n`);
     }
   });
 }
@@ -4013,13 +4010,13 @@ function parseGitIgnoreRules(source: string, basePath: string): GitIgnoreRule[] 
 }
 
 function isGitIgnoredPath(rules: GitIgnoreRule[], display: string, isDirectory: boolean): boolean {
-  let ignored = false;
+  let isIgnored = false;
   for (const rule of rules) {
     if (gitIgnoreRuleMatches(rule, display, isDirectory)) {
-      ignored = !rule.negated;
+      isIgnored = !rule.negated;
     }
   }
-  return ignored;
+  return isIgnored;
 }
 
 function gitIgnoreRuleMatches(rule: GitIgnoreRule, display: string, isDirectory: boolean): boolean {
