@@ -117,6 +117,7 @@ stdout is a TTY; `--ansi` forces colour and `--no-ansi` disables it.
 | `markdown` | Short Markdown summary. |
 | `github` | GitHub Actions annotation commands. |
 | `hotspot` | Compact `gruff.hotspot.v1` top-offender payload. |
+| `sarif` | SARIF 2.1.0 code-scanning output. |
 
 Examples:
 
@@ -124,6 +125,7 @@ Examples:
 gruff-ts analyse . --format=json --fail-on=none
 gruff-ts analyse . --format=github --fail-on=warning
 gruff-ts analyse . --format=hotspot --fail-on=none
+gruff-ts analyse . --format=sarif --fail-on=none > gruff.sarif
 ```
 
 `report` supports `html` and `json`:

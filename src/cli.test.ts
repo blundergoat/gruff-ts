@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -1231,7 +1231,7 @@ PATIENT_SSN=${ssn}
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   }
 
-  for (const format of ["text", "json", "markdown", "github", "html"] as const) {
+  for (const format of ["text", "json", "markdown", "github", "html", "sarif"] as const) {
     const rendered = renderReport(report, format);
     for (const secret of [apiToken, databaseUrl, openAiKey, ssn]) {
       assert.equal(rendered.includes(secret), false, `${format} leaked ${secret}`);
@@ -2239,6 +2239,10 @@ test("console globals suppress normal output and completion emits a script", () 
   const completion = execFileSync("./bin/gruff-ts", ["completion"], { encoding: "utf8" });
   assert.match(completion, /complete -F _gruff_ts_completion gruff-ts/);
   assert.match(completion, /commands="analyse completion dashboard list list-rules report summary"/);
+  assert.match(completion, /text json html markdown github hotspot sarif/);
+
+  const analyseHelp = execFileSync("./bin/gruff-ts", ["analyse", "--help"], { encoding: "utf8" });
+  assert.match(analyseHelp, /sarif/);
 });
 
 test("summary CLI prints compact scan digest without per-finding spam", () => {
@@ -2261,6 +2265,192 @@ test("json report uses schema version", () => {
   });
   const rendered = renderReport(report, "json");
   assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v1"/);
+});
+
+test("sarif report renders code scanning contract without mutating native json schema", () => {
+  const report: AnalysisReport = {
+    schemaVersion: "gruff.analysis.v1",
+    tool: { name: "gruff-ts", version: "0.1.0-test" },
+    run: { projectRoot: "/tmp/project", format: "sarif", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
+    summary: { advisory: 1, warning: 1, error: 1, total: 3 },
+    paths: { analysedFiles: 1, ignoredPaths: [], missingPaths: [] },
+    diagnostics: [],
+    findings: [
+      {
+        ruleId: "security.eval-call",
+        message: "Avoid eval().",
+        filePath: "./src\\bad.ts",
+        line: 7,
+        endLine: 10,
+        column: 3,
+        severity: "error",
+        pillar: "security",
+        secondaryPillars: ["sensitive-data"],
+        tier: "v0.1",
+        confidence: "high",
+        symbol: "run",
+        remediation: "Use a dispatch table.",
+        metadata: { target: "eval" },
+        fingerprint: "abc123",
+      },
+      {
+        ruleId: "waste.console-log",
+        message: "Avoid console logging.",
+        filePath: "src\\warn.ts",
+        line: 8,
+        severity: "warning",
+        pillar: "waste",
+        secondaryPillars: [],
+        tier: "v0.1",
+        confidence: "high",
+        metadata: {},
+        fingerprint: "def456",
+      },
+      {
+        ruleId: "docs.missing-public-doc",
+        message: "Document public exports.",
+        filePath: "./src/docs.ts",
+        line: 9,
+        severity: "advisory",
+        pillar: "documentation",
+        secondaryPillars: [],
+        tier: "v0.1",
+        confidence: "medium",
+        metadata: { exported: true },
+        fingerprint: "ghi789",
+      },
+    ],
+    score: {
+      composite: 91,
+      grade: "A",
+      pillars: [{ pillar: "security", score: 91, findings: 1 }],
+      topOffenders: [{ filePath: "src/bad.ts", score: 91, findings: 1 }],
+    },
+  };
+
+  const beforeSarif = JSON.stringify(report);
+  const payload = JSON.parse(renderReport(report, "sarif"));
+  assert.equal(JSON.stringify(report), beforeSarif);
+  const rules = payload.runs[0].tool.driver.rules as Array<{
+    id: string;
+    name: string;
+    shortDescription: { text: string };
+    fullDescription: { text: string };
+    help: { text: string };
+    properties: Record<string, unknown>;
+  }>;
+  const descriptors = ruleDescriptors();
+  const ruleIds = rules.map((rule) => rule.id);
+  const results = payload.runs[0].results;
+  const result = results[0];
+  const evalDescriptor = descriptors.find((descriptor) => descriptor.ruleId === "security.eval-call");
+  const evalRule = rules.find((rule) => rule.id === "security.eval-call");
+
+  assert.equal(payload.version, "2.1.0");
+  assert.equal(payload.runs[0].tool.driver.name, "gruff-ts");
+  assert.equal(payload.runs[0].tool.driver.semanticVersion, "0.1.0-test");
+  assert.deepEqual(ruleIds, [...ruleIds].sort());
+  assert.deepEqual(ruleIds, descriptors.map((descriptor) => descriptor.ruleId));
+  assert.ok(evalDescriptor);
+  assert.ok(evalRule);
+  assert.equal(evalRule.name, evalDescriptor.ruleId);
+  assert.equal(evalRule.shortDescription.text, evalDescriptor.description);
+  assert.equal(evalRule.fullDescription.text, evalDescriptor.description);
+  assert.equal(evalRule.help.text, evalDescriptor.remediation);
+  assert.equal(evalRule.properties.pillar, evalDescriptor.pillar);
+  assert.equal(evalRule.properties.defaultSeverity, evalDescriptor.severity);
+  assert.equal(evalRule.properties.confidence, evalDescriptor.confidence);
+  assert.equal(evalRule.properties.defaultEnabled, true);
+  for (const sarifResult of results) {
+    assert.equal(rules[sarifResult.ruleIndex]?.id, sarifResult.ruleId);
+    assert.equal(typeof sarifResult.partialFingerprints.gruffFingerprint, "string");
+    assert.equal("primary" in sarifResult.partialFingerprints, false);
+    assert.equal("codeFlows" in sarifResult, false);
+    assert.equal("threadFlows" in sarifResult, false);
+    assert.equal("fixes" in sarifResult, false);
+    assert.equal("relatedLocations" in sarifResult, false);
+    assert.equal("suppressions" in sarifResult, false);
+  }
+  assert.equal(result.ruleId, "security.eval-call");
+  assert.equal(result.ruleIndex, ruleIds.indexOf("security.eval-call"));
+  assert.equal(result.level, "error");
+  assert.equal(result.message.text, "Avoid eval().");
+  assert.equal(result.locations[0].physicalLocation.artifactLocation.uri, "src/bad.ts");
+  assert.equal(result.locations[0].physicalLocation.region.startLine, 7);
+  assert.equal(result.locations[0].physicalLocation.region.startColumn, 3);
+  assert.equal(result.locations[0].physicalLocation.region.endLine, 10);
+  assert.equal(result.partialFingerprints.gruffFingerprint, "abc123");
+  assert.equal(result.properties.severity, "error");
+  assert.equal(result.properties.pillar, "security");
+  assert.deepEqual(result.properties.secondaryPillars, ["sensitive-data"]);
+  assert.equal(result.properties.symbol, "run");
+  assert.equal(result.properties.remediation, "Use a dispatch table.");
+  assert.equal(result.properties.metadata.target, "eval");
+  assert.equal(results[1].level, "warning");
+  assert.equal(results[1].locations[0].physicalLocation.artifactLocation.uri, "src/warn.ts");
+  assert.equal(results[1].properties.severity, "warning");
+  assert.deepEqual(results[1].properties.metadata, {});
+  assert.equal(results[2].level, "note");
+  assert.equal(results[2].locations[0].physicalLocation.artifactLocation.uri, "src/docs.ts");
+  assert.equal(results[2].properties.severity, "advisory");
+  assert.equal(payload.runs[0].properties.gruffSchemaVersion, "gruff.analysis.v1");
+  assert.equal(payload.runs[0].properties.generatedAt, "2026-05-15T00:00:00.000Z");
+  assert.equal(payload.runs[0].properties.score, 91);
+  assert.equal(payload.runs[0].properties.grade, "A");
+  assert.equal(JSON.parse(renderReport(report, "json")).schemaVersion, "gruff.analysis.v1");
+  assert.equal(JSON.stringify(report), beforeSarif);
+});
+
+test("analyse CLI emits parseable sarif for both format syntaxes", () => {
+  for (const formatArgs of [
+    ["--format", "sarif"],
+    ["--format=sarif"],
+  ] as const) {
+    const output = execFileSync("./bin/gruff-ts", ["analyse", "fixtures/sample.ts", ...formatArgs, "--fail-on=none", "--no-config", "--no-baseline"], { encoding: "utf8" });
+    const payload = JSON.parse(output);
+    const rules = payload.runs[0].tool.driver.rules;
+    const ruleIds = rules.map((rule: { id: string }) => rule.id);
+    const results = payload.runs[0].results;
+
+    assert.equal(payload.version, "2.1.0");
+    assert.equal(payload.runs.length, 1);
+    assert.equal(payload.runs[0].tool.driver.name, "gruff-ts");
+    assert.equal(payload.runs[0].tool.driver.semanticVersion, "0.1.0");
+    assert.deepEqual(ruleIds, [...ruleIds].sort());
+    assert.equal(results.length > 0, true);
+    for (const sarifResult of results) {
+      assert.equal(typeof sarifResult.partialFingerprints.gruffFingerprint, "string");
+      if ("ruleIndex" in sarifResult) {
+        assert.equal(rules[sarifResult.ruleIndex].id, sarifResult.ruleId);
+      }
+      const uri = sarifResult.locations[0].physicalLocation.artifactLocation.uri;
+      assert.equal(uri.startsWith("./"), false);
+      assert.equal(uri.includes("\\"), false);
+    }
+  }
+});
+
+test("sarif fail-on preserves error exit behavior", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ts-sarif-fail-on-"));
+  try {
+    const target = join(dir, "bad.ts");
+    writeFileSync(
+      target,
+      `export function run(source: string): unknown {
+  return eval(source);
+}
+`,
+    );
+
+    const result = spawnSync("./bin/gruff-ts", ["analyse", target, "--format", "sarif", "--fail-on", "error", "--no-config", "--no-baseline"], { encoding: "utf8" });
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr, "");
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.version, "2.1.0");
+    assert.equal(payload.runs[0].results.some((sarifResult: { ruleId?: string }) => sarifResult.ruleId === "security.eval-call"), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("html report uses dashboard parity anchors and escapes values", () => {

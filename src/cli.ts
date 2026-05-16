@@ -32,7 +32,7 @@ export type Pillar =
   | "test-quality"
   | "design";
 type Confidence = "low" | "medium" | "high";
-type OutputFormat = "text" | "json" | "html" | "markdown" | "github" | "hotspot";
+type OutputFormat = "text" | "json" | "html" | "markdown" | "github" | "hotspot" | "sarif";
 type FailThreshold = "none" | "advisory" | "warning" | "error";
 type RuleListFormat = "text" | "json";
 type CompletionShell = "bash" | "fish" | "zsh";
@@ -2998,8 +2998,129 @@ function renderReport(report: AnalysisReport, format: OutputFormat): string {
       return renderGithub(report);
     case "hotspot":
       return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders }, null, 2);
+    case "sarif":
+      return renderSarif(report);
     case "text":
       return renderText(report);
+  }
+}
+
+function renderSarif(report: AnalysisReport): string {
+  const rules = ruleDescriptors().map((descriptor) => ({
+    id: descriptor.ruleId,
+    name: descriptor.ruleId,
+    shortDescription: { text: descriptor.description },
+    fullDescription: { text: descriptor.description },
+    help: { text: descriptor.remediation },
+    properties: {
+      pillar: descriptor.pillar,
+      tier: "v0.1",
+      defaultSeverity: descriptor.severity,
+      confidence: descriptor.confidence,
+      defaultEnabled: true,
+      ...(descriptor.thresholdKeys ? { thresholdKeys: descriptor.thresholdKeys } : {}),
+    },
+  }));
+  const ruleIndices = new Map(rules.map((rule, index) => [rule.id, index]));
+  return `${JSON.stringify(
+    {
+      $schema: "https://json.schemastore.org/sarif-2.1.0.json",
+      version: "2.1.0",
+      runs: [
+        {
+          tool: {
+            driver: {
+              name: report.tool.name,
+              semanticVersion: report.tool.version,
+              rules,
+            },
+          },
+          results: report.findings.map((finding) => sarifResult(finding, ruleIndices)),
+          properties: {
+            gruffSchemaVersion: report.schemaVersion,
+            generatedAt: report.run.generatedAt,
+            score: report.score.composite,
+            grade: report.score.grade,
+          },
+        },
+      ],
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+function sarifResult(finding: Finding, ruleIndices: Map<string, number>): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    ruleId: finding.ruleId,
+    level: sarifLevel(finding.severity),
+    message: { text: finding.message },
+    locations: [
+      {
+        physicalLocation: sarifPhysicalLocation(finding),
+      },
+    ],
+    partialFingerprints: {
+      gruffFingerprint: finding.fingerprint,
+    },
+  };
+  const ruleIndex = ruleIndices.get(finding.ruleId);
+  if (ruleIndex !== undefined) {
+    result.ruleIndex = ruleIndex;
+  }
+  const properties: Record<string, unknown> = {
+    severity: finding.severity,
+    pillar: finding.pillar,
+    tier: finding.tier,
+    confidence: finding.confidence,
+    metadata: finding.metadata,
+  };
+  if (finding.secondaryPillars.length > 0) {
+    properties.secondaryPillars = finding.secondaryPillars;
+  }
+  if (finding.symbol) {
+    properties.symbol = finding.symbol;
+  }
+  if (finding.remediation) {
+    properties.remediation = finding.remediation;
+  }
+  result.properties = properties;
+  return result;
+}
+
+function sarifPhysicalLocation(finding: Finding): Record<string, unknown> {
+  const location: Record<string, unknown> = {
+    artifactLocation: {
+      uri: sarifUri(finding.filePath),
+    },
+  };
+  if (finding.line !== undefined) {
+    const region: Record<string, unknown> = {
+      startLine: finding.line,
+    };
+    if (finding.column !== undefined) {
+      region.startColumn = finding.column;
+    }
+    if (finding.endLine !== undefined) {
+      region.endLine = finding.endLine;
+    }
+    location.region = region;
+  }
+  return location;
+}
+
+function sarifUri(filePath: string): string {
+  return filePath.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "");
+}
+
+function sarifLevel(severity: Severity): "error" | "warning" | "note" {
+  switch (severity) {
+    case "error":
+      return "error";
+    case "warning":
+      return "warning";
+    case "advisory":
+      return "note";
   }
 }
 
@@ -3540,7 +3661,7 @@ function renderCompletionScript(shell: CompletionShell): string {
     "    COMPREPLY=( $(compgen -W \"$commands $options\" -- \"$current\") )",
     "  else",
     "    case \"$previous\" in",
-    "      --format) COMPREPLY=( $(compgen -W \"text json html markdown github hotspot\" -- \"$current\") ) ;;",
+    "      --format) COMPREPLY=( $(compgen -W \"text json html markdown github hotspot sarif\" -- \"$current\") ) ;;",
     "      --fail-on) COMPREPLY=( $(compgen -W \"none advisory warning error\" -- \"$current\") ) ;;",
     "      *) COMPREPLY=( $(compgen -W \"$options\" -- \"$current\") ) ;;",
     "    esac",
@@ -3619,7 +3740,7 @@ function buildProgram(): Command {
     .argument("[paths...]", "Files or directories to analyse.")
     .option("--config <path>", "Path to a gruff JSON/YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff.json/.gruff.yaml/.gruff.yml file for this run.")
-    .option("--format <format>", "Output format: text, json, html, markdown, github, or hotspot.", "text")
+    .option("--format <format>", "Output format: text, json, html, markdown, github, hotspot, or sarif.", "text")
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
@@ -3718,7 +3839,7 @@ function buildProgram(): Command {
 }
 
 function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, context: NormalizeContext): AnalysisOptions {
-  const format = stringChoice(rawOptions.format, ["text", "json", "html", "markdown", "github", "hotspot"], "text");
+  const format = stringChoice(rawOptions.format, ["text", "json", "html", "markdown", "github", "hotspot", "sarif"], "text");
   const failOn = stringChoice(rawOptions.failOn, ["none", "advisory", "warning", "error"], "error");
   const baselineValue = rawOptions.baseline;
   const noBaseline = baselineValue === false || rawOptions.noBaseline === true;
