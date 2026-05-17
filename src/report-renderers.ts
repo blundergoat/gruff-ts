@@ -1,6 +1,14 @@
 import type { AnalysisReport, Finding, OutputFormat, Severity } from "./types.ts";
 import { ruleDescriptors } from "./rules.ts";
 
+const CYCLOMATIC_BUCKETS = [
+  { label: "21+", minimum: 21 },
+  { label: "16-20", minimum: 16 },
+  { label: "11-15", minimum: 11 },
+  { label: "6-10", minimum: 6 },
+  { label: "1-5", minimum: 1 },
+] as const;
+
 function renderReport(report: AnalysisReport, format: OutputFormat): string {
   switch (format) {
     case "json":
@@ -347,17 +355,30 @@ function htmlDistribution(report: AnalysisReport): string {
 function cyclomaticDistribution(report: AnalysisReport): Record<string, number> {
   const distribution: Record<string, number> = { "1-5": 0, "6-10": 0, "11-15": 0, "16-20": 0, "21+": 0 };
   for (const finding of report.findings) {
-    if (finding.ruleId !== "complexity.cyclomatic") {
-      continue;
-    }
-    const match = finding.message.match(/cyclomatic complexity (\d+)/);
-    const complexityValue = match?.[1] ? Number(match[1]) : 0;
-    const bucket = complexityValue >= 21 ? "21+" : complexityValue >= 16 ? "16-20" : complexityValue >= 11 ? "11-15" : complexityValue >= 6 ? "6-10" : complexityValue > 0 ? "1-5" : "";
-    if (bucket !== "") {
+    const bucket = cyclomaticFindingBucket(finding);
+    if (bucket) {
       distribution[bucket] = (distribution[bucket] ?? 0) + 1;
     }
   }
   return distribution;
+}
+
+function cyclomaticFindingBucket(finding: Finding): string | undefined {
+  if (finding.ruleId !== "complexity.cyclomatic") {
+    return undefined;
+  }
+  const match = finding.message.match(/cyclomatic complexity (\d+)/);
+  const complexityValue = match?.[1] ? Number(match[1]) : undefined;
+  return complexityValue === undefined ? undefined : cyclomaticBucket(complexityValue);
+}
+
+function cyclomaticBucket(complexityValue: number): string | undefined {
+  for (const bucket of CYCLOMATIC_BUCKETS) {
+    if (complexityValue >= bucket.minimum) {
+      return bucket.label;
+    }
+  }
+  return undefined;
 }
 
 function cyclomaticSummary(distribution: Record<string, number>): string {

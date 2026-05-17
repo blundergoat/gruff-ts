@@ -125,23 +125,49 @@ function scanRegexDelimiter(character: string, scan: DelimiterScanState): void {
 }
 
 function scanCodeDelimiter(line: string, offset: number, character: string, next: string, ctx: DelimiterScanContext): ScanStep {
+  return (
+    scanLineCommentStart(character, next) ??
+    scanBlockCommentStart(character, next, ctx.scan) ??
+    scanQuoteStart(character, ctx.scan) ??
+    scanRegexStart(line, offset, character, ctx.scan) ??
+    scanPlainCodeDelimiter(character, ctx)
+  );
+}
+
+function scanLineCommentStart(character: string, next: string): ScanStep | undefined {
   if (character === "/" && next === "/") {
     return stopLineScan();
   }
+  return undefined;
+}
+
+function scanBlockCommentStart(character: string, next: string, scan: DelimiterScanState): ScanStep | undefined {
   if (character === "/" && next === "*") {
-    ctx.scan.blockComment = true;
+    scan.blockComment = true;
     return skipNextCharacter();
   }
+  return undefined;
+}
+
+function scanQuoteStart(character: string, scan: DelimiterScanState): ScanStep | undefined {
   if (isQuote(character)) {
-    ctx.scan.quote = character;
+    scan.quote = character;
     return continueScan();
   }
-  if (character === "/" && isRegexLiteralStart(ctx.scan.previousCode, line.slice(0, offset))) {
-    ctx.scan.regex = true;
-    ctx.scan.regexCharClass = false;
-    ctx.scan.regexEscaped = false;
+  return undefined;
+}
+
+function scanRegexStart(line: string, offset: number, character: string, scan: DelimiterScanState): ScanStep | undefined {
+  if (character === "/" && isRegexLiteralStart(scan.previousCode, line.slice(0, offset))) {
+    scan.regex = true;
+    scan.regexCharClass = false;
+    scan.regexEscaped = false;
     return continueScan();
   }
+  return undefined;
+}
+
+function scanPlainCodeDelimiter(character: string, ctx: DelimiterScanContext): ScanStep {
   countDelimiter(character, ctx.counts);
   if (character.trim() !== "") {
     ctx.scan.previousCode = character;
@@ -309,24 +335,50 @@ function maskRegexCharacter(character: string, state: MaskState): MaskStep {
 }
 
 function maskCodeCharacter(source: string, index: number, character: string, next: string, state: MaskState): MaskStep {
+  return (
+    maskLineCommentStart(character, next, state) ??
+    maskBlockCommentStart(character, next, state) ??
+    maskRegexStart(source, index, character, state) ??
+    maskQuoteStart(character, state) ??
+    maskPlainCodeCharacter(character, state)
+  );
+}
+
+function maskLineCommentStart(character: string, next: string, state: MaskState): MaskStep | undefined {
   if (character === "/" && next === "/") {
     state.isLineComment = true;
     return { text: "  ", skip: 1 };
   }
+  return undefined;
+}
+
+function maskBlockCommentStart(character: string, next: string, state: MaskState): MaskStep | undefined {
   if (character === "/" && next === "*") {
     state.isBlockComment = true;
     return { text: "  ", skip: 1 };
   }
+  return undefined;
+}
+
+function maskRegexStart(source: string, index: number, character: string, state: MaskState): MaskStep | undefined {
   if (character === "/" && isRegexLiteralStart(state.previousCode, source.slice(Math.max(0, index - 80), index))) {
     state.isRegex = true;
     state.previousCode = character;
     return { text: character, skip: 0 };
   }
+  return undefined;
+}
+
+function maskQuoteStart(character: string, state: MaskState): MaskStep | undefined {
   if (isQuote(character)) {
     state.quote = character;
     state.previousCode = character;
     return { text: character, skip: 0 };
   }
+  return undefined;
+}
+
+function maskPlainCodeCharacter(character: string, state: MaskState): MaskStep {
   if (isNonWhitespaceCharacter(character)) {
     state.previousCode = character;
   }

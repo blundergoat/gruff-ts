@@ -1,9 +1,19 @@
 ---
 category: verification
-last_reviewed: 2026-05-17
+last_reviewed: 2026-05-18
 ---
 
 # Verification lessons
+
+## Lesson: dynamic import is not a safe cycle breaker when the imported module re-enters the CLI
+
+**Created:** 2026-05-18
+
+**What happened:** During self-scan cleanup, replacing the static dashboard import in `src/cli.ts` (`registerDashboardCommand`) with a dynamic import deadlocked the dashboard CLI because `src/dashboard.ts` imported `analyse` back from `src/cli.ts` while the CLI module was still evaluating.
+
+**Evidence:** `npm run check` failed in dashboard tests with `timed out waiting for http://127.0.0.1:<port>/health`; the corrected implementation passes `analyse` into `startDashboard` (`src/dashboard.ts`, search: `type DashboardAnalyse`) instead of importing `cli.ts`.
+
+**Prevention:** When removing an ESM import cycle, prefer moving the dependency direction with a parameter or shared module before trying dynamic import; rerun command-level tests for the affected subcommand.
 
 ## Lesson: benchmark workload labels need filesystem-safe temp names
 

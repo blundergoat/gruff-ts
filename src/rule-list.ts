@@ -33,7 +33,7 @@ function renderRuleList(format: RuleListFormat): string {
   if (format === "json") {
     return `${JSON.stringify({ tool: { name: "gruff-ts", version: VERSION }, rules: descriptors }, null, 2)}\n`;
   }
-  const lines = [`gruff-ts ${VERSION} rules (${descriptors.length})`, ""];
+  const lines = ["gruff-ts " + VERSION + ` rules (${descriptors.length})`, ""];
   for (const descriptor of descriptors) {
     const thresholds = descriptor.thresholdKeys && descriptor.thresholdKeys.length > 0 ? ` | thresholds: ${descriptor.thresholdKeys.join(",")}` : "";
     lines.push(`${descriptor.ruleId} | ${descriptor.pillar} | ${descriptor.severity} | ${descriptor.confidence} | ${descriptor.description}${thresholds}`);
@@ -44,7 +44,7 @@ function renderRuleList(format: RuleListFormat): string {
 function renderConsoleList(useAnsi = false): string {
   const listCommand = ansiWrap("list", ANSI_GREEN, useAnsi);
   return [
-    `gruff-ts ${ansiWrap(VERSION, ANSI_GREEN, useAnsi)}`,
+    "gruff-ts " + ansiWrap(VERSION, ANSI_GREEN, useAnsi),
     "",
     ansiWrap("Usage:", ANSI_YELLOW, useAnsi),
     "  command [options] [arguments]",

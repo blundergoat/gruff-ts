@@ -1,9 +1,18 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { absolutize, displayPath } from "./cli.ts";
+import { isAbsolute, join, relative } from "node:path";
 import { scoreReport } from "./scoring.ts";
 import type { Finding, RunDiagnostic } from "./types.ts";
 
 const DEFAULT_BASELINE = "gruff-baseline.json";
+
+function absolutize(projectRoot: string, path: string): string {
+  return isAbsolute(path) ? path : join(projectRoot, path);
+}
+
+function displayPath(projectRoot: string, path: string): string {
+  const relativePath = relative(projectRoot, path).replaceAll("\\", "/");
+  return relativePath === "" ? "." : relativePath;
+}
 
 function writeBaseline(path: string, findings: Finding[]): void {
   writeFileSync(

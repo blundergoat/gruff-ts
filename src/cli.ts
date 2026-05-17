@@ -18,7 +18,7 @@ import { ruleDescriptors } from "./rules.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
 import { codeLineForMatching, maskNonCode, parseDiagnostics } from "./source-text.ts";
 import { byteLine, countMatches, todoMarkerSummary } from "./text-scans.ts";
-import type { AnalysisOptions, AnalysisReport, Config, FailThreshold, Finding, OutputFormat, Pillar, RunDiagnostic, Severity } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport, Config, Finding, OutputFormat, Pillar, RunDiagnostic, Severity } from "./types.ts";
 export type { AnalysisReport, Finding, OutputFormat, Pillar, RuleDescriptor, Severity } from "./types.ts";
 
 const NPATH_CAP = 1_000_000;
@@ -2542,7 +2542,7 @@ function registerDashboardCommand(program: Command): void {
     .option("--port <port>", "Port to bind.", "8767")
     .option("--project-root <path>", "Default project root.", ".")
     .action((rawOptions: Record<string, unknown>) => {
-      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), resolve(String(rawOptions.projectRoot ?? ".")), !outputSuppressed(program));
+      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), resolve(String(rawOptions.projectRoot ?? ".")), analyse, !outputSuppressed(program));
     });
 }
 

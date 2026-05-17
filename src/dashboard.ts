@@ -1,7 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { chdir, cwd, stdout } from "node:process";
-import { analyse } from "./cli.ts";
 import { dashboardErrorHtml, dashboardHomeHtml, renderHtml } from "./report-renderers.ts";
+import type { AnalysisOptions, AnalysisReport } from "./types.ts";
+
+type DashboardAnalyse = (options: AnalysisOptions) => AnalysisReport;
 
 interface DashboardContext {
   host: string;
@@ -14,9 +16,9 @@ interface DashboardRouteInput {
   scanPath: string;
 }
 
-function startDashboard(host: string, port: number, projectRoot: string, outputEnabled = true): void {
+function startDashboard(host: string, port: number, projectRoot: string, analyse: DashboardAnalyse, outputEnabled = true): void {
   const context: DashboardContext = { host, port, projectRoot };
-  const server = createServer((request, response) => handleDashboardRequest(context, request, response));
+  const server = createServer((request, response) => handleDashboardRequest(context, analyse, request, response));
   server.listen(port, host, () => {
     if (outputEnabled) {
       stdout.write(`gruff-ts dashboard listening at http://${host}:${port}\n`);
@@ -24,14 +26,14 @@ function startDashboard(host: string, port: number, projectRoot: string, outputE
   });
 }
 
-function handleDashboardRequest(context: DashboardContext, request: IncomingMessage, response: ServerResponse): void {
+function handleDashboardRequest(context: DashboardContext, analyse: DashboardAnalyse, request: IncomingMessage, response: ServerResponse): void {
   const url = new URL(request.url ?? "/", `http://${context.host}:${context.port}`);
   if (url.pathname === "/health") {
     writeTextResponse(response, 200, "ok", true);
     return;
   }
   if (url.pathname === "/scan") {
-    renderDashboardScan(response, dashboardRouteInput(url, context.projectRoot));
+    renderDashboardScan(response, dashboardRouteInput(url, context.projectRoot), analyse);
     return;
   }
   if (url.pathname !== "/") {
@@ -49,7 +51,7 @@ function dashboardRouteInput(url: URL, projectRoot: string): DashboardRouteInput
   };
 }
 
-function renderDashboardScan(response: ServerResponse, input: DashboardRouteInput): void {
+function renderDashboardScan(response: ServerResponse, input: DashboardRouteInput, analyse: DashboardAnalyse): void {
   const previous = cwd();
   try {
     chdir(input.root);

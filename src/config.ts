@@ -3,6 +3,20 @@ import { extname, isAbsolute, join } from "node:path";
 import type { AnalysisOptions, Config } from "./types.ts";
 
 const DEFAULT_CONFIG_FILES = [".gruff.json", ".gruff.yaml", ".gruff.yml"] as const;
+const YAML_KEYWORD_SCALARS = new Map<string, boolean | null>([
+  ["true", true],
+  ["false", false],
+  ["null", null],
+  ["~", null],
+]);
+const YAML_NUMBER_SCALAR = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/;
+
+interface ParsedYamlScalar {
+  matched: boolean;
+  value: unknown;
+}
+
+const UNMATCHED_YAML_SCALAR: ParsedYamlScalar = { matched: false, value: undefined };
 
 function defaultConfig(): Config {
   return {
@@ -245,28 +259,52 @@ function splitYamlKeyValue(value: string): [string, string] | undefined {
 
 function parseYamlScalar(value: string): unknown {
   const trimmed = value.trim();
-  if (trimmed === "[]") {
-    return [];
-  }
-  if (trimmed === "{}") {
-    return {};
-  }
-  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-    return parseYamlInlineArray(trimmed);
-  }
-  if (isQuotedYaml(trimmed)) {
-    return unquoteYaml(trimmed);
-  }
-  if (/^(?:true|false)$/i.test(trimmed)) {
-    return trimmed.toLowerCase() === "true";
-  }
-  if (/^(?:null|~)$/i.test(trimmed)) {
-    return null;
-  }
-  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(trimmed)) {
-    return Number(trimmed);
+  for (const parser of [parseYamlCollectionScalar, parseYamlQuotedScalar, parseYamlKeywordScalar, parseYamlNumberScalar]) {
+    const parsed = parser(trimmed);
+    if (parsed.matched) {
+      return parsed.value;
+    }
   }
   return trimmed;
+}
+
+function parseYamlCollectionScalar(trimmed: string): ParsedYamlScalar {
+  if (trimmed === "[]") {
+    return matchedYamlScalar([]);
+  }
+  if (trimmed === "{}") {
+    return matchedYamlScalar({});
+  }
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    return matchedYamlScalar(parseYamlInlineArray(trimmed));
+  }
+  return UNMATCHED_YAML_SCALAR;
+}
+
+function parseYamlQuotedScalar(trimmed: string): ParsedYamlScalar {
+  if (isQuotedYaml(trimmed)) {
+    return matchedYamlScalar(unquoteYaml(trimmed));
+  }
+  return UNMATCHED_YAML_SCALAR;
+}
+
+function parseYamlKeywordScalar(trimmed: string): ParsedYamlScalar {
+  const normalized = trimmed.toLowerCase();
+  if (YAML_KEYWORD_SCALARS.has(normalized)) {
+    return matchedYamlScalar(YAML_KEYWORD_SCALARS.get(normalized) ?? null);
+  }
+  return UNMATCHED_YAML_SCALAR;
+}
+
+function parseYamlNumberScalar(trimmed: string): ParsedYamlScalar {
+  if (YAML_NUMBER_SCALAR.test(trimmed)) {
+    return matchedYamlScalar(Number(trimmed));
+  }
+  return UNMATCHED_YAML_SCALAR;
+}
+
+function matchedYamlScalar(value: unknown): ParsedYamlScalar {
+  return { matched: true, value };
 }
 
 function parseYamlInlineArray(value: string): unknown[] {
