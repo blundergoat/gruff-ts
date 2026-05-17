@@ -9,124 +9,25 @@ function parseDiagnostics(file: DiagnosticSourceFile, source: string): RunDiagno
   if (!file.isTypeScript) {
     return [];
   }
-  let braces = 0;
-  let parentheses = 0;
-  let brackets = 0;
-  const scan: DelimiterScanState = {
-    quote: undefined,
-    escaped: false,
-    blockComment: false,
-    regex: false,
-    regexCharClass: false,
-    regexEscaped: false,
-    previousCode: "",
-  };
+  const counts: DelimiterCounts = { braces: 0, parentheses: 0, brackets: 0 };
+  const scan = defaultDelimiterScanState();
   const lines = source.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
-    for (let offset = 0; offset < line.length; offset += 1) {
-      const character = line[offset] ?? "";
-      const next = line[offset + 1] ?? "";
-      if (scan.blockComment) {
-        if (character === "*" && next === "/") {
-          scan.blockComment = false;
-          offset += 1;
-        }
-        continue;
-      }
-      if (scan.quote) {
-        if (scan.escaped) {
-          scan.escaped = false;
-          continue;
-        }
-        if (character === "\\") {
-          scan.escaped = true;
-          continue;
-        }
-        if (character === scan.quote) {
-          scan.quote = undefined;
-        }
-        continue;
-      }
-      if (scan.regex) {
-        if (scan.regexEscaped) {
-          scan.regexEscaped = false;
-          continue;
-        }
-        if (character === "\\") {
-          scan.regexEscaped = true;
-          continue;
-        }
-        if (character === "[") {
-          scan.regexCharClass = true;
-          continue;
-        }
-        if (character === "]") {
-          scan.regexCharClass = false;
-          continue;
-        }
-        if (character === "/" && !scan.regexCharClass) {
-          scan.regex = false;
-          scan.previousCode = "x";
-        }
-        continue;
-      }
-      if (character === "/" && next === "/") {
-        break;
-      }
-      if (character === "/" && next === "*") {
-        scan.blockComment = true;
-        offset += 1;
-        continue;
-      }
-      if (character === "\"" || character === "'" || character === "`") {
-        scan.quote = character;
-        continue;
-      }
-      if (character === "/" && isRegexLiteralStart(scan.previousCode, line.slice(0, offset))) {
-        scan.regex = true;
-        scan.regexCharClass = false;
-        scan.regexEscaped = false;
-        continue;
-      }
-      if (character === "{") {
-        braces += 1;
-      } else if (character === "}") {
-        braces -= 1;
-      } else if (character === "(") {
-        parentheses += 1;
-      } else if (character === ")") {
-        parentheses -= 1;
-      } else if (character === "[") {
-        brackets += 1;
-      } else if (character === "]") {
-        brackets -= 1;
-      }
-      if (character.trim() !== "") {
-        scan.previousCode = character;
-      }
-    }
-    if (braces < 0 || parentheses < 0 || brackets < 0) {
-      return [
-        {
-          diagnosticType: "parse-error",
-          message: "Unbalanced TypeScript delimiters detected.",
-          filePath: file.displayPath,
-          line: index + 1,
-        },
-      ];
+    scanDelimiterLine(line, scan, counts);
+    if (hasNegativeDelimiterCount(counts)) {
+      return [parseErrorDiagnostic(file, index + 1)];
     }
   }
-  if (braces !== 0 || parentheses !== 0 || brackets !== 0) {
-    return [
-      {
-        diagnosticType: "parse-error",
-        message: "Unbalanced TypeScript delimiters detected.",
-        filePath: file.displayPath,
-        line: lines.length,
-      },
-    ];
+  if (hasUnbalancedDelimiterCount(counts)) {
+    return [parseErrorDiagnostic(file, lines.length)];
   }
   return [];
+}
+
+interface DelimiterCounts {
+  braces: number;
+  parentheses: number;
+  brackets: number;
 }
 
 interface DelimiterScanState {
@@ -139,164 +40,365 @@ interface DelimiterScanState {
   previousCode: string;
 }
 
+interface ScanStep {
+  skip: number;
+  stopLine: boolean;
+}
+
+function defaultDelimiterScanState(): DelimiterScanState {
+  return {
+    quote: undefined,
+    escaped: false,
+    blockComment: false,
+    regex: false,
+    regexCharClass: false,
+    regexEscaped: false,
+    previousCode: "",
+  };
+}
+
+function scanDelimiterLine(line: string, scan: DelimiterScanState, counts: DelimiterCounts): void {
+  for (let offset = 0; offset < line.length; offset += 1) {
+    const step = scanDelimiterCharacter(line, offset, scan, counts);
+    offset += step.skip;
+    if (step.stopLine) {
+      break;
+    }
+  }
+}
+
+function scanDelimiterCharacter(line: string, offset: number, scan: DelimiterScanState, counts: DelimiterCounts): ScanStep {
+  const character = line[offset] ?? "";
+  const next = line[offset + 1] ?? "";
+  if (scan.blockComment) {
+    return scanBlockCommentDelimiter(character, next, scan);
+  }
+  if (scan.quote) {
+    scanQuotedDelimiter(character, scan);
+    return continueScan();
+  }
+  if (scan.regex) {
+    scanRegexDelimiter(character, scan);
+    return continueScan();
+  }
+  return scanCodeDelimiter(line, offset, character, next, scan, counts);
+}
+
+function scanBlockCommentDelimiter(character: string, next: string, scan: DelimiterScanState): ScanStep {
+  if (character === "*" && next === "/") {
+    scan.blockComment = false;
+    return skipNextCharacter();
+  }
+  return continueScan();
+}
+
+function scanQuotedDelimiter(character: string, scan: DelimiterScanState): void {
+  if (scan.escaped) {
+    scan.escaped = false;
+  } else if (character === "\\") {
+    scan.escaped = true;
+  } else if (character === scan.quote) {
+    scan.quote = undefined;
+  }
+}
+
+function scanRegexDelimiter(character: string, scan: DelimiterScanState): void {
+  if (scan.regexEscaped) {
+    scan.regexEscaped = false;
+  } else if (character === "\\") {
+    scan.regexEscaped = true;
+  } else if (character === "[") {
+    scan.regexCharClass = true;
+  } else if (character === "]") {
+    scan.regexCharClass = false;
+  } else if (character === "/" && !scan.regexCharClass) {
+    scan.regex = false;
+    scan.previousCode = "x";
+  }
+}
+
+function scanCodeDelimiter(line: string, offset: number, character: string, next: string, scan: DelimiterScanState, counts: DelimiterCounts): ScanStep {
+  if (character === "/" && next === "/") {
+    return stopLineScan();
+  }
+  if (character === "/" && next === "*") {
+    scan.blockComment = true;
+    return skipNextCharacter();
+  }
+  if (isQuote(character)) {
+    scan.quote = character;
+    return continueScan();
+  }
+  if (character === "/" && isRegexLiteralStart(scan.previousCode, line.slice(0, offset))) {
+    scan.regex = true;
+    scan.regexCharClass = false;
+    scan.regexEscaped = false;
+    return continueScan();
+  }
+  countDelimiter(character, counts);
+  if (character.trim() !== "") {
+    scan.previousCode = character;
+  }
+  return continueScan();
+}
+
+function countDelimiter(character: string, counts: DelimiterCounts): void {
+  if (character === "{") {
+    counts.braces += 1;
+  } else if (character === "}") {
+    counts.braces -= 1;
+  } else if (character === "(") {
+    counts.parentheses += 1;
+  } else if (character === ")") {
+    counts.parentheses -= 1;
+  } else if (character === "[") {
+    counts.brackets += 1;
+  } else if (character === "]") {
+    counts.brackets -= 1;
+  }
+}
+
+function hasNegativeDelimiterCount(counts: DelimiterCounts): boolean {
+  return counts.braces < 0 || counts.parentheses < 0 || counts.brackets < 0;
+}
+
+function hasUnbalancedDelimiterCount(counts: DelimiterCounts): boolean {
+  return counts.braces !== 0 || counts.parentheses !== 0 || counts.brackets !== 0;
+}
+
+function parseErrorDiagnostic(file: DiagnosticSourceFile, line: number): RunDiagnostic {
+  return {
+    diagnosticType: "parse-error",
+    message: "Unbalanced TypeScript delimiters detected.",
+    filePath: file.displayPath,
+    line,
+  };
+}
+
 function isRegexLiteralStart(previousCode: string, beforeSlash: string): boolean {
   return previousCode === "" || "([{=,:!&|?;".includes(previousCode) || /\breturn$/.test(beforeSlash.trimEnd());
 }
 
 function maskNonCode(source: string): string {
   let result = "";
-  let quote: string | undefined;
-  let isEscaped = false;
-  let isLineComment = false;
-  let isBlockComment = false;
-  let isRegex = false;
-  let isRegexCharClass = false;
-  let isRegexEscaped = false;
-  let previousCode = "";
-
+  const state = defaultMaskState();
   for (let index = 0; index < source.length; index += 1) {
-    const character = source[index] ?? "";
-    const next = source[index + 1] ?? "";
-    if (character === "\n") {
-      result += character;
-      isLineComment = false;
-      if (quote !== "`") {
-        quote = undefined;
-      }
-      isRegex = false;
-      isRegexCharClass = false;
-      isRegexEscaped = false;
-      continue;
-    }
-    if (isLineComment) {
-      result += " ";
-      continue;
-    }
-    if (isBlockComment) {
-      if (character === "*" && next === "/") {
-        result += "  ";
-        index += 1;
-        isBlockComment = false;
-      } else {
-        result += " ";
-      }
-      continue;
-    }
-    if (quote) {
-      if (isEscaped) {
-        result += " ";
-        isEscaped = false;
-        continue;
-      }
-      if (character === "\\") {
-        result += " ";
-        isEscaped = true;
-        continue;
-      }
-      if (character === quote) {
-        result += character;
-        previousCode = character;
-        quote = undefined;
-        continue;
-      }
-      result += " ";
-      continue;
-    }
-    if (isRegex) {
-      if (isRegexEscaped) {
-        result += " ";
-        isRegexEscaped = false;
-        continue;
-      }
-      if (character === "\\") {
-        result += " ";
-        isRegexEscaped = true;
-        continue;
-      }
-      if (character === "[") {
-        result += " ";
-        isRegexCharClass = true;
-        continue;
-      }
-      if (character === "]") {
-        result += " ";
-        isRegexCharClass = false;
-        continue;
-      }
-      if (character === "/" && !isRegexCharClass) {
-        result += character;
-        isRegex = false;
-        previousCode = character;
-        continue;
-      }
-      result += " ";
-      continue;
-    }
-    if (character === "/" && next === "/") {
-      result += "  ";
-      index += 1;
-      isLineComment = true;
-      continue;
-    }
-    if (character === "/" && next === "*") {
-      result += "  ";
-      index += 1;
-      isBlockComment = true;
-      continue;
-    }
-    if (character === "/" && isRegexLiteralStart(previousCode, source.slice(Math.max(0, index - 80), index))) {
-      result += character;
-      isRegex = true;
-      previousCode = character;
-      continue;
-    }
-    if (character === "\"" || character === "'" || character === "`") {
-      result += character;
-      quote = character;
-      previousCode = character;
-      continue;
-    }
-    result += character;
-    if (/\S/.test(character)) {
-      previousCode = character;
+    const step = maskNonCodeCharacter(source, index, state);
+    result += step.text;
+    index += step.skip;
+  }
+  return result;
+}
+
+interface MaskState {
+  quote: string | undefined;
+  isEscaped: boolean;
+  isLineComment: boolean;
+  isBlockComment: boolean;
+  isRegex: boolean;
+  isRegexCharClass: boolean;
+  isRegexEscaped: boolean;
+  previousCode: string;
+}
+
+interface MaskStep {
+  text: string;
+  skip: number;
+}
+
+function defaultMaskState(): MaskState {
+  return {
+    quote: undefined,
+    isEscaped: false,
+    isLineComment: false,
+    isBlockComment: false,
+    isRegex: false,
+    isRegexCharClass: false,
+    isRegexEscaped: false,
+    previousCode: "",
+  };
+}
+
+function maskNonCodeCharacter(source: string, index: number, state: MaskState): MaskStep {
+  const character = source[index] ?? "";
+  const next = source[index + 1] ?? "";
+  if (character === "\n") {
+    return maskNewline(state);
+  }
+  if (state.isLineComment) {
+    return maskSingleCharacter();
+  }
+  if (state.isBlockComment) {
+    return maskBlockComment(character, next, state);
+  }
+  if (state.quote) {
+    return maskQuotedCharacter(character, state);
+  }
+  if (state.isRegex) {
+    return maskRegexCharacter(character, state);
+  }
+  return maskCodeCharacter(source, index, character, next, state);
+}
+
+function maskNewline(state: MaskState): MaskStep {
+  state.isLineComment = false;
+  if (state.quote !== "`") {
+    state.quote = undefined;
+  }
+  state.isRegex = false;
+  state.isRegexCharClass = false;
+  state.isRegexEscaped = false;
+  return { text: "\n", skip: 0 };
+}
+
+function maskBlockComment(character: string, next: string, state: MaskState): MaskStep {
+  if (character === "*" && next === "/") {
+    state.isBlockComment = false;
+    return { text: "  ", skip: 1 };
+  }
+  return maskSingleCharacter();
+}
+
+function maskQuotedCharacter(character: string, state: MaskState): MaskStep {
+  if (state.isEscaped) {
+    state.isEscaped = false;
+    return maskSingleCharacter();
+  }
+  if (character === "\\") {
+    state.isEscaped = true;
+    return maskSingleCharacter();
+  }
+  if (character === state.quote) {
+    state.previousCode = character;
+    state.quote = undefined;
+    return { text: character, skip: 0 };
+  }
+  return maskSingleCharacter();
+}
+
+function maskRegexCharacter(character: string, state: MaskState): MaskStep {
+  if (state.isRegexEscaped) {
+    state.isRegexEscaped = false;
+    return maskSingleCharacter();
+  }
+  if (character === "\\") {
+    state.isRegexEscaped = true;
+    return maskSingleCharacter();
+  }
+  if (character === "[") {
+    state.isRegexCharClass = true;
+    return maskSingleCharacter();
+  }
+  if (character === "]") {
+    state.isRegexCharClass = false;
+    return maskSingleCharacter();
+  }
+  if (character === "/" && !state.isRegexCharClass) {
+    state.isRegex = false;
+    state.previousCode = character;
+    return { text: character, skip: 0 };
+  }
+  return maskSingleCharacter();
+}
+
+function maskCodeCharacter(source: string, index: number, character: string, next: string, state: MaskState): MaskStep {
+  if (character === "/" && next === "/") {
+    state.isLineComment = true;
+    return { text: "  ", skip: 1 };
+  }
+  if (character === "/" && next === "*") {
+    state.isBlockComment = true;
+    return { text: "  ", skip: 1 };
+  }
+  if (character === "/" && isRegexLiteralStart(state.previousCode, source.slice(Math.max(0, index - 80), index))) {
+    state.isRegex = true;
+    state.previousCode = character;
+    return { text: character, skip: 0 };
+  }
+  if (isQuote(character)) {
+    state.quote = character;
+    state.previousCode = character;
+    return { text: character, skip: 0 };
+  }
+  if (/\S/.test(character)) {
+    state.previousCode = character;
+  }
+  return { text: character, skip: 0 };
+}
+
+function maskSingleCharacter(): MaskStep {
+  return { text: " ", skip: 0 };
+}
+
+function codeLineForMatching(line: string): string {
+  let result = "";
+  const state: CodeLineState = { quote: undefined, isEscaped: false };
+  for (let index = 0; index < line.length; index += 1) {
+    const step = codeLineCharacter(line, index, state);
+    result += step.text;
+    if (step.stopLine) {
+      break;
     }
   }
   return result;
 }
 
-function codeLineForMatching(line: string): string {
-  let result = "";
-  let quote: string | undefined;
-  let isEscaped = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index] ?? "";
-    const next = line[index + 1] ?? "";
-    if (!quote && character === "/" && next === "/") {
-      break;
-    }
-    if (quote) {
-      if (isEscaped) {
-        isEscaped = false;
-        continue;
-      }
-      if (character === "\\") {
-        isEscaped = true;
-        continue;
-      }
-      if (character === quote) {
-        result += character;
-        quote = undefined;
-      }
-      continue;
-    }
-    if (character === "\"" || character === "'" || character === "`") {
-      quote = character;
-      result += character;
-      continue;
-    }
-    result += character;
+interface CodeLineState {
+  quote: string | undefined;
+  isEscaped: boolean;
+}
+
+interface CodeLineStep {
+  text: string;
+  stopLine: boolean;
+}
+
+function codeLineCharacter(line: string, index: number, state: CodeLineState): CodeLineStep {
+  const character = line[index] ?? "";
+  const next = line[index + 1] ?? "";
+  if (!state.quote && character === "/" && next === "/") {
+    return { text: "", stopLine: true };
   }
-  return result;
+  if (state.quote) {
+    return quotedCodeLineCharacter(character, state);
+  }
+  if (isQuote(character)) {
+    state.quote = character;
+    return { text: character, stopLine: false };
+  }
+  return { text: character, stopLine: false };
+}
+
+function quotedCodeLineCharacter(character: string, state: CodeLineState): CodeLineStep {
+  if (state.isEscaped) {
+    state.isEscaped = false;
+    return { text: "", stopLine: false };
+  }
+  if (character === "\\") {
+    state.isEscaped = true;
+    return { text: "", stopLine: false };
+  }
+  if (character === state.quote) {
+    state.quote = undefined;
+    return { text: character, stopLine: false };
+  }
+  return { text: "", stopLine: false };
+}
+
+function continueScan(): ScanStep {
+  return { skip: 0, stopLine: false };
+}
+
+function skipNextCharacter(): ScanStep {
+  return { skip: 1, stopLine: false };
+}
+
+function stopLineScan(): ScanStep {
+  return { skip: 0, stopLine: true };
+}
+
+function isQuote(character: string): boolean {
+  return character === "\"" || character === "'" || character === "`";
 }
 
 export { codeLineForMatching, maskNonCode, parseDiagnostics };

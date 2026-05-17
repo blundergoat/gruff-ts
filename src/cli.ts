@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 import { Command, Help } from "commander";
-import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { argv, chdir, cwd, stdout } from "node:process";
 import { basename, dirname as dirnamePath, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { isString, loadConfig, objectValue, ruleEnabled, threshold } from "./config.ts";
+import { isString, loadConfig, ruleEnabled, threshold } from "./config.ts";
+import { makeFinding } from "./findings.ts";
+import { analyseProjectConfigRules } from "./project-config-rules.ts";
 import { dashboardErrorHtml, dashboardHomeHtml, grade, renderHtml, renderReport, renderSummary } from "./report-renderers.ts";
 import { ruleDescriptors } from "./rules.ts";
+import { analyseSensitiveData } from "./sensitive-data-rules.ts";
 import { codeLineForMatching, maskNonCode, parseDiagnostics } from "./source-text.ts";
-import { byteLine, countMatches, firstLine, todoMarkerSummary } from "./text-scans.ts";
-import type { AnalysisOptions, AnalysisReport, Config, Confidence, FailThreshold, Finding, OutputFormat, Pillar, RunDiagnostic, Severity } from "./types.ts";
+import { byteLine, countMatches, todoMarkerSummary } from "./text-scans.ts";
+import type { AnalysisOptions, AnalysisReport, Config, FailThreshold, Finding, OutputFormat, Pillar, RunDiagnostic, Severity } from "./types.ts";
 export type { AnalysisReport, Finding, OutputFormat, Pillar, RuleDescriptor, Severity } from "./types.ts";
 
 const VERSION = "0.1.0";
@@ -24,6 +26,11 @@ const ANSI_RESET_FG = "\u001b[39m";
 
 type RuleListFormat = "text" | "json";
 type CompletionShell = "bash" | "fish" | "zsh";
+
+interface CompletionContext {
+  commands: string;
+  options: string;
+}
 
 const CONSOLE_COMMANDS = [
   { name: "analyse", description: "Run gruff analysis." },
@@ -43,6 +50,18 @@ interface SourceFile {
   absolutePath: string;
   displayPath: string;
   isTypeScript: boolean;
+}
+
+interface SourceDiscovery {
+  files: SourceFile[];
+  missingPaths: string[];
+  ignoredPaths: Set<string>;
+}
+
+interface SourceDiscoveryResult {
+  files: SourceFile[];
+  missingPaths: string[];
+  ignoredPaths: string[];
 }
 
 interface ProjectSource {
@@ -74,6 +93,27 @@ interface ImportEdge {
   targetPath?: string;
 }
 
+interface ImportCycle {
+  files: string[];
+}
+
+interface LargeModuleThresholds {
+  minFiles: number;
+  minLines: number;
+  maxSharePercent: number;
+}
+
+interface ModuleLineCount {
+  source: ProjectSource;
+  lines: number;
+}
+
+interface LargeModuleCandidate extends ModuleLineCount {
+  totalLines: number;
+  sharePercent: number;
+  thresholds: LargeModuleThresholds;
+}
+
 interface FunctionBlock {
   name: string;
   params: string;
@@ -83,6 +123,57 @@ interface FunctionBlock {
   codeBody: string;
   isPublic: boolean;
   isTest: boolean;
+}
+
+interface FunctionBlockScan {
+  lines: string[];
+  codeLines: string[];
+  patterns: RegExp[];
+}
+
+interface FunctionBodyScanState {
+  depth: number;
+  hasSeenOpen: boolean;
+}
+
+interface TestBlockCheck {
+  ruleId: string;
+  message: string;
+  severity: Severity;
+}
+
+interface BlockRuleContext {
+  file: SourceFile;
+  block: FunctionBlock;
+  config: Config;
+  findings: Finding[];
+  cyclomatic: number;
+  functionBody: string;
+}
+
+interface NpathResult {
+  value: number;
+  capped: boolean;
+}
+
+interface LineRuleCheck {
+  ruleId: string;
+  pattern: RegExp;
+  message: string;
+  severity: Severity;
+  pillar: Pillar;
+}
+
+interface LineRuleContext {
+  file: SourceFile;
+  line: string;
+  codeLine: string;
+  lineNumber: number;
+  config: Config;
+  findings: Finding[];
+  codeChecks: LineRuleCheck[];
+  literalChecks: LineRuleCheck[];
+  variables: RegExp;
 }
 
 interface NormalizeContext {
@@ -272,29 +363,31 @@ function selectedBaseline(projectRoot: string, options: AnalysisOptions): Baseli
   return existsSync(defaultBaseline) ? { path: defaultBaseline, source: "default" } : undefined;
 }
 
-function discoverSources(projectRoot: string, options: AnalysisOptions, config: Config) {
-  const files: SourceFile[] = [];
-  const missingPaths: string[] = [];
-  const ignoredPaths = new Set<string>();
+function discoverSources(projectRoot: string, options: AnalysisOptions, config: Config): SourceDiscoveryResult {
+  const discovery: SourceDiscovery = { files: [], missingPaths: [], ignoredPaths: new Set<string>() };
   const inputs = options.paths.length > 0 ? options.paths : ["."];
 
   for (const input of inputs) {
-    const absolute = absolutize(projectRoot, input);
-    if (!existsSync(absolute)) {
-      missingPaths.push(input);
-      continue;
-    }
-    const stats = statSync(absolute);
-    if (stats.isFile()) {
-      pushSourceFile(projectRoot, absolute, files);
-      continue;
-    }
-    const gitIgnoreRules = options.includeIgnored ? [] : gitIgnoreRulesForDirectory(projectRoot, absolute);
-    walk(projectRoot, absolute, options, config, ignoredPaths, files, gitIgnoreRules);
+    discoverSourceInput(projectRoot, input, options, config, discovery);
   }
 
-  files.sort((left, right) => left.displayPath.localeCompare(right.displayPath));
-  return { files: uniqueFiles(files), missingPaths, ignoredPaths: [...ignoredPaths].sort() };
+  discovery.files.sort((left, right) => left.displayPath.localeCompare(right.displayPath));
+  return { files: uniqueFiles(discovery.files), missingPaths: discovery.missingPaths, ignoredPaths: [...discovery.ignoredPaths].sort() };
+}
+
+function discoverSourceInput(projectRoot: string, input: string, options: AnalysisOptions, config: Config, discovery: SourceDiscovery): void {
+  const absolute = absolutize(projectRoot, input);
+  if (!existsSync(absolute)) {
+    discovery.missingPaths.push(input);
+    return;
+  }
+  const stats = statSync(absolute);
+  if (stats.isFile()) {
+    pushSourceFile(projectRoot, absolute, discovery.files);
+    return;
+  }
+  const gitIgnoreRules = options.includeIgnored ? [] : gitIgnoreRulesForDirectory(projectRoot, absolute);
+  walk(projectRoot, absolute, options, config, discovery.ignoredPaths, discovery.files, gitIgnoreRules);
 }
 
 function walk(
@@ -399,87 +492,138 @@ function analyseDeepRelativeImports(index: ProjectIndex, config: Config, finding
 }
 
 function analyseCircularImports(index: ProjectIndex, findings: Finding[]): void {
-  const cycles = importCycles(index);
-  for (const cycle of cycles) {
-    const anchorPath = cycle.files[0] ?? "";
-    const anchorSource = index.typeScriptSources.find((source) => source.file.displayPath === anchorPath);
-    if (!anchorSource) {
-      continue;
+  for (const cycle of importCycles(index)) {
+    const finding = circularImportFinding(index, cycle);
+    if (finding) {
+      findings.push(finding);
     }
-    const anchorEdges = index.importsByFile.get(anchorPath) ?? [];
-    const line = anchorEdges.find((edge) => edge.targetPath && cycle.files.includes(edge.targetPath))?.line ?? 1;
-    const cycleLabel = cycle.files.join(" -> ");
-    findings.push(
-      makeFinding({
-        ruleId: "design.circular-import",
-        message: `Import cycle detected among ${cycle.files.join(", ")}.`,
-        filePath: anchorSource.file.displayPath,
-        line,
-        severity: "warning",
-        pillar: "design",
-        confidence: "medium",
-        symbol: cycleLabel,
-        remediation: "Extract the shared contract or move one dependency behind an explicit boundary.",
-        metadata: { files: cycle.files },
-      }),
-    );
   }
 }
 
+function circularImportFinding(index: ProjectIndex, cycle: ImportCycle): Finding | undefined {
+  const anchorPath = cycle.files[0] ?? "";
+  const anchorSource = index.typeScriptSources.find((source) => source.file.displayPath === anchorPath);
+  if (!anchorSource) {
+    return undefined;
+  }
+  return makeFinding({
+    ruleId: "design.circular-import",
+    message: `Import cycle detected among ${cycle.files.join(", ")}.`,
+    filePath: anchorSource.file.displayPath,
+    line: circularImportLine(index, anchorPath, cycle),
+    severity: "warning",
+    pillar: "design",
+    confidence: "medium",
+    symbol: cycle.files.join(" -> "),
+    remediation: "Extract the shared contract or move one dependency behind an explicit boundary.",
+    metadata: { files: cycle.files },
+  });
+}
+
+function circularImportLine(index: ProjectIndex, anchorPath: string, cycle: ImportCycle): number {
+  const anchorEdges = index.importsByFile.get(anchorPath) ?? [];
+  return anchorEdges.find((edge) => edge.targetPath && cycle.files.includes(edge.targetPath))?.line ?? 1;
+}
+
 function analyseLargeModuleConcentration(index: ProjectIndex, config: Config, findings: Finding[]): void {
-  const minFiles = threshold(config, "design.large-module-concentration", "minFiles", 4);
-  const minLines = threshold(config, "design.large-module-concentration", "minLines", 80);
-  const maxSharePercent = threshold(config, "design.large-module-concentration", "maxSharePercent", 55);
-  const modules = index.typeScriptSources
-    .filter((source) => isProductionSourcePath(source.file.displayPath))
-    .map((source) => ({ source, lines: source.lines.length }))
-    .sort((left, right) => right.lines - left.lines || left.source.file.displayPath.localeCompare(right.source.file.displayPath));
-  if (modules.length < minFiles) {
+  const candidate = largeModuleCandidate(index, largeModuleThresholds(config));
+  if (!candidate) {
     return;
+  }
+  findings.push(largeModuleConcentrationFinding(candidate));
+}
+
+function largeModuleThresholds(config: Config): LargeModuleThresholds {
+  return {
+    minFiles: threshold(config, "design.large-module-concentration", "minFiles", 4),
+    minLines: threshold(config, "design.large-module-concentration", "minLines", 80),
+    maxSharePercent: threshold(config, "design.large-module-concentration", "maxSharePercent", 55),
+  };
+}
+
+function largeModuleCandidate(index: ProjectIndex, thresholds: LargeModuleThresholds): LargeModuleCandidate | undefined {
+  const modules = productionModuleLineCounts(index);
+  if (modules.length < thresholds.minFiles) {
+    return undefined;
   }
   const totalLines = modules.reduce((sum, module) => sum + module.lines, 0);
   const largest = modules[0];
-  if (!largest || totalLines === 0) {
-    return;
+  if (!largest) {
+    return undefined;
+  }
+  if (totalLines === 0) {
+    return undefined;
   }
   const sharePercent = Math.round((largest.lines / totalLines) * 1000) / 10;
-  if (largest.lines < minLines || sharePercent <= maxSharePercent) {
-    return;
+  if (!exceedsLargeModuleThresholds(largest, sharePercent, thresholds)) {
+    return undefined;
   }
-  findings.push(
-    makeFinding({
-      ruleId: "design.large-module-concentration",
-      message: `Module \`${largest.source.file.displayPath}\` contains ${sharePercent}% of production source lines.`,
-      filePath: largest.source.file.displayPath,
-      line: 1,
-      severity: "advisory",
-      pillar: "design",
-      confidence: "medium",
-      symbol: fileBaseName(largest.source.file.displayPath),
-      remediation: "Split unrelated responsibilities into smaller modules once stable seams are visible.",
-      metadata: { lines: largest.lines, totalLines, sharePercent, minFiles, minLines, maxSharePercent },
-    }),
-  );
+  return { ...largest, totalLines, sharePercent, thresholds };
+}
+
+function exceedsLargeModuleThresholds(largest: ModuleLineCount, sharePercent: number, thresholds: LargeModuleThresholds): boolean {
+  return largest.lines >= thresholds.minLines && sharePercent > thresholds.maxSharePercent;
+}
+
+function productionModuleLineCounts(index: ProjectIndex): ModuleLineCount[] {
+  return index.typeScriptSources
+    .filter((source) => isProductionSourcePath(source.file.displayPath))
+    .map((source) => ({ source, lines: source.lines.length }))
+    .sort((left, right) => right.lines - left.lines || left.source.file.displayPath.localeCompare(right.source.file.displayPath));
+}
+
+function largeModuleConcentrationFinding(candidate: LargeModuleCandidate): Finding {
+  return makeFinding({
+    ruleId: "design.large-module-concentration",
+    message: `Module \`${candidate.source.file.displayPath}\` contains ${candidate.sharePercent}% of production source lines.`,
+    filePath: candidate.source.file.displayPath,
+    line: 1,
+    severity: "advisory",
+    pillar: "design",
+    confidence: "medium",
+    symbol: fileBaseName(candidate.source.file.displayPath),
+    remediation: "Split unrelated responsibilities into smaller modules once stable seams are visible.",
+    metadata: {
+      lines: candidate.lines,
+      totalLines: candidate.totalLines,
+      sharePercent: candidate.sharePercent,
+      minFiles: candidate.thresholds.minFiles,
+      minLines: candidate.thresholds.minLines,
+      maxSharePercent: candidate.thresholds.maxSharePercent,
+    },
+  });
 }
 
 function importEdgesForSource(source: ProjectSource, sourcePaths: Set<string>): ImportEdge[] {
   const edges: ImportEdge[] = [];
   for (const [index, line] of source.lines.entries()) {
-    for (const match of line.matchAll(/\b(?:import|export)\b(?:[^"'`]*?\bfrom\s*)?\s*["']([^"']+)["']/g)) {
-      const specifier = match[1] ?? "";
-      if (!specifier.startsWith(".")) {
-        continue;
-      }
-      const targetPath = resolveRelativeImport(source.file.displayPath, specifier, sourcePaths);
-      edges.push({
-        specifier,
-        line: index + 1,
-        parentSegments: specifier.split("/").filter((segment) => segment === "..").length,
-        ...(targetPath ? { targetPath } : {}),
-      });
-    }
+    edges.push(...importEdgesForLine(source.file.displayPath, line, index + 1, sourcePaths));
   }
   return edges.sort((left, right) => left.line - right.line || left.specifier.localeCompare(right.specifier));
+}
+
+function importEdgesForLine(importerPath: string, lineSource: string, line: number, sourcePaths: Set<string>): ImportEdge[] {
+  const edges: ImportEdge[] = [];
+  for (const match of lineSource.matchAll(/\b(?:import|export)\b(?:[^"'`]*?\bfrom\s*)?\s*["']([^"']+)["']/g)) {
+    const edge = importEdgeForSpecifier(importerPath, match[1] ?? "", line, sourcePaths);
+    if (edge) {
+      edges.push(edge);
+    }
+  }
+  return edges;
+}
+
+function importEdgeForSpecifier(importerPath: string, specifier: string, line: number, sourcePaths: Set<string>): ImportEdge | undefined {
+  if (!specifier.startsWith(".")) {
+    return undefined;
+  }
+  const targetPath = resolveRelativeImport(importerPath, specifier, sourcePaths);
+  return {
+    specifier,
+    line,
+    parentSegments: specifier.split("/").filter((segment) => segment === "..").length,
+    ...(targetPath ? { targetPath } : {}),
+  };
 }
 
 function resolveRelativeImport(importerPath: string, specifier: string, sourcePaths: Set<string>): string | undefined {
@@ -510,7 +654,7 @@ function importPathCandidates(basePath: string): string[] {
   return [...candidates].map(normalizeDisplayPath);
 }
 
-function importCycles(index: ProjectIndex): Array<{ files: string[] }> {
+function importCycles(index: ProjectIndex): ImportCycle[] {
   const cycles = new Map<string, string[]>();
   const paths = [...index.importsByFile.keys()].sort();
   for (const start of paths) {
@@ -657,330 +801,6 @@ function isGeneratedLockfile(path: string): boolean {
   return name === "package-lock.json" || name === "npm-shrinkwrap.json" || name === "yarn.lock" || name === "pnpm-lock.yaml" || name === "bun.lockb";
 }
 
-function analyseProjectConfigRules(file: SourceFile, source: string, findings: Finding[]): void {
-  const name = basename(file.displayPath);
-  if (name !== "package.json" && name !== "tsconfig.json") {
-    return;
-  }
-  const configObject = parseJsonObject(source);
-  if (!configObject) {
-    return;
-  }
-  if (name === "package.json") {
-    analysePackageJson(file, source, configObject, findings);
-  } else {
-    analyseTsconfigJson(file, source, configObject, findings);
-  }
-}
-
-function analysePackageJson(file: SourceFile, source: string, pkg: Record<string, unknown>, findings: Finding[]): void {
-  const scripts = objectValue(pkg.scripts);
-  if (scripts) {
-    for (const [scriptName, value] of Object.entries(scripts)) {
-      if (!isString(value)) {
-        continue;
-      }
-      const line = jsonKeyLine(source, scriptName);
-      if (isRemoteInstallScript(value)) {
-        findings.push(
-          makeFinding({
-            ruleId: "security.remote-install-script",
-            message: `Package script \`${scriptName}\` downloads and executes remote shell content.`,
-            filePath: file.displayPath,
-            line,
-            severity: "error",
-            pillar: "security",
-            confidence: "medium",
-            symbol: scriptName,
-            remediation: "Vendor the installer, pin an audited package, or remove remote shell execution.",
-            metadata: { scriptName },
-          }),
-        );
-      }
-      if (isLifecycleScript(scriptName)) {
-        findings.push(
-          makeFinding({
-            ruleId: "security.risky-lifecycle-script",
-            message: `Package lifecycle script \`${scriptName}\` runs automatically during install or publish flows.`,
-            filePath: file.displayPath,
-            line,
-            severity: "warning",
-            pillar: "security",
-            confidence: "medium",
-            symbol: scriptName,
-            remediation: "Move setup behind an explicit command unless lifecycle execution is required.",
-            metadata: { scriptName },
-          }),
-        );
-      }
-    }
-  }
-
-  for (const section of ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"]) {
-    const dependencies = objectValue(pkg[section]);
-    if (!dependencies) {
-      continue;
-    }
-    const runtimeDependency = section !== "devDependencies";
-    for (const [packageName, value] of Object.entries(dependencies)) {
-      if (!isString(value)) {
-        continue;
-      }
-      const line = jsonKeyLine(source, packageName);
-      if (isUrlDependency(value)) {
-        findings.push(
-          makeFinding({
-            ruleId: "security.url-dependency",
-            message: `Dependency \`${packageName}\` in \`${section}\` installs from a URL or git spec.`,
-            filePath: file.displayPath,
-            line,
-            severity: "warning",
-            pillar: "security",
-            confidence: "medium",
-            symbol: packageName,
-            remediation: "Prefer a registry package version that can be locked and audited.",
-            metadata: { packageName, section, runtimeDependency },
-          }),
-        );
-      }
-      if (runtimeDependency && isBroadRuntimeVersion(value)) {
-        findings.push(
-          makeFinding({
-            ruleId: "waste.broad-runtime-version",
-            message: `Runtime dependency \`${packageName}\` uses overly broad version spec \`${value}\`.`,
-            filePath: file.displayPath,
-            line,
-            severity: "advisory",
-            pillar: "waste",
-            confidence: "medium",
-            symbol: packageName,
-            remediation: "Use a bounded semver range and rely on the lockfile for repeatable installs.",
-            metadata: { packageName, section, versionSpec: value },
-          }),
-        );
-      }
-    }
-  }
-
-  analysePackageBins(file, source, pkg, findings);
-}
-
-function analysePackageBins(file: SourceFile, source: string, pkg: Record<string, unknown>, findings: Finding[]): void {
-  const bins = packageBinEntries(pkg);
-  for (const [command, target] of bins) {
-    const line = jsonKeyLine(source, command);
-    const absolute = isAbsolute(target) ? target : join(dirnamePath(file.absolutePath), target);
-    if (!existsSync(absolute)) {
-      findings.push(
-        makeFinding({
-          ruleId: "design.package-bin-missing",
-          message: `Package bin \`${command}\` points to missing file \`${target}\`.`,
-          filePath: file.displayPath,
-          line,
-          severity: "warning",
-          pillar: "design",
-          confidence: "high",
-          symbol: command,
-          remediation: "Update the bin path or add the executable file.",
-          metadata: { command, target },
-        }),
-      );
-      continue;
-    }
-    const stats = statSync(absolute);
-    if (!stats.isFile() || (stats.mode & 0o111) === 0) {
-      findings.push(
-        makeFinding({
-          ruleId: "design.package-bin-not-executable",
-          message: `Package bin \`${command}\` points to a file that is not executable.`,
-          filePath: file.displayPath,
-          line,
-          severity: "warning",
-          pillar: "design",
-          confidence: "high",
-          symbol: command,
-          remediation: "Make the bin target executable and keep its shebang valid.",
-          metadata: { command, target },
-        }),
-      );
-    }
-  }
-}
-
-function analyseTsconfigJson(file: SourceFile, source: string, data: Record<string, unknown>, findings: Finding[]): void {
-  const compilerOptions = objectValue(data.compilerOptions) ?? {};
-  const checks: Array<[string, string, string]> = [
-    ["strict", "modernisation.tsconfig-strict-disabled", "`strict` is disabled, reducing TypeScript's baseline safety checks."],
-    ["noUncheckedIndexedAccess", "modernisation.tsconfig-index-safety-disabled", "`noUncheckedIndexedAccess` is disabled, so indexed reads can silently ignore undefined."],
-    ["exactOptionalPropertyTypes", "modernisation.tsconfig-exact-optional-disabled", "`exactOptionalPropertyTypes` is disabled, weakening optional property contracts."],
-  ];
-  for (const [optionName, ruleId, message] of checks) {
-    if (compilerOptions[optionName] === true) {
-      continue;
-    }
-    findings.push(
-      makeFinding({
-        ruleId,
-        message,
-        filePath: file.displayPath,
-        line: jsonKeyLine(source, optionName),
-        severity: "warning",
-        pillar: "modernisation",
-        confidence: "high",
-        symbol: optionName,
-        remediation: `Set compilerOptions.${optionName} to true unless a documented migration blocker exists.`,
-        metadata: { optionName, currentValue: compilerOptions[optionName] ?? null },
-      }),
-    );
-  }
-}
-
-function parseJsonObject(source: string): Record<string, unknown> | undefined {
-  try {
-    return objectValue(JSON.parse(source));
-  } catch {
-    return undefined;
-  }
-}
-
-function jsonKeyLine(source: string, key: string): number {
-  const escapedKey = escapeRegex(key);
-  return firstLine(source, new RegExp(`"${escapedKey}"\\s*:`));
-}
-
-function isRemoteInstallScript(command: string): boolean {
-  return /\b(?:curl|wget)\b[^\n|;&]*https?:\/\/[^\n|;&]*(?:\|\s*(?:sh|bash|zsh)\b|\b(?:sh|bash|zsh)\b)/i.test(command);
-}
-
-function isLifecycleScript(scriptName: string): boolean {
-  return ["preinstall", "install", "postinstall", "prepare", "prepublish", "prepublishOnly"].includes(scriptName);
-}
-
-function isUrlDependency(versionSpec: string): boolean {
-  return /^(?:https?:\/\/|git(?:\+https?|\+ssh)?:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:)/i.test(versionSpec);
-}
-
-function isBroadRuntimeVersion(versionSpec: string): boolean {
-  const normalized = versionSpec.trim().toLowerCase();
-  return normalized === "*" || normalized === "x" || normalized === "latest" || /^>=\s*\d/.test(normalized) || normalized.includes("||");
-}
-
-function packageBinEntries(pkg: Record<string, unknown>): Array<[string, string]> {
-  const bin = pkg.bin;
-  if (isString(bin)) {
-    const name = isString(pkg.name) ? pkg.name : "bin";
-    return [[name, bin]];
-  }
-  const bins = objectValue(bin);
-  if (!bins) {
-    return [];
-  }
-  return Object.entries(bins).filter((entry): entry is [string, string] => isString(entry[1]));
-}
-
-function analyseSensitiveData(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
-  const patterns: Array<[string, RegExp, string]> = [
-    ["sensitive-data.aws-access-key", /AKIA[0-9A-Z]{16}/g, "AWS access key pattern detected."],
-    ["sensitive-data.private-key", /BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY/g, "Private key block detected."],
-    ["sensitive-data.jwt-token", /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "JWT-looking token detected."],
-    ["sensitive-data.database-url-password", /[a-z]+:\/\/[^:\s]+:[^@\s]+@/g, "Database URL appears to include a password."],
-    ["sensitive-data.api-key-pattern", /\b(?:sk_live_[A-Za-z0-9_-]{12,}|sk_test_[A-Za-z0-9_-]{12,}|sk-proj-[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g, "API key pattern detected."],
-    ["sensitive-data.pii-pattern", /\b\d{3}-\d{2}-\d{4}\b/g, "PII-like identifier pattern detected."],
-  ];
-
-  for (const [ruleId, pattern, message] of patterns) {
-    for (const match of source.matchAll(pattern)) {
-      const raw = match[0] ?? "";
-      pushSensitiveFinding(config, findings, file, ruleId, message, byteLine(source, match.index ?? 0), raw, "high");
-    }
-  }
-
-  const hardcodedEnvMinLength = threshold(config, "sensitive-data.hardcoded-env-value", "minLength", 16);
-  const lines = source.split(/\r?\n/);
-  for (const [index, line] of lines.entries()) {
-    const envValue = hardcodedEnvValue(line, hardcodedEnvMinLength);
-    if (!envValue) {
-      continue;
-    }
-    pushSensitiveFinding(
-      config,
-      findings,
-      file,
-      "sensitive-data.hardcoded-env-value",
-      `Environment-style value \`${envValue.keyName}\` appears to be hardcoded with secret-like content.`,
-      index + 1,
-      envValue.value,
-      "medium",
-      { keyName: envValue.keyName, length: envValue.value.length },
-    );
-  }
-
-  const minLength = threshold(config, "sensitive-data.high-entropy-string", "minLength", 32);
-  for (const match of source.matchAll(/(["'`])([A-Za-z0-9_+=./-]{32,})\1/g)) {
-    const raw = match[2] ?? "";
-    if (!isHighEntropySecretCandidate(raw, minLength)) {
-      continue;
-    }
-    pushSensitiveFinding(
-      config,
-      findings,
-      file,
-      "sensitive-data.high-entropy-string",
-      "High-entropy string literal may be an embedded secret.",
-      byteLine(source, match.index ?? 0),
-      raw,
-      "medium",
-      { length: raw.length, detector: "high-entropy-string" },
-    );
-  }
-}
-
-function pushSensitiveFinding(
-  config: Config,
-  findings: Finding[],
-  file: SourceFile,
-  ruleId: string,
-  message: string,
-  line: number,
-  raw: string,
-  confidence: Finding["confidence"],
-  metadata: Record<string, unknown> = {},
-): void {
-  const preview = redact(raw);
-  if (config.secretPreviews.has(preview)) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId,
-      message: `${message} Redacted preview: ${preview}.`,
-      filePath: file.displayPath,
-      line,
-      severity: "error",
-      pillar: "sensitive-data",
-      confidence,
-      remediation: "Remove the sensitive value and load it from a secure runtime source.",
-      metadata: { ...metadata, preview },
-    }),
-  );
-}
-
-function hardcodedEnvValue(line: string, minLength: number): { keyName: string; value: string } | undefined {
-  const match = line.match(/^\s*([A-Z][A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)[A-Z0-9_]*)\s*[:=]\s*["']?([^"'\s#]+)["']?/i);
-  const keyName = match?.[1] ?? "";
-  const candidateValue = match?.[2] ?? "";
-  if (!keyName || candidateValue.length < minLength) {
-    return undefined;
-  }
-  if (/^(?:x-api-key|token|secret|password|example|sample|placeholder)$/i.test(candidateValue)) {
-    return undefined;
-  }
-  if (!/[A-Za-z]/.test(candidateValue) || !/[0-9]/.test(candidateValue)) {
-    return undefined;
-  }
-  return { keyName, value: candidateValue };
-}
-
 function analyseTypeScriptRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
   const codeSource = maskNonCode(source);
   const blocks = functionBlocks(source, codeSource);
@@ -993,140 +813,211 @@ function analyseTypeScriptRules(file: SourceFile, source: string, config: Config
 
 function analyseBlocks(file: SourceFile, blocks: FunctionBlock[], config: Config, findings: Finding[]): void {
   for (const block of blocks) {
-    const functionWarn = threshold(config, "size.function-length", "warn", 30);
-    const functionError = threshold(config, "size.function-length", "error", 60);
-    if (block.lineCount > functionError) {
-      findings.push(blockFinding("size.function-length", `Function \`${block.name}\` has ${block.lineCount} lines, above the error threshold of ${functionError}.`, file, block, "error", "size"));
-    } else if (block.lineCount > functionWarn) {
-      findings.push(blockFinding("size.function-length", `Function \`${block.name}\` has ${block.lineCount} lines, above the warning threshold of ${functionWarn}.`, file, block, "warning", "size"));
-    }
+    analyseBlockRules(blockRuleContext(file, block, config, findings));
+  }
+}
 
-    const params = block.params.split(",").map((value) => value.trim()).filter(Boolean).length;
-    if (params > threshold(config, "size.parameter-count", "warn", 5)) {
-      findings.push(blockFinding("size.parameter-count", `Function \`${block.name}\` declares ${params} parameters.`, file, block, "warning", "size"));
-    }
+function blockRuleContext(file: SourceFile, block: FunctionBlock, config: Config, findings: Finding[]): BlockRuleContext {
+  return {
+    file,
+    block,
+    config,
+    findings,
+    cyclomatic: countMatches(block.codeBody, /\b(if|else if|switch|case|for|while|catch)\b|\?|&&|\|\|/g) + 1,
+    functionBody: functionBodyContent(block.codeBody),
+  };
+}
 
-    const cyclomatic = countMatches(block.codeBody, /\b(if|else if|switch|case|for|while|catch)\b|\?|&&|\|\|/g) + 1;
-    if (cyclomatic > threshold(config, "complexity.cyclomatic", "error", 20)) {
-      findings.push(blockFinding("complexity.cyclomatic", `Function \`${block.name}\` has cyclomatic complexity ${cyclomatic}.`, file, block, "error", "complexity"));
-    } else if (cyclomatic > threshold(config, "complexity.cyclomatic", "warn", 10)) {
-      findings.push(blockFinding("complexity.cyclomatic", `Function \`${block.name}\` has cyclomatic complexity ${cyclomatic}.`, file, block, "warning", "complexity"));
-    }
+function analyseBlockRules(context: BlockRuleContext): void {
+  pushFunctionLengthFinding(context);
+  pushParameterCountFinding(context);
+  pushCyclomaticFinding(context);
+  pushCognitiveFinding(context);
+  pushNpathFinding(context);
+  pushGodFunctionFinding(context);
+  pushGenericFunctionFinding(context);
+  pushMissingPublicFunctionDocFinding(context);
+  pushEmptyFunctionFinding(context);
+  pushUnusedParameterFindings(context);
+  pushRedundantVariableFindings(context);
+  pushUselessReturnFindings(context);
+  if (context.block.isTest) {
+    analyseTestBlock(context.file, context.block, context.config, context.findings);
+  }
+}
 
-    const nesting = maxNestingDepth(block.codeBody);
-    const cognitive = cyclomatic + nesting;
-    if (cognitive > threshold(config, "complexity.cognitive", "warn", 15)) {
-      findings.push(blockFinding("complexity.cognitive", `Function \`${block.name}\` has cognitive complexity ${cognitive}.`, file, block, "warning", "complexity"));
+function pushFunctionLengthFinding(context: BlockRuleContext): void {
+  const functionWarn = threshold(context.config, "size.function-length", "warn", 30);
+  const functionError = threshold(context.config, "size.function-length", "error", 60);
+  if (context.block.lineCount > functionError) {
+    context.findings.push(blockFinding("size.function-length", `Function \`${context.block.name}\` has ${context.block.lineCount} lines, above the error threshold of ${functionError}.`, context.file, context.block, "error", "size"));
+  } else if (context.block.lineCount > functionWarn) {
+    context.findings.push(blockFinding("size.function-length", `Function \`${context.block.name}\` has ${context.block.lineCount} lines, above the warning threshold of ${functionWarn}.`, context.file, context.block, "warning", "size"));
+  }
+}
+
+function pushParameterCountFinding(context: BlockRuleContext): void {
+  const params = context.block.params.split(",").map((value) => value.trim()).filter(Boolean).length;
+  if (params > threshold(context.config, "size.parameter-count", "warn", 5)) {
+    context.findings.push(blockFinding("size.parameter-count", `Function \`${context.block.name}\` declares ${params} parameters.`, context.file, context.block, "warning", "size"));
+  }
+}
+
+function pushCyclomaticFinding(context: BlockRuleContext): void {
+  if (context.cyclomatic > threshold(context.config, "complexity.cyclomatic", "error", 20)) {
+    context.findings.push(blockFinding("complexity.cyclomatic", `Function \`${context.block.name}\` has cyclomatic complexity ${context.cyclomatic}.`, context.file, context.block, "error", "complexity"));
+  } else if (context.cyclomatic > threshold(context.config, "complexity.cyclomatic", "warn", 10)) {
+    context.findings.push(blockFinding("complexity.cyclomatic", `Function \`${context.block.name}\` has cyclomatic complexity ${context.cyclomatic}.`, context.file, context.block, "warning", "complexity"));
+  }
+}
+
+function pushCognitiveFinding(context: BlockRuleContext): void {
+  const cognitive = context.cyclomatic + maxNestingDepth(context.block.codeBody);
+  if (cognitive > threshold(context.config, "complexity.cognitive", "warn", 15)) {
+    context.findings.push(blockFinding("complexity.cognitive", `Function \`${context.block.name}\` has cognitive complexity ${cognitive}.`, context.file, context.block, "warning", "complexity"));
+  }
+}
+
+function pushNpathFinding(context: BlockRuleContext): void {
+  const npath = approximateNpath(context.functionBody);
+  const npathWarn = threshold(context.config, "complexity.npath", "warn", 20);
+  const npathError = threshold(context.config, "complexity.npath", "error", 80);
+  if (npath.value > npathError) {
+    context.findings.push(npathFinding(context, npath, "error"));
+  } else if (npath.value > npathWarn) {
+    context.findings.push(npathFinding(context, npath, "warning"));
+  }
+}
+
+function npathFinding(context: BlockRuleContext, npath: NpathResult, severity: Severity): Finding {
+  return blockFindingWithMetadata(
+    "complexity.npath",
+    `Function \`${context.block.name}\` has approximate NPath complexity ${npath.value} (capped at ${NPATH_CAP}).`,
+    context.file,
+    context.block,
+    severity,
+    "complexity",
+    { npath: npath.value, capped: npath.capped, cap: NPATH_CAP },
+  );
+}
+
+function pushGodFunctionFinding(context: BlockRuleContext): void {
+  if (context.block.lineCount > 45 && context.cyclomatic > 10) {
+    context.findings.push(blockFinding("design.god-function", `Function \`${context.block.name}\` is both long and complex.`, context.file, context.block, "warning", "design"));
+  }
+}
+
+function pushGenericFunctionFinding(context: BlockRuleContext): void {
+  if (isGenericName(context.block.name)) {
+    context.findings.push(blockFinding("naming.generic-function", `Function \`${context.block.name}\` is too generic to explain intent.`, context.file, context.block, "advisory", "naming"));
+  }
+}
+
+function pushMissingPublicFunctionDocFinding(context: BlockRuleContext): void {
+  if (context.block.isPublic && !hasDocCommentBefore(context.block.body)) {
+    context.findings.push(blockFinding("docs.missing-public-doc", `Exported function \`${context.block.name}\` is missing a doc comment.`, context.file, context.block, "advisory", "documentation"));
+  }
+}
+
+function pushEmptyFunctionFinding(context: BlockRuleContext): void {
+  if (isEmptyFunctionBody(context.block.codeBody)) {
+    context.findings.push(blockFinding("waste.empty-function", `Function \`${context.block.name}\` has no executable body.`, context.file, context.block, "advisory", "waste"));
+  }
+}
+
+function pushUnusedParameterFindings(context: BlockRuleContext): void {
+  for (const parameter of parameterNames(context.block.params)) {
+    if (!isUnusedParameter(context, parameter.name)) {
+      continue;
     }
-    const npath = approximateNpath(functionBodyContent(block.codeBody));
-    const npathWarn = threshold(config, "complexity.npath", "warn", 20);
-    const npathError = threshold(config, "complexity.npath", "error", 80);
-    if (npath.value > npathError) {
-      findings.push(
-        blockFindingWithMetadata(
-          "complexity.npath",
-          `Function \`${block.name}\` has approximate NPath complexity ${npath.value} (capped at ${NPATH_CAP}).`,
-          file,
-          block,
-          "error",
-          "complexity",
-          { npath: npath.value, capped: npath.capped, cap: NPATH_CAP },
-        ),
-      );
-    } else if (npath.value > npathWarn) {
-      findings.push(
-        blockFindingWithMetadata(
-          "complexity.npath",
-          `Function \`${block.name}\` has approximate NPath complexity ${npath.value} (capped at ${NPATH_CAP}).`,
-          file,
-          block,
-          "warning",
-          "complexity",
-          { npath: npath.value, capped: npath.capped, cap: NPATH_CAP },
-        ),
-      );
-    }
-    if (block.lineCount > 45 && cyclomatic > 10) {
-      findings.push(blockFinding("design.god-function", `Function \`${block.name}\` is both long and complex.`, file, block, "warning", "design"));
-    }
-    if (isGenericName(block.name)) {
-      findings.push(blockFinding("naming.generic-function", `Function \`${block.name}\` is too generic to explain intent.`, file, block, "advisory", "naming"));
-    }
-    if (block.isPublic && !hasDocCommentBefore(block.body)) {
-      findings.push(blockFinding("docs.missing-public-doc", `Exported function \`${block.name}\` is missing a doc comment.`, file, block, "advisory", "documentation"));
-    }
-    if (isEmptyFunctionBody(block.codeBody)) {
-      findings.push(blockFinding("waste.empty-function", `Function \`${block.name}\` has no executable body.`, file, block, "advisory", "waste"));
-    }
-    for (const parameter of parameterNames(block.params)) {
-      if (!parameter.name.startsWith("_") && !new RegExp(`\\b${escapeRegex(parameter.name)}\\b`).test(functionBodyContent(block.codeBody))) {
-        findings.push(
-          makeFinding({
-            ruleId: "waste.unused-parameter",
-            message: `Parameter \`${parameter.name}\` does not appear to be used.`,
-            filePath: file.displayPath,
-            line: block.startLine,
-            severity: "advisory",
-            pillar: "waste",
-            confidence: "medium",
-            symbol: block.name,
-            remediation: "Remove the parameter or prefix it with _ if it is intentionally unused.",
-            metadata: { parameter: parameter.name },
-          }),
-        );
-      }
-    }
-    for (const redundant of redundantVariableReturns(block.codeBody)) {
-      findings.push(
-        makeFinding({
-          ruleId: "waste.redundant-variable",
-          message: `Variable \`${redundant.name}\` is returned immediately after assignment.`,
-          filePath: file.displayPath,
-          line: block.startLine + redundant.lineOffset,
-          severity: "advisory",
-          pillar: "waste",
-          confidence: "medium",
-          symbol: redundant.name,
-          remediation: "Return the expression directly.",
-          metadata: { variable: redundant.name },
-        }),
-      );
-    }
-    for (const lineOffset of terminalBareReturnLines(block.codeBody)) {
-      findings.push(
-        makeFinding({
-          ruleId: "waste.useless-return",
-          message: `Function \`${block.name}\` ends with a redundant bare return.`,
-          filePath: file.displayPath,
-          line: block.startLine + lineOffset,
-          severity: "advisory",
-          pillar: "waste",
-          confidence: "medium",
-          symbol: block.name,
-          remediation: "Remove the final return statement.",
-        }),
-      );
-    }
-    if (block.isTest) {
-      analyseTestBlock(file, block, config, findings);
-    }
+    context.findings.push(unusedParameterFinding(context, parameter.name));
+  }
+}
+
+function isUnusedParameter(context: BlockRuleContext, parameterName: string): boolean {
+  return !parameterName.startsWith("_") && !new RegExp(`\\b${escapeRegex(parameterName)}\\b`).test(context.functionBody);
+}
+
+function unusedParameterFinding(context: BlockRuleContext, parameterName: string): Finding {
+  return makeFinding({
+    ruleId: "waste.unused-parameter",
+    message: `Parameter \`${parameterName}\` does not appear to be used.`,
+    filePath: context.file.displayPath,
+    line: context.block.startLine,
+    severity: "advisory",
+    pillar: "waste",
+    confidence: "medium",
+    symbol: context.block.name,
+    remediation: "Remove the parameter or prefix it with _ if it is intentionally unused.",
+    metadata: { parameter: parameterName },
+  });
+}
+
+function pushRedundantVariableFindings(context: BlockRuleContext): void {
+  for (const redundant of redundantVariableReturns(context.block.codeBody)) {
+    context.findings.push(
+      makeFinding({
+        ruleId: "waste.redundant-variable",
+        message: `Variable \`${redundant.name}\` is returned immediately after assignment.`,
+        filePath: context.file.displayPath,
+        line: context.block.startLine + redundant.lineOffset,
+        severity: "advisory",
+        pillar: "waste",
+        confidence: "medium",
+        symbol: redundant.name,
+        remediation: "Return the expression directly.",
+        metadata: { variable: redundant.name },
+      }),
+    );
+  }
+}
+
+function pushUselessReturnFindings(context: BlockRuleContext): void {
+  for (const lineOffset of terminalBareReturnLines(context.block.codeBody)) {
+    context.findings.push(
+      makeFinding({
+        ruleId: "waste.useless-return",
+        message: `Function \`${context.block.name}\` ends with a redundant bare return.`,
+        filePath: context.file.displayPath,
+        line: context.block.startLine + lineOffset,
+        severity: "advisory",
+        pillar: "waste",
+        confidence: "medium",
+        symbol: context.block.name,
+        remediation: "Remove the final return statement.",
+      }),
+    );
   }
 }
 
 function analyseTestBlock(file: SourceFile, block: FunctionBlock, config: Config, findings: Finding[]): void {
   const body = block.codeBody;
-  if (!hasAssertion(body)) {
-    findings.push(blockFinding("test-quality.no-assertions", `Test \`${block.name}\` does not appear to make an assertion.`, file, block, "warning", "test-quality"));
+  analyseAssertionQuality(file, block, body, findings);
+  analyseMockQuality(file, block, body, findings);
+  analyseSetupBloat(file, block, body, config, findings);
+  analyseTestStructureChecks(file, block, body, findings);
+}
+
+function analyseAssertionQuality(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
+  for (const check of assertionQualityChecks(block, body)) {
+    findings.push(blockFinding(check.ruleId, check.message, file, block, check.severity, "test-quality"));
   }
-  if (hasTrivialAssertion(body)) {
-    findings.push(blockFinding("test-quality.trivial-assertion", `Test \`${block.name}\` contains an assertion that compares a value to itself.`, file, block, "warning", "test-quality"));
-  }
-  if (isSnapshotOnlyTest(body)) {
-    findings.push(blockFinding("test-quality.snapshot-only-test", `Test \`${block.name}\` relies only on snapshot assertions.`, file, block, "advisory", "test-quality"));
-  }
-  if (isNoThrowOnlyTest(body)) {
-    findings.push(blockFinding("test-quality.no-throw-only-test", `Test \`${block.name}\` only verifies that code does not throw.`, file, block, "advisory", "test-quality"));
-  }
+  pushMagicNumberAssertionFindings(file, block, body, findings);
+}
+
+function assertionQualityChecks(block: FunctionBlock, body: string): TestBlockCheck[] {
+  const testName = block.name;
+  const checks: Array<TestBlockCheck & { active: boolean }> = [
+    { active: !hasAssertion(body), ruleId: "test-quality.no-assertions", message: `Test \`${testName}\` does not appear to make an assertion.`, severity: "warning" },
+    { active: hasTrivialAssertion(body), ruleId: "test-quality.trivial-assertion", message: `Test \`${testName}\` contains an assertion that compares a value to itself.`, severity: "warning" },
+    { active: isSnapshotOnlyTest(body), ruleId: "test-quality.snapshot-only-test", message: `Test \`${testName}\` relies only on snapshot assertions.`, severity: "advisory" },
+    { active: isNoThrowOnlyTest(body), ruleId: "test-quality.no-throw-only-test", message: `Test \`${testName}\` only verifies that code does not throw.`, severity: "advisory" },
+    { active: hasExceptionTypeOnlyAssertion(body), ruleId: "test-quality.exception-type-only", message: `Test \`${testName}\` checks only the exception type.`, severity: "advisory" },
+  ];
+  return checks.filter((check) => check.active).map(({ active: _active, ...check }) => check);
+}
+
+function pushMagicNumberAssertionFindings(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
   for (const assertion of magicNumberAssertions(body)) {
     findings.push(
       blockFindingWithMetadata(
@@ -1140,6 +1031,9 @@ function analyseTestBlock(file: SourceFile, block: FunctionBlock, config: Config
       ),
     );
   }
+}
+
+function analyseMockQuality(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
   const unusedMocks = unusedMockVariables(body);
   for (const mock of unusedMocks) {
     findings.push(
@@ -1157,9 +1051,9 @@ function analyseTestBlock(file: SourceFile, block: FunctionBlock, config: Config
   if (isMockOnlyTest(body)) {
     findings.push(blockFinding("test-quality.mock-only-test", `Test \`${block.name}\` only verifies mock interaction.`, file, block, "advisory", "test-quality"));
   }
-  if (hasExceptionTypeOnlyAssertion(body)) {
-    findings.push(blockFinding("test-quality.exception-type-only", `Test \`${block.name}\` checks only the exception type.`, file, block, "advisory", "test-quality"));
-  }
+}
+
+function analyseSetupBloat(file: SourceFile, block: FunctionBlock, body: string, config: Config, findings: Finding[]): void {
   if (hasGlobalStateMutation(body)) {
     findings.push(blockFinding("test-quality.global-state-mutation", `Test \`${block.name}\` mutates global process or runtime state.`, file, block, "warning", "test-quality"));
   }
@@ -1178,6 +1072,9 @@ function analyseTestBlock(file: SourceFile, block: FunctionBlock, config: Config
       ),
     );
   }
+}
+
+function analyseTestStructureChecks(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
   const checks: Array<[string, RegExp, string]> = [
     ["test-quality.sleep-in-test", /\b(setTimeout|sleep|waitForTimeout)\s*\(/, "Test sleeps instead of synchronising on behaviour."],
     ["test-quality.loop-in-test", /\b(for|while)\b/, "Test contains loop logic."],
@@ -1193,166 +1090,231 @@ function analyseTestBlock(file: SourceFile, block: FunctionBlock, config: Config
 
 function analyseLineRules(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[]): void {
   analyseUnusedImports(file, codeSource, findings);
-  const codeChecks: Array<[string, RegExp, string, Severity, Pillar]> = [
-    ["security.eval-call", /\beval\s*\(/, "eval() executes dynamic code.", "error", "security"],
-    ["security.new-function", /\bnew\s+Function\s*\(|(?:^|[=(:,])\s*Function\s*\(/, "Function constructor executes dynamic code.", "error", "security"],
-    ["security.insecure-random", /\bMath\.random\s*\(/, "Math.random() is not suitable for security-sensitive randomness.", "warning", "security"],
-    ["security.inner-html", /\.innerHTML\s*=|\bdangerouslySetInnerHTML\b/, "HTML injection sink can introduce XSS.", "warning", "security"],
-    ["security.proto-access", /\.__proto__\b/, "Direct __proto__ access can enable prototype pollution.", "warning", "security"],
-    ["security.document-write", /\bdocument\.write\s*\(/, "document.write() can introduce injection risks.", "warning", "security"],
-    ["waste.redundant-boolean-cast", /\b(?:if|while)\s*\(\s*(?:!!\s*[A-Za-z_$][A-Za-z0-9_$.]*|Boolean\s*\()/, "Condition contains a redundant boolean cast.", "advisory", "waste"],
-  ];
-  const literalChecks: Array<[string, RegExp, string, Severity, Pillar]> = [
-    ["security.weak-crypto", /\b(?:createHash|createHmac)\s*\(\s*["'](?:md5|sha1)["']|\bcreateCipher\s*\(|\b(?:secureProtocol|minVersion|maxVersion)\s*:\s*["'](?:SSLv2_method|SSLv3_method|TLSv1(?:_method)?|TLSv1\.1)["']/i, "Weak cryptographic primitive is used.", "warning", "security"],
-    ["security.disabled-tls-verification", /\b(?:process\.env\.)?NODE_TLS_REJECT_UNAUTHORIZED\b\s*=\s*["']0["']|\brejectUnauthorized\s*:\s*false\b/i, "TLS certificate verification is disabled.", "error", "security"],
-    ["security.javascript-url", /["'`]\s*javascript\s*:(?!\s+URL\b)/i, "javascript: URL literal can execute script.", "error", "security"],
-    ["security.proto-access", /\[\s*["']__proto__["']\s*\]/, "Direct __proto__ access can enable prototype pollution.", "warning", "security"],
-    ["security.sql-concatenation", /\b(?:query|execute|raw)\s*\(\s*(?:`[^`]*(?:SELECT|INSERT|UPDATE|DELETE)[^`]*\$\{|["'][^"']*(?:SELECT|INSERT|UPDATE|DELETE)[^"']*["']\s*\+)/i, "SQL text is composed with runtime string interpolation.", "warning", "security"],
-    ["modernisation.date-now-candidate", /\bnew\s+Date\s*\(\s*\)\s*\.getTime\s*\(\s*\)|\bNumber\s*\(\s*new\s+Date\s*\(\s*\)\s*\)/, "Current-time expression can use Date.now().", "advisory", "modernisation"],
-    ["modernisation.object-spread-candidate", /\bObject\.assign\s*\(\s*\{\s*\}\s*,/, "Object.assign clone can usually use object spread.", "advisory", "modernisation"],
-    ["waste.console-log", /\bconsole\.(log|debug)\s*\(/, "console logging is committed in source.", "advisory", "waste"],
-    ["waste.any-type", /:\s*any\b|as\s+any\b/, "any weakens TypeScript's type guarantees.", "warning", "waste"],
-    ["modernisation.var-declaration", /\bvar\s+[A-Za-z_$]/, "var declaration should usually be let or const.", "advisory", "modernisation"],
-  ];
-  const variables = /\b(?:const|let|for\s*\(\s*const|for\s*\(\s*let)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
-
   const sourceLines = source.split(/\r?\n/);
   const codeLines = codeSource.split(/\r?\n/);
+  const sharedContext = {
+    file,
+    config,
+    findings,
+    codeChecks: codeLineChecks(),
+    literalChecks: literalLineChecks(),
+    variables: /\b(?:const|let|for\s*\(\s*const|for\s*\(\s*let)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g,
+  };
   sourceLines.forEach((line, index) => {
-    const lineNumber = index + 1;
-    const codeLine = codeLines[index] ?? codeLineForMatching(line);
-    analyseTypeSafetyLine(file, line, codeLine, lineNumber, findings);
-    analyseReliabilityLine(file, codeLine, lineNumber, findings);
-    if (isCommentedOutCode(line)) {
-      findings.push(finding("waste.commented-out-code", "Comment appears to contain disabled source code.", file, lineNumber, "advisory", "waste"));
-    }
-    const booleanDeclaration = codeLine.match(/\b(?:const|let|var|public|private|protected)\s+([A-Za-z_$][A-Za-z0-9_$]*)\??(?:\s*:\s*boolean|\s*=\s*(?:true|false)\b)/);
-    if (booleanDeclaration?.[1] && !hasBooleanPrefix(booleanDeclaration[1])) {
-      findings.push(
-        makeFinding({
-          ruleId: "naming.boolean-prefix",
-          message: `Boolean identifier \`${booleanDeclaration[1]}\` should use an intent-revealing prefix.`,
-          filePath: file.displayPath,
-          line: lineNumber,
-          severity: "advisory",
-          pillar: "naming",
-          confidence: "medium",
-          symbol: booleanDeclaration[1],
-          remediation: "Use a prefix such as is, has, can, should, or will.",
-          metadata: { identifierName: booleanDeclaration[1] },
-        }),
-      );
-    }
-    for (const hungarian of codeLine.matchAll(/\b(?:const|let|var|public|private|protected)\s+((?:str|obj|arr|bool|int|num)[A-Z][A-Za-z0-9_$]*)/g)) {
-      const name = hungarian[1] ?? "";
-      findings.push(
-        makeFinding({
-          ruleId: "naming.hungarian-notation",
-          message: `Identifier \`${name}\` uses type-style Hungarian notation.`,
-          filePath: file.displayPath,
-          line: lineNumber,
-          severity: "advisory",
-          pillar: "naming",
-          confidence: "medium",
-          symbol: name,
-          remediation: "Name the domain concept instead of the storage type.",
-          metadata: { identifierName: name },
-        }),
-      );
-    }
-    for (const optional of codeLine.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*)\s*&&\s*\1\.[A-Za-z_$][A-Za-z0-9_$]*/g)) {
-      const name = optional[1] ?? "";
-      findings.push(
-        makeFinding({
-          ruleId: "modernisation.optional-chaining-candidate",
-          message: `Guarded property access on \`${name}\` can usually use optional chaining.`,
-          filePath: file.displayPath,
-          line: lineNumber,
-          severity: "advisory",
-          pillar: "modernisation",
-          confidence: "medium",
-          symbol: name,
-          remediation: "Use optional chaining for the guarded property access.",
-        }),
-      );
-    }
-    for (const fallback of codeLine.matchAll(/=\s*([A-Za-z_$][A-Za-z0-9_$.]*)\s*\|\|\s*(["'`]\s*["'`]|\d+|true|false)/g)) {
-      const name = fallback[1] ?? "";
-      findings.push(
-        makeFinding({
-          ruleId: "modernisation.nullish-coalescing-candidate",
-          message: `Fallback for \`${name}\` can usually use nullish coalescing to preserve falsy values.`,
-          filePath: file.displayPath,
-          line: lineNumber,
-          severity: "advisory",
-          pillar: "modernisation",
-          confidence: "medium",
-          symbol: name,
-          remediation: "Use ?? when only null or undefined should trigger the fallback.",
-        }),
-      );
-    }
-    const looseOperator = looseEqualityOperator(codeLine);
-    if (looseOperator) {
-      findings.push(finding("modernisation.loose-equality", `Loose equality operator ${looseOperator} may coerce values.`, file, lineNumber, "advisory", "modernisation"));
-    }
-    if (stringTimerCandidate(codeLine)) {
-      findings.push(finding("security.string-timer", "Timer callback is provided as a string.", file, lineNumber, "warning", "security"));
-    }
-    if (processExecCandidate(codeLine) && !isFixedLocalProcessHarness(file, line, codeLine)) {
-      findings.push(finding("security.process-exec", "Child-process execution is used; validate arguments are not user-controlled.", file, lineNumber, "warning", "security"));
-    }
-    for (const [ruleId, pattern, message, severity, pillar] of codeChecks) {
-      if (pattern.test(codeLine)) {
-        findings.push(finding(ruleId, message, file, lineNumber, severity, pillar));
-      }
-    }
-    for (const [ruleId, pattern, message, severity, pillar] of literalChecks) {
-      if (rawPatternStartsInCode(line, codeLine, pattern)) {
-        findings.push(finding(ruleId, message, file, lineNumber, severity, pillar));
-      }
-    }
-
-    for (const match of codeLine.matchAll(variables)) {
-      const name = match[1] ?? "";
-      if (name.length <= 2 && !["i", "j", "k"].includes(name) && !config.acceptedAbbreviations.has(name.toLowerCase())) {
-        findings.push(
-          makeFinding({
-            ruleId: "naming.short-variable",
-            message: `Variable \`${name}\` is too short to explain intent.`,
-            filePath: file.displayPath,
-            line: lineNumber,
-            severity: "advisory",
-            pillar: "naming",
-            confidence: "medium",
-            symbol: name,
-            remediation: "Use a name that describes the domain role.",
-          }),
-        );
-      }
-      const variant = identifierQualityVariant(name);
-      if (variant) {
-        findings.push(
-          makeFinding({
-            ruleId: "naming.identifier-quality",
-            message: `Identifier \`${name}\` is a ${variant} name that does not explain domain intent.`,
-            filePath: file.displayPath,
-            line: lineNumber,
-            severity: "advisory",
-            pillar: "naming",
-            confidence: "medium",
-            symbol: name,
-            remediation: "Use an identifier that names the domain role.",
-            metadata: { identifierName: name, variant },
-          }),
-        );
-      }
-    }
+    analyseLineRuleContext({ ...sharedContext, line, codeLine: codeLines[index] ?? codeLineForMatching(line), lineNumber: index + 1 });
   });
 
   analyseUselessCatches(file, codeSource, findings);
   analyseSwallowedCatches(file, codeSource, findings);
   analyseUnreachable(file, codeSource, findings);
+}
+
+function analyseLineRuleContext(context: LineRuleContext): void {
+  analyseTypeSafetyLine(context.file, context.line, context.codeLine, context.lineNumber, context.findings);
+  analyseReliabilityLine(context.file, context.codeLine, context.lineNumber, context.findings);
+  pushCommentedOutCodeFinding(context);
+  pushBooleanPrefixFinding(context);
+  pushHungarianNotationFindings(context);
+  pushOptionalChainingFindings(context);
+  pushNullishCoalescingFindings(context);
+  pushLooseEqualityFinding(context);
+  pushStringTimerFinding(context);
+  pushProcessExecFinding(context);
+  pushPatternCheckFindings(context);
+  pushVariableNameFindings(context);
+}
+
+function codeLineChecks(): LineRuleCheck[] {
+  return [
+    { ruleId: "security.eval-call", pattern: /\beval\s*\(/, message: "eval() executes dynamic code.", severity: "error", pillar: "security" },
+    { ruleId: "security.new-function", pattern: /\bnew\s+Function\s*\(|(?:^|[=(:,])\s*Function\s*\(/, message: "Function constructor executes dynamic code.", severity: "error", pillar: "security" },
+    { ruleId: "security.insecure-random", pattern: /\bMath\.random\s*\(/, message: "Math.random() is not suitable for security-sensitive randomness.", severity: "warning", pillar: "security" },
+    { ruleId: "security.inner-html", pattern: /\.innerHTML\s*=|\bdangerouslySetInnerHTML\b/, message: "HTML injection sink can introduce XSS.", severity: "warning", pillar: "security" },
+    { ruleId: "security.proto-access", pattern: /\.__proto__\b/, message: "Direct __proto__ access can enable prototype pollution.", severity: "warning", pillar: "security" },
+    { ruleId: "security.document-write", pattern: /\bdocument\.write\s*\(/, message: "document.write() can introduce injection risks.", severity: "warning", pillar: "security" },
+    { ruleId: "waste.redundant-boolean-cast", pattern: /\b(?:if|while)\s*\(\s*(?:!!\s*[A-Za-z_$][A-Za-z0-9_$.]*|Boolean\s*\()/, message: "Condition contains a redundant boolean cast.", severity: "advisory", pillar: "waste" },
+  ];
+}
+
+function literalLineChecks(): LineRuleCheck[] {
+  return [
+    { ruleId: "security.weak-crypto", pattern: /\b(?:createHash|createHmac)\s*\(\s*["'](?:md5|sha1)["']|\bcreateCipher\s*\(|\b(?:secureProtocol|minVersion|maxVersion)\s*:\s*["'](?:SSLv2_method|SSLv3_method|TLSv1(?:_method)?|TLSv1\.1)["']/i, message: "Weak cryptographic primitive is used.", severity: "warning", pillar: "security" },
+    { ruleId: "security.disabled-tls-verification", pattern: /\b(?:process\.env\.)?NODE_TLS_REJECT_UNAUTHORIZED\b\s*=\s*["']0["']|\brejectUnauthorized\s*:\s*false\b/i, message: "TLS certificate verification is disabled.", severity: "error", pillar: "security" },
+    { ruleId: "security.javascript-url", pattern: /["'`]\s*javascript\s*:(?!\s+URL\b)/i, message: "javascript: URL literal can execute script.", severity: "error", pillar: "security" },
+    { ruleId: "security.proto-access", pattern: /\[\s*["']__proto__["']\s*\]/, message: "Direct __proto__ access can enable prototype pollution.", severity: "warning", pillar: "security" },
+    { ruleId: "security.sql-concatenation", pattern: /\b(?:query|execute|raw)\s*\(\s*(?:`[^`]*(?:SELECT|INSERT|UPDATE|DELETE)[^`]*\$\{|["'][^"']*(?:SELECT|INSERT|UPDATE|DELETE)[^"']*["']\s*\+)/i, message: "SQL text is composed with runtime string interpolation.", severity: "warning", pillar: "security" },
+    { ruleId: "modernisation.date-now-candidate", pattern: /\bnew\s+Date\s*\(\s*\)\s*\.getTime\s*\(\s*\)|\bNumber\s*\(\s*new\s+Date\s*\(\s*\)\s*\)/, message: "Current-time expression can use Date.now().", severity: "advisory", pillar: "modernisation" },
+    { ruleId: "modernisation.object-spread-candidate", pattern: /\bObject\.assign\s*\(\s*\{\s*\}\s*,/, message: "Object.assign clone can usually use object spread.", severity: "advisory", pillar: "modernisation" },
+    { ruleId: "waste.console-log", pattern: /\bconsole\.(log|debug)\s*\(/, message: "console logging is committed in source.", severity: "advisory", pillar: "waste" },
+    { ruleId: "waste.any-type", pattern: /:\s*any\b|as\s+any\b/, message: "any weakens TypeScript's type guarantees.", severity: "warning", pillar: "waste" },
+    { ruleId: "modernisation.var-declaration", pattern: /\bvar\s+[A-Za-z_$]/, message: "var declaration should usually be let or const.", severity: "advisory", pillar: "modernisation" },
+  ];
+}
+
+function pushCommentedOutCodeFinding(context: LineRuleContext): void {
+  if (isCommentedOutCode(context.line)) {
+    context.findings.push(finding("waste.commented-out-code", "Comment appears to contain disabled source code.", context.file, context.lineNumber, "advisory", "waste"));
+  }
+}
+
+function pushBooleanPrefixFinding(context: LineRuleContext): void {
+  const booleanDeclaration = context.codeLine.match(/\b(?:const|let|var|public|private|protected)\s+([A-Za-z_$][A-Za-z0-9_$]*)\??(?:\s*:\s*boolean|\s*=\s*(?:true|false)\b)/);
+  const name = booleanDeclaration?.[1] ?? "";
+  if (!name || hasBooleanPrefix(name)) {
+    return;
+  }
+  context.findings.push(
+    makeFinding({
+      ruleId: "naming.boolean-prefix",
+      message: `Boolean identifier \`${name}\` should use an intent-revealing prefix.`,
+      filePath: context.file.displayPath,
+      line: context.lineNumber,
+      severity: "advisory",
+      pillar: "naming",
+      confidence: "medium",
+      symbol: name,
+      remediation: "Use a prefix such as is, has, can, should, or will.",
+      metadata: { identifierName: name },
+    }),
+  );
+}
+
+function pushHungarianNotationFindings(context: LineRuleContext): void {
+  for (const hungarian of context.codeLine.matchAll(/\b(?:const|let|var|public|private|protected)\s+((?:str|obj|arr|bool|int|num)[A-Z][A-Za-z0-9_$]*)/g)) {
+    const name = hungarian[1] ?? "";
+    context.findings.push(
+      makeFinding({
+        ruleId: "naming.hungarian-notation",
+        message: `Identifier \`${name}\` uses type-style Hungarian notation.`,
+        filePath: context.file.displayPath,
+        line: context.lineNumber,
+        severity: "advisory",
+        pillar: "naming",
+        confidence: "medium",
+        symbol: name,
+        remediation: "Name the domain concept instead of the storage type.",
+        metadata: { identifierName: name },
+      }),
+    );
+  }
+}
+
+function pushOptionalChainingFindings(context: LineRuleContext): void {
+  for (const optional of context.codeLine.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*)\s*&&\s*\1\.[A-Za-z_$][A-Za-z0-9_$]*/g)) {
+    const name = optional[1] ?? "";
+    context.findings.push(
+      makeFinding({
+        ruleId: "modernisation.optional-chaining-candidate",
+        message: `Guarded property access on \`${name}\` can usually use optional chaining.`,
+        filePath: context.file.displayPath,
+        line: context.lineNumber,
+        severity: "advisory",
+        pillar: "modernisation",
+        confidence: "medium",
+        symbol: name,
+        remediation: "Use optional chaining for the guarded property access.",
+      }),
+    );
+  }
+}
+
+function pushNullishCoalescingFindings(context: LineRuleContext): void {
+  for (const fallback of context.codeLine.matchAll(/=\s*([A-Za-z_$][A-Za-z0-9_$.]*)\s*\|\|\s*(["'`]\s*["'`]|\d+|true|false)/g)) {
+    const name = fallback[1] ?? "";
+    context.findings.push(
+      makeFinding({
+        ruleId: "modernisation.nullish-coalescing-candidate",
+        message: `Fallback for \`${name}\` can usually use nullish coalescing to preserve falsy values.`,
+        filePath: context.file.displayPath,
+        line: context.lineNumber,
+        severity: "advisory",
+        pillar: "modernisation",
+        confidence: "medium",
+        symbol: name,
+        remediation: "Use ?? when only null or undefined should trigger the fallback.",
+      }),
+    );
+  }
+}
+
+function pushLooseEqualityFinding(context: LineRuleContext): void {
+  const looseOperator = looseEqualityOperator(context.codeLine);
+  if (looseOperator) {
+    context.findings.push(finding("modernisation.loose-equality", `Loose equality operator ${looseOperator} may coerce values.`, context.file, context.lineNumber, "advisory", "modernisation"));
+  }
+}
+
+function pushStringTimerFinding(context: LineRuleContext): void {
+  if (stringTimerCandidate(context.codeLine)) {
+    context.findings.push(finding("security.string-timer", "Timer callback is provided as a string.", context.file, context.lineNumber, "warning", "security"));
+  }
+}
+
+function pushProcessExecFinding(context: LineRuleContext): void {
+  if (processExecCandidate(context.codeLine) && !isFixedLocalProcessHarness(context.file, context.line, context.codeLine)) {
+    context.findings.push(finding("security.process-exec", "Child-process execution is used; validate arguments are not user-controlled.", context.file, context.lineNumber, "warning", "security"));
+  }
+}
+
+function pushPatternCheckFindings(context: LineRuleContext): void {
+  for (const check of context.codeChecks) {
+    if (check.pattern.test(context.codeLine)) {
+      context.findings.push(finding(check.ruleId, check.message, context.file, context.lineNumber, check.severity, check.pillar));
+    }
+  }
+  for (const check of context.literalChecks) {
+    if (rawPatternStartsInCode(context.line, context.codeLine, check.pattern)) {
+      context.findings.push(finding(check.ruleId, check.message, context.file, context.lineNumber, check.severity, check.pillar));
+    }
+  }
+}
+
+function pushVariableNameFindings(context: LineRuleContext): void {
+  for (const match of context.codeLine.matchAll(context.variables)) {
+    const name = match[1] ?? "";
+    pushShortVariableFinding(context, name);
+    pushIdentifierQualityFinding(context, name);
+  }
+}
+
+function pushShortVariableFinding(context: LineRuleContext, name: string): void {
+  if (name.length > 2 || ["i", "j", "k"].includes(name) || context.config.acceptedAbbreviations.has(name.toLowerCase())) {
+    return;
+  }
+  context.findings.push(
+    makeFinding({
+      ruleId: "naming.short-variable",
+      message: `Variable \`${name}\` is too short to explain intent.`,
+      filePath: context.file.displayPath,
+      line: context.lineNumber,
+      severity: "advisory",
+      pillar: "naming",
+      confidence: "medium",
+      symbol: name,
+      remediation: "Use a name that describes the domain role.",
+    }),
+  );
+}
+
+function pushIdentifierQualityFinding(context: LineRuleContext, name: string): void {
+  const variant = identifierQualityVariant(name);
+  if (!variant) {
+    return;
+  }
+  context.findings.push(
+    makeFinding({
+      ruleId: "naming.identifier-quality",
+      message: `Identifier \`${name}\` is a ${variant} name that does not explain domain intent.`,
+      filePath: context.file.displayPath,
+      line: context.lineNumber,
+      severity: "advisory",
+      pillar: "naming",
+      confidence: "medium",
+      symbol: name,
+      remediation: "Use an identifier that names the domain role.",
+      metadata: { identifierName: name, variant },
+    }),
+  );
 }
 
 function rawPatternStartsInCode(rawLine: string, codeLine: string, pattern: RegExp): boolean {
@@ -1371,19 +1333,28 @@ function looseEqualityOperator(codeLine: string): string | undefined {
   for (const match of codeLine.matchAll(/[=!]=/g)) {
     const index = match.index ?? 0;
     const operator = match[0] ?? "";
-    const before = codeLine[index - 1] ?? "";
-    const after = codeLine[index + operator.length] ?? "";
-    if (before === "=" || before === "!" || after === "=") {
-      continue;
-    }
-    const left = codeLine.slice(Math.max(0, index - 24), index).trimEnd();
-    const right = codeLine.slice(index + operator.length, Math.min(codeLine.length, index + operator.length + 24)).trimStart();
-    if (/\bnull$/.test(left) || /^null\b/.test(right)) {
+    if (!isLooseEqualityCandidate(codeLine, index, operator)) {
       continue;
     }
     return operator;
   }
   return undefined;
+}
+
+function isLooseEqualityCandidate(codeLine: string, index: number, operator: string): boolean {
+  return !isStrictEqualityOperator(codeLine, index, operator) && !isNullEqualityComparison(codeLine, index, operator);
+}
+
+function isStrictEqualityOperator(codeLine: string, index: number, operator: string): boolean {
+  const before = codeLine[index - 1] ?? "";
+  const after = codeLine[index + operator.length] ?? "";
+  return before === "=" || before === "!" || after === "=";
+}
+
+function isNullEqualityComparison(codeLine: string, index: number, operator: string): boolean {
+  const left = codeLine.slice(Math.max(0, index - 24), index).trimEnd();
+  const right = codeLine.slice(index + operator.length, Math.min(codeLine.length, index + operator.length + 24)).trimStart();
+  return /\bnull$/.test(left) || /^null\b/.test(right);
 }
 
 function stringTimerCandidate(codeLine: string): boolean {
@@ -1402,23 +1373,33 @@ function isFixedLocalProcessHarness(file: SourceFile, rawLine: string, codeLine:
 }
 
 function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: string, lineNumber: number, findings: Finding[]): void {
-  const directive = tsDirectiveWithoutRationale(line);
-  if (directive) {
-    findings.push(
-      makeFinding({
-        ruleId: "modernisation.ts-comment-without-rationale",
-        message: `${directive.directive} suppresses TypeScript without a nearby rationale.`,
-        filePath: file.displayPath,
-        line: lineNumber,
-        severity: "warning",
-        pillar: "modernisation",
-        confidence: "medium",
-        remediation: "Add a short reason after the directive or remove the suppression.",
-        metadata: { directive: directive.directive },
-      }),
-    );
-  }
+  pushTsDirectiveFinding(file, line, lineNumber, findings);
+  pushNonNullAssertionFindings(file, codeLine, lineNumber, findings);
+  pushDoubleCastFindings(file, codeLine, lineNumber, findings);
+  pushExportedAnyFinding(file, codeLine, lineNumber, findings);
+}
 
+function pushTsDirectiveFinding(file: SourceFile, line: string, lineNumber: number, findings: Finding[]): void {
+  const directive = tsDirectiveWithoutRationale(line);
+  if (!directive) {
+    return;
+  }
+  findings.push(
+    makeFinding({
+      ruleId: "modernisation.ts-comment-without-rationale",
+      message: `${directive.directive} suppresses TypeScript without a nearby rationale.`,
+      filePath: file.displayPath,
+      line: lineNumber,
+      severity: "warning",
+      pillar: "modernisation",
+      confidence: "medium",
+      remediation: "Add a short reason after the directive or remove the suppression.",
+      metadata: { directive: directive.directive },
+    }),
+  );
+}
+
+function pushNonNullAssertionFindings(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   for (const match of codeLine.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)!(?=\.|\[|\)|,|;|\s+(?:as|in|instanceof)\b|\s*$)/g)) {
     const expression = match[1] ?? "";
     findings.push(
@@ -1436,7 +1417,9 @@ function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: string,
       }),
     );
   }
+}
 
+function pushDoubleCastFindings(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   for (const match of codeLine.matchAll(/\bas\s+(unknown|any)\s+as\s+([^;,\n]+)/g)) {
     const sourceType = match[1] ?? "";
     const targetType = (match[2] ?? "").trim().replace(/[.)]+$/, "");
@@ -1454,77 +1437,93 @@ function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: string,
       }),
     );
   }
+}
 
+function pushExportedAnyFinding(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   const exportedAny = exportedAnySymbol(codeLine);
-  if (exportedAny) {
-    findings.push(
-      makeFinding({
-        ruleId: "waste.exported-any",
-        message: `Exported API \`${exportedAny}\` exposes \`any\` in its public contract.`,
-        filePath: file.displayPath,
-        line: lineNumber,
-        severity: "warning",
-        pillar: "waste",
-        confidence: "medium",
-        symbol: exportedAny,
-        remediation: "Use a named interface, unknown plus validation, or a precise generic type.",
-        metadata: { symbolName: exportedAny },
-      }),
-    );
+  if (!exportedAny) {
+    return;
   }
+  findings.push(
+    makeFinding({
+      ruleId: "waste.exported-any",
+      message: `Exported API \`${exportedAny}\` exposes \`any\` in its public contract.`,
+      filePath: file.displayPath,
+      line: lineNumber,
+      severity: "warning",
+      pillar: "waste",
+      confidence: "medium",
+      symbol: exportedAny,
+      remediation: "Use a named interface, unknown plus validation, or a precise generic type.",
+      metadata: { symbolName: exportedAny },
+    }),
+  );
 }
 
 function analyseReliabilityLine(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
-  if (/\.forEach\s*\(\s*async\b/.test(codeLine)) {
-    findings.push(
-      makeFinding({
-        ruleId: "security.async-foreach",
-        message: "async callbacks passed to forEach are not awaited by the caller.",
-        filePath: file.displayPath,
-        line: lineNumber,
-        severity: "warning",
-        pillar: "security",
-        confidence: "medium",
-        remediation: "Use for...of with await, Promise.all, or an explicit queue.",
-        metadata: { callName: "forEach" },
-      }),
-    );
-  }
+  pushAsyncForEachFinding(file, codeLine, lineNumber, findings);
+  pushFloatingPromiseFinding(file, codeLine, lineNumber, findings);
+  pushNonErrorThrowFinding(file, codeLine, lineNumber, findings);
+}
 
+function pushAsyncForEachFinding(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
+  if (!/\.forEach\s*\(\s*async\b/.test(codeLine)) {
+    return;
+  }
+  findings.push(
+    makeFinding({
+      ruleId: "security.async-foreach",
+      message: "async callbacks passed to forEach are not awaited by the caller.",
+      filePath: file.displayPath,
+      line: lineNumber,
+      severity: "warning",
+      pillar: "security",
+      confidence: "medium",
+      remediation: "Use for...of with await, Promise.all, or an explicit queue.",
+      metadata: { callName: "forEach" },
+    }),
+  );
+}
+
+function pushFloatingPromiseFinding(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   const floating = floatingPromiseCall(codeLine);
-  if (floating) {
-    findings.push(
-      makeFinding({
-        ruleId: "security.floating-promise",
-        message: `Promise-like call \`${floating}\` is started without await, return, or void.`,
-        filePath: file.displayPath,
-        line: lineNumber,
-        severity: "warning",
-        pillar: "security",
-        confidence: "medium",
-        symbol: floating,
-        remediation: "Await it, return it, or prefix with void when fire-and-forget is intentional.",
-        metadata: { callName: floating },
-      }),
-    );
+  if (!floating) {
+    return;
   }
+  findings.push(
+    makeFinding({
+      ruleId: "security.floating-promise",
+      message: `Promise-like call \`${floating}\` is started without await, return, or void.`,
+      filePath: file.displayPath,
+      line: lineNumber,
+      severity: "warning",
+      pillar: "security",
+      confidence: "medium",
+      symbol: floating,
+      remediation: "Await it, return it, or prefix with void when fire-and-forget is intentional.",
+      metadata: { callName: floating },
+    }),
+  );
+}
 
+function pushNonErrorThrowFinding(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   const thrown = nonErrorThrowExpression(codeLine);
-  if (thrown) {
-    findings.push(
-      makeFinding({
-        ruleId: "security.throw-non-error",
-        message: "Throwing non-Error values loses stack and error-shape information.",
-        filePath: file.displayPath,
-        line: lineNumber,
-        severity: "warning",
-        pillar: "security",
-        confidence: "medium",
-        remediation: "Throw an Error subclass with a clear message and structured properties.",
-        metadata: { expression: thrown },
-      }),
-    );
+  if (!thrown) {
+    return;
   }
+  findings.push(
+    makeFinding({
+      ruleId: "security.throw-non-error",
+      message: "Throwing non-Error values loses stack and error-shape information.",
+      filePath: file.displayPath,
+      line: lineNumber,
+      severity: "warning",
+      pillar: "security",
+      confidence: "medium",
+      remediation: "Throw an Error subclass with a clear message and structured properties.",
+      metadata: { expression: thrown },
+    }),
+  );
 }
 
 function analyseUselessCatches(file: SourceFile, source: string, findings: Finding[]): void {
@@ -1597,16 +1596,28 @@ function exportedAnySymbol(codeLine: string): string | undefined {
 
 function floatingPromiseCall(codeLine: string): string | undefined {
   const trimmed = codeLine.trim();
-  if (!trimmed || /^(?:await|return|void|throw|yield)\b/.test(trimmed) || /^(?:const|let|var)\s+/.test(trimmed)) {
+  if (isHandledPromiseStatement(trimmed)) {
     return undefined;
   }
-  const match = trimmed.match(/^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*\(/);
-  const callName = match?.[1] ?? "";
+  const callName = leadingCallName(trimmed);
   if (!callName) {
     return undefined;
   }
+  return isPromiseLikeCall(callName) ? callName : undefined;
+}
+
+function isHandledPromiseStatement(trimmedLine: string): boolean {
+  return trimmedLine.length === 0 || /^(?:await|return|void|throw|yield)\b/.test(trimmedLine) || /^(?:const|let|var)\s+/.test(trimmedLine);
+}
+
+function leadingCallName(trimmedLine: string): string {
+  const match = trimmedLine.match(/^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*\(/);
+  return match?.[1] ?? "";
+}
+
+function isPromiseLikeCall(callName: string): boolean {
   const localName = callName.split(".").at(-1) ?? callName;
-  return callName === "fetch" || /(?:Async|Promise)$/.test(localName) ? callName : undefined;
+  return callName === "fetch" || /(?:Async|Promise)$/.test(localName);
 }
 
 function nonErrorThrowExpression(codeLine: string): string | undefined {
@@ -1628,49 +1639,82 @@ function isSwallowedCatchBody(body: string): boolean {
     .trim();
   return meaningful === "";
 }
-function analyseClassRules(file: SourceFile, source: string, codeSource: string, findings: Finding[]): void {
-  for (const match of codeSource.matchAll(/\bexport\s+(class|interface|type|enum|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
-    const kind = match[1] ?? "";
-    const name = match[2] ?? "";
-    const line = byteLine(source, match.index ?? 0);
-    if (!hasDocCommentBeforeLine(source, line)) {
-      findings.push(
-        makeFinding({
-          ruleId: "docs.missing-public-doc",
-          message: `Exported item \`${name}\` is missing a doc comment.`,
-          filePath: file.displayPath,
-          line,
-          severity: "advisory",
-          pillar: "documentation",
-          confidence: "medium",
-          symbol: name,
-          remediation: "Add a /** ... */ comment explaining the exported API.",
-        }),
-      );
-    }
-    if (kind === "class" && normalizedIdentifier(name) !== normalizedIdentifier(fileBaseName(file.displayPath))) {
-      findings.push(
-        makeFinding({
-          ruleId: "naming.class-file-mismatch",
-          message: `Exported class \`${name}\` does not match file name \`${fileBaseName(file.displayPath)}\`.`,
-          filePath: file.displayPath,
-          line,
-          severity: "advisory",
-          pillar: "naming",
-          confidence: "medium",
-          symbol: name,
-          remediation: "Rename the class or file so the primary export is easy to locate.",
-          metadata: { className: name, fileName: fileBaseName(file.displayPath) },
-        }),
-      );
-    }
-  }
 
+interface ExportedDeclaration {
+  kind: string;
+  name: string;
+  line: number;
+}
+
+function analyseClassRules(file: SourceFile, source: string, codeSource: string, findings: Finding[]): void {
+  analyseExportedDeclarations(file, source, codeSource, findings);
+  analysePublicProperties(file, source, codeSource, findings);
+  analyseReadonlyCandidates(file, source, codeSource, findings);
+}
+
+function analyseExportedDeclarations(file: SourceFile, source: string, codeSource: string, findings: Finding[]): void {
+  for (const declaration of exportedDeclarations(source, codeSource)) {
+    pushMissingPublicDocFinding(file, source, declaration, findings);
+    pushClassFileMismatchFinding(file, declaration, findings);
+  }
+}
+
+function exportedDeclarations(source: string, codeSource: string): ExportedDeclaration[] {
+  return [...codeSource.matchAll(/\bexport\s+(class|interface|type|enum|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)].map((match) => ({
+    kind: match[1] ?? "",
+    name: match[2] ?? "",
+    line: byteLine(source, match.index ?? 0),
+  }));
+}
+
+function pushMissingPublicDocFinding(file: SourceFile, source: string, declaration: ExportedDeclaration, findings: Finding[]): void {
+  if (hasDocCommentBeforeLine(source, declaration.line)) {
+    return;
+  }
+  findings.push(
+    makeFinding({
+      ruleId: "docs.missing-public-doc",
+      message: `Exported item \`${declaration.name}\` is missing a doc comment.`,
+      filePath: file.displayPath,
+      line: declaration.line,
+      severity: "advisory",
+      pillar: "documentation",
+      confidence: "medium",
+      symbol: declaration.name,
+      remediation: "Add a /** ... */ comment explaining the exported API.",
+    }),
+  );
+}
+
+function pushClassFileMismatchFinding(file: SourceFile, declaration: ExportedDeclaration, findings: Finding[]): void {
+  const fileName = fileBaseName(file.displayPath);
+  if (declaration.kind !== "class" || normalizedIdentifier(declaration.name) === normalizedIdentifier(fileName)) {
+    return;
+  }
+  findings.push(
+    makeFinding({
+      ruleId: "naming.class-file-mismatch",
+      message: `Exported class \`${declaration.name}\` does not match file name \`${fileName}\`.`,
+      filePath: file.displayPath,
+      line: declaration.line,
+      severity: "advisory",
+      pillar: "naming",
+      confidence: "medium",
+      symbol: declaration.name,
+      remediation: "Rename the class or file so the primary export is easy to locate.",
+      metadata: { className: declaration.name, fileName },
+    }),
+  );
+}
+
+function analysePublicProperties(file: SourceFile, source: string, codeSource: string, findings: Finding[]): void {
   const publicProperty = /\bpublic\s+[A-Za-z_$][A-Za-z0-9_$]*\s*[=:]/g;
   for (const match of codeSource.matchAll(publicProperty)) {
     findings.push(finding("modernisation.public-property", "Public class property exposes representation; prefer readonly or accessors when invariants matter.", file, byteLine(source, match.index ?? 0), "advisory", "modernisation"));
   }
+}
 
+function analyseReadonlyCandidates(file: SourceFile, source: string, codeSource: string, findings: Finding[]): void {
   const readonlyCandidate = /\b(?:public|private|protected)\s+(?!readonly\b)([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*[^;=\n]+;/g;
   for (const match of codeSource.matchAll(readonlyCandidate)) {
     const name = match[1] ?? "";
@@ -1690,50 +1734,119 @@ function analyseClassRules(file: SourceFile, source: string, codeSource: string,
   }
 }
 
+interface DocumentedExportBlock {
+  doc: string;
+  name: string;
+  params: string[];
+  paramTags: string[];
+  line: number;
+  returnType: string;
+}
+
+interface DocFindingInput {
+  ruleId: string;
+  message: string;
+  file: SourceFile;
+  line: number;
+  symbol: string;
+  parameter?: string;
+}
+
 function analyseDocRules(file: SourceFile, source: string, codeSource: string, findings: Finding[]): void {
+  for (const documentedExport of documentedExportBlocks(source, codeSource)) {
+    pushStaleParamFindings(file, documentedExport, findings);
+    pushMissingParamFindings(file, documentedExport, findings);
+    pushMissingReturnFinding(file, documentedExport, findings);
+    pushUselessDocblockFinding(file, documentedExport, findings);
+  }
+}
+
+function documentedExportBlocks(source: string, codeSource: string): DocumentedExportBlock[] {
+  const blocks: DocumentedExportBlock[] = [];
   const documentedExport = /\/\*\*((?:(?!\*\/)[\s\S])*?)\*\/\s*export\s+function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*(?::\s*([^\x7b\n]+))?/g;
   for (const match of source.matchAll(documentedExport)) {
-    const exportIndex = source.indexOf("export", match.index ?? 0);
-    if (exportIndex < 0 || codeSource[exportIndex] !== "e") {
-      continue;
+    const block = documentedExportBlock(source, codeSource, match);
+    if (block) {
+      blocks.push(block);
     }
-    const doc = match[1] ?? "";
-    const name = match[2] ?? "";
-    const params = parameterNames(match[3] ?? "").map((parameter) => parameter.name);
-    const paramTags = docParamTags(doc);
-    const line = byteLine(source, match.index ?? 0);
-    for (const tag of paramTags) {
-      if (!params.includes(tag)) {
-        findings.push(docFinding("docs.stale-param-tag", `Docblock for \`${name}\` has stale @param tag \`${tag}\`.`, file, line, name, tag));
-      }
-    }
-    for (const param of params) {
-      if (!paramTags.includes(param)) {
-        findings.push(docFinding("docs.missing-param-tag", `Docblock for \`${name}\` is missing @param for \`${param}\`.`, file, line, name, param));
-      }
-    }
-    const returnType = (match[4] ?? "").trim();
-    if (returnType && !/^void\b/.test(returnType) && !/@returns?\b/.test(doc)) {
-      findings.push(docFinding("docs.missing-return-tag", `Docblock for \`${name}\` is missing @returns.`, file, line, name));
-    }
-    if (isUselessDocblock(doc, name)) {
-      findings.push(docFinding("docs.useless-docblock", `Docblock for \`${name}\` only restates the signature.`, file, line, name));
+  }
+  return blocks;
+}
+
+function documentedExportBlock(source: string, codeSource: string, match: RegExpMatchArray): DocumentedExportBlock | undefined {
+  const matchStart = regexMatchStart(match);
+  const exportIndex = source.indexOf("export", matchStart);
+  if (!isDocumentedExportInCode(codeSource, exportIndex)) {
+    return undefined;
+  }
+  const doc = regexGroup(match, 1);
+  return {
+    doc,
+    name: regexGroup(match, 2),
+    params: parameterNames(regexGroup(match, 3)).map((parameter) => parameter.name),
+    paramTags: docParamTags(doc),
+    line: byteLine(source, matchStart),
+    returnType: regexGroup(match, 4).trim(),
+  };
+}
+
+function regexMatchStart(match: RegExpMatchArray): number {
+  return match.index ?? 0;
+}
+
+function regexGroup(match: RegExpMatchArray, index: number): string {
+  return match[index] ?? "";
+}
+
+function isDocumentedExportInCode(codeSource: string, exportIndex: number): boolean {
+  return exportIndex >= 0 && codeSource[exportIndex] === "e";
+}
+
+function pushStaleParamFindings(file: SourceFile, block: DocumentedExportBlock, findings: Finding[]): void {
+  for (const tag of block.paramTags) {
+    if (!block.params.includes(tag)) {
+      findings.push(docFinding({ ruleId: "docs.stale-param-tag", message: `Docblock for \`${block.name}\` has stale @param tag \`${tag}\`.`, file, line: block.line, symbol: block.name, parameter: tag }));
     }
   }
 }
 
-function docFinding(ruleId: string, message: string, file: SourceFile, line: number, symbol: string, parameter?: string): Finding {
+function pushMissingParamFindings(file: SourceFile, block: DocumentedExportBlock, findings: Finding[]): void {
+  for (const param of block.params) {
+    if (!block.paramTags.includes(param)) {
+      findings.push(docFinding({ ruleId: "docs.missing-param-tag", message: `Docblock for \`${block.name}\` is missing @param for \`${param}\`.`, file, line: block.line, symbol: block.name, parameter: param }));
+    }
+  }
+}
+
+function pushMissingReturnFinding(file: SourceFile, block: DocumentedExportBlock, findings: Finding[]): void {
+  if (!needsReturnTag(block)) {
+    return;
+  }
+  findings.push(docFinding({ ruleId: "docs.missing-return-tag", message: `Docblock for \`${block.name}\` is missing @returns.`, file, line: block.line, symbol: block.name }));
+}
+
+function needsReturnTag(block: DocumentedExportBlock): boolean {
+  return block.returnType !== "" && !/^void\b/.test(block.returnType) && !/@returns?\b/.test(block.doc);
+}
+
+function pushUselessDocblockFinding(file: SourceFile, block: DocumentedExportBlock, findings: Finding[]): void {
+  if (isUselessDocblock(block.doc, block.name)) {
+    findings.push(docFinding({ ruleId: "docs.useless-docblock", message: `Docblock for \`${block.name}\` only restates the signature.`, file, line: block.line, symbol: block.name }));
+  }
+}
+
+function docFinding(input: DocFindingInput): Finding {
   return makeFinding({
-    ruleId,
-    message,
-    filePath: file.displayPath,
-    line,
+    ruleId: input.ruleId,
+    message: input.message,
+    filePath: input.file.displayPath,
+    line: input.line,
     severity: "advisory",
     pillar: "documentation",
     confidence: "medium",
-    symbol,
+    symbol: input.symbol,
     remediation: "Update the JSDoc so it documents the current signature and return value.",
-    metadata: { ...(parameter ? { parameter } : {}) },
+    metadata: { ...(input.parameter ? { parameter: input.parameter } : {}) },
   });
 }
 
@@ -1762,50 +1875,84 @@ function analyseUnreachable(file: SourceFile, source: string, findings: Finding[
   let didPreviousTerminate = false;
   source.split(/\r?\n/).forEach((line, index) => {
     const trimmed = line.trim();
-    const branchLabel = /^(?:case\b.*:|default\s*:)$/.test(trimmed);
+    const branchLabel = isBranchLabel(trimmed);
     if (branchLabel) {
       didPreviousTerminate = false;
     }
-    if (didPreviousTerminate && /\S/.test(trimmed) && !trimmed.startsWith(String.fromCharCode(125)) && !branchLabel) {
+    if (isUnreachableStatement(trimmed, didPreviousTerminate, branchLabel)) {
       findings.push(finding("waste.unreachable-code", "Statement appears after a terminating statement.", file, index + 1, "warning", "waste"));
     }
-    didPreviousTerminate = /\b(return|throw|process\.exit)\b/.test(trimmed) && trimmed.endsWith(";");
+    didPreviousTerminate = isTerminatingStatement(trimmed);
   });
+}
+
+function isBranchLabel(trimmedLine: string): boolean {
+  return /^(?:case\b.*:|default\s*:)$/.test(trimmedLine);
+}
+
+function isUnreachableStatement(trimmedLine: string, didPreviousTerminate: boolean, branchLabel: boolean): boolean {
+  return didPreviousTerminate && /\S/.test(trimmedLine) && !trimmedLine.startsWith(String.fromCharCode(125)) && !branchLabel;
+}
+
+function isTerminatingStatement(trimmedLine: string): boolean {
+  return /\b(return|throw|process\.exit)\b/.test(trimmedLine) && trimmedLine.endsWith(";");
 }
 
 function analyseUnusedImports(file: SourceFile, source: string, findings: Finding[]): void {
   const lines = source.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("import ") || !trimmed.includes(" from ")) {
-      continue;
-    }
-    const openBrace = trimmed.indexOf(String.fromCharCode(123));
-    const closeBrace = trimmed.indexOf(String.fromCharCode(125), openBrace + 1);
-    if (openBrace === -1 || closeBrace === -1 || closeBrace <= openBrace) {
-      continue;
-    }
-    for (const specifier of trimmed.slice(openBrace + 1, closeBrace).split(",")) {
-      const name = localImportName(specifier);
-      if (!name || countMatches(source, new RegExp(`\\b${escapeRegex(name)}\\b`, "g")) > 1) {
+    for (const specifier of namedImportSpecifiers(line)) {
+      const name = unusedImportName(source, specifier);
+      if (!name) {
         continue;
       }
-      findings.push(
-        makeFinding({
-          ruleId: "waste.unused-import",
-          message: `Imported symbol \`${name}\` does not appear to be used.`,
-          filePath: file.displayPath,
-          line: index + 1,
-          severity: "advisory",
-          pillar: "waste",
-          confidence: "medium",
-          symbol: name,
-          remediation: "Remove the unused import.",
-          metadata: { importName: name },
-        }),
-      );
+      findings.push(unusedImportFinding(file, name, index + 1));
     }
   }
+}
+
+function namedImportSpecifiers(line: string): string[] {
+  const trimmed = line.trim();
+  if (!isNamedImportLine(trimmed)) {
+    return [];
+  }
+  const openBrace = trimmed.indexOf(String.fromCharCode(123));
+  const closeBrace = trimmed.indexOf(String.fromCharCode(125), openBrace + 1);
+  if (!hasNamedImportBraces(openBrace, closeBrace)) {
+    return [];
+  }
+  return trimmed.slice(openBrace + 1, closeBrace).split(",");
+}
+
+function isNamedImportLine(trimmedLine: string): boolean {
+  return trimmedLine.startsWith("import ") && trimmedLine.includes(" from ");
+}
+
+function hasNamedImportBraces(openBrace: number, closeBrace: number): boolean {
+  return openBrace !== -1 && closeBrace !== -1 && closeBrace > openBrace;
+}
+
+function unusedImportName(source: string, specifier: string): string | undefined {
+  const name = localImportName(specifier);
+  if (!name || countMatches(source, new RegExp(`\\b${escapeRegex(name)}\\b`, "g")) > 1) {
+    return undefined;
+  }
+  return name;
+}
+
+function unusedImportFinding(file: SourceFile, name: string, line: number): Finding {
+  return makeFinding({
+    ruleId: "waste.unused-import",
+    message: `Imported symbol \`${name}\` does not appear to be used.`,
+    filePath: file.displayPath,
+    line,
+    severity: "advisory",
+    pillar: "waste",
+    confidence: "medium",
+    symbol: name,
+    remediation: "Remove the unused import.",
+    metadata: { importName: name },
+  });
 }
 
 function localImportName(specifier: string): string | undefined {
@@ -1815,7 +1962,7 @@ function localImportName(specifier: string): string | undefined {
   return match?.[0];
 }
 
-function approximateNpath(source: string): { value: number; capped: boolean } {
+function approximateNpath(source: string): NpathResult {
   let pathCount = 1;
   let isCapped = false;
   const normalized = source.replace(/\?\./g, "").replace(/\?\?/g, "");
@@ -1923,21 +2070,29 @@ function normalizedIdentifier(value: string): string {
 function docParamTags(doc: string): string[] {
   const names: string[] = [];
   for (const line of doc.split(/\r?\n/)) {
-    const marker = line.indexOf("@param");
-    if (marker === -1) {
-      continue;
-    }
-    let rest = line.slice(marker + "@param".length).trim();
-    if (rest.startsWith(String.fromCharCode(123))) {
-      const end = rest.indexOf(String.fromCharCode(125));
-      rest = end === -1 ? "" : rest.slice(end + 1).trim();
-    }
-    const match = rest.match(/^([A-Za-z_$][A-Za-z0-9_$]*)/);
-    if (match?.[1]) {
-      names.push(match[1]);
+    const name = docParamTagName(line);
+    if (name) {
+      names.push(name);
     }
   }
   return names;
+}
+
+function docParamTagName(line: string): string | undefined {
+  const marker = line.indexOf("@param");
+  if (marker === -1) {
+    return undefined;
+  }
+  const rest = stripDocParamType(line.slice(marker + "@param".length).trim());
+  return rest.match(/^([A-Za-z_$][A-Za-z0-9_$]*)/)?.[1];
+}
+
+function stripDocParamType(rest: string): string {
+  if (!rest.startsWith(String.fromCharCode(123))) {
+    return rest;
+  }
+  const end = rest.indexOf(String.fromCharCode(125));
+  return end === -1 ? "" : rest.slice(end + 1).trim();
 }
 
 function isUselessDocblock(doc: string, symbol: string): boolean {
@@ -1965,17 +2120,26 @@ function splitIdentifierWords(value: string): string[] {
 }
 
 function hasTrivialAssertion(source: string): boolean {
-  if (/\bassert\.ok\s*\(\s*true\s*\)/.test(source)) {
-    return true;
-  }
-  if (/\bassert\.(?:equal|strictEqual|deepEqual)\s*\(\s*(true|false|null|undefined|\d+|["'][^"']*["'])\s*,\s*\1\s*\)/.test(source)) {
-    return true;
-  }
+  return hasLiteralTrivialAssertion(source) || hasRepeatedAssertArgument(source) || hasRepeatedExpectArgument(source);
+}
+
+function hasLiteralTrivialAssertion(source: string): boolean {
+  return (
+    /\bassert\.ok\s*\(\s*true\s*\)/.test(source) ||
+    /\bassert\.(?:equal|strictEqual|deepEqual)\s*\(\s*(true|false|null|undefined|\d+|["'][^"']*["'])\s*,\s*\1\s*\)/.test(source)
+  );
+}
+
+function hasRepeatedAssertArgument(source: string): boolean {
   for (const match of source.matchAll(/\bassert\.(?:equal|strictEqual|deepEqual)\s*\(\s*([^,\n]+?)\s*,\s*([^,\n)]+?)(?:\s*,|\s*\))/g)) {
     if (normalizeAssertionExpression(match[1] ?? "") === normalizeAssertionExpression(match[2] ?? "")) {
       return true;
     }
   }
+  return false;
+}
+
+function hasRepeatedExpectArgument(source: string): boolean {
   for (const match of source.matchAll(/\bexpect\s*\(\s*([^)]+?)\s*\)\s*\.\s*to(?:Be|Equal|StrictEqual)\s*\(\s*([^)]+?)\s*\)/g)) {
     if (normalizeAssertionExpression(match[1] ?? "") === normalizeAssertionExpression(match[2] ?? "")) {
       return true;
@@ -2065,7 +2229,7 @@ function setupLineCount(source: string): number {
   let count = 0;
   for (const line of functionBodyContent(source).split(/\r?\n/)) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed === "});" || trimmed === "}") {
+    if (isIgnorableSetupLine(trimmed)) {
       continue;
     }
     if (hasAssertion(trimmed)) {
@@ -2076,89 +2240,126 @@ function setupLineCount(source: string): number {
   return count;
 }
 
+function isIgnorableSetupLine(trimmedLine: string): boolean {
+  return trimmedLine.length === 0 || trimmedLine === "});" || trimmedLine === "}";
+}
+
 function isTestInvocationLine(line: string): boolean {
   return /^\s*(?:test|it)\s*\(/.test(line);
 }
 
 function functionBlocks(source: string, codeSource = source): FunctionBlock[] {
-  const lines = source.split(/\r?\n/);
-  const codeLines = codeSource.split(/\r?\n/);
+  const scan: FunctionBlockScan = {
+    lines: source.split(/\r?\n/),
+    codeLines: codeSource.split(/\r?\n/),
+    patterns: functionBlockPatterns(),
+  };
   const blocks: FunctionBlock[] = [];
-  const patterns = [
+  scan.codeLines.forEach((line, index) => {
+    const match = functionBlockMatch(scan, line, index);
+    if (!match) {
+      return;
+    }
+    blocks.push(functionBlockFromMatch(scan, match, index));
+  });
+  return blocks;
+}
+
+function functionBlockPatterns(): RegExp[] {
+  return [
     /^\s*(?:test|it)\s*\(\s*["'`]([^"'`]+)["'`]\s*,\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
     /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)/,
     /^\s*(?:public|private|protected)?\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*[:{]/,
     /^\s*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
   ];
-  codeLines.forEach((line, index) => {
-    const rawLine = lines[index] ?? "";
-    const match = patterns.map((pattern, patternIndex) => (patternIndex === 0 && isTestInvocationLine(line) ? rawLine.match(pattern) : line.match(pattern))).find(Boolean);
-    if (!match?.[1]) {
-      return;
+}
+
+function functionBlockMatch(scan: FunctionBlockScan, line: string, index: number): RegExpMatchArray | undefined {
+  const rawLine = scan.lines[index] ?? "";
+  const match = scan.patterns.map((pattern, patternIndex) => (patternIndex === 0 && isTestInvocationLine(line) ? rawLine.match(pattern) : line.match(pattern))).find(Boolean);
+  if (!match?.[1] || isControlBlockName(match[1])) {
+    return undefined;
+  }
+  return match;
+}
+
+function functionBlockFromMatch(scan: FunctionBlockScan, match: RegExpMatchArray, index: number): FunctionBlock {
+  const start = functionStartIndex(scan.lines, index);
+  const end = functionEndIndex(scan, index);
+  const body = scan.lines.slice(start, end + 1).join("\n");
+  const codeBody = scan.codeLines.slice(start, end + 1).join("\n");
+  return {
+    name: match[1] ?? "",
+    params: match[2] ?? "",
+    startLine: start + 1,
+    lineCount: end - start + 1,
+    body,
+    codeBody,
+    isPublic: /\bexport\b|\bpublic\b/.test(scan.codeLines.slice(start, index + 1).join("\n")),
+    isTest: isTestInvocationLine(scan.codeLines[index] ?? ""),
+  };
+}
+
+function functionEndIndex(scan: FunctionBlockScan, index: number): number {
+  return expressionArrowEndIndex(scan.codeLines, index) ?? blockFunctionEndIndex(scan, index);
+}
+
+function blockFunctionEndIndex(scan: FunctionBlockScan, index: number): number {
+  const state: FunctionBodyScanState = { depth: 0, hasSeenOpen: false };
+  let end = index;
+  for (let current = index; current < scan.lines.length; current += 1) {
+    for (const character of scan.codeLines[current] ?? "") {
+      applyFunctionBodyCharacter(state, character);
     }
-    if (isControlBlockName(match[1])) {
-      return;
+    end = current;
+    if (isFunctionBodyClosed(state)) {
+      break;
     }
-    const start = functionStartIndex(lines, index);
-    const expressionArrowEnd = expressionArrowEndIndex(codeLines, index);
-    let depth = 0;
-    let hasSeenOpen = false;
-    let end = expressionArrowEnd ?? index;
-    if (expressionArrowEnd === undefined) {
-      for (let current = index; current < lines.length; current += 1) {
-        for (const character of codeLines[current] ?? "") {
-          if (character === "{") {
-            depth += 1;
-            hasSeenOpen = true;
-          } else if (character === "}") {
-            depth -= 1;
-          }
-        }
-        end = current;
-        if (hasSeenOpen && depth <= 0) {
-          break;
-        }
-      }
-    }
-    const body = lines.slice(start, end + 1).join("\n");
-    const codeBody = codeLines.slice(start, end + 1).join("\n");
-    blocks.push({
-      name: match[1],
-      params: match[2] ?? "",
-      startLine: start + 1,
-      lineCount: end - start + 1,
-      body,
-      codeBody,
-      isPublic: /\bexport\b|\bpublic\b/.test(codeLines.slice(start, index + 1).join("\n")),
-      isTest: isTestInvocationLine(codeLines[index] ?? ""),
-    });
-  });
-  return blocks;
+  }
+  return end;
+}
+
+function applyFunctionBodyCharacter(state: FunctionBodyScanState, character: string): void {
+  if (character === "{") {
+    state.depth += 1;
+    state.hasSeenOpen = true;
+  } else if (character === "}") {
+    state.depth -= 1;
+  }
+}
+
+function isFunctionBodyClosed(state: FunctionBodyScanState): boolean {
+  return state.hasSeenOpen && state.depth <= 0;
 }
 
 function expressionArrowEndIndex(codeLines: string[], index: number): number | undefined {
   const line = codeLines[index] ?? "";
   const arrowIndex = line.indexOf("=>");
-  if (arrowIndex === -1 || line.slice(arrowIndex + 2).includes("{")) {
+  if (!isExpressionArrowLine(line, arrowIndex)) {
     return undefined;
   }
   for (let current = index; current < codeLines.length; current += 1) {
-    const trimmed = (codeLines[current] ?? "").trim();
-    if (current === index) {
-      const tail = line.slice(arrowIndex + 2).trim();
-      if (tail.endsWith(";")) {
-        return current;
-      }
-      continue;
-    }
-    if (trimmed === "") {
-      return current - 1;
-    }
-    if (trimmed.endsWith(";")) {
-      return current;
+    const endIndex = expressionArrowEndStep(codeLines, line, arrowIndex, index, current);
+    if (endIndex !== undefined) {
+      return endIndex;
     }
   }
   return index;
+}
+
+function isExpressionArrowLine(line: string, arrowIndex: number): boolean {
+  return arrowIndex !== -1 && !line.slice(arrowIndex + 2).includes("{");
+}
+
+function expressionArrowEndStep(codeLines: string[], line: string, arrowIndex: number, start: number, current: number): number | undefined {
+  const trimmed = (codeLines[current] ?? "").trim();
+  if (current === start) {
+    return line.slice(arrowIndex + 2).trim().endsWith(";") ? current : undefined;
+  }
+  if (trimmed === "") {
+    return current - 1;
+  }
+  return trimmed.endsWith(";") ? current : undefined;
 }
 
 function isControlBlockName(name: string): boolean {
@@ -2169,7 +2370,7 @@ function functionStartIndex(lines: string[], index: number): number {
   let start = index;
   while (start > 0) {
     const previous = lines[start - 1]?.trim() ?? "";
-    if (previous.startsWith("@") || previous.startsWith("/**") || previous.startsWith("*") || previous === "") {
+    if (isFunctionPrefixLine(previous)) {
       start -= 1;
       continue;
     }
@@ -2178,37 +2379,8 @@ function functionStartIndex(lines: string[], index: number): number {
   return start;
 }
 
-function makeFinding(input: {
-  ruleId: string;
-  message: string;
-  filePath: string;
-  line?: number;
-  severity: Severity;
-  pillar: Pillar;
-  confidence: Confidence;
-  symbol?: string;
-  remediation?: string;
-  metadata?: Record<string, unknown>;
-}): Finding {
-  const fingerprint = createHash("sha256")
-    .update([input.ruleId, input.filePath, input.line ?? "", input.symbol ?? ""].join("\0"))
-    .digest("hex")
-    .slice(0, 16);
-  return {
-    ruleId: input.ruleId,
-    message: input.message,
-    filePath: input.filePath,
-    ...(input.line ? { line: input.line } : {}),
-    severity: input.severity,
-    pillar: input.pillar,
-    secondaryPillars: [],
-    tier: "v0.1",
-    confidence: input.confidence,
-    ...(input.symbol ? { symbol: input.symbol } : {}),
-    ...(input.remediation ? { remediation: input.remediation } : {}),
-    metadata: input.metadata ?? {},
-    fingerprint,
-  };
+function isFunctionPrefixLine(trimmedLine: string): boolean {
+  return trimmedLine.startsWith("@") || trimmedLine.startsWith("/**") || trimmedLine.startsWith("*") || trimmedLine === "";
 }
 
 function finding(ruleId: string, message: string, file: SourceFile, line: number, severity: Severity, pillar: Pillar): Finding {
@@ -2275,53 +2447,80 @@ function thresholdTriggered(thresholdValue: FailThreshold, severity: Severity): 
   return severity === "error";
 }
 
+interface DashboardContext {
+  host: string;
+  port: number;
+  projectRoot: string;
+}
+
+interface DashboardRouteInput {
+  root: string;
+  scanPath: string;
+}
+
 function startDashboard(host: string, port: number, projectRoot: string, outputEnabled = true): void {
-  const server = createServer((request, response) => {
-    const url = new URL(request.url ?? "/", `http://${host}:${port}`);
-    if (url.pathname === "/health") {
-      response.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-      response.end("ok");
-      return;
-    }
-    if (url.pathname === "/scan") {
-      const root = url.searchParams.get("projectRoot") ?? projectRoot;
-      const scanPath = url.searchParams.get("path") ?? ".";
-      const previous = cwd();
-      try {
-        chdir(root);
-        const report = analyse({
-          paths: [scanPath],
-          noConfig: false,
-          format: "html",
-          failOn: "none",
-          includeIgnored: false,
-          noBaseline: false,
-        });
-        response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        response.end(renderHtml(report, { projectRoot: root, scanPath }));
-      } catch (error) {
-        response.writeHead(500, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        response.end(dashboardErrorHtml(String(error), root, scanPath));
-      } finally {
-        chdir(previous);
-      }
-      return;
-    }
-    if (url.pathname !== "/") {
-      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-      response.end("not found");
-      return;
-    }
-    const root = url.searchParams.get("projectRoot") ?? projectRoot;
-    const scanPath = url.searchParams.get("path") ?? ".";
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-    response.end(dashboardHomeHtml(root, scanPath));
-  });
+  const context: DashboardContext = { host, port, projectRoot };
+  const server = createServer((request, response) => handleDashboardRequest(context, request, response));
   server.listen(port, host, () => {
     if (outputEnabled) {
       stdout.write(`gruff-ts dashboard listening at http://${host}:${port}\n`);
     }
   });
+}
+
+function handleDashboardRequest(context: DashboardContext, request: IncomingMessage, response: ServerResponse): void {
+  const url = new URL(request.url ?? "/", `http://${context.host}:${context.port}`);
+  if (url.pathname === "/health") {
+    writeTextResponse(response, 200, "ok", true);
+    return;
+  }
+  if (url.pathname === "/scan") {
+    renderDashboardScan(response, dashboardRouteInput(url, context.projectRoot));
+    return;
+  }
+  if (url.pathname !== "/") {
+    writeTextResponse(response, 404, "not found", false);
+    return;
+  }
+  const input = dashboardRouteInput(url, context.projectRoot);
+  writeHtmlResponse(response, 200, dashboardHomeHtml(input.root, input.scanPath));
+}
+
+function dashboardRouteInput(url: URL, projectRoot: string): DashboardRouteInput {
+  return {
+    root: url.searchParams.get("projectRoot") ?? projectRoot,
+    scanPath: url.searchParams.get("path") ?? ".",
+  };
+}
+
+function renderDashboardScan(response: ServerResponse, input: DashboardRouteInput): void {
+  const previous = cwd();
+  try {
+    chdir(input.root);
+    const report = analyse({
+      paths: [input.scanPath],
+      noConfig: false,
+      format: "html",
+      failOn: "none",
+      includeIgnored: false,
+      noBaseline: false,
+    });
+    writeHtmlResponse(response, 200, renderHtml(report, { projectRoot: input.root, scanPath: input.scanPath }));
+  } catch (error) {
+    writeHtmlResponse(response, 500, dashboardErrorHtml(String(error), input.root, input.scanPath));
+  } finally {
+    chdir(previous);
+  }
+}
+
+function writeHtmlResponse(response: ServerResponse, statusCode: number, body: string): void {
+  response.writeHead(statusCode, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+  response.end(body);
+}
+
+function writeTextResponse(response: ServerResponse, statusCode: number, body: string, noStore: boolean): void {
+  response.writeHead(statusCode, { "content-type": "text/plain; charset=utf-8", ...(noStore ? { "cache-control": "no-store" } : {}) });
+  response.end(body);
 }
 
 function renderRuleList(format: RuleListFormat): string {
@@ -2375,40 +2574,60 @@ function ansiWrap(value: string, color: string, useAnsi: boolean): string {
 }
 
 function renderCompletionScript(shell: CompletionShell): string {
-  const commands = CONSOLE_COMMANDS.filter((command) => command.name !== "help").map((command) => command.name).join(" ");
-  const options = "-h --help --silent -q --quiet -V --version --ansi --no-ansi -n --no-interaction -v -vv -vvv --verbose";
+  const context = completionContext();
   if (shell === "fish") {
-    return [
-      "complete -c gruff-ts -f",
-      ...commands.split(" ").map((command) => `complete -c gruff-ts -n '__fish_use_subcommand' -a '${command}'`),
-      ...options.split(" ").map((option) => `complete -c gruff-ts -a '${option}'`),
-      "",
-    ].join("\n");
+    return renderFishCompletion(context);
   }
   if (shell === "zsh") {
-    return [
-      "#compdef gruff-ts",
-      "_gruff_ts() {",
-      "  local -a commands",
-      `  commands=(${commands})`,
-      "  _arguments '1:command:->commands' '*::arg:->args'",
-      "  case $state in",
-      "    commands) _describe 'command' commands ;;",
-      "    args) _values 'option' " + options.split(" ").map((option) => `'${option}'`).join(" ") + " ;;",
-      "  esac",
-      "}",
-      "_gruff_ts \"$@\"",
-      "",
-    ].join("\n");
+    return renderZshCompletion(context);
   }
+  return renderBashCompletion(context);
+}
+
+function completionContext(): CompletionContext {
+  return {
+    commands: CONSOLE_COMMANDS.filter((command) => command.name !== "help").map((command) => command.name).join(" "),
+    options: "-h --help --silent -q --quiet -V --version --ansi --no-ansi -n --no-interaction -v -vv -vvv --verbose",
+  };
+}
+
+function renderFishCompletion(context: CompletionContext): string {
+  return [
+    "complete -c gruff-ts -f",
+    ...context.commands.split(" ").map((command) => `complete -c gruff-ts -n '__fish_use_subcommand' -a '${command}'`),
+    ...context.options.split(" ").map((option) => `complete -c gruff-ts -a '${option}'`),
+    "",
+  ].join("\n");
+}
+
+function renderZshCompletion(context: CompletionContext): string {
+  return [
+    "#compdef gruff-ts",
+    "_gruff_ts() {",
+    "  local -a commands",
+    `  commands=(${context.commands})`,
+    "  _arguments '1:command:->commands' '*::arg:->args'",
+    "  case $state in",
+    "    commands) _describe 'command' commands ;;",
+    "    args) _values 'option' " + context.options.split(" ").map((option) => `'${option}'`).join(" ") + " ;;",
+    "  esac",
+    "}",
+    "_gruff_ts \"$@\"",
+    "",
+  ].join("\n");
+}
+
+function renderBashCompletion({ commands, options }: CompletionContext): string {
+  const commandsLine = `  commands=\"${commands}\"`;
+  const optionsLine = `  options=\"${options}\"`;
   return [
     "_gruff_ts_completion() {",
     "  local current previous commands options",
     "  COMPREPLY=()",
     "  current=\"${COMP_WORDS[COMP_CWORD]}\"",
     "  previous=\"${COMP_WORDS[COMP_CWORD-1]}\"",
-    `  commands=\"${commands}\"`,
-    `  options=\"${options}\"`,
+    commandsLine,
+    optionsLine,
     "  if [ \"$COMP_CWORD\" -eq 1 ]; then",
     "    COMPREPLY=( $(compgen -W \"$commands $options\" -- \"$current\") )",
     "  else",
@@ -2453,6 +2672,18 @@ function ansiEnabled(program: Command): boolean {
 
 function buildProgram(): Command {
   const program = new Command();
+  configureRootProgram(program);
+  registerAnalyseCommand(program);
+  registerCompletionCommand(program);
+  registerDashboardCommand(program);
+  registerListCommand(program);
+  registerListRulesCommand(program);
+  registerReportCommand(program);
+  registerSummaryCommand(program);
+  return program;
+}
+
+function configureRootProgram(program: Command): void {
   program
     .name("gruff-ts")
     .usage("command [options] [arguments]")
@@ -2468,24 +2699,30 @@ function buildProgram(): Command {
     .showHelpAfterError()
     .configureHelp({
       formatHelp(command, helper) {
-        if (command === program) {
-          return renderConsoleList(ansiEnabled(program));
-        }
-        const defaultHelp = new Help();
-        defaultHelp.showGlobalOptions = true;
-        if (helper.helpWidth !== undefined) {
-          defaultHelp.helpWidth = helper.helpWidth;
-        }
-        if (helper.minWidthToWrap !== undefined) {
-          defaultHelp.minWidthToWrap = helper.minWidthToWrap;
-        }
-        return defaultHelp.formatHelp(command, defaultHelp);
+        return rootHelpText(program, command, helper);
       },
     })
     .action(() => {
       writeCommandOutput(program, renderConsoleList(ansiEnabled(program)));
     });
+}
 
+function rootHelpText(program: Command, command: Command, helper: Help): string {
+  if (command === program) {
+    return renderConsoleList(ansiEnabled(program));
+  }
+  const defaultHelp = new Help();
+  defaultHelp.showGlobalOptions = true;
+  if (helper.helpWidth !== undefined) {
+    defaultHelp.helpWidth = helper.helpWidth;
+  }
+  if (helper.minWidthToWrap !== undefined) {
+    defaultHelp.minWidthToWrap = helper.minWidthToWrap;
+  }
+  return defaultHelp.formatHelp(command, defaultHelp);
+}
+
+function registerAnalyseCommand(program: Command): void {
   program
     .command("analyse")
     .description("Run gruff analysis.")
@@ -2506,7 +2743,9 @@ function buildProgram(): Command {
       writeCommandOutput(program, renderReport(report, options.format));
       process.exitCode = exitFor(report, options.failOn);
     });
+}
 
+function registerCompletionCommand(program: Command): void {
   program
     .command("completion")
     .description("Dump the shell completion script")
@@ -2514,7 +2753,9 @@ function buildProgram(): Command {
     .action((shell: string) => {
       writeCommandOutput(program, renderCompletionScript(completionShell(shell)));
     });
+}
 
+function registerDashboardCommand(program: Command): void {
   program
     .command("dashboard")
     .description("Serve the local gruff dashboard.")
@@ -2524,14 +2765,18 @@ function buildProgram(): Command {
     .action((rawOptions: Record<string, unknown>) => {
       startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), resolve(String(rawOptions.projectRoot ?? ".")), !outputSuppressed(program));
     });
+}
 
+function registerListCommand(program: Command): void {
   program
     .command("list")
     .description("List commands")
     .action(() => {
       writeCommandOutput(program, renderConsoleList(ansiEnabled(program)));
     });
+}
 
+function registerListRulesCommand(program: Command): void {
   program
     .command("list-rules")
     .description("List gruff rule metadata.")
@@ -2540,7 +2785,9 @@ function buildProgram(): Command {
       const format: RuleListFormat = rawOptions.format === "json" ? "json" : "text";
       writeCommandOutput(program, renderRuleList(format));
     });
+}
 
+function registerReportCommand(program: Command): void {
   program
     .command("report")
     .description("Render a gruff report to stdout or a file.")
@@ -2564,7 +2811,9 @@ function buildProgram(): Command {
       }
       process.exitCode = exitFor(report, options.failOn);
     });
+}
 
+function registerSummaryCommand(program: Command): void {
   program
     .command("summary")
     .description(
@@ -2586,8 +2835,6 @@ function buildProgram(): Command {
       writeCommandOutput(program, renderSummary(report));
       process.exitCode = exitFor(report, options.failOn);
     });
-
-  return program;
 }
 
 function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, context: NormalizeContext): AnalysisOptions {
@@ -2597,21 +2844,49 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
   const noBaseline = baselineValue === false || rawOptions.noBaseline === true;
   return {
     paths,
-    ...(typeof rawOptions.config === "string" ? { config: rawOptions.config } : {}),
+    ...configOption(rawOptions),
     noConfig: rawOptions.config === false || rawOptions.noConfig === true,
     format,
     failOn,
     includeIgnored: rawOptions.includeIgnored === true,
-    ...(typeof rawOptions.diff === "string" ? { diff: rawOptions.diff } : rawOptions.diff === true ? { diff: "working-tree" } : {}),
-    ...(typeof rawOptions.historyFile === "string" ? { historyFile: rawOptions.historyFile } : {}),
-    ...(context.allowBaselineFlag && typeof baselineValue === "string" ? { baseline: baselineValue } : context.allowBaselineFlag && baselineValue === true ? { baseline: DEFAULT_BASELINE } : {}),
-    ...(typeof rawOptions.generateBaseline === "string"
-      ? { generateBaseline: rawOptions.generateBaseline }
-      : rawOptions.generateBaseline === true
-        ? { generateBaseline: DEFAULT_BASELINE }
-        : {}),
+    ...diffOption(rawOptions),
+    ...historyFileOption(rawOptions),
+    ...baselineOption(baselineValue, context),
+    ...generateBaselineOption(rawOptions),
     noBaseline,
   };
+}
+
+function configOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "config">> {
+  return typeof rawOptions.config === "string" ? { config: rawOptions.config } : {};
+}
+
+function diffOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "diff">> {
+  if (typeof rawOptions.diff === "string") {
+    return { diff: rawOptions.diff };
+  }
+  return rawOptions.diff === true ? { diff: "working-tree" } : {};
+}
+
+function historyFileOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "historyFile">> {
+  return typeof rawOptions.historyFile === "string" ? { historyFile: rawOptions.historyFile } : {};
+}
+
+function baselineOption(baselineValue: unknown, context: NormalizeContext): Partial<Pick<AnalysisOptions, "baseline">> {
+  if (!context.allowBaselineFlag) {
+    return {};
+  }
+  if (typeof baselineValue === "string") {
+    return { baseline: baselineValue };
+  }
+  return baselineValue === true ? { baseline: DEFAULT_BASELINE } : {};
+}
+
+function generateBaselineOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "generateBaseline">> {
+  if (typeof rawOptions.generateBaseline === "string") {
+    return { generateBaseline: rawOptions.generateBaseline };
+  }
+  return rawOptions.generateBaseline === true ? { generateBaseline: DEFAULT_BASELINE } : {};
 }
 
 function changedFiles(mode: string): Set<string> {
@@ -2683,13 +2958,21 @@ function isDefaultIgnoredDir(path: string): boolean {
 }
 
 function isIgnoredDiscoveryPath(display: string, isDirectory: boolean, options: AnalysisOptions, config: Config, gitIgnoreRules: GitIgnoreRule[]): boolean {
-  if (!options.includeIgnored && isDirectory && isDefaultIgnoredDir(display)) {
+  if (isDefaultIgnoredDiscoveryPath(display, isDirectory, options)) {
     return true;
   }
-  if (!options.includeIgnored && isGitIgnoredPath(gitIgnoreRules, display, isDirectory)) {
+  if (isGitIgnoredDiscoveryPath(display, isDirectory, options, gitIgnoreRules)) {
     return true;
   }
   return config.ignoredPaths.some((pattern) => pathMatches(pattern, display));
+}
+
+function isDefaultIgnoredDiscoveryPath(display: string, isDirectory: boolean, options: AnalysisOptions): boolean {
+  return !options.includeIgnored && isDirectory && isDefaultIgnoredDir(display);
+}
+
+function isGitIgnoredDiscoveryPath(display: string, isDirectory: boolean, options: AnalysisOptions, gitIgnoreRules: GitIgnoreRule[]): boolean {
+  return !options.includeIgnored && isGitIgnoredPath(gitIgnoreRules, display, isDirectory);
 }
 
 function gitIgnoreRulesForDirectory(projectRoot: string, directory: string): GitIgnoreRule[] {
@@ -2722,37 +3005,48 @@ function appendGitIgnoreRules(projectRoot: string, directory: string, inheritedR
 function parseGitIgnoreRules(source: string, basePath: string): GitIgnoreRule[] {
   const rules: GitIgnoreRule[] = [];
   for (const rawLine of source.replace(/\r\n/g, "\n").split("\n")) {
-    let line = rawLine.trimEnd();
-    if (line.length === 0 || line.startsWith("#")) {
-      continue;
+    const rule = parseGitIgnoreRule(rawLine, basePath);
+    if (rule) {
+      rules.push(rule);
     }
-    if (line.startsWith("\\#") || line.startsWith("\\!")) {
-      line = line.slice(1);
-    }
-
-    const negated = line.startsWith("!");
-    if (negated) {
-      line = line.slice(1);
-    }
-    if (line.length === 0) {
-      continue;
-    }
-
-    const anchored = line.startsWith("/");
-    line = line.replace(/^\/+/, "");
-    const directoryOnly = line.endsWith("/");
-    line = line.replace(/\/+$/, "");
-    if (line.length === 0) {
-      continue;
-    }
-
-    const pattern = line
-      .split("/")
-      .filter((segment) => segment.length > 0)
-      .join("/");
-    rules.push({ basePath, pattern, negated, directoryOnly, anchored, hasSlash: pattern.includes("/") });
   }
   return rules;
+}
+
+function parseGitIgnoreRule(rawLine: string, basePath: string): GitIgnoreRule | undefined {
+  const initial = unescapedGitIgnoreLine(rawLine);
+  if (!initial) {
+    return undefined;
+  }
+  const negated = initial.startsWith("!");
+  const withoutNegation = negated ? initial.slice(1) : initial;
+  if (withoutNegation.length === 0) {
+    return undefined;
+  }
+  const anchored = withoutNegation.startsWith("/");
+  const directoryOnly = withoutNegation.endsWith("/");
+  const pattern = normalizedGitIgnorePattern(withoutNegation);
+  if (pattern.length === 0) {
+    return undefined;
+  }
+  return { basePath, pattern, negated, directoryOnly, anchored, hasSlash: pattern.includes("/") };
+}
+
+function unescapedGitIgnoreLine(rawLine: string): string | undefined {
+  const line = rawLine.trimEnd();
+  if (line.length === 0 || line.startsWith("#")) {
+    return undefined;
+  }
+  return line.startsWith("\\#") || line.startsWith("\\!") ? line.slice(1) : line;
+}
+
+function normalizedGitIgnorePattern(line: string): string {
+  return line
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .split("/")
+    .filter((segment) => segment.length > 0)
+    .join("/");
 }
 
 function isGitIgnoredPath(rules: GitIgnoreRule[], display: string, isDirectory: boolean): boolean {
@@ -2774,19 +3068,27 @@ function gitIgnoreRuleMatches(rule: GitIgnoreRule, display: string, isDirectory:
   if (rule.directoryOnly) {
     return gitIgnoreDirectoryRuleMatches(rule, relativePath, isDirectory);
   }
-  if (rule.anchored || rule.hasSlash) {
+  return gitIgnoreFileRuleMatches(rule, relativePath, isDirectory);
+}
+
+function gitIgnoreFileRuleMatches(rule: GitIgnoreRule, relativePath: string, isDirectory: boolean): boolean {
+  if (isPathScopedGitIgnoreRule(rule)) {
     return gitIgnorePathCandidates(relativePath, isDirectory, true).some((candidate) => gitIgnoreGlobMatches(rule.pattern, candidate));
   }
   return relativePath.split("/").some((segment) => gitIgnoreGlobMatches(rule.pattern, segment));
 }
 
 function gitIgnoreDirectoryRuleMatches(rule: GitIgnoreRule, relativePath: string, isDirectory: boolean): boolean {
-  if (rule.anchored || rule.hasSlash) {
+  if (isPathScopedGitIgnoreRule(rule)) {
     return gitIgnorePathCandidates(relativePath, isDirectory, false).some((candidate) => gitIgnoreGlobMatches(rule.pattern, candidate));
   }
   const segments = relativePath.split("/");
   const directorySegments = isDirectory ? segments : segments.slice(0, -1);
   return directorySegments.some((segment) => gitIgnoreGlobMatches(rule.pattern, segment));
+}
+
+function isPathScopedGitIgnoreRule(rule: GitIgnoreRule): boolean {
+  return rule.anchored || rule.hasSlash;
 }
 
 function gitIgnorePathCandidates(relativePath: string, isDirectory: boolean, includeFilePath: boolean): string[] {
@@ -2806,30 +3108,34 @@ function gitIgnoreGlobMatches(pattern: string, value: string): boolean {
 function gitIgnoreGlobRegex(pattern: string): RegExp {
   let source = "^";
   for (let index = 0; index < pattern.length; index += 1) {
-    const character = pattern[index];
-    if (character === "*") {
-      const next = pattern[index + 1];
-      const afterNext = pattern[index + 2];
-      if (next === "*") {
-        if (afterNext === "/") {
-          source += "(?:.*/)?";
-          index += 2;
-        } else {
-          source += ".*";
-          index += 1;
-        }
-      } else {
-        source += "[^/]*";
-      }
-      continue;
-    }
-    if (character === "?") {
-      source += "[^/]";
-      continue;
-    }
-    source += escapeRegex(character ?? "");
+    const fragment = gitIgnoreGlobFragment(pattern, index);
+    source += fragment.source;
+    index += fragment.skip;
   }
   return new RegExp(`${source}$`);
+}
+
+function gitIgnoreGlobFragment(pattern: string, index: number): { source: string; skip: number } {
+  const character = pattern[index] ?? "";
+  if (character === "*") {
+    return gitIgnoreStarFragment(pattern, index);
+  }
+  if (character === "?") {
+    return { source: "[^/]", skip: 0 };
+  }
+  return { source: escapeRegex(character), skip: 0 };
+}
+
+function gitIgnoreStarFragment(pattern: string, index: number): { source: string; skip: number } {
+  const next = pattern[index + 1];
+  const afterNext = pattern[index + 2];
+  if (next !== "*") {
+    return { source: "[^/]*", skip: 0 };
+  }
+  if (afterNext === "/") {
+    return { source: "(?:.*/)?", skip: 2 };
+  }
+  return { source: ".*", skip: 1 };
 }
 
 function pathRelativeToBase(basePath: string, display: string): string | undefined {
@@ -2899,10 +3205,10 @@ function hasDocCommentBeforeLine(source: string, line: number): boolean {
   let index = line - 2;
   while (index >= 0) {
     const current = lines[index]?.trim() ?? "";
-    if (current.startsWith("/**") || current.startsWith("*")) {
+    if (isDocCommentLine(current)) {
       return true;
     }
-    if (current !== "" && !current.startsWith("@")) {
+    if (isDocCommentSearchBoundary(current)) {
       return false;
     }
     index -= 1;
@@ -2910,38 +3216,16 @@ function hasDocCommentBeforeLine(source: string, line: number): boolean {
   return false;
 }
 
+function isDocCommentLine(trimmedLine: string): boolean {
+  return trimmedLine.startsWith("/**") || trimmedLine.startsWith("*");
+}
+
+function isDocCommentSearchBoundary(trimmedLine: string): boolean {
+  return trimmedLine !== "" && !trimmedLine.startsWith("@");
+}
+
 function isGenericName(name: string): boolean {
   return ["process", "handle", "doit", "run", "execute", "manage"].includes(name.toLowerCase());
-}
-
-function isHighEntropySecretCandidate(value: string, minLength: number): boolean {
-  if (value.length < minLength || /^[0-9a-f]+$/i.test(value) || /^sha(?:256|384|512)-[A-Za-z0-9+/=]+$/.test(value)) {
-    return false;
-  }
-  if (!/[a-z]/.test(value) || !/[A-Z]/.test(value) || !/[0-9]/.test(value)) {
-    return false;
-  }
-  if (new Set(value).size < Math.min(12, Math.ceil(value.length / 3))) {
-    return false;
-  }
-  return shannonEntropy(value) >= 4;
-}
-
-function shannonEntropy(value: string): number {
-  const counts = new Map<string, number>();
-  for (const character of value) {
-    counts.set(character, (counts.get(character) ?? 0) + 1);
-  }
-  return [...counts.values()].reduce((sum, count) => {
-    const probability = count / value.length;
-    return sum - probability * Math.log2(probability);
-  }, 0);
-}
-function redact(value: string): string {
-  if (value.length <= 8) {
-    return `${"*".repeat(value.length)} (redacted, ${value.length} chars)`;
-  }
-  return `${value.slice(0, 4)}...${value.slice(-4)} (redacted, ${value.length} chars)`;
 }
 
 function severityPenalty(severity: Severity): number {

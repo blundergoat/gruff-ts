@@ -2185,7 +2185,8 @@ test("rule descriptor threshold keys match implementation and config defaults", 
   const descriptorThresholds = new Map(
     descriptors.filter((descriptor) => (descriptor.thresholdKeys ?? []).length > 0).map((descriptor) => [descriptor.ruleId, [...(descriptor.thresholdKeys ?? [])].sort()]),
   );
-  const implementationThresholds = thresholdUsages(readFileSync("src/cli.ts", "utf8"));
+  const implementationSources = ["src/cli.ts", "src/sensitive-data-rules.ts"].map((path) => readFileSync(path, "utf8")).join("\n");
+  const implementationThresholds = thresholdUsages(implementationSources);
   assert.deepEqual(descriptorThresholds, implementationThresholds);
 
   const configThresholds = yamlThresholdDefaults(readFileSync(".gruff.yaml", "utf8"));
@@ -3023,7 +3024,7 @@ API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
 
 function thresholdUsages(source: string): Map<string, string[]> {
   const usages = new Map<string, Set<string>>();
-  for (const match of source.matchAll(/threshold\(config,\s*"([^"]+)",\s*"([^"]+)"/g)) {
+  for (const match of source.matchAll(/threshold\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)"/g)) {
     const ruleId = match[1] ?? "";
     const key = match[2] ?? "";
     usages.set(ruleId, usages.get(ruleId) ?? new Set<string>());

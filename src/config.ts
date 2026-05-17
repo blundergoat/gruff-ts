@@ -22,46 +22,72 @@ function loadConfig(projectRoot: string, options: AnalysisOptions): Config {
   if (options.noConfig) {
     return config;
   }
-  const path = options.config ? absolutize(projectRoot, options.config) : defaultConfigPath(projectRoot);
+  const path = selectedConfigPath(projectRoot, options);
   if (!path) {
     return config;
   }
 
-  const raw = parseConfigFile(path);
+  applyConfigValues(config, parseConfigFile(path));
+  return config;
+}
+
+function selectedConfigPath(projectRoot: string, options: AnalysisOptions): string | undefined {
+  return options.config ? absolutize(projectRoot, options.config) : defaultConfigPath(projectRoot);
+}
+
+function applyConfigValues(config: Config, raw: Record<string, unknown>): void {
+  applyPathConfig(config, raw);
+  applyAllowlistConfig(config, raw);
+  applyRuleConfig(config, raw);
+}
+
+function applyPathConfig(config: Config, raw: Record<string, unknown>): void {
   const paths = objectValue(raw.paths);
   config.ignoredPaths = arrayValue(paths?.ignore).filter(isString);
+}
 
+function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): void {
   const allowlists = objectValue(raw.allowlists);
   const abbreviations = arrayValue(allowlists?.acceptedAbbreviations).filter(isString);
   if (abbreviations.length > 0) {
     config.acceptedAbbreviations = new Set(abbreviations.map((value) => value.toLowerCase()));
   }
   config.secretPreviews = new Set(arrayValue(allowlists?.secretPreviews).filter(isString));
+}
 
+function applyRuleConfig(config: Config, raw: Record<string, unknown>): void {
   const rules = objectValue(raw.rules);
-  if (rules) {
-    for (const [ruleId, value] of Object.entries(rules)) {
-      const rule = objectValue(value);
-      if (!rule) {
-        continue;
-      }
-      const thresholds = new Map<string, number>();
-      const rawThresholds = objectValue(rule.thresholds);
-      if (rawThresholds) {
-        for (const [name, threshold] of Object.entries(rawThresholds)) {
-          if (typeof threshold === "number") {
-            thresholds.set(name, threshold);
-          }
-        }
-      }
-      config.rules.set(ruleId, {
-        ...(typeof rule.enabled === "boolean" ? { enabled: rule.enabled } : {}),
-        thresholds,
-      });
+  if (!rules) {
+    return;
+  }
+  for (const [ruleId, value] of Object.entries(rules)) {
+    const rule = objectValue(value);
+    if (!rule) {
+      continue;
+    }
+    config.rules.set(ruleId, ruleConfigValue(rule));
+  }
+}
+
+function ruleConfigValue(rule: Record<string, unknown>): { enabled?: boolean; thresholds: Map<string, number> } {
+  return {
+    ...(typeof rule.enabled === "boolean" ? { enabled: rule.enabled } : {}),
+    thresholds: thresholdConfigValue(rule.thresholds),
+  };
+}
+
+function thresholdConfigValue(value: unknown): Map<string, number> {
+  const thresholds = new Map<string, number>();
+  const rawThresholds = objectValue(value);
+  if (!rawThresholds) {
+    return thresholds;
+  }
+  for (const [name, threshold] of Object.entries(rawThresholds)) {
+    if (typeof threshold === "number") {
+      thresholds.set(name, threshold);
     }
   }
-
-  return config;
+  return thresholds;
 }
 
 function defaultConfigPath(projectRoot: string): string | undefined {
@@ -90,96 +116,102 @@ interface YamlLine {
   content: string;
 }
 
+interface YamlParser {
+  lines: YamlLine[];
+  index: number;
+}
+
 function parseYamlConfig(source: string): Record<string, unknown> {
-  const lines = yamlLines(source);
-  let index = 0;
-
-  function parseBlock(indent: number): unknown {
-    const line = lines[index];
-    if (!line || line.indent < indent) {
-      return {};
-    }
-    return line.content.startsWith("- ") || line.content === "-" ? parseYamlArray(line.indent) : parseYamlObject(line.indent);
-  }
-
-  function parseYamlObject(indent: number): Record<string, unknown> {
-    const result: Record<string, unknown> = {};
-    while (index < lines.length) {
-      const line = lines[index];
-      if (!line || line.indent < indent) {
-        break;
-      }
-      if (line.indent > indent) {
-        throw new Error(`Invalid YAML indentation near "${line.content}".`);
-      }
-      if (line.content.startsWith("- ") || line.content === "-") {
-        break;
-      }
-
-      const pair = splitYamlKeyValue(line.content);
-      if (!pair) {
-        throw new Error(`Invalid YAML mapping line: "${line.content}".`);
-      }
-      const [rawKey, rawValue] = pair;
-      const key = unquoteYaml(rawKey.trim());
-      const scalarText = rawValue.trim();
-      index += 1;
-
-      if (scalarText.length > 0) {
-        result[key] = parseYamlScalar(scalarText);
-        continue;
-      }
-
-      const nestedIndent = lines[index]?.indent;
-      result[key] = nestedIndent !== undefined && nestedIndent > indent ? parseBlock(nestedIndent) : {};
-    }
-    return result;
-  }
-
-  function parseYamlArray(indent: number): unknown[] {
-    const result: unknown[] = [];
-    while (index < lines.length) {
-      const line = lines[index];
-      if (!line || line.indent < indent) {
-        break;
-      }
-      if (line.indent > indent) {
-        throw new Error(`Invalid YAML indentation near "${line.content}".`);
-      }
-      if (!line.content.startsWith("- ") && line.content !== "-") {
-        break;
-      }
-
-      const itemText = line.content === "-" ? "" : line.content.slice(2).trim();
-      index += 1;
-      if (itemText.length === 0) {
-        const nestedIndent = lines[index]?.indent;
-        result.push(nestedIndent !== undefined && nestedIndent > indent ? parseBlock(nestedIndent) : null);
-        continue;
-      }
-
-      const pair = splitYamlKeyValue(itemText);
-      if (pair) {
-        const [rawKey, rawValue] = pair;
-        const scalarText = rawValue.trim();
-        const entry: Record<string, unknown> = {};
-        const nestedIndent = lines[index]?.indent;
-        entry[unquoteYaml(rawKey.trim())] = scalarText.length > 0 ? parseYamlScalar(scalarText) : nestedIndent !== undefined && nestedIndent > indent ? parseBlock(nestedIndent) : {};
-        result.push(entry);
-        continue;
-      }
-
-      result.push(parseYamlScalar(itemText));
-    }
-    return result;
-  }
-
-  const parsed = lines.length === 0 ? {} : parseBlock(lines[0]?.indent ?? 0);
+  const parser = { lines: yamlLines(source), index: 0 };
+  const parsed = parser.lines.length === 0 ? {} : parseYamlBlock(parser, parser.lines[0]?.indent ?? 0);
   const config = objectValue(parsed);
   if (!config) {
     throw new Error("Config YAML must contain a mapping object.");
   }
   return config;
+}
+
+function parseYamlBlock(parser: YamlParser, indent: number): unknown {
+  const line = parser.lines[parser.index];
+  if (!line || line.indent < indent) {
+    return {};
+  }
+  return isYamlArrayLine(line) ? parseYamlArray(parser, line.indent) : parseYamlObject(parser, line.indent);
+}
+
+function parseYamlObject(parser: YamlParser, indent: number): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  while (parser.index < parser.lines.length) {
+    const line = parser.lines[parser.index];
+    if (!line || line.indent < indent || isYamlArrayLine(line)) {
+      break;
+    }
+    assertYamlIndent(line, indent);
+    addYamlObjectEntry(parser, indent, line, result);
+  }
+  return result;
+}
+
+function addYamlObjectEntry(parser: YamlParser, indent: number, line: YamlLine, result: Record<string, unknown>): void {
+  const [rawKey, rawValue] = yamlKeyValuePair(line.content);
+  const scalarText = rawValue.trim();
+  parser.index += 1;
+  result[unquoteYaml(rawKey.trim())] = scalarText.length > 0 ? parseYamlScalar(scalarText) : parseNestedYamlValue(parser, indent, {});
+}
+
+function parseYamlArray(parser: YamlParser, indent: number): unknown[] {
+  const result: unknown[] = [];
+  while (parser.index < parser.lines.length) {
+    const line = parser.lines[parser.index];
+    if (!line || line.indent < indent || !isYamlArrayLine(line)) {
+      break;
+    }
+    assertYamlIndent(line, indent);
+    result.push(parseYamlArrayItem(parser, indent, line));
+  }
+  return result;
+}
+
+function parseYamlArrayItem(parser: YamlParser, indent: number, line: YamlLine): unknown {
+  const itemText = line.content === "-" ? "" : line.content.slice(2).trim();
+  parser.index += 1;
+  if (itemText.length === 0) {
+    return parseNestedYamlValue(parser, indent, null);
+  }
+
+  const pair = splitYamlKeyValue(itemText);
+  return pair ? parseYamlArrayMappingItem(parser, indent, pair) : parseYamlScalar(itemText);
+}
+
+function parseYamlArrayMappingItem(parser: YamlParser, indent: number, pair: [string, string]): Record<string, unknown> {
+  const [rawKey, rawValue] = pair;
+  const scalarText = rawValue.trim();
+  return {
+    [unquoteYaml(rawKey.trim())]: scalarText.length > 0 ? parseYamlScalar(scalarText) : parseNestedYamlValue(parser, indent, {}),
+  };
+}
+
+function parseNestedYamlValue(parser: YamlParser, indent: number, fallback: unknown): unknown {
+  const nestedIndent = parser.lines[parser.index]?.indent;
+  return nestedIndent !== undefined && nestedIndent > indent ? parseYamlBlock(parser, nestedIndent) : fallback;
+}
+
+function yamlKeyValuePair(content: string): [string, string] {
+  const pair = splitYamlKeyValue(content);
+  if (!pair) {
+    throw new Error(`Invalid YAML mapping line: "${content}".`);
+  }
+  return pair;
+}
+
+function isYamlArrayLine(line: YamlLine): boolean {
+  return line.content.startsWith("- ") || line.content === "-";
+}
+
+function assertYamlIndent(line: YamlLine, indent: number): void {
+  if (line.indent > indent) {
+    throw new Error(`Invalid YAML indentation near "${line.content}".`);
+  }
 }
 
 function yamlLines(source: string): YamlLine[] {
@@ -199,64 +231,16 @@ function yamlLines(source: string): YamlLine[] {
 }
 
 function stripYamlComment(line: string): string {
-  let quote: string | undefined;
-  let isEscaped = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    if (!character) {
-      continue;
-    }
-    if (quote) {
-      if (quote === "\"" && character === "\\" && !isEscaped) {
-        isEscaped = true;
-        continue;
-      }
-      if (character === quote && !isEscaped) {
-        quote = undefined;
-      }
-      isEscaped = false;
-      continue;
-    }
-    if (character === "\"" || character === "'") {
-      quote = character;
-      continue;
-    }
-    if (character === "#") {
-      return line.slice(0, index);
-    }
-  }
-  return line;
+  const commentIndex = firstUnquotedIndex(line, (character) => character === "#");
+  return commentIndex === undefined ? line : line.slice(0, commentIndex);
 }
 
 function splitYamlKeyValue(value: string): [string, string] | undefined {
-  let quote: string | undefined;
-  let isEscaped = false;
-  for (let index = 0; index < value.length; index += 1) {
-    const character = value[index];
-    if (!character) {
-      continue;
-    }
-    if (quote) {
-      if (quote === "\"" && character === "\\" && !isEscaped) {
-        isEscaped = true;
-        continue;
-      }
-      if (character === quote && !isEscaped) {
-        quote = undefined;
-      }
-      isEscaped = false;
-      continue;
-    }
-    if (character === "\"" || character === "'") {
-      quote = character;
-      continue;
-    }
+  const separatorIndex = firstUnquotedIndex(value, (character, index) => {
     const next = value[index + 1];
-    if (character === ":" && (!next || /\s/.test(next))) {
-      return [value.slice(0, index), value.slice(index + 1)];
-    }
-  }
-  return undefined;
+    return character === ":" && (!next || /\s/.test(next));
+  });
+  return separatorIndex === undefined ? undefined : [value.slice(0, separatorIndex), value.slice(separatorIndex + 1)];
 }
 
 function parseYamlScalar(value: string): unknown {
@@ -295,36 +279,66 @@ function parseYamlInlineArray(value: string): unknown[] {
 
 function splitYamlInlineItems(value: string): string[] {
   const items: string[] = [];
-  let quote: string | undefined;
-  let isEscaped = false;
   let start = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const character = value[index];
-    if (!character) {
-      continue;
-    }
-    if (quote) {
-      if (quote === "\"" && character === "\\" && !isEscaped) {
-        isEscaped = true;
-        continue;
-      }
-      if (character === quote && !isEscaped) {
-        quote = undefined;
-      }
-      isEscaped = false;
-      continue;
-    }
-    if (character === "\"" || character === "'") {
-      quote = character;
-      continue;
-    }
-    if (character === ",") {
-      items.push(value.slice(start, index).trim());
-      start = index + 1;
-    }
+  for (const index of unquotedIndexes(value, ",")) {
+    items.push(value.slice(start, index).trim());
+    start = index + 1;
   }
   items.push(value.slice(start).trim());
   return items;
+}
+
+interface QuoteScanState {
+  quote: string | undefined;
+  isEscaped: boolean;
+}
+
+function firstUnquotedIndex(value: string, predicate: (character: string, index: number) => boolean): number | undefined {
+  for (const index of unquotedIndexes(value)) {
+    const character = value[index] ?? "";
+    if (predicate(character, index)) {
+      return index;
+    }
+  }
+  return undefined;
+}
+
+function unquotedIndexes(value: string, expectedCharacter?: string): number[] {
+  const indexes: number[] = [];
+  const state: QuoteScanState = { quote: undefined, isEscaped: false };
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index] ?? "";
+    if (consumeQuotedCharacter(character, state)) {
+      continue;
+    }
+    if (isYamlQuote(character)) {
+      state.quote = character;
+      continue;
+    }
+    if (!expectedCharacter || character === expectedCharacter) {
+      indexes.push(index);
+    }
+  }
+  return indexes;
+}
+
+function consumeQuotedCharacter(character: string, state: QuoteScanState): boolean {
+  if (!state.quote) {
+    return false;
+  }
+  if (state.quote === "\"" && character === "\\" && !state.isEscaped) {
+    state.isEscaped = true;
+    return true;
+  }
+  if (character === state.quote && !state.isEscaped) {
+    state.quote = undefined;
+  }
+  state.isEscaped = false;
+  return true;
+}
+
+function isYamlQuote(character: string): boolean {
+  return character === "\"" || character === "'";
 }
 
 function isQuotedYaml(value: string): boolean {
