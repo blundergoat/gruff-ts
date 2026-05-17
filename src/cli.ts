@@ -136,6 +136,7 @@ interface NpathResult {
 interface LineRuleCheck {
   ruleId: string;
   pattern: RegExp;
+  globalPattern?: RegExp;
   message: string;
   severity: Severity;
   pillar: Pillar;
@@ -1114,7 +1115,7 @@ function codeLineChecks(): LineRuleCheck[] {
 }
 
 function literalLineChecks(): LineRuleCheck[] {
-  return [
+  const checks: LineRuleCheck[] = [
     { ruleId: "security.weak-crypto", pattern: /\b(?:createHash|createHmac)\s*\(\s*["'](?:md5|sha1)["']|\bcreateCipher\s*\(|\b(?:secureProtocol|minVersion|maxVersion)\s*:\s*["'](?:SSLv2_method|SSLv3_method|TLSv1(?:_method)?|TLSv1\.1)["']/i, message: "Weak cryptographic primitive is used.", severity: "warning", pillar: "security" },
     { ruleId: "security.disabled-tls-verification", pattern: /\b(?:process\.env\.)?NODE_TLS_REJECT_UNAUTHORIZED\b\s*=\s*["']0["']|\brejectUnauthorized\s*:\s*false\b/i, message: "TLS certificate verification is disabled.", severity: "error", pillar: "security" },
     { ruleId: "security.javascript-url", pattern: /["'`]\s*javascript\s*:(?!\s+URL\b)/i, message: "javascript: URL literal can execute script.", severity: "error", pillar: "security" },
@@ -1126,6 +1127,14 @@ function literalLineChecks(): LineRuleCheck[] {
     { ruleId: "waste.any-type", pattern: /:\s*any\b|as\s+any\b/, message: "any weakens TypeScript's type guarantees.", severity: "warning", pillar: "waste" },
     { ruleId: "modernisation.var-declaration", pattern: /\bvar\s+[A-Za-z_$]/, message: "var declaration should usually be let or const.", severity: "advisory", pillar: "modernisation" },
   ];
+  return checks.map(withGlobalPattern);
+}
+
+function withGlobalPattern(check: LineRuleCheck): LineRuleCheck {
+  return {
+    ...check,
+    globalPattern: check.pattern.flags.includes("g") ? check.pattern : new RegExp(check.pattern.source, `${check.pattern.flags}g`),
+  };
 }
 
 function pushCommentedOutCodeFinding(context: LineRuleContext): void {
@@ -1240,7 +1249,7 @@ function pushPatternCheckFindings(context: LineRuleContext): void {
     }
   }
   for (const check of context.literalChecks) {
-    if (rawPatternStartsInCode(context.line, context.codeLine, check.pattern)) {
+    if (rawPatternStartsInCode(context.line, context.codeLine, check.globalPattern ?? check.pattern)) {
       context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: check.severity, pillar: check.pillar }));
     }
   }
@@ -1295,15 +1304,23 @@ function pushIdentifierQualityFinding(context: LineRuleContext, name: string): v
 }
 
 function rawPatternStartsInCode(rawLine: string, codeLine: string, pattern: RegExp): boolean {
-  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
-  const globalPattern = new RegExp(pattern.source, flags);
-  for (const match of rawLine.matchAll(globalPattern)) {
+  const globalPattern = pattern;
+  let match: RegExpExecArray | null;
+  globalPattern.lastIndex = 0;
+  while ((match = globalPattern["exec"](rawLine)) !== null) {
     const index = match.index ?? 0;
-    if (/\S/.test(codeLine[index] ?? "")) {
+    if (isNonWhitespaceCharacter(codeLine[index] ?? "")) {
       return true;
+    }
+    if (match[0] === "") {
+      globalPattern.lastIndex += 1;
     }
   }
   return false;
+}
+
+function isNonWhitespaceCharacter(character: string): boolean {
+  return character !== "" && character !== " " && character !== "\t" && character !== "\r" && character !== "\n";
 }
 
 function looseEqualityOperator(codeLine: string): string | undefined {
@@ -2253,7 +2270,22 @@ function functionBlockPatterns(): RegExp[] {
 
 function functionBlockMatch(scan: FunctionBlockScan, line: string, index: number): RegExpMatchArray | undefined {
   const rawLine = scan.lines[index] ?? "";
-  const match = scan.patterns.map((pattern, patternIndex) => (patternIndex === 0 && isTestInvocationLine(line) ? rawLine.match(pattern) : line.match(pattern))).find(Boolean);
+  for (let patternIndex = 0; patternIndex < scan.patterns.length; patternIndex += 1) {
+    const pattern = scan.patterns[patternIndex];
+    if (!pattern) {
+      continue;
+    }
+    const match = functionPatternMatch(pattern, patternIndex, line, rawLine);
+    if (match) {
+      return match;
+    }
+  }
+  return undefined;
+}
+
+function functionPatternMatch(pattern: RegExp, patternIndex: number, line: string, rawLine: string): RegExpMatchArray | undefined {
+  const candidate = patternIndex === 0 && isTestInvocationLine(line) ? rawLine : line;
+  const match = candidate.match(pattern);
   if (!match?.[1] || isControlBlockName(match[1])) {
     return undefined;
   }

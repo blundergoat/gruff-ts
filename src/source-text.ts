@@ -327,7 +327,7 @@ function maskCodeCharacter(source: string, index: number, character: string, nex
     state.previousCode = character;
     return { text: character, skip: 0 };
   }
-  if (/\S/.test(character)) {
+  if (isNonWhitespaceCharacter(character)) {
     state.previousCode = character;
   }
   return { text: character, skip: 0 };
@@ -406,6 +406,10 @@ function stopLineScan(): ScanStep {
 
 function isQuote(character: string): boolean {
   return character === "\"" || character === "'" || character === "`";
+}
+
+function isNonWhitespaceCharacter(character: string): boolean {
+  return character !== "" && character !== " " && character !== "\t" && character !== "\r" && character !== "\n";
 }
 
 export { codeLineForMatching, maskNonCode, parseDiagnostics };

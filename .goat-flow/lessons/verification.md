@@ -1,9 +1,19 @@
 ---
 category: verification
-last_reviewed: 2026-05-16
+last_reviewed: 2026-05-17
 ---
 
 # Verification lessons
+
+## Lesson: benchmark workload labels need filesystem-safe temp names
+
+**Created:** 2026-05-17
+
+**What happened:** During M29 perf-harness verification, `./scripts/test-performance.sh --runs 1 --target fixtures/sample.ts --out /tmp/perf-spike.json` failed because the workload label `fixtures/sample.ts` was reused inside the temporary filename, creating an unintended nested path under `/tmp/gruff-perf-work-*`.
+
+**Evidence:** `scripts/test-performance.sh` + `(search: "local cell_name=")` now sanitizes workload/config/format labels before building per-cell temp file paths.
+
+**Prevention:** Any benchmark or report label that can contain `/`, spaces, or option-like prefixes must be converted to a filesystem slug before it is used as a path segment. Keep human labels in JSON/report fields; use sanitized names only for temp files.
 
 ## Lesson: source-scanning contract tests must follow refactors across helper contexts
 

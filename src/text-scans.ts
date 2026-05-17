@@ -1,5 +1,22 @@
 function countMatches(source: string, pattern: RegExp): number {
-  return [...source.matchAll(pattern)].length;
+  const globalPattern = globalRegExp(pattern);
+  let count = 0;
+  let match: RegExpExecArray | null;
+  globalPattern.lastIndex = 0;
+  while ((match = globalPattern["exec"](source)) !== null) {
+    count += 1;
+    if (match[0] === "") {
+      globalPattern.lastIndex += 1;
+    }
+  }
+  return count;
+}
+
+function globalRegExp(pattern: RegExp): RegExp {
+  if (pattern.flags.includes("g")) {
+    return pattern;
+  }
+  return new RegExp(pattern.source, `${pattern.flags}g`);
 }
 
 function firstLine(source: string, pattern: RegExp): number {
