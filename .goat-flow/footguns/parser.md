@@ -1,6 +1,6 @@
 ---
 category: parser
-last_reviewed: 2026-05-10
+last_reviewed: 2026-05-18
 hallucination-risk: high
 ---
 
@@ -19,6 +19,7 @@ Static-analysis surfaces that look like a real TS parser but are actually regex/
 - Decorators or overload signatures — `functionStartIndex` walks back over `@`/`/**`/`*`/blank lines but not over multiple overload declarations.
 - Object-method shorthand inside object literals — matches anything with `name(args):` pattern, so config-like literals can be mistaken for methods.
 - The "test" classifier (`block.isTest`) trips on any function whose name `startsWith("test")`, not only Node-test/Vitest/Mocha calls.
+- `FunctionBlock.startLine` intentionally points at the leading comment/decorator prefix when one exists. Declaration-anchored rules need a separate declaration-line value from the raw match index.
 
 If you change a per-block rule (size/complexity/cyclomatic/cognitive/test-quality), do not assume blocks are clean function units. Add a fixture exercising the edge case to `src/cli.test.ts` before changing thresholds.
 

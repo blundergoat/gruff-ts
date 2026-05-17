@@ -26,10 +26,21 @@ const COMMENTED_OUT_LEGACY_CALL = ["const", " disabledLegacy = runLegacyPath();"
 
 const expandedRuleIds = new Set([
   "complexity.npath",
+  "docs.magic-threshold-without-rationale",
+  "docs.missing-error-behavior-doc",
+  "docs.missing-file-overview",
+  "docs.missing-function-doc",
+  "docs.missing-interface-doc",
+  "docs.missing-invariant-doc",
   "docs.missing-param-tag",
   "docs.missing-return-tag",
+  "docs.missing-side-effect-doc",
+  "docs.missing-why-for-complex-code",
+  "docs.stale-comment",
   "docs.stale-param-tag",
+  "docs.suppression-without-rationale",
   "docs.useless-docblock",
+  "docs.todo-without-tracking",
   "design.circular-import",
   "design.deep-relative-import",
   "design.large-module-concentration",
@@ -112,7 +123,16 @@ interface RuleQualityDoctrineCase {
 }
 
 const riskyRuleIdsRequiringNoisyValidProof = [
+  "docs.magic-threshold-without-rationale",
+  "docs.missing-error-behavior-doc",
+  "docs.missing-invariant-doc",
+  "docs.missing-side-effect-doc",
+  "docs.missing-why-for-complex-code",
+  "docs.stale-comment",
+  "docs.suppression-without-rationale",
   "docs.todo-density",
+  "docs.todo-without-tracking",
+  "docs.useless-docblock",
   "security.disabled-tls-verification",
   "security.eval-call",
   "security.new-function",
@@ -130,6 +150,97 @@ const riskyRuleIdsRequiringNoisyValidProof = [
 
 const riskyRuleQualityDoctrine = [
   {
+    ruleId: "docs.magic-threshold-without-rationale",
+    signalSource: "masked executable-line scan for named threshold constants and threshold() defaults",
+    expectedPillar: "documentation",
+    expectedSeverity: "advisory",
+    expectedConfidence: "medium",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "threshold-like numeric constant or config default without nearby rationale",
+    noisyValidFixture: "ordinary numeric literals, test assertions, strings, templates, and rationale-commented thresholds",
+    missingInvalidFixture: "unexplained threshold remains reported when explained thresholds are nearby",
+    falsePositiveEscapeHatch: "skip common safe values and test files, require threshold-like names or threshold() defaults",
+    fingerprintStability: "anchor to the numeric policy line and threshold label without including surrounding prose",
+  },
+  {
+    ruleId: "docs.missing-error-behavior-doc",
+    signalSource: "commented function body scan for throw, catch, process.exit, diagnostics, or finding pushes",
+    expectedPillar: "documentation",
+    expectedSeverity: "advisory",
+    expectedConfidence: "medium",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "commented function with throw/catch/reporting behavior but no error-behavior marker",
+    noisyValidFixture: "ordinary pure functions and comments that explicitly mention throws, reports, exits, or recovery",
+    missingInvalidFixture: "error behavior remains reported when unrelated useful comments are present",
+    falsePositiveEscapeHatch: "require an existing leading comment and bounded observable error-behavior tokens",
+    fingerprintStability: "anchor to the leading comment line plus function symbol",
+  },
+  {
+    ruleId: "docs.missing-invariant-doc",
+    signalSource: "commented declaration scan for schema, fingerprint, baseline, report, and deterministic contracts",
+    expectedPillar: "documentation",
+    expectedSeverity: "advisory",
+    expectedConfidence: "medium",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "commented function or interface that owns schemaVersion or fingerprint fields without invariant wording",
+    noisyValidFixture: "contract-bearing comments that mention schema, fingerprint, stable, deterministic, or invariant",
+    missingInvalidFixture: "contract-bearing declaration remains reported when unrelated comments are present",
+    falsePositiveEscapeHatch: "require an existing leading comment and explicit contract vocabulary in declaration or body",
+    fingerprintStability: "anchor to the leading comment line plus declaration symbol",
+  },
+  {
+    ruleId: "docs.missing-side-effect-doc",
+    signalSource: "commented function body scan for explicit filesystem, process, environment, server, and child-process APIs",
+    expectedPillar: "documentation",
+    expectedSeverity: "advisory",
+    expectedConfidence: "medium",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "commented function that writes files, mutates process state, or spawns a process without naming the side effect",
+    noisyValidFixture: "pure parsing/string helpers and comments that explicitly mention writes, persists, spawns, or environment",
+    missingInvalidFixture: "observable side effect remains reported when unrelated comments are present",
+    falsePositiveEscapeHatch: "do not infer from function names alone except known persistence entry points",
+    fingerprintStability: "anchor to the leading comment line plus function symbol",
+  },
+  {
+    ruleId: "docs.missing-why-for-complex-code",
+    signalSource: "commented function metrics reused from existing size, cyclomatic, cognitive, NPath, and nesting thresholds",
+    expectedPillar: "documentation",
+    expectedSeverity: "advisory",
+    expectedConfidence: "medium",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "commented function over an existing complexity threshold without because/why/tradeoff context",
+    noisyValidFixture: "simple commented functions and complex functions whose comments mention why, because, or tradeoffs",
+    missingInvalidFixture: "complex control flow remains reported when a restating or generic comment is present",
+    falsePositiveEscapeHatch: "missing comments stay owned by docs.missing-function-doc; M32 needs a leading comment",
+    fingerprintStability: "anchor to the leading comment line plus function symbol",
+  },
+  {
+    ruleId: "docs.stale-comment",
+    signalSource: "comment-text scanner with declaration, rule, flag, and path cross-checks",
+    expectedPillar: "documentation",
+    expectedSeverity: "advisory",
+    expectedConfidence: "medium",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "comments naming missing files, unknown rule ids, stale flags, or the wrong declaration",
+    noisyValidFixture: "historical comments with legacy or migration context and valid file/rule/flag references",
+    missingInvalidFixture: "stale references still report when valid historical context appears nearby",
+    falsePositiveEscapeHatch: "skip explicitly historical context and only match narrow quoted paths and known rule prefixes",
+    fingerprintStability: "anchor to the comment line rather than the prose body so wording edits do not churn identity",
+  },
+  {
+    ruleId: "docs.suppression-without-rationale",
+    signalSource: "comment-text scanner over lint, formatter, coverage, and tool suppression markers",
+    expectedPillar: "documentation",
+    expectedSeverity: "advisory",
+    expectedConfidence: "medium",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "eslint, biome, oxlint, coverage, or prettier suppression without because/reason/tracking text",
+    noisyValidFixture: "suppression markers with because, reason, false-positive, issue, ADR, or task context",
+    missingInvalidFixture: "unexplained suppression remains reported beside documented suppressions",
+    falsePositiveEscapeHatch: "TypeScript directives keep the existing modernisation rule to avoid duplicate findings",
+    fingerprintStability: "anchor to the suppression comment line and not to the suppression rationale body",
+  },
+  {
     ruleId: "docs.todo-density",
     signalSource: "comment-text scanner with raw line anchors",
     expectedPillar: "documentation",
@@ -141,6 +252,32 @@ const riskyRuleQualityDoctrine = [
     missingInvalidFixture: "real comment markers just below and at threshold",
     falsePositiveEscapeHatch: "count only comment text, not executable literals",
     fingerprintStability: "anchor to the first real marker line",
+  },
+  {
+    ruleId: "docs.todo-without-tracking",
+    signalSource: "comment-text scanner requiring issue, owner, date, ADR, milestone, or task tracking markers",
+    expectedPillar: "documentation",
+    expectedSeverity: "advisory",
+    expectedConfidence: "high",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "TODO, FIXME, HACK, or XXX comment with no tracking context",
+    noisyValidFixture: "marker words inside strings/templates/regexes plus comments with explicit tracking markers",
+    missingInvalidFixture: "untracked marker remains reported when tracked marker examples are present",
+    falsePositiveEscapeHatch: "scan extracted comments only and accept bounded tracking patterns",
+    fingerprintStability: "anchor to the marker comment line and keep raw TODO text out of the fingerprint",
+  },
+  {
+    ruleId: "docs.useless-docblock",
+    signalSource: "leading-comment scanner comparing normalized comment words with declaration names",
+    expectedPillar: "documentation",
+    expectedSeverity: "advisory",
+    expectedConfidence: "medium",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "JSDoc or line comment that only repeats the function or interface name",
+    noisyValidFixture: "comments that explain contract, side effects, invariants, fallback, or why context",
+    missingInvalidFixture: "restating comment remains reported beside useful context comments",
+    falsePositiveEscapeHatch: "skip comments with explicit maintainer-context marker phrases",
+    fingerprintStability: "anchor to the declaration comment line and symbol, not the full prose",
   },
   {
     ruleId: "security.eval-call",
@@ -1205,12 +1342,303 @@ function unusedParam(value: string): void {
   assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unused-parameter" && finding.symbol === "unusedParam"), true);
 });
 
-test("missing public docs are reported once per exported symbol", () => {
-  const report = analyseFixture(`export function loadValue(): string {
+test("documentation rubric requires file overview and comments on functions and interfaces", () => {
+  const report = analyseFixture(`interface DiagnosticSourceFile {
+  displayPath: string;
+}
+
+function parseDiagnostics(file: DiagnosticSourceFile, source: string): string {
+  return source + file.displayPath;
+}
+`);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-file-overview"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-interface-doc" && finding.symbol === "DiagnosticSourceFile"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-function-doc" && finding.symbol === "parseDiagnostics"), true);
+
+  const documentedReport = analyseFixture(`/**
+ * Scans source text in fixtures for documentation coverage.
+ */
+
+// Minimal source contract consumed by parser diagnostics.
+interface DiagnosticSourceFile {
+  displayPath: string;
+}
+
+/**
+ * Checks fixture source and returns a derived parser value.
+ *
+ * @param file - Source metadata used to report paths.
+ * @param source - Raw fixture text to inspect.
+ */
+function parseDiagnostics(file: DiagnosticSourceFile, source: string): string {
+  return source + file.displayPath;
+}
+`);
+  for (const ruleId of ["docs.missing-file-overview", "docs.missing-interface-doc", "docs.missing-function-doc"]) {
+    assert.equal(documentedReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
+  }
+});
+
+test("comment quality rules extract only real comments", () => {
+  const report = analyseFixture(`/**
+ * Exercises line, block, and JSDoc comments for comment-quality rules.
+ */
+// TODO add ownership
+const stringTodo = "TODO is not a comment";
+const templateTodo = \`FIXME inside a template is not a comment\`;
+const regexTodo = /HACK\\/\\/XXX/;
+
+/*
+ * FIXME add a tracking issue
+ */
+function documentedFunction(): void {}
+
+/**
+ * HACK document the interface purpose
+ */
+interface DocumentedShape {
+  value: string;
+}
+`);
+  const todoFindings = report.findings.filter((finding) => finding.ruleId === "docs.todo-without-tracking");
+  assert.deepEqual(todoFindings.map((finding) => finding.line), [4, 9, 14]);
+  assert.equal(todoFindings.every((finding) => ["TODO", "FIXME", "HACK"].includes(String(finding.metadata.marker))), true);
+});
+
+test("comment quality stale-comment flags stale references", () => {
+  const report = analyseFixture(`/**
+ * Exercises stale comment references.
+ */
+// See \`src/missing-file.ts\` before changing this helper.
+// Unknown scanner rule docs.removed-rule should be deleted.
+// Run with --removed-flag when debugging.
+// legacy migration note mentions \`src/old-file.ts\` intentionally.
+function currentFeature(): void {}
+
+// OldFeature function
+function newFeature(): void {}
+`);
+  const staleFindings = report.findings.filter((finding) => finding.ruleId === "docs.stale-comment");
+  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "path" && finding.message.includes("src/missing-file.ts")), true);
+  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "ruleId" && finding.message.includes("docs.removed-rule")), true);
+  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "cliFlag" && finding.message.includes("--removed-flag")), true);
+  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "function" && finding.symbol === "newFeature"), true);
+  assert.equal(staleFindings.some((finding) => finding.message.includes("src/old-file.ts")), false);
+});
+
+test("comment quality requires tracking for TODO markers", () => {
+  const report = analyseFixture(`/**
+ * Exercises tracked and untracked task-marker comments.
+ */
+// TODO owner: platform-runtime
+// FIXME tracked in #123
+// HACK M31 keeps this fixture intentional
+// XXX 2026-05-18 revisit the temporary setup
+// TODO add the missing owner
+function trackedTodos(): void {}
+`);
+  const todoFindings = report.findings.filter((finding) => finding.ruleId === "docs.todo-without-tracking");
+  assert.equal(todoFindings.length, 1);
+  assert.equal(todoFindings[0]?.line, 8);
+});
+
+test("comment quality requires rationale for non-TypeScript suppressions", () => {
+  const report = analyseFixture(`/**
+ * Exercises suppression rationale checks.
+ */
+// eslint-disable-next-line no-console
+console.log("debug");
+// biome-ignore lint/suspicious/noExplicitAny: because the generated fixture uses any.
+const ok: any = {};
+// @ts-ignore
+const narrowed = ok.value;
+`);
+  const suppressionFindings = report.findings.filter((finding) => finding.ruleId === "docs.suppression-without-rationale");
+  assert.equal(suppressionFindings.length, 1);
+  assert.match(suppressionFindings[0]?.message ?? "", /eslint-disable-next-line/);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "modernisation.ts-comment-without-rationale"), true);
+});
+
+test("comment quality restates signature through useless-docblock without duplicates", () => {
+  const report = analyseFixture(`/**
+ * Exercises restating comments.
+ */
+/** Parses diagnostics. */
+function parseDiagnostics(): void {}
+
+// DiagnosticSourceFile interface
+interface DiagnosticSourceFile {
+  displayPath: string;
+}
+
+// Parser options contract must stay deterministic for callers.
+interface ParserOptions {
+  stable: boolean;
+}
+
+/** updateName */
+export function updateName(name: string): string {
+  return name;
+}
+`);
+  const uselessFindings = report.findings.filter((finding) => finding.ruleId === "docs.useless-docblock");
+  assert.equal(uselessFindings.some((finding) => finding.symbol === "parseDiagnostics"), true);
+  assert.equal(uselessFindings.some((finding) => finding.symbol === "DiagnosticSourceFile"), true);
+  assert.equal(uselessFindings.filter((finding) => finding.symbol === "updateName").length, 1);
+  assert.equal(uselessFindings.some((finding) => finding.symbol === "ParserOptions"), false);
+});
+
+test("documentation context detector matrix covers why side-effect error-behavior invariant magic-threshold", () => {
+  const report = analyseFixture(`/**
+ * Exercises maintainer-context documentation rules.
+ */
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+
+const maxRetryLimit = 12;
+const ordinaryCount = 42;
+// Tuned threshold from production retry budgets.
+const explainedRetryLimit = 12;
+const contextText = "side effect throws schema threshold 99";
+const contextTemplate = \`missing why threshold 88\`;
+const contextRegex = /side-effect|invariant|77/;
+
+/** Handles routing branches. */
+function complexFlow(value: string): string {
+  if (value === "a") return "a";
+  if (value === "b") return "b";
+  if (value === "c") return "c";
+  if (value === "d") return "d";
+  if (value === "e") return "e";
+  if (value === "f") return "f";
+  if (value === "g") return "g";
+  if (value === "h") return "h";
+  if (value === "i") return "i";
+  if (value === "j") return "j";
+  if (value === "k") return "k";
+  return value;
+}
+
+/** Complex flow exists because legacy states arrive out of order. */
+function complexFlowWithWhy(value: string): string {
+  if (value === "a") return "a";
+  if (value === "b") return "b";
+  if (value === "c") return "c";
+  if (value === "d") return "d";
+  if (value === "e") return "e";
+  if (value === "f") return "f";
+  if (value === "g") return "g";
+  if (value === "h") return "h";
+  if (value === "i") return "i";
+  if (value === "j") return "j";
+  if (value === "k") return "k";
+  return value;
+}
+
+/** Saves output. */
+function persistOutput(path: string): void {
+  writeFileSync(path, "ok");
+}
+
+/** Filesystem writes persist the generated report. */
+function persistOutputWithContext(path: string): void {
+  writeFileSync(path, "ok");
+}
+
+/** Parses user value. */
+function parseRequired(value: string): string {
+  if (!value) {
+    throw new Error("missing value");
+  }
+  return value;
+}
+
+/** Throws when the required value is absent. */
+function parseRequiredWithContext(value: string): string {
+  if (!value) {
+    throw new Error("missing value");
+  }
+  return value;
+}
+
+/** Payload details. */
+interface ReportEnvelope {
+  schemaVersion: string;
+  fingerprint: string;
+}
+
+/** Schema contract must stay stable for report readers. */
+interface StableReportEnvelope {
+  schemaVersion: string;
+  fingerprint: string;
+}
+
+/** Restating complex flow. */
+function restatingComplexFlow(value: string): string {
+  if (value === "a") return "a";
+  if (value === "b") return "b";
+  if (value === "c") return "c";
+  if (value === "d") return "d";
+  if (value === "e") return "e";
+  if (value === "f") return "f";
+  if (value === "g") return "g";
+  if (value === "h") return "h";
+  if (value === "i") return "i";
+  if (value === "j") return "j";
+  if (value === "k") return "k";
+  return value;
+}
+
+function undocumentedSideEffect(path: string): void {
+  writeFileSync(path, "ok");
+  spawn("node", []);
+}
+`);
+  const findingsByRule = new Map<string, Set<string>>();
+  for (const finding of report.findings) {
+    const symbols = findingsByRule.get(finding.ruleId) ?? new Set<string>();
+    symbols.add(finding.symbol ?? String(finding.metadata.thresholdKind ?? "-"));
+    findingsByRule.set(finding.ruleId, symbols);
+  }
+
+  assert.equal(findingsByRule.get("docs.missing-why-for-complex-code")?.has("complexFlow"), true);
+  assert.equal(findingsByRule.get("docs.missing-why-for-complex-code")?.has("complexFlowWithWhy"), false);
+  assert.equal(findingsByRule.get("docs.missing-side-effect-doc")?.has("persistOutput"), true);
+  assert.equal(findingsByRule.get("docs.missing-side-effect-doc")?.has("persistOutputWithContext"), false);
+  assert.equal(findingsByRule.get("docs.missing-error-behavior-doc")?.has("parseRequired"), true);
+  assert.equal(findingsByRule.get("docs.missing-error-behavior-doc")?.has("parseRequiredWithContext"), false);
+  assert.equal(findingsByRule.get("docs.missing-invariant-doc")?.has("ReportEnvelope"), true);
+  assert.equal(findingsByRule.get("docs.missing-invariant-doc")?.has("StableReportEnvelope"), false);
+  assert.equal(findingsByRule.get("docs.magic-threshold-without-rationale")?.has("maxRetryLimit"), true);
+  assert.equal(findingsByRule.get("docs.magic-threshold-without-rationale")?.has("explainedRetryLimit"), false);
+  assert.equal(findingsByRule.get("docs.missing-side-effect-doc")?.has("undocumentedSideEffect"), false);
+  assert.equal(findingsByRule.get("docs.missing-function-doc")?.has("undocumentedSideEffect"), true);
+  assert.equal(findingsByRule.get("docs.useless-docblock")?.has("restatingComplexFlow"), true);
+  assert.equal(findingsByRule.get("docs.missing-why-for-complex-code")?.has("restatingComplexFlow"), false);
+});
+
+test("missing public docs are reported once per exported class type or enum", () => {
+  const report = analyseFixture(`export class PublicLoader {
+  loadValue(): string {
+    return "ok";
+  }
+}
+
+export type PublicValue = string;
+
+export enum PublicMode {
+  Ready = "ready",
+}
+
+export function loadValue(): string {
   return "ok";
 }
 `);
-  assert.equal(report.findings.filter((finding) => finding.ruleId === "docs.missing-public-doc" && finding.symbol === "loadValue").length, 1);
+  assert.equal(report.findings.filter((finding) => finding.ruleId === "docs.missing-public-doc" && finding.symbol === "PublicLoader").length, 1);
+  assert.equal(report.findings.filter((finding) => finding.ruleId === "docs.missing-public-doc" && finding.symbol === "PublicValue").length, 1);
+  assert.equal(report.findings.filter((finding) => finding.ruleId === "docs.missing-public-doc" && finding.symbol === "PublicMode").length, 1);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-public-doc" && finding.symbol === "loadValue"), false);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-function-doc" && finding.symbol === "loadValue"), true);
 });
 
 test("size file-length skips generated lockfiles", () => {
@@ -1865,8 +2293,11 @@ test("cumulative expanded fixture covers every new rule with unique fingerprints
     "Widget.ts": `import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 
+// TODO add ownership
+// See \`src/missing-widget.ts\` before changing this fixture.
+// eslint-disable-next-line no-console
 export class WidgetRecord {
   public active = true;
   public name: string;
@@ -1889,9 +2320,15 @@ const strName = "Ada";
 const objUser = { name: strName };
 const loadedText = readFileSync("input.txt", "utf8");
 const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";
+const maxRetryLimit = 12;
+
+interface WidgetShape {
+  name: string;
+}
 
 // ${COMMENTED_OUT_SECRET_LOAD}
 
+/** Handles route status branches. */
 function routeOrder(state: string, unusedFlag: boolean): string {
   if (state === "new") return "new";
   if (state === "paid") return "paid";
@@ -1906,6 +2343,25 @@ function emptyWork(): void {}
 function redundantResult(): string {
   const calculatedResult = routeOrder("new", true);
   return calculatedResult;
+}
+
+/** Saves widget output. */
+function persistWidgetOutput(path: string): void {
+  writeFileSync(path, "ok");
+}
+
+/** Parses risky widget input. */
+function parseWidgetInput(value: string): string {
+  if (!value) {
+    throw new Error("missing value");
+  }
+  return value;
+}
+
+/** Widget report details. */
+interface WidgetReportEnvelope {
+  schemaVersion: string;
+  fingerprint: string;
 }
 
 export function unsafePublicApi(input: ${"any"}): ${"any"} {
@@ -2752,6 +3208,8 @@ import { exec, spawn } from "node:child_process";
 import { unusedThing } from "./dep";
 
 // TODO: collapse this coverage fixture when generated rule docs exist.
+// See \`src/missing-catalogue.ts\` before updating catalogue fixtures.
+// prettier-ignore
 // ${COMMENTED_OUT_LEGACY_CALL}
 const data1 = "placeholder";
 const strName = "Ada";
@@ -2759,10 +3217,21 @@ const active = true;
 const xx = 1;
 const unsafeAny: any = {};
 const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";
+const maxRetryLimit = 12;
 const maybeUser = { name: strName };
 const optionalName = maybeUser && maybeUser.name;
 const fallbackName = maybeUser.name || "anonymous";
 var legacyName = fallbackName;
+
+interface MissingCommentShape {
+  name: string;
+}
+
+/** Carries payload details. */
+interface ReportPayload {
+  schemaVersion: string;
+  fingerprint: string;
+}
 
 export type PublicAny = any;
 
@@ -2779,6 +3248,7 @@ export class WrongName {
   }
 }
 
+/** Handles process input. */
 export function process(flag: boolean, userInput: string, userId: string, userIds: string[], unusedFlag: boolean): string {
   eval(userInput);
   new Function(userInput)();

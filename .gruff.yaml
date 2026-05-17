@@ -63,24 +63,57 @@ rules:
   # design/warning: Flags package bin targets that are not executable.
   design.package-bin-not-executable:
     enabled: true
+  # documentation/advisory: Flags threshold-like numeric values without a nearby rationale comment.
+  docs.magic-threshold-without-rationale:
+    enabled: true
+  # documentation/advisory: Flags commented functions whose error behavior is not described.
+  docs.missing-error-behavior-doc:
+    enabled: true
+  # documentation/advisory: Flags TypeScript files without a top-of-file purpose comment.
+  docs.missing-file-overview:
+    enabled: true
+  # documentation/advisory: Flags functions without a leading maintainer comment.
+  docs.missing-function-doc:
+    enabled: true
+  # documentation/advisory: Flags interfaces without a leading maintainer comment.
+  docs.missing-interface-doc:
+    enabled: true
+  # documentation/advisory: Flags commented declarations that own schema, fingerprint, baseline, or determinism contracts without saying so.
+  docs.missing-invariant-doc:
+    enabled: true
   # documentation/advisory: Flags documented exports with parameters missing @param tags.
   docs.missing-param-tag:
     enabled: true
-  # documentation/advisory: Flags exported APIs without a nearby doc comment.
+  # documentation/advisory: Flags exported class, type, and enum APIs without a nearby doc comment.
   docs.missing-public-doc:
     enabled: true
   # documentation/advisory: Flags documented non-void exports without @returns.
   docs.missing-return-tag:
     enabled: true
+  # documentation/advisory: Flags commented functions that perform observable side effects without naming them.
+  docs.missing-side-effect-doc:
+    enabled: true
+  # documentation/advisory: Flags comments on complex functions that do not explain why the shape exists.
+  docs.missing-why-for-complex-code:
+    enabled: true
+  # documentation/advisory: Flags comments that reference missing files, unknown rules, stale CLI flags, or the wrong declaration.
+  docs.stale-comment:
+    enabled: true
   # documentation/advisory: Flags @param tags for parameters no longer in the signature.
   docs.stale-param-tag:
+    enabled: true
+  # documentation/advisory: Flags lint, formatter, coverage, or tool suppressions without a maintainer rationale.
+  docs.suppression-without-rationale:
     enabled: true
   # documentation/advisory: Flags files with a high count of TODO/FIXME markers.
   docs.todo-density:
     enabled: true
     thresholds:
       markers: 4
-  # documentation/advisory: Flags docblocks that only restate the symbol name.
+  # documentation/advisory: Flags TODO, FIXME, HACK, and XXX comments without tracking context.
+  docs.todo-without-tracking:
+    enabled: true
+  # documentation/advisory: Flags comments or docblocks that only restate the symbol name.
   docs.useless-docblock:
     enabled: true
   # modernisation/advisory: Flags verbose current-time expressions that can use Date.now().

@@ -5,6 +5,36 @@ last_reviewed: 2026-05-18
 
 # Verification lessons
 
+## Lesson: exact optional properties must be omitted instead of set to undefined
+
+**Created:** 2026-05-18
+
+**What happened:** During M31, `staleCommentFinding` initially passed `symbol: metadata.symbol` into `makeFinding`, which can be `undefined` at runtime. `tsc --noEmit` rejected the object under `exactOptionalPropertyTypes`.
+
+**Evidence:** `src/cli.ts` + `(search: "function staleCommentFinding")`; the corrected implementation uses a conditional spread so `symbol` is omitted unless a real symbol exists.
+
+**Prevention:** For optional fields in `Finding` or `FindingInput`, build object literals with conditional spreads rather than assigning possibly undefined values.
+
+## Lesson: use raw source for human labels and masked source only for code-position proof
+
+**Created:** 2026-05-18
+
+**What happened:** During M32, magic-threshold findings initially built labels from masked source text, so `threshold(config, "rule", "key", 55)` produced whitespace/dot labels after string masking.
+
+**Evidence:** `src/cli.ts` + `(search: "function magicThresholdCandidate")`; the corrected function takes `rawLine` for labels and `codeLine` only to prove the threshold call starts in executable code.
+
+**Prevention:** For source scanners, derive human-facing metadata and message labels from raw source after proving the candidate starts in code with masked source.
+
+## Lesson: line-anchored multiline regexes must not use `\s*` for indentation
+
+**Created:** 2026-05-18
+
+**What happened:** During documentation-rubric work, `interfaceDeclarations` initially used a `gm` regex with `^\s*`, which let the indentation prefix consume newlines and report an interface at line 1 instead of its declaration line. That made a valid leading `//` comment look detached from the interface.
+
+**Evidence:** `src/cli.ts` + `(search: "function interfaceDeclarations")`; the focused test `documentation rubric requires file overview and comments on functions and interfaces` failed until the regex used `[ \t]*` and `[ \t]+` for same-line whitespace.
+
+**Prevention:** In line-anchored `m` regexes, use `[ \t]` for indentation. Reserve `\s` for patterns where crossing line boundaries is intended.
+
 ## Lesson: dynamic import is not a safe cycle breaker when the imported module re-enters the CLI
 
 **Created:** 2026-05-18

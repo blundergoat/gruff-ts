@@ -1,10 +1,21 @@
+/**
+ * Provides lightweight source text scanners that separate executable TypeScript
+ * from comments, strings, and regex bodies before rule matching runs.
+ */
 import type { RunDiagnostic } from "./types.ts";
 
+// Minimal file contract needed to report parser diagnostics against source text.
 interface DiagnosticSourceFile {
   displayPath: string;
   isTypeScript: boolean;
 }
 
+/**
+ * Checks TypeScript-like source for obviously unbalanced delimiters.
+ *
+ * @param file - Source metadata used to skip non-TypeScript inputs and report paths.
+ * @param source - Raw file text to scan for delimiter balance.
+ */
 function parseDiagnostics(file: DiagnosticSourceFile, source: string): RunDiagnostic[] {
   if (!file.isTypeScript) {
     return [];

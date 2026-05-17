@@ -100,6 +100,8 @@ interface FunctionBlock {
   codeBody: string;
   isPublic: boolean;
   isTest: boolean;
+  hasLeadingComment: boolean;
+  declarationLine: number;
 }
 
 interface FunctionBlockScan {
@@ -111,6 +113,22 @@ interface FunctionBlockScan {
 interface FunctionBodyScanState {
   depth: number;
   hasSeenOpen: boolean;
+}
+
+interface CommentRecord {
+  kind: "line" | "block";
+  text: string;
+  line: number;
+  endLine: number;
+  startIndex: number;
+  endIndex: number;
+}
+
+interface CommentedDeclaration {
+  kind: "function" | "interface";
+  name: string;
+  line: number;
+  isPublic: boolean;
 }
 
 interface TestBlockCheck {
@@ -782,9 +800,13 @@ function isGeneratedLockfile(path: string): boolean {
 function analyseTypeScriptRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
   const codeSource = maskNonCode(source);
   const blocks = functionBlocks(source, codeSource);
+  const comments = commentRecords(source);
+  analyseFileOverviewDoc(file, source, findings);
   analyseBlocks(file, blocks, config, findings);
   analyseLineRules(file, source, codeSource, config, findings);
   analyseDocRules(file, source, codeSource, findings);
+  analyseInterfaceDocs(file, source, codeSource, findings);
+  analyseCommentQualityRules(file, source, codeSource, blocks, comments, config, findings);
   analyseClassRules(file, source, codeSource, findings);
   analyseDeadCode(file, codeSource, findings);
 }
@@ -814,7 +836,7 @@ function analyseBlockRules(context: BlockRuleContext): void {
   pushNpathFinding(context);
   pushGodFunctionFinding(context);
   pushGenericFunctionFinding(context);
-  pushMissingPublicFunctionDocFinding(context);
+  pushMissingFunctionDocFinding(context);
   pushEmptyFunctionFinding(context);
   pushUnusedParameterFindings(context);
   pushRedundantVariableFindings(context);
@@ -891,9 +913,9 @@ function pushGenericFunctionFinding(context: BlockRuleContext): void {
   }
 }
 
-function pushMissingPublicFunctionDocFinding(context: BlockRuleContext): void {
-  if (context.block.isPublic && !hasDocCommentBefore(context.block.body)) {
-    context.findings.push(blockFinding({ ruleId: "docs.missing-public-doc", message: `Exported function \`${context.block.name}\` is missing a doc comment.`, file: context.file, block: context.block, severity: "advisory", pillar: "documentation" }));
+function pushMissingFunctionDocFinding(context: BlockRuleContext): void {
+  if (!context.block.isTest && !context.block.hasLeadingComment) {
+    context.findings.push(blockFinding({ ruleId: "docs.missing-function-doc", message: `Function \`${context.block.name}\` is missing a leading maintainer comment.`, file: context.file, block: context.block, severity: "advisory", pillar: "documentation" }));
   }
 }
 
@@ -1577,7 +1599,7 @@ function tsDirectiveWithoutRationale(line: string): { directive: string } | unde
 function hasDirectiveRationale(value: string): boolean {
   const cleaned = value.replace(/^[-:\s]+/, "").trim();
   const words = cleaned.match(/[A-Za-z]{3,}/g) ?? [];
-  return words.length >= 3;
+  return hasSuppressionRationale(cleaned) || words.length >= 3;
 }
 
 function exportedAnySymbol(codeLine: string): string | undefined {
@@ -1662,6 +1684,9 @@ function exportedDeclarations(source: string, codeSource: string): ExportedDecla
 }
 
 function pushMissingPublicDocFinding(file: SourceFile, source: string, declaration: ExportedDeclaration, findings: Finding[]): void {
+  if (declaration.kind === "function" || declaration.kind === "interface") {
+    return;
+  }
   if (hasDocCommentBeforeLine(source, declaration.line)) {
     return;
   }
@@ -1678,6 +1703,664 @@ function pushMissingPublicDocFinding(file: SourceFile, source: string, declarati
       remediation: "Add a /** ... */ comment explaining the exported API.",
     }),
   );
+}
+
+function analyseFileOverviewDoc(file: SourceFile, source: string, findings: Finding[]): void {
+  if (hasFileOverviewComment(source)) {
+    return;
+  }
+  findings.push(
+    makeFinding({
+      ruleId: "docs.missing-file-overview",
+      message: `TypeScript file \`${file.displayPath}\` is missing a top-of-file purpose comment.`,
+      filePath: file.displayPath,
+      line: 1,
+      severity: "advisory",
+      pillar: "documentation",
+      confidence: "medium",
+      remediation: "Add a brief /** ... */ overview before imports or declarations.",
+      metadata: {},
+    }),
+  );
+}
+
+function analyseInterfaceDocs(file: SourceFile, source: string, codeSource: string, findings: Finding[]): void {
+  for (const declaration of interfaceDeclarations(source, codeSource)) {
+    if (hasLeadingCommentBeforeLine(source, declaration.line)) {
+      continue;
+    }
+    findings.push(
+      makeFinding({
+        ruleId: "docs.missing-interface-doc",
+        message: `Interface \`${declaration.name}\` is missing a leading maintainer comment.`,
+        filePath: file.displayPath,
+        line: declaration.line,
+        severity: "advisory",
+        pillar: "documentation",
+        confidence: "medium",
+        symbol: declaration.name,
+        remediation: "Add a short /** ... */ or // comment explaining the interface contract.",
+        metadata: { interfaceName: declaration.name },
+      }),
+    );
+  }
+}
+
+function interfaceDeclarations(source: string, codeSource: string): ExportedDeclaration[] {
+  return [...codeSource.matchAll(/^[ \t]*(?:export[ \t]+)?interface[ \t]+([A-Za-z_$][A-Za-z0-9_$]*)\b/gm)].map((match) => ({
+    kind: "interface",
+    name: match[1] ?? "",
+    line: byteLine(source, match.index ?? 0),
+  }));
+}
+
+function analyseCommentQualityRules(file: SourceFile, source: string, codeSource: string, blocks: FunctionBlock[], comments: CommentRecord[], config: Config, findings: Finding[]): void {
+  const lines = source.split(/\r?\n/);
+  const descriptorIds = new Set(ruleDescriptors().map((descriptor) => descriptor.ruleId));
+  const cliFlags = knownCliFlags();
+
+  for (const comment of comments) {
+    pushTodoWithoutTrackingFinding(file, comment, findings);
+    pushSuppressionWithoutRationaleFinding(file, comment, findings);
+    pushStaleFileReferenceFindings(file, comment, findings);
+    pushStaleRuleReferenceFindings(file, comment, descriptorIds, findings);
+    pushStaleCliFlagReferenceFindings(file, comment, cliFlags, findings);
+  }
+
+  for (const declaration of commentedDeclarations(blocks, interfaceDeclarations(source, codeSource))) {
+    const comment = leadingCommentForLine(lines, comments, declaration.line);
+    if (!comment) {
+      continue;
+    }
+    pushStaleDeclarationCommentFinding(file, comment, declaration, findings);
+    pushRestatingSignatureCommentFinding(file, comment, declaration, findings);
+    pushDeclarationContextFindings(file, lines, declaration, comment, findings);
+  }
+
+  for (const block of blocks) {
+    const comment = leadingCommentForLine(lines, comments, block.declarationLine);
+    if (!comment || isRestatingSignatureComment(comment.text, block.name, "function")) {
+      continue;
+    }
+    pushFunctionContextFindings(file, block, comment, config, findings);
+  }
+
+  pushMagicThresholdFindings(file, source, codeSource, comments, findings);
+}
+
+function commentedDeclarations(blocks: FunctionBlock[], interfaces: ExportedDeclaration[]): CommentedDeclaration[] {
+  return [
+    ...blocks
+      .filter((block) => !block.isTest)
+      .map((block) => ({ kind: "function" as const, name: block.name, line: block.declarationLine, isPublic: block.isPublic })),
+    ...interfaces.map((declaration) => ({ kind: "interface" as const, name: declaration.name, line: declaration.line, isPublic: true })),
+  ];
+}
+
+function pushTodoWithoutTrackingFinding(file: SourceFile, comment: CommentRecord, findings: Finding[]): void {
+  const marker = todoMarker(comment.text);
+  if (!marker || hasTodoTracking(comment.text)) {
+    return;
+  }
+  findings.push(
+    makeFinding({
+      ruleId: "docs.todo-without-tracking",
+      message: `${marker} comment is missing an issue, owner, date, ADR, or task reference.`,
+      filePath: file.displayPath,
+      line: comment.line,
+      severity: "advisory",
+      pillar: "documentation",
+      confidence: "high",
+      remediation: "Attach a tracking URL, issue id, owner, date, ADR, or .goat-flow task reference.",
+      metadata: { marker },
+    }),
+  );
+}
+
+function todoMarker(text: string): string | undefined {
+  return text.match(/\b(TODO|FIXME|HACK|XXX)\b/i)?.[1]?.toUpperCase();
+}
+
+function hasTodoTracking(text: string): boolean {
+  return /https?:\/\//i.test(text) || /(?:^|\s)#\d+\b/.test(text) || /\bGH-\d+\b/i.test(text) || /\bM\d{1,3}\b/.test(text) || /\.goat-flow\/tasks\//.test(text) || /\bADR-\d{3}\b/i.test(text) || /\b\d{4}-\d{2}-\d{2}\b/.test(text) || /\bowner\s*:/i.test(text);
+}
+
+function pushSuppressionWithoutRationaleFinding(file: SourceFile, comment: CommentRecord, findings: Finding[]): void {
+  const suppression = suppressionDirective(comment.text);
+  if (!suppression || hasSuppressionRationale(comment.text)) {
+    return;
+  }
+  findings.push(
+    makeFinding({
+      ruleId: "docs.suppression-without-rationale",
+      message: `${suppression} suppression is missing a maintainer rationale.`,
+      filePath: file.displayPath,
+      line: comment.line,
+      severity: "advisory",
+      pillar: "documentation",
+      confidence: "medium",
+      remediation: "Explain why the suppression is intentional, a false positive, or tracked elsewhere.",
+      metadata: { suppression },
+    }),
+  );
+}
+
+function suppressionDirective(text: string): string | undefined {
+  if (/@ts-(?:ignore|expect-error|nocheck|check)\b/.test(text)) {
+    return undefined;
+  }
+  const match = text.match(/\b(eslint-disable(?:-next-line|-line)?|biome-ignore|oxlint-disable|istanbul ignore|c8 ignore|v8 ignore|prettier-ignore)\b/i);
+  return match?.[1];
+}
+
+function hasSuppressionRationale(text: string): boolean {
+  return /\b(?:because|intentional|false positive|tracked in|M\d{1,3}|ADR-\d{3}|GH-\d+)\b/i.test(text) || /\breason\s*:/i.test(text) || /(?:^|\s)#\d+\b/.test(text) || /https?:\/\//i.test(text) || /\.goat-flow\/tasks\//.test(text);
+}
+
+function pushStaleFileReferenceFindings(file: SourceFile, comment: CommentRecord, findings: Finding[]): void {
+  if (isHistoricalContextComment(comment.text)) {
+    return;
+  }
+  for (const match of comment.text.matchAll(/[`'"]((?:\.{1,2}\/|src\/|bin\/|scripts\/|docs\/|fixtures\/|\.goat-flow\/)[A-Za-z0-9_./-]+\.(?:ts|tsx|js|json|ya?ml|toml|md|sh))[`'"]/g)) {
+    const referencedPath = match[1] ?? "";
+    if (referencedPathExists(file, referencedPath)) {
+      continue;
+    }
+    findings.push(staleCommentFinding(file, comment, `Comment references missing path \`${referencedPath}\`.`, { staleReference: referencedPath, referenceType: "path" }));
+  }
+}
+
+function referencedPathExists(file: SourceFile, referencedPath: string): boolean {
+  const fromProject = resolve(cwd(), referencedPath);
+  const fromFile = resolve(dirnamePath(file.absolutePath), referencedPath);
+  return existsSync(fromProject) || existsSync(fromFile);
+}
+
+function pushStaleRuleReferenceFindings(file: SourceFile, comment: CommentRecord, descriptorIds: Set<string>, findings: Finding[]): void {
+  if (isHistoricalContextComment(comment.text)) {
+    return;
+  }
+  for (const match of comment.text.matchAll(/\b((?:complexity|dead-code|design|docs|modernisation|naming|security|sensitive-data|size|test-quality|waste)\.[a-z0-9-]+)\b/g)) {
+    const ruleId = match[1] ?? "";
+    if (descriptorIds.has(ruleId)) {
+      continue;
+    }
+    findings.push(staleCommentFinding(file, comment, `Comment references unknown rule id \`${ruleId}\`.`, { staleReference: ruleId, referenceType: "ruleId" }));
+  }
+}
+
+function pushStaleCliFlagReferenceFindings(file: SourceFile, comment: CommentRecord, cliFlags: Set<string>, findings: Finding[]): void {
+  if (isHistoricalContextComment(comment.text)) {
+    return;
+  }
+  for (const match of comment.text.matchAll(/(?<![A-Za-z0-9])--[a-z][a-z0-9-]*/g)) {
+    const flag = match[0] ?? "";
+    if (cliFlags.has(flag)) {
+      continue;
+    }
+    findings.push(staleCommentFinding(file, comment, `Comment references unknown CLI flag \`${flag}\`.`, { staleReference: flag, referenceType: "cliFlag" }));
+  }
+}
+
+function knownCliFlags(): Set<string> {
+  return new Set([
+    "--ansi",
+    "--baseline",
+    "--config",
+    "--diff",
+    "--fail-on",
+    "--format",
+    "--generate-baseline",
+    "--help",
+    "--history-file",
+    "--host",
+    "--include-ignored",
+    "--no-ansi",
+    "--no-baseline",
+    "--no-config",
+    "--no-interaction",
+    "--output",
+    "--port",
+    "--project-root",
+    "--quiet",
+    "--silent",
+    "--verbose",
+    "--version",
+  ]);
+}
+
+function pushStaleDeclarationCommentFinding(file: SourceFile, comment: CommentRecord, declaration: CommentedDeclaration, findings: Finding[]): void {
+  if (isHistoricalContextComment(comment.text)) {
+    return;
+  }
+  const referencedName = referencedDeclarationName(comment.text, declaration.kind);
+  if (!referencedName || referencedName === declaration.name) {
+    return;
+  }
+  findings.push(staleCommentFinding(file, comment, `Comment names \`${referencedName}\` but documents \`${declaration.name}\`.`, { staleReference: referencedName, referenceType: declaration.kind, symbol: declaration.name }));
+}
+
+function referencedDeclarationName(text: string, kind: CommentedDeclaration["kind"]): string | undefined {
+  const identifier = "([A-Za-z_$][A-Za-z0-9_$]*)";
+  const direct = text.match(new RegExp(`\\b${kind}\\s+\`?${identifier}\`?`, "i"));
+  if (direct?.[1]) {
+    return direct[1];
+  }
+  const leading = text.match(new RegExp(`^\`?${identifier}\`?\\s+(?:${kind}|helper|method|contract|type)\\b`, "i"));
+  return leading?.[1];
+}
+
+function pushRestatingSignatureCommentFinding(file: SourceFile, comment: CommentRecord, declaration: CommentedDeclaration, findings: Finding[]): void {
+  if (declaration.kind === "function" && declaration.isPublic && comment.kind === "block") {
+    return;
+  }
+  if (!isRestatingSignatureComment(comment.text, declaration.name, declaration.kind)) {
+    return;
+  }
+  findings.push(docFinding({ ruleId: "docs.useless-docblock", message: `Comment for \`${declaration.name}\` only restates the signature.`, file, line: comment.line, symbol: declaration.name }));
+}
+
+function pushFunctionContextFindings(file: SourceFile, block: FunctionBlock, comment: CommentRecord, config: Config, findings: Finding[]): void {
+  const body = block.codeBody;
+  if (isComplexContextCandidate(block, config) && !hasComplexWhyMarker(comment.text)) {
+    findings.push(contextDocFinding(file, comment, block.name, "docs.missing-why-for-complex-code", `Complex function \`${block.name}\` has a comment, but it does not explain why the control flow exists.`, "Explain the tradeoff, compatibility reason, or invariant behind the complex control flow.", { contextClass: "complex-code" }));
+  }
+  if (hasSideEffectSignal(block.name, body) && !hasSideEffectMarker(comment.text)) {
+    findings.push(contextDocFinding(file, comment, block.name, "docs.missing-side-effect-doc", `Function \`${block.name}\` performs side effects that its comment does not describe.`, "Name the observable side effect such as filesystem, process, environment, or network mutation.", { contextClass: "side-effect" }));
+  }
+  if (hasErrorBehaviorSignal(body) && !hasErrorBehaviorMarker(comment.text)) {
+    findings.push(contextDocFinding(file, comment, block.name, "docs.missing-error-behavior-doc", `Function \`${block.name}\` has error behavior that its comment does not describe.`, "Document thrown errors, diagnostics, exits, reports, or recovery behavior.", { contextClass: "error-behavior" }));
+  }
+  if (hasInvariantFunctionSignal(block) && !hasInvariantMarker(comment.text)) {
+    findings.push(contextDocFinding(file, comment, block.name, "docs.missing-invariant-doc", `Function \`${block.name}\` maintains a public contract that its comment does not describe.`, "Document the schema, fingerprint, baseline, sorting, or determinism invariant.", { contextClass: "invariant" }));
+  }
+}
+
+function pushDeclarationContextFindings(file: SourceFile, lines: string[], declaration: CommentedDeclaration, comment: CommentRecord, findings: Finding[]): void {
+  if (declaration.kind !== "interface" || isRestatingSignatureComment(comment.text, declaration.name, declaration.kind)) {
+    return;
+  }
+  if (!hasInvariantInterfaceSignal(lines, declaration) || hasInvariantMarker(comment.text)) {
+    return;
+  }
+  findings.push(contextDocFinding(file, comment, declaration.name, "docs.missing-invariant-doc", `Interface \`${declaration.name}\` defines a public contract that its comment does not describe.`, "Document the schema, fingerprint, baseline, report, or determinism invariant.", { contextClass: "invariant" }));
+}
+
+function contextDocFinding(file: SourceFile, comment: CommentRecord, symbol: string, ruleId: string, message: string, remediation: string, metadata: Record<string, string>): Finding {
+  return makeFinding({
+    ruleId,
+    message,
+    filePath: file.displayPath,
+    line: comment.line,
+    severity: "advisory",
+    pillar: "documentation",
+    confidence: "medium",
+    symbol,
+    remediation,
+    metadata,
+  });
+}
+
+function isComplexContextCandidate(block: FunctionBlock, config: Config): boolean {
+  const cyclomatic = countMatches(block.codeBody, /\b(if|else if|switch|case|for|while|catch)\b|\?|&&|\|\|/g) + 1;
+  const cognitive = cyclomatic + maxNestingDepth(block.codeBody);
+  const npath = approximateNpath(functionBodyContent(block.codeBody));
+  return (
+    block.lineCount > threshold(config, "size.function-length", "warn", 30) ||
+    cyclomatic > threshold(config, "complexity.cyclomatic", "warn", 10) ||
+    cognitive > threshold(config, "complexity.cognitive", "warn", 15) ||
+    npath.value > threshold(config, "complexity.npath", "warn", 20) ||
+    maxNestingDepth(block.codeBody) > 3
+  );
+}
+
+function hasComplexWhyMarker(text: string): boolean {
+  return /\b(?:because|why|intentional|tradeoff|compat|avoid|preserve)\b/i.test(text);
+}
+
+function hasSideEffectMarker(text: string): boolean {
+  return /\b(?:writes|reads|persists|mutates|starts|spawns|network|filesystem|environment)\b/i.test(text);
+}
+
+function hasErrorBehaviorMarker(text: string): boolean {
+  return /\b(?:throws|returns diagnostic|reports|exits|swallows|fallback|recover)\b/i.test(text);
+}
+
+function hasInvariantMarker(text: string): boolean {
+  return /\b(?:invariant|contract|must|stable|deterministic|schema|fingerprint)\b/i.test(text);
+}
+
+function hasThresholdRationaleMarker(text: string): boolean {
+  return /\b(?:threshold|limit|cap|budget|tuned|default|because|empirical)\b/i.test(text);
+}
+
+function hasSideEffectSignal(name: string, body: string): boolean {
+  return (
+    /\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|mkdir(?:Sync)?|rm(?:Sync)?|rename(?:Sync)?|createWriteStream)\s*\(/.test(body) ||
+    /\bprocess\.chdir\s*\(/.test(body) ||
+    /\bprocess\.env\.[A-Za-z0-9_]+\s*=/.test(body) ||
+    /\b(?:exec|execFile|spawn)(?:Sync)?\s*\(/.test(body) ||
+    /\b(?:response|res)\.(?:write|end|setHeader|writeHead)\s*\(/.test(body) ||
+    /\bcreateServer\s*\(|\.listen\s*\(/.test(body) ||
+    /^(?:write|recordHistory|startDashboard)\b/.test(name)
+  );
+}
+
+function hasErrorBehaviorSignal(body: string): boolean {
+  return /\bthrow\b|\bcatch\b|\bprocess\.exit\s*\(|\bdiagnosticType\s*:|\b(?:findings|diagnostics)\.push\s*\(/.test(body);
+}
+
+function hasInvariantFunctionSignal(block: FunctionBlock): boolean {
+  const signalText = `${block.name}\n${block.codeBody}`;
+  return /\b(?:fingerprint|schemaVersion|baseline|AnalysisReport|Finding|stable sort|deterministic|dedupe|sort)\b/i.test(signalText);
+}
+
+function hasInvariantInterfaceSignal(lines: string[], declaration: CommentedDeclaration): boolean {
+  const blockText = declarationBlockText(lines, declaration.line);
+  const signalText = `${declaration.name}\n${blockText}`;
+  return /\b(?:fingerprint|schemaVersion|baseline|report|Finding|AnalysisReport|Baseline|stable|deterministic)\b/i.test(signalText);
+}
+
+function declarationBlockText(lines: string[], line: number): string {
+  const start = Math.max(0, line - 1);
+  const collected: string[] = [];
+  for (let index = start; index < lines.length; index += 1) {
+    const current = lines[index] ?? "";
+    collected.push(current);
+    if (current.trim() === "}") {
+      break;
+    }
+  }
+  return collected.join("\n");
+}
+
+function pushMagicThresholdFindings(file: SourceFile, source: string, codeSource: string, comments: CommentRecord[], findings: Finding[]): void {
+  if (isTestPath(file.displayPath)) {
+    return;
+  }
+  const lines = source.split(/\r?\n/);
+  const codeLines = codeSource.split(/\r?\n/);
+  codeLines.forEach((codeLine, index) => {
+    const candidate = magicThresholdCandidate(lines[index] ?? "", codeLine);
+    if (!candidate || hasNearbyThresholdRationale(lines, comments, index + 1)) {
+      return;
+    }
+    findings.push(
+      makeFinding({
+        ruleId: "docs.magic-threshold-without-rationale",
+        message: `Threshold-like value \`${candidate.label}\` lacks a nearby rationale comment.`,
+        filePath: file.displayPath,
+        line: index + 1,
+        severity: "advisory",
+        pillar: "documentation",
+        confidence: "medium",
+        symbol: candidate.label,
+        remediation: "Add a nearby comment explaining the threshold, limit, budget, or default.",
+        metadata: { value: candidate.value, thresholdKind: candidate.kind },
+      }),
+    );
+  });
+}
+
+function magicThresholdCandidate(rawLine: string, codeLine: string): { label: string; value: string; kind: string } | undefined {
+  const named = rawLine.match(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*(?:Threshold|Limit|Cap|Budget|Timeout|Tolerance|Weight|Score|Max|Min|Default|Entropy|Length)[A-Za-z0-9_$]*)\b[^=\n]*=\s*(-?\d+(?:\.\d+)?)/i);
+  if (named?.[1] && named[2] && !isCommonSafeNumber(named[2])) {
+    return { label: named[1], value: named[2], kind: "named-threshold" };
+  }
+  const thresholdDefault = rawLine.match(/\bthreshold\s*\([^)]*,\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/);
+  if (thresholdDefault?.[1] && thresholdDefault[2] && thresholdDefault[3] && !isCommonSafeNumber(thresholdDefault[3])) {
+    if (!/\bthreshold\s*\(/.test(codeLine)) {
+      return undefined;
+    }
+    return { label: `${thresholdDefault[1]}.${thresholdDefault[2]}`, value: thresholdDefault[3], kind: "config-default" };
+  }
+  return undefined;
+}
+
+function isCommonSafeNumber(value: string): boolean {
+  return ["-1", "0", "1", "2"].includes(value);
+}
+
+function hasNearbyThresholdRationale(lines: string[], comments: CommentRecord[], line: number): boolean {
+  const sameLine = comments.find((comment) => comment.line <= line && comment.endLine >= line);
+  if (sameLine && hasThresholdRationaleMarker(sameLine.text)) {
+    return true;
+  }
+  const leading = leadingCommentForLine(lines, comments, line);
+  return Boolean(leading && hasThresholdRationaleMarker(leading.text));
+}
+
+function isRestatingSignatureComment(text: string, name: string, kind: CommentedDeclaration["kind"]): boolean {
+  if (hasUsefulCommentContext(text)) {
+    return false;
+  }
+  const words = normalizedCommentWords(text).filter((word) => !restatementStopWords(kind).has(word)).map(stemCommentWord);
+  const nameWords = splitIdentifierWords(name).map(stemCommentWord);
+  if (words.length === 0) {
+    return true;
+  }
+  if (sameWords(words, nameWords)) {
+    return true;
+  }
+  return words.length <= nameWords.length + 1 && sameWords(words.slice(0, nameWords.length), nameWords);
+}
+
+function normalizedCommentWords(text: string): string[] {
+  return text
+    .replace(/`/g, " ")
+    .replace(/[^A-Za-z0-9_$]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .flatMap(splitIdentifierWords)
+    .filter(Boolean);
+}
+
+function restatementStopWords(kind: CommentedDeclaration["kind"]): Set<string> {
+  return new Set(["a", "an", "the", "this", "that", "function", "method", "helper", "type", "declaration", kind]);
+}
+
+function stemCommentWord(word: string): string {
+  return word.length > 3 && word.endsWith("s") ? word.slice(0, -1) : word;
+}
+
+function sameWords(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((word, index) => word === right[index]);
+}
+
+function hasUsefulCommentContext(text: string): boolean {
+  return /\b(?:because|why|intentional|tradeoff|compat|avoid|preserve|invariant|contract|side effect|throws|writes|reads|persists|fallback|recover|stable|deterministic|schema|fingerprint)\b/i.test(text);
+}
+
+function isHistoricalContextComment(text: string): boolean {
+  return /\b(?:previously|legacy|compat|migration|ADR)\b/i.test(text);
+}
+
+function staleCommentFinding(file: SourceFile, comment: CommentRecord, message: string, metadata: Record<string, string>): Finding {
+  const symbol = metadata["symbol"];
+  return makeFinding({
+    ruleId: "docs.stale-comment",
+    message,
+    filePath: file.displayPath,
+    line: comment.line,
+    severity: "advisory",
+    pillar: "documentation",
+    confidence: "medium",
+    ...(symbol ? { symbol } : {}),
+    remediation: "Update the comment reference or add historical context that explains why it remains useful.",
+    metadata,
+  });
+}
+
+function leadingCommentForLine(lines: string[], comments: CommentRecord[], line: number): CommentRecord | undefined {
+  for (let index = comments.length - 1; index >= 0; index -= 1) {
+    const comment = comments[index];
+    if (!comment || comment.endLine >= line) {
+      continue;
+    }
+    if (hasOnlyBlankLines(lines, comment.endLine + 1, line - 1)) {
+      return comment;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+function hasOnlyBlankLines(lines: string[], startLine: number, endLine: number): boolean {
+  for (let line = startLine; line < endLine; line += 1) {
+    if ((lines[line - 1] ?? "").trim() !== "") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function commentRecords(source: string): CommentRecord[] {
+  const records: CommentRecord[] = [];
+  let quote: string | undefined;
+  let isEscaped = false;
+  let isRegex = false;
+  let isRegexEscaped = false;
+  let isRegexCharClass = false;
+  let previousCode = "";
+  let line = 1;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index] ?? "";
+    const next = source[index + 1] ?? "";
+    if (character === "\n") {
+      line += 1;
+      if (quote !== "`") {
+        quote = undefined;
+      }
+      isRegex = false;
+      isRegexEscaped = false;
+      isRegexCharClass = false;
+      continue;
+    }
+    if (quote) {
+      const state = scanQuotedCommentCharacter(character, quote, isEscaped);
+      quote = state.quote;
+      isEscaped = state.isEscaped;
+      continue;
+    }
+    if (isRegex) {
+      const state = scanRegexCommentCharacter(character, isRegexEscaped, isRegexCharClass);
+      isRegex = state.isRegex;
+      isRegexEscaped = state.isEscaped;
+      isRegexCharClass = state.isCharClass;
+      continue;
+    }
+    if (character === "/" && next === "/") {
+      const record = lineCommentRecord(source, index, line);
+      records.push(record);
+      index = record.endIndex - 1;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      const record = blockCommentRecord(source, index, line);
+      records.push(record);
+      line = record.endLine;
+      index = record.endIndex;
+      continue;
+    }
+    if (character === "\"" || character === "'" || character === "`") {
+      quote = character;
+      isEscaped = false;
+      previousCode = character;
+      continue;
+    }
+    if (character === "/" && isCommentRegexStart(previousCode, source.slice(Math.max(0, index - 40), index))) {
+      isRegex = true;
+      isRegexEscaped = false;
+      isRegexCharClass = false;
+      previousCode = character;
+      continue;
+    }
+    if (/\S/.test(character)) {
+      previousCode = character;
+    }
+  }
+  return records;
+}
+
+function scanQuotedCommentCharacter(character: string, quote: string, isEscaped: boolean): { quote: string | undefined; isEscaped: boolean } {
+  if (isEscaped) {
+    return { quote, isEscaped: false };
+  }
+  if (character === "\\") {
+    return { quote, isEscaped: true };
+  }
+  if (character === quote) {
+    return { quote: undefined, isEscaped: false };
+  }
+  return { quote, isEscaped: false };
+}
+
+function scanRegexCommentCharacter(character: string, isEscaped: boolean, isCharClass: boolean): { isRegex: boolean; isEscaped: boolean; isCharClass: boolean } {
+  if (isEscaped) {
+    return { isRegex: true, isEscaped: false, isCharClass };
+  }
+  if (character === "\\") {
+    return { isRegex: true, isEscaped: true, isCharClass };
+  }
+  if (character === "[") {
+    return { isRegex: true, isEscaped: false, isCharClass: true };
+  }
+  if (character === "]") {
+    return { isRegex: true, isEscaped: false, isCharClass: false };
+  }
+  if (character === "/" && !isCharClass) {
+    return { isRegex: false, isEscaped: false, isCharClass: false };
+  }
+  return { isRegex: true, isEscaped: false, isCharClass };
+}
+
+function isCommentRegexStart(previousCode: string, beforeSlash: string): boolean {
+  return previousCode === "" || "([{=,:!&|?;".includes(previousCode) || /\breturn$/.test(beforeSlash.trimEnd());
+}
+
+function lineCommentRecord(source: string, startIndex: number, line: number): CommentRecord {
+  const newline = source.indexOf("\n", startIndex + 2);
+  const endIndex = newline === -1 ? source.length : newline;
+  return {
+    kind: "line",
+    text: source.slice(startIndex + 2, endIndex).trim(),
+    line,
+    endLine: line,
+    startIndex,
+    endIndex,
+  };
+}
+
+function blockCommentRecord(source: string, startIndex: number, line: number): CommentRecord {
+  let endIndex = source.length - 1;
+  let endLine = line;
+  for (let index = startIndex + 2; index < source.length; index += 1) {
+    if (source[index] === "\n") {
+      endLine += 1;
+    }
+    if (source[index] === "*" && source[index + 1] === "/") {
+      endIndex = index + 1;
+      break;
+    }
+  }
+  return {
+    kind: "block",
+    text: normalizedBlockCommentText(source.slice(startIndex + 2, Math.max(startIndex + 2, endIndex - 1))),
+    line,
+    endLine,
+    startIndex,
+    endIndex,
+  };
+}
+
+function normalizedBlockCommentText(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[ \t]*\*[ \t]?/, "").trim())
+    .filter((line) => line !== "")
+    .join(" ")
+    .trim();
 }
 
 function pushClassFileMismatchFinding(file: SourceFile, declaration: ExportedDeclaration, findings: Finding[]): void {
@@ -2306,6 +2989,8 @@ function functionBlockFromMatch(scan: FunctionBlockScan, match: RegExpMatchArray
     codeBody,
     isPublic: /\bexport\b|\bpublic\b/.test(scan.codeLines.slice(start, index + 1).join("\n")),
     isTest: isTestInvocationLine(scan.codeLines[index] ?? ""),
+    hasLeadingComment: hasLeadingCommentBeforeLines(scan.lines, index + 1),
+    declarationLine: index + 1,
   };
 }
 
@@ -2920,13 +3605,6 @@ function maxNestingDepth(source: string): number {
   return Math.max(0, maxDepth - 1);
 }
 
-function hasDocCommentBefore(block: string): boolean {
-  return block
-    .split(/\r?\n/)
-    .filter((line) => !/\b(function|class|interface|type|enum)\b/.test(line))
-    .some((line) => line.trimStart().startsWith("/**") || line.trimStart().startsWith("*"));
-}
-
 function hasDocCommentBeforeLine(source: string, line: number): boolean {
   const lines = source.split(/\r?\n/);
   let index = line - 2;
@@ -2949,6 +3627,86 @@ function isDocCommentLine(trimmedLine: string): boolean {
 
 function isDocCommentSearchBoundary(trimmedLine: string): boolean {
   return trimmedLine !== "" && !trimmedLine.startsWith("@");
+}
+
+function hasFileOverviewComment(source: string): boolean {
+  const lines = source.split(/\r?\n/);
+  let index = firstMeaningfulLineIndex(lines);
+  if (index === undefined) {
+    return false;
+  }
+  if (lines[index]?.startsWith("#!")) {
+    index = firstMeaningfulLineIndex(lines, index + 1);
+  }
+  return index !== undefined && commentTextAtLine(lines, index) !== undefined;
+}
+
+function firstMeaningfulLineIndex(lines: string[], start = 0): number | undefined {
+  for (let index = start; index < lines.length; index += 1) {
+    if ((lines[index] ?? "").trim() !== "") {
+      return index;
+    }
+  }
+  return undefined;
+}
+
+function hasLeadingCommentBeforeLine(source: string, line: number): boolean {
+  return hasLeadingCommentBeforeLines(source.split(/\r?\n/), line);
+}
+
+function hasLeadingCommentBeforeLines(lines: string[], line: number): boolean {
+  let index = line - 2;
+  while (index >= 0 && (lines[index] ?? "").trim() === "") {
+    index -= 1;
+  }
+  return index >= 0 && commentTextAtLine(lines, index) !== undefined;
+}
+
+function commentTextAtLine(lines: string[], index: number): string | undefined {
+  const trimmedLine = (lines[index] ?? "").trim();
+  if (trimmedLine.startsWith("//")) {
+    const text = trimmedLine.slice(2).trim();
+    return text === "" ? undefined : text;
+  }
+  if (trimmedLine.startsWith("/*")) {
+    return blockCommentText(lines, index);
+  }
+  if (trimmedLine.endsWith("*/")) {
+    return blockCommentTextEndingAt(lines, index);
+  }
+  return undefined;
+}
+
+function blockCommentTextEndingAt(lines: string[], endIndex: number): string | undefined {
+  for (let index = endIndex; index >= 0; index -= 1) {
+    if ((lines[index] ?? "").trim().startsWith("/*")) {
+      return blockCommentText(lines, index, endIndex);
+    }
+  }
+  return undefined;
+}
+
+function blockCommentText(lines: string[], startIndex: number, knownEndIndex?: number): string | undefined {
+  const endIndex = knownEndIndex ?? blockCommentEndIndex(lines, startIndex);
+  if (endIndex === undefined) {
+    return undefined;
+  }
+  const text = lines
+    .slice(startIndex, endIndex + 1)
+    .map((line) => line.replace(/^\s*\/\*\*?/, "").replace(/\*\/\s*$/, "").replace(/^\s*\*\s?/, "").trim())
+    .filter((line) => line !== "" && !line.startsWith("@"))
+    .join(" ")
+    .trim();
+  return text === "" ? undefined : text;
+}
+
+function blockCommentEndIndex(lines: string[], startIndex: number): number | undefined {
+  for (let index = startIndex; index < lines.length; index += 1) {
+    if ((lines[index] ?? "").includes("*/")) {
+      return index;
+    }
+  }
+  return undefined;
 }
 
 function isGenericName(name: string): boolean {
