@@ -9,16 +9,18 @@ function parseDiagnostics(file: DiagnosticSourceFile, source: string): RunDiagno
   if (!file.isTypeScript) {
     return [];
   }
-  const counts: DelimiterCounts = { braces: 0, parentheses: 0, brackets: 0 };
-  const scan = defaultDelimiterScanState();
+  const ctx: DelimiterScanContext = {
+    scan: defaultDelimiterScanState(),
+    counts: { braces: 0, parentheses: 0, brackets: 0 },
+  };
   const lines = source.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
-    scanDelimiterLine(line, scan, counts);
-    if (hasNegativeDelimiterCount(counts)) {
+    scanDelimiterLine(line, ctx);
+    if (hasNegativeDelimiterCount(ctx.counts)) {
       return [parseErrorDiagnostic(file, index + 1)];
     }
   }
-  if (hasUnbalancedDelimiterCount(counts)) {
+  if (hasUnbalancedDelimiterCount(ctx.counts)) {
     return [parseErrorDiagnostic(file, lines.length)];
   }
   return [];
@@ -40,6 +42,11 @@ interface DelimiterScanState {
   previousCode: string;
 }
 
+interface DelimiterScanContext {
+  scan: DelimiterScanState;
+  counts: DelimiterCounts;
+}
+
 interface ScanStep {
   skip: number;
   stopLine: boolean;
@@ -57,9 +64,9 @@ function defaultDelimiterScanState(): DelimiterScanState {
   };
 }
 
-function scanDelimiterLine(line: string, scan: DelimiterScanState, counts: DelimiterCounts): void {
+function scanDelimiterLine(line: string, ctx: DelimiterScanContext): void {
   for (let offset = 0; offset < line.length; offset += 1) {
-    const step = scanDelimiterCharacter(line, offset, scan, counts);
+    const step = scanDelimiterCharacter(line, offset, ctx);
     offset += step.skip;
     if (step.stopLine) {
       break;
@@ -67,21 +74,21 @@ function scanDelimiterLine(line: string, scan: DelimiterScanState, counts: Delim
   }
 }
 
-function scanDelimiterCharacter(line: string, offset: number, scan: DelimiterScanState, counts: DelimiterCounts): ScanStep {
+function scanDelimiterCharacter(line: string, offset: number, ctx: DelimiterScanContext): ScanStep {
   const character = line[offset] ?? "";
   const next = line[offset + 1] ?? "";
-  if (scan.blockComment) {
-    return scanBlockCommentDelimiter(character, next, scan);
+  if (ctx.scan.blockComment) {
+    return scanBlockCommentDelimiter(character, next, ctx.scan);
   }
-  if (scan.quote) {
-    scanQuotedDelimiter(character, scan);
+  if (ctx.scan.quote) {
+    scanQuotedDelimiter(character, ctx.scan);
     return continueScan();
   }
-  if (scan.regex) {
-    scanRegexDelimiter(character, scan);
+  if (ctx.scan.regex) {
+    scanRegexDelimiter(character, ctx.scan);
     return continueScan();
   }
-  return scanCodeDelimiter(line, offset, character, next, scan, counts);
+  return scanCodeDelimiter(line, offset, character, next, ctx);
 }
 
 function scanBlockCommentDelimiter(character: string, next: string, scan: DelimiterScanState): ScanStep {
@@ -117,27 +124,27 @@ function scanRegexDelimiter(character: string, scan: DelimiterScanState): void {
   }
 }
 
-function scanCodeDelimiter(line: string, offset: number, character: string, next: string, scan: DelimiterScanState, counts: DelimiterCounts): ScanStep {
+function scanCodeDelimiter(line: string, offset: number, character: string, next: string, ctx: DelimiterScanContext): ScanStep {
   if (character === "/" && next === "/") {
     return stopLineScan();
   }
   if (character === "/" && next === "*") {
-    scan.blockComment = true;
+    ctx.scan.blockComment = true;
     return skipNextCharacter();
   }
   if (isQuote(character)) {
-    scan.quote = character;
+    ctx.scan.quote = character;
     return continueScan();
   }
-  if (character === "/" && isRegexLiteralStart(scan.previousCode, line.slice(0, offset))) {
-    scan.regex = true;
-    scan.regexCharClass = false;
-    scan.regexEscaped = false;
+  if (character === "/" && isRegexLiteralStart(ctx.scan.previousCode, line.slice(0, offset))) {
+    ctx.scan.regex = true;
+    ctx.scan.regexCharClass = false;
+    ctx.scan.regexEscaped = false;
     return continueScan();
   }
-  countDelimiter(character, counts);
+  countDelimiter(character, ctx.counts);
   if (character.trim() !== "") {
-    scan.previousCode = character;
+    ctx.scan.previousCode = character;
   }
   return continueScan();
 }

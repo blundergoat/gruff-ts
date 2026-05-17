@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 import { Command, Help } from "commander";
 import { execFileSync } from "node:child_process";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { argv, chdir, cwd, stdout } from "node:process";
+import { argv, cwd } from "node:process";
 import { basename, dirname as dirnamePath, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isString, loadConfig, ruleEnabled, threshold } from "./config.ts";
+import { startDashboard } from "./dashboard.ts";
 import { makeFinding } from "./findings.ts";
 import { analyseProjectConfigRules } from "./project-config-rules.ts";
-import { dashboardErrorHtml, dashboardHomeHtml, grade, renderHtml, renderReport, renderSummary } from "./report-renderers.ts";
+import { grade, renderReport, renderSummary } from "./report-renderers.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
 import { codeLineForMatching, maskNonCode, parseDiagnostics } from "./source-text.ts";
@@ -781,15 +781,15 @@ function analyseTextRules(file: SourceFile, source: string, config: Config, find
   const error = threshold(config, "size.file-length", "error", 800);
   if (!isGeneratedLockfile(file.displayPath)) {
     if (lines > error) {
-      findings.push(finding("size.file-length", `File has ${lines} lines, above the error threshold of ${error}.`, file, 1, "error", "size"));
+      findings.push(finding({ ruleId: "size.file-length", message: `File has ${lines} lines, above the error threshold of ${error}.`, file, line: 1, severity: "error", pillar: "size" }));
     } else if (lines > warn) {
-      findings.push(finding("size.file-length", `File has ${lines} lines, above the warning threshold of ${warn}.`, file, 1, "warning", "size"));
+      findings.push(finding({ ruleId: "size.file-length", message: `File has ${lines} lines, above the warning threshold of ${warn}.`, file, line: 1, severity: "warning", pillar: "size" }));
     }
   }
 
   const todoMarkers = todoMarkerSummary(source, file.isTypeScript);
   if (todoMarkers.count >= threshold(config, "docs.todo-density", "markers", 4)) {
-    findings.push(finding("docs.todo-density", `File contains ${todoMarkers.count} TODO/FIXME markers.`, file, todoMarkers.firstLine, "advisory", "documentation"));
+    findings.push(finding({ ruleId: "docs.todo-density", message: `File contains ${todoMarkers.count} TODO/FIXME markers.`, file, line: todoMarkers.firstLine, severity: "advisory", pillar: "documentation" }));
   }
 
   analyseSensitiveData(file, source, config, findings);
@@ -850,31 +850,31 @@ function pushFunctionLengthFinding(context: BlockRuleContext): void {
   const functionWarn = threshold(context.config, "size.function-length", "warn", 30);
   const functionError = threshold(context.config, "size.function-length", "error", 60);
   if (context.block.lineCount > functionError) {
-    context.findings.push(blockFinding("size.function-length", `Function \`${context.block.name}\` has ${context.block.lineCount} lines, above the error threshold of ${functionError}.`, context.file, context.block, "error", "size"));
+    context.findings.push(blockFinding({ ruleId: "size.function-length", message: `Function \`${context.block.name}\` has ${context.block.lineCount} lines, above the error threshold of ${functionError}.`, file: context.file, block: context.block, severity: "error", pillar: "size" }));
   } else if (context.block.lineCount > functionWarn) {
-    context.findings.push(blockFinding("size.function-length", `Function \`${context.block.name}\` has ${context.block.lineCount} lines, above the warning threshold of ${functionWarn}.`, context.file, context.block, "warning", "size"));
+    context.findings.push(blockFinding({ ruleId: "size.function-length", message: `Function \`${context.block.name}\` has ${context.block.lineCount} lines, above the warning threshold of ${functionWarn}.`, file: context.file, block: context.block, severity: "warning", pillar: "size" }));
   }
 }
 
 function pushParameterCountFinding(context: BlockRuleContext): void {
   const params = context.block.params.split(",").map((value) => value.trim()).filter(Boolean).length;
   if (params > threshold(context.config, "size.parameter-count", "warn", 5)) {
-    context.findings.push(blockFinding("size.parameter-count", `Function \`${context.block.name}\` declares ${params} parameters.`, context.file, context.block, "warning", "size"));
+    context.findings.push(blockFinding({ ruleId: "size.parameter-count", message: `Function \`${context.block.name}\` declares ${params} parameters.`, file: context.file, block: context.block, severity: "warning", pillar: "size" }));
   }
 }
 
 function pushCyclomaticFinding(context: BlockRuleContext): void {
   if (context.cyclomatic > threshold(context.config, "complexity.cyclomatic", "error", 20)) {
-    context.findings.push(blockFinding("complexity.cyclomatic", `Function \`${context.block.name}\` has cyclomatic complexity ${context.cyclomatic}.`, context.file, context.block, "error", "complexity"));
+    context.findings.push(blockFinding({ ruleId: "complexity.cyclomatic", message: `Function \`${context.block.name}\` has cyclomatic complexity ${context.cyclomatic}.`, file: context.file, block: context.block, severity: "error", pillar: "complexity" }));
   } else if (context.cyclomatic > threshold(context.config, "complexity.cyclomatic", "warn", 10)) {
-    context.findings.push(blockFinding("complexity.cyclomatic", `Function \`${context.block.name}\` has cyclomatic complexity ${context.cyclomatic}.`, context.file, context.block, "warning", "complexity"));
+    context.findings.push(blockFinding({ ruleId: "complexity.cyclomatic", message: `Function \`${context.block.name}\` has cyclomatic complexity ${context.cyclomatic}.`, file: context.file, block: context.block, severity: "warning", pillar: "complexity" }));
   }
 }
 
 function pushCognitiveFinding(context: BlockRuleContext): void {
   const cognitive = context.cyclomatic + maxNestingDepth(context.block.codeBody);
   if (cognitive > threshold(context.config, "complexity.cognitive", "warn", 15)) {
-    context.findings.push(blockFinding("complexity.cognitive", `Function \`${context.block.name}\` has cognitive complexity ${cognitive}.`, context.file, context.block, "warning", "complexity"));
+    context.findings.push(blockFinding({ ruleId: "complexity.cognitive", message: `Function \`${context.block.name}\` has cognitive complexity ${cognitive}.`, file: context.file, block: context.block, severity: "warning", pillar: "complexity" }));
   }
 }
 
@@ -890,38 +890,38 @@ function pushNpathFinding(context: BlockRuleContext): void {
 }
 
 function npathFinding(context: BlockRuleContext, npath: NpathResult, severity: Severity): Finding {
-  return blockFindingWithMetadata(
-    "complexity.npath",
-    `Function \`${context.block.name}\` has approximate NPath complexity ${npath.value} (capped at ${NPATH_CAP}).`,
-    context.file,
-    context.block,
+  return blockFindingWithMetadata({
+    ruleId: "complexity.npath",
+    message: `Function \`${context.block.name}\` has approximate NPath complexity ${npath.value} (capped at ${NPATH_CAP}).`,
+    file: context.file,
+    block: context.block,
     severity,
-    "complexity",
-    { npath: npath.value, capped: npath.capped, cap: NPATH_CAP },
-  );
+    pillar: "complexity",
+    metadata: { npath: npath.value, capped: npath.capped, cap: NPATH_CAP },
+  });
 }
 
 function pushGodFunctionFinding(context: BlockRuleContext): void {
   if (context.block.lineCount > 45 && context.cyclomatic > 10) {
-    context.findings.push(blockFinding("design.god-function", `Function \`${context.block.name}\` is both long and complex.`, context.file, context.block, "warning", "design"));
+    context.findings.push(blockFinding({ ruleId: "design.god-function", message: `Function \`${context.block.name}\` is both long and complex.`, file: context.file, block: context.block, severity: "warning", pillar: "design" }));
   }
 }
 
 function pushGenericFunctionFinding(context: BlockRuleContext): void {
   if (isGenericName(context.block.name)) {
-    context.findings.push(blockFinding("naming.generic-function", `Function \`${context.block.name}\` is too generic to explain intent.`, context.file, context.block, "advisory", "naming"));
+    context.findings.push(blockFinding({ ruleId: "naming.generic-function", message: `Function \`${context.block.name}\` is too generic to explain intent.`, file: context.file, block: context.block, severity: "advisory", pillar: "naming" }));
   }
 }
 
 function pushMissingPublicFunctionDocFinding(context: BlockRuleContext): void {
   if (context.block.isPublic && !hasDocCommentBefore(context.block.body)) {
-    context.findings.push(blockFinding("docs.missing-public-doc", `Exported function \`${context.block.name}\` is missing a doc comment.`, context.file, context.block, "advisory", "documentation"));
+    context.findings.push(blockFinding({ ruleId: "docs.missing-public-doc", message: `Exported function \`${context.block.name}\` is missing a doc comment.`, file: context.file, block: context.block, severity: "advisory", pillar: "documentation" }));
   }
 }
 
 function pushEmptyFunctionFinding(context: BlockRuleContext): void {
   if (isEmptyFunctionBody(context.block.codeBody)) {
-    context.findings.push(blockFinding("waste.empty-function", `Function \`${context.block.name}\` has no executable body.`, context.file, context.block, "advisory", "waste"));
+    context.findings.push(blockFinding({ ruleId: "waste.empty-function", message: `Function \`${context.block.name}\` has no executable body.`, file: context.file, block: context.block, severity: "advisory", pillar: "waste" }));
   }
 }
 
@@ -1000,7 +1000,7 @@ function analyseTestBlock(file: SourceFile, block: FunctionBlock, config: Config
 
 function analyseAssertionQuality(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
   for (const check of assertionQualityChecks(block, body)) {
-    findings.push(blockFinding(check.ruleId, check.message, file, block, check.severity, "test-quality"));
+    findings.push(blockFinding({ ruleId: check.ruleId, message: check.message, file, block, severity: check.severity, pillar: "test-quality" }));
   }
   pushMagicNumberAssertionFindings(file, block, body, findings);
 }
@@ -1020,15 +1020,15 @@ function assertionQualityChecks(block: FunctionBlock, body: string): TestBlockCh
 function pushMagicNumberAssertionFindings(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
   for (const assertion of magicNumberAssertions(body)) {
     findings.push(
-      blockFindingWithMetadata(
-        "test-quality.magic-number-assertion",
-        `Test \`${block.name}\` asserts against unexplained numeric literal ${assertion.value}.`,
+      blockFindingWithMetadata({
+        ruleId: "test-quality.magic-number-assertion",
+        message: `Test \`${block.name}\` asserts against unexplained numeric literal ${assertion.value}.`,
         file,
         block,
-        "advisory",
-        "test-quality",
-        { value: assertion.value },
-      ),
+        severity: "advisory",
+        pillar: "test-quality",
+        metadata: { value: assertion.value },
+      }),
     );
   }
 }
@@ -1037,39 +1037,39 @@ function analyseMockQuality(file: SourceFile, block: FunctionBlock, body: string
   const unusedMocks = unusedMockVariables(body);
   for (const mock of unusedMocks) {
     findings.push(
-      blockFindingWithMetadata(
-        "test-quality.unused-mock",
-        `Mock \`${mock}\` is created but not used.`,
+      blockFindingWithMetadata({
+        ruleId: "test-quality.unused-mock",
+        message: `Mock \`${mock}\` is created but not used.`,
         file,
         block,
-        "advisory",
-        "test-quality",
-        { mockName: mock },
-      ),
+        severity: "advisory",
+        pillar: "test-quality",
+        metadata: { mockName: mock },
+      }),
     );
   }
   if (isMockOnlyTest(body)) {
-    findings.push(blockFinding("test-quality.mock-only-test", `Test \`${block.name}\` only verifies mock interaction.`, file, block, "advisory", "test-quality"));
+    findings.push(blockFinding({ ruleId: "test-quality.mock-only-test", message: `Test \`${block.name}\` only verifies mock interaction.`, file, block, severity: "advisory", pillar: "test-quality" }));
   }
 }
 
 function analyseSetupBloat(file: SourceFile, block: FunctionBlock, body: string, config: Config, findings: Finding[]): void {
   if (hasGlobalStateMutation(body)) {
-    findings.push(blockFinding("test-quality.global-state-mutation", `Test \`${block.name}\` mutates global process or runtime state.`, file, block, "warning", "test-quality"));
+    findings.push(blockFinding({ ruleId: "test-quality.global-state-mutation", message: `Test \`${block.name}\` mutates global process or runtime state.`, file, block, severity: "warning", pillar: "test-quality" }));
   }
   const setupLines = setupLineCount(body);
   const maxSetupLines = threshold(config, "test-quality.setup-bloat", "maxSetupLines", 12);
   if (setupLines > maxSetupLines) {
     findings.push(
-      blockFindingWithMetadata(
-        "test-quality.setup-bloat",
-        `Test \`${block.name}\` has ${setupLines} setup lines before its first assertion.`,
+      blockFindingWithMetadata({
+        ruleId: "test-quality.setup-bloat",
+        message: `Test \`${block.name}\` has ${setupLines} setup lines before its first assertion.`,
         file,
         block,
-        "advisory",
-        "test-quality",
-        { setupLines, maxSetupLines },
-      ),
+        severity: "advisory",
+        pillar: "test-quality",
+        metadata: { setupLines, maxSetupLines },
+      }),
     );
   }
 }
@@ -1083,7 +1083,7 @@ function analyseTestStructureChecks(file: SourceFile, block: FunctionBlock, body
   ];
   for (const [ruleId, pattern, message] of checks) {
     if (pattern.test(body)) {
-      findings.push(blockFinding(ruleId, message, file, block, "advisory", "test-quality"));
+      findings.push(blockFinding({ ruleId, message, file, block, severity: "advisory", pillar: "test-quality" }));
     }
   }
 }
@@ -1153,7 +1153,7 @@ function literalLineChecks(): LineRuleCheck[] {
 
 function pushCommentedOutCodeFinding(context: LineRuleContext): void {
   if (isCommentedOutCode(context.line)) {
-    context.findings.push(finding("waste.commented-out-code", "Comment appears to contain disabled source code.", context.file, context.lineNumber, "advisory", "waste"));
+    context.findings.push(finding({ ruleId: "waste.commented-out-code", message: "Comment appears to contain disabled source code.", file: context.file, line: context.lineNumber, severity: "advisory", pillar: "waste" }));
   }
 }
 
@@ -1240,31 +1240,31 @@ function pushNullishCoalescingFindings(context: LineRuleContext): void {
 function pushLooseEqualityFinding(context: LineRuleContext): void {
   const looseOperator = looseEqualityOperator(context.codeLine);
   if (looseOperator) {
-    context.findings.push(finding("modernisation.loose-equality", `Loose equality operator ${looseOperator} may coerce values.`, context.file, context.lineNumber, "advisory", "modernisation"));
+    context.findings.push(finding({ ruleId: "modernisation.loose-equality", message: `Loose equality operator ${looseOperator} may coerce values.`, file: context.file, line: context.lineNumber, severity: "advisory", pillar: "modernisation" }));
   }
 }
 
 function pushStringTimerFinding(context: LineRuleContext): void {
   if (stringTimerCandidate(context.codeLine)) {
-    context.findings.push(finding("security.string-timer", "Timer callback is provided as a string.", context.file, context.lineNumber, "warning", "security"));
+    context.findings.push(finding({ ruleId: "security.string-timer", message: "Timer callback is provided as a string.", file: context.file, line: context.lineNumber, severity: "warning", pillar: "security" }));
   }
 }
 
 function pushProcessExecFinding(context: LineRuleContext): void {
   if (processExecCandidate(context.codeLine) && !isFixedLocalProcessHarness(context.file, context.line, context.codeLine)) {
-    context.findings.push(finding("security.process-exec", "Child-process execution is used; validate arguments are not user-controlled.", context.file, context.lineNumber, "warning", "security"));
+    context.findings.push(finding({ ruleId: "security.process-exec", message: "Child-process execution is used; validate arguments are not user-controlled.", file: context.file, line: context.lineNumber, severity: "warning", pillar: "security" }));
   }
 }
 
 function pushPatternCheckFindings(context: LineRuleContext): void {
   for (const check of context.codeChecks) {
     if (check.pattern.test(context.codeLine)) {
-      context.findings.push(finding(check.ruleId, check.message, context.file, context.lineNumber, check.severity, check.pillar));
+      context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: check.severity, pillar: check.pillar }));
     }
   }
   for (const check of context.literalChecks) {
     if (rawPatternStartsInCode(context.line, context.codeLine, check.pattern)) {
-      context.findings.push(finding(check.ruleId, check.message, context.file, context.lineNumber, check.severity, check.pillar));
+      context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: check.severity, pillar: check.pillar }));
     }
   }
 }
@@ -1710,7 +1710,7 @@ function pushClassFileMismatchFinding(file: SourceFile, declaration: ExportedDec
 function analysePublicProperties(file: SourceFile, source: string, codeSource: string, findings: Finding[]): void {
   const publicProperty = /\bpublic\s+[A-Za-z_$][A-Za-z0-9_$]*\s*[=:]/g;
   for (const match of codeSource.matchAll(publicProperty)) {
-    findings.push(finding("modernisation.public-property", "Public class property exposes representation; prefer readonly or accessors when invariants matter.", file, byteLine(source, match.index ?? 0), "advisory", "modernisation"));
+    findings.push(finding({ ruleId: "modernisation.public-property", message: "Public class property exposes representation; prefer readonly or accessors when invariants matter.", file, line: byteLine(source, match.index ?? 0), severity: "advisory", pillar: "modernisation" }));
   }
 }
 
@@ -1880,7 +1880,7 @@ function analyseUnreachable(file: SourceFile, source: string, findings: Finding[
       didPreviousTerminate = false;
     }
     if (isUnreachableStatement(trimmed, didPreviousTerminate, branchLabel)) {
-      findings.push(finding("waste.unreachable-code", "Statement appears after a terminating statement.", file, index + 1, "warning", "waste"));
+      findings.push(finding({ ruleId: "waste.unreachable-code", message: "Statement appears after a terminating statement.", file, line: index + 1, severity: "warning", pillar: "waste" }));
     }
     didPreviousTerminate = isTerminatingStatement(trimmed);
   });
@@ -2383,16 +2383,38 @@ function isFunctionPrefixLine(trimmedLine: string): boolean {
   return trimmedLine.startsWith("@") || trimmedLine.startsWith("/**") || trimmedLine.startsWith("*") || trimmedLine === "";
 }
 
-function finding(ruleId: string, message: string, file: SourceFile, line: number, severity: Severity, pillar: Pillar): Finding {
-  return makeFinding({ ruleId, message, filePath: file.displayPath, line, severity, pillar, confidence: "high" });
+interface LineFindingArgs {
+  ruleId: string;
+  message: string;
+  file: SourceFile;
+  line: number;
+  severity: Severity;
+  pillar: Pillar;
 }
 
-function blockFinding(ruleId: string, message: string, file: SourceFile, block: FunctionBlock, severity: Severity, pillar: Pillar): Finding {
-  return makeFinding({ ruleId, message, filePath: file.displayPath, line: block.startLine, severity, pillar, confidence: "high", symbol: block.name });
+interface BlockFindingArgs {
+  ruleId: string;
+  message: string;
+  file: SourceFile;
+  block: FunctionBlock;
+  severity: Severity;
+  pillar: Pillar;
 }
 
-function blockFindingWithMetadata(ruleId: string, message: string, file: SourceFile, block: FunctionBlock, severity: Severity, pillar: Pillar, metadata: Record<string, unknown>): Finding {
-  return makeFinding({ ruleId, message, filePath: file.displayPath, line: block.startLine, severity, pillar, confidence: "medium", symbol: block.name, metadata });
+interface BlockFindingWithMetadataArgs extends BlockFindingArgs {
+  metadata: Record<string, unknown>;
+}
+
+function finding(args: LineFindingArgs): Finding {
+  return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.line, severity: args.severity, pillar: args.pillar, confidence: "high" });
+}
+
+function blockFinding(args: BlockFindingArgs): Finding {
+  return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.block.startLine, severity: args.severity, pillar: args.pillar, confidence: "high", symbol: args.block.name });
+}
+
+function blockFindingWithMetadata(args: BlockFindingWithMetadataArgs): Finding {
+  return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.block.startLine, severity: args.severity, pillar: args.pillar, confidence: "medium", symbol: args.block.name, metadata: args.metadata });
 }
 
 function scoreReport(findings: Finding[]): AnalysisReport["score"] {
@@ -2445,82 +2467,6 @@ function thresholdTriggered(thresholdValue: FailThreshold, severity: Severity): 
     return severity === "warning" || severity === "error";
   }
   return severity === "error";
-}
-
-interface DashboardContext {
-  host: string;
-  port: number;
-  projectRoot: string;
-}
-
-interface DashboardRouteInput {
-  root: string;
-  scanPath: string;
-}
-
-function startDashboard(host: string, port: number, projectRoot: string, outputEnabled = true): void {
-  const context: DashboardContext = { host, port, projectRoot };
-  const server = createServer((request, response) => handleDashboardRequest(context, request, response));
-  server.listen(port, host, () => {
-    if (outputEnabled) {
-      stdout.write(`gruff-ts dashboard listening at http://${host}:${port}\n`);
-    }
-  });
-}
-
-function handleDashboardRequest(context: DashboardContext, request: IncomingMessage, response: ServerResponse): void {
-  const url = new URL(request.url ?? "/", `http://${context.host}:${context.port}`);
-  if (url.pathname === "/health") {
-    writeTextResponse(response, 200, "ok", true);
-    return;
-  }
-  if (url.pathname === "/scan") {
-    renderDashboardScan(response, dashboardRouteInput(url, context.projectRoot));
-    return;
-  }
-  if (url.pathname !== "/") {
-    writeTextResponse(response, 404, "not found", false);
-    return;
-  }
-  const input = dashboardRouteInput(url, context.projectRoot);
-  writeHtmlResponse(response, 200, dashboardHomeHtml(input.root, input.scanPath));
-}
-
-function dashboardRouteInput(url: URL, projectRoot: string): DashboardRouteInput {
-  return {
-    root: url.searchParams.get("projectRoot") ?? projectRoot,
-    scanPath: url.searchParams.get("path") ?? ".",
-  };
-}
-
-function renderDashboardScan(response: ServerResponse, input: DashboardRouteInput): void {
-  const previous = cwd();
-  try {
-    chdir(input.root);
-    const report = analyse({
-      paths: [input.scanPath],
-      noConfig: false,
-      format: "html",
-      failOn: "none",
-      includeIgnored: false,
-      noBaseline: false,
-    });
-    writeHtmlResponse(response, 200, renderHtml(report, { projectRoot: input.root, scanPath: input.scanPath }));
-  } catch (error) {
-    writeHtmlResponse(response, 500, dashboardErrorHtml(String(error), input.root, input.scanPath));
-  } finally {
-    chdir(previous);
-  }
-}
-
-function writeHtmlResponse(response: ServerResponse, statusCode: number, body: string): void {
-  response.writeHead(statusCode, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-  response.end(body);
-}
-
-function writeTextResponse(response: ServerResponse, statusCode: number, body: string, noStore: boolean): void {
-  response.writeHead(statusCode, { "content-type": "text/plain; charset=utf-8", ...(noStore ? { "cache-control": "no-store" } : {}) });
-  response.end(body);
 }
 
 function renderRuleList(format: RuleListFormat): string {
