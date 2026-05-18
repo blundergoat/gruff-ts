@@ -105,6 +105,16 @@ function applyRuleConfig(config: Config, raw: Record<string, unknown>): void {
 }
 
 function ruleConfigValue(rule: Record<string, unknown>): { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> } {
+  assertRuleThresholdConfig(rule);
+  const parsed: { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> } = { options: numericConfigMap(rule.options) };
+  applyRuleEnabledConfig(parsed, rule);
+  applyRuleThresholdConfig(parsed, rule);
+  applyRuleSeverityConfig(parsed, rule);
+  return parsed;
+}
+
+/** Validates the public threshold/severity pair contract before parsing rule options. */
+function assertRuleThresholdConfig(rule: Record<string, unknown>): void {
   const hasThreshold = "threshold" in rule;
   const hasSeverity = "severity" in rule;
   if (hasThreshold && typeof rule.threshold !== "number") {
@@ -116,12 +126,27 @@ function ruleConfigValue(rule: Record<string, unknown>): { enabled?: boolean; th
   if (hasThreshold !== hasSeverity) {
     throw new Error('Rule config keys "threshold" and "severity" must be configured together.');
   }
-  return {
-    ...(typeof rule.enabled === "boolean" ? { enabled: rule.enabled } : {}),
-    ...(typeof rule.threshold === "number" ? { threshold: rule.threshold } : {}),
-    ...(isSeverity(rule.severity) ? { severity: rule.severity } : {}),
-    options: numericConfigMap(rule.options),
-  };
+}
+
+/** Copies an explicit enabled override while preserving absent config keys. */
+function applyRuleEnabledConfig(parsed: { enabled?: boolean }, rule: Record<string, unknown>): void {
+  if (typeof rule.enabled === "boolean") {
+    parsed.enabled = rule.enabled;
+  }
+}
+
+/** Copies a numeric threshold after validation has proved the value is safe. */
+function applyRuleThresholdConfig(parsed: { threshold?: number }, rule: Record<string, unknown>): void {
+  if (typeof rule.threshold === "number") {
+    parsed.threshold = rule.threshold;
+  }
+}
+
+/** Copies a severity override after validation has proved the value is supported. */
+function applyRuleSeverityConfig(parsed: { severity?: Severity }, rule: Record<string, unknown>): void {
+  if (isSeverity(rule.severity)) {
+    parsed.severity = rule.severity;
+  }
 }
 
 function numericConfigMap(value: unknown): Map<string, number> {

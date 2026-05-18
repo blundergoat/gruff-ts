@@ -97,6 +97,19 @@ interface CommentRecord {
   endIndex: number;
 }
 
+/** Tracks comment lexer state so string and regex contents are not treated as comments. */
+interface CommentScanState {
+  quote: string | undefined;
+  isEscaped: boolean;
+  isRegex: boolean;
+  isRegexEscaped: boolean;
+  isRegexCharClass: boolean;
+  previousCode: string;
+  line: number;
+}
+
+type CommentScanHandler = (source: string, index: number, state: CommentScanState, records: CommentRecord[]) => number | undefined;
+
 interface CommentedDeclaration {
   kind: "function" | "interface";
   name: string;
@@ -2869,71 +2882,164 @@ function hasOnlyBlankLines(lines: string[], startLine: number, endLine: number):
 
 function commentRecords(source: string): CommentRecord[] {
   const records: CommentRecord[] = [];
-  let quote: string | undefined;
-  let isEscaped = false;
-  let isRegex = false;
-  let isRegexEscaped = false;
-  let isRegexCharClass = false;
-  let previousCode = "";
-  let line = 1;
+  const state = initialCommentScanState();
 
   for (let index = 0; index < source.length; index += 1) {
-    const character = source[index] ?? "";
-    const next = source[index + 1] ?? "";
-    if (character === "\n") {
-      line += 1;
-      if (quote !== "`") {
-        quote = undefined;
-      }
-      isRegex = false;
-      isRegexEscaped = false;
-      isRegexCharClass = false;
-      continue;
-    }
-    if (quote) {
-      const state = scanQuotedCommentCharacter(character, quote, isEscaped);
-      quote = state.quote;
-      isEscaped = state.isEscaped;
-      continue;
-    }
-    if (isRegex) {
-      const state = scanRegexCommentCharacter(character, isRegexEscaped, isRegexCharClass);
-      isRegex = state.isRegex;
-      isRegexEscaped = state.isEscaped;
-      isRegexCharClass = state.isCharClass;
-      continue;
-    }
-    if (character === "/" && next === "/") {
-      const record = lineCommentRecord(source, index, line);
-      records.push(record);
-      index = record.endIndex - 1;
-      continue;
-    }
-    if (character === "/" && next === "*") {
-      const record = blockCommentRecord(source, index, line);
-      records.push(record);
-      line = record.endLine;
-      index = record.endIndex;
-      continue;
-    }
-    if (character === "\"" || character === "'" || character === "`") {
-      quote = character;
-      isEscaped = false;
-      previousCode = character;
-      continue;
-    }
-    if (character === "/" && isCommentRegexStart(previousCode, source.slice(Math.max(0, index - 40), index))) {
-      isRegex = true;
-      isRegexEscaped = false;
-      isRegexCharClass = false;
-      previousCode = character;
-      continue;
-    }
-    if (/\S/.test(character)) {
-      previousCode = character;
-    }
+    index = advanceCommentRecordScan(source, index, state, records);
   }
   return records;
+}
+
+/** Ordered comment lexer steps keep comment detection deterministic and branch-light. */
+const COMMENT_SCAN_HANDLERS: CommentScanHandler[] = [
+  scanCommentLineBreak,
+  scanQuotedCommentStep,
+  scanRegexCommentStep,
+  scanCommentRecordStep,
+  scanQuoteStartStep,
+  scanRegexStartStep,
+];
+
+/** Runs the first lexer step that can consume the current source character. */
+function advanceCommentRecordScan(source: string, index: number, state: CommentScanState, records: CommentRecord[]): number {
+  for (const handler of COMMENT_SCAN_HANDLERS) {
+    const nextIndex = handler(source, index, state, records);
+    if (typeof nextIndex === "number") {
+      return nextIndex;
+    }
+  }
+  updateCommentScanPreviousCode(state, source[index] ?? "");
+  return index;
+}
+
+/** Creates a fresh comment lexer state for a single source file scan. */
+function initialCommentScanState(): CommentScanState {
+  return {
+    quote: undefined,
+    isEscaped: false,
+    isRegex: false,
+    isRegexEscaped: false,
+    isRegexCharClass: false,
+    previousCode: "",
+    line: 1,
+  };
+}
+
+/** Consumes newlines and resets quote/regex state that cannot cross lines. */
+function scanCommentLineBreak(source: string, index: number, state: CommentScanState): number | undefined {
+  if ((source[index] ?? "") !== "\n") {
+    return undefined;
+  }
+  advanceCommentScanLine(state);
+  return index;
+}
+
+/** Advances the lexer after a newline has been consumed. */
+function advanceCommentScanLine(state: CommentScanState): void {
+  state.line += 1;
+  if (state.quote !== "`") {
+    state.quote = undefined;
+  }
+  state.isRegex = false;
+  state.isRegexEscaped = false;
+  state.isRegexCharClass = false;
+}
+
+/** Keeps quoted text from being reported as a real source comment. */
+function scanQuotedCommentStep(source: string, index: number, state: CommentScanState): number | undefined {
+  return scanActiveQuotedCommentState(state, source[index] ?? "") ? index : undefined;
+}
+
+/** Updates quote escape/close state when the lexer is inside a string. */
+function scanActiveQuotedCommentState(state: CommentScanState, character: string): boolean {
+  if (!state.quote) {
+    return false;
+  }
+  const nextState = scanQuotedCommentCharacter(character, state.quote, state.isEscaped);
+  state.quote = nextState.quote;
+  state.isEscaped = nextState.isEscaped;
+  return true;
+}
+
+/** Keeps regex literal bodies from being reported as real source comments. */
+function scanRegexCommentStep(source: string, index: number, state: CommentScanState): number | undefined {
+  return scanActiveRegexCommentState(state, source[index] ?? "") ? index : undefined;
+}
+
+/** Updates regex escape, character-class, and close state. */
+function scanActiveRegexCommentState(state: CommentScanState, character: string): boolean {
+  if (!state.isRegex) {
+    return false;
+  }
+  const nextState = scanRegexCommentCharacter(character, state.isRegexEscaped, state.isRegexCharClass);
+  state.isRegex = nextState.isRegex;
+  state.isRegexEscaped = nextState.isEscaped;
+  state.isRegexCharClass = nextState.isCharClass;
+  return true;
+}
+
+/** Records a line or block comment and returns the consumed source index. */
+function scanCommentRecordStep(source: string, index: number, state: CommentScanState, records: CommentRecord[]): number | undefined {
+  const record = commentRecordAt(source, index, state.line);
+  if (!record) {
+    return undefined;
+  }
+  records.push(record);
+  state.line = record.endLine;
+  return record.kind === "line" ? record.endIndex - 1 : record.endIndex;
+}
+
+/** Detects whether the current slash pair begins a source comment. */
+function commentRecordAt(source: string, index: number, line: number): CommentRecord | undefined {
+  const character = source[index] ?? "";
+  const next = source[index + 1] ?? "";
+  if (character === "/" && next === "/") {
+    return lineCommentRecord(source, index, line);
+  }
+  if (character === "/" && next === "*") {
+    return blockCommentRecord(source, index, line);
+  }
+  return undefined;
+}
+
+/** Opens string/template quote state when the current character starts a literal. */
+function scanQuoteStartStep(source: string, index: number, state: CommentScanState): number | undefined {
+  return openCommentScanQuote(state, source[index] ?? "") ? index : undefined;
+}
+
+/** Mutates quote state after a quote-start character is found. */
+function openCommentScanQuote(state: CommentScanState, character: string): boolean {
+  if (character !== "\"" && character !== "'" && character !== "`") {
+    return false;
+  }
+  state.quote = character;
+  state.isEscaped = false;
+  state.previousCode = character;
+  return true;
+}
+
+/** Opens regex state for slash tokens that follow expression-start syntax. */
+function scanRegexStartStep(source: string, index: number, state: CommentScanState): number | undefined {
+  return openCommentScanRegex(state, source, index, source[index] ?? "") ? index : undefined;
+}
+
+/** Mutates regex state after a regex literal start is found. */
+function openCommentScanRegex(state: CommentScanState, source: string, index: number, character: string): boolean {
+  if (character !== "/" || !isCommentRegexStart(state.previousCode, source.slice(Math.max(0, index - 40), index))) {
+    return false;
+  }
+  state.isRegex = true;
+  state.isRegexEscaped = false;
+  state.isRegexCharClass = false;
+  state.previousCode = character;
+  return true;
+}
+
+/** Remembers the last non-whitespace code token for regex/comment disambiguation. */
+function updateCommentScanPreviousCode(state: CommentScanState, character: string): void {
+  if (/\S/.test(character)) {
+    state.previousCode = character;
+  }
 }
 
 function scanQuotedCommentCharacter(character: string, quote: string, isEscaped: boolean): { quote: string | undefined; isEscaped: boolean } {
