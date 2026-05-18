@@ -1,4 +1,4 @@
-import { threshold } from "./config.ts";
+import { ruleSeverity, threshold } from "./config.ts";
 import { makeFinding } from "./findings.ts";
 import { byteLine } from "./text-scans.ts";
 import type { Config, Finding } from "./types.ts";
@@ -33,7 +33,7 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
 }
 
 function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
-  const minLength = threshold(config, "sensitive-data.hardcoded-env-value", "minLength", 16);
+  const minLength = threshold(config, "sensitive-data.hardcoded-env-value", 16);
   const lines = source.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
     const envValue = hardcodedEnvValue(line, minLength);
@@ -50,12 +50,13 @@ function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: st
       envValue.value,
       "medium",
       { keyName: envValue.keyName, length: envValue.value.length },
+      ruleSeverity(config, "sensitive-data.hardcoded-env-value", "error"),
     );
   }
 }
 
 function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
-  const minLength = threshold(config, "sensitive-data.high-entropy-string", "minLength", 32);
+  const minLength = threshold(config, "sensitive-data.high-entropy-string", 32);
   for (const match of source.matchAll(/(["'`])([A-Za-z0-9_+=./-]{32,})\1/g)) {
     const raw = match[2] ?? "";
     if (!isHighEntropySecretCandidate(raw, minLength)) {
@@ -71,6 +72,7 @@ function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, co
       raw,
       "medium",
       { length: raw.length, detector: "high-entropy-string" },
+      ruleSeverity(config, "sensitive-data.high-entropy-string", "error"),
     );
   }
 }
@@ -85,6 +87,7 @@ function pushSensitiveFinding(
   raw: string,
   confidence: Finding["confidence"],
   metadata: Record<string, unknown> = {},
+  severity: Finding["severity"] = "error",
 ): void {
   const preview = redact(raw);
   if (config.secretPreviews.has(preview)) {
@@ -96,7 +99,7 @@ function pushSensitiveFinding(
       message: `${message} Redacted preview: ${preview}.`,
       filePath: file.displayPath,
       line,
-      severity: "error",
+      severity,
       pillar: "sensitive-data",
       confidence,
       remediation: "Remove the sensitive value and load it from a secure runtime source.",

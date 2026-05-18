@@ -41,7 +41,8 @@ function renderSarif(report: AnalysisReport): string {
       defaultSeverity: descriptor.severity,
       confidence: descriptor.confidence,
       defaultEnabled: true,
-      ...(descriptor.thresholdKeys ? { thresholdKeys: descriptor.thresholdKeys } : {}),
+      ...(typeof descriptor.threshold === "number" ? { threshold: descriptor.threshold } : {}),
+      ...(descriptor.optionKeys ? { optionKeys: descriptor.optionKeys } : {}),
     },
   }));
   const ruleIndices = new Map(rules.map((rule, index) => [rule.id, index]));

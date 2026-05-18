@@ -38,8 +38,8 @@ allowlists:
 rules:
   rule.id:
     enabled: true
-    thresholds:
-      key: 10
+    threshold: 10
+    severity: warning
 ```
 
 ## Ignored Paths
@@ -106,21 +106,32 @@ rules:
     enabled: false
 ```
 
-Adjust thresholds:
+Set one threshold and one emitted severity for a metric rule:
 
 ```yaml
 rules:
   complexity.cyclomatic:
-    thresholds:
-      warn: 10
-      error: 20
+    threshold: 10
+    severity: warning
   size.file-length:
-    thresholds:
-      warn: 400
-      error: 800
+    threshold: 400
+    severity: error
 ```
 
-List threshold keys supported by each rule:
+Rules with extra tuning knobs use `options` for those knobs while the primary
+metric still uses `threshold` and `severity`:
+
+```yaml
+rules:
+  design.large-module-concentration:
+    threshold: 55
+    severity: advisory
+    options:
+      minFiles: 4
+      minLines: 80
+```
+
+List supported thresholds and options:
 
 ```bash
 gruff-ts list-rules
@@ -145,23 +156,21 @@ allowlists:
 
 rules:
   complexity.cognitive:
-    thresholds:
-      warn: 15
+    threshold: 15
+    severity: warning
   complexity.cyclomatic:
-    thresholds:
-      warn: 10
-      error: 20
+    threshold: 10
+    severity: warning
   design.deep-relative-import:
-    thresholds:
-      maxParentSegments: 2
+    threshold: 2
+    severity: advisory
   sensitive-data.high-entropy-string:
-    thresholds:
-      minLength: 32
+    threshold: 32
+    severity: error
   size.function-length:
-    thresholds:
-      warn: 30
-      error: 60
+    threshold: 30
+    severity: warning
   test-quality.setup-bloat:
-    thresholds:
-      maxSetupLines: 12
+    threshold: 12
+    severity: advisory
 ```

@@ -44,7 +44,7 @@ export interface Config {
   ignoredPaths: string[];
   acceptedAbbreviations: Set<string>;
   secretPreviews: Set<string>;
-  rules: Map<string, { enabled?: boolean; thresholds: Map<string, number> }>;
+  rules: Map<string, { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> }>;
 }
 
 /** Stable analysis finding emitted by a rule. */
@@ -100,6 +100,7 @@ export interface RuleDescriptor {
   confidence: Confidence;
   description: string;
   remediation: string;
-  thresholdKeys?: readonly string[];
+  threshold?: number;
+  optionKeys?: readonly string[];
   fixtureExemption?: string;
 }

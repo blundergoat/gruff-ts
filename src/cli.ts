@@ -6,7 +6,7 @@ import { argv, cwd } from "node:process";
 import { basename, dirname as dirnamePath, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { applyBaseline, dedupeFindings, DEFAULT_BASELINE, recordHistory, writeBaseline } from "./baseline.ts";
-import { isString, loadConfig, ruleEnabled, threshold } from "./config.ts";
+import { isString, loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { VERSION } from "./constants.ts";
 import { startDashboard } from "./dashboard.ts";
 import { makeFinding } from "./findings.ts";
@@ -22,6 +22,7 @@ import type { AnalysisOptions, AnalysisReport, Config, Finding, OutputFormat, Pi
 export type { AnalysisReport, Finding, OutputFormat, Pillar, RuleDescriptor, Severity } from "./types.ts";
 
 const NPATH_CAP = 1_000_000;
+const FIXTURE_PURPOSE_MIN_LINES = 12;
 
 interface SourceFile {
   absolutePath: string;
@@ -168,6 +169,13 @@ type MagicThresholdCandidate = {
   value: string;
   kind: string;
 };
+
+interface FixturePurposeCandidate {
+  line: number;
+  symbol: string;
+  targetKind: string;
+  lineCount: number;
+}
 
 interface TestBlockCheck {
   ruleId: string;
@@ -500,7 +508,8 @@ function analyseTestAdequacyRules(index: ProjectIndex, findings: Finding[]): voi
 }
 
 function analyseDeepRelativeImports(index: ProjectIndex, config: Config, findings: Finding[]): void {
-  const maxParentSegments = threshold(config, "design.deep-relative-import", "maxParentSegments", 2);
+  const maxParentSegments = threshold(config, "design.deep-relative-import", 2);
+  const severity = ruleSeverity(config, "design.deep-relative-import", "advisory");
   for (const source of index.scriptSources) {
     const edges = index.importsByFile.get(source.file.displayPath) ?? [];
     for (const edge of edges) {
@@ -513,7 +522,7 @@ function analyseDeepRelativeImports(index: ProjectIndex, config: Config, finding
           message: `Relative import \`${edge.specifier}\` climbs ${edge.parentSegments} directories.`,
           filePath: source.file.displayPath,
           line: edge.line,
-          severity: "advisory",
+          severity,
           pillar: "design",
           confidence: "medium",
           symbol: edge.specifier,
@@ -564,14 +573,14 @@ function analyseLargeModuleConcentration(index: ProjectIndex, config: Config, fi
   if (!candidate) {
     return;
   }
-  findings.push(largeModuleConcentrationFinding(candidate));
+  findings.push(largeModuleConcentrationFinding(candidate, ruleSeverity(config, "design.large-module-concentration", "advisory")));
 }
 
 function largeModuleThresholds(config: Config): LargeModuleThresholds {
   return {
-    minFiles: threshold(config, "design.large-module-concentration", "minFiles", 4),
-    minLines: threshold(config, "design.large-module-concentration", "minLines", 80),
-    maxSharePercent: threshold(config, "design.large-module-concentration", "maxSharePercent", 55),
+    minFiles: optionNumber(config, "design.large-module-concentration", "minFiles", 4),
+    minLines: optionNumber(config, "design.large-module-concentration", "minLines", 80),
+    maxSharePercent: threshold(config, "design.large-module-concentration", 55),
   };
 }
 
@@ -606,13 +615,13 @@ function productionModuleLineCounts(index: ProjectIndex): ModuleLineCount[] {
     .sort((left, right) => right.lines - left.lines || left.source.file.displayPath.localeCompare(right.source.file.displayPath));
 }
 
-function largeModuleConcentrationFinding(candidate: LargeModuleCandidate): Finding {
+function largeModuleConcentrationFinding(candidate: LargeModuleCandidate, severity: Severity): Finding {
   return makeFinding({
     ruleId: "design.large-module-concentration",
     message: `Module \`${candidate.source.file.displayPath}\` contains ${candidate.sharePercent}% of production source lines.`,
     filePath: candidate.source.file.displayPath,
     line: 1,
-    severity: "advisory",
+    severity,
     pillar: "design",
     confidence: "medium",
     symbol: fileBaseName(candidate.source.file.displayPath),
@@ -811,19 +820,16 @@ function normalizeDisplayPath(path: string): string {
 
 function analyseTextRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
   const lines = source.split(/\r?\n/).length;
-  const warn = threshold(config, "size.file-length", "warn", 400);
-  const error = threshold(config, "size.file-length", "error", 800);
+  const fileLengthThreshold = threshold(config, "size.file-length", 400);
   if (!isGeneratedLockfile(file.displayPath)) {
-    if (lines > error) {
-      findings.push(finding({ ruleId: "size.file-length", message: `File has ${lines} lines, above the error threshold of ${error}.`, file, line: 1, severity: "error", pillar: "size" }));
-    } else if (lines > warn) {
-      findings.push(finding({ ruleId: "size.file-length", message: `File has ${lines} lines, above the warning threshold of ${warn}.`, file, line: 1, severity: "warning", pillar: "size" }));
+    if (lines > fileLengthThreshold) {
+      findings.push(finding({ ruleId: "size.file-length", message: `File has ${lines} lines, above the threshold of ${fileLengthThreshold}.`, file, line: 1, severity: ruleSeverity(config, "size.file-length", "warning"), pillar: "size" }));
     }
   }
 
   const todoMarkers = todoMarkerSummary(source, file.isScript);
-  if (todoMarkers.count >= threshold(config, "docs.todo-density", "markers", 4)) {
-    findings.push(finding({ ruleId: "docs.todo-density", message: `File contains ${todoMarkers.count} TODO/FIXME markers.`, file, line: todoMarkers.firstLine, severity: "advisory", pillar: "documentation" }));
+  if (todoMarkers.count >= threshold(config, "docs.todo-density", 4)) {
+    findings.push(finding({ ruleId: "docs.todo-density", message: `File contains ${todoMarkers.count} TODO/FIXME markers.`, file, line: todoMarkers.firstLine, severity: ruleSeverity(config, "docs.todo-density", "advisory"), pillar: "documentation" }));
   }
 
   analyseSensitiveData(file, source, config, findings);
@@ -885,57 +891,49 @@ function analyseBlockRules(context: BlockRuleContext): void {
 }
 
 function pushFunctionLengthFinding(context: BlockRuleContext): void {
-  const functionWarn = threshold(context.config, "size.function-length", "warn", 30);
-  const functionError = threshold(context.config, "size.function-length", "error", 60);
-  if (context.block.lineCount > functionError) {
-    context.findings.push(blockFinding({ ruleId: "size.function-length", message: `Function \`${context.block.name}\` has ${context.block.lineCount} lines, above the error threshold of ${functionError}.`, file: context.file, block: context.block, severity: "error", pillar: "size" }));
-  } else if (context.block.lineCount > functionWarn) {
-    context.findings.push(blockFinding({ ruleId: "size.function-length", message: `Function \`${context.block.name}\` has ${context.block.lineCount} lines, above the warning threshold of ${functionWarn}.`, file: context.file, block: context.block, severity: "warning", pillar: "size" }));
+  const functionLengthThreshold = threshold(context.config, "size.function-length", 30);
+  if (context.block.lineCount > functionLengthThreshold) {
+    context.findings.push(blockFinding({ ruleId: "size.function-length", message: `Function \`${context.block.name}\` has ${context.block.lineCount} lines, above the threshold of ${functionLengthThreshold}.`, file: context.file, block: context.block, severity: ruleSeverity(context.config, "size.function-length", "warning"), pillar: "size" }));
   }
 }
 
 function pushParameterCountFinding(context: BlockRuleContext): void {
   const params = context.block.params.split(",").map((value) => value.trim()).filter(Boolean).length;
-  if (params > threshold(context.config, "size.parameter-count", "warn", 5)) {
-    context.findings.push(blockFinding({ ruleId: "size.parameter-count", message: `Function \`${context.block.name}\` declares ${params} parameters.`, file: context.file, block: context.block, severity: "warning", pillar: "size" }));
+  if (params > threshold(context.config, "size.parameter-count", 5)) {
+    context.findings.push(blockFinding({ ruleId: "size.parameter-count", message: `Function \`${context.block.name}\` declares ${params} parameters.`, file: context.file, block: context.block, severity: ruleSeverity(context.config, "size.parameter-count", "warning"), pillar: "size" }));
   }
 }
 
 function pushCyclomaticFinding(context: BlockRuleContext): void {
-  if (context.cyclomatic > threshold(context.config, "complexity.cyclomatic", "error", 20)) {
-    context.findings.push(blockFinding({ ruleId: "complexity.cyclomatic", message: `Function \`${context.block.name}\` has cyclomatic complexity ${context.cyclomatic}.`, file: context.file, block: context.block, severity: "error", pillar: "complexity" }));
-  } else if (context.cyclomatic > threshold(context.config, "complexity.cyclomatic", "warn", 10)) {
-    context.findings.push(blockFinding({ ruleId: "complexity.cyclomatic", message: `Function \`${context.block.name}\` has cyclomatic complexity ${context.cyclomatic}.`, file: context.file, block: context.block, severity: "warning", pillar: "complexity" }));
+  if (context.cyclomatic > threshold(context.config, "complexity.cyclomatic", 10)) {
+    context.findings.push(blockFinding({ ruleId: "complexity.cyclomatic", message: `Function \`${context.block.name}\` has cyclomatic complexity ${context.cyclomatic}.`, file: context.file, block: context.block, severity: ruleSeverity(context.config, "complexity.cyclomatic", "warning"), pillar: "complexity" }));
   }
 }
 
 function pushCognitiveFinding(context: BlockRuleContext): void {
   const cognitive = context.cyclomatic + maxNestingDepth(context.block.codeBody);
-  if (cognitive > threshold(context.config, "complexity.cognitive", "warn", 15)) {
-    context.findings.push(blockFinding({ ruleId: "complexity.cognitive", message: `Function \`${context.block.name}\` has cognitive complexity ${cognitive}.`, file: context.file, block: context.block, severity: "warning", pillar: "complexity" }));
+  if (cognitive > threshold(context.config, "complexity.cognitive", 15)) {
+    context.findings.push(blockFinding({ ruleId: "complexity.cognitive", message: `Function \`${context.block.name}\` has cognitive complexity ${cognitive}.`, file: context.file, block: context.block, severity: ruleSeverity(context.config, "complexity.cognitive", "warning"), pillar: "complexity" }));
   }
 }
 
 function pushNpathFinding(context: BlockRuleContext): void {
   const npath = approximateNpath(context.functionBody);
-  const npathWarn = threshold(context.config, "complexity.npath", "warn", 20);
-  const npathError = threshold(context.config, "complexity.npath", "error", 80);
-  if (npath.value > npathError) {
-    context.findings.push(npathFinding(context, npath, "error"));
-  } else if (npath.value > npathWarn) {
-    context.findings.push(npathFinding(context, npath, "warning"));
+  const npathThreshold = threshold(context.config, "complexity.npath", 20);
+  if (npath.value > npathThreshold) {
+    context.findings.push(npathFinding(context, npath, npathThreshold, ruleSeverity(context.config, "complexity.npath", "warning")));
   }
 }
 
-function npathFinding(context: BlockRuleContext, npath: NpathResult, severity: Severity): Finding {
+function npathFinding(context: BlockRuleContext, npath: NpathResult, thresholdValue: number, severity: Severity): Finding {
   return blockFindingWithMetadata({
     ruleId: "complexity.npath",
-    message: `Function \`${context.block.name}\` has approximate NPath complexity ${npath.value} (capped at ${NPATH_CAP}).`,
+    message: `Function \`${context.block.name}\` has approximate NPath complexity ${npath.value} above the threshold of ${thresholdValue} (capped at ${NPATH_CAP}).`,
     file: context.file,
     block: context.block,
     severity,
     pillar: "complexity",
-    metadata: { npath: npath.value, capped: npath.capped, cap: NPATH_CAP },
+    metadata: { npath: npath.value, capped: npath.capped, cap: NPATH_CAP, threshold: thresholdValue },
   });
 }
 
@@ -1096,7 +1094,7 @@ function analyseSetupBloat(file: SourceFile, block: FunctionBlock, body: string,
     findings.push(blockFinding({ ruleId: "test-quality.global-state-mutation", message: `Test \`${block.name}\` mutates global process or runtime state.`, file, block, severity: "warning", pillar: "test-quality" }));
   }
   const setupLines = setupLineCount(body);
-  const maxSetupLines = threshold(config, "test-quality.setup-bloat", "maxSetupLines", 12);
+  const maxSetupLines = threshold(config, "test-quality.setup-bloat", 12);
   if (setupLines > maxSetupLines) {
     findings.push(
       blockFindingWithMetadata({
@@ -1104,7 +1102,7 @@ function analyseSetupBloat(file: SourceFile, block: FunctionBlock, body: string,
         message: `Test \`${block.name}\` has ${setupLines} setup lines before its first assertion.`,
         file,
         block,
-        severity: "advisory",
+        severity: ruleSeverity(config, "test-quality.setup-bloat", "advisory"),
         pillar: "test-quality",
         metadata: { setupLines, maxSetupLines },
       }),
@@ -1804,6 +1802,7 @@ function analyseCommentQualityRules(input: CommentQualityRuleInput): void {
   analyseCommentedDeclarationQuality(file, lines, comments, declarations, findings);
   analyseFunctionContextCommentQuality({ file, lines, comments, blocks, config, findings });
   pushMagicThresholdFindings(file, source, codeSource, comments, findings);
+  pushFixturePurposeFindings(file, source, codeSource, lines, comments, blocks, config, findings);
 }
 
 // Keeps stale-reference checks separate from declaration-level documentation checks.
@@ -1840,6 +1839,252 @@ function analyseFunctionContextCommentQuality(input: FunctionContextCommentQuali
     }
     pushFunctionContextFindings(file, block, comment, config, findings);
   }
+}
+
+// Targets only large fixture-like source so ordinary tests and short examples stay quiet.
+function pushFixturePurposeFindings(file: SourceFile, source: string, codeSource: string, lines: string[], comments: CommentRecord[], blocks: FunctionBlock[], config: Config, findings: Finding[]): void {
+  if (!isTestPath(file.displayPath) && !isFixtureLikePath(file.displayPath)) {
+    return;
+  }
+  for (const candidate of fixturePurposeCandidates(source, codeSource, blocks, config)) {
+    if (hasFixturePurposeComment(lines, comments, candidate.line)) {
+      continue;
+    }
+    findings.push(
+      makeFinding({
+        ruleId: "docs.fixture-purpose-missing",
+        message: `Large fixture source near \`${candidate.symbol}\` is missing a purpose comment.`,
+        filePath: file.displayPath,
+        line: candidate.line,
+        severity: "advisory",
+        pillar: "documentation",
+        confidence: "medium",
+        symbol: candidate.symbol,
+        remediation: "Add a nearby comment explaining what scanner path, regression, or fixture behavior this source covers.",
+        metadata: {
+          targetKind: candidate.targetKind,
+          fixtureLines: candidate.lineCount,
+        },
+      }),
+    );
+  }
+}
+
+function fixturePurposeCandidates(source: string, codeSource: string, blocks: FunctionBlock[], config: Config): FixturePurposeCandidate[] {
+  const candidates: FixturePurposeCandidate[] = [];
+  const seen = new Set<string>();
+  const occupiedLines = new Set<number>();
+  const lines = source.split(/\r?\n/);
+  const codeLines = codeSource.split(/\r?\n/);
+  const lineOffsets = sourceLineStartOffsets(source);
+
+  codeLines.forEach((codeLine, index) => {
+    const lineNumber = index + 1;
+    const templateCandidate = fixtureTemplateCandidate(source, lineOffsets, codeLine, lineNumber);
+    if (templateCandidate) {
+      pushUniqueFixturePurposeCandidate(candidates, seen, templateCandidate);
+      occupiedLines.add(templateCandidate.line);
+    }
+    const generatedCandidate = generatedFixtureCandidate(lines[index] ?? "", codeLine, lineNumber);
+    if (generatedCandidate) {
+      pushUniqueFixturePurposeCandidate(candidates, seen, generatedCandidate);
+      occupiedLines.add(generatedCandidate.line);
+    }
+  });
+
+  for (const candidate of fixtureTestBlockCandidates(blocks, config, occupiedLines)) {
+    pushUniqueFixturePurposeCandidate(candidates, seen, candidate);
+  }
+
+  return candidates.filter((candidate) => candidate.line <= lines.length);
+}
+
+function pushUniqueFixturePurposeCandidate(candidates: FixturePurposeCandidate[], seen: Set<string>, candidate: FixturePurposeCandidate): void {
+  const key = `${candidate.line}\0${candidate.symbol}\0${candidate.targetKind}`;
+  if (seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  candidates.push(candidate);
+}
+
+function fixtureTemplateCandidate(source: string, lineOffsets: number[], codeLine: string, lineNumber: number): FixturePurposeCandidate | undefined {
+  const trigger = fixtureTemplateTrigger(codeLine);
+  if (!trigger) {
+    return undefined;
+  }
+  const text = templateLiteralAtLine(source, lineOffsets, lineNumber);
+  if (!text || !isLargeSourceFixtureText(text)) {
+    return undefined;
+  }
+  return {
+    line: lineNumber,
+    symbol: trigger.symbol,
+    targetKind: trigger.targetKind,
+    lineCount: fixtureLineCount(text),
+  };
+}
+
+function fixtureTemplateTrigger(codeLine: string): { symbol: string; targetKind: string } | undefined {
+  if (/\banalyseFixture\s*\(/.test(codeLine)) {
+    return { symbol: "analyseFixture", targetKind: "inline-source" };
+  }
+  if (/\banalyseProject\s*\(/.test(codeLine)) {
+    return { symbol: "analyseProject", targetKind: "inline-project" };
+  }
+  if (/\bwriteFileSync\s*\(/.test(codeLine)) {
+    return { symbol: "writeFileSync", targetKind: "written-source" };
+  }
+  const fixtureName = fixtureConstantName(codeLine);
+  return fixtureName ? { symbol: fixtureName, targetKind: "fixture-constant" } : undefined;
+}
+
+function fixtureConstantName(codeLine: string): string | undefined {
+  return codeLine.match(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*(?:Fixture|FIXTURE)[A-Za-z0-9_$]*)\b[^=\n]*=/)?.[1];
+}
+
+function generatedFixtureCandidate(rawLine: string, codeLine: string, lineNumber: number): FixturePurposeCandidate | undefined {
+  const fixtureName = fixtureConstantName(codeLine) ?? (/\b(?:const|let|var)\b/.test(codeLine) ? fixtureConstantName(rawLine) : undefined);
+  const generatedLength = Number((codeLine.match(/\bArray\.from\s*\(\s*\{\s*length\s*:\s*(\d+)/) ?? rawLine.match(/\bArray\.from\s*\(\s*\{\s*length\s*:\s*(\d+)/))?.[1] ?? 0);
+  if (!fixtureName || generatedLength <= FIXTURE_PURPOSE_MIN_LINES) {
+    return undefined;
+  }
+  return {
+    line: lineNumber,
+    symbol: fixtureName,
+    targetKind: "generated-fixture",
+    lineCount: generatedLength,
+  };
+}
+
+function fixtureTestBlockCandidates(blocks: FunctionBlock[], config: Config, occupiedLines: Set<number>): FixturePurposeCandidate[] {
+  const candidates: FixturePurposeCandidate[] = [];
+  for (const block of blocks) {
+    if (!block.isTest || fixtureLineInsideBlock(block, occupiedLines)) {
+      continue;
+    }
+    const setupLines = setupLineCount(block.codeBody);
+    if (setupLines <= threshold(config, "test-quality.setup-bloat", 12) || !hasFixtureSetupSignal(block.codeBody)) {
+      continue;
+    }
+    candidates.push({
+      line: block.declarationLine,
+      symbol: block.name,
+      targetKind: "test-setup",
+      lineCount: setupLines,
+    });
+  }
+  return candidates;
+}
+
+function fixtureLineInsideBlock(block: FunctionBlock, occupiedLines: Set<number>): boolean {
+  const endLine = block.startLine + block.lineCount - 1;
+  for (const line of occupiedLines) {
+    if (line >= block.startLine && line <= endLine) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasFixtureSetupSignal(source: string): boolean {
+  return /\b(?:analyseFixture|writeFileSync|mkdtempSync|Array\.from)\s*\(/.test(source) || hasFixtureIdentifier(source);
+}
+
+function hasFixtureIdentifier(source: string): boolean {
+  for (const match of source.matchAll(/\b[A-Za-z_$][A-Za-z0-9_$]*\b/g)) {
+    if ((match[0] ?? "").toLowerCase().includes("fixture")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isLargeSourceFixtureText(text: string): boolean {
+  return fixtureLineCount(text) > FIXTURE_PURPOSE_MIN_LINES && /\b(?:function|class|interface|type|enum|const|let|var|import|export|test|it)\b/.test(text);
+}
+
+function fixtureLineCount(text: string): number {
+  return text.split(/\r?\n/).length;
+}
+
+function sourceLineStartOffsets(source: string): number[] {
+  const offsets = [0];
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === "\n") {
+      offsets.push(index + 1);
+    }
+  }
+  return offsets;
+}
+
+function templateLiteralAtLine(source: string, lineOffsets: number[], lineNumber: number): string | undefined {
+  const start = lineOffsets[lineNumber - 1];
+  if (start === undefined) {
+    return undefined;
+  }
+  const nextLineStart = lineOffsets[lineNumber] ?? source.length + 1;
+  const firstBacktick = source.indexOf("`", start);
+  if (firstBacktick < 0 || firstBacktick >= nextLineStart) {
+    return undefined;
+  }
+  const end = closingTemplateLiteralIndex(source, firstBacktick + 1);
+  return end === undefined ? undefined : source.slice(firstBacktick + 1, end);
+}
+
+function closingTemplateLiteralIndex(source: string, startIndex: number): number | undefined {
+  let isEscaped = false;
+  for (let index = startIndex; index < source.length; index += 1) {
+    const character = source[index] ?? "";
+    if (isEscaped) {
+      isEscaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      isEscaped = true;
+      continue;
+    }
+    if (character === "`") {
+      return index;
+    }
+  }
+  return undefined;
+}
+
+function hasFixturePurposeComment(lines: string[], comments: CommentRecord[], line: number): boolean {
+  const sameLine = comments.find((comment) => comment.line <= line && comment.endLine >= line);
+  if (sameLine && hasFixturePurposeMarker(sameLine.text)) {
+    return true;
+  }
+  const leading = leadingFixturePurposeComment(lines, comments, line);
+  return Boolean(leading && hasFixturePurposeMarker(leading.text));
+}
+
+function leadingFixturePurposeComment(lines: string[], comments: CommentRecord[], line: number): CommentRecord | undefined {
+  for (let index = comments.length - 1; index >= 0; index -= 1) {
+    const comment = comments[index];
+    if (!comment || comment.endLine >= line) {
+      continue;
+    }
+    if (hasOnlyBlankFixturePurposeGap(lines, comment.endLine + 1, line - 1)) {
+      return comment;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+function hasOnlyBlankFixturePurposeGap(lines: string[], startLine: number, endLine: number): boolean {
+  for (let line = startLine; line <= endLine; line += 1) {
+    if ((lines[line - 1] ?? "").trim() !== "") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function hasFixturePurposeMarker(text: string): boolean {
+  return /\b(?:fixture|covers|reproduces|regression|scanner|parse|baseline|fingerprint|noise|valid case|invalid case|because|M\d{1,3})\b/i.test(text) || /\.goat-flow\/tasks\//.test(text);
 }
 
 function commentedDeclarations(blocks: FunctionBlock[], interfaces: ExportedDeclaration[]): CommentedDeclaration[] {
@@ -2139,10 +2384,10 @@ function isComplexContextCandidate(block: FunctionBlock, config: Config): boolea
   const cognitive = cyclomatic + maxNestingDepth(block.codeBody);
   const npath = approximateNpath(functionBodyContent(block.codeBody));
   return (
-    block.lineCount > threshold(config, "size.function-length", "warn", 30) ||
-    cyclomatic > threshold(config, "complexity.cyclomatic", "warn", 10) ||
-    cognitive > threshold(config, "complexity.cognitive", "warn", 15) ||
-    npath.value > threshold(config, "complexity.npath", "warn", 20) ||
+    block.lineCount > threshold(config, "size.function-length", 30) ||
+    cyclomatic > threshold(config, "complexity.cyclomatic", 10) ||
+    cognitive > threshold(config, "complexity.cognitive", 15) ||
+    npath.value > threshold(config, "complexity.npath", 20) ||
     maxNestingDepth(block.codeBody) > 3
   );
 }

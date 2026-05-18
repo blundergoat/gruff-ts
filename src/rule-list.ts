@@ -35,8 +35,9 @@ function renderRuleList(format: RuleListFormat): string {
   }
   const lines = ["gruff-ts " + VERSION + ` rules (${descriptors.length})`, ""];
   for (const descriptor of descriptors) {
-    const thresholds = descriptor.thresholdKeys && descriptor.thresholdKeys.length > 0 ? ` | thresholds: ${descriptor.thresholdKeys.join(",")}` : "";
-    lines.push(`${descriptor.ruleId} | ${descriptor.pillar} | ${descriptor.severity} | ${descriptor.confidence} | ${descriptor.description}${thresholds}`);
+    const threshold = typeof descriptor.threshold === "number" ? ` | threshold: ${descriptor.threshold}` : "";
+    const options = descriptor.optionKeys && descriptor.optionKeys.length > 0 ? ` | options: ${descriptor.optionKeys.join(",")}` : "";
+    lines.push(`${descriptor.ruleId} | ${descriptor.pillar} | ${descriptor.severity} | ${descriptor.confidence} | ${descriptor.description}${threshold}${options}`);
   }
   return `${lines.join("\n")}\n`;
 }

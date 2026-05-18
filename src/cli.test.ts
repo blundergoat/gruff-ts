@@ -26,6 +26,7 @@ const COMMENTED_OUT_LEGACY_CALL = ["const", " disabledLegacy = runLegacyPath();"
 
 const expandedRuleIds = new Set([
   "complexity.npath",
+  "docs.fixture-purpose-missing",
   "docs.magic-threshold-without-rationale",
   "docs.missing-error-behavior-doc",
   "docs.missing-file-overview",
@@ -123,6 +124,7 @@ interface RuleQualityDoctrineCase {
 }
 
 const riskyRuleIdsRequiringNoisyValidProof = [
+  "docs.fixture-purpose-missing",
   "docs.magic-threshold-without-rationale",
   "docs.missing-error-behavior-doc",
   "docs.missing-invariant-doc",
@@ -149,6 +151,19 @@ const riskyRuleIdsRequiringNoisyValidProof = [
 ] as const;
 
 const riskyRuleQualityDoctrine = [
+  {
+    ruleId: "docs.fixture-purpose-missing",
+    signalSource: "test and fixture file scan for large source literals, generated fixture sources, and fixture-heavy setup blocks",
+    expectedPillar: "documentation",
+    expectedSeverity: "advisory",
+    expectedConfidence: "medium",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "large inline source fixture, generated fixture source, or fixture-heavy test setup without a nearby purpose comment",
+    noisyValidFixture: "ordinary prose strings, UI text, markdown snippets, snapshots, short code examples, and purpose-commented fixtures",
+    missingInvalidFixture: "large scanner-relevant fixture remains reported when unrelated strings and documented fixtures are present",
+    falsePositiveEscapeHatch: "scope to test/fixture-like files, require large source-like content or fixture setup signals, and accept bounded purpose markers",
+    fingerprintStability: "anchor to the fixture declaration, helper call, or test invocation line rather than fixture body text",
+  },
   {
     ruleId: "docs.magic-threshold-without-rationale",
     signalSource: "masked executable-line scan for named threshold constants and threshold() defaults",
@@ -656,7 +671,7 @@ function redundantResult(): string {
 });
 
 test("core expansion respects npath config", () => {
-  // Config contract: complexity.npath | thresholds warn/error | defaults 20/80 |
+  // Config contract: complexity.npath | threshold/severity | defaults 20/warning |
   // metadata npath,capped,cap | disabled and override fixtures below.
   const source = `function branchLightly(input: string): string {
   if (input === "a") {
@@ -672,12 +687,12 @@ test("core expansion respects npath config", () => {
   assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "complexity.npath"), false);
 
   const tightReport = analyseFixture(source, {
-    config: { rules: { "complexity.npath": { thresholds: { warn: 3, error: 6 } } } },
+    config: { rules: { "complexity.npath": { threshold: 3, severity: "error" } } },
   });
-  assert.equal(tightReport.findings.some((finding) => finding.ruleId === "complexity.npath"), true);
+  assert.equal(tightReport.findings.some((finding) => finding.ruleId === "complexity.npath" && finding.severity === "error"), true);
 
   const disabledReport = analyseFixture(source, {
-    config: { rules: { "complexity.npath": { enabled: false, thresholds: { warn: 1, error: 2 } } } },
+    config: { rules: { "complexity.npath": { enabled: false, threshold: 1, severity: "warning" } } },
   });
   assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "complexity.npath"), false);
 });
@@ -698,14 +713,24 @@ test("loads default gruff-ts yaml config", () => {
       ".gruff-ts.yaml": `
 rules:
   "complexity.npath":
-    thresholds:
-      warn: 3
-      error: 6
+    threshold: 3
+    severity: warning
 `,
     },
     { noConfig: false },
   );
   assert.equal(report.findings.some((finding) => finding.ruleId === "complexity.npath"), true);
+});
+
+test("rule threshold config requires one value and one severity", () => {
+  assert.throws(
+    () => analyseProject({ "bad.ts": "export const value = 1;\n" }, { config: { rules: { "size.file-length": { threshold: 3 } } } }),
+    /threshold" and "severity" must be configured together/,
+  );
+  assert.throws(
+    () => analyseProject({ "bad.ts": "export const value = 1;\n" }, { config: { rules: { "size.file-length": { severity: "warning" } } } }),
+    /threshold" and "severity" must be configured together/,
+  );
 });
 
 test("loads default gruff-ts yaml allowlists", () => {
@@ -1272,14 +1297,14 @@ function work(): void {
 }
 `;
   const report = analyseFixture(source, {
-    config: { rules: { "docs.todo-density": { thresholds: { markers: 2 } } } },
+    config: { rules: { "docs.todo-density": { threshold: 2, severity: "advisory" } } },
   });
   const finding = report.findings.find((candidate) => candidate.ruleId === "docs.todo-density");
   assert.equal(finding?.message, "File contains 2 TODO/FIXME markers.");
   assert.equal(finding?.line, 4);
 
   const relaxedReport = analyseFixture(source, {
-    config: { rules: { "docs.todo-density": { thresholds: { markers: 3 } } } },
+    config: { rules: { "docs.todo-density": { threshold: 3, severity: "advisory" } } },
   });
   assert.equal(relaxedReport.findings.some((finding) => finding.ruleId === "docs.todo-density"), false);
 });
@@ -1620,6 +1645,115 @@ function undocumentedSideEffect(path: string): void {
   assert.equal(findingsByRule.get("docs.missing-why-for-complex-code")?.has("restatingComplexFlow"), false);
 });
 
+// Fixture covers the source-literal detector matrix without private helper access.
+test("fixture purpose detector matrix", () => {
+  const source = [
+    "const report = analyseFixture(`",
+    ...largeFixtureSourceLines("matrixValue"),
+    "`);",
+    "",
+    "const shortExample = `const tiny = 1;`;",
+    "const PROSE_FIXTURE_SOURCE = `",
+    ...Array.from({ length: 13 }, (_, index) => `Plain prose line ${index} for a release note.`),
+    "`;",
+    "const uiCopy = `",
+    ...Array.from({ length: 13 }, (_, index) => `Button label ${index}: Save changes`),
+    "`;",
+    "const markdownSnippet = `",
+    ...Array.from({ length: 13 }, (_, index) => `- Item ${index}: documentation text`),
+    "`;",
+    "const snapshotText = `",
+    ...Array.from({ length: 13 }, (_, index) => `<div data-index=\"${index}\">snapshot</div>`),
+    "`;",
+    "// fixture covers parser branch detection.",
+    "const PARSER_FIXTURE_SOURCE = `",
+    ...largeFixtureSourceLines("parserValue"),
+    "`;",
+    "const ROUTE_FIXTURE_SOURCE = `",
+    ...largeFixtureSourceLines("routeValue"),
+    "`;",
+    "// fixture covers generated source for a rule-count regression.",
+    "const generatedFixtureSource = Array.from({ length: 13 }, (_value, index) => \"const generated\" + index + \" = \" + index + \";\").join(\"\\n\");",
+    "const generatedWithoutPurposeFixtureSource = Array.from({ length: 13 }, (_value, index) => \"const generatedMissing\" + index + \" = \" + index + \";\").join(\"\\n\");",
+  ].join("\n");
+  const report = analyseFixture(source, { fileName: "fixture-purpose.test.ts" });
+  const findings = report.findings.filter((finding) => finding.ruleId === "docs.fixture-purpose-missing");
+  const symbols = new Set(findings.map((finding) => finding.symbol));
+
+  assert.equal(symbols.has("analyseFixture"), true);
+  assert.equal(symbols.has("ROUTE_FIXTURE_SOURCE"), true);
+  assert.equal(symbols.has("generatedWithoutPurposeFixtureSource"), true);
+  assert.equal(symbols.has("PARSER_FIXTURE_SOURCE"), false);
+  assert.equal(symbols.has("PROSE_FIXTURE_SOURCE"), false);
+  assert.equal(findings.length, 3);
+  assert.equal(findings.every((finding) => Number(finding.metadata.fixtureLines) > 12), true);
+
+  const changedBodyReport = analyseFixture(["const report = analyseFixture(`", ...largeFixtureSourceLines("changedMatrixValue"), "`);"].join("\n"), { fileName: "fixture-purpose.test.ts" });
+  const originalInline = findings.find((finding) => finding.symbol === "analyseFixture");
+  const changedInline = changedBodyReport.findings.find((finding) => finding.ruleId === "docs.fixture-purpose-missing" && finding.symbol === "analyseFixture");
+  assert.equal(changedInline?.fingerprint, originalInline?.fingerprint);
+});
+
+// Fixture covers setup-block detection and the nearby purpose-comment escape hatch.
+test("fixture purpose flags large fixture-heavy test setup without flagging documented setup", () => {
+  const source = [
+    "test(\"builds noisy fixture setup\", () => {",
+    ...Array.from({ length: 13 }, (_, index) => `  const fixtureValue${index} = ${index};`),
+    "  const report = analyseProject({ \"bad.ts\": \"const value = 1;\" });",
+    "  assert.ok(report);",
+    "});",
+    "",
+    "// fixture covers setup-bloat calibration.",
+    "test(\"builds documented fixture setup\", () => {",
+    ...Array.from({ length: 13 }, (_, index) => `  const documentedFixtureValue${index} = ${index};`),
+    "  const report = analyseProject({ \"bad.ts\": \"const value = 1;\" });",
+    "  assert.ok(report);",
+    "});",
+  ].join("\n");
+  const report = analyseFixture(source, { fileName: "fixture-purpose.test.ts" });
+  const fixturePurposeFindings = report.findings.filter((finding) => finding.ruleId === "docs.fixture-purpose-missing");
+  assert.equal(fixturePurposeFindings.some((finding) => finding.symbol === "builds noisy fixture setup"), true);
+  assert.equal(fixturePurposeFindings.some((finding) => finding.symbol === "builds documented fixture setup"), false);
+});
+
+test("comment rules config disable keeps fixture purpose independent", () => {
+  const source = [
+    "const report = analyseFixture(`",
+    ...largeFixtureSourceLines("disableValue"),
+    "`);",
+    "",
+    "function undocumentedHelper(): void {}",
+  ].join("\n");
+  const defaultReport = analyseFixture(source, { fileName: "fixture-purpose.test.ts" });
+  assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "docs.fixture-purpose-missing"), true);
+  assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "docs.missing-function-doc" && finding.symbol === "undocumentedHelper"), true);
+
+  const disabledReport = analyseFixture(source, {
+    fileName: "fixture-purpose.test.ts",
+    config: { rules: { "docs.fixture-purpose-missing": { enabled: false } } },
+  });
+  assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "docs.fixture-purpose-missing"), false);
+  assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "docs.missing-function-doc" && finding.symbol === "undocumentedHelper"), true);
+});
+
+test("documentation catalogue covers comment rule pack", () => {
+  const descriptors = ruleDescriptors();
+  const descriptorByRuleId = new Map(descriptors.map((descriptor) => [descriptor.ruleId, descriptor]));
+  const configSource = readFileSync(".gruff-ts.yaml", "utf8");
+  const coverageIds = ruleCatalogueCoverageRuleIds();
+  const doctrineIds: Set<string> = new Set(riskyRuleQualityDoctrine.filter((entry) => entry.expectedPillar === "documentation").map((entry) => entry.ruleId));
+  const documentationRuleIds = descriptors.filter((descriptor) => descriptor.pillar === "documentation").map((descriptor) => descriptor.ruleId);
+
+  for (const ruleId of documentationRuleIds) {
+    assert.notEqual(descriptorByRuleId.get(ruleId), undefined, `missing descriptor for ${ruleId}`);
+    assert.equal(configSource.includes(`  ${ruleId}:`), true, `missing config entry for ${ruleId}`);
+    assert.equal(coverageIds.has(ruleId), true, `missing cumulative fixture coverage for ${ruleId}`);
+  }
+  for (const ruleId of riskyRuleIdsRequiringNoisyValidProof.filter((ruleId) => ruleId.startsWith("docs."))) {
+    assert.equal(doctrineIds.has(ruleId), true, `missing documentation doctrine for ${ruleId}`);
+  }
+});
+
 test("missing public docs are reported once per exported class type or enum", () => {
   const report = analyseFixture(`export class PublicLoader {
   loadValue(): string {
@@ -1699,7 +1833,7 @@ test("risk expansion respects sensitive-data config", () => {
 
   const thresholdReport = analyseFixture(source, {
     fileName: ".env",
-    config: { rules: { "sensitive-data.hardcoded-env-value": { thresholds: { minLength: 40 } } } },
+    config: { rules: { "sensitive-data.hardcoded-env-value": { threshold: 40, severity: "error" } } },
   });
   assert.equal(thresholdReport.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), false);
 });
@@ -1951,12 +2085,12 @@ test("risk expansion respects test-quality config", () => {
   assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "test-quality.setup-bloat"), false);
 
   const tightReport = analyseFixture(source, {
-    config: { rules: { "test-quality.setup-bloat": { thresholds: { maxSetupLines: 3 } } } },
+    config: { rules: { "test-quality.setup-bloat": { threshold: 3, severity: "advisory" } } },
   });
   assert.equal(tightReport.findings.some((finding) => finding.ruleId === "test-quality.setup-bloat"), true);
 
   const disabledReport = analyseFixture(source, {
-    config: { rules: { "test-quality.setup-bloat": { enabled: false, thresholds: { maxSetupLines: 3 } } } },
+    config: { rules: { "test-quality.setup-bloat": { enabled: false, threshold: 3, severity: "advisory" } } },
   });
   assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "test-quality.setup-bloat"), false);
 });
@@ -2167,7 +2301,7 @@ export function fromB(): string {
   };
   const config = {
     rules: {
-      "design.large-module-concentration": { thresholds: { minFiles: 4, minLines: 8, maxSharePercent: 40 } },
+      "design.large-module-concentration": { threshold: 40, severity: "advisory", options: { minFiles: 4, minLines: 8 } },
     },
   };
   const first = analyseProject(files, { config });
@@ -2283,7 +2417,7 @@ function branchLightly(input: string): string {
     config: {
       rules: {
         "sensitive-data.hardcoded-env-value": { enabled: false },
-        "complexity.npath": { thresholds: { warn: 3, error: 6 } },
+        "complexity.npath": { threshold: 3, severity: "warning" },
       },
     },
   });
@@ -2507,6 +2641,12 @@ test("setup bloat", () => {
   expect(one).toBeDefined();
 });
 `,
+    "src/fixture-purpose.test.ts": [
+      "const report = analyseFixture(`",
+      ...largeFixtureSourceLines("expandedFixtureValue"),
+      "`);",
+      "void report;",
+    ].join("\n"),
     "src/app/feature/controller.ts": `import { sharedHelper } from "../../../shared/helper";
 
 export function renderController(): string {
@@ -2582,9 +2722,9 @@ test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
     assert.match(descriptor.ruleId, /^[a-z-]+\.[a-z0-9-]+$/);
     assert.ok(descriptor.description.length > 10, `description for ${descriptor.ruleId}`);
     assert.ok(descriptor.remediation.length > 10, `remediation for ${descriptor.ruleId}`);
-    if (descriptor.thresholdKeys) {
-      assert.deepEqual(descriptor.thresholdKeys, [...descriptor.thresholdKeys].sort(), `threshold key ordering for ${descriptor.ruleId}`);
-      assert.equal(new Set(descriptor.thresholdKeys).size, descriptor.thresholdKeys.length, `threshold key uniqueness for ${descriptor.ruleId}`);
+    if (descriptor.optionKeys) {
+      assert.deepEqual(descriptor.optionKeys, [...descriptor.optionKeys].sort(), `option key ordering for ${descriptor.ruleId}`);
+      assert.equal(new Set(descriptor.optionKeys).size, descriptor.optionKeys.length, `option key uniqueness for ${descriptor.ruleId}`);
     }
   }
 
@@ -2639,20 +2779,27 @@ test("rule quality doctrine covers risky scanner descriptors", () => {
   }
 });
 
-test("rule descriptor threshold keys match implementation and config defaults", () => {
+test("rule descriptor thresholds and options match implementation and config defaults", () => {
   const descriptors = ruleDescriptors();
   const descriptorThresholds = new Map(
-    descriptors.filter((descriptor) => (descriptor.thresholdKeys ?? []).length > 0).map((descriptor) => [descriptor.ruleId, [...(descriptor.thresholdKeys ?? [])].sort()]),
+    descriptors.filter((descriptor) => typeof descriptor.threshold === "number").map((descriptor) => [descriptor.ruleId, descriptor.threshold ?? 0]),
+  );
+  const descriptorSeverities = new Map(
+    descriptors.filter((descriptor) => typeof descriptor.threshold === "number").map((descriptor) => [descriptor.ruleId, descriptor.severity]),
+  );
+  const descriptorOptions = new Map(
+    descriptors.filter((descriptor) => (descriptor.optionKeys ?? []).length > 0).map((descriptor) => [descriptor.ruleId, [...(descriptor.optionKeys ?? [])].sort()]),
   );
   const implementationSources = ["src/cli.ts", "src/sensitive-data-rules.ts"].map((path) => readFileSync(path, "utf8")).join("\n");
   const implementationThresholds = thresholdUsages(implementationSources);
   assert.deepEqual(descriptorThresholds, implementationThresholds);
+  assert.deepEqual(descriptorOptions, optionUsages(implementationSources));
 
-  const configThresholds = yamlThresholdDefaults(readFileSync(".gruff-ts.yaml", "utf8"));
+  const configSource = readFileSync(".gruff-ts.yaml", "utf8");
+  const configThresholds = yamlThresholdDefaults(configSource);
   assert.deepEqual(configThresholds, descriptorThresholds);
-  for (const [ruleId, keys] of configThresholds) {
-    assert.deepEqual(descriptorThresholds.get(ruleId), keys, `config threshold keys for ${ruleId}`);
-  }
+  assert.deepEqual(yamlSeverityDefaults(configSource), descriptorSeverities);
+  assert.deepEqual(yamlOptionDefaults(configSource), descriptorOptions);
 });
 
 test("root CLI exposes gruff console command and option parity", () => {
@@ -2689,7 +2836,7 @@ test("list-rules CLI prints text and deterministic json", () => {
   const text = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
   assert.match(text, /gruff-ts 0\.1\.0 rules \(\d+\)/);
   assert.match(text, /security\.eval-call \| security \| error \| high \|/);
-  assert.match(text, /complexity\.npath \| complexity \| warning \| medium \| .*thresholds: error,warn/);
+  assert.match(text, /complexity\.npath \| complexity \| warning \| medium \| .*threshold: 20/);
 
   const firstJsonText = execFileSync("./bin/gruff-ts", ["list-rules", "--format=json"], { encoding: "utf8" });
   const secondJsonText = execFileSync("./bin/gruff-ts", ["list-rules", "--format=json"], { encoding: "utf8" });
@@ -2697,11 +2844,12 @@ test("list-rules CLI prints text and deterministic json", () => {
   const parsed = JSON.parse(firstJsonText) as {
     schemaVersion?: string;
     tool?: { name?: string; version?: string };
-    rules?: Array<{ ruleId?: string; pillar?: string; severity?: string; confidence?: string; description?: string; thresholdKeys?: string[] }>;
+    rules?: Array<{ ruleId?: string; pillar?: string; severity?: string; confidence?: string; description?: string; threshold?: number; optionKeys?: string[] }>;
   };
   assert.equal(parsed.schemaVersion, undefined);
   assert.equal(parsed.tool?.name, "gruff-ts");
-  assert.equal(parsed.rules?.some((rule) => rule.ruleId === "design.deep-relative-import" && rule.thresholdKeys?.includes("maxParentSegments")), true);
+  assert.equal(parsed.rules?.some((rule) => rule.ruleId === "design.deep-relative-import" && rule.threshold === 2), true);
+  assert.equal(parsed.rules?.some((rule) => rule.ruleId === "design.large-module-concentration" && rule.optionKeys?.includes("minFiles")), true);
 });
 
 test("console globals suppress normal output and completion emits a script", () => {
@@ -3137,6 +3285,10 @@ function writeFixtureFiles(dir: string, files: Record<string, string>): void {
   }
 }
 
+function largeFixtureSourceLines(prefix: string): string[] {
+  return Array.from({ length: 13 }, (_, index) => `const ${prefix}${index} = ${index};`);
+}
+
 function evalFindingFiles(report: AnalysisReport): Set<string> {
   return new Set(report.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.filePath));
 }
@@ -3395,6 +3547,11 @@ export function unsafePublicApi(input: any): any {
 `,
       "src/catalogue.test.ts": `import assert from "node:assert/strict";
 
+const fixturePurposeReport = analyseFixture(${"`"}
+${largeFixtureSourceLines("catalogueFixtureValue").join("\n")}
+${"`"});
+void fixturePurposeReport;
+
 function renderCatalogue(): string {
   return "catalogue";
 }
@@ -3514,15 +3671,15 @@ API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
     {
       config: {
         rules: {
-          "complexity.cognitive": { thresholds: { warn: 3 } },
-          "complexity.cyclomatic": { thresholds: { warn: 2, error: 50 } },
-          "complexity.npath": { thresholds: { warn: 2, error: 100 } },
-          "design.large-module-concentration": { thresholds: { minFiles: 4, minLines: 8, maxSharePercent: 35 } },
-          "docs.todo-density": { thresholds: { markers: 1 } },
-          "size.file-length": { thresholds: { warn: 8, error: 500 } },
-          "size.function-length": { thresholds: { warn: 8, error: 500 } },
-          "size.parameter-count": { thresholds: { warn: 3 } },
-          "test-quality.setup-bloat": { thresholds: { maxSetupLines: 2 } },
+          "complexity.cognitive": { threshold: 3, severity: "warning" },
+          "complexity.cyclomatic": { threshold: 2, severity: "warning" },
+          "complexity.npath": { threshold: 2, severity: "warning" },
+          "design.large-module-concentration": { threshold: 35, severity: "advisory", options: { minFiles: 4, minLines: 8 } },
+          "docs.todo-density": { threshold: 1, severity: "advisory" },
+          "size.file-length": { threshold: 8, severity: "warning" },
+          "size.function-length": { threshold: 8, severity: "warning" },
+          "size.parameter-count": { threshold: 3, severity: "warning" },
+          "test-quality.setup-bloat": { threshold: 2, severity: "advisory" },
         },
       },
     },
@@ -3530,9 +3687,19 @@ API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
   return new Set(report.findings.map((finding) => finding.ruleId));
 }
 
-function thresholdUsages(source: string): Map<string, string[]> {
+function thresholdUsages(source: string): Map<string, number> {
+  const usages = new Map<string, number>();
+  for (const match of source.matchAll(/threshold\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*(-?\d+(?:\.\d+)?)\)/g)) {
+    const ruleId = match[1] ?? "";
+    const thresholdValue = Number(match[2] ?? "0");
+    usages.set(ruleId, thresholdValue);
+  }
+  return new Map([...usages.entries()].sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function optionUsages(source: string): Map<string, string[]> {
   const usages = new Map<string, Set<string>>();
-  for (const match of source.matchAll(/threshold\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)"/g)) {
+  for (const match of source.matchAll(/optionNumber\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)"/g)) {
     const ruleId = match[1] ?? "";
     const key = match[2] ?? "";
     usages.set(ruleId, usages.get(ruleId) ?? new Set<string>());
@@ -3541,11 +3708,10 @@ function thresholdUsages(source: string): Map<string, string[]> {
   return new Map([...usages.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([ruleId, keys]) => [ruleId, [...keys].sort()]));
 }
 
-function yamlThresholdDefaults(source: string): Map<string, string[]> {
-  const result = new Map<string, string[]>();
+function yamlThresholdDefaults(source: string): Map<string, number> {
+  const result = new Map<string, number>();
   let isInRules = false;
   let currentRule = "";
-  let isInThresholds = false;
   for (const line of source.split(/\r?\n/)) {
     if (line.trim() === "rules:") {
       isInRules = true;
@@ -3557,16 +3723,68 @@ function yamlThresholdDefaults(source: string): Map<string, string[]> {
     const ruleMatch = line.match(/^  ([a-z-]+\.[a-z0-9-]+):\s*$/);
     if (ruleMatch?.[1]) {
       currentRule = ruleMatch[1];
-      isInThresholds = false;
       continue;
     }
-    if (currentRule && line.match(/^    thresholds:\s*$/)) {
-      isInThresholds = true;
+    const thresholdMatch = line.match(/^    threshold:\s*(-?\d+(?:\.\d+)?)\s*$/);
+    if (currentRule && thresholdMatch?.[1]) {
+      result.set(currentRule, Number(thresholdMatch[1]));
+    }
+  }
+  return new Map([...result.entries()].sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function yamlSeverityDefaults(source: string): Map<string, string> {
+  const thresholdRules = new Set(yamlThresholdDefaults(source).keys());
+  const result = new Map<string, string>();
+  let isInRules = false;
+  let currentRule = "";
+  for (const line of source.split(/\r?\n/)) {
+    if (line.trim() === "rules:") {
+      isInRules = true;
+      continue;
+    }
+    if (!isInRules) {
+      continue;
+    }
+    const ruleMatch = line.match(/^  ([a-z-]+\.[a-z0-9-]+):\s*$/);
+    if (ruleMatch?.[1]) {
+      currentRule = ruleMatch[1];
+      continue;
+    }
+    const severityMatch = line.match(/^    severity:\s*(advisory|warning|error)\s*$/);
+    if (currentRule && thresholdRules.has(currentRule) && severityMatch?.[1]) {
+      result.set(currentRule, severityMatch[1]);
+    }
+  }
+  return new Map([...result.entries()].sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function yamlOptionDefaults(source: string): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  let isInRules = false;
+  let currentRule = "";
+  let isInOptions = false;
+  for (const line of source.split(/\r?\n/)) {
+    if (line.trim() === "rules:") {
+      isInRules = true;
+      continue;
+    }
+    if (!isInRules) {
+      continue;
+    }
+    const ruleMatch = line.match(/^  ([a-z-]+\.[a-z0-9-]+):\s*$/);
+    if (ruleMatch?.[1]) {
+      currentRule = ruleMatch[1];
+      isInOptions = false;
+      continue;
+    }
+    if (currentRule && line.match(/^    options:\s*$/)) {
+      isInOptions = true;
       result.set(currentRule, []);
       continue;
     }
     const keyMatch = line.match(/^      ([A-Za-z0-9_-]+):/);
-    if (currentRule && isInThresholds && keyMatch?.[1]) {
+    if (currentRule && isInOptions && keyMatch?.[1]) {
       result.get(currentRule)?.push(keyMatch[1]);
     }
   }

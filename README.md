@@ -70,7 +70,7 @@ Findings are grouped into 11 public pillars:
 - `design`
 
 Inspect the exact rule ids, severities, confidence levels, remediation text,
-and threshold keys:
+threshold values, and options:
 
 ```bash
 gruff-ts list-rules
@@ -215,13 +215,11 @@ allowlists:
 
 rules:
   complexity.cyclomatic:
-    thresholds:
-      warn: 10
-      error: 20
+    threshold: 10
+    severity: warning
   size.file-length:
-    thresholds:
-      warn: 400
-      error: 800
+    threshold: 400
+    severity: warning
 ```
 
 See [Configuration](docs/CONFIGURATION.md) for the full config shape and

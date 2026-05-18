@@ -5,6 +5,16 @@ last_reviewed: 2026-05-18
 
 # Verification lessons
 
+## Lesson: self-scan calibration should inspect the candidate class, not only targeted fixtures
+
+**Created:** 2026-05-18
+
+**What happened:** During M33, the focused fixture-purpose tests passed after implementation, but the self-scan showed broad `test-setup` findings because `analyseProject(...)` alone was treated as a fixture setup signal. Tightening the signal to explicit fixture identifiers or source-generation helpers reduced the self-scan from generic project-helper setup to scanner-relevant fixtures.
+
+**Evidence:** `src/cli.ts` + `(search: "function hasFixtureSetupSignal")`; `src/cli.test.ts` + `(search: "fixture purpose flags large fixture-heavy test setup without flagging documented setup")`.
+
+**Prevention:** For new source-scanner classes, run a self-scan before close-out and inspect representative findings by candidate kind. If a helper name is too broad, require a domain-specific token or metadata signal before emitting.
+
 ## Lesson: self-scan refactors must account for rules that apply to new helpers
 
 **Created:** 2026-05-18

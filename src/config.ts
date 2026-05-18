@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, join } from "node:path";
-import type { AnalysisOptions, Config } from "./types.ts";
+import type { AnalysisOptions, Config, Severity } from "./types.ts";
 
 const DEFAULT_CONFIG_FILE = ".gruff-ts.yaml";
 const YAML_KEYWORD_SCALARS = new Map<string, boolean | null>([
@@ -83,25 +83,38 @@ function applyRuleConfig(config: Config, raw: Record<string, unknown>): void {
   }
 }
 
-function ruleConfigValue(rule: Record<string, unknown>): { enabled?: boolean; thresholds: Map<string, number> } {
+function ruleConfigValue(rule: Record<string, unknown>): { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> } {
+  const hasThreshold = "threshold" in rule;
+  const hasSeverity = "severity" in rule;
+  if (hasThreshold && typeof rule.threshold !== "number") {
+    throw new Error('Rule config key "threshold" must be numeric.');
+  }
+  if (hasSeverity && !isSeverity(rule.severity)) {
+    throw new Error('Rule config key "severity" must be "advisory", "warning", or "error".');
+  }
+  if (hasThreshold !== hasSeverity) {
+    throw new Error('Rule config keys "threshold" and "severity" must be configured together.');
+  }
   return {
     ...(typeof rule.enabled === "boolean" ? { enabled: rule.enabled } : {}),
-    thresholds: thresholdConfigValue(rule.thresholds),
+    ...(typeof rule.threshold === "number" ? { threshold: rule.threshold } : {}),
+    ...(isSeverity(rule.severity) ? { severity: rule.severity } : {}),
+    options: numericConfigMap(rule.options),
   };
 }
 
-function thresholdConfigValue(value: unknown): Map<string, number> {
-  const thresholds = new Map<string, number>();
-  const rawThresholds = objectValue(value);
-  if (!rawThresholds) {
-    return thresholds;
+function numericConfigMap(value: unknown): Map<string, number> {
+  const options = new Map<string, number>();
+  const rawOptions = objectValue(value);
+  if (!rawOptions) {
+    return options;
   }
-  for (const [name, threshold] of Object.entries(rawThresholds)) {
-    if (typeof threshold === "number") {
-      thresholds.set(name, threshold);
+  for (const [name, option] of Object.entries(rawOptions)) {
+    if (typeof option === "number") {
+      options.set(name, option);
     }
   }
-  return thresholds;
+  return options;
 }
 
 function defaultConfigPath(projectRoot: string): string | undefined {
@@ -406,8 +419,16 @@ function ruleEnabled(config: Config, ruleId: string): boolean {
   return config.rules.get(ruleId)?.enabled ?? true;
 }
 
-function threshold(config: Config, ruleId: string, name: string, defaultValue: number): number {
-  return config.rules.get(ruleId)?.thresholds.get(name) ?? defaultValue;
+function threshold(config: Config, ruleId: string, defaultValue: number): number {
+  return config.rules.get(ruleId)?.threshold ?? defaultValue;
+}
+
+function ruleSeverity(config: Config, ruleId: string, defaultSeverity: Severity): Severity {
+  return config.rules.get(ruleId)?.severity ?? defaultSeverity;
+}
+
+function optionNumber(config: Config, ruleId: string, name: string, defaultValue: number): number {
+  return config.rules.get(ruleId)?.options.get(name) ?? defaultValue;
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
@@ -422,4 +443,8 @@ function isString(value: unknown): value is string {
   return typeof value === "string";
 }
 
-export { isString, loadConfig, objectValue, ruleEnabled, threshold };
+function isSeverity(value: unknown): value is Severity {
+  return value === "advisory" || value === "warning" || value === "error";
+}
+
+export { isString, loadConfig, objectValue, optionNumber, ruleEnabled, ruleSeverity, threshold };
