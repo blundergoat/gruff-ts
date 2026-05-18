@@ -463,11 +463,11 @@ const riskyRuleQualityExceptions = [
 test("analysis finds core TypeScript smells", () => {
   const report = analyseFixture(`export class Bad {
   public name = "demo";
-  public process(a: boolean, b: string[], c: string, d: string, e: string, f: string): void {
+  public process(a: boolean, b: string[], c: string, d: string, e: string, f: string, g: string, h: string): void {
     if (a) {
       eval(c);
     }
-    console.log(b, d, e, f);
+    console.log(b, d, e, f, g, h);
   }
 }
 
@@ -485,11 +485,11 @@ test("sleeps without assertion", async () => {
 test("existing core fixture fingerprints stay stable", () => {
   const report = analyseFixture(`export class Bad {
   public name = "demo";
-  public process(a: boolean, b: string[], c: string, d: string, e: string, f: string): void {
+  public process(a: boolean, b: string[], c: string, d: string, e: string, f: string, g: string, h: string): void {
     if (a) {
       eval(c);
     }
-    console.log(b, d, e, f);
+    console.log(b, d, e, f, g, h);
   }
 }
 
@@ -623,7 +623,8 @@ function normalizeStatus(status: string): string {
 });
 
 test("core expansion finds complexity and waste rules", () => {
-  const report = analyseFixture(`import { readFileSync, writeFileSync } from "node:fs";
+  const report = analyseFixture(
+    `import { readFileSync, writeFileSync } from "node:fs";
 
 const loadedText = readFileSync("input.txt", "utf8");
 
@@ -653,7 +654,9 @@ function redundantResult(): string {
   const calculatedResult = routeOrder("new", true);
   return calculatedResult;
 }
-`);
+`,
+    { config: { rules: { "complexity.npath": { threshold: 20, severity: "warning" } } } },
+  );
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   for (const ruleId of [
     "complexity.npath",
@@ -671,7 +674,7 @@ function redundantResult(): string {
 });
 
 test("core expansion respects npath config", () => {
-  // Config contract: complexity.npath | threshold/severity | defaults 20/warning |
+  // Config contract: complexity.npath | threshold/severity | defaults 200/warning |
   // metadata npath,capped,cap | disabled and override fixtures below.
   const source = `function branchLightly(input: string): string {
   if (input === "a") {
@@ -2098,11 +2101,11 @@ test("risk expansion respects test-quality config", () => {
 test("expanded scanner keeps pre-expansion fingerprints stable", () => {
   const report = analyseFixture(`export class Bad {
   public name = "demo";
-  public process(a: boolean, b: string[], c: string, d: string, e: string, f: string): void {
+  public process(a: boolean, b: string[], c: string, d: string, e: string, f: string, g: string, h: string): void {
     if (a) {
       eval(c);
     }
-    console.log(b, d, e, f);
+    console.log(b, d, e, f, g, h);
   }
 }
 
@@ -2426,7 +2429,8 @@ function branchLightly(input: string): string {
 });
 
 test("cumulative expanded fixture covers every new rule with unique fingerprints", () => {
-  const report = analyseProject({
+  const report = analyseProject(
+    {
     "Widget.ts": `import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -2695,7 +2699,9 @@ PATIENT_SSN=${SSN_FIXTURE_VALUE}
         exactOptionalPropertyTypes: false,
       },
     }),
-  });
+    },
+    { config: { rules: { "complexity.npath": { threshold: 20, severity: "warning" } } } },
+  );
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   for (const ruleId of expandedRuleIds) {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);

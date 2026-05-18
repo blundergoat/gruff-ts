@@ -32,12 +32,12 @@ rules:
   # complexity/warning: Flags functions with many independent branch paths.
   complexity.cyclomatic:
     enabled: true
-    threshold: 10
+    threshold: 15
     severity: warning
   # complexity/warning: Flags functions with high approximate NPath complexity.
   complexity.npath:
     enabled: true
-    threshold: 20
+    threshold: 200
     severity: warning
   # dead-code/advisory: Flags private methods without an apparent same-file call site.
   dead-code.unused-private-method:
@@ -268,17 +268,17 @@ rules:
   # size/warning: Flags files longer than configured thresholds.
   size.file-length:
     enabled: true
-    threshold: 400
+    threshold: 750
     severity: warning
   # size/warning: Flags functions longer than configured thresholds.
   size.function-length:
     enabled: true
-    threshold: 30
+    threshold: 200
     severity: warning
   # size/warning: Flags functions with too many parameters.
   size.parameter-count:
     enabled: true
-    threshold: 5
+    threshold: 7
     severity: warning
   # test-quality/advisory: Flags tests with conditional logic.
   test-quality.conditional-logic:

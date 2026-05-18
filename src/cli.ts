@@ -820,7 +820,7 @@ function normalizeDisplayPath(path: string): string {
 
 function analyseTextRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
   const lines = source.split(/\r?\n/).length;
-  const fileLengthThreshold = threshold(config, "size.file-length", 400);
+  const fileLengthThreshold = threshold(config, "size.file-length", 750);
   if (!isGeneratedLockfile(file.displayPath)) {
     if (lines > fileLengthThreshold) {
       findings.push(finding({ ruleId: "size.file-length", message: `File has ${lines} lines, above the threshold of ${fileLengthThreshold}.`, file, line: 1, severity: ruleSeverity(config, "size.file-length", "warning"), pillar: "size" }));
@@ -891,7 +891,7 @@ function analyseBlockRules(context: BlockRuleContext): void {
 }
 
 function pushFunctionLengthFinding(context: BlockRuleContext): void {
-  const functionLengthThreshold = threshold(context.config, "size.function-length", 30);
+  const functionLengthThreshold = threshold(context.config, "size.function-length", 200);
   if (context.block.lineCount > functionLengthThreshold) {
     context.findings.push(blockFinding({ ruleId: "size.function-length", message: `Function \`${context.block.name}\` has ${context.block.lineCount} lines, above the threshold of ${functionLengthThreshold}.`, file: context.file, block: context.block, severity: ruleSeverity(context.config, "size.function-length", "warning"), pillar: "size" }));
   }
@@ -899,13 +899,13 @@ function pushFunctionLengthFinding(context: BlockRuleContext): void {
 
 function pushParameterCountFinding(context: BlockRuleContext): void {
   const params = context.block.params.split(",").map((value) => value.trim()).filter(Boolean).length;
-  if (params > threshold(context.config, "size.parameter-count", 5)) {
+  if (params > threshold(context.config, "size.parameter-count", 7)) {
     context.findings.push(blockFinding({ ruleId: "size.parameter-count", message: `Function \`${context.block.name}\` declares ${params} parameters.`, file: context.file, block: context.block, severity: ruleSeverity(context.config, "size.parameter-count", "warning"), pillar: "size" }));
   }
 }
 
 function pushCyclomaticFinding(context: BlockRuleContext): void {
-  if (context.cyclomatic > threshold(context.config, "complexity.cyclomatic", 10)) {
+  if (context.cyclomatic > threshold(context.config, "complexity.cyclomatic", 15)) {
     context.findings.push(blockFinding({ ruleId: "complexity.cyclomatic", message: `Function \`${context.block.name}\` has cyclomatic complexity ${context.cyclomatic}.`, file: context.file, block: context.block, severity: ruleSeverity(context.config, "complexity.cyclomatic", "warning"), pillar: "complexity" }));
   }
 }
@@ -919,7 +919,7 @@ function pushCognitiveFinding(context: BlockRuleContext): void {
 
 function pushNpathFinding(context: BlockRuleContext): void {
   const npath = approximateNpath(context.functionBody);
-  const npathThreshold = threshold(context.config, "complexity.npath", 20);
+  const npathThreshold = threshold(context.config, "complexity.npath", 200);
   if (npath.value > npathThreshold) {
     context.findings.push(npathFinding(context, npath, npathThreshold, ruleSeverity(context.config, "complexity.npath", "warning")));
   }
@@ -2384,10 +2384,10 @@ function isComplexContextCandidate(block: FunctionBlock, config: Config): boolea
   const cognitive = cyclomatic + maxNestingDepth(block.codeBody);
   const npath = approximateNpath(functionBodyContent(block.codeBody));
   return (
-    block.lineCount > threshold(config, "size.function-length", 30) ||
-    cyclomatic > threshold(config, "complexity.cyclomatic", 10) ||
+    block.lineCount > threshold(config, "size.function-length", 200) ||
+    cyclomatic > threshold(config, "complexity.cyclomatic", 15) ||
     cognitive > threshold(config, "complexity.cognitive", 15) ||
-    npath.value > threshold(config, "complexity.npath", 20) ||
+    npath.value > threshold(config, "complexity.npath", 200) ||
     maxNestingDepth(block.codeBody) > 3
   );
 }
