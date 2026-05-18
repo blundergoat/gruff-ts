@@ -60,12 +60,17 @@ Initial public release.
     url-dependency, weak-crypto.
   - `sensitive-data` (8): api-key-pattern, aws-access-key,
     database-url-password, hardcoded-env-value, high-entropy-string,
-    jwt-token, plus private-key and token-pattern detectors.
+    jwt-token, pii-pattern, private-key.
   - `size` (3): file-length, function-length, parameter-count.
-  - `test-quality` (15): assertion coverage, setup bloat, expect counts,
-    test-case sizing, and related test-hygiene checks.
-  - `waste` (14): duplicate string, unused dependency, unused export, broad
-    runtime version, and related waste detectors.
+  - `test-quality` (15): conditional-logic, exception-type-only,
+    global-state-mutation, loop-in-test, magic-number-assertion,
+    missing-nearby-test, mock-only-test, no-assertions, no-throw-only-test,
+    only-skip, setup-bloat, sleep-in-test, snapshot-only-test,
+    trivial-assertion, unused-mock.
+  - `waste` (14): any-type, broad-runtime-version, commented-out-code,
+    console-log, empty-function, exported-any, redundant-boolean-cast,
+    redundant-variable, swallowed-catch, unreachable-code, unused-import,
+    unused-parameter, useless-catch, useless-return.
 - Each finding carries a stable `fingerprint` so baselines and report
   snapshots round-trip without churn.
 - Rule descriptors expose severity, confidence, remediation text, threshold
@@ -117,7 +122,9 @@ Initial public release.
 ### Source Layout
 
 - Runtime lives under `src/`:
-  - `cli.ts` — command surface, scanner glue, renderers.
+  - `cli.ts` — analyser entry point and scanner orchestration.
+  - `cli-program.ts` — Commander program wiring and option normalization.
+  - `discovery.ts` — source-file discovery and `.gitignore` handling.
   - `rules.ts` — pillar rule descriptors and matchers.
   - `sensitive-data-rules.ts` — sensitive-data rule descriptors and detectors.
   - `project-config-rules.ts` — package/tsconfig rule descriptors.
@@ -131,6 +138,8 @@ Initial public release.
 - `scripts/bump-version.sh <semver>` bumps `package.json` and
   `src/constants.ts` together; `--check` verifies they agree.
 - `scripts/check.sh` runs `npm run check` (`tsc --noEmit && npm test`).
+- `scripts/preflight-checks.sh` runs release-readiness gates before
+  publishing.
 - `scripts/start-dev.sh` starts the dashboard with environment overrides.
 - `scripts/test-performance.sh` records a `gruff-perf.v1` matrix and compares
   against a stored baseline.

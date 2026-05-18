@@ -20,14 +20,24 @@ npm run start-dev
 
 ## Project Shape
 
-The runtime intentionally lives in one TypeScript file:
+The runtime lives under `src/`:
 
-- `src/cli.ts` - CLI, scanner, rules, renderers, dashboard, config, baselines.
+- `src/cli.ts` - analyser entry point and scanner orchestration.
+- `src/cli-program.ts` - Commander program wiring and option normalization.
+- `src/discovery.ts` - source-file discovery and `.gitignore` handling.
+- `src/rules.ts` - pillar rule descriptors and matchers.
+- `src/sensitive-data-rules.ts` - sensitive-data rule descriptors and
+  detectors.
+- `src/project-config-rules.ts` - package and tsconfig rule descriptors.
+- `src/baseline.ts`, `src/config.ts`, `src/dashboard.ts`, `src/findings.ts`,
+  `src/rule-list.ts`, `src/scoring.ts`, `src/source-text.ts`,
+  `src/text-scans.ts`, `src/report-renderers.ts`, `src/constants.ts`,
+  `src/types.ts` - shared helpers and renderers.
 - `src/cli.test.ts` - Node test runner coverage for scanner behavior and CLI
   surfaces.
 
-Keep changes small and local. Do not split the runtime into modules or add
-runtime dependencies unless that direction is explicitly accepted first.
+Keep changes small and local. Do not add runtime dependencies beyond
+`commander` and `tsx` unless that direction is explicitly accepted first.
 
 ## Rules For Rule Changes
 
