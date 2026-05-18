@@ -1,6 +1,6 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-05-10
+last_reviewed: 2026-05-18
 ---
 
 # Schema + CLI surface footguns
@@ -21,7 +21,7 @@ Three string literals in `src/cli.ts` are part of the public output contract: `g
 
 **Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
 
-`normalizeOptions` (`src/cli.ts`, search: `function normalizeOptions`) reads `rawOptions.config === false` and `rawOptions.noConfig === true` to decide whether to load the default `.gruff.json`/`.gruff.yaml`/`.gruff.yml`; same pattern for baseline (`baselineValue === false || rawOptions.noBaseline === true`). These come from Commander's `--no-config`/`--no-baseline` automatic negations, which set the *positive* option to `false`. If you migrate to a different CLI framework or change the option declaration, both branches must be reviewed together — testing only `noConfig` will leave silent gaps.
+`normalizeOptions` (`src/cli.ts`, search: `function normalizeOptions`) reads `rawOptions.config === false` and `rawOptions.noConfig === true` to decide whether to load the default `.gruff-ts.yaml`; same pattern for baseline (`baselineValue === false || rawOptions.noBaseline === true`). These come from Commander's `--no-config`/`--no-baseline` automatic negations, which set the *positive* option to `false`. If you migrate to a different CLI framework or change the option declaration, both branches must be reviewed together — testing only `noConfig` will leave silent gaps.
 
 ## Footgun: default-ignored directories are hardcoded and lowercase-only
 

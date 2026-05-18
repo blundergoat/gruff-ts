@@ -9,9 +9,7 @@ src/**/*.test.ts
 
 AGENTS.md
 CLAUDE.md
-.gruff.yaml
-.gruff.yml
-.gruff.json
+.gruff-ts.yaml
 
 .env
 .env.*

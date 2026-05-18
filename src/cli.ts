@@ -131,6 +131,44 @@ interface CommentedDeclaration {
   isPublic: boolean;
 }
 
+type CommentQualityRuleInput = {
+  file: SourceFile;
+  source: string;
+  codeSource: string;
+  blocks: FunctionBlock[];
+  comments: CommentRecord[];
+  config: Config;
+  findings: Finding[];
+};
+
+type FunctionContextCommentQualityInput = {
+  file: SourceFile;
+  lines: string[];
+  comments: CommentRecord[];
+  blocks: FunctionBlock[];
+  config: Config;
+  findings: Finding[];
+};
+
+type ContextDocFindingDetails = {
+  symbol: string;
+  ruleId: string;
+  message: string;
+  remediation: string;
+  metadata: Record<string, string>;
+};
+
+type ContextDocFindingInput = ContextDocFindingDetails & {
+  file: SourceFile;
+  comment: CommentRecord;
+};
+
+type MagicThresholdCandidate = {
+  label: string;
+  value: string;
+  kind: string;
+};
+
 interface TestBlockCheck {
   ruleId: string;
   message: string;
@@ -806,7 +844,7 @@ function analyseTypeScriptRules(file: SourceFile, source: string, config: Config
   analyseLineRules(file, source, codeSource, config, findings);
   analyseDocRules(file, source, codeSource, findings);
   analyseInterfaceDocs(file, source, codeSource, findings);
-  analyseCommentQualityRules(file, source, codeSource, blocks, comments, config, findings);
+  analyseCommentQualityRules({ file, source, codeSource, blocks, comments, config, findings });
   analyseClassRules(file, source, codeSource, findings);
   analyseDeadCode(file, codeSource, findings);
 }
@@ -1754,11 +1792,22 @@ function interfaceDeclarations(source: string, codeSource: string): ExportedDecl
   }));
 }
 
-function analyseCommentQualityRules(file: SourceFile, source: string, codeSource: string, blocks: FunctionBlock[], comments: CommentRecord[], config: Config, findings: Finding[]): void {
+// Shares precomputed comment indexes so documentation checks stay deterministic within one scan.
+function analyseCommentQualityRules(input: CommentQualityRuleInput): void {
+  const { file, source, codeSource, blocks, comments, config, findings } = input;
   const lines = source.split(/\r?\n/);
   const descriptorIds = new Set(ruleDescriptors().map((descriptor) => descriptor.ruleId));
   const cliFlags = knownCliFlags();
+  const declarations = commentedDeclarations(blocks, interfaceDeclarations(source, codeSource));
 
+  analyseStandaloneCommentQuality(file, comments, descriptorIds, cliFlags, findings);
+  analyseCommentedDeclarationQuality(file, lines, comments, declarations, findings);
+  analyseFunctionContextCommentQuality({ file, lines, comments, blocks, config, findings });
+  pushMagicThresholdFindings(file, source, codeSource, comments, findings);
+}
+
+// Keeps stale-reference checks separate from declaration-level documentation checks.
+function analyseStandaloneCommentQuality(file: SourceFile, comments: CommentRecord[], descriptorIds: Set<string>, cliFlags: Set<string>, findings: Finding[]): void {
   for (const comment of comments) {
     pushTodoWithoutTrackingFinding(file, comment, findings);
     pushSuppressionWithoutRationaleFinding(file, comment, findings);
@@ -1766,8 +1815,11 @@ function analyseCommentQualityRules(file: SourceFile, source: string, codeSource
     pushStaleRuleReferenceFindings(file, comment, descriptorIds, findings);
     pushStaleCliFlagReferenceFindings(file, comment, cliFlags, findings);
   }
+}
 
-  for (const declaration of commentedDeclarations(blocks, interfaceDeclarations(source, codeSource))) {
+// Applies declaration-aware comment rules only when a parsed leading comment exists.
+function analyseCommentedDeclarationQuality(file: SourceFile, lines: string[], comments: CommentRecord[], declarations: CommentedDeclaration[], findings: Finding[]): void {
+  for (const declaration of declarations) {
     const comment = leadingCommentForLine(lines, comments, declaration.line);
     if (!comment) {
       continue;
@@ -1776,7 +1828,11 @@ function analyseCommentQualityRules(file: SourceFile, source: string, codeSource
     pushRestatingSignatureCommentFinding(file, comment, declaration, findings);
     pushDeclarationContextFindings(file, lines, declaration, comment, findings);
   }
+}
 
+// Limits function-context checks to comments that are not just restating the signature.
+function analyseFunctionContextCommentQuality(input: FunctionContextCommentQualityInput): void {
+  const { file, lines, comments, blocks, config, findings } = input;
   for (const block of blocks) {
     const comment = leadingCommentForLine(lines, comments, block.declarationLine);
     if (!comment || isRestatingSignatureComment(comment.text, block.name, "function")) {
@@ -1784,8 +1840,6 @@ function analyseCommentQualityRules(file: SourceFile, source: string, codeSource
     }
     pushFunctionContextFindings(file, block, comment, config, findings);
   }
-
-  pushMagicThresholdFindings(file, source, codeSource, comments, findings);
 }
 
 function commentedDeclarations(blocks: FunctionBlock[], interfaces: ExportedDeclaration[]): CommentedDeclaration[] {
@@ -1821,8 +1875,20 @@ function todoMarker(text: string): string | undefined {
   return text.match(/\b(TODO|FIXME|HACK|XXX)\b/i)?.[1]?.toUpperCase();
 }
 
+const TODO_TRACKING_PATTERNS = [
+  /https?:\/\//i,
+  /(?:^|\s)#\d+\b/,
+  /\bGH-\d+\b/i,
+  /\bM\d{1,3}\b/,
+  /\.goat-flow\/tasks\//,
+  /\bADR-\d{3}\b/i,
+  /\b\d{4}-\d{2}-\d{2}\b/,
+  /\bowner\s*:/i,
+] as const;
+
+// Accepts durable tracking markers rather than forcing one issue system.
 function hasTodoTracking(text: string): boolean {
-  return /https?:\/\//i.test(text) || /(?:^|\s)#\d+\b/.test(text) || /\bGH-\d+\b/i.test(text) || /\bM\d{1,3}\b/.test(text) || /\.goat-flow\/tasks\//.test(text) || /\bADR-\d{3}\b/i.test(text) || /\b\d{4}-\d{2}-\d{2}\b/.test(text) || /\bowner\s*:/i.test(text);
+  return TODO_TRACKING_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 function pushSuppressionWithoutRationaleFinding(file: SourceFile, comment: CommentRecord, findings: Finding[]): void {
@@ -1940,13 +2006,14 @@ function pushStaleDeclarationCommentFinding(file: SourceFile, comment: CommentRe
   findings.push(staleCommentFinding(file, comment, `Comment names \`${referencedName}\` but documents \`${declaration.name}\`.`, { staleReference: referencedName, referenceType: declaration.kind, symbol: declaration.name }));
 }
 
+// Extracts names from prose without treating every identifier mention as documentation drift.
 function referencedDeclarationName(text: string, kind: CommentedDeclaration["kind"]): string | undefined {
   const identifier = "([A-Za-z_$][A-Za-z0-9_$]*)";
-  const direct = text.match(new RegExp(`\\b${kind}\\s+\`?${identifier}\`?`, "i"));
+  const direct = text.match(new RegExp(["\\b", kind, "\\s+`?", identifier, "`?"].join(""), "i"));
   if (direct?.[1]) {
     return direct[1];
   }
-  const leading = text.match(new RegExp(`^\`?${identifier}\`?\\s+(?:${kind}|helper|method|contract|type)\\b`, "i"));
+  const leading = text.match(new RegExp(["^`?", identifier, "`?\\s+(?:", kind, "|helper|method|contract|type)\\b"].join(""), "i"));
   return leading?.[1];
 }
 
@@ -1960,22 +2027,80 @@ function pushRestatingSignatureCommentFinding(file: SourceFile, comment: Comment
   findings.push(docFinding({ ruleId: "docs.useless-docblock", message: `Comment for \`${declaration.name}\` only restates the signature.`, file, line: comment.line, symbol: declaration.name }));
 }
 
+// Emits at most one finding for each missing context class on a documented function.
 function pushFunctionContextFindings(file: SourceFile, block: FunctionBlock, comment: CommentRecord, config: Config, findings: Finding[]): void {
-  const body = block.codeBody;
-  if (isComplexContextCandidate(block, config) && !hasComplexWhyMarker(comment.text)) {
-    findings.push(contextDocFinding(file, comment, block.name, "docs.missing-why-for-complex-code", `Complex function \`${block.name}\` has a comment, but it does not explain why the control flow exists.`, "Explain the tradeoff, compatibility reason, or invariant behind the complex control flow.", { contextClass: "complex-code" }));
-  }
-  if (hasSideEffectSignal(block.name, body) && !hasSideEffectMarker(comment.text)) {
-    findings.push(contextDocFinding(file, comment, block.name, "docs.missing-side-effect-doc", `Function \`${block.name}\` performs side effects that its comment does not describe.`, "Name the observable side effect such as filesystem, process, environment, or network mutation.", { contextClass: "side-effect" }));
-  }
-  if (hasErrorBehaviorSignal(body) && !hasErrorBehaviorMarker(comment.text)) {
-    findings.push(contextDocFinding(file, comment, block.name, "docs.missing-error-behavior-doc", `Function \`${block.name}\` has error behavior that its comment does not describe.`, "Document thrown errors, diagnostics, exits, reports, or recovery behavior.", { contextClass: "error-behavior" }));
-  }
-  if (hasInvariantFunctionSignal(block) && !hasInvariantMarker(comment.text)) {
-    findings.push(contextDocFinding(file, comment, block.name, "docs.missing-invariant-doc", `Function \`${block.name}\` maintains a public contract that its comment does not describe.`, "Document the schema, fingerprint, baseline, sorting, or determinism invariant.", { contextClass: "invariant" }));
+  for (const detail of functionContextDocFindings(block, comment.text, config)) {
+    findings.push(contextDocFinding({ file, comment, ...detail }));
   }
 }
 
+// Evaluates independent context classes before materialising stable findings.
+function functionContextDocFindings(block: FunctionBlock, commentText: string, config: Config): ContextDocFindingDetails[] {
+  const details: ContextDocFindingDetails[] = [];
+  const body = block.codeBody;
+  const complex = complexFunctionContextDocFinding(block, commentText, config);
+  const sideEffect = sideEffectContextDocFinding(block, body, commentText);
+  const errorBehavior = errorBehaviorContextDocFinding(block, body, commentText);
+  const invariant = invariantContextDocFinding(block, commentText);
+  if (complex) {
+    details.push(complex);
+  }
+  if (sideEffect) {
+    details.push(sideEffect);
+  }
+  if (errorBehavior) {
+    details.push(errorBehavior);
+  }
+  if (invariant) {
+    details.push(invariant);
+  }
+  return details;
+}
+
+// Requires "why" context only after the function crosses a configured complexity threshold.
+function complexFunctionContextDocFinding(block: FunctionBlock, commentText: string, config: Config): ContextDocFindingDetails | undefined {
+  if (!isComplexContextCandidate(block, config) || hasComplexWhyMarker(commentText)) {
+    return undefined;
+  }
+  return contextDocDetails(block.name, "docs.missing-why-for-complex-code", `Complex function \`${block.name}\` has a comment, but it does not explain why the control flow exists.`, "Explain the tradeoff, compatibility reason, or invariant behind the complex control flow.", "complex-code");
+}
+
+// Documents externally observable mutations when the comment does not mention them.
+function sideEffectContextDocFinding(block: FunctionBlock, body: string, commentText: string): ContextDocFindingDetails | undefined {
+  if (!hasSideEffectSignal(block.name, body) || hasSideEffectMarker(commentText)) {
+    return undefined;
+  }
+  return contextDocDetails(block.name, "docs.missing-side-effect-doc", `Function \`${block.name}\` performs side effects that its comment does not describe.`, "Name the observable side effect such as filesystem, process, environment, or network mutation.", "side-effect");
+}
+
+// Keeps thrown, diagnostic, and recovery behavior visible in maintainer comments.
+function errorBehaviorContextDocFinding(block: FunctionBlock, body: string, commentText: string): ContextDocFindingDetails | undefined {
+  if (!hasErrorBehaviorSignal(body) || hasErrorBehaviorMarker(commentText)) {
+    return undefined;
+  }
+  return contextDocDetails(block.name, "docs.missing-error-behavior-doc", `Function \`${block.name}\` has error behavior that its comment does not describe.`, "Document thrown errors, diagnostics, exits, reports, or recovery behavior.", "error-behavior");
+}
+
+// Protects schema and fingerprint invariants from becoming implicit tribal knowledge.
+function invariantContextDocFinding(block: FunctionBlock, commentText: string): ContextDocFindingDetails | undefined {
+  if (!hasInvariantFunctionSignal(block) || hasInvariantMarker(commentText)) {
+    return undefined;
+  }
+  return contextDocDetails(block.name, "docs.missing-invariant-doc", `Function \`${block.name}\` maintains a public contract that its comment does not describe.`, "Document the schema, fingerprint, baseline, sorting, or determinism invariant.", "invariant");
+}
+
+// Centralises shared metadata so context-doc findings keep identical shape.
+function contextDocDetails(symbol: string, ruleId: string, message: string, remediation: string, contextClass: string): ContextDocFindingDetails {
+  return {
+    symbol,
+    ruleId,
+    message,
+    remediation,
+    metadata: { contextClass },
+  };
+}
+
+// Checks interface comments for public contract cues without duplicating function logic.
 function pushDeclarationContextFindings(file: SourceFile, lines: string[], declaration: CommentedDeclaration, comment: CommentRecord, findings: Finding[]): void {
   if (declaration.kind !== "interface" || isRestatingSignatureComment(comment.text, declaration.name, declaration.kind)) {
     return;
@@ -1983,10 +2108,18 @@ function pushDeclarationContextFindings(file: SourceFile, lines: string[], decla
   if (!hasInvariantInterfaceSignal(lines, declaration) || hasInvariantMarker(comment.text)) {
     return;
   }
-  findings.push(contextDocFinding(file, comment, declaration.name, "docs.missing-invariant-doc", `Interface \`${declaration.name}\` defines a public contract that its comment does not describe.`, "Document the schema, fingerprint, baseline, report, or determinism invariant.", { contextClass: "invariant" }));
+  findings.push(
+    contextDocFinding({
+      file,
+      comment,
+      ...contextDocDetails(declaration.name, "docs.missing-invariant-doc", `Interface \`${declaration.name}\` defines a public contract that its comment does not describe.`, "Document the schema, fingerprint, baseline, report, or determinism invariant.", "invariant"),
+    }),
+  );
 }
 
-function contextDocFinding(file: SourceFile, comment: CommentRecord, symbol: string, ruleId: string, message: string, remediation: string, metadata: Record<string, string>): Finding {
+// Materialises a documentation-context finding using the comment location as the anchor.
+function contextDocFinding(input: ContextDocFindingInput): Finding {
+  const { file, comment, symbol, ruleId, message, remediation, metadata } = input;
   return makeFinding({
     ruleId,
     message,
@@ -2034,24 +2167,27 @@ function hasThresholdRationaleMarker(text: string): boolean {
   return /\b(?:threshold|limit|cap|budget|tuned|default|because|empirical)\b/i.test(text);
 }
 
+const SIDE_EFFECT_BODY_PATTERNS = [
+  /\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|mkdir(?:Sync)?|rm(?:Sync)?|rename(?:Sync)?|createWriteStream)\s*\(/,
+  /\bprocess\.chdir\s*\(/,
+  /\bprocess\.env\.[A-Za-z0-9_]+\s*=/,
+  /\b(?:exec|execFile|spawn)(?:Sync)?\s*\(/,
+  /\b(?:response|res)\.(?:write|end|setHeader|writeHead)\s*\(/,
+  /\bcreateServer\s*\(|\.listen\s*\(/,
+] as const;
+
+// Treats filesystem, process, HTTP, and server operations as comment-worthy effects.
 function hasSideEffectSignal(name: string, body: string): boolean {
-  return (
-    /\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|mkdir(?:Sync)?|rm(?:Sync)?|rename(?:Sync)?|createWriteStream)\s*\(/.test(body) ||
-    /\bprocess\.chdir\s*\(/.test(body) ||
-    /\bprocess\.env\.[A-Za-z0-9_]+\s*=/.test(body) ||
-    /\b(?:exec|execFile|spawn)(?:Sync)?\s*\(/.test(body) ||
-    /\b(?:response|res)\.(?:write|end|setHeader|writeHead)\s*\(/.test(body) ||
-    /\bcreateServer\s*\(|\.listen\s*\(/.test(body) ||
-    /^(?:write|recordHistory|startDashboard)\b/.test(name)
-  );
+  return SIDE_EFFECT_BODY_PATTERNS.some((pattern) => pattern.test(body)) || /^(?:write|recordHistory|startDashboard)\b/.test(name);
 }
 
 function hasErrorBehaviorSignal(body: string): boolean {
   return /\bthrow\b|\bcatch\b|\bprocess\.exit\s*\(|\bdiagnosticType\s*:|\b(?:findings|diagnostics)\.push\s*\(/.test(body);
 }
 
+// Detects public-contract vocabulary in function names or bodies.
 function hasInvariantFunctionSignal(block: FunctionBlock): boolean {
-  const signalText = `${block.name}\n${block.codeBody}`;
+  const signalText = [block.name, block.codeBody].join("\n");
   return /\b(?:fingerprint|schemaVersion|baseline|AnalysisReport|Finding|stable sort|deterministic|dedupe|sort)\b/i.test(signalText);
 }
 
@@ -2102,19 +2238,41 @@ function pushMagicThresholdFindings(file: SourceFile, source: string, codeSource
   });
 }
 
-function magicThresholdCandidate(rawLine: string, codeLine: string): { label: string; value: string; kind: string } | undefined {
+// Finds hard-coded limits that are likely policy rather than ordinary arithmetic.
+function magicThresholdCandidate(rawLine: string, codeLine: string): MagicThresholdCandidate | undefined {
+  return namedThresholdCandidate(rawLine) ?? configDefaultThresholdCandidate(rawLine, codeLine);
+}
+
+// Names such as "maxLength" usually deserve rationale when set above common sentinels.
+function namedThresholdCandidate(rawLine: string): MagicThresholdCandidate | undefined {
   const named = rawLine.match(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*(?:Threshold|Limit|Cap|Budget|Timeout|Tolerance|Weight|Score|Max|Min|Default|Entropy|Length)[A-Za-z0-9_$]*)\b[^=\n]*=\s*(-?\d+(?:\.\d+)?)/i);
-  if (named?.[1] && named[2] && !isCommonSafeNumber(named[2])) {
-    return { label: named[1], value: named[2], kind: "named-threshold" };
+  const label = named?.[1];
+  const thresholdValue = named?.[2];
+  if (!label) {
+    return undefined;
+  }
+  if (!thresholdValue || isCommonSafeNumber(thresholdValue)) {
+    return undefined;
+  }
+  return { label, value: thresholdValue, kind: "named-threshold" };
+}
+
+// Config threshold defaults are scanned only when the unmasked code still calls threshold().
+function configDefaultThresholdCandidate(rawLine: string, codeLine: string): MagicThresholdCandidate | undefined {
+  if (!/\bthreshold\s*\(/.test(codeLine)) {
+    return undefined;
   }
   const thresholdDefault = rawLine.match(/\bthreshold\s*\([^)]*,\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/);
-  if (thresholdDefault?.[1] && thresholdDefault[2] && thresholdDefault[3] && !isCommonSafeNumber(thresholdDefault[3])) {
-    if (!/\bthreshold\s*\(/.test(codeLine)) {
-      return undefined;
-    }
-    return { label: `${thresholdDefault[1]}.${thresholdDefault[2]}`, value: thresholdDefault[3], kind: "config-default" };
+  const ruleId = thresholdDefault?.[1];
+  const key = thresholdDefault?.[2];
+  const thresholdValue = thresholdDefault?.[3];
+  if (!ruleId || !key) {
+    return undefined;
   }
-  return undefined;
+  if (!thresholdValue || isCommonSafeNumber(thresholdValue)) {
+    return undefined;
+  }
+  return { label: `${ruleId}.${key}`, value: thresholdValue, kind: "config-default" };
 }
 
 function isCommonSafeNumber(value: string): boolean {
@@ -3191,8 +3349,8 @@ function registerAnalyseCommand(program: Command): void {
     .command("analyse")
     .description("Run gruff analysis.")
     .argument("[paths...]", "Files or directories to analyse.")
-    .option("--config <path>", "Path to a gruff JSON/YAML config file.")
-    .option("--no-config", "Skip auto-applying the default .gruff.json/.gruff.yaml/.gruff.yml file for this run.")
+    .option("--config <path>", "Path to a gruff YAML config file.")
+    .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--format <format>", "Output format: text, json, html, markdown, github, hotspot, or sarif.", "text")
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
@@ -3258,8 +3416,8 @@ function registerReportCommand(program: Command): void {
     .argument("[paths...]", "Files or directories to analyse.")
     .option("--format <format>", "Report format: html or json.", "html")
     .option("--output <path>", "Write report to a file.")
-    .option("--config <path>", "Path to a gruff JSON/YAML config file.")
-    .option("--no-config", "Skip auto-applying the default .gruff.json/.gruff.yaml/.gruff.yml file for this run.")
+    .option("--config <path>", "Path to a gruff YAML config file.")
+    .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--fail-on <severity>", "Finding severity that fails the run.", "none")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
@@ -3284,8 +3442,8 @@ function registerSummaryCommand(program: Command): void {
       "Print a compact digest of a scan: per-pillar finding counts, top rules, and top file offenders. Runs the analyser once and renders only the summary; no per-finding spam.",
     )
     .argument("[paths...]", "Files or directories to analyse.")
-    .option("--config <path>", "Path to a gruff JSON/YAML config file.")
-    .option("--no-config", "Skip auto-applying the default .gruff.json/.gruff.yaml/.gruff.yml file for this run.")
+    .option("--config <path>", "Path to a gruff YAML config file.")
+    .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")

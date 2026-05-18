@@ -682,7 +682,7 @@ test("core expansion respects npath config", () => {
   assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "complexity.npath"), false);
 });
 
-test("loads default gruff yaml config", () => {
+test("loads default gruff-ts yaml config", () => {
   const report = analyseProject(
     {
       "bad.ts": `function branchLightly(input: string): string {
@@ -695,7 +695,7 @@ test("loads default gruff yaml config", () => {
   return "c";
 }
 `,
-      ".gruff.yaml": `
+      ".gruff-ts.yaml": `
 rules:
   "complexity.npath":
     thresholds:
@@ -708,13 +708,13 @@ rules:
   assert.equal(report.findings.some((finding) => finding.ruleId === "complexity.npath"), true);
 });
 
-test("loads default gruff yml config", () => {
+test("loads default gruff-ts yaml allowlists", () => {
   const report = analyseProject(
     {
       "bad.ts": `const xy = 1;
 console.log(xy);
 `,
-      ".gruff.yml": `
+      ".gruff-ts.yaml": `
 allowlists:
   acceptedAbbreviations: [xy]
 `,
@@ -805,7 +805,11 @@ test("gitignore fixture expectations match git check-ignore when git is availabl
 test("include ignored scans default and Git ignored paths but keeps config policy ignores", () => {
   const files = {
     ".gitignore": "ignored.ts\n",
-    ".gruff.json": JSON.stringify({ paths: { ignore: ["policy/**"] } }),
+    ".gruff-ts.yaml": `
+paths:
+  ignore:
+    - "policy/**"
+`,
     "visible.ts": `eval("visible");
 `,
     "ignored.ts": `eval("ignored");
@@ -862,16 +866,15 @@ test("explicit file inputs are scanned even when gitignored", () => {
   assert.deepEqual(report.paths.ignoredPaths, []);
 });
 
-test("prefers default gruff json config over yaml", () => {
+test("loads default gruff-ts yaml config over no config", () => {
   const report = analyseProject(
     {
       "bad.ts": `eval("console.log(1)");
 `,
-      ".gruff.json": JSON.stringify({ rules: { "security.eval-call": { enabled: false } } }),
-      ".gruff.yaml": `
+      ".gruff-ts.yaml": `
 rules:
   security.eval-call:
-    enabled: true
+    enabled: false
 `,
     },
     { noConfig: false },
@@ -2645,7 +2648,7 @@ test("rule descriptor threshold keys match implementation and config defaults", 
   const implementationThresholds = thresholdUsages(implementationSources);
   assert.deepEqual(descriptorThresholds, implementationThresholds);
 
-  const configThresholds = yamlThresholdDefaults(readFileSync(".gruff.yaml", "utf8"));
+  const configThresholds = yamlThresholdDefaults(readFileSync(".gruff-ts.yaml", "utf8"));
   assert.deepEqual(configThresholds, descriptorThresholds);
   for (const [ruleId, keys] of configThresholds) {
     assert.deepEqual(descriptorThresholds.get(ruleId), keys, `config threshold keys for ${ruleId}`);
@@ -3073,7 +3076,7 @@ function analyseProject(files: Record<string, string>, options: AnalyseProjectOp
       chmodSync(join(dir, fileName), 0o755);
     }
     if (options.config) {
-      writeFileSync(join(dir, ".gruff.json"), JSON.stringify(options.config));
+      writeFileSync(join(dir, ".gruff-ts.yaml"), yamlConfigFixture(options.config));
     }
     chdir(dir);
     return analyse({
@@ -3089,6 +3092,41 @@ function analyseProject(files: Record<string, string>, options: AnalyseProjectOp
     chdir(previous);
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function yamlConfigFixture(value: Record<string, unknown>): string {
+  return yamlConfigObject(value, 0);
+}
+
+function yamlConfigObject(value: Record<string, unknown>, indent: number): string {
+  return Object.entries(value)
+    .map(([key, nested]) => yamlConfigEntry(key, nested, indent))
+    .join("");
+}
+
+function yamlConfigEntry(key: string, value: unknown, indent: number): string {
+  const prefix = " ".repeat(indent);
+  if (isYamlConfigObject(value)) {
+    return `${prefix}${key}:\n${yamlConfigObject(value, indent + 2)}`;
+  }
+  return `${prefix}${key}: ${yamlConfigScalar(value)}\n`;
+}
+
+function yamlConfigScalar(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(yamlConfigScalar).join(", ")}]`;
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "{}";
+}
+
+function isYamlConfigObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function writeFixtureFiles(dir: string, files: Record<string, string>): void {

@@ -15,7 +15,7 @@ The scanner must keep deterministic ordering and stable finding fingerprints for
 
 ## Context
 
-Current discovery is implemented in `src/cli.ts` (`function discoverSources`, `function walk`) using a hardcoded default directory list plus `.gruff.yaml` `paths.ignore`. It does not currently apply repository ignore rules while walking directories.
+Current discovery is implemented in `src/cli.ts` (`function discoverSources`, `function walk`) using a hardcoded default directory list plus `.gruff-ts.yaml` `paths.ignore`. It does not currently apply repository ignore rules while walking directories.
 
 That creates a mismatch between the desired repository-level scan and the actual scan surface. Security and configuration rubrics should be able to inspect committed repository surfaces broadly, but generated or local-only material should not have to be excluded by broad project config rules that also hide useful committed config from those rubrics.
 

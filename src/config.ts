@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, join } from "node:path";
 import type { AnalysisOptions, Config } from "./types.ts";
 
-const DEFAULT_CONFIG_FILES = [".gruff.json", ".gruff.yaml", ".gruff.yml"] as const;
+const DEFAULT_CONFIG_FILE = ".gruff-ts.yaml";
 const YAML_KEYWORD_SCALARS = new Map<string, boolean | null>([
   ["true", true],
   ["false", false],
@@ -105,11 +105,9 @@ function thresholdConfigValue(value: unknown): Map<string, number> {
 }
 
 function defaultConfigPath(projectRoot: string): string | undefined {
-  for (const fileName of DEFAULT_CONFIG_FILES) {
-    const candidate = join(projectRoot, fileName);
-    if (existsSync(candidate)) {
-      return candidate;
-    }
+  const candidate = join(projectRoot, DEFAULT_CONFIG_FILE);
+  if (existsSync(candidate)) {
+    return candidate;
   }
   return undefined;
 }
@@ -117,12 +115,10 @@ function defaultConfigPath(projectRoot: string): string | undefined {
 function parseConfigFile(path: string): Record<string, unknown> {
   const source = readFileSync(path, "utf8");
   const extension = extname(path).toLowerCase();
-  const parsed = extension === ".yaml" || extension === ".yml" ? parseYamlConfig(source) : (JSON.parse(source) as unknown);
-  const config = objectValue(parsed);
-  if (!config) {
-    throw new Error(`Config file must contain an object: ${path}`);
+  if (extension !== ".yaml") {
+    throw new Error(`Config file must use .yaml extension: ${path}`);
   }
-  return config;
+  return parseYamlConfig(source);
 }
 
 interface YamlLine {

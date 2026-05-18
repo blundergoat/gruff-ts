@@ -5,6 +5,16 @@ last_reviewed: 2026-05-18
 
 # Verification lessons
 
+## Lesson: self-scan refactors must account for rules that apply to new helpers
+
+**Created:** 2026-05-18
+
+**What happened:** During self-scan cleanup, the first `src/cli.ts` helper split removed unused-parameter and complexity findings but introduced new self-scan noise from undocumented helper functions, generic local names, and a six-parameter helper.
+
+**Evidence:** `src/cli.ts` + `(search: "function analyseCommentQualityRules")`; the corrected implementation adds focused helper comments, domain-specific `thresholdValue` names, and `FunctionContextCommentQualityInput` for the helper argument bundle.
+
+**Prevention:** After refactoring code that is scanned by gruff itself, rerun `./bin/gruff-ts analyse . --format=json --fail-on=none --no-baseline` before declaring improvement. Compare targeted rule counts and inspect new findings around the edited region, not only the total count.
+
 ## Lesson: exact optional properties must be omitted instead of set to undefined
 
 **Created:** 2026-05-18

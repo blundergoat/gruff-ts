@@ -22,7 +22,7 @@ This project follows semantic versioning once public releases begin.
 - Symfony-style command menu with ANSI-coloured section headers, options, and
   command names.
 - Local dashboard with a dark iframe report shell and controls panel.
-- Config loading from `.gruff.json`, `.gruff.yaml`, and `.gruff.yml`.
+- Config loading from `.gruff-ts.yaml`.
 - Baseline generation/application using `gruff.baseline.v1`.
 - Changed-file filtering with `--diff`.
 - Local score history with `--history-file`.

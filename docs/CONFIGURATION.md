@@ -6,16 +6,14 @@ thresholds that need tuning.
 
 ## Discovery Order
 
-`analyse` auto-loads the first default config file it finds in the project root:
+`analyse` auto-loads the default config file from the project root:
 
-1. `.gruff.json`
-2. `.gruff.yaml`
-3. `.gruff.yml`
+- `.gruff-ts.yaml`
 
 Use an explicit path:
 
 ```bash
-gruff-ts analyse . --config .gruff.yaml
+gruff-ts analyse . --config .gruff-ts.yaml
 ```
 
 Skip config for a run:
@@ -43,8 +41,6 @@ rules:
     thresholds:
       key: 10
 ```
-
-The same shape works as JSON.
 
 ## Ignored Paths
 
