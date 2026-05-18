@@ -26,7 +26,7 @@ const NPATH_CAP = 1_000_000;
 interface SourceFile {
   absolutePath: string;
   displayPath: string;
-  isTypeScript: boolean;
+  isScript: boolean;
 }
 
 interface SourceDiscovery {
@@ -58,7 +58,7 @@ interface GitIgnoreRule {
 
 interface ProjectIndex {
   sources: ProjectSource[];
-  typeScriptSources: ProjectSource[];
+  scriptSources: ProjectSource[];
   sourcePaths: Set<string>;
   importsByFile: Map<string, ImportEdge[]>;
 }
@@ -415,18 +415,18 @@ function walk(
 function pushSourceFile(projectRoot: string, absolutePath: string, files: SourceFile[]): void {
   const extension = extname(absolutePath).slice(1).toLowerCase();
   const name = basename(absolutePath);
-  const isTypeScript = ["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(extension);
+  const isScript = ["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(extension);
   const isText =
     ["conf", "config", "env", "ini", "json", "toml", "xml", "yaml", "yml"].includes(extension) ||
     name.startsWith(".env");
-  if (isTypeScript || isText) {
-    files.push({ absolutePath, displayPath: displayPath(projectRoot, absolutePath), isTypeScript });
+  if (isScript || isText) {
+    files.push({ absolutePath, displayPath: displayPath(projectRoot, absolutePath), isScript });
   }
 }
 function analyseSource(file: SourceFile, source: string, config: Config): Finding[] {
   const findings: Finding[] = [];
   analyseTextRules(file, source, config, findings);
-  if (file.isTypeScript) {
+  if (file.isScript) {
     analyseTypeScriptRules(file, source, config, findings);
   }
   return findings.filter((finding) => ruleEnabled(config, finding.ruleId));
@@ -442,13 +442,13 @@ function analyseProjectIndex(projectSources: ProjectSource[], config: Config): F
 
 function buildProjectIndex(projectSources: ProjectSource[]): ProjectIndex {
   const sources = [...projectSources].sort((left, right) => left.file.displayPath.localeCompare(right.file.displayPath));
-  const typeScriptSources = sources.filter((source) => source.file.isTypeScript);
-  const sourcePaths = new Set(typeScriptSources.map((source) => source.file.displayPath));
+  const scriptSources = sources.filter((source) => source.file.isScript);
+  const sourcePaths = new Set(scriptSources.map((source) => source.file.displayPath));
   const importsByFile = new Map<string, ImportEdge[]>();
-  for (const source of typeScriptSources) {
+  for (const source of scriptSources) {
     importsByFile.set(source.file.displayPath, importEdgesForSource(source, sourcePaths));
   }
-  return { sources, typeScriptSources, sourcePaths, importsByFile };
+  return { sources, scriptSources, sourcePaths, importsByFile };
 }
 
 function analyseArchitectureRules(index: ProjectIndex, config: Config, findings: Finding[]): void {
@@ -463,7 +463,7 @@ function analyseTestAdequacyRules(index: ProjectIndex, findings: Finding[]): voi
 
 function analyseDeepRelativeImports(index: ProjectIndex, config: Config, findings: Finding[]): void {
   const maxParentSegments = threshold(config, "design.deep-relative-import", "maxParentSegments", 2);
-  for (const source of index.typeScriptSources) {
+  for (const source of index.scriptSources) {
     const edges = index.importsByFile.get(source.file.displayPath) ?? [];
     for (const edge of edges) {
       if (edge.parentSegments <= maxParentSegments) {
@@ -498,7 +498,7 @@ function analyseCircularImports(index: ProjectIndex, findings: Finding[]): void 
 
 function circularImportFinding(index: ProjectIndex, cycle: ImportCycle): Finding | undefined {
   const anchorPath = cycle.files[0] ?? "";
-  const anchorSource = index.typeScriptSources.find((source) => source.file.displayPath === anchorPath);
+  const anchorSource = index.scriptSources.find((source) => source.file.displayPath === anchorPath);
   if (!anchorSource) {
     return undefined;
   }
@@ -562,7 +562,7 @@ function exceedsLargeModuleThresholds(largest: ModuleLineCount, sharePercent: nu
 }
 
 function productionModuleLineCounts(index: ProjectIndex): ModuleLineCount[] {
-  return index.typeScriptSources
+  return index.scriptSources
     .filter((source) => isProductionSourcePath(source.file.displayPath))
     .map((source) => ({ source, lines: source.lines.length }))
     .sort((left, right) => right.lines - left.lines || left.source.file.displayPath.localeCompare(right.source.file.displayPath));
@@ -690,8 +690,8 @@ function isProductionSourcePath(path: string): boolean {
 }
 
 function analyseMissingNearbyTests(index: ProjectIndex, findings: Finding[]): void {
-  const testPaths = new Set(index.typeScriptSources.filter((source) => isTestPath(source.file.displayPath)).map((source) => source.file.displayPath));
-  for (const source of index.typeScriptSources.filter((candidate) => isProductionSourcePath(candidate.file.displayPath))) {
+  const testPaths = new Set(index.scriptSources.filter((source) => isTestPath(source.file.displayPath)).map((source) => source.file.displayPath));
+  for (const source of index.scriptSources.filter((candidate) => isProductionSourcePath(candidate.file.displayPath))) {
     const exported = exportedSurface(source.source);
     if (!exported || hasNearbyTest(source.file.displayPath, testPaths)) {
       continue;
@@ -783,7 +783,7 @@ function analyseTextRules(file: SourceFile, source: string, config: Config, find
     }
   }
 
-  const todoMarkers = todoMarkerSummary(source, file.isTypeScript);
+  const todoMarkers = todoMarkerSummary(source, file.isScript);
   if (todoMarkers.count >= threshold(config, "docs.todo-density", "markers", 4)) {
     findings.push(finding({ ruleId: "docs.todo-density", message: `File contains ${todoMarkers.count} TODO/FIXME markers.`, file, line: todoMarkers.firstLine, severity: "advisory", pillar: "documentation" }));
   }
@@ -1712,7 +1712,7 @@ function analyseFileOverviewDoc(file: SourceFile, source: string, findings: Find
   findings.push(
     makeFinding({
       ruleId: "docs.missing-file-overview",
-      message: `TypeScript file \`${file.displayPath}\` is missing a top-of-file purpose comment.`,
+      message: `Source file \`${file.displayPath}\` is missing a top-of-file purpose comment.`,
       filePath: file.displayPath,
       line: 1,
       severity: "advisory",

@@ -35,13 +35,13 @@ interface CommentScanStep {
   done: boolean;
 }
 
-function todoMarkerSummary(source: string, isTypeScript: boolean): { count: number; firstLine: number } {
+function todoMarkerSummary(source: string, isScript: boolean): { count: number; firstLine: number } {
   let count = 0;
   let firstLine = 0;
   const state: TodoMarkerScanState = { blockComment: false, quote: undefined, escaped: false };
 
   source.split(/\r?\n/).forEach((line, index) => {
-    const markerCount = countMatches(commentTextForLine(line, state, isTypeScript), /\b(?:TODO|FIXME)\b/g);
+    const markerCount = countMatches(commentTextForLine(line, state, isScript), /\b(?:TODO|FIXME)\b/g);
     if (markerCount === 0) {
       return;
     }
@@ -54,10 +54,10 @@ function todoMarkerSummary(source: string, isTypeScript: boolean): { count: numb
   return { count, firstLine: firstLine || 1 };
 }
 
-function commentTextForLine(line: string, state: TodoMarkerScanState, isTypeScript: boolean): string {
+function commentTextForLine(line: string, state: TodoMarkerScanState, isScript: boolean): string {
   let comment = "";
   for (let index = 0; index < line.length; index += 1) {
-    const step = commentScanStep(line, index, state, isTypeScript);
+    const step = commentScanStep(line, index, state, isScript);
     comment += step.comment;
     index += step.skip;
     if (step.done) {
@@ -71,7 +71,7 @@ function commentTextForLine(line: string, state: TodoMarkerScanState, isTypeScri
   return comment;
 }
 
-function commentScanStep(line: string, index: number, state: TodoMarkerScanState, isTypeScript: boolean): CommentScanStep {
+function commentScanStep(line: string, index: number, state: TodoMarkerScanState, isScript: boolean): CommentScanStep {
   const character = line[index] ?? "";
   const next = line[index + 1] ?? "";
   if (state.blockComment) {
@@ -80,10 +80,10 @@ function commentScanStep(line: string, index: number, state: TodoMarkerScanState
   if (state.quote) {
     return quotedScanStep(character, state);
   }
-  return openCodeCommentScanStep(line, index, state, isTypeScript);
+  return openCodeCommentScanStep(line, index, state, isScript);
 }
 
-function openCodeCommentScanStep(line: string, index: number, state: TodoMarkerScanState, isTypeScript: boolean): CommentScanStep {
+function openCodeCommentScanStep(line: string, index: number, state: TodoMarkerScanState, isScript: boolean): CommentScanStep {
   const character = line[index] ?? "";
   const next = line[index + 1] ?? "";
   const quoteStep = quoteStartScanStep(character, state);
@@ -94,7 +94,7 @@ function openCodeCommentScanStep(line: string, index: number, state: TodoMarkerS
   if (blockStep) {
     return blockStep;
   }
-  return lineCommentScanStep(line, index, character, next, isTypeScript);
+  return lineCommentScanStep(line, index, character, next, isScript);
 }
 
 function quoteStartScanStep(character: string, state: TodoMarkerScanState): CommentScanStep | undefined {
@@ -113,11 +113,11 @@ function blockStartScanStep(character: string, next: string, state: TodoMarkerSc
   return undefined;
 }
 
-function lineCommentScanStep(line: string, index: number, character: string, next: string, isTypeScript: boolean): CommentScanStep {
+function lineCommentScanStep(line: string, index: number, character: string, next: string, isScript: boolean): CommentScanStep {
   if (character === "/" && next === "/") {
     return { comment: line.slice(index + 2), skip: line.length, done: true };
   }
-  if (!isTypeScript && character === "#") {
+  if (!isScript && character === "#") {
     return { comment: line.slice(index + 1), skip: line.length, done: true };
   }
   return emptyCommentScanStep();

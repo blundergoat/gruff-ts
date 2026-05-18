@@ -7,17 +7,17 @@ import type { RunDiagnostic } from "./types.ts";
 // Minimal file contract needed to report parser diagnostics against source text.
 interface DiagnosticSourceFile {
   displayPath: string;
-  isTypeScript: boolean;
+  isScript: boolean;
 }
 
 /**
- * Checks TypeScript-like source for obviously unbalanced delimiters.
+ * Checks TypeScript or JavaScript source for obviously unbalanced delimiters.
  *
- * @param file - Source metadata used to skip non-TypeScript inputs and report paths.
+ * @param file - Source metadata used to skip non-script inputs and report paths.
  * @param source - Raw file text to scan for delimiter balance.
  */
 function parseDiagnostics(file: DiagnosticSourceFile, source: string): RunDiagnostic[] {
-  if (!file.isTypeScript) {
+  if (!file.isScript) {
     return [];
   }
   const ctx: DelimiterScanContext = {
