@@ -873,6 +873,100 @@ console.log(process);
   assert.equal(finding?.fingerprint, "6786a041045d82a8");
 });
 
+test("naming abbreviation default disabled produces no findings", () => {
+  const report = analyseFixture(`function takesCtx(ctx: unknown): unknown {
+  return ctx;
+}
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.abbreviation");
+  assert.deepEqual(findings, []);
+});
+
+test("naming abbreviation enabled flags ctx parameter", () => {
+  const report = analyseFixture(
+    `function takesCtx(ctx: unknown): unknown {
+  return ctx;
+}
+`,
+    { config: { rules: { "naming.abbreviation": { enabled: true } } } },
+  );
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.abbreviation");
+  assert.deepEqual(findings.map((finding) => finding.symbol), ["ctx"]);
+  assert.equal(findings[0]?.metadata?.surface, "parameter");
+});
+
+test("naming abbreviation respects acceptedAbbreviations override", () => {
+  const report = analyseFixture(
+    `function takesCtx(ctx: unknown): unknown {
+  return ctx;
+}
+`,
+    {
+      config: {
+        rules: { "naming.abbreviation": { enabled: true } },
+        allowlists: { acceptedAbbreviations: ["ctx"] },
+      },
+    },
+  );
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.abbreviation");
+  assert.deepEqual(findings, []);
+});
+
+test("naming negative-boolean flags disableCache and noEnabled style names", () => {
+  const report = analyseFixture(`const disableCache = true;
+
+function configure(noEnabled = true): void {
+  console.log(disableCache, noEnabled);
+}
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.negative-boolean");
+  assert.deepEqual(findings.map((finding) => finding.symbol).sort(), ["disableCache", "noEnabled"]);
+});
+
+test("naming negative-boolean ignores noStore via allowlist", () => {
+  const report = analyseFixture(`function writeResponse(noStore: boolean): void {
+  console.log(noStore);
+}
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.negative-boolean");
+  assert.deepEqual(findings, []);
+});
+
+test("naming negative-boolean message points to inversion not prefix-addition", () => {
+  const report = analyseFixture(`const disableCache = true;
+console.log(disableCache);
+`);
+  const finding = report.findings.find((entry) => entry.ruleId === "naming.negative-boolean");
+  assert.match(finding?.remediation ?? "", /[Ii]nvert/);
+});
+
+test("naming generic-parameter fires only in multi-param functions above thresholds", () => {
+  const positive = analyseFixture(`export function expandHelpers(data: unknown, options: unknown, target: unknown): unknown {
+  return [data, options, target];
+}
+`);
+  const flagged = positive.findings.filter((finding) => finding.ruleId === "naming.generic-parameter").map((finding) => finding.symbol);
+  assert.deepEqual(flagged.sort(), ["data"]);
+
+  const single = analyseFixture(`function double(value: number): number {
+  return value * 2;
+}
+`);
+  const noneFlagged = single.findings.filter((finding) => finding.ruleId === "naming.generic-parameter");
+  assert.deepEqual(noneFlagged, []);
+});
+
+test("naming generic-parameter ignores typed parameters in exported helpers below thresholds", () => {
+  const report = analyseFixture(`export function escape(value: string): string {
+  return value;
+}
+`,
+    { config: { rules: { "naming.generic-parameter": { enabled: true, options: { minParameters: 3, minLineCount: 30, minCyclomatic: 8 } } } } },
+  );
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.generic-parameter");
+  assert.deepEqual(findings, []);
+});
+
 test("loads explicit yaml config path", () => {
   const report = analyseProject(
     {
@@ -3541,6 +3635,8 @@ const data1 = "placeholder";
 const strName = "Ada";
 const active = true;
 const xx = 1;
+const ctx = { request: 1 };
+const disableCache = true;
 const unsafeAny: any = {};
 const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";
 const maxRetryLimit = 12;
@@ -3548,6 +3644,10 @@ const maybeUser = { name: strName };
 const optionalName = maybeUser && maybeUser.name;
 const fallbackName = maybeUser.name || "anonymous";
 var legacyName = fallbackName;
+
+export function expandHelpers(data: unknown, options: unknown, target: unknown): unknown {
+  return [data, options, target];
+}
 
 interface MissingCommentShape {
   name: string;
@@ -3812,6 +3912,7 @@ API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
           "complexity.npath": { threshold: 2, severity: "warning" },
           "design.large-module-concentration": { threshold: 35, severity: "advisory", options: { minFiles: 4, minLines: 8 } },
           "docs.todo-density": { threshold: 1, severity: "advisory" },
+          "naming.abbreviation": { enabled: true },
           "size.file-length": { threshold: 8, severity: "warning" },
           "size.function-length": { threshold: 8, severity: "warning" },
           "size.parameter-count": { threshold: 3, severity: "warning" },

@@ -48,6 +48,9 @@ export interface Config {
   booleanPrefixes: Set<string>;
   hungarianPrefixes: Set<string>;
   placeholderNames: Set<string>;
+  abbreviationDenylist: Set<string>;
+  negativeBooleanAllowed: Set<string>;
+  knownAcronyms: Set<string>;
   rules: Map<string, { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> }>;
 }
 

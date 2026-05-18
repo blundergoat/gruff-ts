@@ -27,6 +27,9 @@ function defaultConfig(): Config {
     booleanPrefixes: new Set(["is", "has", "can", "should", "does", "did", "was", "will"]),
     hungarianPrefixes: new Set(["str", "obj", "arr", "bool", "int", "num"]),
     placeholderNames: new Set(["foo", "bar", "baz", "tmp", "temp", "thing", "stuff", "data", "value", "item"]),
+    abbreviationDenylist: new Set(["ctx", "pkg", "opts", "fn", "idx", "cb"]),
+    negativeBooleanAllowed: new Set(["nostore", "nofollow", "noreferrer", "noscript", "noindex"]),
+    knownAcronyms: new Set(["url", "http", "https", "id", "xml", "json", "html", "css", "api", "sql", "db", "io", "ui", "uuid", "ip", "tcp", "udp", "ast", "cli", "npm"]),
     rules: new Map(),
   };
 }
@@ -75,9 +78,12 @@ function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): voi
   applyNamingAllowlist(config, allowlists, "booleanPrefixes");
   applyNamingAllowlist(config, allowlists, "hungarianPrefixes");
   applyNamingAllowlist(config, allowlists, "placeholderNames");
+  applyNamingAllowlist(config, allowlists, "abbreviationDenylist");
+  applyNamingAllowlist(config, allowlists, "negativeBooleanAllowed");
+  applyNamingAllowlist(config, allowlists, "knownAcronyms");
 }
 
-function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "bannedGenericNames" | "booleanPrefixes" | "hungarianPrefixes" | "placeholderNames"): void {
+function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "bannedGenericNames" | "booleanPrefixes" | "hungarianPrefixes" | "placeholderNames" | "abbreviationDenylist" | "negativeBooleanAllowed" | "knownAcronyms"): void {
   if (!allowlists || !(key in allowlists)) {
     return;
   }

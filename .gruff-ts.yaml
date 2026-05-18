@@ -37,6 +37,13 @@ allowlists:
   # numbered-suffix branch (foo1, value2) stays active even when this is empty.
   # Default: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]
   # placeholderNames: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]
+  # Abbreviations flagged by the opt-in naming.abbreviation rule. Case-insensitive.
+  # Default: [ctx, pkg, opts, fn, idx, cb]
+  # abbreviationDenylist: [ctx, pkg, opts, fn, idx, cb]
+  # Negative-framed boolean names that should NOT trigger naming.negative-boolean.
+  # Defaults are HTTP-header conventions; add project terms as needed.
+  # Default: [nostore, nofollow, noreferrer, noscript, noindex]
+  # negativeBooleanAllowed: [nostore, nofollow, noreferrer, noscript, noindex]
 
 rules:
   # complexity/warning: Flags functions with high combined branch and nesting complexity.
@@ -180,6 +187,9 @@ rules:
   # modernisation/advisory: Flags var declarations.
   modernisation.var-declaration:
     enabled: true
+  # naming/advisory: Flags identifiers in allowlists.abbreviationDenylist. Opt-in.
+  naming.abbreviation:
+    enabled: false
   # naming/advisory: Flags boolean names without intent-revealing prefixes.
   naming.boolean-prefix:
     enabled: true
@@ -189,11 +199,21 @@ rules:
   # naming/advisory: Flags generic function names that hide intent.
   naming.generic-function:
     enabled: true
+  # naming/advisory: Flags placeholder parameter names in multi-parameter, long, exported, or complex functions.
+  naming.generic-parameter:
+    enabled: true
+    options:
+      minCyclomatic: 8
+      minLineCount: 30
+      minParameters: 3
   # naming/advisory: Flags identifiers named after storage type prefixes.
   naming.hungarian-notation:
     enabled: true
   # naming/advisory: Flags placeholder or numbered identifiers.
   naming.identifier-quality:
+    enabled: true
+  # naming/advisory: Flags boolean identifiers framed as a negation.
+  naming.negative-boolean:
     enabled: true
   # naming/advisory: Flags very short variable names outside common loop counters.
   naming.short-variable:

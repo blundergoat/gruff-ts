@@ -850,15 +850,15 @@ function analyseTypeScriptRules(file: SourceFile, source: string, config: Config
   analyseLineRules(file, source, codeSource, config, findings);
   analyseDocRules(file, source, codeSource, findings);
   analyseInterfaceDocs(file, source, codeSource, findings);
-  analyseInterfaceBooleanFields(file, source, codeSource, config, findings);
+  analyseInterfaceFields(file, source, codeSource, config, findings);
   analyseCommentQualityRules({ file, source, codeSource, blocks, comments, config, findings });
   analyseClassRules(file, source, codeSource, findings);
   analyseDeadCode(file, codeSource, findings);
 }
 
-function analyseInterfaceBooleanFields(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[]): void {
+function analyseInterfaceFields(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[]): void {
   const headerRegex = /\b(?:export\s+)?(?:interface\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^>]*>)?(?:\s+extends\s+[^{]+)?|type\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^>]*>)?\s*=\s*)\s*\{/g;
-  const fieldRegex = /^[ \t]*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\??\s*:\s*boolean\b/;
+  const fieldRegex = /^[ \t]*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\??\s*:\s*([^;]+)/;
   const codeLines = codeSource.split(/\r?\n/);
   const sourceLines = source.split(/\r?\n/);
 
@@ -877,16 +877,44 @@ function analyseInterfaceBooleanFields(file: SourceFile, source: string, codeSou
       const codeLine = codeLines[lineIndex] ?? "";
       if (depth === 1) {
         const match = (sourceLines[lineIndex] ?? "").match(fieldRegex);
-        if (match) {
-          const name = match[1] ?? "";
-          if (name) {
+        const name = match?.[1] ?? "";
+        if (name) {
+          pushAbbreviationAt(file, lineIndex + 1, name, config, findings, "interface-field");
+          if (/^\s*boolean\b/.test(match?.[2] ?? "")) {
             pushBooleanPrefixAt(file, lineIndex + 1, name, config, findings, "interface-field");
+            pushNegativeBooleanAt(file, lineIndex + 1, name, config, findings, "interface-field");
           }
         }
       }
       depth += countBraceChange(codeLine);
     }
   }
+}
+
+function pushAbbreviationAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
+  if (config.rules.get("naming.abbreviation")?.enabled !== true) {
+    return;
+  }
+  if (config.acceptedAbbreviations.has(name.toLowerCase())) {
+    return;
+  }
+  if (!config.abbreviationDenylist.has(name.toLowerCase())) {
+    return;
+  }
+  findings.push(
+    makeFinding({
+      ruleId: "naming.abbreviation",
+      message: `Identifier \`${name}\` uses an opaque abbreviation.`,
+      filePath: file.displayPath,
+      line,
+      severity: "advisory",
+      pillar: "naming",
+      confidence: "medium",
+      symbol: name,
+      remediation: "Use the full domain term or add the abbreviation to allowlists.acceptedAbbreviations.",
+      metadata: { identifierName: name, surface },
+    }),
+  );
 }
 
 function countBraceChange(text: string): number {
@@ -939,13 +967,50 @@ function analyseBlockRules(context: BlockRuleContext): void {
 
 function pushParameterNamingFindings(context: BlockRuleContext): void {
   const line = context.block.declarationLine;
-  for (const parameter of parameterNames(context.block.params)) {
+  const params = parameterNames(context.block.params);
+  for (const parameter of params) {
     pushShortVariableAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
     pushIdentifierQualityAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
+    pushAbbreviationAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
     if (isBooleanParameter(parameter.raw)) {
       pushBooleanPrefixAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
+      pushNegativeBooleanAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
+    }
+    if (isGenericParameterCandidate(context, params.length, parameter.name)) {
+      pushGenericParameterAt(context.file, line, parameter.name, context.findings);
     }
   }
+}
+
+function isGenericParameterCandidate(context: BlockRuleContext, paramCount: number, name: string): boolean {
+  if (!context.config.placeholderNames.has(name.toLowerCase())) {
+    return false;
+  }
+  const minParameters = optionNumber(context.config, "naming.generic-parameter", "minParameters", 3);
+  const minLineCount = optionNumber(context.config, "naming.generic-parameter", "minLineCount", 30);
+  const minCyclomatic = optionNumber(context.config, "naming.generic-parameter", "minCyclomatic", 8);
+  return (
+    paramCount >= minParameters ||
+    context.block.lineCount >= minLineCount ||
+    context.cyclomatic >= minCyclomatic
+  );
+}
+
+function pushGenericParameterAt(file: SourceFile, line: number, name: string, findings: Finding[]): void {
+  findings.push(
+    makeFinding({
+      ruleId: "naming.generic-parameter",
+      message: `Parameter \`${name}\` uses a placeholder name in a function that meets context-gating thresholds.`,
+      filePath: file.displayPath,
+      line,
+      severity: "advisory",
+      pillar: "naming",
+      confidence: "medium",
+      symbol: name,
+      remediation: "Use a name that describes the parameter's role.",
+      metadata: { identifierName: name, surface: "parameter" },
+    }),
+  );
 }
 
 function isBooleanParameter(raw: string): boolean {
@@ -1278,6 +1343,30 @@ function pushBooleanPrefixFinding(context: LineRuleContext): void {
     return;
   }
   pushBooleanPrefixAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
+  pushNegativeBooleanAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
+}
+
+function pushNegativeBooleanAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
+  if (!/^(?:disable|no|not|prevent|skip|disallow)[A-Z]/.test(name)) {
+    return;
+  }
+  if (config.negativeBooleanAllowed.has(name.toLowerCase())) {
+    return;
+  }
+  findings.push(
+    makeFinding({
+      ruleId: "naming.negative-boolean",
+      message: `Boolean identifier \`${name}\` is framed as a negation.`,
+      filePath: file.displayPath,
+      line,
+      severity: "advisory",
+      pillar: "naming",
+      confidence: "medium",
+      symbol: name,
+      remediation: "Invert the framing so callers do not read a double negation.",
+      metadata: { identifierName: name, surface },
+    }),
+  );
 }
 
 function pushBooleanPrefixAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
@@ -1399,10 +1488,12 @@ function pushVariableNameFindings(context: LineRuleContext): void {
     const name = match[1] ?? "";
     pushShortVariableFinding(context, name);
     pushIdentifierQualityFinding(context, name);
+    pushAbbreviationAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
   }
   for (const name of destructuredLocalNames(context.codeLine)) {
     pushShortVariableAt(context.file, context.lineNumber, name, context.config, context.findings, "destructure");
     pushIdentifierQualityAt(context.file, context.lineNumber, name, context.config, context.findings, "destructure");
+    pushAbbreviationAt(context.file, context.lineNumber, name, context.config, context.findings, "destructure");
   }
 }
 
