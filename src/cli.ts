@@ -854,37 +854,169 @@ function analyseTypeScriptRules(file: SourceFile, source: string, config: Config
   analyseCommentQualityRules({ file, source, codeSource, blocks, comments, config, findings });
   analyseClassRules(file, source, codeSource, findings);
   analyseDeadCode(file, codeSource, findings);
+  const inventory = collectDeclaredIdentifiers(source, codeSource, blocks);
+  analyseInconsistentCasing(file, inventory, findings);
+  analyseAcronymCase(file, inventory, config, findings);
+}
+
+interface DeclaredIdentifier {
+  name: string;
+  line: number;
+}
+
+function collectDeclaredIdentifiers(source: string, codeSource: string, blocks: FunctionBlock[]): DeclaredIdentifier[] {
+  const inventory: DeclaredIdentifier[] = [];
+  const seen = new Set<string>();
+  const push = (name: string, line: number): void => {
+    if (!name) return;
+    const key = `${name}@${line}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    inventory.push({ name, line });
+  };
+
+  for (const match of codeSource.matchAll(/\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+    push(match[1] ?? "", byteLine(source, match.index ?? 0));
+  }
+  for (const block of blocks) {
+    for (const parameter of parameterNames(block.params)) {
+      push(parameter.name, block.declarationLine);
+    }
+  }
+  for (const fieldMatch of collectInterfaceFieldDeclarations(source, codeSource)) {
+    push(fieldMatch.name, fieldMatch.line);
+  }
+  return inventory;
+}
+
+function collectInterfaceFieldDeclarations(source: string, codeSource: string): DeclaredIdentifier[] {
+  const fieldRegex = /^[ \t]*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\??\s*:/;
+  const out: DeclaredIdentifier[] = [];
+  for (const { lineIndex, sourceLine } of walkInterfaceBodyLines(source, codeSource)) {
+    const name = sourceLine.match(fieldRegex)?.[1] ?? "";
+    if (name) out.push({ name, line: lineIndex + 1 });
+  }
+  return out;
+}
+
+function casingCanonicalKey(name: string): string {
+  return name.toLowerCase().replace(/[_\-0-9]/g, "");
+}
+
+function analyseInconsistentCasing(file: SourceFile, inventory: DeclaredIdentifier[], findings: Finding[]): void {
+  const groups = new Map<string, DeclaredIdentifier[]>();
+  for (const entry of inventory) {
+    const key = casingCanonicalKey(entry.name);
+    if (!key) continue;
+    const list = groups.get(key) ?? [];
+    list.push(entry);
+    groups.set(key, list);
+  }
+  for (const [, entries] of groups) {
+    const surfaces = new Set(entries.map((entry) => entry.name));
+    if (surfaces.size < 2) continue;
+    const sorted = [...entries].sort((a, b) => a.line - b.line);
+    const second = sorted.find((entry, index) => index > 0 && entry.name !== sorted[0]?.name);
+    if (!second) continue;
+    findings.push(
+      makeFinding({
+        ruleId: "naming.inconsistent-casing",
+        message: `Identifier \`${second.name}\` shares a canonical key with \`${sorted[0]?.name}\` in the same file.`,
+        filePath: file.displayPath,
+        line: second.line,
+        severity: "advisory",
+        pillar: "naming",
+        confidence: "medium",
+        symbol: second.name,
+        remediation: "Choose one form and use it consistently within the file.",
+        metadata: { variants: [...surfaces].sort() },
+      }),
+    );
+  }
+}
+
+function tokensForAcronymCheck(name: string): string[] {
+  const split = name.split(/[_\-]+/).filter(Boolean);
+  const tokens: string[] = [];
+  for (const part of split) {
+    const matches = part.match(/[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z0-9]+|[A-Z]+/g);
+    if (matches) tokens.push(...matches);
+    else tokens.push(part);
+  }
+  return tokens;
+}
+
+function acronymCaseClass(token: string): "upper" | "lower" | "title" {
+  if (token === token.toUpperCase()) return "upper";
+  if (token === token.toLowerCase()) return "lower";
+  return "title";
+}
+
+function analyseAcronymCase(file: SourceFile, inventory: DeclaredIdentifier[], config: Config, findings: Finding[]): void {
+  const observed = new Map<string, Map<string, { name: string; line: number }>>();
+  for (const entry of inventory) {
+    for (const token of tokensForAcronymCheck(entry.name)) {
+      const lower = token.toLowerCase();
+      if (!config.knownAcronyms.has(lower)) continue;
+      const cases = observed.get(lower) ?? new Map();
+      const caseKey = acronymCaseClass(token);
+      if (!cases.has(caseKey)) cases.set(caseKey, { name: entry.name, line: entry.line });
+      observed.set(lower, cases);
+    }
+  }
+  for (const [acronym, cases] of observed) {
+    if (cases.size < 2) continue;
+    const occurrences = [...cases.values()].sort((a, b) => a.line - b.line);
+    const second = occurrences[1];
+    if (!second) continue;
+    findings.push(
+      makeFinding({
+        ruleId: "naming.acronym-case",
+        message: `Acronym \`${acronym.toUpperCase()}\` appears in multiple cases in this file.`,
+        filePath: file.displayPath,
+        line: second.line,
+        severity: "advisory",
+        pillar: "naming",
+        confidence: "medium",
+        symbol: second.name,
+        remediation: "Use one casing for each acronym throughout the file.",
+        metadata: { acronym: acronym.toUpperCase(), variants: [...cases.keys()].sort() },
+      }),
+    );
+  }
 }
 
 function analyseInterfaceFields(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[]): void {
-  const headerRegex = /\b(?:export\s+)?(?:interface\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^>]*>)?(?:\s+extends\s+[^{]+)?|type\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^>]*>)?\s*=\s*)\s*\{/g;
   const fieldRegex = /^[ \t]*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\??\s*:\s*([^;]+)/;
+  for (const { lineIndex, sourceLine } of walkInterfaceBodyLines(source, codeSource)) {
+    const match = sourceLine.match(fieldRegex);
+    const name = match?.[1] ?? "";
+    if (!name) continue;
+    pushAbbreviationAt(file, lineIndex + 1, name, config, findings, "interface-field");
+    if (/^\s*boolean\b/.test(match?.[2] ?? "")) {
+      pushBooleanPrefixAt(file, lineIndex + 1, name, config, findings, "interface-field");
+      pushNegativeBooleanAt(file, lineIndex + 1, name, config, findings, "interface-field");
+    }
+  }
+}
+
+const INTERFACE_HEADER_REGEX = /\b(?:export\s+)?(?:interface\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^>]*>)?(?:\s+extends\s+[^{]+)?|type\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^>]*>)?\s*=\s*)\s*\{/g;
+
+function* walkInterfaceBodyLines(source: string, codeSource: string): Generator<{ lineIndex: number; sourceLine: string }> {
   const codeLines = codeSource.split(/\r?\n/);
   const sourceLines = source.split(/\r?\n/);
-
-  for (const header of codeSource.matchAll(headerRegex)) {
+  for (const header of codeSource.matchAll(INTERFACE_HEADER_REGEX)) {
     const headerEnd = (header.index ?? 0) + header[0].length;
-    const peek = codeSource.slice(headerEnd, headerEnd + 30).trimStart();
-    if (peek.startsWith("[")) {
+    if (codeSource.slice(headerEnd, headerEnd + 30).trimStart().startsWith("[")) {
       continue;
     }
     const headerLineIndex = byteLine(source, headerEnd - 1) - 1;
-    let depth = 1;
     const headerLine = codeLines[headerLineIndex] ?? "";
-    const afterOpen = headerLine.slice(headerLine.lastIndexOf("{") + 1);
-    depth += countBraceChange(afterOpen);
+    let depth = 1 + countBraceChange(headerLine.slice(headerLine.lastIndexOf("{") + 1));
     for (let lineIndex = headerLineIndex + 1; depth > 0 && lineIndex < codeLines.length; lineIndex += 1) {
       const codeLine = codeLines[lineIndex] ?? "";
       if (depth === 1) {
-        const match = (sourceLines[lineIndex] ?? "").match(fieldRegex);
-        const name = match?.[1] ?? "";
-        if (name) {
-          pushAbbreviationAt(file, lineIndex + 1, name, config, findings, "interface-field");
-          if (/^\s*boolean\b/.test(match?.[2] ?? "")) {
-            pushBooleanPrefixAt(file, lineIndex + 1, name, config, findings, "interface-field");
-            pushNegativeBooleanAt(file, lineIndex + 1, name, config, findings, "interface-field");
-          }
-        }
+        yield { lineIndex, sourceLine: sourceLines[lineIndex] ?? "" };
       }
       depth += countBraceChange(codeLine);
     }
@@ -2004,7 +2136,18 @@ function analyseCommentQualityRules(input: CommentQualityRuleInput): void {
   analyseCommentedDeclarationQuality(file, lines, comments, declarations, findings);
   analyseFunctionContextCommentQuality({ file, lines, comments, blocks, config, findings });
   pushMagicThresholdFindings(file, source, codeSource, comments, findings);
-  pushFixturePurposeFindings(file, source, codeSource, lines, comments, blocks, config, findings);
+  pushFixturePurposeFindings({ file, source, codeSource, lines, comments, blocks, config, findings });
+}
+
+interface FixturePurposeInput {
+  file: SourceFile;
+  source: string;
+  codeSource: string;
+  lines: string[];
+  comments: CommentRecord[];
+  blocks: FunctionBlock[];
+  config: Config;
+  findings: Finding[];
 }
 
 // Keeps stale-reference checks separate from declaration-level documentation checks.
@@ -2044,7 +2187,8 @@ function analyseFunctionContextCommentQuality(input: FunctionContextCommentQuali
 }
 
 // Targets only large fixture-like source so ordinary tests and short examples stay quiet.
-function pushFixturePurposeFindings(file: SourceFile, source: string, codeSource: string, lines: string[], comments: CommentRecord[], blocks: FunctionBlock[], config: Config, findings: Finding[]): void {
+function pushFixturePurposeFindings(input: FixturePurposeInput): void {
+  const { file, source, codeSource, lines, comments, blocks, config, findings } = input;
   if (!isTestPath(file.displayPath) && !isFixtureLikePath(file.displayPath)) {
     return;
   }
@@ -3177,7 +3321,7 @@ function isUnreachableStatement(trimmedLine: string, didPreviousTerminate: boole
 }
 
 function isTerminatingStatement(trimmedLine: string): boolean {
-  return /\b(return|throw|process\.exit)\b/.test(trimmedLine) && trimmedLine.endsWith(";");
+  return /^(?:return|throw|process\.exit)\b/.test(trimmedLine) && trimmedLine.endsWith(";");
 }
 
 function analyseUnusedImports(file: SourceFile, source: string, findings: Finding[]): void {

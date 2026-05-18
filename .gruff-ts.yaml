@@ -44,6 +44,10 @@ allowlists:
   # Defaults are HTTP-header conventions; add project terms as needed.
   # Default: [nostore, nofollow, noreferrer, noscript, noindex]
   # negativeBooleanAllowed: [nostore, nofollow, noreferrer, noscript, noindex]
+  # Known acronyms whose mixed casings trigger naming.acronym-case. Stored
+  # case-insensitively; match is against canonical lowercase.
+  # Default: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]
+  # knownAcronyms: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]
 
 rules:
   # complexity/warning: Flags functions with high combined branch and nesting complexity.
@@ -190,6 +194,9 @@ rules:
   # naming/advisory: Flags identifiers in allowlists.abbreviationDenylist. Opt-in.
   naming.abbreviation:
     enabled: false
+  # naming/advisory: Flags mixed casings of a known acronym in one file.
+  naming.acronym-case:
+    enabled: true
   # naming/advisory: Flags boolean names without intent-revealing prefixes.
   naming.boolean-prefix:
     enabled: true
@@ -211,6 +218,9 @@ rules:
     enabled: true
   # naming/advisory: Flags placeholder or numbered identifiers.
   naming.identifier-quality:
+    enabled: true
+  # naming/advisory: Flags the same canonical identifier appearing in multiple casings within one file.
+  naming.inconsistent-casing:
     enabled: true
   # naming/advisory: Flags boolean identifiers framed as a negation.
   naming.negative-boolean:

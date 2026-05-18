@@ -956,6 +956,135 @@ test("naming generic-parameter fires only in multi-param functions above thresho
   assert.deepEqual(noneFlagged, []);
 });
 
+test("naming inconsistent-casing flags URL_PATH next to urlPath in one file", () => {
+  const report = analyseFixture(`const URL_PATH = "/a";
+const urlPath = "/b";
+console.log(URL_PATH, urlPath);
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
+  assert.equal(findings.length, 1);
+  assert.deepEqual(findings[0]?.metadata?.variants, ["URL_PATH", "urlPath"]);
+});
+
+test("naming inconsistent-casing ignores distinct concepts across files", () => {
+  const report = analyseProject({
+    "a.ts": `const URL_PATH = "/x";\nconsole.log(URL_PATH);\n`,
+    "b.ts": `function handler(urlPath: string): string {\n  return urlPath;\n}\n`,
+  });
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
+  assert.deepEqual(findings, []);
+});
+
+test("naming inconsistent-casing ignores legitimate enum cases", () => {
+  const report = analyseFixture(`enum Status { Ok = "OK", Error = "ERROR" }
+console.log(Status.Ok, Status.Error);
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
+  assert.deepEqual(findings, []);
+});
+
+test("naming acronym-case flags URL next to Url in identifiers", () => {
+  const report = analyseFixture(`const databaseUrl = "/a";
+const SERVICE_URL = "/b";
+console.log(databaseUrl, SERVICE_URL);
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.acronym-case");
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.metadata?.acronym, "URL");
+});
+
+test("naming acronym-case respects custom knownAcronyms", () => {
+  const report = analyseFixture(
+    `const grpcChannel = "/a";
+const GRPC_HOST = "/b";
+console.log(grpcChannel, GRPC_HOST);
+`,
+    { config: { allowlists: { knownAcronyms: ["grpc"] } } },
+  );
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.acronym-case");
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.metadata?.acronym, "GRPC");
+});
+
+test("naming acronym-case ignores acronym not in the seed and not in config", () => {
+  const report = analyseFixture(`const widgetEtag = "/a";
+const WIDGET_ETAG = "/b";
+console.log(widgetEtag, WIDGET_ETAG);
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.acronym-case");
+  assert.deepEqual(findings, []);
+});
+
+test("naming rule pack catalogue coverage", () => {
+  const expected = [
+    "naming.abbreviation",
+    "naming.acronym-case",
+    "naming.boolean-prefix",
+    "naming.class-file-mismatch",
+    "naming.generic-function",
+    "naming.generic-parameter",
+    "naming.hungarian-notation",
+    "naming.identifier-quality",
+    "naming.inconsistent-casing",
+    "naming.negative-boolean",
+    "naming.short-variable",
+  ];
+  const descriptors = ruleDescriptors().map((descriptor) => descriptor.ruleId).filter((id) => id.startsWith("naming."));
+  assert.deepEqual(descriptors, expected);
+
+  const yamlSource = readFileSync(".gruff-ts.yaml", "utf8");
+  for (const ruleId of expected) {
+    assert.match(yamlSource, new RegExp(`\\b${ruleId.replace(".", "\\.")}\\b`), `missing yaml entry for ${ruleId}`);
+  }
+});
+
+test("naming rule pack config disable independence", () => {
+  const source = `const URL_PATH = "/a";
+const urlPath = "/b";
+const databaseUrl = "/c";
+const DATABASE_URL = "/d";
+console.log(URL_PATH, urlPath, databaseUrl, DATABASE_URL);
+`;
+  const both = analyseFixture(source);
+  assert.equal(both.findings.some((finding) => finding.ruleId === "naming.inconsistent-casing"), true);
+  assert.equal(both.findings.some((finding) => finding.ruleId === "naming.acronym-case"), true);
+
+  const onlyAcronym = analyseFixture(source, {
+    config: { rules: { "naming.inconsistent-casing": { enabled: false } } },
+  });
+  assert.equal(onlyAcronym.findings.some((finding) => finding.ruleId === "naming.inconsistent-casing"), false);
+  assert.equal(onlyAcronym.findings.some((finding) => finding.ruleId === "naming.acronym-case"), true);
+
+  const onlyCasing = analyseFixture(source, {
+    config: { rules: { "naming.acronym-case": { enabled: false } } },
+  });
+  assert.equal(onlyCasing.findings.some((finding) => finding.ruleId === "naming.acronym-case"), false);
+  assert.equal(onlyCasing.findings.some((finding) => finding.ruleId === "naming.inconsistent-casing"), true);
+});
+
+test("naming rule pack cross-rule overlap stays disjoint", () => {
+  const report = analyseFixture(
+    `const ctx = { request: 1 };
+const disableCache = true;
+console.log(ctx, disableCache);
+`,
+    { config: { rules: { "naming.abbreviation": { enabled: true } } } },
+  );
+  const abbreviation = report.findings.filter((finding) => finding.ruleId === "naming.abbreviation").map((finding) => finding.symbol);
+  const shortVariable = report.findings.filter((finding) => finding.ruleId === "naming.short-variable").map((finding) => finding.symbol);
+  assert.equal(abbreviation.includes("ctx"), true);
+  assert.equal(shortVariable.includes("ctx"), false);
+
+  const negative = report.findings.filter((finding) => finding.ruleId === "naming.negative-boolean").map((finding) => finding.symbol);
+  const booleanPrefix = report.findings.filter((finding) => finding.ruleId === "naming.boolean-prefix").map((finding) => finding.symbol);
+  assert.equal(negative.includes("disableCache"), true);
+  assert.equal(booleanPrefix.includes("disableCache"), true);
+  assert.notEqual(
+    report.findings.find((finding) => finding.ruleId === "naming.negative-boolean" && finding.symbol === "disableCache")?.fingerprint,
+    report.findings.find((finding) => finding.ruleId === "naming.boolean-prefix" && finding.symbol === "disableCache")?.fingerprint,
+  );
+});
+
 test("naming generic-parameter ignores typed parameters in exported helpers below thresholds", () => {
   const report = analyseFixture(`export function escape(value: string): string {
   return value;
@@ -3637,6 +3766,8 @@ const active = true;
 const xx = 1;
 const ctx = { request: 1 };
 const disableCache = true;
+const URL_PATH = "/health";
+const urlPath = "/healthz";
 const unsafeAny: any = {};
 const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";
 const maxRetryLimit = 12;
