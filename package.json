@@ -2,7 +2,8 @@
   "name": "gruff-ts",
   "version": "0.1.0",
   "description": "TypeScript project quality analyzer.",
-  "license": "proprietary",
+  "license": "MIT",
+  "author": "Matthew Hansen (https://www.blundergoat.com/about)",
   "type": "module",
   "bin": {
     "gruff-ts": "./bin/gruff-ts"

@@ -5,9 +5,9 @@ TypeScript and JavaScript projects. It scans source, tests, package metadata,
 and common config files, then reports quality findings across 11 pillars with
 stable fingerprints for baselines and repeatable machine output.
 
-The 0.1 release includes 86 rules, JSON/HTML/Markdown/GitHub output, baseline
-support, changed-file filtering, local score history, a rule catalogue, and a
-dark local dashboard.
+The 0.1 release ships 111 rules across 11 pillars, JSON/HTML/Markdown/GitHub
+/SARIF/hotspot output, baseline support, changed-file filtering, local score
+history, a rule catalogue, and a dark local dashboard.
 
 ## Install
 
@@ -268,11 +268,19 @@ npm run start-dev
 ./bin/gruff-ts analyse . --fail-on=none
 ```
 
-The runtime is intentionally concentrated in `src/cli.ts`, with tests in
-`src/cli.test.ts`.
+Source lives under `src/` (CLI in `src/cli.ts`, rules in `src/rules.ts`,
+sensitive-data rules in `src/sensitive-data-rules.ts`, project-config rules in
+`src/project-config-rules.ts`, with shared helpers in sibling files). Tests
+live in `src/cli.test.ts`.
+
+To bump the released version, run `scripts/bump-version.sh <new-version>` — it
+updates `package.json` and `src/constants.ts` in lockstep so the CLI
+`--version` output stays consistent with the published package.
+
+## Author
+
+Built by [Matthew Hansen](https://www.blundergoat.com/about).
 
 ## License
 
-`package.json` currently declares `proprietary`. If this project is intended to
-be open source, add a `LICENSE` file and update package metadata before the
-public release.
+[MIT](LICENSE)

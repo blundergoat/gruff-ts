@@ -1,19 +1,18 @@
 #!/usr/bin/env node
-import { Command, Help } from "commander";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { argv, cwd } from "node:process";
-import { basename, dirname as dirnamePath, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname as dirnamePath, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { applyBaseline, dedupeFindings, DEFAULT_BASELINE, recordHistory, writeBaseline } from "./baseline.ts";
+import { buildProgram as buildCliProgram } from "./cli-program.ts";
 import { isString, loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { VERSION } from "./constants.ts";
-import { startDashboard } from "./dashboard.ts";
+import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { analyseProjectConfigRules } from "./project-config-rules.ts";
-import { renderReport, renderSummary } from "./report-renderers.ts";
-import { completionShell, renderCompletionScript, renderConsoleList, renderRuleList, type CompletionShell, type RuleListFormat } from "./rule-list.ts";
-import { exitFor, scoreReport, summarize } from "./scoring.ts";
+import { renderReport } from "./report-renderers.ts";
+import { scoreReport, summarize } from "./scoring.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
 import { codeLineForMatching, maskNonCode, parseDiagnostics } from "./source-text.ts";
@@ -24,37 +23,10 @@ export type { AnalysisReport, Finding, OutputFormat, Pillar, RuleDescriptor, Sev
 const NPATH_CAP = 1_000_000;
 const FIXTURE_PURPOSE_MIN_LINES = 12;
 
-interface SourceFile {
-  absolutePath: string;
-  displayPath: string;
-  isScript: boolean;
-}
-
-interface SourceDiscovery {
-  files: SourceFile[];
-  missingPaths: string[];
-  ignoredPaths: Set<string>;
-}
-
-interface SourceDiscoveryResult {
-  files: SourceFile[];
-  missingPaths: string[];
-  ignoredPaths: string[];
-}
-
 interface ProjectSource {
   file: SourceFile;
   source: string;
   lines: string[];
-}
-
-interface GitIgnoreRule {
-  basePath: string;
-  pattern: string;
-  negated: boolean;
-  directoryOnly: boolean;
-  anchored: boolean;
-  hasSlash: boolean;
 }
 
 interface ProjectIndex {
@@ -216,10 +188,6 @@ interface LineRuleContext {
   codeChecks: LineRuleCheck[];
   literalChecks: LineRuleCheck[];
   variables: RegExp;
-}
-
-interface NormalizeContext {
-  allowBaselineFlag: boolean;
 }
 
 /**
@@ -405,70 +373,6 @@ function selectedBaseline(projectRoot: string, options: AnalysisOptions): Baseli
   return existsSync(defaultBaseline) ? { path: defaultBaseline, source: "default" } : undefined;
 }
 
-function discoverSources(projectRoot: string, options: AnalysisOptions, config: Config): SourceDiscoveryResult {
-  const discovery: SourceDiscovery = { files: [], missingPaths: [], ignoredPaths: new Set<string>() };
-  const inputs = options.paths.length > 0 ? options.paths : ["."];
-
-  for (const input of inputs) {
-    discoverSourceInput(projectRoot, input, options, config, discovery);
-  }
-
-  discovery.files.sort((left, right) => left.displayPath.localeCompare(right.displayPath));
-  return { files: uniqueFiles(discovery.files), missingPaths: discovery.missingPaths, ignoredPaths: [...discovery.ignoredPaths].sort() };
-}
-
-function discoverSourceInput(projectRoot: string, input: string, options: AnalysisOptions, config: Config, discovery: SourceDiscovery): void {
-  const absolute = absolutize(projectRoot, input);
-  if (!existsSync(absolute)) {
-    discovery.missingPaths.push(input);
-    return;
-  }
-  const stats = statSync(absolute);
-  if (stats.isFile()) {
-    pushSourceFile(projectRoot, absolute, discovery.files);
-    return;
-  }
-  const gitIgnoreRules = options.includeIgnored ? [] : gitIgnoreRulesForDirectory(projectRoot, absolute);
-  walk(projectRoot, absolute, options, config, discovery.ignoredPaths, discovery.files, gitIgnoreRules);
-}
-
-function walk(
-  projectRoot: string,
-  directory: string,
-  options: AnalysisOptions,
-  config: Config,
-  ignoredPaths: Set<string>,
-  files: SourceFile[],
-  gitIgnoreRules: GitIgnoreRule[],
-): void {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const absolute = join(directory, entry.name);
-    const display = displayPath(projectRoot, absolute);
-    if (entry.isDirectory() || entry.isFile()) {
-      if (isIgnoredDiscoveryPath(display, entry.isDirectory(), options, config, gitIgnoreRules)) {
-        ignoredPaths.add(display);
-        continue;
-      }
-    }
-    if (entry.isDirectory()) {
-      walk(projectRoot, absolute, options, config, ignoredPaths, files, options.includeIgnored ? gitIgnoreRules : appendGitIgnoreRules(projectRoot, absolute, gitIgnoreRules));
-    } else if (entry.isFile()) {
-      pushSourceFile(projectRoot, absolute, files);
-    }
-  }
-}
-
-function pushSourceFile(projectRoot: string, absolutePath: string, files: SourceFile[]): void {
-  const extension = extname(absolutePath).slice(1).toLowerCase();
-  const name = basename(absolutePath);
-  const isScript = ["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(extension);
-  const isText =
-    ["conf", "config", "env", "ini", "json", "toml", "xml", "yaml", "yml"].includes(extension) ||
-    name.startsWith(".env");
-  if (isScript || isText) {
-    files.push({ absolutePath, displayPath: displayPath(projectRoot, absolutePath), isScript });
-  }
-}
 function analyseSource(file: SourceFile, source: string, config: Config): Finding[] {
   const findings: Finding[] = [];
   analyseTextRules(file, source, config, findings);
@@ -3884,248 +3788,6 @@ function blockFindingWithMetadata(args: BlockFindingWithMetadataArgs): Finding {
   return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.block.startLine, severity: args.severity, pillar: args.pillar, confidence: "medium", symbol: args.block.name, metadata: args.metadata });
 }
 
-function writeCommandOutput(program: Command, output: string): void {
-  if (outputSuppressed(program)) {
-    return;
-  }
-  process.stdout.write(output.endsWith("\n") ? output : `${output}\n`);
-}
-
-function outputSuppressed(program: Command): boolean {
-  const options = program.opts() as { quiet?: boolean; silent?: boolean };
-  return options.quiet === true || options.silent === true;
-}
-
-function ansiEnabled(program: Command): boolean {
-  const options = program.opts() as { ansi?: boolean };
-  if (options.ansi === true) {
-    return true;
-  }
-  if (options.ansi === false) {
-    return false;
-  }
-  return process.stdout.isTTY === true;
-}
-
-function buildProgram(): Command {
-  const program = new Command();
-  configureRootProgram(program);
-  registerAnalyseCommand(program);
-  registerCompletionCommand(program);
-  registerDashboardCommand(program);
-  registerListCommand(program);
-  registerListRulesCommand(program);
-  registerReportCommand(program);
-  registerSummaryCommand(program);
-  return program;
-}
-
-function configureRootProgram(program: Command): void {
-  program
-    .name("gruff-ts")
-    .usage("command [options] [arguments]")
-    .helpOption("-h, --help", "Display help for the given command. When no command is given display help for the list command")
-    .version(VERSION, "-V, --version", "Display this application version")
-    .option("--silent", "Do not output any message")
-    .option("-q, --quiet", "Only errors are displayed. All other output is suppressed")
-    .option("--ansi", "Force ANSI output")
-    .option("--no-ansi", "Disable ANSI output")
-    .option("-n, --no-interaction", "Do not ask any interactive question")
-    .option("-v, --verbose", "Increase the verbosity of messages: 1 for normal output, 2 for more verbose output and 3 for debug", (_value, previous: number) => previous + 1, 0)
-    .addHelpCommand("help [command]", "Display help for a command")
-    .showHelpAfterError()
-    .configureHelp({
-      formatHelp(command, helper) {
-        return rootHelpText(program, command, helper);
-      },
-    })
-    .action(() => {
-      writeCommandOutput(program, renderConsoleList(ansiEnabled(program)));
-    });
-}
-
-function rootHelpText(program: Command, command: Command, helper: Help): string {
-  if (command === program) {
-    return renderConsoleList(ansiEnabled(program));
-  }
-  const defaultHelp = new Help();
-  defaultHelp.showGlobalOptions = true;
-  if (helper.helpWidth !== undefined) {
-    defaultHelp.helpWidth = helper.helpWidth;
-  }
-  if (helper.minWidthToWrap !== undefined) {
-    defaultHelp.minWidthToWrap = helper.minWidthToWrap;
-  }
-  return defaultHelp.formatHelp(command, defaultHelp);
-}
-
-function registerAnalyseCommand(program: Command): void {
-  program
-    .command("analyse")
-    .description("Run gruff analysis.")
-    .argument("[paths...]", "Files or directories to analyse.")
-    .option("--config <path>", "Path to a gruff YAML config file.")
-    .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
-    .option("--format <format>", "Output format: text, json, html, markdown, github, hotspot, or sarif.", "text")
-    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
-    .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
-    .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
-    .option("--history-file <path>", "Append score trend history to this JSON file.")
-    .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
-    .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
-    .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
-    .action((paths: string[], rawOptions: Record<string, unknown>) => {
-      const options = normalizeOptions(paths, rawOptions, { allowBaselineFlag: true });
-      const report = analyse(options);
-      writeCommandOutput(program, renderReport(report, options.format));
-      process.exitCode = exitFor(report, options.failOn);
-    });
-}
-
-function registerCompletionCommand(program: Command): void {
-  program
-    .command("completion")
-    .description("Dump the shell completion script")
-    .argument("[shell]", "Shell to generate completion for: bash, zsh, or fish.", "bash")
-    .action((shell: string) => {
-      writeCommandOutput(program, renderCompletionScript(completionShell(shell)));
-    });
-}
-
-function registerDashboardCommand(program: Command): void {
-  program
-    .command("dashboard")
-    .description("Serve the local gruff dashboard.")
-    .option("--host <host>", "Host to bind.", "127.0.0.1")
-    .option("--port <port>", "Port to bind.", "8767")
-    .option("--project-root <path>", "Default project root.", ".")
-    .action((rawOptions: Record<string, unknown>) => {
-      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), resolve(String(rawOptions.projectRoot ?? ".")), analyse, !outputSuppressed(program));
-    });
-}
-
-function registerListCommand(program: Command): void {
-  program
-    .command("list")
-    .description("List commands")
-    .action(() => {
-      writeCommandOutput(program, renderConsoleList(ansiEnabled(program)));
-    });
-}
-
-function registerListRulesCommand(program: Command): void {
-  program
-    .command("list-rules")
-    .description("List gruff rule metadata.")
-    .option("--format <format>", "Output format: text or json.", "text")
-    .action((rawOptions: Record<string, unknown>) => {
-      const format: RuleListFormat = rawOptions.format === "json" ? "json" : "text";
-      writeCommandOutput(program, renderRuleList(format));
-    });
-}
-
-function registerReportCommand(program: Command): void {
-  program
-    .command("report")
-    .description("Render a gruff report to stdout or a file.")
-    .argument("[paths...]", "Files or directories to analyse.")
-    .option("--format <format>", "Report format: html or json.", "html")
-    .option("--output <path>", "Write report to a file.")
-    .option("--config <path>", "Path to a gruff YAML config file.")
-    .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
-    .option("--fail-on <severity>", "Finding severity that fails the run.", "none")
-    .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
-    .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
-    .action((paths: string[], rawOptions: Record<string, unknown>) => {
-      const format = rawOptions.format === "json" ? "json" : "html";
-      const options = normalizeOptions(paths, { ...rawOptions, format }, { allowBaselineFlag: false });
-      const report = analyse(options);
-      const rendered = renderReport(report, format);
-      if (typeof rawOptions.output === "string") {
-        writeFileSync(rawOptions.output, rendered);
-      } else {
-        writeCommandOutput(program, rendered);
-      }
-      process.exitCode = exitFor(report, options.failOn);
-    });
-}
-
-function registerSummaryCommand(program: Command): void {
-  program
-    .command("summary")
-    .description(
-      "Print a compact digest of a scan: per-pillar finding counts, top rules, and top file offenders. Runs the analyser once and renders only the summary; no per-finding spam.",
-    )
-    .argument("[paths...]", "Files or directories to analyse.")
-    .option("--config <path>", "Path to a gruff YAML config file.")
-    .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
-    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
-    .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
-    .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
-    .option("--history-file <path>", "Append score trend history to this JSON file.")
-    .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
-    .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
-    .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
-    .action((paths: string[], rawOptions: Record<string, unknown>) => {
-      const options = normalizeOptions(paths, { ...rawOptions, format: "text" }, { allowBaselineFlag: true });
-      const report = analyse(options);
-      writeCommandOutput(program, renderSummary(report));
-      process.exitCode = exitFor(report, options.failOn);
-    });
-}
-
-function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, context: NormalizeContext): AnalysisOptions {
-  const format = stringChoice(rawOptions.format, ["text", "json", "html", "markdown", "github", "hotspot", "sarif"], "text");
-  const failOn = stringChoice(rawOptions.failOn, ["none", "advisory", "warning", "error"], "error");
-  const baselineValue = rawOptions.baseline;
-  const noBaseline = baselineValue === false || rawOptions.noBaseline === true;
-  return {
-    paths,
-    ...configOption(rawOptions),
-    noConfig: rawOptions.config === false || rawOptions.noConfig === true,
-    format,
-    failOn,
-    includeIgnored: rawOptions.includeIgnored === true,
-    ...diffOption(rawOptions),
-    ...historyFileOption(rawOptions),
-    ...baselineOption(baselineValue, context),
-    ...generateBaselineOption(rawOptions),
-    noBaseline,
-  };
-}
-
-function configOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "config">> {
-  return typeof rawOptions.config === "string" ? { config: rawOptions.config } : {};
-}
-
-function diffOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "diff">> {
-  if (typeof rawOptions.diff === "string") {
-    return { diff: rawOptions.diff };
-  }
-  return rawOptions.diff === true ? { diff: "working-tree" } : {};
-}
-
-function historyFileOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "historyFile">> {
-  return typeof rawOptions.historyFile === "string" ? { historyFile: rawOptions.historyFile } : {};
-}
-
-function baselineOption(baselineValue: unknown, context: NormalizeContext): Partial<Pick<AnalysisOptions, "baseline">> {
-  if (!context.allowBaselineFlag) {
-    return {};
-  }
-  if (typeof baselineValue === "string") {
-    return { baseline: baselineValue };
-  }
-  return baselineValue === true ? { baseline: DEFAULT_BASELINE } : {};
-}
-
-function generateBaselineOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "generateBaseline">> {
-  if (typeof rawOptions.generateBaseline === "string") {
-    return { generateBaseline: rawOptions.generateBaseline };
-  }
-  return rawOptions.generateBaseline === true ? { generateBaseline: DEFAULT_BASELINE } : {};
-}
-
 function changedFiles(mode: string): Set<string> {
   const args = ["diff", "--name-only"];
   if (mode === "staged") {
@@ -4134,234 +3796,6 @@ function changedFiles(mode: string): Set<string> {
     args.push(mode);
   }
   return new Set(execFileSync("git", args, { encoding: "utf8" }).split(/\r?\n/).filter(Boolean).map((line) => line.replaceAll("\\", "/")));
-}
-
-
-function isDefaultIgnoredDir(path: string): boolean {
-  const first = path.split("/")[0] ?? path;
-  return [".git", ".hg", ".svn", ".idea", ".vscode", "build", "cache", "coverage", "dist", "generated", "node_modules", "target", "tmp", "vendor"].includes(first);
-}
-
-function isIgnoredDiscoveryPath(display: string, isDirectory: boolean, options: AnalysisOptions, config: Config, gitIgnoreRules: GitIgnoreRule[]): boolean {
-  if (isDefaultIgnoredDiscoveryPath(display, isDirectory, options)) {
-    return true;
-  }
-  if (isGitIgnoredDiscoveryPath(display, isDirectory, options, gitIgnoreRules)) {
-    return true;
-  }
-  return config.ignoredPaths.some((pattern) => pathMatches(pattern, display));
-}
-
-function isDefaultIgnoredDiscoveryPath(display: string, isDirectory: boolean, options: AnalysisOptions): boolean {
-  return !options.includeIgnored && isDirectory && isDefaultIgnoredDir(display);
-}
-
-function isGitIgnoredDiscoveryPath(display: string, isDirectory: boolean, options: AnalysisOptions, gitIgnoreRules: GitIgnoreRule[]): boolean {
-  return !options.includeIgnored && isGitIgnoredPath(gitIgnoreRules, display, isDirectory);
-}
-
-function gitIgnoreRulesForDirectory(projectRoot: string, directory: string): GitIgnoreRule[] {
-  if (!isInsideProject(projectRoot, directory)) {
-    return [];
-  }
-
-  const relativeDirectory = displayPath(projectRoot, directory);
-  const segments = relativeDirectory === "." ? [] : relativeDirectory.split("/");
-  let current = projectRoot;
-  let rules = appendGitIgnoreRules(projectRoot, current, []);
-  for (const segment of segments) {
-    current = join(current, segment);
-    rules = appendGitIgnoreRules(projectRoot, current, rules);
-  }
-  return rules;
-}
-
-function appendGitIgnoreRules(projectRoot: string, directory: string, inheritedRules: GitIgnoreRule[]): GitIgnoreRule[] {
-  const ignoreFile = join(directory, ".gitignore");
-  if (!existsSync(ignoreFile) || !statSync(ignoreFile).isFile()) {
-    return inheritedRules;
-  }
-
-  const basePath = displayPath(projectRoot, directory);
-  const parsedRules = parseGitIgnoreRules(readFileSync(ignoreFile, "utf8"), basePath === "." ? "" : basePath);
-  return parsedRules.length > 0 ? [...inheritedRules, ...parsedRules] : inheritedRules;
-}
-
-function parseGitIgnoreRules(source: string, basePath: string): GitIgnoreRule[] {
-  const rules: GitIgnoreRule[] = [];
-  for (const rawLine of source.replace(/\r\n/g, "\n").split("\n")) {
-    const rule = parseGitIgnoreRule(rawLine, basePath);
-    if (rule) {
-      rules.push(rule);
-    }
-  }
-  return rules;
-}
-
-function parseGitIgnoreRule(rawLine: string, basePath: string): GitIgnoreRule | undefined {
-  const initial = unescapedGitIgnoreLine(rawLine);
-  if (!initial) {
-    return undefined;
-  }
-  const negated = initial.startsWith("!");
-  const withoutNegation = negated ? initial.slice(1) : initial;
-  if (withoutNegation.length === 0) {
-    return undefined;
-  }
-  const anchored = withoutNegation.startsWith("/");
-  const directoryOnly = withoutNegation.endsWith("/");
-  const pattern = normalizedGitIgnorePattern(withoutNegation);
-  if (pattern.length === 0) {
-    return undefined;
-  }
-  return { basePath, pattern, negated, directoryOnly, anchored, hasSlash: pattern.includes("/") };
-}
-
-function unescapedGitIgnoreLine(rawLine: string): string | undefined {
-  const line = rawLine.trimEnd();
-  if (line.length === 0 || line.startsWith("#")) {
-    return undefined;
-  }
-  return line.startsWith("\\#") || line.startsWith("\\!") ? line.slice(1) : line;
-}
-
-function normalizedGitIgnorePattern(line: string): string {
-  return line
-    .replace(/^\/+/, "")
-    .replace(/\/+$/, "")
-    .split("/")
-    .filter((segment) => segment.length > 0)
-    .join("/");
-}
-
-function isGitIgnoredPath(rules: GitIgnoreRule[], display: string, isDirectory: boolean): boolean {
-  let isIgnored = false;
-  for (const rule of rules) {
-    if (gitIgnoreRuleMatches(rule, display, isDirectory)) {
-      isIgnored = !rule.negated;
-    }
-  }
-  return isIgnored;
-}
-
-function gitIgnoreRuleMatches(rule: GitIgnoreRule, display: string, isDirectory: boolean): boolean {
-  const relativePath = pathRelativeToBase(rule.basePath, display);
-  if (relativePath === undefined || relativePath.length === 0) {
-    return false;
-  }
-
-  if (rule.directoryOnly) {
-    return gitIgnoreDirectoryRuleMatches(rule, relativePath, isDirectory);
-  }
-  return gitIgnoreFileRuleMatches(rule, relativePath, isDirectory);
-}
-
-function gitIgnoreFileRuleMatches(rule: GitIgnoreRule, relativePath: string, isDirectory: boolean): boolean {
-  if (isPathScopedGitIgnoreRule(rule)) {
-    return gitIgnorePathCandidates(relativePath, isDirectory, true).some((candidate) => gitIgnoreGlobMatches(rule.pattern, candidate));
-  }
-  return relativePath.split("/").some((segment) => gitIgnoreGlobMatches(rule.pattern, segment));
-}
-
-function gitIgnoreDirectoryRuleMatches(rule: GitIgnoreRule, relativePath: string, isDirectory: boolean): boolean {
-  if (isPathScopedGitIgnoreRule(rule)) {
-    return gitIgnorePathCandidates(relativePath, isDirectory, false).some((candidate) => gitIgnoreGlobMatches(rule.pattern, candidate));
-  }
-  const segments = relativePath.split("/");
-  const directorySegments = isDirectory ? segments : segments.slice(0, -1);
-  return directorySegments.some((segment) => gitIgnoreGlobMatches(rule.pattern, segment));
-}
-
-function isPathScopedGitIgnoreRule(rule: GitIgnoreRule): boolean {
-  return rule.anchored || rule.hasSlash;
-}
-
-function gitIgnorePathCandidates(relativePath: string, isDirectory: boolean, includeFilePath: boolean): string[] {
-  const segments = relativePath.split("/");
-  const limit = isDirectory || includeFilePath ? segments.length : segments.length - 1;
-  const candidates: string[] = [];
-  for (let index = 1; index <= limit; index += 1) {
-    candidates.push(segments.slice(0, index).join("/"));
-  }
-  return candidates;
-}
-
-function gitIgnoreGlobMatches(pattern: string, value: string): boolean {
-  return gitIgnoreGlobRegex(pattern).test(value);
-}
-
-function gitIgnoreGlobRegex(pattern: string): RegExp {
-  let source = "^";
-  for (let index = 0; index < pattern.length; index += 1) {
-    const fragment = gitIgnoreGlobFragment(pattern, index);
-    source += fragment.source;
-    index += fragment.skip;
-  }
-  return new RegExp(`${source}$`);
-}
-
-function gitIgnoreGlobFragment(pattern: string, index: number): { source: string; skip: number } {
-  const character = pattern[index] ?? "";
-  if (character === "*") {
-    return gitIgnoreStarFragment(pattern, index);
-  }
-  if (character === "?") {
-    return { source: "[^/]", skip: 0 };
-  }
-  return { source: escapeRegex(character), skip: 0 };
-}
-
-function gitIgnoreStarFragment(pattern: string, index: number): { source: string; skip: number } {
-  const next = pattern[index + 1];
-  const afterNext = pattern[index + 2];
-  if (next !== "*") {
-    return { source: "[^/]*", skip: 0 };
-  }
-  if (afterNext === "/") {
-    return { source: "(?:.*/)?", skip: 2 };
-  }
-  return { source: ".*", skip: 1 };
-}
-
-function pathRelativeToBase(basePath: string, display: string): string | undefined {
-  if (basePath.length === 0) {
-    return display === "." ? "" : display;
-  }
-  if (display === basePath) {
-    return "";
-  }
-  return display.startsWith(`${basePath}/`) ? display.slice(basePath.length + 1) : undefined;
-}
-
-function isInsideProject(projectRoot: string, path: string): boolean {
-  const relativePath = relative(projectRoot, path).replaceAll("\\", "/");
-  return relativePath === "" || (!relativePath.startsWith("../") && relativePath !== ".." && !isAbsolute(relativePath));
-}
-
-function pathMatches(pattern: string, path: string): boolean {
-  if (pattern === path) {
-    return true;
-  }
-  if (pattern.endsWith("/**")) {
-    const prefix = pattern.slice(0, -3);
-    return path === prefix || path.startsWith(`${prefix}/`);
-  }
-  if (pattern.includes("*")) {
-    const regex = new RegExp(`^${escapeRegex(pattern).replaceAll("\\*\\*", ".*").replaceAll("\\*", "[^/]*")}$`);
-    return regex.test(path);
-  }
-  return path.startsWith(pattern.replace(/\/$/, ""));
-}
-
-function uniqueFiles(files: SourceFile[]): SourceFile[] {
-  const seen = new Set<string>();
-  return files.filter((file) => {
-    if (seen.has(file.absolutePath)) {
-      return false;
-    }
-    seen.add(file.absolutePath);
-    return true;
-  });
 }
 
 function maxNestingDepth(source: string): number {
@@ -4491,18 +3925,8 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function absolutize(projectRoot: string, path: string): string {
-  return isAbsolute(path) ? path : join(projectRoot, path);
-}
+const buildProgram = (): ReturnType<typeof buildCliProgram> => buildCliProgram(analyse);
 
-function displayPath(projectRoot: string, path: string): string {
-  const relativePath = relative(projectRoot, path).replaceAll("\\", "/");
-  return relativePath === "" ? "." : relativePath;
-}
-
-function stringChoice<T extends string>(value: unknown, choices: readonly T[], fallback: T): T {
-  return typeof value === "string" && choices.includes(value as T) ? (value as T) : fallback;
-}
 if (import.meta.url === pathToFileURL(argv[1] ?? "").href) {
   buildProgram().parse(argv);
 }

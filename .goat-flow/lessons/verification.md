@@ -1,9 +1,19 @@
 ---
 category: verification
-last_reviewed: 2026-05-18
+last_reviewed: 2026-05-19
 ---
 
 # Verification lessons
+
+## Lesson: verify extracted modules for circular self-scan edges
+
+**Created:** 2026-05-19
+
+**What happened:** During M27, the first `src/cli-program.ts` extraction imported `analyse` directly from `src/cli.ts` while `src/cli.ts` imported `buildProgram` from `src/cli-program.ts`. `tsc` passed, but `./bin/gruff-ts analyse src --format=json --no-config --no-baseline --fail-on=none` surfaced a new `design.circular-import` finding between the two modules.
+
+**Evidence:** `src/cli.ts` + `(search: "const buildProgram =")`; `src/cli-program.ts` + `(search: "type AnalyseRunner")`. The corrected extraction passes the analyser callback from `cli.ts` into `cli-program.ts` instead of importing back into `cli.ts`.
+
+**Prevention:** After extracting code from `src/cli.ts`, run a self-scan and inspect `design.circular-import` before accepting the split. If the extracted module needs a runtime callback from `cli.ts`, pass it as a parameter and keep the public wrapper in `cli.ts`.
 
 ## Lesson: self-scan calibration should inspect the candidate class, not only targeted fixtures
 
