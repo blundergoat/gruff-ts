@@ -807,6 +807,72 @@ console.log(process);
   assert.equal(finding?.fingerprint, "6786a041045d82a8");
 });
 
+test("naming short-variable flags single-letter parameter", () => {
+  const report = analyseFixture(`function takesOne(x: number): number {
+  return x;
+}
+`);
+  const shorts = report.findings.filter((finding) => finding.ruleId === "naming.short-variable");
+  assert.equal(shorts.length, 1);
+  assert.equal(shorts[0]?.symbol, "x");
+  assert.equal(shorts[0]?.metadata?.surface, "parameter");
+});
+
+test("naming short-variable flags destructured single-letter", () => {
+  const report = analyseFixture(`function unpack(): void {
+  const { a, b } = { a: 1, b: 2 };
+  console.log(a, b);
+}
+`);
+  const shorts = report.findings.filter((finding) => finding.ruleId === "naming.short-variable" && finding.metadata?.surface === "destructure");
+  assert.deepEqual(shorts.map((finding) => finding.symbol).sort(), ["a", "b"]);
+});
+
+test("naming identifier-quality flags placeholder parameter", () => {
+  const report = analyseFixture(`function takesValue(data: unknown): unknown {
+  return data;
+}
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.identifier-quality" && finding.metadata?.surface === "parameter");
+  assert.deepEqual(findings.map((finding) => finding.symbol), ["data"]);
+});
+
+test("naming boolean-prefix flags untyped-prefixed boolean parameter", () => {
+  const report = analyseFixture(`function configure(enabled = true): void {
+  console.log(enabled);
+}
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.boolean-prefix" && finding.metadata?.surface === "parameter");
+  assert.deepEqual(findings.map((finding) => finding.symbol), ["enabled"]);
+});
+
+test("naming boolean-prefix flags interface boolean field", () => {
+  const report = analyseFixture(`interface Status {
+  ready: boolean;
+  isOpen: boolean;
+}
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.boolean-prefix" && finding.metadata?.surface === "interface-field");
+  assert.deepEqual(findings.map((finding) => finding.symbol), ["ready"]);
+});
+
+test("naming boolean-prefix ignores inferred boolean parameter without annotation or literal default", () => {
+  const report = analyseFixture(`function takes(enabled): unknown {
+  return enabled;
+}
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.boolean-prefix");
+  assert.deepEqual(findings, []);
+});
+
+test("naming widening preserves fingerprints for unchanged code", () => {
+  const report = analyseFixture(`function process(): void {}
+console.log(process);
+`);
+  const finding = report.findings.find((entry) => entry.ruleId === "naming.generic-function" && entry.symbol === "process");
+  assert.equal(finding?.fingerprint, "6786a041045d82a8");
+});
+
 test("loads explicit yaml config path", () => {
   const report = analyseProject(
     {
@@ -2520,6 +2586,15 @@ const maxRetryLimit = 12;
 
 interface WidgetShape {
   name: string;
+}
+
+interface WidgetFlags {
+  ready: boolean;
+}
+
+function applyWidget(x: number, value: string): string {
+  const { a } = { a: 1 };
+  return value + x + a;
 }
 
 // ${COMMENTED_OUT_SECRET_LOAD}

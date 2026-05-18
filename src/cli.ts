@@ -850,9 +850,55 @@ function analyseTypeScriptRules(file: SourceFile, source: string, config: Config
   analyseLineRules(file, source, codeSource, config, findings);
   analyseDocRules(file, source, codeSource, findings);
   analyseInterfaceDocs(file, source, codeSource, findings);
+  analyseInterfaceBooleanFields(file, source, codeSource, config, findings);
   analyseCommentQualityRules({ file, source, codeSource, blocks, comments, config, findings });
   analyseClassRules(file, source, codeSource, findings);
   analyseDeadCode(file, codeSource, findings);
+}
+
+function analyseInterfaceBooleanFields(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[]): void {
+  const headerRegex = /\b(?:export\s+)?(?:interface\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^>]*>)?(?:\s+extends\s+[^{]+)?|type\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^>]*>)?\s*=\s*)\s*\{/g;
+  const fieldRegex = /^[ \t]*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\??\s*:\s*boolean\b/;
+  const codeLines = codeSource.split(/\r?\n/);
+  const sourceLines = source.split(/\r?\n/);
+
+  for (const header of codeSource.matchAll(headerRegex)) {
+    const headerEnd = (header.index ?? 0) + header[0].length;
+    const peek = codeSource.slice(headerEnd, headerEnd + 30).trimStart();
+    if (peek.startsWith("[")) {
+      continue;
+    }
+    const headerLineIndex = byteLine(source, headerEnd - 1) - 1;
+    let depth = 1;
+    const headerLine = codeLines[headerLineIndex] ?? "";
+    const afterOpen = headerLine.slice(headerLine.lastIndexOf("{") + 1);
+    depth += countBraceChange(afterOpen);
+    for (let lineIndex = headerLineIndex + 1; depth > 0 && lineIndex < codeLines.length; lineIndex += 1) {
+      const codeLine = codeLines[lineIndex] ?? "";
+      if (depth === 1) {
+        const match = (sourceLines[lineIndex] ?? "").match(fieldRegex);
+        if (match) {
+          const name = match[1] ?? "";
+          if (name) {
+            pushBooleanPrefixAt(file, lineIndex + 1, name, config, findings, "interface-field");
+          }
+        }
+      }
+      depth += countBraceChange(codeLine);
+    }
+  }
+}
+
+function countBraceChange(text: string): number {
+  let delta = 0;
+  for (const character of text) {
+    if (character === "{") {
+      delta += 1;
+    } else if (character === "}") {
+      delta -= 1;
+    }
+  }
+  return delta;
 }
 
 function analyseBlocks(file: SourceFile, blocks: FunctionBlock[], config: Config, findings: Finding[]): void {
@@ -883,11 +929,33 @@ function analyseBlockRules(context: BlockRuleContext): void {
   pushMissingFunctionDocFinding(context);
   pushEmptyFunctionFinding(context);
   pushUnusedParameterFindings(context);
+  pushParameterNamingFindings(context);
   pushRedundantVariableFindings(context);
   pushUselessReturnFindings(context);
   if (context.block.isTest) {
     analyseTestBlock(context.file, context.block, context.config, context.findings);
   }
+}
+
+function pushParameterNamingFindings(context: BlockRuleContext): void {
+  const line = context.block.declarationLine;
+  for (const parameter of parameterNames(context.block.params)) {
+    pushShortVariableAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
+    pushIdentifierQualityAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
+    if (isBooleanParameter(parameter.raw)) {
+      pushBooleanPrefixAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
+    }
+  }
+}
+
+function isBooleanParameter(raw: string): boolean {
+  if (/:\s*boolean\b/.test(raw)) {
+    return true;
+  }
+  if (/\bas\b/.test(raw)) {
+    return false;
+  }
+  return /=\s*(?:true|false)\s*$/.test(raw);
 }
 
 function pushFunctionLengthFinding(context: BlockRuleContext): void {
@@ -1201,24 +1269,33 @@ function pushCommentedOutCodeFinding(context: LineRuleContext): void {
   }
 }
 
+type NamingSurface = "declaration" | "parameter" | "destructure" | "interface-field";
+
 function pushBooleanPrefixFinding(context: LineRuleContext): void {
   const booleanDeclaration = context.codeLine.match(/\b(?:const|let|var|public|private|protected)\s+([A-Za-z_$][A-Za-z0-9_$]*)\??(?:\s*:\s*boolean|\s*=\s*(?:true|false)\b)/);
   const name = booleanDeclaration?.[1] ?? "";
-  if (!name || hasBooleanPrefix(name, context.config.booleanPrefixes)) {
+  if (!name) {
     return;
   }
-  context.findings.push(
+  pushBooleanPrefixAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
+}
+
+function pushBooleanPrefixAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
+  if (hasBooleanPrefix(name, config.booleanPrefixes)) {
+    return;
+  }
+  findings.push(
     makeFinding({
       ruleId: "naming.boolean-prefix",
       message: `Boolean identifier \`${name}\` should use an intent-revealing prefix.`,
-      filePath: context.file.displayPath,
-      line: context.lineNumber,
+      filePath: file.displayPath,
+      line,
       severity: "advisory",
       pillar: "naming",
       confidence: "medium",
       symbol: name,
       remediation: "Use a prefix such as is, has, can, should, or will.",
-      metadata: { identifierName: name },
+      metadata: { identifierName: name, surface },
     }),
   );
 }
@@ -1323,44 +1400,74 @@ function pushVariableNameFindings(context: LineRuleContext): void {
     pushShortVariableFinding(context, name);
     pushIdentifierQualityFinding(context, name);
   }
+  for (const name of destructuredLocalNames(context.codeLine)) {
+    pushShortVariableAt(context.file, context.lineNumber, name, context.config, context.findings, "destructure");
+    pushIdentifierQualityAt(context.file, context.lineNumber, name, context.config, context.findings, "destructure");
+  }
+}
+
+function destructuredLocalNames(codeLine: string): string[] {
+  const names: string[] = [];
+  for (const block of codeLine.matchAll(/\b(?:const|let)\s+\{([^}]+)\}\s*=/g)) {
+    const inner = block[1] ?? "";
+    for (const part of inner.split(",")) {
+      const trimmed = part.trim().replace(/\s*=[^,]*$/, "");
+      const aliased = trimmed.match(/[A-Za-z_$][A-Za-z0-9_$]*\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)/);
+      const plain = trimmed.match(/^([A-Za-z_$][A-Za-z0-9_$]*)$/);
+      const name = aliased?.[1] ?? plain?.[1];
+      if (name) {
+        names.push(name);
+      }
+    }
+  }
+  return names;
 }
 
 function pushShortVariableFinding(context: LineRuleContext, name: string): void {
-  if (name.length > 2 || ["i", "j", "k"].includes(name) || context.config.acceptedAbbreviations.has(name.toLowerCase())) {
+  pushShortVariableAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
+}
+
+function pushShortVariableAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
+  if (name.length > 2 || ["i", "j", "k"].includes(name) || config.acceptedAbbreviations.has(name.toLowerCase())) {
     return;
   }
-  context.findings.push(
+  findings.push(
     makeFinding({
       ruleId: "naming.short-variable",
       message: `Variable \`${name}\` is too short to explain intent.`,
-      filePath: context.file.displayPath,
-      line: context.lineNumber,
+      filePath: file.displayPath,
+      line,
       severity: "advisory",
       pillar: "naming",
       confidence: "medium",
       symbol: name,
       remediation: "Use a name that describes the domain role.",
+      metadata: { surface },
     }),
   );
 }
 
 function pushIdentifierQualityFinding(context: LineRuleContext, name: string): void {
-  const variant = identifierQualityVariant(name, context.config.placeholderNames);
+  pushIdentifierQualityAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
+}
+
+function pushIdentifierQualityAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
+  const variant = identifierQualityVariant(name, config.placeholderNames);
   if (!variant) {
     return;
   }
-  context.findings.push(
+  findings.push(
     makeFinding({
       ruleId: "naming.identifier-quality",
       message: `Identifier \`${name}\` is a ${variant} name that does not explain domain intent.`,
-      filePath: context.file.displayPath,
-      line: context.lineNumber,
+      filePath: file.displayPath,
+      line,
       severity: "advisory",
       pillar: "naming",
       confidence: "medium",
       symbol: name,
       remediation: "Use an identifier that names the domain role.",
-      metadata: { identifierName: name, variant },
+      metadata: { identifierName: name, variant, surface },
     }),
   );
 }
@@ -3094,14 +3201,17 @@ function terminalBareReturnLines(source: string): number[] {
   return [];
 }
 
-function parameterNames(params: string): Array<{ name: string }> {
+function parameterNames(params: string): Array<{ name: string; raw: string }> {
   return params
     .split(",")
     .map((parameter) => parameter.trim())
     .filter(Boolean)
-    .map((parameter) => parameter.replace(/^(?:public|private|protected|readonly)\s+/, "").replace(/^\.\.\./, "").split(/[?:=]/)[0]?.trim() ?? "")
-    .filter((name): name is string => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name))
-    .map((name) => ({ name }));
+    .map((raw) => {
+      const stripped = raw.replace(/^(?:public|private|protected|readonly)\s+/, "").replace(/^\.\.\./, "");
+      const name = stripped.split(/[?:=]/)[0]?.trim() ?? "";
+      return { name, raw: stripped };
+    })
+    .filter((parameter) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(parameter.name));
 }
 
 function redundantVariableReturns(source: string): Array<{ name: string; lineOffset: number }> {
