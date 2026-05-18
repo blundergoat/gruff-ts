@@ -44,6 +44,10 @@ export interface Config {
   ignoredPaths: string[];
   acceptedAbbreviations: Set<string>;
   secretPreviews: Set<string>;
+  bannedGenericNames: Set<string>;
+  booleanPrefixes: Set<string>;
+  hungarianPrefixes: Set<string>;
+  placeholderNames: Set<string>;
   rules: Map<string, { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> }>;
 }
 

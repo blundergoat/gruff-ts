@@ -944,7 +944,7 @@ function pushGodFunctionFinding(context: BlockRuleContext): void {
 }
 
 function pushGenericFunctionFinding(context: BlockRuleContext): void {
-  if (isGenericName(context.block.name)) {
+  if (isGenericName(context.block.name, context.config.bannedGenericNames)) {
     context.findings.push(blockFinding({ ruleId: "naming.generic-function", message: `Function \`${context.block.name}\` is too generic to explain intent.`, file: context.file, block: context.block, severity: "advisory", pillar: "naming" }));
   }
 }
@@ -1204,7 +1204,7 @@ function pushCommentedOutCodeFinding(context: LineRuleContext): void {
 function pushBooleanPrefixFinding(context: LineRuleContext): void {
   const booleanDeclaration = context.codeLine.match(/\b(?:const|let|var|public|private|protected)\s+([A-Za-z_$][A-Za-z0-9_$]*)\??(?:\s*:\s*boolean|\s*=\s*(?:true|false)\b)/);
   const name = booleanDeclaration?.[1] ?? "";
-  if (!name || hasBooleanPrefix(name)) {
+  if (!name || hasBooleanPrefix(name, context.config.booleanPrefixes)) {
     return;
   }
   context.findings.push(
@@ -1224,7 +1224,11 @@ function pushBooleanPrefixFinding(context: LineRuleContext): void {
 }
 
 function pushHungarianNotationFindings(context: LineRuleContext): void {
-  for (const hungarian of context.codeLine.matchAll(/\b(?:const|let|var|public|private|protected)\s+((?:str|obj|arr|bool|int|num)[A-Z][A-Za-z0-9_$]*)/g)) {
+  const regex = hungarianPrefixRegex(context.config.hungarianPrefixes);
+  if (regex === null) {
+    return;
+  }
+  for (const hungarian of context.codeLine.matchAll(regex)) {
     const name = hungarian[1] ?? "";
     context.findings.push(
       makeFinding({
@@ -1341,7 +1345,7 @@ function pushShortVariableFinding(context: LineRuleContext, name: string): void 
 }
 
 function pushIdentifierQualityFinding(context: LineRuleContext, name: string): void {
-  const variant = identifierQualityVariant(name);
+  const variant = identifierQualityVariant(name, context.config.placeholderNames);
   if (!variant) {
     return;
   }
@@ -3124,9 +3128,8 @@ function isCommentedOutCode(line: string): boolean {
   return /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?\s*\([^)]*\);?$/.test(uncommented);
 }
 
-function identifierQualityVariant(name: string): string | undefined {
-  const lower = name.toLowerCase();
-  if (["foo", "bar", "baz", "tmp", "temp", "thing", "stuff", "data", "value", "item"].includes(lower)) {
+function identifierQualityVariant(name: string, placeholderNames: Set<string>): string | undefined {
+  if (placeholderNames.has(name.toLowerCase())) {
     return "generic";
   }
   if (/^[A-Za-z_$]+[0-9]+$/.test(name)) {
@@ -3135,8 +3138,30 @@ function identifierQualityVariant(name: string): string | undefined {
   return undefined;
 }
 
-function hasBooleanPrefix(name: string): boolean {
-  return /^(?:is|has|can|should|does|did|was|will)[A-Z_]/.test(name);
+const BOOLEAN_PREFIX_REGEX_CACHE = new WeakMap<Set<string>, RegExp | null>();
+const HUNGARIAN_PREFIX_REGEX_CACHE = new WeakMap<Set<string>, RegExp | null>();
+
+function hasBooleanPrefix(name: string, prefixes: Set<string>): boolean {
+  const regex = booleanPrefixRegex(prefixes);
+  return regex !== null && regex.test(name);
+}
+
+function booleanPrefixRegex(prefixes: Set<string>): RegExp | null {
+  if (BOOLEAN_PREFIX_REGEX_CACHE.has(prefixes)) {
+    return BOOLEAN_PREFIX_REGEX_CACHE.get(prefixes) ?? null;
+  }
+  const regex = prefixes.size === 0 ? null : new RegExp(`^(?:${[...prefixes].map(escapeRegex).join("|")})[A-Z_]`);
+  BOOLEAN_PREFIX_REGEX_CACHE.set(prefixes, regex);
+  return regex;
+}
+
+function hungarianPrefixRegex(prefixes: Set<string>): RegExp | null {
+  if (HUNGARIAN_PREFIX_REGEX_CACHE.has(prefixes)) {
+    return HUNGARIAN_PREFIX_REGEX_CACHE.get(prefixes) ?? null;
+  }
+  const regex = prefixes.size === 0 ? null : new RegExp(`\\b(?:const|let|var|public|private|protected)\\s+((?:${[...prefixes].map(escapeRegex).join("|")})[A-Z][A-Za-z0-9_$]*)`, "g");
+  HUNGARIAN_PREFIX_REGEX_CACHE.set(prefixes, regex);
+  return regex;
 }
 
 function fileBaseName(path: string): string {
@@ -4112,8 +4137,8 @@ function blockCommentEndIndex(lines: string[], startIndex: number): number | und
   return undefined;
 }
 
-function isGenericName(name: string): boolean {
-  return ["process", "handle", "doit", "run", "execute", "manage"].includes(name.toLowerCase());
+function isGenericName(name: string, bannedNames: Set<string>): boolean {
+  return bannedNames.has(name.toLowerCase());
 }
 
 

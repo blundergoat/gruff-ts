@@ -22,6 +22,21 @@ allowlists:
     - env
     - npath
   secretPreviews: []
+  # Names that trigger naming.generic-function. Each key replaces the built-in
+  # default when present; an empty list disables that rule's blacklist branch.
+  # Default: [process, handle, doit, run, execute, manage]
+  # bannedGenericNames: [process, handle, doit, run, execute, manage, walk]
+  # Accepted prefixes for boolean identifiers. Names without one of these
+  # prefixes trigger naming.boolean-prefix.
+  # Default: [is, has, can, should, does, did, was, will]
+  # booleanPrefixes: [is, has, can, should, does, did, was, will]
+  # Hungarian type-style prefixes flagged by naming.hungarian-notation.
+  # Default: [str, obj, arr, bool, int, num]
+  # hungarianPrefixes: [str, obj, arr, bool, int, num]
+  # Placeholder words flagged as generic by naming.identifier-quality. The
+  # numbered-suffix branch (foo1, value2) stays active even when this is empty.
+  # Default: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]
+  # placeholderNames: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]
 
 rules:
   # complexity/warning: Flags functions with high combined branch and nesting complexity.

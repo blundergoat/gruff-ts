@@ -752,6 +752,61 @@ allowlists:
   assert.equal(report.findings.some((finding) => finding.ruleId === "naming.short-variable"), false);
 });
 
+test("naming blacklists default to current behavior", () => {
+  const report = analyseFixture(`function process(): void {}
+
+function walk(): void {}
+
+const strName = "demo";
+
+const enabled = true;
+
+const value = 1;
+
+console.log(process, walk, strName, enabled, value);
+`);
+  const byRule = (id: string) => report.findings.filter((finding) => finding.ruleId === id).map((finding) => finding.symbol);
+  assert.deepEqual(byRule("naming.generic-function"), ["process"]);
+  assert.deepEqual(byRule("naming.generic-function").includes("walk"), false);
+  assert.deepEqual(byRule("naming.hungarian-notation"), ["strName"]);
+  assert.deepEqual(byRule("naming.boolean-prefix"), ["enabled"]);
+  assert.deepEqual(byRule("naming.identifier-quality"), ["value"]);
+});
+
+test("naming blacklists accept config overrides", () => {
+  const report = analyseFixture(
+    `function process(): void {}
+
+function walk(): void {}
+
+console.log(process, walk);
+`,
+    { config: { allowlists: { bannedGenericNames: ["walk"] } } },
+  );
+  const generic = report.findings.filter((finding) => finding.ruleId === "naming.generic-function").map((finding) => finding.symbol);
+  assert.deepEqual(generic, ["walk"]);
+});
+
+test("naming blacklist disable empties the list", () => {
+  const report = analyseFixture(
+    `const value = 1;
+const foo1 = 2;
+console.log(value, foo1);
+`,
+    { config: { allowlists: { placeholderNames: [] } } },
+  );
+  const quality = report.findings.filter((finding) => finding.ruleId === "naming.identifier-quality").map((finding) => finding.metadata?.variant);
+  assert.deepEqual(quality, ["numbered"]);
+});
+
+test("naming blacklists preserve fingerprint identity", () => {
+  const report = analyseFixture(`function process(): void {}
+console.log(process);
+`);
+  const finding = report.findings.find((entry) => entry.ruleId === "naming.generic-function" && entry.symbol === "process");
+  assert.equal(finding?.fingerprint, "6786a041045d82a8");
+});
+
 test("loads explicit yaml config path", () => {
   const report = analyseProject(
     {

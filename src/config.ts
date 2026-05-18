@@ -23,6 +23,10 @@ function defaultConfig(): Config {
     ignoredPaths: [],
     acceptedAbbreviations: new Set(["id", "db", "io", "ui", "tx", "rx"]),
     secretPreviews: new Set(),
+    bannedGenericNames: new Set(["process", "handle", "doit", "run", "execute", "manage"]),
+    booleanPrefixes: new Set(["is", "has", "can", "should", "does", "did", "was", "will"]),
+    hungarianPrefixes: new Set(["str", "obj", "arr", "bool", "int", "num"]),
+    placeholderNames: new Set(["foo", "bar", "baz", "tmp", "temp", "thing", "stuff", "data", "value", "item"]),
     rules: new Map(),
   };
 }
@@ -67,6 +71,17 @@ function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): voi
     config.acceptedAbbreviations = new Set(abbreviations.map((value) => value.toLowerCase()));
   }
   config.secretPreviews = new Set(arrayValue(allowlists?.secretPreviews).filter(isString));
+  applyNamingAllowlist(config, allowlists, "bannedGenericNames");
+  applyNamingAllowlist(config, allowlists, "booleanPrefixes");
+  applyNamingAllowlist(config, allowlists, "hungarianPrefixes");
+  applyNamingAllowlist(config, allowlists, "placeholderNames");
+}
+
+function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "bannedGenericNames" | "booleanPrefixes" | "hungarianPrefixes" | "placeholderNames"): void {
+  if (!allowlists || !(key in allowlists)) {
+    return;
+  }
+  config[key] = new Set(arrayValue(allowlists[key]).filter(isString).map((value) => value.toLowerCase()));
 }
 
 function applyRuleConfig(config: Config, raw: Record<string, unknown>): void {
