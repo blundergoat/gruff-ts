@@ -18,8 +18,10 @@ import { analyseArchitectureRules, analyseTestAdequacyRules, buildProjectIndex, 
 import { analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks, parameterNames } from "./blocks.ts";
 import { analyseClassRules, analyseAcronymCase, analyseInconsistentCasing, analyseInterfaceFields, collectDeclaredIdentifiers } from "./class-rules.ts";
 import { analyseDeadCode, analyseUnreachable, analyseUnusedImports } from "./dead-code-rules.ts";
-import { analyseCommentQualityRules, analyseDocRules, analyseFileOverviewDoc, analyseInterfaceDocs } from "./comment-rules.ts";
-import { analyseLineRules, pushAbbreviationAt, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./line-rules.ts";
+import { analyseCommentQualityRules } from "./comment-rules.ts";
+import { analyseDocRules, analyseFileOverviewDoc, analyseInterfaceDocs } from "./doc-rules.ts";
+import { analyseLineRules } from "./line-rules.ts";
+import { pushAbbreviationAt, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { analyseTestBlock } from "./test-block-rules.ts";
 import { analyseProjectConfigRules } from "./project-config-rules.ts";
 import { renderReport } from "./report-renderers.ts";

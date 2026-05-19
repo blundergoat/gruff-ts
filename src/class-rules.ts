@@ -3,11 +3,11 @@
 // Pulls the declaration walkers and casing helpers out of cli.ts so the orchestrator just calls
 // the entry points.
 import { type FunctionBlock, parameterNames } from "./blocks.ts";
-import { type ExportedDeclaration, exportedDeclarations, pushMissingPublicDocFinding } from "./comment-rules.ts";
+import { type ExportedDeclaration, exportedDeclarations, pushMissingPublicDocFinding } from "./doc-rules.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { fileBaseName, finding, normalizedIdentifier } from "./findings-helpers.ts";
-import { pushAbbreviationAt, pushBooleanPrefixAt, pushNegativeBooleanAt } from "./line-rules.ts";
+import { pushAbbreviationAt, pushBooleanPrefixAt, pushNegativeBooleanAt } from "./naming-pushers.ts";
 import { byteLine } from "./text-scans.ts";
 import type { Config, Finding } from "./types.ts";
 

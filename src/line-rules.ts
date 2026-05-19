@@ -4,13 +4,13 @@
 // detection and the block-rule parameter pass. Dead-code rules (unused imports, unreachable) are
 // invoked by the cli orchestrator before/after this module so the stable per-line emission order
 // stays a single contract.
-import { hasSuppressionRationale } from "./comment-rules.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts";
+import { type NamingSurface, pushAbbreviationAt, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { isTestPath } from "./project-rules.ts";
+import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
-import { byteLine } from "./text-scans.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
 // Descriptor for one regex-backed line rule. `pattern` is the cheap test and `globalPattern`
@@ -40,11 +40,6 @@ interface LineRuleContext {
   variables: RegExp;
 }
 
-/**
- * Tag carried in every naming-rule finding's metadata so consumers can distinguish a flagged
- * declaration, parameter, destructured binding, or interface field without re-parsing the source.
- */
-export type NamingSurface = "declaration" | "parameter" | "destructure" | "interface-field";
 
 /*
  * Per-line rule pipeline plus the two multi-line catch detectors. Excludes analyseUnusedImports
@@ -152,58 +147,7 @@ function pushBooleanPrefixFinding(context: LineRuleContext): void {
   pushNegativeBooleanAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
 }
 
-/*
- * Negative-framed booleans (disableX, noX, preventX, …) read as double negations at call sites.
- * `negativeBooleanAllowed` is the user-curated exemption list. Reports the stable
- * `naming.negative-boolean` finding.
- */
-export function pushNegativeBooleanAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
-  if (!/^(?:disable|no|not|prevent|skip|disallow)[A-Z]/.test(name)) {
-    return;
-  }
-  if (config.negativeBooleanAllowed.has(name.toLowerCase())) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "naming.negative-boolean",
-      message: `Boolean identifier \`${name}\` is framed as a negation.`,
-      filePath: file.displayPath,
-      line,
-      severity: "advisory",
-      pillar: "naming",
-      confidence: "medium",
-      symbol: name,
-      remediation: "Invert the framing so callers do not read a double negation.",
-      metadata: { identifierName: name, surface },
-    }),
-  );
-}
 
-/*
- * Booleans should announce their boolean-ness with an `is`/`has`/`can`/… prefix. The accepted set
- * lives in `config.booleanPrefixes` so projects can tune it. Reports the stable
- * `naming.boolean-prefix` finding.
- */
-export function pushBooleanPrefixAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
-  if (hasBooleanPrefix(name, config.booleanPrefixes)) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "naming.boolean-prefix",
-      message: `Boolean identifier \`${name}\` should use an intent-revealing prefix.`,
-      filePath: file.displayPath,
-      line,
-      severity: "advisory",
-      pillar: "naming",
-      confidence: "medium",
-      symbol: name,
-      remediation: "Use a prefix such as is, has, can, should, or will.",
-      metadata: { identifierName: name, surface },
-    }),
-  );
-}
 
 // Walks all `strFoo` / `intBar` / `arrBaz` identifiers on the line. The prefix regex is
 // auto-generated from `config.hungarianPrefixes`. Reports `naming.hungarian-notation`.
@@ -363,29 +307,6 @@ function pushShortVariableFinding(context: LineRuleContext, name: string): void 
   pushShortVariableAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
 }
 
-/*
- * Allows the standard `i`, `j`, `k` loop counters and anything on `acceptedAbbreviations`. Reports
- * `naming.short-variable` for any other one or two character name as a stable advisory finding.
- */
-export function pushShortVariableAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
-  if (name.length > 2 || ["i", "j", "k"].includes(name) || config.acceptedAbbreviations.has(name.toLowerCase())) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "naming.short-variable",
-      message: `Variable \`${name}\` is too short to explain intent.`,
-      filePath: file.displayPath,
-      line,
-      severity: "advisory",
-      pillar: "naming",
-      confidence: "medium",
-      symbol: name,
-      remediation: "Use a name that describes the domain role.",
-      metadata: { surface },
-    }),
-  );
-}
 
 // Thin wrapper that fills in `"declaration"` for the surface field; parameter and destructure
 // callers use their own surface labels via the underlying `pushIdentifierQualityAt`.
@@ -393,62 +314,7 @@ function pushIdentifierQualityFinding(context: LineRuleContext, name: string): v
   pushIdentifierQualityAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
 }
 
-/*
- * Reports `naming.identifier-quality` when a name resolves to a generic variant via
- * `identifierQualityVariant` (placeholder names from config, or built-in low-info forms like `data`).
- * The stable `variant` metadata lets downstream tools group by category.
- */
-export function pushIdentifierQualityAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
-  const variant = identifierQualityVariant(name, config.placeholderNames);
-  if (!variant) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "naming.identifier-quality",
-      message: `Identifier \`${name}\` is a ${variant} name that does not explain domain intent.`,
-      filePath: file.displayPath,
-      line,
-      severity: "advisory",
-      pillar: "naming",
-      confidence: "medium",
-      symbol: name,
-      remediation: "Use an identifier that names the domain role.",
-      metadata: { identifierName: name, variant, surface },
-    }),
-  );
-}
 
-/*
- * Reports `naming.abbreviation` when the name is on `abbreviationDenylist` and not on the user's
- * `acceptedAbbreviations` allowlist. `surface` distinguishes parameter / variable / interface-field
- * — same stable rule contract, different metadata, so consumers can filter on origin.
- */
-export function pushAbbreviationAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
-  if (config.rules.get("naming.abbreviation")?.enabled !== true) {
-    return;
-  }
-  if (config.acceptedAbbreviations.has(name.toLowerCase())) {
-    return;
-  }
-  if (!config.abbreviationDenylist.has(name.toLowerCase())) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "naming.abbreviation",
-      message: `Identifier \`${name}\` uses an opaque abbreviation.`,
-      filePath: file.displayPath,
-      line,
-      severity: "advisory",
-      pillar: "naming",
-      confidence: "medium",
-      symbol: name,
-      remediation: "Use the full domain term or add the abbreviation to allowlists.acceptedAbbreviations.",
-      metadata: { identifierName: name, surface },
-    }),
-  );
-}
 
 // True iff the pattern matches somewhere on the raw line *and* the match's start position falls on
 // a code character in `codeLine`. Required for literal-rule checks where the raw line is needed to
@@ -532,369 +398,10 @@ function isFixedLocalProcessHarness(file: SourceFile, rawLine: string, codeLine:
   return isTestPath(file.displayPath) && /\b(?:spawn|execFile)\s*\(/.test(codeLine) && /\b(?:spawn|execFile)\s*\(\s*["']\.{1,2}\/[^"']*["']\s*,\s*\[/.test(rawLine);
 }
 
-// Four-rule TypeScript safety pass: directive comment, non-null assertion, double cast, exported any.
-// Stable, deterministic ordering keeps the per-line findings in a known sequence.
-function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: string, lineNumber: number, findings: Finding[]): void {
-  pushTsDirectiveFinding(file, line, lineNumber, findings);
-  pushNonNullAssertionFindings(file, codeLine, lineNumber, findings);
-  pushDoubleCastFindings(file, codeLine, lineNumber, findings);
-  pushExportedAnyFinding(file, codeLine, lineNumber, findings);
-}
 
-/*
- * `@ts-ignore` / `@ts-expect-error` without an explanatory note. `tsDirectiveWithoutRationale`
- * applies the rationale heuristic. Reports the stable `modernisation.ts-comment-without-rationale`
- * finding.
- */
-function pushTsDirectiveFinding(file: SourceFile, line: string, lineNumber: number, findings: Finding[]): void {
-  const directive = tsDirectiveWithoutRationale(line);
-  if (!directive) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "modernisation.ts-comment-without-rationale",
-      message: `${directive.directive} suppresses TypeScript without a nearby rationale.`,
-      filePath: file.displayPath,
-      line: lineNumber,
-      severity: "warning",
-      pillar: "modernisation",
-      confidence: "medium",
-      remediation: "Add a short reason after the directive or remove the suppression.",
-      metadata: { directive: directive.directive },
-    }),
-  );
-}
 
-// Walks every `foo.bar!` non-null assertion on the line. The lookahead enforces a real expression
-// boundary so `!=` doesn't get misread. Reports `modernisation.non-null-assertion` with stable metadata.
-function pushNonNullAssertionFindings(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
-  for (const match of codeLine.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)!(?=\.|\[|\)|,|;|\s+(?:as|in|instanceof)\b|\s*$)/g)) {
-    const expression = match[1] ?? "";
-    findings.push(
-      makeFinding({
-        ruleId: "modernisation.non-null-assertion",
-        message: `Non-null assertion on \`${expression}\` bypasses TypeScript's null checks.`,
-        filePath: file.displayPath,
-        line: lineNumber,
-        severity: "warning",
-        pillar: "modernisation",
-        confidence: "medium",
-        symbol: expression,
-        remediation: "Narrow the value with a guard or handle the null/undefined case explicitly.",
-        metadata: { expression },
-      }),
-    );
-  }
-}
-
-// `as unknown as Foo` and `as any as Foo` double-cast patterns. Both source and target types are
-// captured in stable metadata so reviewers can see what's being coerced. Reports `modernisation.double-cast`.
-function pushDoubleCastFindings(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
-  for (const match of codeLine.matchAll(/\bas\s+(unknown|any)\s+as\s+([^;,\n]+)/g)) {
-    const sourceType = match[1] ?? "";
-    const targetType = (match[2] ?? "").trim().replace(/[.)]+$/, "");
-    findings.push(
-      makeFinding({
-        ruleId: "modernisation.double-cast",
-        message: `Double cast through \`${sourceType}\` bypasses structural type checks.`,
-        filePath: file.displayPath,
-        line: lineNumber,
-        severity: "warning",
-        pillar: "modernisation",
-        confidence: "medium",
-        remediation: "Prefer a typed parser, type guard, or narrower assertion at the trust boundary.",
-        metadata: { sourceType, targetType },
-      }),
-    );
-  }
-}
-
-/*
- * `any` in an exported declaration's public surface. Only one finding per line because a single
- * `export` with multiple any-typed fields is one design problem, not many. Reports the stable
- * `waste.exported-any` finding.
- */
-function pushExportedAnyFinding(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
-  const exportedAny = exportedAnySymbol(codeLine);
-  if (!exportedAny) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "waste.exported-any",
-      message: `Exported API \`${exportedAny}\` exposes \`any\` in its public contract.`,
-      filePath: file.displayPath,
-      line: lineNumber,
-      severity: "warning",
-      pillar: "waste",
-      confidence: "medium",
-      symbol: exportedAny,
-      remediation: "Use a named interface, unknown plus validation, or a precise generic type.",
-      metadata: { symbolName: exportedAny },
-    }),
-  );
-}
-
-// Three reliability rules per line: async-forEach, floating-promise, non-Error throw. Order is
-// the stable contract — reshuffling shifts per-block emission and churns baselines.
-function analyseReliabilityLine(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
-  pushAsyncForEachFinding(file, codeLine, lineNumber, findings);
-  pushFloatingPromiseFinding(file, codeLine, lineNumber, findings);
-  pushNonErrorThrowFinding(file, codeLine, lineNumber, findings);
-}
-
-// `arr.forEach(async …)` is a near-universal anti-pattern: the array iterator does not await the
-// returned promise, so errors swallow silently. Reports the stable `security.async-foreach` finding.
-function pushAsyncForEachFinding(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
-  if (!/\.forEach\s*\(\s*async\b/.test(codeLine)) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "security.async-foreach",
-      message: "async callbacks passed to forEach are not awaited by the caller.",
-      filePath: file.displayPath,
-      line: lineNumber,
-      severity: "warning",
-      pillar: "security",
-      confidence: "medium",
-      remediation: "Use for...of with await, Promise.all, or an explicit queue.",
-      metadata: { callName: "forEach" },
-    }),
-  );
-}
-
-/*
- * A promise-shaped call started as a bare statement, with no `await`, `return`, `void`, or chain.
- * Such promises lose their reject path — exceptions land in an unhandled-rejection. Reports
- * the stable `security.floating-promise` finding.
- */
-function pushFloatingPromiseFinding(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
-  const floating = floatingPromiseCall(codeLine);
-  if (!floating) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "security.floating-promise",
-      message: `Promise-like call \`${floating}\` is started without await, return, or void.`,
-      filePath: file.displayPath,
-      line: lineNumber,
-      severity: "warning",
-      pillar: "security",
-      confidence: "medium",
-      symbol: floating,
-      remediation: "Await it, return it, or prefix with void when fire-and-forget is intentional.",
-      metadata: { callName: floating },
-    }),
-  );
-}
-
-/*
- * `throw "string"` / `throw { …object }` / `throw 42`. JavaScript permits it but the stack trace
- * is missing and the caller can't pattern-match an Error subclass. Reports the stable
- * `security.throw-non-error` finding.
- */
-function pushNonErrorThrowFinding(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
-  const thrown = nonErrorThrowExpression(codeLine);
-  if (!thrown) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "security.throw-non-error",
-      message: "Throwing non-Error values loses stack and error-shape information.",
-      filePath: file.displayPath,
-      line: lineNumber,
-      severity: "warning",
-      pillar: "security",
-      confidence: "medium",
-      remediation: "Throw an Error subclass with a clear message and structured properties.",
-      metadata: { expression: thrown },
-    }),
-  );
-}
-
-/*
- * `catch (e) { throw e; }` patterns. The backreference enforces "same binding name" so a real
- * `catch (e) { throw new Wrapped(e); }` does not trip. Reports the stable `waste.useless-catch` finding.
- */
-function analyseUselessCatches(file: SourceFile, source: string, findings: Finding[]): void {
-  for (const match of source.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)\s*\{\s*throw\s+\1\s*;?\s*\}/g)) {
-    const binding = match[1] ?? "";
-    findings.push(
-      makeFinding({
-        ruleId: "waste.useless-catch",
-        message: `catch block only rethrows \`${binding}\` without adding handling.`,
-        filePath: file.displayPath,
-        line: byteLine(source, match.index ?? 0),
-        severity: "advisory",
-        pillar: "waste",
-        confidence: "high",
-        remediation: "Remove the catch block or add meaningful handling.",
-        metadata: { binding },
-      }),
-    );
-  }
-}
-
-/*
- * Empty / comment-only catch bodies. Strips comments before testing, because a catch body with
- * only `// intentional` is still a swallowed catch but a real `console.error` is not. Reports
- * the stable `waste.swallowed-catch` finding.
- */
-function analyseSwallowedCatches(file: SourceFile, source: string, findings: Finding[]): void {
-  for (const match of source.matchAll(/\bcatch\s*(?:\(([^)]*)\))?\s*\{([\s\S]*?)\}/g)) {
-    const body = match[2] ?? "";
-    if (!isSwallowedCatchBody(body)) {
-      continue;
-    }
-    const binding = (match[1] ?? "").trim();
-    findings.push(
-      makeFinding({
-        ruleId: "waste.swallowed-catch",
-        message: "catch block swallows an error without rethrowing, returning, or reporting it.",
-        filePath: file.displayPath,
-        line: byteLine(source, match.index ?? 0),
-        severity: "warning",
-        pillar: "waste",
-        confidence: "medium",
-        remediation: "Handle the error explicitly, rethrow it, or document an intentional ignore path.",
-        metadata: { ...(binding ? { binding } : {}) },
-      }),
-    );
-  }
-}
-
-// Returns the directive name only when the suffix following a TypeScript suppression directive
-// has no meaningful rationale. Heuristic is intentionally lenient — three real words usually means
-// the maintainer wrote a reason.
-function tsDirectiveWithoutRationale(line: string): { directive: string } | undefined {
-  const match = line.match(/@ts-(ignore|expect-error)\b(.*)$/);
-  if (!match?.[1]) {
-    return undefined;
-  }
-  const rationale = match[2] ?? "";
-  if (hasDirectiveRationale(rationale)) {
-    return undefined;
-  }
-  return { directive: `@ts-${match[1]}` };
-}
-
-// Two-way pass: an explicit suppression rationale token (tracking URL / issue ID / owner / date)
-// or at least three real English-shaped words. The disjunction keeps maintainers from having to
-// remember a specific format.
-function hasDirectiveRationale(directiveSuffix: string): boolean {
-  const cleaned = directiveSuffix.replace(/^[-:\s]+/, "").trim();
-  const words = cleaned.match(/[A-Za-z]{3,}/g) ?? [];
-  return hasSuppressionRationale(cleaned) || words.length >= 3;
-}
-
-// Two-shot scan: line must have both `export` and `any` before the regex is invoked, because the
-// regex is expensive and most lines do not have both.
-function exportedAnySymbol(codeLine: string): string | undefined {
-  if (!/\bexport\b/.test(codeLine) || !/\bany\b/.test(codeLine)) {
-    return undefined;
-  }
-  const match = codeLine.match(/\bexport\s+(?:async\s+)?(?:function|const|let|var|class|interface|type)\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
-  return match?.[1];
-}
-
-// Two predicates compose: must be a bare statement (not handled), and must be a promise-shaped
-// call. Returning undefined keeps the per-line emission stable when either gate fails.
-function floatingPromiseCall(codeLine: string): string | undefined {
-  const trimmed = codeLine.trim();
-  if (isHandledPromiseStatement(trimmed)) {
-    return undefined;
-  }
-  const callName = leadingCallName(trimmed);
-  if (!callName) {
-    return undefined;
-  }
-  return isPromiseLikeCall(callName) ? callName : undefined;
-}
-
-// Five "this is intentional" forms: await, return, void, throw, yield, or a binding. Any one keeps
-// the line out of floating-promise reporting.
-function isHandledPromiseStatement(trimmedLine: string): boolean {
-  return trimmedLine.length === 0 || /^(?:await|return|void|throw|yield)\b/.test(trimmedLine) || /^(?:const|let|var)\s+/.test(trimmedLine);
-}
-
-// Picks the dotted callable name at the start of the line. Empty string for non-call statements
-// signals "not a candidate" to the caller without throwing.
-function leadingCallName(trimmedLine: string): string {
-  const match = trimmedLine.match(/^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*\(/);
-  return match?.[1] ?? "";
-}
-
-// Heuristic: `fetch`, anything ending in `Async`, or anything ending in `Promise`. False positives
-// are tolerated because the rule's remediation ("await or void it") is also the universal best practice.
-function isPromiseLikeCall(callName: string): boolean {
-  const localName = callName.split(".").at(-1) ?? callName;
-  return callName === "fetch" || /(?:Async|Promise)$/.test(localName);
-}
-
-// Allow `throw new XxxError(...)` and `throw e` (bare identifier — usually a rethrow), reject literals.
-// Returns a truncated preview because the full expression can be arbitrarily long.
-function nonErrorThrowExpression(codeLine: string): string | undefined {
-  const match = codeLine.match(/\bthrow\s+(.+?);?$/);
-  const expression = (match?.[1] ?? "").trim();
-  if (!expression) {
-    return undefined;
-  }
-  if (/^(?:new\s+[A-Za-z_$][A-Za-z0-9_$]*Error\b|[A-Za-z_$][A-Za-z0-9_$]*)/.test(expression)) {
-    return undefined;
-  }
-  return /^(?:["'`]|\d|\{|\[|true\b|false\b|null\b|undefined\b)/.test(expression) ? expression.slice(0, 40) : undefined;
-}
-
-// Strips both line and block comments before testing for emptiness. A catch body holding only a
-// throwaway placeholder comment reads as a deliberate swallow but documents nothing about the
-// recovery path — that is still the rule's signal.
-function isSwallowedCatchBody(body: string): boolean {
-  const meaningful = body
-    .replace(/\/\/.*$/gm, "")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .trim();
-  return meaningful === "";
-}
-
-// Returns `"generic"` for low-information names from the configured set, `"numbered"` for
-// `foo1` / `bar2` style trailing-digit identifiers, or undefined when the name is acceptable.
-// The variant string lands in finding metadata so consumers can split the two failure modes.
-function identifierQualityVariant(name: string, placeholderNames: Set<string>): string | undefined {
-  if (placeholderNames.has(name.toLowerCase())) {
-    return "generic";
-  }
-  if (/^[A-Za-z_$]+[0-9]+$/.test(name)) {
-    return "numbered";
-  }
-  return undefined;
-}
-
-const BOOLEAN_PREFIX_REGEX_CACHE = new WeakMap<Set<string>, RegExp | null>();
 const HUNGARIAN_PREFIX_REGEX_CACHE = new WeakMap<Set<string>, RegExp | null>();
 
-// Tests the cached prefix regex from `booleanPrefixRegex`. A null regex (empty prefix set) is
-// treated as "no rule configured" so the boolean-prefix check fires only when configured.
-function hasBooleanPrefix(name: string, prefixes: Set<string>): boolean {
-  const regex = booleanPrefixRegex(prefixes);
-  return regex !== null && regex.test(name);
-}
-
-// Cached per prefix Set via a WeakMap so each rule pass reuses the compiled regex instead of
-// rebuilding it for every identifier. The trailing `[A-Z_]` requirement keeps single-letter
-// names like `is` from falsely matching the prefix-followed-by-name pattern.
-function booleanPrefixRegex(prefixes: Set<string>): RegExp | null {
-  if (BOOLEAN_PREFIX_REGEX_CACHE.has(prefixes)) {
-    return BOOLEAN_PREFIX_REGEX_CACHE.get(prefixes) ?? null;
-  }
-  const escaped = [...prefixes].map(escapeRegex);
-  const regex = prefixes.size === 0 ? null : new RegExp(`^(?:${escaped.join("|")})[A-Z_]`);
-  BOOLEAN_PREFIX_REGEX_CACHE.set(prefixes, regex);
-  return regex;
-}
 
 // Counterpart to `booleanPrefixRegex` for the `naming.hungarian-notation` rule. Returns a global
 // regex (callers iterate matches) anchored to declaration keywords + visibility modifiers, so a
