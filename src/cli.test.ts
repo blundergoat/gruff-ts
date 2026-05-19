@@ -227,7 +227,7 @@ const riskyRuleQualityDoctrine = [
     invalidFixture: "commented function over an existing complexity threshold without because/why/tradeoff context",
     noisyValidFixture: "simple commented functions and complex functions whose comments mention why, because, or tradeoffs",
     missingInvalidFixture: "complex control flow remains reported when a restating or generic comment is present",
-    falsePositiveEscapeHatch: "missing comments stay owned by docs.missing-function-doc; M32 needs a leading comment",
+    falsePositiveEscapeHatch: "missing comments stay owned by docs.missing-function-doc; the context-doc rules require a leading comment to fire",
     fingerprintStability: "anchor to the leading comment line plus function symbol",
   },
   {
@@ -507,7 +507,7 @@ test("sleeps without assertion", async () => {
 
 test("analysis finds first-slice portable TypeScript rules", () => {
   const secret = HIGH_ENTROPY_FIXTURE_VALUE;
-  // M01 portable rubric map: port-now rules use source-text, line, function-block,
+  // Portable rubric map: port-now rules use source-text, line, function-block,
   // test-block, and sensitive-data seams with standalone TypeScript fixtures.
   const report = analyseFixture(`import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -554,7 +554,7 @@ function testBuildsValue(): void {
   assert.equal(renderReport(report, "json").includes(secret), false);
 });
 
-test("core expansion clean fixture avoids new M02 findings", () => {
+test("core expansion clean fixture stays finding-free", () => {
   const report = analyseFixture(
     `/** UserProfile stores profile state. */
 export class UserProfile {
@@ -1812,7 +1812,7 @@ test("comment quality requires tracking for TODO markers", () => {
  */
 // TODO owner: platform-runtime
 // FIXME tracked in #123
-// HACK M31 keeps this fixture intentional
+// HACK .goat-flow/tasks/keep-fixture-intentional.md
 // XXX 2026-05-18 revisit the temporary setup
 // TODO add the missing owner
 function trackedTodos(): void {}

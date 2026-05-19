@@ -5,11 +5,23 @@ last_reviewed: 2026-05-19
 
 # Verification lessons
 
+## Lesson: targeted self-scan fixes still need comment-quality review
+
+**Created:** 2026-05-19
+
+**What happened:** A self-scan cleanup first cleared `docs.missing-function-doc` and `docs.missing-interface-doc` by adding repetitive `Maintainer note:` comments. The requested rule count reached zero, but the comments were low-value boilerplate and needed a second pass to become declaration-specific.
+
+**Evidence:** `src/cli.ts` + `(search: "function pushMissingFunctionDocFinding")`; corrected comments now describe the declaration role directly, and `rg -n 'Maintainer note|helper intent|analysis output relies|stable contract' src` returns no matches.
+
+**Prevention:** When fixing documentation findings in bulk, verify both rule counts and comment quality. Grep for repeated scaffolding phrases before presenting the change, and sample the largest edited file for comments that merely satisfy the predicate.
+
+**Follow-up:** A later cleanup made comments more readable but removed words such as `stable`, `deterministic`, `fingerprint`, `throws`, and `reports` that encode the analyzer's own context-doc contracts. Before closing a comment rewrite, rerun the self-scan and compare context-doc rules as well as the originally targeted missing-doc rules.
+
 ## Lesson: verify extracted modules for circular self-scan edges
 
 **Created:** 2026-05-19
 
-**What happened:** During M27, the first `src/cli-program.ts` extraction imported `analyse` directly from `src/cli.ts` while `src/cli.ts` imported `buildProgram` from `src/cli-program.ts`. `tsc` passed, but `./bin/gruff-ts analyse src --format=json --no-config --no-baseline --fail-on=none` surfaced a new `design.circular-import` finding between the two modules.
+**What happened:** During the first `src/cli-program.ts` extraction, the new module imported `analyse` directly from `src/cli.ts` while `src/cli.ts` imported `buildProgram` from `src/cli-program.ts`. `tsc` passed, but `./bin/gruff-ts analyse src --format=json --no-config --no-baseline --fail-on=none` surfaced a new `design.circular-import` finding between the two modules.
 
 **Evidence:** `src/cli.ts` + `(search: "const buildProgram =")`; `src/cli-program.ts` + `(search: "type AnalyseRunner")`. The corrected extraction passes the analyser callback from `cli.ts` into `cli-program.ts` instead of importing back into `cli.ts`.
 
@@ -19,7 +31,7 @@ last_reviewed: 2026-05-19
 
 **Created:** 2026-05-18
 
-**What happened:** During M33, the focused fixture-purpose tests passed after implementation, but the self-scan showed broad `test-setup` findings because `analyseProject(...)` alone was treated as a fixture setup signal. Tightening the signal to explicit fixture identifiers or source-generation helpers reduced the self-scan from generic project-helper setup to scanner-relevant fixtures.
+**What happened:** During fixture-purpose rule work, the focused tests passed after implementation, but the self-scan showed broad `test-setup` findings because `analyseProject(...)` alone was treated as a fixture setup signal. Tightening the signal to explicit fixture identifiers or source-generation helpers reduced the self-scan from generic project-helper setup to scanner-relevant fixtures.
 
 **Evidence:** `src/cli.ts` + `(search: "function hasFixtureSetupSignal")`; `src/cli.test.ts` + `(search: "fixture purpose flags large fixture-heavy test setup without flagging documented setup")`.
 
@@ -39,7 +51,7 @@ last_reviewed: 2026-05-19
 
 **Created:** 2026-05-18
 
-**What happened:** During M31, `staleCommentFinding` initially passed `symbol: metadata.symbol` into `makeFinding`, which can be `undefined` at runtime. `tsc --noEmit` rejected the object under `exactOptionalPropertyTypes`.
+**What happened:** During stale-comment rule work, `staleCommentFinding` initially passed `symbol: metadata.symbol` into `makeFinding`, which can be `undefined` at runtime. `tsc --noEmit` rejected the object under `exactOptionalPropertyTypes`.
 
 **Evidence:** `src/cli.ts` + `(search: "function staleCommentFinding")`; the corrected implementation uses a conditional spread so `symbol` is omitted unless a real symbol exists.
 
@@ -49,7 +61,7 @@ last_reviewed: 2026-05-19
 
 **Created:** 2026-05-18
 
-**What happened:** During M32, magic-threshold findings initially built labels from masked source text, so `threshold(config, "rule", "key", 55)` produced whitespace/dot labels after string masking.
+**What happened:** During magic-threshold rule work, findings initially built labels from masked source text, so `threshold(config, "rule", "key", 55)` produced whitespace/dot labels after string masking.
 
 **Evidence:** `src/cli.ts` + `(search: "function magicThresholdCandidate")`; the corrected function takes `rawLine` for labels and `codeLine` only to prove the threshold call starts in executable code.
 
@@ -79,7 +91,7 @@ last_reviewed: 2026-05-19
 
 **Created:** 2026-05-17
 
-**What happened:** During M29 perf-harness verification, `./scripts/test-performance.sh --runs 1 --target fixtures/sample.ts --out /tmp/perf-spike.json` failed because the workload label `fixtures/sample.ts` was reused inside the temporary filename, creating an unintended nested path under `/tmp/gruff-perf-work-*`.
+**What happened:** During perf-harness verification, `./scripts/test-performance.sh --runs 1 --target fixtures/sample.ts --out /tmp/perf-spike.json` failed because the workload label `fixtures/sample.ts` was reused inside the temporary filename, creating an unintended nested path under `/tmp/gruff-perf-work-*`.
 
 **Evidence:** `scripts/test-performance.sh` + `(search: "local cell_name=")` now sanitizes workload/config/format labels before building per-cell temp file paths.
 
@@ -99,7 +111,7 @@ last_reviewed: 2026-05-19
 
 **Created:** 2026-05-16
 
-The local deny-dangerous hook blocks verification wrappers that obscure nested execution. During M14 verification, one `node` heredoc was blocked because JavaScript template-literal backticks looked like hidden command substitution, and a later `node -e` wrapper around `spawnSync("./bin/gruff-ts", ...)` was blocked because the shell-executing primitive hid the real command from hook review.
+The local deny-dangerous hook blocks verification wrappers that obscure nested execution. During discovery-scope verification, one `node` heredoc was blocked because JavaScript template-literal backticks looked like hidden command substitution, and a later `node -e` wrapper around `spawnSync("./bin/gruff-ts", ...)` was blocked because the shell-executing primitive hid the real command from hook review.
 
 Run the target command directly, save output to `/tmp` if parsing is needed, then use a non-spawning parser command against that file.
 
@@ -125,7 +137,7 @@ Run the target command directly, save output to `/tmp` if parsing is needed, the
 
 **Created:** 2026-05-13
 
-**What happened:** The M01 high-entropy sensitive-data fixture initially used a 31-character secret-like value while the rule default required 32 characters, so the targeted test failed after implementation until the fixture value was corrected.
+**What happened:** The first high-entropy sensitive-data fixture initially used a 31-character secret-like value while the rule default required 32 characters, so the targeted test failed after implementation until the fixture value was corrected.
 
 **Evidence:** `src/cli.test.ts` + `(search: "const secret =")` - the first-slice fixture owns the candidate value for `sensitive-data.high-entropy-string`.
 
@@ -135,17 +147,17 @@ Run the target command directly, save output to `/tmp` if parsing is needed, the
 
 **Created:** 2026-05-13
 
-**What happened:** M02 unit fixtures passed, but `./bin/gruff-ts analyse src --format=json --fail-on=none --no-config` exposed a `parse-error` in `src/cli.ts` and false positives where control statements were treated as function blocks.
+**What happened:** Core-expansion unit fixtures passed, but `./bin/gruff-ts analyse src --format=json --fail-on=none --no-config` exposed a `parse-error` in `src/cli.ts` and false positives where control statements were treated as function blocks.
 
 **Evidence:** `src/cli.ts` + `(search: "function parseDiagnostics")` and `(search: "function functionBlocks")`; `src/cli.test.ts` now includes clean control-flow coverage and delimiter-looking literal coverage.
 
-**Prevention:** For regex-heavy rule work, run the analyzer against `src` before declaring the milestone gate done, and check the output for diagnostics plus impossible symbols such as `if`, `switch`, or `catch`.
+**Prevention:** For regex-heavy rule work, run the analyzer against `src` before declaring the work done, and check the output for diagnostics plus impossible symbols such as `if`, `switch`, or `catch`.
 
 ## Lesson: inspect smoke output, not just exit status
 
 **Created:** 2026-05-13
 
-**What happened:** M03 tests and the HTML smoke command exited 0, but the first HTML inspection showed obvious sensitive-data false positives on `package-lock.json` SRI hashes and the detector string `OPENAI_API_KEY` inside `src/cli.ts`.
+**What happened:** Sensitive-data tests and the HTML smoke command exited 0, but the first HTML inspection showed obvious false positives on `package-lock.json` SRI hashes and the detector string `OPENAI_API_KEY` inside `src/cli.ts`.
 
 **Evidence:** `src/cli.ts` + `(search: "function isHighEntropySecretCandidate")` and `(search: "sensitive-data.api-key-pattern")`; `src/cli.test.ts` now includes `risk expansion ignores package integrity hashes`.
 
@@ -155,9 +167,9 @@ Run the target command directly, save output to `/tmp` if parsing is needed, the
 
 **Created:** 2026-05-13
 
-**What happened:** The M04 determinism smoke was first run in parallel with baseline generation. The baseline command created `.goat-flow/scratchpad/gruff-ts-expanded-baseline.json` between the two `analyse .` runs, so the comparison reported one extra finding even though the analyzer output was deterministic for a stable tree.
+**What happened:** The determinism smoke was first run in parallel with baseline generation. The baseline command created `.goat-flow/scratchpad/gruff-ts-expanded-baseline.json` between the two `analyse .` runs, so the comparison reported one extra finding even though the analyzer output was deterministic for a stable tree.
 
-**Evidence:** M04 verification commands; rerunning `./bin/gruff-ts analyse . --format=json --fail-on=none --no-config` twice after baseline generation completed produced identical reports after ignoring `run.generatedAt`.
+**Evidence:** Determinism verification commands; rerunning `./bin/gruff-ts analyse . --format=json --fail-on=none --no-config` twice after baseline generation completed produced identical reports after ignoring `run.generatedAt`.
 
 **Prevention:** Run determinism checks by themselves, or generate any scratchpad/baseline artifacts before the first compared run. Parallel verification is fine only when none of the commands write into paths being scanned.
 
@@ -165,7 +177,7 @@ Run the target command directly, save output to `/tmp` if parsing is needed, the
 
 **Created:** 2026-05-14
 
-**What happened:** The M07 cumulative rule-coverage test initially missed `test-quality.no-throw-only-test` because a patch matched the first `test("global mutation"` block in `src/cli.test.ts`, not the later cumulative fixture block that owns `expandedRuleIds`.
+**What happened:** The cumulative rule-coverage test initially missed `test-quality.no-throw-only-test` because a patch matched the first `test("global mutation"` block in `src/cli.test.ts`, not the later cumulative fixture block that owns `expandedRuleIds`.
 
 **Evidence:** `src/cli.test.ts` + `(search: "cumulative expanded fixture covers every new rule with unique fingerprints")`; the failing run of `node --import tsx --test src/cli.test.ts` reported `expected test-quality.no-throw-only-test`.
 
@@ -175,7 +187,7 @@ Run the target command directly, save output to `/tmp` if parsing is needed, the
 
 **Created:** 2026-05-14
 
-**What happened:** The M08 descriptor self-test first failed for `design.god-function` because the catalogue fixture was not long and complex enough, then failed for `test-quality.magic-number-assertion` because the fixture used `expect(renderCatalogue().length).toBe(42)`, which exceeded the regex assertion matcher’s supported shape.
+**What happened:** The descriptor self-test first failed for `design.god-function` because the catalogue fixture was not long and complex enough, then failed for `test-quality.magic-number-assertion` because the fixture used `expect(renderCatalogue().length).toBe(42)`, which exceeded the regex assertion matcher’s supported shape.
 
 **Evidence:** `src/cli.test.ts` + `(search: "rule descriptors cover emitted rules and fixture-backed coverage")`; failing runs of `node --import tsx --test src/cli.test.ts` reported missing positive fixture coverage for those rule ids.
 
@@ -185,9 +197,9 @@ Run the target command directly, save output to `/tmp` if parsing is needed, the
 
 **Created:** 2026-05-15
 
-**What happened:** During M13 dashboard parity verification, screenshots were first captured against a dashboard server that had been started before the final `src/cli.ts` CSS tweak. The evidence was structurally valid, but it did not prove the current source until the server was stopped, restarted, and the captures were rerun.
+**What happened:** During dashboard parity verification, screenshots were first captured against a dashboard server that had been started before the final `src/cli.ts` CSS tweak. The evidence was structurally valid, but it did not prove the current source until the server was stopped, restarted, and the captures were rerun.
 
-**Evidence:** `src/cli.ts` + `(search: "function startDashboard")`; `.goat-flow/scratchpad/dashboard-parity/capture_m13.py` captured the current-source screenshots only after the dashboard was restarted on `127.0.0.1:8877`.
+**Evidence:** `src/cli.ts` + `(search: "function startDashboard")`; the dashboard-parity capture script in `.goat-flow/scratchpad/dashboard-parity/` captured the current-source screenshots only after the dashboard was restarted on `127.0.0.1:8877`.
 
 **Prevention:** For browser-visible code, restart any long-running dev server after every source edit before taking final screenshots or claiming visual verification.
 
@@ -195,9 +207,9 @@ Run the target command directly, save output to `/tmp` if parsing is needed, the
 
 **Created:** 2026-05-15
 
-**What happened:** The M13 screenshot script initially clicked dashboard Refresh and then read `[data-scan-status]` before the iframe `load` handler had settled, producing a false failure with status `Scanning`.
+**What happened:** The dashboard-parity screenshot script initially clicked dashboard Refresh and then read `[data-scan-status]` before the iframe `load` handler had settled, producing a false failure with status `Scanning`.
 
-**Evidence:** `.goat-flow/scratchpad/dashboard-parity/capture_m13.py` + `(search: "wait_for_function")`; the corrected script waits until the status text is `Ready` before asserting refresh completion.
+**Evidence:** The capture script under `.goat-flow/scratchpad/dashboard-parity/` (search: `wait_for_function`); the corrected script waits until the status text is `Ready` before asserting refresh completion.
 
 **Prevention:** Browser evidence scripts should wait for the user-visible postcondition after an interaction, not only for a reused selector or iframe to exist.
 
@@ -215,17 +227,17 @@ Run the target command directly, save output to `/tmp` if parsing is needed, the
 
 **Created:** 2026-05-16
 
-**What happened:** During M15, the clone inventory command originally listed every directory under `.goat-flow/scratchpad/related-projects`, but the milestone itself creates `.goat-flow/scratchpad/related-projects/study`, so the command no longer proved "exactly the ten cloned projects" after the first artifact write.
+**What happened:** During the related-projects intake work, the clone inventory command originally listed every directory under `.goat-flow/scratchpad/related-projects`, but the task itself created `.goat-flow/scratchpad/related-projects/study`, so the command no longer proved "exactly the ten cloned projects" after the first artifact write.
 
-**Evidence:** `.goat-flow/tasks/0.1/M15-related-project-study-intake.md` + `(search: "find .goat-flow/scratchpad/related-projects")` - the verified command now excludes `study`; commands that grep ignored `.goat-flow` artifacts use `rg -uuu`.
+**Evidence:** The verified command now excludes `study`; commands that grep ignored `.goat-flow` artifacts use `rg -uuu`.
 
-**Prevention:** When a milestone writes verification artifacts inside the tree being enumerated, either exclude the artifact directory in the proof command or write artifacts outside the enumerated scope. Use `rg -uuu` for checks that intentionally inspect gitignored `.goat-flow/tasks` or `.goat-flow/scratchpad` files.
+**Prevention:** When a task writes verification artifacts inside the tree being enumerated, either exclude the artifact directory in the proof command or write artifacts outside the enumerated scope. Use `rg -uuu` for checks that intentionally inspect gitignored `.goat-flow/tasks` or `.goat-flow/scratchpad` files.
 
 ## Lesson: widen typed test maps when one list has documented exceptions
 
 **Created:** 2026-05-16
 
-**What happened:** During M21, the first `npm run check` failed in `tsc` because a rule-quality self-check built one `Map` from doctrine entries and another from exception entries. TypeScript inferred each `Map` with only its literal key union, so looking up the full risky-rule union failed for the exception-only rule.
+**What happened:** During rule-quality doctrine work, the first `npm run check` failed in `tsc` because a rule-quality self-check built one `Map` from doctrine entries and another from exception entries. TypeScript inferred each `Map` with only its literal key union, so looking up the full risky-rule union failed for the exception-only rule.
 
 **Evidence:** `src/cli.test.ts` + `(search: "rule quality doctrine covers risky scanner descriptors")`; the failing command reported `sensitive-data.api-key-pattern` was not assignable to the doctrine-only map key union.
 

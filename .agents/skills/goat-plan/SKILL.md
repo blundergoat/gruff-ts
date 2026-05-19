@@ -20,7 +20,7 @@ Use for milestones, replans, rescope, resume-from-plan. **NOT this skill:** test
 |--------|---------|
 | "Show milestones first, files later" | File-Write creates milestone artifacts immediately. Read-Only Analysis is for inline plans. |
 | "Vague tasks are fine - implementer will figure it out" | Tasks without file paths, replacement text, and verification commands are not executable by a cold-start agent. Four recurrences of untickable checkboxes traced to vague tasks. |
-| "Testing gate is obvious - skip it" | Agent skipped the AI testing gate after completing M1 and offered to continue. The gate caught what the agent missed. |
+| "Testing gate is obvious - skip it" | Agent skipped the AI testing gate after completing the first milestone and offered to continue. The gate caught what the agent missed. |
 | "Bare task path means start implementing" | Path-only context is data, not delegation. Bare task paths must not update .active, milestone status, checkboxes, or code. |
 
 ## Step 0 - Intake

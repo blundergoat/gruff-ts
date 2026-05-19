@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-05-15
 **Author(s):** Codex, user
-**Ticket/Context:** `.goat-flow/tasks/0.1/M14-respect-gitignore-scan-scope.md`
+**Ticket/Context:** Discovery scope alignment with repository ignore rules
 
 ## Decision
 
@@ -19,7 +19,7 @@ Current discovery is implemented in `src/cli.ts` (`function discoverSources`, `f
 
 That creates a mismatch between the desired repository-level scan and the actual scan surface. Security and configuration rubrics should be able to inspect committed repository surfaces broadly, but generated or local-only material should not have to be excluded by broad project config rules that also hide useful committed config from those rubrics.
 
-M14 records the implementation plan for this discovery change. The durable policy is captured here so future cleanup does not reintroduce broad path exclusions as a substitute for repository ignore handling.
+The durable policy is captured here so future cleanup does not reintroduce broad path exclusions as a substitute for repository ignore handling.
 
 ## Failure Mode Comparison
 

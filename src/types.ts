@@ -24,7 +24,7 @@ export type OutputFormat = "text" | "json" | "html" | "markdown" | "github" | "h
 /** Minimum severity that causes a non-zero CLI exit. */
 export type FailThreshold = "none" | "advisory" | "warning" | "error";
 
-/** Normalised analysis options consumed by the analyzer core. */
+/** Public options contract consumed by the analyzer core and CLI. */
 export interface AnalysisOptions {
   paths: string[];
   config?: string;
@@ -81,7 +81,7 @@ export interface RunDiagnostic {
   line?: number;
 }
 
-/** Versioned report payload returned by analyse and JSON report commands. */
+/** Stable gruff.analysis.v1 report schema returned by analyse and JSON report commands. */
 export interface AnalysisReport {
   schemaVersion: "gruff.analysis.v1";
   tool: { name: "gruff-ts"; version: string };
