@@ -4,6 +4,8 @@ import { ruleDescriptors } from "./rules.ts";
 type RuleListFormat = "text" | "json";
 type CompletionShell = "bash" | "fish" | "zsh";
 
+// Pre-formatted token strings, not arrays — the shell-specific renderers paste them straight into
+// completion scripts (bash `$commands`, zsh `_describe`, etc.) so the formatting must already be shell-safe.
 interface CompletionContext {
   commands: string;
   options: string;
@@ -28,6 +30,8 @@ const CONSOLE_COMMANDS = [
   },
 ] as const;
 
+// Catalogue dump. JSON is the canonical form consumed by docs builds and rule audits — its shape
+// (tool, rules[]) is a public contract; text is for ad-hoc human inspection.
 function renderRuleList(format: RuleListFormat): string {
   const descriptors = ruleDescriptors();
   if (format === "json") {
@@ -42,6 +46,8 @@ function renderRuleList(format: RuleListFormat): string {
   return `${lines.join("\n")}\n`;
 }
 
+// The Symfony-style command catalogue shown for `gruff-ts`, `gruff-ts list`, and `gruff-ts help`.
+// `useAnsi` is autodetected by the caller from TTY and `--ansi` flags, never from this layer.
 function renderConsoleList(useAnsi = false): string {
   const listCommand = ansiWrap("list", ANSI_GREEN, useAnsi);
   return [
@@ -64,6 +70,8 @@ function renderConsoleList(useAnsi = false): string {
   ].join("\n") + "\n";
 }
 
+// Two-column row: label padded to `width`, then description. Width is fixed per section so the
+// catalogue lines up regardless of label length — matches Symfony console output conventions.
 function formatConsoleRow(label: string, description: string, width: number, useAnsi: boolean): string {
   const paddedLabel = ansiWrap(label, ANSI_GREEN, useAnsi);
   const padding = " ".repeat(Math.max(1, width - label.length));
@@ -71,6 +79,8 @@ function formatConsoleRow(label: string, description: string, width: number, use
   return `  ${paddedLabel}${padding}${rowDescription}`;
 }
 
+// `useAnsi` is the only gate. We never sniff `process.stdout.isTTY` here because the caller may be
+// rendering to a file or capture buffer where ANSI codes would be garbage.
 function ansiWrap(value: string, color: string, useAnsi: boolean): string {
   if (!useAnsi) {
     return value;
@@ -79,6 +89,8 @@ function ansiWrap(value: string, color: string, useAnsi: boolean): string {
   return `${ansiColor}${value}${ANSI_RESET_FG}`;
 }
 
+// Dispatches by shell with bash as the default — chosen because bash completion is most likely to
+// be installed and least likely to break silently if the user pipes the output through `source`.
 function renderCompletionScript(shell: CompletionShell): string {
   const context = completionContext();
   if (shell === "fish") {
@@ -90,6 +102,8 @@ function renderCompletionScript(shell: CompletionShell): string {
   return renderBashCompletion(context);
 }
 
+// Filters out `help` from the completion list — Commander handles it implicitly and exposing it
+// would suggest `gruff-ts help` is a real subcommand on equal footing with `analyse`.
 function completionContext(): CompletionContext {
   return {
     commands: CONSOLE_COMMANDS.filter((command) => command.name !== "help").map((command) => command.name).join(" "),
@@ -97,6 +111,8 @@ function completionContext(): CompletionContext {
   };
 }
 
+// Fish's `complete` builtin is invoked once per token. Trailing newline matters — fish ignores
+// the final entry without one.
 function renderFishCompletion(context: CompletionContext): string {
   return [
     "complete -c gruff-ts -f",
@@ -106,6 +122,8 @@ function renderFishCompletion(context: CompletionContext): string {
   ].join("\n");
 }
 
+// `#compdef gruff-ts` must be on line 1 — zsh's autoloader rejects the file otherwise. Uses
+// `_arguments` rather than `_describe` so option completion still works after a subcommand.
 function renderZshCompletion(context: CompletionContext): string {
   return [
     "#compdef gruff-ts",
@@ -123,6 +141,8 @@ function renderZshCompletion(context: CompletionContext): string {
   ].join("\n");
 }
 
+// Bash completion: a function registered via `complete -F`. The `--format` / `--fail-on` value
+// lists are duplicated from `cli-program.ts` because completion runs without loading the analyser.
 function renderBashCompletion({ commands, options }: CompletionContext): string {
   const commandsLine = `  commands=\"${commands}\"`;
   const optionsLine = `  options=\"${options}\"`;
@@ -149,6 +169,7 @@ function renderBashCompletion({ commands, options }: CompletionContext): string 
   ].join("\n");
 }
 
+// Bash is the fallback for any unknown shell name — see `renderCompletionScript` for why bash wins.
 function completionShell(value: unknown): CompletionShell {
   return value === "fish" || value === "zsh" ? value : "bash";
 }

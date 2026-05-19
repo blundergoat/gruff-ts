@@ -11,10 +11,14 @@ import type { AnalysisOptions, AnalysisReport } from "./types.ts";
 
 type AnalyseRunner = (options: AnalysisOptions) => AnalysisReport;
 
+// The `report` command intentionally rejects `--baseline` because its output is meant to reflect
+// raw findings; this flag lets `normalizeOptions` enforce that without per-command branching.
 interface NormalizeContext {
   allowBaselineFlag: boolean;
 }
 
+// Honours `--silent`/`--quiet` before writing to stdout. Always appends a trailing newline so piped
+// callers (e.g., `gruff-ts analyse | jq`) see a complete line even when a renderer forgot one.
 function writeCommandOutput(program: Command, output: string): void {
   if (outputSuppressed(program)) {
     return;
@@ -22,11 +26,15 @@ function writeCommandOutput(program: Command, output: string): void {
   process.stdout.write(output.endsWith("\n") ? output : `${output}\n`);
 }
 
+// `--silent` and `--quiet` both suppress non-error stdout — they are intentionally treated the same
+// here because Commander exposes them as independent flags but the CLI's contract is uniform.
 function outputSuppressed(program: Command): boolean {
   const options = program.opts() as { quiet?: boolean; silent?: boolean };
   return options.quiet === true || options.silent === true;
 }
 
+// Three-state ANSI resolution: explicit `--ansi` forces colour, explicit `--no-ansi` forbids it,
+// otherwise autodetect from TTY. Required because pipelines and CI logs would otherwise eat colour codes.
 function ansiEnabled(program: Command): boolean {
   const options = program.opts() as { ansi?: boolean };
   if (options.ansi === true) {
@@ -38,6 +46,8 @@ function ansiEnabled(program: Command): boolean {
   return process.stdout.isTTY === true;
 }
 
+// `runAnalyse` is injected rather than imported to keep `cli-program.ts` off the analyser's
+// dependency graph; see `.goat-flow/lessons/verification.md` on the original cli.ts ↔ cli-program.ts cycle.
 export function buildProgram(runAnalyse: AnalyseRunner): Command {
   const program = new Command();
   configureRootProgram(program);
@@ -51,6 +61,9 @@ export function buildProgram(runAnalyse: AnalyseRunner): Command {
   return program;
 }
 
+// Adds the Symfony-style global flags (`--silent`, `--quiet`, `--ansi`, `--no-interaction`, `-v`)
+// and replaces the default help formatter so the bare root command lists the catalogue instead of
+// Commander's auto-generated usage block.
 function configureRootProgram(program: Command): void {
   program
     .name("gruff-ts")
@@ -66,6 +79,9 @@ function configureRootProgram(program: Command): void {
     .addHelpCommand("help [command]", "Display help for a command")
     .showHelpAfterError()
     .configureHelp({
+
+      // Custom root help: the bare `gruff-ts` invocation prints the Symfony-style command catalogue;
+      // subcommand help still uses Commander's default formatter via `rootHelpText`.
       formatHelp(command, helper) {
         return rootHelpText(program, command, helper);
       },
@@ -75,6 +91,8 @@ function configureRootProgram(program: Command): void {
     });
 }
 
+// Returns the catalogue view when the user asked for root help; defers to Commander's default
+// formatter for subcommand help. `showGlobalOptions = true` so the global flags surface there too.
 function rootHelpText(program: Command, command: Command, helper: Help): string {
   if (command === program) {
     return renderConsoleList(ansiEnabled(program));
@@ -90,6 +108,8 @@ function rootHelpText(program: Command, command: Command, helper: Help): string 
   return defaultHelp.formatHelp(command, defaultHelp);
 }
 
+// The primary entry point. Sets `process.exitCode` (not `process.exit`) so async writers in the
+// renderer get a chance to flush before Node tears down. Default fail-on is `error`, matching CI.
 function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("analyse")
@@ -113,6 +133,8 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     });
 }
 
+// Emits the static completion script for the requested shell. Does not touch the filesystem or
+// run a scan — callers pipe the output into their shell config themselves.
 function registerCompletionCommand(program: Command): void {
   program
     .command("completion")
@@ -123,6 +145,8 @@ function registerCompletionCommand(program: Command): void {
     });
 }
 
+// Wires the `dashboard` subcommand to `startDashboard`. Defaults bind to loopback (127.0.0.1:8767)
+// because the dashboard accepts a `projectRoot` query parameter and would otherwise be unauthenticated.
 function registerDashboardCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("dashboard")
@@ -135,6 +159,8 @@ function registerDashboardCommand(program: Command, runAnalyse: AnalyseRunner): 
     });
 }
 
+// Mirrors the bare-root help output. Exists so `gruff-ts list` works the way `symfony list` does
+// for users coming from Symfony's console conventions.
 function registerListCommand(program: Command): void {
   program
     .command("list")
@@ -144,6 +170,8 @@ function registerListCommand(program: Command): void {
     });
 }
 
+// Read-only catalogue dump. JSON is the canonical form consumed by docs builds; text is for humans.
+// Anything other than `json` falls back to `text` rather than erroring so old aliases keep working.
 function registerListRulesCommand(program: Command): void {
   program
     .command("list-rules")
@@ -155,6 +183,9 @@ function registerListRulesCommand(program: Command): void {
     });
 }
 
+// `report` differs from `analyse` in two ways: default format is `html`, and baseline suppression is
+// disallowed (`allowBaselineFlag: false`) because reports are meant to capture the raw scan, not a
+// filtered view. Writes the rendered output to `--output` when provided; otherwise to stdout.
 function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("report")
@@ -181,6 +212,8 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     });
 }
 
+// Same analyser run as `analyse` but renders only the pillar/rule/offender digest. Format is locked
+// to `text` because the summary shape is intentionally not part of the JSON report contract.
 function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("summary")
@@ -205,6 +238,10 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     });
 }
 
+// Single source of truth for translating Commander's loose option bag into the strict
+// `AnalysisOptions` shape that drives baseline matching. The fingerprint contract is the invariant:
+// two CLI invocations producing identical AnalysisOptions must produce identical, stable findings —
+// adding new fields here without folding them into that hash is a deterministic-output regression.
 function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, context: NormalizeContext): AnalysisOptions {
   const format = stringChoice(rawOptions.format, ["text", "json", "html", "markdown", "github", "hotspot", "sarif"], "text");
   const failOn = stringChoice(rawOptions.failOn, ["none", "advisory", "warning", "error"], "error");
@@ -229,10 +266,14 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
   };
 }
 
+// Conditional spreads (not `config: undefined`) because `AnalysisOptions` runs under
+// `exactOptionalPropertyTypes` — the absent and `undefined` cases are not interchangeable.
 function configOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "config">> {
   return typeof rawOptions.config === "string" ? { config: rawOptions.config } : {};
 }
 
+// `--diff` without an argument means "working-tree". A boolean `true` arrives when Commander parsed
+// the flag standalone; an explicit string keeps whatever ref the user passed (e.g., `main`).
 function diffOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "diff">> {
   if (typeof rawOptions.diff === "string") {
     return { diff: rawOptions.diff };
@@ -240,10 +281,14 @@ function diffOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisO
   return rawOptions.diff === true ? { diff: "working-tree" } : {};
 }
 
+// Conditional spread keeps `historyFile` absent rather than `undefined` under exactOptionalPropertyTypes.
 function historyFileOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "historyFile">> {
   return typeof rawOptions.historyFile === "string" ? { historyFile: rawOptions.historyFile } : {};
 }
 
+// `--baseline` with no value implies the conventional default file (`gruff-baseline.json`); commands
+// that disallow baseline input (e.g., `report`) short-circuit so the option is never set. The fingerprint
+// contract requires that two scans with the same baseline file produce identical suppression behaviour.
 function baselineOption(baselineValue: unknown, context: NormalizeContext): Partial<Pick<AnalysisOptions, "baseline">> {
   if (!context.allowBaselineFlag) {
     return {};
@@ -254,6 +299,8 @@ function baselineOption(baselineValue: unknown, context: NormalizeContext): Part
   return baselineValue === true ? { baseline: DEFAULT_BASELINE } : {};
 }
 
+// Mirrors `--baseline`: a bare `--generate-baseline` writes to the default path; a string value
+// overrides it. Absent (not present) and absent-because-undefined are distinct here.
 function generateBaselineOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "generateBaseline">> {
   if (typeof rawOptions.generateBaseline === "string") {
     return { generateBaseline: rawOptions.generateBaseline };

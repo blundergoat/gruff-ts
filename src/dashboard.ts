@@ -5,17 +5,25 @@ import type { AnalysisOptions, AnalysisReport } from "./types.ts";
 
 type DashboardAnalyse = (options: AnalysisOptions) => AnalysisReport;
 
+// Host/port/projectRoot frozen at server start. The dashboard binds to a loopback host only —
+// `startDashboard` callers must not relax this without auditing for unauthenticated remote scans.
 interface DashboardContext {
   host: string;
   port: number;
   projectRoot: string;
 }
 
+// Per-request projectRoot + scanPath. Sourced from `?projectRoot` and `?path` query parameters and
+// fed straight to `chdir`/`analyse`, so untrusted values would let a caller pivot the analyser to
+// arbitrary directories — only acceptable because the server is loopback-only.
 interface DashboardRouteInput {
   root: string;
   scanPath: string;
 }
 
+// Starts a loopback HTTP server. `analyse` is injected (not imported) to avoid a circular import
+// back into `cli.ts`; see `.goat-flow/lessons/verification.md` on the dashboard import cycle.
+// Side effect: opens a listening socket and writes the URL to stdout unless `outputEnabled` is false.
 function startDashboard(host: string, port: number, projectRoot: string, analyse: DashboardAnalyse, outputEnabled = true): void {
   const context: DashboardContext = { host, port, projectRoot };
   const server = createServer((request, response) => handleDashboardRequest(context, analyse, request, response));
@@ -26,6 +34,9 @@ function startDashboard(host: string, port: number, projectRoot: string, analyse
   });
 }
 
+// Four endpoints: `/health` (uptime probes), `/scan` (runs the analyser and renders HTML),
+// `/` (control page), anything else → 404. `/health` is the only response that survives proxies
+// uncached — the scan and home responses set `no-store` so the dashboard always sees fresh output.
 function handleDashboardRequest(context: DashboardContext, analyse: DashboardAnalyse, request: IncomingMessage, response: ServerResponse): void {
   const url = new URL(request.url ?? "/", `http://${context.host}:${context.port}`);
   if (url.pathname === "/health") {
@@ -44,6 +55,8 @@ function handleDashboardRequest(context: DashboardContext, analyse: DashboardAna
   writeHtmlResponse(response, 200, dashboardHomeHtml(input.root, input.scanPath));
 }
 
+// Reads `?projectRoot` and `?path`, falling back to the server's launch context. Both values flow
+// straight into `chdir` and `analyse`; see DashboardRouteInput for the loopback trust assumption.
 function dashboardRouteInput(url: URL, projectRoot: string): DashboardRouteInput {
   return {
     root: url.searchParams.get("projectRoot") ?? projectRoot,
@@ -51,6 +64,9 @@ function dashboardRouteInput(url: URL, projectRoot: string): DashboardRouteInput
   };
 }
 
+// chdirs into the caller-requested project root, runs `analyse`, and always restores the previous
+// cwd in `finally` — leaking the chdir would corrupt subsequent requests. The loopback server must
+// keep serving on analyser failure, so the catch reports the error as a rendered fallback page.
 function renderDashboardScan(response: ServerResponse, input: DashboardRouteInput, analyse: DashboardAnalyse): void {
   const previous = cwd();
   try {
@@ -71,11 +87,15 @@ function renderDashboardScan(response: ServerResponse, input: DashboardRouteInpu
   }
 }
 
+// `no-store` is non-negotiable for dashboard responses: stale findings cached by a proxy would
+// mislead a maintainer reading the report. Writes the HTTP response body and closes the connection.
 function writeHtmlResponse(response: ServerResponse, statusCode: number, body: string): void {
   response.writeHead(statusCode, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
   response.end(body);
 }
 
+// `/health` opts in to `no-store` so uptime probes never read a cached "ok"; 404 responses do not,
+// because their content is constant and proxies can safely keep them. Writes the response and closes it.
 function writeTextResponse(response: ServerResponse, statusCode: number, body: string, noStore: boolean): void {
   response.writeHead(statusCode, { "content-type": "text/plain; charset=utf-8", ...(noStore ? { "cache-control": "no-store" } : {}) });
   response.end(body);

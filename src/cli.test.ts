@@ -109,6 +109,7 @@ const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "mis
 type RuleQualityCategory = (typeof RULE_QUALITY_FIXTURE_CATEGORIES)[number];
 type RuleQualityDescriptor = ReturnType<typeof ruleDescriptors>[number];
 
+// Pairs valid, invalid, and noisy fixtures for one rule-doctrine assertion.
 interface RuleQualityDoctrineCase {
   ruleId: string;
   signalSource: string;
@@ -765,6 +766,8 @@ const value = 1;
 
 console.log(process, walk, strName, enabled, value);
 `);
+
+  // Collects finding symbols for one rule in the naming fixture assertions. Keeps rule output deterministic for snapshots.
   const byRule = (id: string) => report.findings.filter((finding) => finding.ruleId === id).map((finding) => finding.symbol);
   assert.deepEqual(byRule("naming.generic-function"), ["process"]);
   assert.deepEqual(byRule("naming.generic-function").includes("walk"), false);
@@ -1624,6 +1627,8 @@ test("scanner guardrail fixtures keep live finding fingerprints stable", () => {
 }
 `);
   const ruleIds = new Set(["security.eval-call", "security.string-timer"]);
+
+  // Projects reports to the fingerprint fields used by scanner guardrail assertions.
   const identity = (report: AnalysisReport) =>
     report.findings
       .filter((finding) => ruleIds.has(finding.ruleId))
@@ -1977,7 +1982,7 @@ function documentationContextExpectations(): Array<[string, string, boolean]> {
   ];
 }
 
-// Fixture covers the source-literal detector matrix without private helper access.
+// Fixture covers source-literal detection and fingerprint stability without private helper access.
 test("fixture purpose detector matrix", () => {
   const source = [
     "const report = analyseFixture(`",
@@ -2026,7 +2031,7 @@ test("fixture purpose detector matrix", () => {
   assert.equal(changedInline?.fingerprint, originalInline?.fingerprint);
 });
 
-// Fixture covers setup-block detection and the nearby purpose-comment escape hatch.
+// Fixture covers setup-block detection and stable fixture-purpose fingerprints.
 test("fixture purpose flags large fixture-heavy test setup without flagging documented setup", () => {
   const source = [
     "test(\"builds noisy fixture setup\", () => {",
@@ -2464,7 +2469,7 @@ test("baseline round trip suppresses old and new findings by identity tuple", ()
   }
 });
 
-/** Builds a project that exercises baseline identity across current rule families. */
+/** Writes a temporary project that exercises baseline identity across current rule families. */
 function writeBaselineRoundTripFixture(projectDir: string): void {
   writeFileSync(
     join(projectDir, "bad.ts"),
@@ -2530,7 +2535,7 @@ export function fromB(): string {
   });
 }
 
-/** Verifies generated, suppressed, and mismatched baseline entries. */
+/** Verifies generated, suppressed, and mismatched baseline entries by stable fingerprint identity. */
 function assertBaselineRoundTrip(baselineDir: string): number {
   const baseOptions = baselineRoundTripOptions();
   const report = analyse(baseOptions);
@@ -2563,7 +2568,7 @@ function baselineRoundTripOptions() {
   };
 }
 
-/** Proves the baseline fixture still covers each representative rule family. */
+/** Proves the baseline fixture still covers each representative rule family in the stable contract. */
 function assertBaselineRoundTripRuleIds(report: AnalysisReport): void {
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   for (const ruleId of [
@@ -2600,7 +2605,7 @@ function readBaselineRoundTripFile(path: string): BaselineRoundTripFile {
   return JSON.parse(readFileSync(path, "utf8")) as BaselineRoundTripFile;
 }
 
-/** Narrows the first baseline entry after checking required identity fields. */
+/** Narrows the first baseline entry after checking stable identity fields. */
 function assertBaselineEntryMetadata(schemaVersion: string | undefined, target: BaselineRoundTripEntry | undefined): asserts target is BaselineRoundTripEntry {
   assert.equal(schemaVersion, "gruff.baseline.v1");
   assert.ok(target);
@@ -3230,7 +3235,7 @@ test("list-rules CLI prints text and deterministic json", () => {
   assert.equal(assertRuleListJsonOutput(), true);
 });
 
-/** Verifies the human-readable rule catalogue includes representative metadata. */
+/** Spawns the rule catalogue command and verifies representative metadata. */
 function assertRuleListTextOutput(): boolean {
   const text = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
   assert.match(text, /gruff-ts 0\.1\.0 rules \(\d+\)/);
@@ -3622,6 +3627,7 @@ test("dashboard scan returns report shell with escaped dashboard context", async
   }
 });
 
+// Configures temporary project scans used by tests.
 interface AnalyseProjectOptions {
   config?: Record<string, unknown>;
   configPath?: string;
@@ -3631,10 +3637,12 @@ interface AnalyseProjectOptions {
   paths?: string[];
 }
 
+// Adds a fixture filename override for single-source test scans.
 interface AnalyseFixtureOptions extends AnalyseProjectOptions {
   fileName?: string;
 }
 
+// Runs one source string through the temporary-project analysis helper.
 function analyseFixture(source: string, options: AnalyseFixtureOptions = {}) {
   return analyseProject(
     { [options.fileName ?? "bad.ts"]: source },
@@ -3646,6 +3654,7 @@ function analyseFixture(source: string, options: AnalyseFixtureOptions = {}) {
   );
 }
 
+// Creates a temporary project, runs analysis inside it, and removes the fixture tree. Performs the required filesystem or process side effect.
 function analyseProject(files: Record<string, string>, options: AnalyseProjectOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-"));
   const previous = cwd();
@@ -3670,7 +3679,7 @@ function setupAnalyseProjectDirectory(dir: string, files: Record<string, string>
   }
 }
 
-/** Runs analyse after the fixture helper has switched into the temp project root. */
+/** Runs analyse after the fixture helper has switched into the temp project root, returning a stable report. */
 function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions): AnalysisReport {
   return analyse({
     paths: options.paths ?? ["."],
@@ -3683,16 +3692,19 @@ function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions): Analy
   });
 }
 
+// Serializes a test YAML config object from the root indentation level.
 function yamlConfigFixture(value: Record<string, unknown>): string {
   return yamlConfigObject(value, 0);
 }
 
+// Serializes nested config objects using the fixture YAML subset.
 function yamlConfigObject(value: Record<string, unknown>, indent: number): string {
   return Object.entries(value)
     .map(([key, nested]) => yamlConfigEntry(key, nested, indent))
     .join("");
 }
 
+// Serializes one YAML key with either nested indentation or a scalar value.
 function yamlConfigEntry(key: string, value: unknown, indent: number): string {
   const prefix = " ".repeat(indent);
   if (isYamlConfigObject(value)) {
@@ -3701,6 +3713,7 @@ function yamlConfigEntry(key: string, value: unknown, indent: number): string {
   return `${prefix}${key}: ${yamlConfigScalar(value)}\n`;
 }
 
+// Converts fixture config scalar values into the YAML text used by tests.
 function yamlConfigScalar(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(yamlConfigScalar).join(", ")}]`;
@@ -3714,10 +3727,12 @@ function yamlConfigScalar(value: unknown): string {
   return "{}";
 }
 
+// Narrows YAML fixture values to plain objects before recursive serialization.
 function isYamlConfigObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// Writes temporary fixture files and creates their parent directories.
 function writeFixtureFiles(dir: string, files: Record<string, string>): void {
   for (const [fileName, source] of Object.entries(files)) {
     const path = join(dir, fileName);
@@ -3726,14 +3741,17 @@ function writeFixtureFiles(dir: string, files: Record<string, string>): void {
   }
 }
 
+// Builds enough simple declarations to cross the fixture-purpose line threshold.
 function largeFixtureSourceLines(prefix: string): string[] {
   return Array.from({ length: 13 }, (_, index) => `const ${prefix}${index} = ${index};`);
 }
 
+// Collects eval finding files so security assertions stay tied to stable analyzer output.
 function evalFindingFiles(report: AnalysisReport): Set<string> {
   return new Set(report.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.filePath));
 }
 
+// Reads `git --version`; fallback false keeps gitignore parity tests optional.
 function gitAvailable(): boolean {
   try {
     execFileSync("git", ["--version"], { stdio: "ignore" });
@@ -3743,6 +3761,7 @@ function gitAvailable(): boolean {
   }
 }
 
+// Reads `git check-ignore` and throws only for unexpected git failures.
 function isGitIgnoredByGit(projectRoot: string, path: string): boolean {
   try {
     execFileSync("git", ["check-ignore", "--quiet", path], { cwd: projectRoot });
@@ -3756,6 +3775,7 @@ function isGitIgnoredByGit(projectRoot: string, path: string): boolean {
   }
 }
 
+// Starts a dashboard server for one test and always closes it afterward.
 async function withDashboard(projectRoot: string, run: (baseUrl: string) => Promise<void>): Promise<void> {
   const port = await freePort();
   const child = spawn("./bin/gruff-ts", ["dashboard", "--host", "127.0.0.1", "--port", String(port), "--project-root", projectRoot], {
@@ -3788,6 +3808,7 @@ async function withDashboard(projectRoot: string, run: (baseUrl: string) => Prom
   }
 }
 
+// Asks the OS for an unused loopback port for dashboard tests. Starts loopback server state for the dashboard.
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createNetServer();
@@ -3805,6 +3826,7 @@ async function freePort(): Promise<number> {
   });
 }
 
+// Polls a dashboard URL until it responds or reports the captured server output.
 async function waitForUrl(url: string, output: string): Promise<void> {
   const deadline = Date.now() + 5000;
   const processOutput = output;
@@ -3824,6 +3846,7 @@ async function waitForUrl(url: string, output: string): Promise<void> {
   throw new Error(`timed out waiting for ${url}: ${String(lastError)}\n${processOutput}`);
 }
 
+// Fetches response text and fails the test with status details on non-OK responses.
 async function fetchText(url: string): Promise<string> {
   const response = await fetch(url);
   const text = await response.text();
@@ -3831,6 +3854,7 @@ async function fetchText(url: string): Promise<string> {
   return text;
 }
 
+// Writes a broad temporary catalogue fixture because one scan must cover many rule families.
 function ruleCatalogueCoverageRuleIds(): Set<string> {
   const report = analyseProject(
     {
@@ -4001,6 +4025,7 @@ ${largeFixtureSourceLines("catalogueFixtureValue").join("\n")}
 ${"`"});
 void fixturePurposeReport;
 
+// Provides a named fixture callable used by render-related rule coverage.
 function renderCatalogue(): string {
   return "catalogue";
 }
@@ -4062,18 +4087,21 @@ ${"test"}("setup bloat and control flow", () => {
 `,
       "src/app/feature/controller.ts": `import { sharedHelper } from "../../../shared/helper";
 
+// Exercises a deep relative import from a controller fixture.
 export function renderController(): string {
   return sharedHelper();
 }
 `,
       "src/cycle/a.ts": `import { fromB } from "./b";
 
+// Creates one side of the circular-import fixture.
 export function fromA(): string {
   return fromB();
 }
 `,
       "src/cycle/b.ts": `import { fromA } from "./a";
 
+// Creates the other side of the circular-import fixture.
 export function fromB(): string {
   return fromA();
 }

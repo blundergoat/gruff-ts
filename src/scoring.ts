@@ -1,6 +1,9 @@
 import { grade } from "./report-renderers.ts";
 import type { AnalysisReport, FailThreshold, Finding, Pillar, Severity } from "./types.ts";
 
+// Builds the per-pillar and per-file score breakdown that ships in `gruff.analysis.v1`. The composite
+// score is the mean of pillar scores so adding a pillar shifts the headline number, and `topOffenders`
+// is intentionally truncated to 10 — both shapes are part of the public report contract.
 function scoreReport(findings: Finding[]): AnalysisReport["score"] {
   const byPillar = new Map<Pillar, Finding[]>();
   const byFile = new Map<string, Finding[]>();
@@ -24,6 +27,8 @@ function scoreReport(findings: Finding[]): AnalysisReport["score"] {
   return { composite, grade: grade(composite), pillars, topOffenders };
 }
 
+// Severity tallies emitted in the report summary. The four-key shape (advisory/warning/error/total)
+// is part of the `gruff.analysis.v1` schema and consumers rely on `total` matching the array length.
 function summarize(findings: Finding[]) {
   return {
     advisory: findings.filter((finding) => finding.severity === "advisory").length,
@@ -33,6 +38,9 @@ function summarize(findings: Finding[]) {
   };
 }
 
+// Process exit contract: 2 when diagnostics were emitted (parse/IO failures the user must know about),
+// 1 when any finding crosses `failOn`, 0 otherwise. CI scripts and the dashboard runner depend on
+// this three-value invariant; reshuffling the precedence is a stable-contract regression.
 function exitFor(report: AnalysisReport, failOn: FailThreshold): number {
   if (report.diagnostics.length > 0) {
     return 2;
@@ -40,6 +48,8 @@ function exitFor(report: AnalysisReport, failOn: FailThreshold): number {
   return report.findings.some((finding) => thresholdTriggered(failOn, finding.severity)) ? 1 : 0;
 }
 
+// Severity ladder: "none" never triggers, "advisory" triggers on anything, "warning" needs at least
+// warning, "error" needs error. Order is intentional — `failOn=warning` must still trigger on errors.
 function thresholdTriggered(thresholdValue: FailThreshold, severity: Severity): boolean {
   if (thresholdValue === "none") {
     return false;
@@ -53,6 +63,9 @@ function thresholdTriggered(thresholdValue: FailThreshold, severity: Severity): 
   return severity === "error";
 }
 
+// Penalty weights tuned so a handful of errors visibly drag a pillar below a passing grade while
+// a long tail of advisories cannot single-handedly fail a healthy pillar. Adjusting these shifts
+// every historical score and the grade letters in `scores.jsonl`.
 function severityPenalty(severity: Severity): number {
   return severity === "error" ? 8 : severity === "warning" ? 4 : 1.5;
 }
