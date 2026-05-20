@@ -1,3 +1,4 @@
+// Commander CLI shell wiring that keeps option normalization and stdout behavior outside the analyzer.
 import { Command, Help } from "commander";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -14,7 +15,7 @@ type AnalyseRunner = (options: AnalysisOptions) => AnalysisReport;
 // The `report` command intentionally rejects `--baseline` because its output is meant to reflect
 // raw findings; this flag lets `normalizeOptions` enforce that without per-command branching.
 interface NormalizeContext {
-  allowBaselineFlag: boolean;
+  shouldAllowBaselineFlag: boolean;
 }
 
 // Honours `--silent`/`--quiet` before writing to stdout. Always appends a trailing newline so piped
@@ -126,7 +127,7 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action((paths: string[], rawOptions: Record<string, unknown>) => {
-      const options = normalizeOptions(paths, rawOptions, { allowBaselineFlag: true });
+      const options = normalizeOptions(paths, rawOptions, { shouldAllowBaselineFlag: true });
       const report = runAnalyse(options);
       writeCommandOutput(program, renderReport(report, options.format));
       process.exitCode = exitFor(report, options.failOn);
@@ -159,8 +160,8 @@ function registerDashboardCommand(program: Command, runAnalyse: AnalyseRunner): 
     });
 }
 
-// Mirrors the bare-root help output. Exists so `gruff-ts list` works the way `symfony list` does
-// for users coming from Symfony's console conventions.
+// Mirrors the bare-root help output. Exists so users coming from Symfony's console conventions
+// can run `gruff-ts list` the way they expect.
 function registerListCommand(program: Command): void {
   program
     .command("list")
@@ -184,7 +185,7 @@ function registerListRulesCommand(program: Command): void {
 }
 
 // `report` differs from `analyse` in two ways: default format is `html`, and baseline suppression is
-// disallowed (`allowBaselineFlag: false`) because reports are meant to capture the raw scan, not a
+// disallowed (`shouldAllowBaselineFlag: false`) because reports are meant to capture the raw scan, not a
 // filtered view. Writes the rendered output to `--output` when provided; otherwise to stdout.
 function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
@@ -200,7 +201,7 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action((paths: string[], rawOptions: Record<string, unknown>) => {
       const format = rawOptions.format === "json" ? "json" : "html";
-      const options = normalizeOptions(paths, { ...rawOptions, format }, { allowBaselineFlag: false });
+      const options = normalizeOptions(paths, { ...rawOptions, format }, { shouldAllowBaselineFlag: false });
       const report = runAnalyse(options);
       const rendered = renderReport(report, format);
       if (typeof rawOptions.output === "string") {
@@ -231,7 +232,7 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action((paths: string[], rawOptions: Record<string, unknown>) => {
-      const options = normalizeOptions(paths, { ...rawOptions, format: "text" }, { allowBaselineFlag: true });
+      const options = normalizeOptions(paths, { ...rawOptions, format: "text" }, { shouldAllowBaselineFlag: true });
       const report = runAnalyse(options);
       writeCommandOutput(program, renderSummary(report));
       process.exitCode = exitFor(report, options.failOn);
@@ -290,7 +291,7 @@ function historyFileOption(rawOptions: Record<string, unknown>): Partial<Pick<An
 // that disallow baseline input (e.g., `report`) short-circuit so the option is never set. The fingerprint
 // contract requires that two scans with the same baseline file produce identical suppression behaviour.
 function baselineOption(baselineValue: unknown, context: NormalizeContext): Partial<Pick<AnalysisOptions, "baseline">> {
-  if (!context.allowBaselineFlag) {
+  if (!context.shouldAllowBaselineFlag) {
     return {};
   }
   if (typeof baselineValue === "string") {

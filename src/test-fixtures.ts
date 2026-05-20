@@ -1,3 +1,4 @@
+// Shared test harness utilities and synthetic secret/source fixtures for isolated project analyses.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -64,7 +65,12 @@ export function analyseProject(files: Record<string, string>, options: AnalysePr
   }
 }
 
-/** Writes fixture files, executability bits, and optional config for project tests. */
+/**
+ * Writes fixture files, executability bits, and optional config for project tests.
+ * @param dir Temporary project root to populate.
+ * @param files Project-relative file paths and source text to write.
+ * @param options Fixture config, executability, and path options.
+ */
 export function setupAnalyseProjectDirectory(dir: string, files: Record<string, string>, options: AnalyseProjectOptions): void {
   writeFixtureFiles(dir, files);
   for (const fileName of options.executableFiles ?? []) {
@@ -75,7 +81,11 @@ export function setupAnalyseProjectDirectory(dir: string, files: Record<string, 
   }
 }
 
-/** Runs analyse after the fixture helper has switched into the temp project root, returning a stable report. */
+/**
+ * Runs analyse after the fixture helper has switched into the temp project root, returning a stable report.
+ * @param options Normalized fixture scan options.
+ * @returns The analysis report produced from the current temporary project.
+ */
 export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions): AnalysisReport {
   return analyse({
     paths: options.paths ?? ["."],
@@ -104,9 +114,9 @@ export function yamlConfigObject(configObject: Record<string, unknown>, indent: 
 export function yamlConfigEntry(key: string, nestedValue: unknown, indent: number): string {
   const prefix = " ".repeat(indent);
   if (isYamlConfigObject(nestedValue)) {
-    return `${prefix}${key}:\n${yamlConfigObject(nestedValue, indent + 2)}`;
+    return prefix + key + ":\n" + yamlConfigObject(nestedValue, indent + 2);
   }
-  return `${prefix}${key}: ${yamlConfigScalar(nestedValue)}\n`;
+  return prefix + key + ": " + yamlConfigScalar(nestedValue) + "\n";
 }
 
 // Converts fixture config scalar values into the YAML text used by tests.
@@ -139,7 +149,7 @@ export function writeFixtureFiles(dir: string, files: Record<string, string>): v
 
 // Builds enough simple declarations to cross the fixture-purpose line threshold.
 export function largeFixtureSourceLines(prefix: string): string[] {
-  return Array.from({ length: 13 }, (_, index) => `const ${prefix}${index} = ${index};`);
+  return Array.from({ length: 13 }, (_, index) => "const " + prefix + index + " = " + index + ";");
 }
 
 // Collects eval finding files so security assertions stay tied to stable analyzer output.

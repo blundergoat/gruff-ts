@@ -1,3 +1,4 @@
+// Baseline persistence helpers for stable suppression files and score history side effects.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { scoreReport } from "./scoring.ts";

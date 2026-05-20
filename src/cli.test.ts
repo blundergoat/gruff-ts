@@ -4,10 +4,10 @@
 // cumulative-fixture.test.ts, rule-catalogue.test.ts).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chdir, cwd } from "node:process";
+import { cwd } from "node:process";
 import test from "node:test";
 import { renderReport } from "./cli.ts";
 import type { AnalysisReport } from "./cli.ts";
@@ -25,6 +25,7 @@ import {
 } from "./test-fixtures.ts";
 
 test("analysis finds core TypeScript smells", () => {
+  // Fixture covers core scanner findings across class, eval, parameter-count, and no-assertions paths.
   const report = analyseFixture(`export class Bad {
   public name = "demo";
   public process(a: boolean, b: string[], c: string, d: string, e: string, f: string, g: string, h: string): void {
@@ -47,6 +48,7 @@ test("sleeps without assertion", async () => {
 });
 
 test("existing core fixture fingerprints stay stable", () => {
+  // Fixture covers stable fingerprint anchors for the original core scanner findings.
   const report = analyseFixture(`export class Bad {
   public name = "demo";
   public process(a: boolean, b: string[], c: string, d: string, e: string, f: string, g: string, h: string): void {
@@ -70,8 +72,7 @@ test("sleeps without assertion", async () => {
 
 test("analysis finds first-slice portable TypeScript rules", () => {
   const secret = HIGH_ENTROPY_FIXTURE_VALUE;
-  // Portable rubric map: port-now rules use source-text, line, function-block,
-  // test-block, and sensitive-data seams with standalone TypeScript fixtures.
+  // Fixture covers portable source-text, line, function-block, test-block, and sensitive-data seams.
   const report = analyseFixture(`import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 
@@ -117,7 +118,7 @@ function testBuildsValue(): void {
   assert.equal(renderReport(report, "json").includes(secret), false);
 });
 
-test("core expansion clean fixture stays finding-free", () => {
+test("core expansion clean fixture stays finding-free", () => { // Fixture covers clean-path expansion rules so false positives stay visible.
   const report = analyseFixture(
     `/** UserProfile stores profile state. */
 export class UserProfile {
@@ -186,7 +187,7 @@ function normalizeStatus(status: string): string {
   assert.deepEqual(unexpected, []);
 });
 
-test("core expansion finds complexity and waste rules", () => {
+test("core expansion finds complexity and waste rules", () => { // Fixture covers noisy complexity and waste signals with threshold override metadata.
   const report = analyseFixture(
     `import { readFileSync, writeFileSync } from "node:fs";
 
@@ -363,6 +364,7 @@ test("directory discovery respects root and nested gitignore rules", () => {
   );
 });
 
+// Fixture covers gitignore parity against git check-ignore for ignored and tracked path cases.
 test("gitignore fixture expectations match git check-ignore when git is available", () => {
   if (!gitAvailable()) {
     return;
@@ -474,7 +476,7 @@ rules:
   assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
 });
 
-test("core expansion finds naming and documentation rules", () => {
+test("core expansion finds naming and documentation rules", () => { // Fixture covers naming and documentation rule emissions in one source sample.
   const report = analyseFixture(
     `/** CustomerProfile stores customer data. */
 export class CustomerRecord {
@@ -515,6 +517,7 @@ export function updateName(name: string): string {
 });
 
 test("core expansion finds modernisation rules", () => {
+  // Fixture covers modernization detections for readonly, optional chaining, and nullish coalescing.
   const report = analyseFixture(`class AccountReader {
   public displayName: string;
 
@@ -720,6 +723,7 @@ function parseYamlScalar(value: string): string {
 });
 
 test("function parser handles multiline expression-bodied arrows without empty-body noise", () => {
+  // Fixture covers multiline arrow parsing without treating expression bodies as empty blocks.
   const report = analyseFixture(`interface AnalysisReport {
   findings: Array<{ ruleId: string }>;
 }
@@ -743,4 +747,3 @@ function unusedParam(value: string): void {
   assert.equal(report.findings.some((finding) => finding.ruleId === "waste.empty-function" && finding.symbol === "emptyWork"), true);
   assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unused-parameter" && finding.symbol === "unusedParam"), true);
 });
-

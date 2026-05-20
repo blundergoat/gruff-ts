@@ -1,3 +1,4 @@
+// Regression tests for baseline identity, history output, project graph rules, and discovery behavior.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +16,7 @@ import {
 } from "./test-fixtures.ts";
 
 test("expanded scanner keeps pre-expansion fingerprints stable", () => {
+  // Fixture covers legacy fingerprint anchors across representative rule families.
   const report = analyseFixture(`export class Bad {
   public name = "demo";
   public process(a: boolean, b: string[], c: string, d: string, e: string, f: string, g: string, h: string): void {
@@ -242,6 +244,7 @@ function unsafe(value: string): void {
   );
 });
 
+// Fixture covers deterministic project graph findings for deep imports and cycles.
 test("project architecture index finds deterministic cross-file findings", () => {
   const files = {
     "src/app/feature/controller.ts": `import { sharedValue } from "../../../shared/value";

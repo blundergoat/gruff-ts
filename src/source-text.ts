@@ -50,11 +50,11 @@ interface DelimiterCounts {
 // character — required because `/` may start a regex or a division depending on what came before.
 interface DelimiterScanState {
   quote: string | undefined;
-  escaped: boolean;
-  blockComment: boolean;
-  regex: boolean;
-  regexCharClass: boolean;
-  regexEscaped: boolean;
+  isEscaped: boolean;
+  isInBlockComment: boolean;
+  isInRegex: boolean;
+  isInRegexCharClass: boolean;
+  isRegexEscaped: boolean;
   previousCode: string;
 }
 
@@ -65,10 +65,10 @@ interface DelimiterScanContext {
 }
 
 // Per-character scanner result. `skip` consumes the next N characters (e.g. the `/` of `*/`);
-// `stopLine` bails out of the rest of the line when a `//` line comment starts.
+// `shouldStopLine` bails out of the rest of the line when a `//` line comment starts.
 interface ScanStep {
   skip: number;
-  stopLine: boolean;
+  shouldStopLine: boolean;
 }
 
 // All flags begin false / quote unset. `previousCode` starts empty so the first `/` in a file
@@ -76,22 +76,22 @@ interface ScanStep {
 function defaultDelimiterScanState(): DelimiterScanState {
   return {
     quote: undefined,
-    escaped: false,
-    blockComment: false,
-    regex: false,
-    regexCharClass: false,
-    regexEscaped: false,
+    isEscaped: false,
+    isInBlockComment: false,
+    isInRegex: false,
+    isInRegexCharClass: false,
+    isRegexEscaped: false,
     previousCode: "",
   };
 }
 
-// Walks one line, mutating `ctx.counts` and `ctx.scan` in place. The `stopLine` step is the only
+// Walks one line, mutating `ctx.counts` and `ctx.scan` in place. The `shouldStopLine` step is the only
 // way out before line end; comment, string, and regex bodies merely advance offset without counting.
 function scanDelimiterLine(line: string, ctx: DelimiterScanContext): void {
   for (let offset = 0; offset < line.length; offset += 1) {
     const step = scanDelimiterCharacter(line, offset, ctx);
     offset += step.skip;
-    if (step.stopLine) {
+    if (step.shouldStopLine) {
       break;
     }
   }
@@ -102,14 +102,14 @@ function scanDelimiterLine(line: string, ctx: DelimiterScanContext): void {
 function scanDelimiterCharacter(line: string, offset: number, ctx: DelimiterScanContext): ScanStep {
   const character = line[offset] ?? "";
   const next = line[offset + 1] ?? "";
-  if (ctx.scan.blockComment) {
+  if (ctx.scan.isInBlockComment) {
     return scanBlockCommentDelimiter(character, next, ctx.scan);
   }
   if (ctx.scan.quote) {
     scanQuotedDelimiter(character, ctx.scan);
     return continueScan();
   }
-  if (ctx.scan.regex) {
+  if (ctx.scan.isInRegex) {
     scanRegexDelimiter(character, ctx.scan);
     return continueScan();
   }
@@ -120,37 +120,37 @@ function scanDelimiterCharacter(line: string, offset: number, ctx: DelimiterScan
 // step resumes in code mode. Block-comment contents do not affect delimiter counts.
 function scanBlockCommentDelimiter(character: string, next: string, scan: DelimiterScanState): ScanStep {
   if (character === "*" && next === "/") {
-    scan.blockComment = false;
+    scan.isInBlockComment = false;
     return skipNextCharacter();
   }
   return continueScan();
 }
 
-// Inside a string or template literal. `\` arms `escaped` so the next character (including a
+// Inside a string or template literal. `\` arms `isEscaped` so the next character (including a
 // closing quote) is treated as literal text. Necessary to handle `"\\\""` and similar correctly.
 function scanQuotedDelimiter(character: string, scan: DelimiterScanState): void {
-  if (scan.escaped) {
-    scan.escaped = false;
+  if (scan.isEscaped) {
+    scan.isEscaped = false;
   } else if (character === "\\") {
-    scan.escaped = true;
+    scan.isEscaped = true;
   } else if (character === scan.quote) {
     scan.quote = undefined;
   }
 }
 
 // Inside `/regex/`. `[...]` character classes can legally contain `/`, so the closing slash
-// is only honoured when `regexCharClass` is false; otherwise `/[/]/` would terminate early.
+// is only honoured when `isInRegexCharClass` is false; otherwise `/[/]/` would terminate early.
 function scanRegexDelimiter(character: string, scan: DelimiterScanState): void {
-  if (scan.regexEscaped) {
-    scan.regexEscaped = false;
+  if (scan.isRegexEscaped) {
+    scan.isRegexEscaped = false;
   } else if (character === "\\") {
-    scan.regexEscaped = true;
+    scan.isRegexEscaped = true;
   } else if (character === "[") {
-    scan.regexCharClass = true;
+    scan.isInRegexCharClass = true;
   } else if (character === "]") {
-    scan.regexCharClass = false;
-  } else if (character === "/" && !scan.regexCharClass) {
-    scan.regex = false;
+    scan.isInRegexCharClass = false;
+  } else if (character === "/" && !scan.isInRegexCharClass) {
+    scan.isInRegex = false;
     scan.previousCode = "x";
   }
 }
@@ -178,7 +178,7 @@ function scanLineCommentStart(character: string, next: string): ScanStep | undef
 // `/*` flips the scanner into block-comment mode; `skip: 1` swallows the `*` so it isn't re-evaluated.
 function scanBlockCommentStart(character: string, next: string, scan: DelimiterScanState): ScanStep | undefined {
   if (character === "/" && next === "*") {
-    scan.blockComment = true;
+    scan.isInBlockComment = true;
     return skipNextCharacter();
   }
   return undefined;
@@ -198,9 +198,9 @@ function scanQuoteStart(character: string, scan: DelimiterScanState): ScanStep |
 // regex mode and absorb everything to the next slash.
 function scanRegexStart(line: string, offset: number, character: string, scan: DelimiterScanState): ScanStep | undefined {
   if (character === "/" && isRegexLiteralStart(scan.previousCode, line.slice(0, offset))) {
-    scan.regex = true;
-    scan.regexCharClass = false;
-    scan.regexEscaped = false;
+    scan.isInRegex = true;
+    scan.isInRegexCharClass = false;
+    scan.isRegexEscaped = false;
     return continueScan();
   }
   return undefined;
@@ -482,7 +482,7 @@ function codeLineForMatching(line: string): string {
   for (let index = 0; index < line.length; index += 1) {
     const step = codeLineCharacter(line, index, state);
     result += step.text;
-    if (step.stopLine) {
+    if (step.shouldStopLine) {
       break;
     }
   }
@@ -495,11 +495,11 @@ interface CodeLineState {
   isEscaped: boolean;
 }
 
-// One step yields the kept text (empty when masked, original when code) plus a `stopLine` flag set
+// One step yields the kept text (empty when masked, original when code) plus a `shouldStopLine` flag set
 // once a line comment opens.
 interface CodeLineStep {
   text: string;
-  stopLine: boolean;
+  shouldStopLine: boolean;
 }
 
 // Quotes are emitted (so callers can see the literal boundary) but their bodies are dropped, while
@@ -508,16 +508,16 @@ function codeLineCharacter(line: string, index: number, state: CodeLineState): C
   const character = line[index] ?? "";
   const next = line[index + 1] ?? "";
   if (!state.quote && character === "/" && next === "/") {
-    return { text: "", stopLine: true };
+    return { text: "", shouldStopLine: true };
   }
   if (state.quote) {
     return quotedCodeLineCharacter(character, state);
   }
   if (isQuote(character)) {
     state.quote = character;
-    return { text: character, stopLine: false };
+    return { text: character, shouldStopLine: false };
   }
-  return { text: character, stopLine: false };
+  return { text: character, shouldStopLine: false };
 }
 
 // Body characters of a string are dropped so `"// not a comment"` doesn't truncate the line, but
@@ -525,32 +525,32 @@ function codeLineCharacter(line: string, index: number, state: CodeLineState): C
 function quotedCodeLineCharacter(character: string, state: CodeLineState): CodeLineStep {
   if (state.isEscaped) {
     state.isEscaped = false;
-    return { text: "", stopLine: false };
+    return { text: "", shouldStopLine: false };
   }
   if (character === "\\") {
     state.isEscaped = true;
-    return { text: "", stopLine: false };
+    return { text: "", shouldStopLine: false };
   }
   if (character === state.quote) {
     state.quote = undefined;
-    return { text: character, stopLine: false };
+    return { text: character, shouldStopLine: false };
   }
-  return { text: "", stopLine: false };
+  return { text: "", shouldStopLine: false };
 }
 
 // Default step: caller advances by one, line continues. Centralised so callers stay symmetrical.
 function continueScan(): ScanStep {
-  return { skip: 0, stopLine: false };
+  return { skip: 0, shouldStopLine: false };
 }
 
 // Skip one extra character — used to swallow the second half of a two-character token like `*/`.
 function skipNextCharacter(): ScanStep {
-  return { skip: 1, stopLine: false };
+  return { skip: 1, shouldStopLine: false };
 }
 
 // End-of-line short circuit returned when a `//` line comment starts.
 function stopLineScan(): ScanStep {
-  return { skip: 0, stopLine: true };
+  return { skip: 0, shouldStopLine: true };
 }
 
 // String, template literal, and char-class quotes recognised by every lexer in this module.

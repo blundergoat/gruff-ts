@@ -1,3 +1,4 @@
+// Documentation and comment-rule tests for doc coverage, stale comments, fixture purpose, and suppressions.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { analyseFixture, analyseProject, largeFixtureSourceLines, TS_IGNORE_DIRECTIVE } from "./test-fixtures.ts";
@@ -15,6 +16,7 @@ function parseDiagnostics(file: DiagnosticSourceFile, source: string): string {
   assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-interface-doc" && finding.symbol === "DiagnosticSourceFile"), true);
   assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-function-doc" && finding.symbol === "parseDiagnostics"), true);
 
+  // Fixture covers documented code that should clear file, interface, and function doc findings.
   const documentedReport = analyseFixture(`/**
  * Scans source text in fixtures for documentation coverage.
  */
@@ -40,6 +42,7 @@ function parseDiagnostics(file: DiagnosticSourceFile, source: string): string {
 });
 
 test("comment quality rules extract only real comments", () => {
+  // Fixture covers real comments versus marker text inside strings, templates, and regexes.
   const report = analyseFixture(`/**
  * Exercises line, block, and JSDoc comments for comment-quality rules.
  */
@@ -110,7 +113,7 @@ test("comment quality requires rationale for non-TypeScript suppressions", () =>
 console.log("debug");
 // biome-ignore lint/suspicious/noExplicitAny: because the generated fixture uses any.
 const ok: any = {};
-// ${TS_IGNORE_DIRECTIVE}
+// ` + TS_IGNORE_DIRECTIVE + `
 const narrowed = ok.value;
 `);
   const suppressionFindings = report.findings.filter((finding) => finding.ruleId === "docs.suppression-without-rationale");
@@ -120,6 +123,7 @@ const narrowed = ok.value;
 });
 
 test("comment quality restates signature through useless-docblock without duplicates", () => {
+  // Fixture covers useless-docblock detection without duplicate function/interface findings.
   const report = analyseFixture(`/**
  * Exercises restating comments.
  */
@@ -150,6 +154,7 @@ export function updateName(name: string): string {
 
 test("documentation context detector matrix covers why side-effect error-behavior invariant magic-threshold", () => {
   const routingBranches = branchFixtureLines(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"]);
+  // Fixture covers context-doc rules for why, side effects, errors, invariants, and thresholds.
   const report = analyseFixture(`/**
  * Exercises maintainer-context documentation rules.
  */
@@ -354,6 +359,7 @@ test("comment rules config disable keeps fixture purpose independent", () => {
 });
 
 test("missing public docs are reported once per exported class type or enum", () => {
+  // Fixture covers public class, type, and enum declarations without existing docs.
   const report = analyseFixture(`export class PublicLoader {
   loadValue(): string {
     return "ok";

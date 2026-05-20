@@ -1,3 +1,4 @@
+// Cumulative rule fixture coverage that proves expanded descriptors have representative findings.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ruleDescriptors } from "./cli.ts";

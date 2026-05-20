@@ -1,3 +1,4 @@
+// Sensitive-data scanners and redaction helpers for secret-like raw text findings.
 import { ruleSeverity, threshold } from "./config.ts";
 import { makeFinding } from "./findings.ts";
 import { byteLine } from "./text-scans.ts";

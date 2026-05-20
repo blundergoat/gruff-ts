@@ -1,3 +1,4 @@
+// Console command catalogue, shell completion scripts, and rule-list renderers for CLI surfaces.
 import { VERSION } from "./constants.ts";
 import { ruleDescriptors } from "./rules.ts";
 
@@ -47,42 +48,42 @@ function renderRuleList(format: RuleListFormat): string {
 }
 
 // The Symfony-style command catalogue shown for `gruff-ts`, `gruff-ts list`, and `gruff-ts help`.
-// `useAnsi` is autodetected by the caller from TTY and `--ansi` flags, never from this layer.
-function renderConsoleList(useAnsi = false): string {
-  const listCommand = ansiWrap("list", ANSI_GREEN, useAnsi);
+// `shouldUseAnsi` is autodetected by the caller from TTY and `--ansi` flags, never from this layer.
+function renderConsoleList(shouldUseAnsi = false): string {
+  const listCommand = ansiWrap("list", ANSI_GREEN, shouldUseAnsi);
   return [
-    "gruff-ts " + ansiWrap(VERSION, ANSI_GREEN, useAnsi),
+    "gruff-ts " + ansiWrap(VERSION, ANSI_GREEN, shouldUseAnsi),
     "",
-    ansiWrap("Usage:", ANSI_YELLOW, useAnsi),
+    ansiWrap("Usage:", ANSI_YELLOW, shouldUseAnsi),
     "  command [options] [arguments]",
     "",
-    ansiWrap("Options:", ANSI_YELLOW, useAnsi),
-    formatConsoleRow("-h, --help", `Display help for the given command. When no command is given display help for the ${listCommand} command`, 22, useAnsi),
-    formatConsoleRow("    --silent", "Do not output any message", 22, useAnsi),
-    formatConsoleRow("-q, --quiet", "Only errors are displayed. All other output is suppressed", 22, useAnsi),
-    formatConsoleRow("-V, --version", "Display this application version", 22, useAnsi),
-    formatConsoleRow("    --ansi|--no-ansi", "Force (or disable --no-ansi) ANSI output", 22, useAnsi),
-    formatConsoleRow("-n, --no-interaction", "Do not ask any interactive question", 22, useAnsi),
-    formatConsoleRow("-v|vv|vvv, --verbose", "Increase the verbosity of messages: 1 for normal output, 2 for more verbose output and 3 for debug", 22, useAnsi),
+    ansiWrap("Options:", ANSI_YELLOW, shouldUseAnsi),
+    formatConsoleRow("-h, --help", `Display help for the given command. When no command is given display help for the ${listCommand} command`, 22, shouldUseAnsi),
+    formatConsoleRow("    --silent", "Do not output any message", 22, shouldUseAnsi),
+    formatConsoleRow("-q, --quiet", "Only errors are displayed. All other output is suppressed", 22, shouldUseAnsi),
+    formatConsoleRow("-V, --version", "Display this application version", 22, shouldUseAnsi),
+    formatConsoleRow("    --ansi|--no-ansi", "Force (or disable --no-ansi) ANSI output", 22, shouldUseAnsi),
+    formatConsoleRow("-n, --no-interaction", "Do not ask any interactive question", 22, shouldUseAnsi),
+    formatConsoleRow("-v|vv|vvv, --verbose", "Increase the verbosity of messages: 1 for normal output, 2 for more verbose output and 3 for debug", 22, shouldUseAnsi),
     "",
-    ansiWrap("Available commands:", ANSI_YELLOW, useAnsi),
-    ...CONSOLE_COMMANDS.map((command) => formatConsoleRow(command.name, command.description, 12, useAnsi)),
+    ansiWrap("Available commands:", ANSI_YELLOW, shouldUseAnsi),
+    ...CONSOLE_COMMANDS.map((command) => formatConsoleRow(command.name, command.description, 12, shouldUseAnsi)),
   ].join("\n") + "\n";
 }
 
 // Two-column row: label padded to `width`, then description. Width is fixed per section so the
 // catalogue lines up regardless of label length — matches Symfony console output conventions.
-function formatConsoleRow(label: string, description: string, width: number, useAnsi: boolean): string {
-  const paddedLabel = ansiWrap(label, ANSI_GREEN, useAnsi);
+function formatConsoleRow(label: string, description: string, width: number, shouldUseAnsi: boolean): string {
+  const paddedLabel = ansiWrap(label, ANSI_GREEN, shouldUseAnsi);
   const padding = " ".repeat(Math.max(1, width - label.length));
   const rowDescription = description;
   return `  ${paddedLabel}${padding}${rowDescription}`;
 }
 
-// `useAnsi` is the only gate. We never sniff `process.stdout.isTTY` here because the caller may be
+// `shouldUseAnsi` is the only gate. We never sniff `process.stdout.isTTY` here because the caller may be
 // rendering to a file or capture buffer where ANSI codes would be garbage.
-function ansiWrap(text: string, color: string, useAnsi: boolean): string {
-  if (!useAnsi) {
+function ansiWrap(text: string, color: string, shouldUseAnsi: boolean): string {
+  if (!shouldUseAnsi) {
     return text;
   }
   const ansiColor = color;

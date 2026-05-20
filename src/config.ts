@@ -1,6 +1,9 @@
+// Config loading and YAML-subset parsing for the analyzer's zero-dependency rule defaults.
 import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, join } from "node:path";
 import type { AnalysisOptions, Config, Severity } from "./types.ts";
+
+type RuleOverride = Config["rules"] extends Map<string, infer RuleOverrideValue> ? RuleOverrideValue : never;
 
 const DEFAULT_CONFIG_FILE = ".gruff-ts.yaml";
 const YAML_KEYWORD_SCALARS = new Map<string, boolean | null>([
@@ -11,14 +14,14 @@ const YAML_KEYWORD_SCALARS = new Map<string, boolean | null>([
 ]);
 const YAML_NUMBER_SCALAR = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
-// Result of one scalar parser attempt. `matched: false` lets the dispatcher fall through to the
+// Result of one scalar parser attempt. `isMatched: false` lets the dispatcher fall through to the
 // next parser instead of mistaking `undefined` for a successfully parsed null value.
 interface ParsedYamlScalar {
-  matched: boolean;
+  isMatched: boolean;
   value: unknown;
 }
 
-const UNMATCHED_YAML_SCALAR: ParsedYamlScalar = { matched: false, value: undefined };
+const UNMATCHED_YAML_SCALAR: ParsedYamlScalar = { isMatched: false, value: undefined };
 
 // Built-in defaults applied before any user config overlays. The string lists here (accepted
 // abbreviations, banned generic names, boolean prefixes, …) are the stable rule contract — they
@@ -129,13 +132,13 @@ function applyRuleConfig(config: Config, raw: Record<string, unknown>): void {
 
 // Builds one rule's override entry after `assertRuleThresholdConfig` has thrown on malformed input.
 // Validation happens before extraction so users see a useful error rather than a silently dropped key.
-function ruleConfigValue(rule: Record<string, unknown>): { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> } {
+function ruleConfigValue(rule: Record<string, unknown>): RuleOverride {
   assertRuleThresholdConfig(rule);
-  const parsed: { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> } = { options: numericConfigMap(rule.options) };
-  applyRuleEnabledConfig(parsed, rule);
-  applyRuleThresholdConfig(parsed, rule);
-  applyRuleSeverityConfig(parsed, rule);
-  return parsed;
+  const ruleOverride: RuleOverride = { options: numericConfigMap(rule.options) };
+  applyRuleEnabledConfig(ruleOverride, rule);
+  applyRuleThresholdConfig(ruleOverride, rule);
+  applyRuleSeverityConfig(ruleOverride, rule);
+  return ruleOverride;
 }
 
 /** Validates the public threshold/severity pair contract and throws before malformed rule options are parsed. */
@@ -154,23 +157,23 @@ function assertRuleThresholdConfig(rule: Record<string, unknown>): void {
 }
 
 /** Copies an explicit enabled override while preserving absent config keys. */
-function applyRuleEnabledConfig(parsed: { enabled?: boolean }, rule: Record<string, unknown>): void {
+function applyRuleEnabledConfig(ruleOverride: RuleOverride, rule: Record<string, unknown>): void {
   if (typeof rule.enabled === "boolean") {
-    parsed.enabled = rule.enabled;
+    ruleOverride.enabled = rule.enabled;
   }
 }
 
 /** Copies a numeric threshold after validation has proved the value is safe. */
-function applyRuleThresholdConfig(parsed: { threshold?: number }, rule: Record<string, unknown>): void {
+function applyRuleThresholdConfig(ruleOverride: RuleOverride, rule: Record<string, unknown>): void {
   if (typeof rule.threshold === "number") {
-    parsed.threshold = rule.threshold;
+    ruleOverride.threshold = rule.threshold;
   }
 }
 
 /** Copies a severity override after validation has proved the value is supported. */
-function applyRuleSeverityConfig(parsed: { severity?: Severity }, rule: Record<string, unknown>): void {
+function applyRuleSeverityConfig(ruleOverride: RuleOverride, rule: Record<string, unknown>): void {
   if (isSeverity(rule.severity)) {
-    parsed.severity = rule.severity;
+    ruleOverride.severity = rule.severity;
   }
 }
 
@@ -234,8 +237,8 @@ interface YamlParser {
  */
 function parseYamlConfig(source: string): Record<string, unknown> {
   const parser = { lines: yamlLines(source), index: 0 };
-  const parsed = parser.lines.length === 0 ? {} : parseYamlBlock(parser, parser.lines[0]?.indent ?? 0);
-  const config = objectValue(parsed);
+  const parsedDocument = parser.lines.length === 0 ? {} : parseYamlBlock(parser, parser.lines[0]?.indent ?? 0);
+  const config = objectValue(parsedDocument);
   if (!config) {
     throw new Error("Config YAML must contain a mapping object.");
   }
@@ -391,9 +394,9 @@ function splitYamlKeyValue(mappingText: string): [string, string] | undefined {
 function parseYamlScalar(scalarText: string): unknown {
   const trimmed = scalarText.trim();
   for (const parser of [parseYamlCollectionScalar, parseYamlQuotedScalar, parseYamlKeywordScalar, parseYamlNumberScalar]) {
-    const parsed = parser(trimmed);
-    if (parsed.matched) {
-      return parsed.value;
+    const parsedScalar = parser(trimmed);
+    if (parsedScalar.isMatched) {
+      return parsedScalar.value;
     }
   }
   return trimmed;
@@ -414,7 +417,7 @@ function parseYamlCollectionScalar(trimmed: string): ParsedYamlScalar {
 }
 
 // `"..."` or `'...'` wrapped. Calls `unquoteYaml` so the resulting value matches what a real YAML
-// engine would produce; matched flag separates "empty quoted string" from "not a quoted scalar".
+// engine would produce; matched-state flag separates "empty quoted string" from "not a quoted scalar".
 function parseYamlQuotedScalar(trimmed: string): ParsedYamlScalar {
   if (isQuotedYaml(trimmed)) {
     return matchedYamlScalar(unquoteYaml(trimmed));
@@ -444,7 +447,7 @@ function parseYamlNumberScalar(trimmed: string): ParsedYamlScalar {
 // Returns a "matched" result with the parsed value, distinguishing real matches from the shared
 // `UNMATCHED_YAML_SCALAR` sentinel used by every parser that failed.
 function matchedYamlScalar(scalarValue: unknown): ParsedYamlScalar {
-  return { matched: true, value: scalarValue };
+  return { isMatched: true, value: scalarValue };
 }
 
 // Inline `[a, b, c]` arrays. Items are split on unquoted commas and each item recurses through

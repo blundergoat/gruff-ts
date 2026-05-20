@@ -1,3 +1,4 @@
+// Filesystem discovery, ignore-policy matching, and display-path normalization for deterministic scans.
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, extname, isAbsolute, join, relative } from "node:path";
 import type { AnalysisOptions, Config } from "./types.ts";
@@ -26,14 +27,14 @@ export interface SourceDiscoveryResult {
   ignoredPaths: string[];
 }
 
-// A single line from a `.gitignore`. The combination of `anchored`, `directoryOnly`, and `hasSlash`
+// A single line from a `.gitignore`. The combination of `isAnchored`, `isDirectoryOnly`, and `hasSlash`
 // reproduces git's documented matching semantics; missing any one of them yields wrong matches.
 interface GitIgnoreRule {
   basePath: string;
   pattern: string;
-  negated: boolean;
-  directoryOnly: boolean;
-  anchored: boolean;
+  isNegated: boolean;
+  isDirectoryOnly: boolean;
+  isAnchored: boolean;
   hasSlash: boolean;
 }
 
@@ -53,8 +54,8 @@ export function discoverSources(projectRoot: string, options: AnalysisOptions, c
 }
 
 // Resolves the input against `node:fs`. Missing inputs go into `missingPaths` so the CLI can
-// report them as diagnostics rather than silently producing no findings — that distinction matters
-// for CI runs and reads the .gitignore stack only when ignored paths are not requested.
+// report them as diagnostics rather than silently producing no findings. CI output depends on that
+// distinction, and .gitignore rules are only read when ignored paths are not requested.
 function discoverSourceInput(projectRoot: string, input: string, options: AnalysisOptions, config: Config, discovery: SourceDiscovery): void {
   const absolute = absolutize(projectRoot, input);
   if (!existsSync(absolute)) {
@@ -194,18 +195,18 @@ function parseGitIgnoreRule(rawLine: string, basePath: string): GitIgnoreRule | 
   if (!initial) {
     return undefined;
   }
-  const negated = initial.startsWith("!");
-  const withoutNegation = negated ? initial.slice(1) : initial;
+  const isNegated = initial.startsWith("!");
+  const withoutNegation = isNegated ? initial.slice(1) : initial;
   if (withoutNegation.length === 0) {
     return undefined;
   }
-  const anchored = withoutNegation.startsWith("/");
-  const directoryOnly = withoutNegation.endsWith("/");
+  const isAnchored = withoutNegation.startsWith("/");
+  const isDirectoryOnly = withoutNegation.endsWith("/");
   const pattern = normalizedGitIgnorePattern(withoutNegation);
   if (pattern.length === 0) {
     return undefined;
   }
-  return { basePath, pattern, negated, directoryOnly, anchored, hasSlash: pattern.includes("/") };
+  return { basePath, pattern, isNegated, isDirectoryOnly, isAnchored, hasSlash: pattern.includes("/") };
 }
 
 // `\#` and `\!` are the documented git escapes for literal `#` / `!` at line start; everything
@@ -218,8 +219,8 @@ function unescapedGitIgnoreLine(rawLine: string): string | undefined {
   return line.startsWith("\\#") || line.startsWith("\\!") ? line.slice(1) : line;
 }
 
-// Strips leading and trailing slashes (those flags are already captured in `anchored` /
-// `directoryOnly`) and collapses any internal `//` runs so the glob matcher sees canonical segments.
+// Strips leading and trailing slashes (those flags are already captured in `isAnchored` /
+// `isDirectoryOnly`) and collapses any internal `//` runs so the glob matcher sees canonical segments.
 function normalizedGitIgnorePattern(line: string): string {
   return line
     .replace(/^\/+/, "")
@@ -235,7 +236,7 @@ function isGitIgnoredPath(rules: GitIgnoreRule[], display: string, isDirectory: 
   let isIgnored = false;
   for (const rule of rules) {
     if (gitIgnoreRuleMatches(rule, display, isDirectory)) {
-      isIgnored = !rule.negated;
+      isIgnored = !rule.isNegated;
     }
   }
   return isIgnored;
@@ -249,7 +250,7 @@ function gitIgnoreRuleMatches(rule: GitIgnoreRule, display: string, isDirectory:
     return false;
   }
 
-  if (rule.directoryOnly) {
+  if (rule.isDirectoryOnly) {
     return gitIgnoreDirectoryRuleMatches(rule, relativePath, isDirectory);
   }
   return gitIgnoreFileRuleMatches(rule, relativePath, isDirectory);
@@ -278,15 +279,15 @@ function gitIgnoreDirectoryRuleMatches(rule: GitIgnoreRule, relativePath: string
 // A rule is "path scoped" when it was anchored (leading `/`) or contained a `/` — both signal that
 // the pattern should be matched against multi-segment sub-paths rather than individual names.
 function isPathScopedGitIgnoreRule(rule: GitIgnoreRule): boolean {
-  return rule.anchored || rule.hasSlash;
+  return rule.isAnchored || rule.hasSlash;
 }
 
 // Enumerates progressively longer prefixes of `relativePath` so a single-segment pattern can match
-// at any nesting depth. `includeFilePath` controls whether the leaf segment is part of the prefix set
+// at any nesting depth. `shouldIncludeFilePath` controls whether the leaf segment is part of the prefix set
 // — directory-only rules omit it because `dir/` must not match a file called `dir`.
-function gitIgnorePathCandidates(relativePath: string, isDirectory: boolean, includeFilePath: boolean): string[] {
+function gitIgnorePathCandidates(relativePath: string, isDirectory: boolean, shouldIncludeFilePath: boolean): string[] {
   const segments = relativePath.split("/");
-  const limit = isDirectory || includeFilePath ? segments.length : segments.length - 1;
+  const limit = isDirectory || shouldIncludeFilePath ? segments.length : segments.length - 1;
   const candidates: string[] = [];
   for (let index = 1; index <= limit; index += 1) {
     candidates.push(segments.slice(0, index).join("/"));

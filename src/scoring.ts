@@ -1,3 +1,4 @@
+// Score, grade, and fail-on helpers derived from finding severities for reports and CLI exits.
 import { grade } from "./report-renderers.ts";
 import type { AnalysisReport, FailThreshold, Finding, Pillar, Severity } from "./types.ts";
 

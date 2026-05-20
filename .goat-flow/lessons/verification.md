@@ -1,9 +1,19 @@
 ---
 category: verification
-last_reviewed: 2026-05-19
+last_reviewed: 2026-05-21
 ---
 
 # Verification lessons
+
+## Lesson: Codex permission audits reject absent exact workspace paths
+
+**Created:** 2026-05-21
+
+**What happened:** While fixing the Codex secret-path audit gate, switching `.codex/config.toml` to `:workspace_roots` made file-read deny coverage observable, but the next audit failed because exact workspace-root entries named files absent from this checkout (`.env`, `.envrc`, `.docker/config.json`, `.npmrc`, `.pypirc`, `.kube/config`, and `.env.example`).
+
+**Evidence:** `.codex/config.toml` + `(search: "[permissions.goat-flow.filesystem.\":workspace_roots\"]")`; the failing harness message came from the Codex exact-path settings check and said to remove absent exact entries while keeping trailing `/**` subtree denies.
+
+**Prevention:** For Codex permission profiles, use `:workspace_roots`, keep wildcard/subtree denies for absent secret families, and add exact `none` or `read` entries only when the path exists in the checkout. Rerun `goat-flow audit . --harness --agent codex` after both the secret-deny patch and the exact-path cleanup.
 
 ## Lesson: targeted self-scan fixes still need comment-quality review
 
@@ -242,3 +252,13 @@ Run the target command directly, save output to `/tmp` if parsing is needed, the
 **Evidence:** `src/cli.test.ts` + `(search: "rule quality doctrine covers risky scanner descriptors")`; the failing command reported `sensitive-data.api-key-pattern` was not assignable to the doctrine-only map key union.
 
 **Prevention:** For test metadata split across coverage and exception lists, widen lookup maps to `Map<string, ...>` before iterating the combined rule-id list. This preserves useful literal data in the source arrays while keeping strict TypeScript from rejecting intentional exception-only entries.
+
+## Lesson: keep fixture strings compact when fixing self-scan import noise
+
+**Created:** 2026-05-21
+
+**What happened:** While clearing an unused-import self-scan finding, expanding a template fixture into an array of string lines made the surrounding test exceed `test-quality.setup-bloat` and re-triggered `docs.fixture-purpose-missing`.
+
+**Evidence:** `src/docs-comment-rules.test.ts` + `(search: "comment quality requires rationale for non-TypeScript suppressions")`; the corrected fixture uses one concatenated source expression so `TS_IGNORE_DIRECTIVE` is visible to import analysis without adding setup lines.
+
+**Prevention:** When a fixture token must be visible outside a template literal, prefer a compact concatenated expression over line-array builders unless the test already has setup budget and a nearby fixture-purpose comment.

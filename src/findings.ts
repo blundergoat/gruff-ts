@@ -1,3 +1,4 @@
+// Finding factory helpers that centralize fingerprint generation and optional-field omission.
 import { createHash } from "node:crypto";
 import type { Confidence, Finding, Pillar, Severity } from "./types.ts";
 

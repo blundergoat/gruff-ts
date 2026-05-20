@@ -1,3 +1,4 @@
+// Rule catalogue tests that keep descriptors, fixture coverage, and rule-quality doctrine aligned.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -476,6 +477,7 @@ test("rule descriptor thresholds and options match implementation and config def
   assert.deepEqual(yamlOptionDefaults(configSource), descriptorOptions);
 });
 
+// Preserves the descriptor/default invariant by extracting threshold(config, ruleId, default) calls.
 function thresholdUsages(source: string): Map<string, number> {
   const usages = new Map<string, number>();
   for (const match of source.matchAll(/threshold\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*(-?\d+(?:\.\d+)?)\)/g)) {
@@ -486,6 +488,7 @@ function thresholdUsages(source: string): Map<string, number> {
   return new Map([...usages.entries()].sort(([left], [right]) => left.localeCompare(right)));
 }
 
+// Preserves the descriptor/options invariant by extracting optionNumber(config, ruleId, key) calls.
 function optionUsages(source: string): Map<string, string[]> {
   const usages = new Map<string, Set<string>>();
   for (const match of source.matchAll(/optionNumber\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)"/g)) {
@@ -497,6 +500,7 @@ function optionUsages(source: string): Map<string, string[]> {
   return new Map([...usages.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([ruleId, keys]) => [ruleId, [...keys].sort()]));
 }
 
+// Preserves the config/descriptor invariant by reading threshold defaults from .gruff-ts.yaml.
 function yamlThresholdDefaults(source: string): Map<string, number> {
   const result = new Map<string, number>();
   let isInRules = false;
@@ -522,6 +526,7 @@ function yamlThresholdDefaults(source: string): Map<string, number> {
   return new Map([...result.entries()].sort(([left], [right]) => left.localeCompare(right)));
 }
 
+// Reads severities only for threshold-owning YAML rules so the pair contract stays in sync.
 function yamlSeverityDefaults(source: string): Map<string, string> {
   const thresholdRules = new Set(yamlThresholdDefaults(source).keys());
   const result = new Map<string, string>();
@@ -548,6 +553,7 @@ function yamlSeverityDefaults(source: string): Map<string, string> {
   return new Map([...result.entries()].sort(([left], [right]) => left.localeCompare(right)));
 }
 
+// Preserves the YAML option-key invariant with a state machine for per-rule option blocks.
 function yamlOptionDefaults(source: string): Map<string, string[]> {
   const result = new Map<string, string[]>();
   const state: YamlRuleOptionsState = { isInRules: false, currentRule: "", isInOptions: false };

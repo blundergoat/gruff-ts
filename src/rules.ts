@@ -1,3 +1,4 @@
+// Rule descriptor catalogue that defines the public rule metadata emitted by list-rules and reports.
 import type { RuleDescriptor } from "./types.ts";
 
 const RULE_DESCRIPTORS: readonly RuleDescriptor[] = [

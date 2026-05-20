@@ -32,9 +32,9 @@ function firstLine(source: string, pattern: RegExp): number {
 // Mutable lexer state threaded through the task-marker scanner. `quote === "\`"` survives across
 // newlines because template literals can span lines; ordinary quotes reset at end of line.
 interface TodoMarkerScanState {
-  blockComment: boolean;
+  isInBlockComment: boolean;
   quote: string | undefined;
-  escaped: boolean;
+  isEscaped: boolean;
 }
 
 // One scanner step yields the comment bytes for this position, how many extra characters to skip
@@ -42,7 +42,7 @@ interface TodoMarkerScanState {
 interface CommentScanStep {
   comment: string;
   skip: number;
-  done: boolean;
+  isDone: boolean;
 }
 
 // Task-marker counter consumed by the density rule. Skipping strings is mandatory — markers inside
@@ -51,7 +51,7 @@ interface CommentScanStep {
 function todoMarkerSummary(source: string, isScript: boolean): { count: number; firstLine: number } {
   let count = 0;
   let firstLine = 0;
-  const state: TodoMarkerScanState = { blockComment: false, quote: undefined, escaped: false };
+  const state: TodoMarkerScanState = { isInBlockComment: false, quote: undefined, isEscaped: false };
 
   source.split(/\r?\n/).forEach((line, index) => {
     const markerCount = countMatches(commentTextForLine(line, state, isScript), /\b(?:TODO|FIXME)\b/g);
@@ -75,13 +75,13 @@ function commentTextForLine(line: string, state: TodoMarkerScanState, isScript: 
     const step = commentScanStep(line, index, state, isScript);
     comment += step.comment;
     index += step.skip;
-    if (step.done) {
+    if (step.isDone) {
       break;
     }
   }
   if (state.quote !== "`") {
     state.quote = undefined;
-    state.escaped = false;
+    state.isEscaped = false;
   }
   return comment;
 }
@@ -91,7 +91,7 @@ function commentTextForLine(line: string, state: TodoMarkerScanState, isScript: 
 function commentScanStep(line: string, index: number, state: TodoMarkerScanState, isScript: boolean): CommentScanStep {
   const character = line[index] ?? "";
   const next = line[index + 1] ?? "";
-  if (state.blockComment) {
+  if (state.isInBlockComment) {
     return blockCommentScanStep(character, next, state);
   }
   if (state.quote) {
@@ -130,20 +130,20 @@ function quoteStartScanStep(character: string, state: TodoMarkerScanState): Comm
 // the next character as if `*` were code.
 function blockStartScanStep(character: string, next: string, state: TodoMarkerScanState): CommentScanStep | undefined {
   if (character === "/" && next === "*") {
-    state.blockComment = true;
-    return { comment: "", skip: 1, done: false };
+    state.isInBlockComment = true;
+    return { comment: "", skip: 1, isDone: false };
   }
   return undefined;
 }
 
-// Slices the comment payload after `//` (or `#` in config files) and signals `done: true` so the
+// Slices the comment payload after `//` (or `#` in config files) and signals `isDone: true` so the
 // caller stops walking the line — everything to the right is comment text.
 function lineCommentScanStep(line: string, index: number, character: string, next: string, isScript: boolean): CommentScanStep {
   if (character === "/" && next === "/") {
-    return { comment: line.slice(index + 2), skip: line.length, done: true };
+    return { comment: line.slice(index + 2), skip: line.length, isDone: true };
   }
   if (!isScript && character === "#") {
-    return { comment: line.slice(index + 1), skip: line.length, done: true };
+    return { comment: line.slice(index + 1), skip: line.length, isDone: true };
   }
   return emptyCommentScanStep();
 }
@@ -152,19 +152,19 @@ function lineCommentScanStep(line: string, index: number, character: string, nex
 // markers inside the block contribute to the count.
 function blockCommentScanStep(character: string, next: string, state: TodoMarkerScanState): CommentScanStep {
   if (character === "*" && next === "/") {
-    state.blockComment = false;
-    return { comment: "", skip: 1, done: false };
+    state.isInBlockComment = false;
+    return { comment: "", skip: 1, isDone: false };
   }
-  return { comment: character, skip: 0, done: false };
+  return { comment: character, skip: 0, isDone: false };
 }
 
-// Consumes the body of a string/template literal. `\` toggles `escaped` so the next character
+// Consumes the body of a string/template literal. `\` toggles `isEscaped` so the next character
 // is not interpreted as the closing quote — necessary for sequences like `"\""` and `"\\\""`.
 function quotedScanStep(character: string, state: TodoMarkerScanState): CommentScanStep {
-  if (state.escaped) {
-    state.escaped = false;
+  if (state.isEscaped) {
+    state.isEscaped = false;
   } else if (character === "\\") {
-    state.escaped = true;
+    state.isEscaped = true;
   } else if (character === state.quote) {
     state.quote = undefined;
   }
@@ -174,7 +174,7 @@ function quotedScanStep(character: string, state: TodoMarkerScanState): CommentS
 // No-op step used by branches that consumed a character but produced no comment text — keeps the
 // caller loop branchless at the cost of one allocation per non-comment character.
 function emptyCommentScanStep(): CommentScanStep {
-  return { comment: "", skip: 0, done: false };
+  return { comment: "", skip: 0, isDone: false };
 }
 
 // One-based line number containing byte offset `index`. Used to anchor findings extracted from

@@ -1,3 +1,4 @@
+// CLI and dashboard surface tests covering command help, render formats, SARIF, and HTML controls.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";

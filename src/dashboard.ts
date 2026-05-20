@@ -1,3 +1,4 @@
+// Loopback dashboard HTTP surface that renders live analyzer reports without exposing remote scans.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { chdir, cwd, stdout } from "node:process";
 import { dashboardErrorHtml, dashboardHomeHtml, renderHtml } from "./report-renderers.ts";
@@ -23,12 +24,12 @@ interface DashboardRouteInput {
 
 // Starts a loopback HTTP server. `analyse` is injected (not imported) to avoid a circular import
 // back into `cli.ts`; see `.goat-flow/lessons/verification.md` on the dashboard import cycle.
-// Side effect: opens a listening socket and writes the URL to stdout unless `outputEnabled` is false.
-function startDashboard(host: string, port: number, projectRoot: string, analyse: DashboardAnalyse, outputEnabled = true): void {
+// Side effect: opens a listening socket and writes the URL to stdout unless `shouldWriteOutput` is false.
+function startDashboard(host: string, port: number, projectRoot: string, analyse: DashboardAnalyse, shouldWriteOutput = true): void {
   const context: DashboardContext = { host, port, projectRoot };
   const server = createServer((request, response) => handleDashboardRequest(context, analyse, request, response));
   server.listen(port, host, () => {
-    if (outputEnabled) {
+    if (shouldWriteOutput) {
       stdout.write(`gruff-ts dashboard listening at http://${host}:${port}\n`);
     }
   });
@@ -96,8 +97,8 @@ function writeHtmlResponse(response: ServerResponse, statusCode: number, body: s
 
 // `/health` opts in to `no-store` so uptime probes never read a cached "ok"; 404 responses do not,
 // because their content is constant and proxies can safely keep them. Writes the response and closes it.
-function writeTextResponse(response: ServerResponse, statusCode: number, body: string, noStore: boolean): void {
-  response.writeHead(statusCode, { "content-type": "text/plain; charset=utf-8", ...(noStore ? { "cache-control": "no-store" } : {}) });
+function writeTextResponse(response: ServerResponse, statusCode: number, body: string, shouldUseNoStore: boolean): void {
+  response.writeHead(statusCode, { "content-type": "text/plain; charset=utf-8", ...(shouldUseNoStore ? { "cache-control": "no-store" } : {}) });
   response.end(body);
 }
 

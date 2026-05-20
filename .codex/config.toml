@@ -17,15 +17,12 @@ hooks = true
 [permissions.goat-flow.filesystem]
 glob_scan_max_depth = 3
 
-[permissions.goat-flow.filesystem.":project_roots"]
+[permissions.goat-flow.filesystem.":workspace_roots"]
 "." = "write"
 # Codex read rules must be exact paths or trailing "/**" subtrees.
-".env.example" = "read"
-".env" = "none"
 "**/.env" = "none"
 ".env.*" = "none"
 "**/.env.*" = "none"
-".envrc" = "none"
 "**/.envrc" = "none"
 "secrets/**" = "none"
 "**/secrets/**" = "none"
@@ -41,13 +38,11 @@ glob_scan_max_depth = 3
 "**/.ssh/**" = "none"
 ".aws/**" = "none"
 "**/.aws/**" = "none"
-".docker/config.json" = "none"
+".docker/**" = "none"
 "**/.docker/config.json" = "none"
 ".gnupg/**" = "none"
 "**/.gnupg/**" = "none"
-".npmrc" = "none"
 "**/.npmrc" = "none"
-".pypirc" = "none"
 "**/.pypirc" = "none"
-".kube/config" = "none"
+".kube/**" = "none"
 "**/.kube/config" = "none"

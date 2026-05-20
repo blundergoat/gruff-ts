@@ -1,3 +1,4 @@
+// Package and tsconfig health checks that emit deterministic project-config findings from JSON files.
 import { existsSync, statSync } from "node:fs";
 import { basename, dirname as dirnamePath, isAbsolute, join } from "node:path";
 import { isString, objectValue } from "./config.ts";

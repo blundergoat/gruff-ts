@@ -1,3 +1,4 @@
+// Security, sensitive-data, config-health, and test-quality expansion tests with safe fixture values.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderReport } from "./cli.ts";
@@ -50,6 +51,7 @@ export function safeApi(input: unknown): string {
 });
 
 test("extended reliability rubric finds unsafe async patterns without false positives", () => {
+  // Fixture covers unsafe async patterns across callbacks, floating promises, catch, and thrown strings.
   const unsafeReport = analyseFixture(`async function unreliable(userIds: string[]): Promise<void> {
   userIds.forEach(${"async"} (userId) => {
     await sendEmailAsync(userId);
@@ -68,6 +70,7 @@ test("extended reliability rubric finds unsafe async patterns without false posi
     assert.equal(unsafeRuleIds.has(ruleId), true, `expected ${ruleId}`);
   }
 
+  // Fixture covers async safe cases that should avoid reliability findings.
   const cleanReport = analyseFixture(`async function reliable(userIds: string[]): Promise<void> {
   for (const userId of userIds) {
     await sendEmailAsync(userId);
@@ -206,6 +209,7 @@ test("tsconfig health detects disabled strictness without changing diagnostics",
   assert.deepEqual(malformedReport.diagnostics, []);
 });
 
+// Fixture covers the redaction contract across all renderer formats using safe synthetic values.
 test("risk expansion redacts sensitive data in all render formats", () => {
   const apiToken = API_TOKEN_FIXTURE_VALUE;
   const databaseUrl = DATABASE_URL_FIXTURE_VALUE;
@@ -276,6 +280,7 @@ test("risk expansion ignores package integrity hashes", () => {
 });
 
 test("risk expansion finds security rules with safe non-candidates", () => {
+  // Fixture covers executable security sinks while keeping noisy safe references nearby.
   const report = analyseFixture(`import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 
@@ -367,6 +372,7 @@ function run(userCommand: string): void {
 });
 
 test("risk expansion finds direct modernisation and waste rules with safe non-candidates", () => {
+  // Fixture covers modernization and waste detections with adjacent safe alternatives.
   const report = analyseFixture(`function risky(value: unknown, source: Record<string, string>): number {
   if (!!source.ready) {
     observe(source);
@@ -420,6 +426,7 @@ function finish(): void {
 });
 
 test("risk expansion finds scoped test-quality rules", () => {
+  // Fixture covers test-quality detections across assertions, mocks, global mutation, and setup bloat.
   const report = analyseFixture(`import assert from "node:assert/strict";
 import test from "node:test";
 
