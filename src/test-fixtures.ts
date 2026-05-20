@@ -89,43 +89,43 @@ export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions)
 }
 
 // Serializes a test YAML config object from the root indentation level.
-export function yamlConfigFixture(value: Record<string, unknown>): string {
-  return yamlConfigObject(value, 0);
+export function yamlConfigFixture(configObject: Record<string, unknown>): string {
+  return yamlConfigObject(configObject, 0);
 }
 
 // Serializes nested config objects using the fixture YAML subset.
-export function yamlConfigObject(value: Record<string, unknown>, indent: number): string {
-  return Object.entries(value)
+export function yamlConfigObject(configObject: Record<string, unknown>, indent: number): string {
+  return Object.entries(configObject)
     .map(([key, nested]) => yamlConfigEntry(key, nested, indent))
     .join("");
 }
 
 // Serializes one YAML key with either nested indentation or a scalar value.
-export function yamlConfigEntry(key: string, value: unknown, indent: number): string {
+export function yamlConfigEntry(key: string, nestedValue: unknown, indent: number): string {
   const prefix = " ".repeat(indent);
-  if (isYamlConfigObject(value)) {
-    return `${prefix}${key}:\n${yamlConfigObject(value, indent + 2)}`;
+  if (isYamlConfigObject(nestedValue)) {
+    return `${prefix}${key}:\n${yamlConfigObject(nestedValue, indent + 2)}`;
   }
-  return `${prefix}${key}: ${yamlConfigScalar(value)}\n`;
+  return `${prefix}${key}: ${yamlConfigScalar(nestedValue)}\n`;
 }
 
 // Converts fixture config scalar values into the YAML text used by tests.
-export function yamlConfigScalar(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(yamlConfigScalar).join(", ")}]`;
+export function yamlConfigScalar(scalarValue: unknown): string {
+  if (Array.isArray(scalarValue)) {
+    return `[${scalarValue.map(yamlConfigScalar).join(", ")}]`;
   }
-  if (typeof value === "string") {
-    return JSON.stringify(value);
+  if (typeof scalarValue === "string") {
+    return JSON.stringify(scalarValue);
   }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
+  if (typeof scalarValue === "number" || typeof scalarValue === "boolean") {
+    return String(scalarValue);
   }
   return "{}";
 }
 
 // Narrows YAML fixture values to plain objects before recursive serialization.
-export function isYamlConfigObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+export function isYamlConfigObject(configValue: unknown): configValue is Record<string, unknown> {
+  return typeof configValue === "object" && configValue !== null && !Array.isArray(configValue);
 }
 
 // Writes temporary fixture files and creates their parent directories.
@@ -502,7 +502,7 @@ function renderCatalogue(): string {
 }
 
 ${"test"}("no assertion", () => {
-  const value = renderCatalogue();
+  const catalogueOutput = renderCatalogue();
 });
 
 ${"test"}("trivial assertion", () => {
@@ -547,8 +547,8 @@ ${"test"}("setup bloat and control flow", () => {
   const two = buildTwo();
   const three = buildThree();
   if (one) {
-    for (const item of [one, two, three]) {
-      sleep(item);
+    for (const setupEntry of [one, two, three]) {
+      sleep(setupEntry);
     }
   }
   setTimeout(() => undefined, 1);

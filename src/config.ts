@@ -176,9 +176,9 @@ function applyRuleSeverityConfig(parsed: { severity?: Severity }, rule: Record<s
 
 // Rule options are typed as numeric (thresholds, line counts, etc.). Non-numeric entries are
 // silently dropped rather than thrown because allowing malformed YAML to abort a scan is too aggressive.
-function numericConfigMap(value: unknown): Map<string, number> {
+function numericConfigMap(optionsValue: unknown): Map<string, number> {
   const options = new Map<string, number>();
-  const rawOptions = objectValue(value);
+  const rawOptions = objectValue(optionsValue);
   if (!rawOptions) {
     return options;
   }
@@ -378,18 +378,18 @@ function stripYamlComment(line: string): string {
 
 // Finds the first `:<space>` outside quotes. Required because a quoted value can legitimately
 // contain `:` (`url: "https://..."`) and the parser must not split at the first occurrence.
-function splitYamlKeyValue(value: string): [string, string] | undefined {
-  const separatorIndex = firstUnquotedIndex(value, (character, index) => {
-    const next = value[index + 1];
+function splitYamlKeyValue(mappingText: string): [string, string] | undefined {
+  const separatorIndex = firstUnquotedIndex(mappingText, (character, index) => {
+    const next = mappingText[index + 1];
     return character === ":" && (!next || /\s/.test(next));
   });
-  return separatorIndex === undefined ? undefined : [value.slice(0, separatorIndex), value.slice(separatorIndex + 1)];
+  return separatorIndex === undefined ? undefined : [mappingText.slice(0, separatorIndex), mappingText.slice(separatorIndex + 1)];
 }
 
 // Tries each scalar parser in order; the first to claim a match wins. Bare strings are the
 // fallback so callers never end up with `undefined` for a non-empty scalar.
-function parseYamlScalar(value: string): unknown {
-  const trimmed = value.trim();
+function parseYamlScalar(scalarText: string): unknown {
+  const trimmed = scalarText.trim();
   for (const parser of [parseYamlCollectionScalar, parseYamlQuotedScalar, parseYamlKeywordScalar, parseYamlNumberScalar]) {
     const parsed = parser(trimmed);
     if (parsed.matched) {
@@ -443,14 +443,14 @@ function parseYamlNumberScalar(trimmed: string): ParsedYamlScalar {
 
 // Returns a "matched" result with the parsed value, distinguishing real matches from the shared
 // `UNMATCHED_YAML_SCALAR` sentinel used by every parser that failed.
-function matchedYamlScalar(value: unknown): ParsedYamlScalar {
-  return { matched: true, value };
+function matchedYamlScalar(scalarValue: unknown): ParsedYamlScalar {
+  return { matched: true, value: scalarValue };
 }
 
 // Inline `[a, b, c]` arrays. Items are split on unquoted commas and each item recurses through
 // `parseYamlScalar` so nested types resolve correctly.
-function parseYamlInlineArray(value: string): unknown[] {
-  const inner = value.slice(1, -1).trim();
+function parseYamlInlineArray(arrayText: string): unknown[] {
+  const inner = arrayText.slice(1, -1).trim();
   if (inner.length === 0) {
     return [];
   }
@@ -459,14 +459,14 @@ function parseYamlInlineArray(value: string): unknown[] {
 
 // Quote-aware split on commas. Treating a quoted comma as a separator would corrupt entries like
 // `["a, b", "c"]` — same reason `splitYamlKeyValue` is also quote-aware.
-function splitYamlInlineItems(value: string): string[] {
+function splitYamlInlineItems(itemsText: string): string[] {
   const items: string[] = [];
   let start = 0;
-  for (const index of unquotedIndexes(value, ",")) {
-    items.push(value.slice(start, index).trim());
+  for (const index of unquotedIndexes(itemsText, ",")) {
+    items.push(itemsText.slice(start, index).trim());
     start = index + 1;
   }
-  items.push(value.slice(start).trim());
+  items.push(itemsText.slice(start).trim());
   return items;
 }
 
@@ -479,9 +479,9 @@ interface QuoteScanState {
 
 // Walks `value` calling `predicate` only at quote-free positions. Used by both the comment
 // stripper and the colon splitter to keep quoted text inert.
-function firstUnquotedIndex(value: string, predicate: (character: string, index: number) => boolean): number | undefined {
-  for (const index of unquotedIndexes(value)) {
-    const character = value[index] ?? "";
+function firstUnquotedIndex(sourceText: string, predicate: (character: string, index: number) => boolean): number | undefined {
+  for (const index of unquotedIndexes(sourceText)) {
+    const character = sourceText[index] ?? "";
     if (predicate(character, index)) {
       return index;
     }
@@ -491,11 +491,11 @@ function firstUnquotedIndex(value: string, predicate: (character: string, index:
 
 // All quote-free positions in `value`, optionally filtered by a specific character. The two-mode
 // shape lets the same lexer feed both `firstUnquotedIndex` and the inline-array splitter.
-function unquotedIndexes(value: string, expectedCharacter?: string): number[] {
+function unquotedIndexes(sourceText: string, expectedCharacter?: string): number[] {
   const indexes: number[] = [];
   const state: QuoteScanState = { quote: undefined, isEscaped: false };
-  for (let index = 0; index < value.length; index += 1) {
-    const character = value[index] ?? "";
+  for (let index = 0; index < sourceText.length; index += 1) {
+    const character = sourceText[index] ?? "";
     if (consumeQuotedCharacter(character, state)) {
       continue;
     }
@@ -535,19 +535,19 @@ function isYamlQuote(character: string): boolean {
 
 // Both endpoints must use the same quote character; mismatched openers/closers are treated as
 // plain text rather than a parse error so a single stray quote in user prose doesn't fail the config.
-function isQuotedYaml(value: string): boolean {
-  return value.length >= 2 && ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'")));
+function isQuotedYaml(scalarText: string): boolean {
+  return scalarText.length >= 2 && ((scalarText.startsWith("\"") && scalarText.endsWith("\"")) || (scalarText.startsWith("'") && scalarText.endsWith("'")));
 }
 
 // Removes quotes and decodes the supported escapes: `''` doubling for single quotes, and `\n`,
 // `\r`, `\t`, `\"`, `\\` for double quotes. Anything else passes through unchanged so the parser
 // reports the user's exact intent rather than mangling unknown escape sequences.
-function unquoteYaml(value: string): string {
-  if (!isQuotedYaml(value)) {
-    return value;
+function unquoteYaml(scalarText: string): string {
+  if (!isQuotedYaml(scalarText)) {
+    return scalarText;
   }
-  const quote = value[0];
-  const body = value.slice(1, -1);
+  const quote = scalarText[0];
+  const body = scalarText.slice(1, -1);
   if (quote === "'") {
     return body.replace(/''/g, "'");
   }
@@ -591,25 +591,25 @@ function optionNumber(config: Config, ruleId: string, name: string, defaultValue
 
 // Type narrowing for `Record<string, unknown>`. Returns undefined (not null) for non-objects so
 // the caller can use the standard optional-chaining pattern through the rest of the config layer.
-function objectValue(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+function objectValue(configValue: unknown): Record<string, unknown> | undefined {
+  return typeof configValue === "object" && configValue !== null && !Array.isArray(configValue) ? (configValue as Record<string, unknown>) : undefined;
 }
 
 // Returns the array or an empty array — never undefined — so callers can iterate without a guard.
-function arrayValue(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
+function arrayValue(configValue: unknown): unknown[] {
+  return Array.isArray(configValue) ? configValue : [];
 }
 
 // String type narrowing. Exported so other modules can share a single string-test that matches
 // the config-side semantics (rejects non-string truthy values like numbers).
-function isString(value: unknown): value is string {
-  return typeof value === "string";
+function isString(configValue: unknown): configValue is string {
+  return typeof configValue === "string";
 }
 
 // Whitelist check used both by config validation (throws on bad values) and by `applyRuleSeverityConfig`.
 // The set of accepted strings is the public severity vocabulary; adding entries is a schema change.
-function isSeverity(value: unknown): value is Severity {
-  return value === "advisory" || value === "warning" || value === "error";
+function isSeverity(configValue: unknown): configValue is Severity {
+  return configValue === "advisory" || configValue === "warning" || configValue === "error";
 }
 
 export { isString, loadConfig, objectValue, optionNumber, ruleEnabled, ruleSeverity, threshold };

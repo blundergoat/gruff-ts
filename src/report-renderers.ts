@@ -307,9 +307,9 @@ function htmlMasthead(report: AnalysisReport): string {
 
 // Single key/value row. Both inputs are escaped — they reach this function as user-influenced
 // strings (paths, format names) and would otherwise enable injection in archived reports.
-function htmlMetaRow(label: string, value: string): string {
+function htmlMetaRow(label: string, metaValue: string): string {
   const escapedLabel = escapeHtml(label);
-  const escapedValue = escapeHtml(value);
+  const escapedValue = escapeHtml(metaValue);
   return `<div><span class="label">${escapedLabel}</span><span class="val">${escapedValue}</span></div>`;
 }
 
@@ -511,8 +511,8 @@ function severityClass(severity: Severity): string {
 
 // Same idea as `severityClass`: collapses any grade letter to one of {a,b,c,d,f,n} so the caller
 // can interpolate it into a CSS class name without escaping.
-function gradeClass(value: string): string {
-  const letter = value[0]?.toLowerCase() ?? "n";
+function gradeClass(gradeValue: string): string {
+  const letter = gradeValue[0]?.toLowerCase() ?? "n";
   return ["a", "b", "c", "d", "f"].includes(letter) ? letter : "n";
 }
 
@@ -634,14 +634,14 @@ function githubLevel(severity: Severity): "notice" | "warning" | "error" {
 
 // Actions workflow-command escaping per the documented spec. `%` must be first — otherwise the
 // `%0A` replacement would itself be re-encoded.
-function escapeCommand(value: string): string {
-  return value.replaceAll("%", "%25").replaceAll("\n", "%0A").replaceAll("\r", "%0D");
+function escapeCommand(commandText: string): string {
+  return commandText.replaceAll("%", "%25").replaceAll("\n", "%0A").replaceAll("\r", "%0D");
 }
 
 // Four-character HTML entity escape (`&`, `<`, `>`, `"`). `&` must be first so the other entities
 // don't get double-encoded; missing escapes here would enable script injection in archived reports.
-function escapeHtml(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+function escapeHtml(htmlText: string): string {
+  return htmlText.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
 export { dashboardErrorHtml, dashboardHomeHtml, grade, renderHtml, renderReport, renderSummary };

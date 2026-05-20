@@ -296,8 +296,8 @@ function gitIgnorePathCandidates(relativePath: string, isDirectory: boolean, inc
 
 // Compiles the pattern on demand. Compilation is cheap relative to the surrounding walk so caching
 // across calls is not worth the cache-invalidation footgun.
-function gitIgnoreGlobMatches(pattern: string, value: string): boolean {
-  return gitIgnoreGlobRegex(pattern).test(value);
+function gitIgnoreGlobMatches(pattern: string, candidatePath: string): boolean {
+  return gitIgnoreGlobRegex(pattern).test(candidatePath);
 }
 
 // Translates a git glob into a JS RegExp. `**`, `*`, and `?` get their git-flavoured semantics:
@@ -403,6 +403,6 @@ export function displayPath(projectRoot: string, path: string): string {
 }
 
 // Escapes the standard regex metacharacters so untrusted patterns can be embedded literally.
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegex(rawText: string): string {
+  return rawText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

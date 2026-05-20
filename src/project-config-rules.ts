@@ -50,11 +50,11 @@ function analysePackageScripts(file: ConfigSourceFile, source: string, scripts: 
   if (!scripts) {
     return;
   }
-  for (const [scriptName, value] of Object.entries(scripts)) {
-    if (!isString(value)) {
+  for (const [scriptName, scriptCommand] of Object.entries(scripts)) {
+    if (!isString(scriptCommand)) {
       continue;
     }
-    pushRemoteInstallScriptFinding(file, source, scriptName, value, findings);
+    pushRemoteInstallScriptFinding(file, source, scriptName, scriptCommand, findings);
     pushLifecycleScriptFinding(file, source, scriptName, findings);
   }
 }
@@ -64,8 +64,8 @@ function analysePackageScripts(file: ConfigSourceFile, source: string, scripts: 
  * because remote shell execution at install time is a contract red flag in the modern supply-chain
  * landscape.
  */
-function pushRemoteInstallScriptFinding(file: ConfigSourceFile, source: string, scriptName: string, value: string, findings: Finding[]): void {
-  if (!isRemoteInstallScript(value)) {
+function pushRemoteInstallScriptFinding(file: ConfigSourceFile, source: string, scriptName: string, scriptCommand: string, findings: Finding[]): void {
+  if (!isRemoteInstallScript(scriptCommand)) {
     return;
   }
   findings.push(
@@ -305,8 +305,8 @@ function packageBinFinding(input: PackageBinFindingInput): Finding {
  * finding; the list is intentionally short — adding new flags here changes the rule surface and
  * warrants a schema discussion.
  */
-function analyseTsconfigJson(file: ConfigSourceFile, source: string, data: Record<string, unknown>, findings: Finding[]): void {
-  const compilerOptions = objectValue(data.compilerOptions) ?? {};
+function analyseTsconfigJson(file: ConfigSourceFile, source: string, tsconfigData: Record<string, unknown>, findings: Finding[]): void {
+  const compilerOptions = objectValue(tsconfigData.compilerOptions) ?? {};
   const checks: Array<[string, string, string]> = [
     ["strict", "modernisation.tsconfig-strict-disabled", "`strict` is disabled, reducing TypeScript's baseline safety checks."],
     ["noUncheckedIndexedAccess", "modernisation.tsconfig-index-safety-disabled", "`noUncheckedIndexedAccess` is disabled, so indexed reads can silently ignore undefined."],
@@ -417,8 +417,8 @@ function packageBinEntries(pkg: Record<string, unknown>): Array<[string, string]
 
 // Local copy of the regex-escape helper — `discovery.ts` has its own copy because this module
 // is intentionally a leaf with no cross-module dependency on path helpers.
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegex(rawText: string): string {
+  return rawText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export { analyseProjectConfigRules };

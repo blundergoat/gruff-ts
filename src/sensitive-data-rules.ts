@@ -142,87 +142,87 @@ function envValueCandidate(line: string): { keyName: string; value: string } | u
 
 // Three predicates combined: long enough, not a literal placeholder, and shape-like (letters + digits).
 // All three are required — dropping any one regresses to noisy findings on fixture values.
-function isHardcodedEnvCandidate(value: string, minLength: number): boolean {
-  return value.length >= minLength && !isPlaceholderSecretValue(value) && hasLetterAndDigit(value);
+function isHardcodedEnvCandidate(secretValue: string, minLength: number): boolean {
+  return secretValue.length >= minLength && !isPlaceholderSecretValue(secretValue) && hasLetterAndDigit(secretValue);
 }
 
 // Allowlist of obvious fixture words. Case-insensitive so `Placeholder`, `PASSWORD` and similar
 // fixture values stay quiet. Extend deliberately — the cost of a missing word is a false positive.
-function isPlaceholderSecretValue(value: string): boolean {
-  return /^(?:x-api-key|token|secret|password|example|sample|placeholder)$/i.test(value);
+function isPlaceholderSecretValue(secretValue: string): boolean {
+  return /^(?:x-api-key|token|secret|password|example|sample|placeholder)$/i.test(secretValue);
 }
 
 // Cheap shape filter: rejects all-letters words and all-digit numbers before the more expensive
 // entropy work runs. False negatives here are acceptable; false positives waste maintainer time.
-function hasLetterAndDigit(value: string): boolean {
-  return /[A-Za-z]/.test(value) && /[0-9]/.test(value);
+function hasLetterAndDigit(candidateText: string): boolean {
+  return /[A-Za-z]/.test(candidateText) && /[0-9]/.test(candidateText);
 }
 
 // Layered filter for the entropy detector. Order matters: cheap rejections (length, hex digest,
 // SRI hash) run before character-set checks before the entropy calculation itself, which is the
 // most expensive step. Reordering changes nothing semantically but can regress scan performance.
-function isHighEntropySecretCandidate(value: string, minLength: number): boolean {
-  if (isExcludedHighEntropyCandidate(value, minLength)) {
+function isHighEntropySecretCandidate(candidateText: string, minLength: number): boolean {
+  if (isExcludedHighEntropyCandidate(candidateText, minLength)) {
     return false;
   }
-  if (!hasLowerUpperAndDigit(value)) {
+  if (!hasLowerUpperAndDigit(candidateText)) {
     return false;
   }
-  if (!hasEnoughDistinctCharacters(value)) {
+  if (!hasEnoughDistinctCharacters(candidateText)) {
     return false;
   }
-  return shannonEntropy(value) >= 4;
+  return shannonEntropy(candidateText) >= 4;
 }
 
 // Entropy false-positive escape hatches. Hex digests and SRI hashes both look "high entropy" but
 // are well-known non-secrets — without these exclusions, package-lock.json scans become noise.
-function isExcludedHighEntropyCandidate(value: string, minLength: number): boolean {
-  return value.length < minLength || isHexDigest(value) || isSubresourceIntegrityHash(value);
+function isExcludedHighEntropyCandidate(candidateText: string, minLength: number): boolean {
+  return candidateText.length < minLength || isHexDigest(candidateText) || isSubresourceIntegrityHash(candidateText);
 }
 
 // All-hex strings — typical for SHA digests, content hashes, and tooling identifiers.
-function isHexDigest(value: string): boolean {
-  return /^[0-9a-f]+$/i.test(value);
+function isHexDigest(candidateText: string): boolean {
+  return /^[0-9a-f]+$/i.test(candidateText);
 }
 
 // SRI hashes from `package-lock.json` and `<script integrity=...>` attributes. Excluded so the
 // detector stays quiet on dependency manifests.
-function isSubresourceIntegrityHash(value: string): boolean {
-  return /^sha(?:256|384|512)-[A-Za-z0-9+/=]+$/.test(value);
+function isSubresourceIntegrityHash(candidateText: string): boolean {
+  return /^sha(?:256|384|512)-[A-Za-z0-9+/=]+$/.test(candidateText);
 }
 
 // Three-class character requirement that filters out single-case identifiers and pure base64 hashes
 // before the entropy calculation runs. Real API tokens almost always contain all three classes.
-function hasLowerUpperAndDigit(value: string): boolean {
-  return /[a-z]/.test(value) && /[A-Z]/.test(value) && /[0-9]/.test(value);
+function hasLowerUpperAndDigit(candidateText: string): boolean {
+  return /[a-z]/.test(candidateText) && /[A-Z]/.test(candidateText) && /[0-9]/.test(candidateText);
 }
 
 // Distinct-character guard. The cap at 12 keeps a long alphabet from inflating the requirement;
 // the `ceil(length/3)` floor scales the threshold with the candidate length.
-function hasEnoughDistinctCharacters(value: string): boolean {
-  return new Set(value).size >= Math.min(12, Math.ceil(value.length / 3));
+function hasEnoughDistinctCharacters(candidateText: string): boolean {
+  return new Set(candidateText).size >= Math.min(12, Math.ceil(candidateText.length / 3));
 }
 
 // Standard Shannon entropy in bits per symbol. The 4.0-bit threshold in the caller corresponds
 // roughly to a uniform alphabet of 16 distinct characters — the typical floor for real secrets.
-function shannonEntropy(value: string): number {
+function shannonEntropy(candidateText: string): number {
   const counts = new Map<string, number>();
-  for (const character of value) {
+  for (const character of candidateText) {
     counts.set(character, (counts.get(character) ?? 0) + 1);
   }
   return [...counts.values()].reduce((sum, count) => {
-    const probability = count / value.length;
+    const probability = count / candidateText.length;
     return sum - probability * Math.log2(probability);
   }, 0);
 }
 
 // Preview format used in finding messages. Short values are fully masked; longer values show only
 // the first/last 4 characters so an operator can identify which secret to rotate without leaking it.
-function redact(value: string): string {
-  if (value.length <= 8) {
-    return `${"*".repeat(value.length)} (redacted, ${value.length} chars)`;
+function redact(rawSecret: string): string {
+  if (rawSecret.length <= 8) {
+    return `${"*".repeat(rawSecret.length)} (redacted, ${rawSecret.length} chars)`;
   }
-  return `${value.slice(0, 4)}...${value.slice(-4)} (redacted, ${value.length} chars)`;
+  return `${rawSecret.slice(0, 4)}...${rawSecret.slice(-4)} (redacted, ${rawSecret.length} chars)`;
 }
 
 export { analyseSensitiveData };

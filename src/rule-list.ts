@@ -81,12 +81,12 @@ function formatConsoleRow(label: string, description: string, width: number, use
 
 // `useAnsi` is the only gate. We never sniff `process.stdout.isTTY` here because the caller may be
 // rendering to a file or capture buffer where ANSI codes would be garbage.
-function ansiWrap(value: string, color: string, useAnsi: boolean): string {
+function ansiWrap(text: string, color: string, useAnsi: boolean): string {
   if (!useAnsi) {
-    return value;
+    return text;
   }
   const ansiColor = color;
-  return `${ansiColor}${value}${ANSI_RESET_FG}`;
+  return `${ansiColor}${text}${ANSI_RESET_FG}`;
 }
 
 // Dispatches by shell with bash as the default — chosen because bash completion is most likely to
@@ -170,8 +170,8 @@ function renderBashCompletion({ commands, options }: CompletionContext): string 
 }
 
 // Bash is the fallback for any unknown shell name — see `renderCompletionScript` for why bash wins.
-function completionShell(value: unknown): CompletionShell {
-  return value === "fish" || value === "zsh" ? value : "bash";
+function completionShell(shellName: unknown): CompletionShell {
+  return shellName === "fish" || shellName === "zsh" ? shellName : "bash";
 }
 
 export type { RuleListFormat, CompletionShell };
