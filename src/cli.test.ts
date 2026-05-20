@@ -3188,7 +3188,7 @@ test("rule descriptor thresholds and options match implementation and config def
   const descriptorOptions = new Map(
     descriptors.filter((descriptor) => (descriptor.optionKeys ?? []).length > 0).map((descriptor) => [descriptor.ruleId, [...(descriptor.optionKeys ?? [])].sort()]),
   );
-  const implementationSources = ["src/cli.ts", "src/blocks.ts", "src/comment-rules.ts", "src/project-rules.ts", "src/sensitive-data-rules.ts", "src/test-block-rules.ts"].map((path) => readFileSync(path, "utf8")).join("\n");
+  const implementationSources = ["src/cli.ts", "src/analyser.ts", "src/blocks.ts", "src/comment-rules.ts", "src/project-rules.ts", "src/sensitive-data-rules.ts", "src/test-block-rules.ts"].map((path) => readFileSync(path, "utf8")).join("\n");
   const implementationThresholds = thresholdUsages(implementationSources);
   assert.deepEqual(descriptorThresholds, implementationThresholds);
   assert.deepEqual(descriptorOptions, optionUsages(implementationSources));
