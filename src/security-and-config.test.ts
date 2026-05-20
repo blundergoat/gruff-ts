@@ -344,6 +344,13 @@ test("process exec exempts fixed local test harnesses but reports dynamic comman
 const child = spawn("./bin/gruff-ts", ["summary"]);
 void child;
 `,
+    "src/test-fixtures.ts": `import { spawn } from "node:child_process";
+
+export function withHarness(): void {
+  const child = spawn("./bin/gruff-ts", ["dashboard"]);
+  void child;
+}
+`,
     "src/runner.ts": `import { spawn, execFile } from "node:child_process";
 
 function run(userCommand: string): void {
@@ -355,6 +362,7 @@ function run(userCommand: string): void {
 
   const processExecFindings = report.findings.filter((finding) => finding.ruleId === "security.process-exec");
   assert.equal(processExecFindings.some((finding) => finding.filePath === "src/harness.test.ts"), false);
+  assert.equal(processExecFindings.some((finding) => finding.filePath === "src/test-fixtures.ts"), false);
   assert.equal(processExecFindings.filter((finding) => finding.filePath === "src/runner.ts").length, 2);
 });
 

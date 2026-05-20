@@ -395,7 +395,12 @@ function processExecCandidate(codeLine: string): boolean {
 // False-positive escape hatch for gruff's own tests: spawning a literal relative path with an array
 // of args (the safe `spawn("./bin", ["…"])` form) inside a test file does not need to be flagged.
 function isFixedLocalProcessHarness(file: SourceFile, rawLine: string, codeLine: string): boolean {
-  return isTestPath(file.displayPath) && /\b(?:spawn|execFile)\s*\(/.test(codeLine) && /\b(?:spawn|execFile)\s*\(\s*["']\.{1,2}\/[^"']*["']\s*,\s*\[/.test(rawLine);
+  return isProcessHarnessPath(file.displayPath) && /\b(?:spawn|execFile)\s*\(/.test(codeLine) && /\b(?:spawn|execFile)\s*\(\s*["']\.{1,2}\/[^"']*["']\s*,\s*\[/.test(rawLine);
+}
+
+// Shared test helper modules are harness code even when their filenames are not `.test.ts`.
+function isProcessHarnessPath(path: string): boolean {
+  return isTestPath(path) || /(?:^|\/)test-fixtures\.[cm]?[tj]sx?$/.test(path);
 }
 
 

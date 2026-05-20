@@ -9,6 +9,13 @@ const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "mis
 type RuleQualityCategory = (typeof RULE_QUALITY_FIXTURE_CATEGORIES)[number];
 type RuleQualityDescriptor = ReturnType<typeof ruleDescriptors>[number];
 
+// Tracks the rule/options section while scanning the YAML config fixture.
+interface YamlRuleOptionsState {
+  isInRules: boolean;
+  currentRule: string;
+  isInOptions: boolean;
+}
+
 // Pairs valid, invalid, and noisy fixtures for one rule-doctrine assertion.
 interface RuleQualityDoctrineCase {
   ruleId: string;
@@ -543,32 +550,75 @@ function yamlSeverityDefaults(source: string): Map<string, string> {
 
 function yamlOptionDefaults(source: string): Map<string, string[]> {
   const result = new Map<string, string[]>();
-  let isInRules = false;
-  let currentRule = "";
-  let isInOptions = false;
+  const state: YamlRuleOptionsState = { isInRules: false, currentRule: "", isInOptions: false };
   for (const line of source.split(/\r?\n/)) {
-    if (line.trim() === "rules:") {
-      isInRules = true;
-      continue;
-    }
-    if (!isInRules) {
-      continue;
-    }
-    const ruleMatch = line.match(/^  ([a-z-]+\.[a-z0-9-]+):\s*$/);
-    if (ruleMatch?.[1]) {
-      currentRule = ruleMatch[1];
-      isInOptions = false;
-      continue;
-    }
-    if (currentRule && line.match(/^    options:\s*$/)) {
-      isInOptions = true;
-      result.set(currentRule, []);
-      continue;
-    }
-    const keyMatch = line.match(/^      ([A-Za-z0-9_-]+):/);
-    if (currentRule && isInOptions && keyMatch?.[1]) {
-      result.get(currentRule)?.push(keyMatch[1]);
-    }
+    updateYamlOptionDefaults(line, state, result);
   }
   return new Map([...result.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([ruleId, keys]) => [ruleId, keys.sort()]));
+}
+
+// Advances the tiny YAML state machine for one config line.
+function updateYamlOptionDefaults(line: string, state: YamlRuleOptionsState, result: Map<string, string[]>): void {
+  if (line.trim() === "rules:") {
+    state.isInRules = true;
+    return;
+  }
+  if (!state.isInRules) {
+    return;
+  }
+  if (recordYamlOptionRule(line, state)) {
+    return;
+  }
+  if (recordYamlOptionsStart(line, state, result)) {
+    return;
+  }
+  recordYamlOptionKey(line, state, result);
+}
+
+// Records a rule heading and resets option collection until an options block appears.
+function recordYamlOptionRule(line: string, state: YamlRuleOptionsState): boolean {
+  const ruleId = yamlRuleId(line);
+  if (!ruleId) {
+    return false;
+  }
+  state.currentRule = ruleId;
+  state.isInOptions = false;
+  return true;
+}
+
+// Starts collecting option keys for the current rule when the config block declares options.
+function recordYamlOptionsStart(line: string, state: YamlRuleOptionsState, result: Map<string, string[]>): boolean {
+  if (state.currentRule === "") {
+    return false;
+  }
+  if (!/^    options:\s*$/.test(line)) {
+    return false;
+  }
+  state.isInOptions = true;
+  result.set(state.currentRule, []);
+  return true;
+}
+
+// Appends an option key inside the current rule's options block.
+function recordYamlOptionKey(line: string, state: YamlRuleOptionsState, result: Map<string, string[]>): void {
+  if (state.currentRule === "") {
+    return;
+  }
+  if (!state.isInOptions) {
+    return;
+  }
+  const key = yamlOptionKey(line);
+  if (key) {
+    result.get(state.currentRule)?.push(key);
+  }
+}
+
+// Extracts a rule id from a two-space-indented YAML heading.
+function yamlRuleId(line: string): string | undefined {
+  return line.match(/^  ([a-z-]+\.[a-z0-9-]+):\s*$/)?.[1];
+}
+
+// Extracts an option key from a six-space-indented YAML property.
+function yamlOptionKey(line: string): string | undefined {
+  return line.match(/^      ([A-Za-z0-9_-]+):/)?.[1];
 }
