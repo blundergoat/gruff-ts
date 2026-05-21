@@ -1,9 +1,18 @@
 ---
 category: verification
-last_reviewed: 2026-05-21
+last_reviewed: 2026-05-22
 ---
 
 # Verification lessons
+
+## Lesson: run a no-diff control when a zero-tolerance perf gate fails
+**Created:** 2026-05-22
+
+**What happened:** During analyser performance work, two small hot-path patches were reverted after `scripts/test-performance.sh --matrix --baseline ... --fail-on-regression 0` reported regressions. A clean-tree control run with no source diff then failed the same zero-tolerance gate, proving the original comparison was not reproducible in the current machine state.
+
+**Evidence:** `scripts/test-performance.sh` + `(search: "check_regressions")`; no-diff command `scripts/test-performance.sh --matrix --baseline /tmp/perf-baseline.json --fail-on-regression 0 --report /tmp/perf-report-control.md --out /tmp/perf-control.json --runs 7` reported wall/RSS regressions despite `git diff -- src` being empty.
+
+**Prevention:** Before attributing a zero-tolerance perf regression to a patch, run one clean-tree control against the same baseline. If the control fails, re-establish a current baseline or remove environmental noise before evaluating code changes.
 
 ## Lesson: Codex permission audits reject absent exact workspace paths
 

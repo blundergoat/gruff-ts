@@ -35,6 +35,8 @@ interface FunctionBlockScan {
   patterns: RegExp[];
 }
 
+const FUNCTION_BLOCK_PATTERNS = functionBlockPatterns();
+
 // Tiny lexer for finding the closing brace of a callable. `hasSeenOpen` matters because the depth
 // counter would otherwise hit zero before the body ever opened (arrow functions with a default body).
 interface FunctionBodyScanState {
@@ -416,7 +418,7 @@ export function functionBlocks(source: string, codeSource = source): FunctionBlo
   const scan: FunctionBlockScan = {
     lines: source.split(/\r?\n/),
     codeLines: codeSource.split(/\r?\n/),
-    patterns: functionBlockPatterns(),
+    patterns: FUNCTION_BLOCK_PATTERNS,
   };
   const blocks: FunctionBlock[] = [];
   scan.codeLines.forEach((line, index) => {

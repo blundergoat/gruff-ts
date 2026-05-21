@@ -49,6 +49,9 @@ interface CommentScanStep {
 // string literals must not inflate the count, or every fixture string containing a task keyword
 // would trip. `isScript` flips `#` line-comment recognition for shell-like config files.
 function todoMarkerSummary(source: string, isScript: boolean): { count: number; firstLine: number } {
+  if (!source.includes("TODO") && !source.includes("FIXME")) {
+    return { count: 0, firstLine: 1 };
+  }
   let count = 0;
   let firstLine = 0;
   const state: TodoMarkerScanState = { isInBlockComment: false, quote: undefined, isEscaped: false };
@@ -180,7 +183,14 @@ function emptyCommentScanStep(): CommentScanStep {
 // One-based line number containing byte offset `index`. Used to anchor findings extracted from
 // regex match indices; off-by-one would shift every reported line in the resulting reports.
 function byteLine(source: string, index: number): number {
-  return source.slice(0, Math.max(0, index)).split("\n").length;
+  const end = Math.max(0, index);
+  let line = 1;
+  for (let offset = 0; offset < end; offset += 1) {
+    if (source.charCodeAt(offset) === 10) {
+      line += 1;
+    }
+  }
+  return line;
 }
 
 export { byteLine, countMatches, firstLine, todoMarkerSummary };

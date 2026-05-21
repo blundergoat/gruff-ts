@@ -11,7 +11,7 @@ import { absolutize, discoverSources, displayPath, type SourceFile } from "./dis
 import { makeFinding } from "./findings.ts";
 import { changedFiles, finding } from "./findings-helpers.ts";
 import { commentRecords } from "./comment-scanner.ts";
-import { analyseArchitectureRules, analyseTestAdequacyRules, buildProjectIndex, type ProjectSource } from "./project-rules.ts";
+import { analyseArchitectureRules, analyseTestAdequacyRules, buildProjectIndex, exportedSurface, isProductionSourcePath, type ProjectSource } from "./project-rules.ts";
 import { analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks, parameterNames } from "./blocks.ts";
 import { analyseClassRules, analyseAcronymCase, analyseInconsistentCasing, analyseInterfaceFields, collectDeclaredIdentifiers } from "./class-rules.ts";
 import { analyseDeadCode, analyseUnreachable, analyseUnusedImports } from "./dead-code-rules.ts";
@@ -150,9 +150,9 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
   for (const file of files) {
     try {
       const source = readFileSync(file.absolutePath, "utf8");
-      const lines = source.split(/\r?\n/);
-      const templateMaskedLines = maskTemplateLiteralBodies(source).split(/\r?\n/);
-      projectSources.push({ file, source, lines, templateMaskedLines });
+      if (shouldRetainProjectSource(file, source)) {
+        projectSources.push(projectSource(file, source));
+      }
       diagnostics.push(...parseDiagnostics(file, source));
       findings.push(...analyseSource(file, source, config));
     } catch (error) {
@@ -165,6 +165,24 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
     }
   }
   return { findings, projectSources };
+}
+
+/** Returns true when any project-level rule can emit from this source snapshot. */
+function shouldRetainProjectSource(file: SourceFile, source: string): boolean {
+  return file.isScript && (isProductionSourcePath(file.displayPath) || hasImportSyntaxCandidate(source));
+}
+
+/** Builds the retained script snapshot consumed by project-level architecture and test rules. */
+function projectSource(file: SourceFile, source: string): ProjectSource {
+  const lines = source.split(/\r?\n/);
+  const templateMaskedLines = hasImportSyntaxCandidate(source) ? maskTemplateLiteralBodies(source).split(/\r?\n/) : lines;
+  const surface = isProductionSourcePath(file.displayPath) ? exportedSurface(source) : undefined;
+  return { file, lines, templateMaskedLines, ...(surface ? { exportedSurface: surface } : {}) };
+}
+
+/** Returns true when import-edge parsing may need to inspect masked template-literal lines. */
+function hasImportSyntaxCandidate(source: string): boolean {
+  return source.includes("import") || source.includes("from");
 }
 
 // Canonical finding ordering: (filePath, line, ruleId, message). The same tuple is part of the
@@ -274,7 +292,7 @@ function analyseProjectIndex(projectSources: ProjectSource[], config: Config): F
  * `findings.push` channel.
  */
 function analyseTextRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
-  const lines = source.split(/\r?\n/).length;
+  const lines = lineCount(source);
   const fileLengthThreshold = threshold(config, "size.file-length", 750);
   if (!isGeneratedLockfile(file.displayPath)) {
     if (lines > fileLengthThreshold) {
@@ -289,6 +307,17 @@ function analyseTextRules(file: SourceFile, source: string, config: Config, find
 
   analyseSensitiveData(file, source, config, findings);
   analyseProjectConfigRules(file, source, findings);
+}
+
+// Counts the same logical lines as `source.split(/\r?\n/)` without allocating the full line array.
+function lineCount(source: string): number {
+  let count = 1;
+  for (let index = 0; index < source.length; index += 1) {
+    if (source.charCodeAt(index) === 10) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 // Exact-name match against the five major package managers. Lockfiles routinely break size and

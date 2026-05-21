@@ -42,6 +42,9 @@ type MagicThresholdCandidate = {
   kind: string;
 };
 
+const DESCRIPTOR_IDS = new Set(ruleDescriptors().map((descriptor) => descriptor.ruleId));
+const CLI_FLAGS = knownCliFlags();
+
 
 /*
  * Coordinator for every comment-quality rule. Comments and declarations are parsed once and the
@@ -50,14 +53,12 @@ type MagicThresholdCandidate = {
 export function analyseCommentQualityRules(input: CommentQualityRuleInput): void {
   const { file, source, codeSource, blocks, comments, config, findings } = input;
   const lines = source.split(/\r?\n/);
-  const descriptorIds = new Set(ruleDescriptors().map((descriptor) => descriptor.ruleId));
-  const cliFlags = knownCliFlags();
   const declarations = commentedDeclarations(blocks, interfaceDeclarations(source, codeSource));
 
-  analyseStandaloneCommentQuality(file, comments, descriptorIds, cliFlags, findings);
+  analyseStandaloneCommentQuality(file, comments, DESCRIPTOR_IDS, CLI_FLAGS, findings);
   analyseCommentedDeclarationQuality(file, lines, comments, declarations, findings);
   analyseFunctionContextCommentQuality({ file, lines, comments, blocks, config, findings });
-  pushMagicThresholdFindings(file, source, codeSource, comments, findings);
+  pushMagicThresholdFindings(file, lines, codeSource, comments, findings);
   pushFixturePurposeFindings({ file, source, codeSource, lines, comments, blocks, config, findings });
 }
 
@@ -66,13 +67,13 @@ export function analyseCommentQualityRules(input: CommentQualityRuleInput): void
  * stale CLI flag refs) that run on every comment regardless of whether it documents a declaration.
  * Stable, deterministic emission order across the five sub-checks.
  */
-function analyseStandaloneCommentQuality(file: SourceFile, comments: CommentRecord[], descriptorIds: Set<string>, cliFlags: Set<string>, findings: Finding[]): void {
+function analyseStandaloneCommentQuality(file: SourceFile, comments: CommentRecord[], ruleIdSet: Set<string>, optionFlagSet: Set<string>, findings: Finding[]): void {
   for (const comment of comments) {
     pushTodoWithoutTrackingFinding(file, comment, findings);
     pushSuppressionWithoutRationaleFinding(file, comment, findings);
     pushStaleFileReferenceFindings(file, comment, findings);
-    pushStaleRuleReferenceFindings(file, comment, descriptorIds, findings);
-    pushStaleCliFlagReferenceFindings(file, comment, cliFlags, findings);
+    pushStaleRuleReferenceFindings(file, comment, ruleIdSet, findings);
+    pushStaleCliFlagReferenceFindings(file, comment, optionFlagSet, findings);
   }
 }
 
@@ -240,13 +241,13 @@ function referencedPathExists(file: SourceFile, referencedPath: string): boolean
  * Historical-context comments stay exempt so removed rules can remain referenced in lessons text.
  * Reports the stable `docs.stale-comment` finding for each stale rule id.
  */
-function pushStaleRuleReferenceFindings(file: SourceFile, comment: CommentRecord, descriptorIds: Set<string>, findings: Finding[]): void {
+function pushStaleRuleReferenceFindings(file: SourceFile, comment: CommentRecord, ruleIdSet: Set<string>, findings: Finding[]): void {
   if (isHistoricalContextComment(comment.text)) {
     return;
   }
   for (const match of comment.text.matchAll(/\b((?:complexity|dead-code|design|docs|modernisation|naming|security|sensitive-data|size|test-quality|waste)\.[a-z0-9-]+)\b/g)) {
     const ruleId = match[1] ?? "";
-    if (descriptorIds.has(ruleId)) {
+    if (ruleIdSet.has(ruleId)) {
       continue;
     }
     findings.push(staleCommentFinding(file, comment, `Comment references unknown rule id \`${ruleId}\`.`, { staleReference: ruleId, referenceType: "ruleId" }));
@@ -258,13 +259,13 @@ function pushStaleRuleReferenceFindings(file: SourceFile, comment: CommentRecord
  * it counts as a stale reference. Historical context comments stay exempt by design. Reports the
  * stable `docs.stale-comment` finding for each unknown option name.
  */
-function pushStaleCliFlagReferenceFindings(file: SourceFile, comment: CommentRecord, cliFlags: Set<string>, findings: Finding[]): void {
+function pushStaleCliFlagReferenceFindings(file: SourceFile, comment: CommentRecord, optionFlagSet: Set<string>, findings: Finding[]): void {
   if (isHistoricalContextComment(comment.text)) {
     return;
   }
   for (const match of comment.text.matchAll(/(?<![A-Za-z0-9])--[a-z][a-z0-9-]*/g)) {
     const flag = match[0] ?? "";
-    if (cliFlags.has(flag)) {
+    if (optionFlagSet.has(flag)) {
       continue;
     }
     findings.push(staleCommentFinding(file, comment, `Comment references unknown CLI flag \`${flag}\`.`, { staleReference: flag, referenceType: "cliFlag" }));
@@ -362,11 +363,10 @@ function pushRestatingSignatureCommentFinding(file: SourceFile, comment: Comment
  * threshold/limit/cap or a `threshold(config, …)` default call, then checks that a nearby comment
  * explains it. Reports the stable `docs.magic-threshold-without-rationale` finding.
  */
-function pushMagicThresholdFindings(file: SourceFile, source: string, codeSource: string, comments: CommentRecord[], findings: Finding[]): void {
-  if (isTestPath(file.displayPath)) {
+function pushMagicThresholdFindings(file: SourceFile, lines: string[], codeSource: string, comments: CommentRecord[], findings: Finding[]): void {
+  if (isTestPath(file.displayPath) || !hasMagicThresholdSignal(codeSource)) {
     return;
   }
-  const lines = source.split(/\r?\n/);
   const codeLines = codeSource.split(/\r?\n/);
   codeLines.forEach((codeLine, index) => {
     const candidate = magicThresholdCandidate(lines[index] ?? "", codeLine);
@@ -388,6 +388,11 @@ function pushMagicThresholdFindings(file: SourceFile, source: string, codeSource
       }),
     );
   });
+}
+
+// Cheap whole-file preflight for the two shapes `magicThresholdCandidate` can report.
+function hasMagicThresholdSignal(codeSource: string): boolean {
+  return /\bthreshold\s*\(/.test(codeSource) || /\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*(?:Threshold|Limit|Cap|Budget|Timeout|Tolerance|Weight|Score|Max|Min|Default|Entropy|Length)[A-Za-z0-9_$]*\b/i.test(codeSource);
 }
 
 // Two candidate sources: a named constant (`const maxThings = N`) or a `threshold()` default call.
@@ -565,4 +570,3 @@ function hasOnlyBlankLines(lines: string[], startLine: number, endLine: number):
   }
   return true;
 }
-

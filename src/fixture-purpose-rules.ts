@@ -72,6 +72,9 @@ export function pushFixturePurposeFindings(input: FixturePurposeInput): void {
 // Three candidate kinds collected in one pass: template-literal fixtures, generated array fixtures,
 // and test setup blocks. `occupiedLines` tracks the first two so the third doesn't double-report.
 function fixturePurposeCandidates(source: string, codeSource: string, blocks: FunctionBlock[], config: Config): FixturePurposeCandidate[] {
+  if (!hasFixturePurposeCandidateSignal(codeSource, blocks)) {
+    return [];
+  }
   const candidates: FixturePurposeCandidate[] = [];
   const seen = new Set<string>();
   const occupiedLines = new Set<number>();
@@ -98,6 +101,11 @@ function fixturePurposeCandidates(source: string, codeSource: string, blocks: Fu
   }
 
   return candidates.filter((candidate) => candidate.line <= lines.length);
+}
+
+// Whole-file preflight for the only shapes that can become fixture-purpose findings.
+function hasFixturePurposeCandidateSignal(codeSource: string, blocks: FunctionBlock[]): boolean {
+  return blocks.some((block) => block.isTest) || /\b(?:analyseFixture|analyseProject|writeFileSync|Array\.from)\s*\(/.test(codeSource) || /\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*(?:Fixture|FIXTURE)[A-Za-z0-9_$]*\b[^=\n]*=/.test(codeSource);
 }
 
 // Composite key prevents two fixture candidates landing at the same line/symbol/kind tuple — a

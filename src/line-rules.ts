@@ -40,6 +40,9 @@ interface LineRuleContext {
   variables: RegExp;
 }
 
+const CODE_LINE_CHECKS = codeLineChecks();
+const LITERAL_LINE_CHECKS = literalLineChecks();
+const VARIABLE_DECLARATIONS = /\b(?:const|let|for\s*\(\s*const|for\s*\(\s*let)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
 
 /*
  * Per-line rule pipeline plus the two multi-line catch detectors. Excludes analyseUnusedImports
@@ -49,16 +52,23 @@ interface LineRuleContext {
 export function analyseLineRules(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[]): void {
   const sourceLines = source.split(/\r?\n/);
   const codeLines = codeSource.split(/\r?\n/);
-  const sharedContext = {
+  const context: LineRuleContext = {
     file,
+    line: "",
+    codeLine: "",
+    lineNumber: 0,
     config,
     findings,
-    codeChecks: codeLineChecks(),
-    literalChecks: literalLineChecks(),
-    variables: /\b(?:const|let|for\s*\(\s*const|for\s*\(\s*let)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g,
+    codeChecks: CODE_LINE_CHECKS,
+    literalChecks: LITERAL_LINE_CHECKS,
+    variables: VARIABLE_DECLARATIONS,
   };
   sourceLines.forEach((line, index) => {
-    analyseLineRuleContext({ ...sharedContext, line, codeLine: codeLines[index] ?? codeLineForMatching(line), lineNumber: index + 1 });
+    context.line = line;
+    context.codeLine = codeLines[index] ?? codeLineForMatching(line);
+    context.lineNumber = index + 1;
+    context.variables.lastIndex = 0;
+    analyseLineRuleContext(context);
   });
 
   analyseUselessCatches(file, codeSource, findings);

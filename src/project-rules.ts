@@ -10,6 +10,13 @@ import { fileBaseName } from "./findings-helpers.ts";
 import { byteLine } from "./text-scans.ts";
 import type { Config, Finding, Severity } from "./types.ts";
 
+// First exported callable/value in a production file. Missing-nearby-test only needs this compact
+// surface, so the project index does not retain full source bodies after per-file analysis.
+export interface ProjectExportedSurface {
+  symbol: string;
+  line: number;
+}
+
 // Read-once snapshot of a discovered file. Lines are cached because cross-file project rules
 // scan each source repeatedly — splitting once amortises the cost across rule passes.
 // `templateMaskedLines` mirrors `lines` but blanks out `` ` `` template-literal body characters
@@ -17,9 +24,9 @@ import type { Config, Finding, Severity } from "./types.ts";
 // template-literal content without losing real `import ... from "..."` detection.
 export interface ProjectSource {
   file: SourceFile;
-  source: string;
   lines: string[];
   templateMaskedLines: string[];
+  exportedSurface?: ProjectExportedSurface;
 }
 
 // Project-wide aggregate built once per scan and reused by every architecture rule (cycle detection,
@@ -380,7 +387,7 @@ export function isProductionSourcePath(path: string): boolean {
 function analyseMissingNearbyTests(index: ProjectIndex, findings: Finding[]): void {
   const testPaths = new Set(index.scriptSources.filter((source) => isTestPath(source.file.displayPath)).map((source) => source.file.displayPath));
   for (const source of index.scriptSources.filter((candidate) => isProductionSourcePath(candidate.file.displayPath))) {
-    const exported = exportedSurface(source.source);
+    const exported = source.exportedSurface;
     if (!exported || hasNearbyTest(source.file.displayPath, testPaths)) {
       continue;
     }
@@ -403,7 +410,7 @@ function analyseMissingNearbyTests(index: ProjectIndex, findings: Finding[]): vo
 
 // Returns the first exported callable/value seen — one finding per file is sufficient because
 // the rule's signal is "this file ships an API surface", not "every export is untested".
-function exportedSurface(source: string): { symbol: string; line: number } | undefined {
+export function exportedSurface(source: string): ProjectExportedSurface | undefined {
   const match = source.match(/\bexport\s+(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
   if (!match?.[1]) {
     return undefined;
