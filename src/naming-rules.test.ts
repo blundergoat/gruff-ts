@@ -270,27 +270,29 @@ console.log(widgetEtag, WIDGET_ETAG);
   assert.deepEqual(findings, []);
 });
 
-test("naming rule pack catalogue coverage", () => {
-  const expected = [
-    "naming.abbreviation",
-    "naming.acronym-case",
-    "naming.boolean-prefix",
-    "naming.class-file-mismatch",
-    "naming.generic-function",
-    "naming.generic-parameter",
-    "naming.hungarian-notation",
-    "naming.identifier-quality",
-    "naming.inconsistent-casing",
-    "naming.negative-boolean",
-    "naming.short-variable",
-  ];
-  const descriptors = ruleDescriptors().map((descriptor) => descriptor.ruleId).filter((ruleId) => ruleId.startsWith("naming."));
-  assert.deepEqual(descriptors, expected);
+// Canonical list of naming-pillar rule ids. Ordering matters: the catalogue test asserts the
+// descriptor output matches this list exactly.
+const NAMING_PILLAR_RULE_IDS = [
+  "naming.abbreviation",
+  "naming.acronym-case",
+  "naming.boolean-prefix",
+  "naming.class-file-mismatch",
+  "naming.generic-function",
+  "naming.generic-parameter",
+  "naming.hungarian-notation",
+  "naming.identifier-quality",
+  "naming.inconsistent-casing",
+  "naming.negative-boolean",
+  "naming.short-variable",
+];
 
+test("naming rule pack catalogue coverage", () => {
+  const descriptors = ruleDescriptors().map((descriptor) => descriptor.ruleId).filter((ruleId) => ruleId.startsWith("naming."));
+  assert.deepEqual(descriptors, NAMING_PILLAR_RULE_IDS);
   const yamlSource = readFileSync(".gruff-ts.yaml", "utf8");
-  for (const ruleId of expected) {
+  NAMING_PILLAR_RULE_IDS.forEach((ruleId) => {
     assert.match(yamlSource, new RegExp(`\\b${ruleId.replace(".", "\\.")}\\b`), `missing yaml entry for ${ruleId}`);
-  }
+  });
 });
 
 test("naming rule pack config disable independence", () => {

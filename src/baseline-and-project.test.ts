@@ -244,39 +244,43 @@ function unsafe(value: string): void {
   );
 });
 
-// Fixture covers deterministic project graph findings for deep imports and cycles; the deep path and two-file cycle are intentional because the fingerprint contract must stay stable across discovery permutations.
-test("project architecture index finds deterministic cross-file findings", () => {
-  const files = {
-    "src/app/feature/controller.ts": `import { sharedValue } from "../../../shared/value";
+// Fixture covers deterministic project graph findings for deep imports and cycles; the deep path
+// and two-file cycle are intentional because the fingerprint contract must stay stable across
+// discovery permutations.
+const CROSS_FILE_GRAPH_FIXTURE = {
+  "src/app/feature/controller.ts": `import { sharedValue } from "../../../shared/value";
 import { startCycle } from "../cycle/a";
 
 export function renderController(): string {
   return sharedValue + startCycle();
 }
 `,
-    "src/app/cycle/a.ts": `import { fromB } from "./b";
+  "src/app/cycle/a.ts": `import { fromB } from "./b";
 
 export function startCycle(): string {
   return fromB();
 }
 `,
-    "src/app/cycle/b.ts": `import { startCycle } from "./a";
+  "src/app/cycle/b.ts": `import { startCycle } from "./a";
 
 export function fromB(): string {
   return startCycle();
 }
 `,
-    "src/shared/value.ts": `export const sharedValue = "shared";
+  "src/shared/value.ts": `export const sharedValue = "shared";
 `,
-    "src/large.ts": Array.from({ length: 20 }, (_, index) => `export const largeValue${index} = ${index};`).join("\n"),
-  };
-  const config = {
-    rules: {
-      "design.large-module-concentration": { threshold: 40, severity: "advisory", options: { minFiles: 4, minLines: 8 } },
-    },
-  };
-  const first = analyseProject(files, { config });
-  const second = analyseProject(files, { config });
+  "src/large.ts": Array.from({ length: 20 }, (_, index) => `export const largeValue${index} = ${index};`).join("\n"),
+};
+
+const CROSS_FILE_GRAPH_CONFIG = {
+  rules: {
+    "design.large-module-concentration": { threshold: 40, severity: "advisory", options: { minFiles: 4, minLines: 8 } },
+  },
+};
+
+test("project architecture index finds deterministic cross-file findings", () => {
+  const first = analyseProject(CROSS_FILE_GRAPH_FIXTURE, { config: CROSS_FILE_GRAPH_CONFIG });
+  const second = analyseProject(CROSS_FILE_GRAPH_FIXTURE, { config: CROSS_FILE_GRAPH_CONFIG });
   const ruleIds = new Set(first.findings.map((finding) => finding.ruleId));
   assert.equal(ruleIds.has("design.deep-relative-import"), true);
   assert.equal(ruleIds.has("design.circular-import"), true);
@@ -326,17 +330,18 @@ export function fromA(): string {
   );
 });
 
-test("project test adequacy checks nearby coverage and shallow tests", () => {
-  const report = analyseProject({
-    "src/payments.ts": `export function chargeCard(): string {
+// Fixture for the test-adequacy rule sweep: covers missing-nearby-test, snapshot-only,
+// no-throw-only, plus exemption paths for `.d.ts`, fixtures/, and generated/.
+const TEST_ADEQUACY_FIXTURE = {
+  "src/payments.ts": `export function chargeCard(): string {
   return "charged";
 }
 `,
-    "src/users.ts": `export function renderUser(): string {
+  "src/users.ts": `export function renderUser(): string {
   return "user";
 }
 `,
-    "src/users.test.ts": `import assert from "node:assert/strict";
+  "src/users.test.ts": `import assert from "node:assert/strict";
 import { renderUser } from "./users";
 
 test("renders user", () => {
@@ -351,19 +356,22 @@ test("no throw only", () => {
   assert.doesNotThrow(() => renderUser());
 });
 `,
-    "src/types.d.ts": `export interface GeneratedContract {
+  "src/types.d.ts": `export interface GeneratedContract {
   id: string;
 }
 `,
-    "fixtures/sample.ts": `export function fixtureOnly(): string {
+  "fixtures/sample.ts": `export function fixtureOnly(): string {
   return "fixture";
 }
 `,
-    "src/generated/client.ts": `export function generatedClient(): string {
+  "src/generated/client.ts": `export function generatedClient(): string {
   return "generated";
 }
 `,
-  });
+};
+
+test("project test adequacy checks nearby coverage and shallow tests", () => {
+  const report = analyseProject(TEST_ADEQUACY_FIXTURE);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   assert.equal(ruleIds.has("test-quality.missing-nearby-test"), true);
   assert.equal(ruleIds.has("test-quality.snapshot-only-test"), true);

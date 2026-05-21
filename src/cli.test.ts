@@ -100,9 +100,9 @@ function testBuildsValue(): void {
     "sensitive-data.high-entropy-string",
   ]);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  for (const ruleId of firstSliceRuleIds) {
+  firstSliceRuleIds.forEach((ruleId: string) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
+  });
 
   const firstSliceFindings = report.findings.filter((finding) => firstSliceRuleIds.has(finding.ruleId));
   assert.equal(new Set(firstSliceFindings.map((finding) => finding.fingerprint)).size, firstSliceFindings.length);
@@ -118,9 +118,8 @@ function testBuildsValue(): void {
   assert.equal(renderReport(report, "json").includes(secret), false);
 });
 
-test("core expansion clean fixture stays finding-free", () => { // Fixture covers clean-path expansion rules so false positives stay visible.
-  const report = analyseFixture(
-    `/** UserProfile stores profile state. */
+// Fixture covers clean-path expansion rules so false positives stay visible.
+const CLEAN_USER_PROFILE_FIXTURE = `/** UserProfile stores profile state. */
 export class UserProfile {
   public readonly displayName: string;
 
@@ -161,35 +160,36 @@ function normalizeStatus(status: string): string {
     return String(error);
   }
 }
-`,
-    { fileName: "UserProfile.ts" },
-  );
-  const m02RuleIds = new Set([
-    "complexity.npath",
-    "waste.commented-out-code",
-    "waste.empty-function",
-    "waste.redundant-variable",
-    "waste.unused-import",
-    "waste.unused-parameter",
-    "naming.identifier-quality",
-    "naming.boolean-prefix",
-    "naming.hungarian-notation",
-    "naming.class-file-mismatch",
-    "docs.stale-param-tag",
-    "docs.missing-param-tag",
-    "docs.missing-return-tag",
-    "docs.useless-docblock",
-    "modernisation.readonly-property-candidate",
-    "modernisation.optional-chaining-candidate",
-    "modernisation.nullish-coalescing-candidate",
-  ]);
-  const unexpected = report.findings.filter((finding) => m02RuleIds.has(finding.ruleId));
+`;
+
+const M02_EXPANSION_RULE_IDS = new Set([
+  "complexity.npath",
+  "waste.commented-out-code",
+  "waste.empty-function",
+  "waste.redundant-variable",
+  "waste.unused-import",
+  "waste.unused-parameter",
+  "naming.identifier-quality",
+  "naming.boolean-prefix",
+  "naming.hungarian-notation",
+  "naming.class-file-mismatch",
+  "docs.stale-param-tag",
+  "docs.missing-param-tag",
+  "docs.missing-return-tag",
+  "docs.useless-docblock",
+  "modernisation.readonly-property-candidate",
+  "modernisation.optional-chaining-candidate",
+  "modernisation.nullish-coalescing-candidate",
+]);
+
+test("core expansion clean fixture stays finding-free", () => {
+  const report = analyseFixture(CLEAN_USER_PROFILE_FIXTURE, { fileName: "UserProfile.ts" });
+  const unexpected = report.findings.filter((finding) => M02_EXPANSION_RULE_IDS.has(finding.ruleId));
   assert.deepEqual(unexpected, []);
 });
 
-test("core expansion finds complexity and waste rules", () => { // Fixture covers noisy complexity and waste signals with threshold override metadata.
-  const report = analyseFixture(
-    `import { readFileSync, writeFileSync } from "node:fs";
+// Fixture covers noisy complexity and waste signals with threshold override metadata.
+const COMPLEXITY_WASTE_FIXTURE = `import { readFileSync, writeFileSync } from "node:fs";
 
 const loadedText = readFileSync("input.txt", "utf8");
 
@@ -219,20 +219,14 @@ function redundantResult(): string {
   const calculatedResult = routeOrder("new", true);
   return calculatedResult;
 }
-`,
-    { config: { rules: { "complexity.npath": { threshold: 20, severity: "warning" } } } },
-  );
+`;
+
+test("core expansion finds complexity and waste rules", () => {
+  const report = analyseFixture(COMPLEXITY_WASTE_FIXTURE, { config: { rules: { "complexity.npath": { threshold: 20, severity: "warning" } } } });
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  for (const ruleId of [
-    "complexity.npath",
-    "waste.commented-out-code",
-    "waste.empty-function",
-    "waste.redundant-variable",
-    "waste.unused-import",
-    "waste.unused-parameter",
-  ]) {
+  ["complexity.npath", "waste.commented-out-code", "waste.empty-function", "waste.redundant-variable", "waste.unused-import", "waste.unused-parameter"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
+  });
   const npathFinding = report.findings.find((finding) => finding.ruleId === "complexity.npath");
   assert.match(npathFinding?.message ?? "", /capped at/);
   assert.equal(typeof npathFinding?.metadata.npath, "number");
@@ -333,29 +327,21 @@ rules:
   assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
 });
 
-test("directory discovery respects root and nested gitignore rules", () => {
-  const report = analyseProject(
-    {
-      ".gitignore": "ignored.ts\nignored-dir/\n*.ignored.ts\n!keep.ignored.ts\n",
-      "tracked.ts": `eval("tracked");
-`,
-      "ignored.ts": `eval("ignored");
-`,
-      "skip.ignored.ts": `eval("skip");
-`,
-      "keep.ignored.ts": `eval("keep");
-`,
-      "ignored-dir/bad.ts": `eval("dir");
-`,
-      "nested/.gitignore": "*.ts\n!allowed.ts\n",
-      "nested/blocked.ts": `eval("blocked");
-`,
-      "nested/allowed.ts": `eval("allowed");
-`,
-    },
-    { shouldSkipConfig: true },
-  );
+// Fixture files for the nested-gitignore discovery test.
+const NESTED_GITIGNORE_FIXTURE = {
+  ".gitignore": "ignored.ts\nignored-dir/\n*.ignored.ts\n!keep.ignored.ts\n",
+  "tracked.ts": `eval("tracked");\n`,
+  "ignored.ts": `eval("ignored");\n`,
+  "skip.ignored.ts": `eval("skip");\n`,
+  "keep.ignored.ts": `eval("keep");\n`,
+  "ignored-dir/bad.ts": `eval("dir");\n`,
+  "nested/.gitignore": "*.ts\n!allowed.ts\n",
+  "nested/blocked.ts": `eval("blocked");\n`,
+  "nested/allowed.ts": `eval("allowed");\n`,
+};
 
+test("directory discovery respects root and nested gitignore rules", () => {
+  const report = analyseProject(NESTED_GITIGNORE_FIXTURE, { shouldSkipConfig: true });
   const expectedTrackedFiles = ["keep.ignored.ts", "nested/allowed.ts", "tracked.ts"];
   assert.deepEqual([...evalFindingFiles(report)].sort(), expectedTrackedFiles); assert.equal(report.paths.analysedFiles, expectedTrackedFiles.length);
   assert.deepEqual(
@@ -392,51 +378,43 @@ test("gitignore fixture expectations match git check-ignore when git is availabl
   }
 });
 
-test("include ignored scans default and Git ignored paths but keeps config policy ignores", () => {
-  const files = {
-    ".gitignore": "ignored.ts\n",
-    ".gruff-ts.yaml": `
-paths:
-  ignore:
-    - "policy/**"
-`,
-    "visible.ts": `eval("visible");
-`,
-    "ignored.ts": `eval("ignored");
-`,
-    "node_modules/pkg/index.ts": `eval("dependency");
-`,
-    "policy/bad.ts": `eval("policy");
-`,
-  };
+// Fixture files for the include-ignored test; policy/** stays ignored regardless of include-ignored.
+const INCLUDE_IGNORED_FIXTURE = {
+  ".gitignore": "ignored.ts\n",
+  ".gruff-ts.yaml": `\npaths:\n  ignore:\n    - "policy/**"\n`,
+  "visible.ts": `eval("visible");\n`,
+  "ignored.ts": `eval("ignored");\n`,
+  "node_modules/pkg/index.ts": `eval("dependency");\n`,
+  "policy/bad.ts": `eval("policy");\n`,
+};
 
-  const normalReport = analyseProject(files, { shouldSkipConfig: false });
+test("include ignored scans default and Git ignored paths but keeps config policy ignores", () => {
+  const normalReport = analyseProject(INCLUDE_IGNORED_FIXTURE, { shouldSkipConfig: false });
   assert.deepEqual([...evalFindingFiles(normalReport)].sort(), ["visible.ts"]);
   assert.deepEqual(
     normalReport.paths.ignoredPaths.filter((path) => ["ignored.ts", "node_modules", "policy"].includes(path)).sort(),
     ["ignored.ts", "node_modules", "policy"],
   );
 
-  const includeReport = analyseProject(files, { shouldIncludeIgnored: true, shouldSkipConfig: false });
+  const includeReport = analyseProject(INCLUDE_IGNORED_FIXTURE, { shouldIncludeIgnored: true, shouldSkipConfig: false });
   assert.deepEqual([...evalFindingFiles(includeReport)].sort(), ["ignored.ts", "node_modules/pkg/index.ts", "visible.ts"]);
   assert.deepEqual(includeReport.paths.ignoredPaths.filter((path) => ["ignored.ts", "node_modules", "policy"].includes(path)).sort(), ["policy"]);
 });
 
-test("directory discovery includes non-gitignored repository config surfaces", () => {
-  const report = analyseProject(
-    {
-      ".gitignore": ".claude/settings.local.json\n.codex/local.json\n",
-      ".agents/config.json": "{}\n",
-      ".claude/settings.json": "{}\n",
-      ".claude/settings.local.json": "{}\n",
-      ".codex/config.toml": "sandbox_mode = \"danger-full-access\"\n",
-      ".codex/local.json": "{}\n",
-      ".github/workflows/ci.yaml": "name: ci\n",
-      ".goat-flow/config.yaml": "version: 1\n",
-    },
-    { shouldSkipConfig: true },
-  );
+// Fixture for the non-gitignored-config-surfaces test.
+const NON_GITIGNORED_CONFIG_FIXTURE = {
+  ".gitignore": ".claude/settings.local.json\n.codex/local.json\n",
+  ".agents/config.json": "{}\n",
+  ".claude/settings.json": "{}\n",
+  ".claude/settings.local.json": "{}\n",
+  ".codex/config.toml": "sandbox_mode = \"danger-full-access\"\n",
+  ".codex/local.json": "{}\n",
+  ".github/workflows/ci.yaml": "name: ci\n",
+  ".goat-flow/config.yaml": "version: 1\n",
+};
 
+test("directory discovery includes non-gitignored repository config surfaces", () => {
+  const report = analyseProject(NON_GITIGNORED_CONFIG_FIXTURE, { shouldSkipConfig: true });
   const expectedAnalysedFileCount = 5;
   assert.equal(report.paths.analysedFiles, expectedAnalysedFileCount); assert.deepEqual(report.paths.ignoredPaths.sort(), [".claude/settings.local.json", ".codex/local.json"]);
 });
@@ -472,9 +450,8 @@ rules:
   assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
 });
 
-test("core expansion finds naming and documentation rules", () => { // Fixture covers naming and documentation rule emissions in one source sample.
-  const report = analyseFixture(
-    `/** CustomerProfile stores customer data. */
+// Fixture covers naming and documentation rule emissions in one source sample.
+const NAMING_DOC_FIXTURE = `/** CustomerProfile stores customer data. */
 export class CustomerRecord {
   public active = true;
 }
@@ -495,21 +472,14 @@ export function calculateScore(amount: number, label: string): number {
 export function updateName(name: string): string {
   return name;
 }
-`,
-    { fileName: "CustomerProfile.ts" },
-  );
+`;
+
+test("core expansion finds naming and documentation rules", () => {
+  const report = analyseFixture(NAMING_DOC_FIXTURE, { fileName: "CustomerProfile.ts" });
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  for (const ruleId of [
-    "naming.boolean-prefix",
-    "naming.hungarian-notation",
-    "naming.class-file-mismatch",
-    "docs.stale-param-tag",
-    "docs.missing-param-tag",
-    "docs.missing-return-tag",
-    "docs.useless-docblock",
-  ]) {
+  ["naming.boolean-prefix", "naming.hungarian-notation", "naming.class-file-mismatch", "docs.stale-param-tag", "docs.missing-param-tag", "docs.missing-return-tag", "docs.useless-docblock"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
+  });
 });
 
 test("core expansion finds modernisation rules", () => {
@@ -531,13 +501,9 @@ test("core expansion finds modernisation rules", () => {
 }
 `);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  for (const ruleId of [
-    "modernisation.readonly-property-candidate",
-    "modernisation.optional-chaining-candidate",
-    "modernisation.nullish-coalescing-candidate",
-  ]) {
+  ["modernisation.readonly-property-candidate", "modernisation.optional-chaining-candidate", "modernisation.nullish-coalescing-candidate"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
+  });
 });
 
 test("parse diagnostics ignore delimiter-looking text in literals", () => {
@@ -593,9 +559,10 @@ test("fixture source text remains inert", () => {
   );
 });
 
-test("scanner guardrail fixtures keep noisy-valid comments strings regex templates inert", () => {
-  const report = analyseProject({
-    "src/generated/noisy-valid.ts": `// @generated by scanner guardrail fixture.
+// Fixture for the scanner guardrail noisy-valid test: commented/templated/regex shapes that must
+// stay quiet across the noisy-valid rule set.
+const SCANNER_GUARDRAIL_NOISY_VALID_FIXTURE = {
+  "src/generated/noisy-valid.ts": `// @generated by scanner guardrail fixture.
 // Prose mentions eval(input), new Function(input), setTimeout("alert(1)"), console.log(value), and var legacyName.
 const literalMention = "eval(input); new Function(input)(); setTimeout(\\"alert(1)\\", 10); console.log(input); var legacyName = input;";
 const templateMention = \`if (ready) { return "ok"; } setInterval("tick()", 10);\`;
@@ -606,14 +573,17 @@ function safeRender(inputText: string): string {
   return matcher.test(literalMention) ? templateMention : cleanedText;
 }
 `,
-    "src/no-trigger.ts": `const localNumber = 1;
+  "src/no-trigger.ts": `const localNumber = 1;
 
 function computeValue(inputText: string): string {
   const paddedText = inputText.padStart(2, "0");
   return paddedText.slice(0, localNumber);
 }
 `,
-  });
+};
+
+test("scanner guardrail fixtures keep noisy-valid comments strings regex templates inert", () => {
+  const report = analyseProject(SCANNER_GUARDRAIL_NOISY_VALID_FIXTURE);
   const noisyRules = new Set([
     "docs.todo-density",
     "modernisation.var-declaration",

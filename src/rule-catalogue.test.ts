@@ -394,14 +394,14 @@ test("documentation catalogue covers comment rule pack", () => {
   const doctrineIds: Set<string> = new Set(riskyRuleQualityDoctrine.filter((entry) => entry.expectedPillar === "documentation").map((entry) => entry.ruleId));
   const documentationRuleIds = descriptors.filter((descriptor) => descriptor.pillar === "documentation").map((descriptor) => descriptor.ruleId);
 
-  for (const ruleId of documentationRuleIds) {
+  documentationRuleIds.forEach((ruleId) => {
     assert.notEqual(descriptorByRuleId.get(ruleId), undefined, `missing descriptor for ${ruleId}`);
     assert.equal(configSource.includes(`  ${ruleId}:`), true, `missing config entry for ${ruleId}`);
     assert.equal(coverageIds.has(ruleId), true, `missing cumulative fixture coverage for ${ruleId}`);
-  }
-  for (const ruleId of riskyRuleIdsRequiringNoisyValidProof.filter((ruleId) => ruleId.startsWith("docs."))) {
+  });
+  riskyRuleIdsRequiringNoisyValidProof.filter((ruleId) => ruleId.startsWith("docs.")).forEach((ruleId) => {
     assert.equal(doctrineIds.has(ruleId), true, `missing documentation doctrine for ${ruleId}`);
-  }
+  });
 });
 
 test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
@@ -410,21 +410,21 @@ test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
   assert.deepEqual(descriptorIds, [...descriptorIds].sort());
   assert.equal(new Set(descriptorIds).size, descriptorIds.length);
 
-  for (const descriptor of descriptors) {
+  descriptors.forEach((descriptor) => {
     assert.match(descriptor.ruleId, /^[a-z-]+\.[a-z0-9-]+$/);
     assert.ok(descriptor.description.length > 10, `description for ${descriptor.ruleId}`);
     assert.ok(descriptor.remediation.length > 10, `remediation for ${descriptor.ruleId}`);
     assertSortedUniqueOptionKeys(descriptor);
-  }
+  });
 
   const coverageIds = ruleCatalogueCoverageRuleIds();
   const descriptorIdSet = new Set(descriptorIds);
-  for (const ruleId of coverageIds) {
+  coverageIds.forEach((ruleId) => {
     assert.equal(descriptorIdSet.has(ruleId), true, `missing descriptor for emitted rule ${ruleId}`);
-  }
-  for (const descriptor of descriptors) {
+  });
+  descriptors.forEach((descriptor) => {
     assertDescriptorCoverageOrExemption(descriptor, coverageIds);
-  }
+  });
 });
 
 test("rule quality doctrine covers risky scanner descriptors", () => {
@@ -434,39 +434,55 @@ test("rule quality doctrine covers risky scanner descriptors", () => {
   const categoryVocabulary = [...RULE_QUALITY_FIXTURE_CATEGORIES].sort();
 
   const exceptionOnlyIds = riskyRuleIdsRequiringNoisyValidProof.filter((ruleId) => !doctrine.has(ruleId));
-  const doctrineIds = riskyRuleIdsRequiringNoisyValidProof.filter((ruleId) => doctrine.has(ruleId));
+  const doctrineRuleIds = riskyRuleIdsRequiringNoisyValidProof.filter((ruleId) => doctrine.has(ruleId));
 
-  for (const ruleId of riskyRuleIdsRequiringNoisyValidProof) {
+  riskyRuleIdsRequiringNoisyValidProof.forEach((ruleId) => {
     assert.notEqual(descriptors.get(ruleId), undefined, `risky rule has no descriptor: ${ruleId}`);
     assert.equal(Boolean(doctrine.get(ruleId)) || Boolean(exceptions.get(ruleId)), true, `risky rule missing noisy-valid doctrine or exception: ${ruleId}`);
-  }
+  });
 
-  for (const ruleId of exceptionOnlyIds) {
+  exceptionOnlyIds.forEach((ruleId) => {
     const exception = exceptions.get(ruleId) ?? "";
     assert.ok(exception.length > 80, `risky rule exception is too terse: ${ruleId}`);
-  }
+  });
 
-  for (const ruleId of doctrineIds) {
-    const descriptor = descriptors.get(ruleId);
-    const entry = doctrine.get(ruleId);
-    assert.ok(entry, `expected doctrine entry for ${ruleId}`);
-    assert.equal(exceptions.get(ruleId), undefined, `risky rule should use doctrine or exception, not both: ${ruleId}`);
-    assert.equal(descriptor?.pillar, entry.expectedPillar, `pillar drift for ${ruleId}`);
-    assert.equal(descriptor?.severity, entry.expectedSeverity, `severity drift for ${ruleId}`);
-    assert.equal(descriptor?.confidence, entry.expectedConfidence, `confidence drift for ${ruleId}`);
-    assert.deepEqual([...entry.fixtureCategories].sort(), categoryVocabulary, `fixture vocabulary for ${ruleId}`);
-    for (const [field, value] of [
-      ["signalSource", entry.signalSource],
-      ["invalidFixture", entry.invalidFixture],
-      ["noisyValidFixture", entry.noisyValidFixture],
-      ["missingInvalidFixture", entry.missingInvalidFixture],
-      ["falsePositiveEscapeHatch", entry.falsePositiveEscapeHatch],
-      ["fingerprintStability", entry.fingerprintStability],
-    ] as const) {
-      assert.ok(value.length > 20, `${field} is too terse for ${ruleId}`);
-    }
-  }
+  doctrineRuleIds.forEach((ruleId) => assertRiskyRuleDoctrineEntry({ ruleId, descriptors, doctrine, exceptions, categoryVocabulary }));
 });
+
+// `RiskyRuleDoctrineCheck` bundles per-rule lookup tables for risky-rule doctrine assertions.
+// Passed as a single object so the helper stays under the size.parameter-count budget.
+interface RiskyRuleDoctrineCheck {
+  ruleId: string;
+  descriptors: Map<string, RuleQualityDescriptor>;
+  doctrine: Map<string, RuleQualityDoctrineCase>;
+  exceptions: Map<string, string>;
+  categoryVocabulary: readonly string[];
+}
+
+// Verifies that a single doctrine entry matches its descriptor and that every fixture-category
+// field is non-terse. Factored out so the test body avoids an inline branch; the descriptor-to-
+// entry mapping must stay stable so doctrine drift is caught even when entries are added.
+function assertRiskyRuleDoctrineEntry(check: RiskyRuleDoctrineCheck): void {
+  const { ruleId, descriptors, doctrine, exceptions, categoryVocabulary } = check;
+  const descriptor = descriptors.get(ruleId);
+  const entry = doctrine.get(ruleId);
+  assert.ok(entry, `expected doctrine entry for ${ruleId}`);
+  assert.equal(exceptions.get(ruleId), undefined, `risky rule should use doctrine or exception, not both: ${ruleId}`);
+  assert.equal(descriptor?.pillar, entry.expectedPillar, `pillar drift for ${ruleId}`);
+  assert.equal(descriptor?.severity, entry.expectedSeverity, `severity drift for ${ruleId}`);
+  assert.equal(descriptor?.confidence, entry.expectedConfidence, `confidence drift for ${ruleId}`);
+  assert.deepEqual([...entry.fixtureCategories].sort(), categoryVocabulary, `fixture vocabulary for ${ruleId}`);
+  ([
+    ["signalSource", entry.signalSource],
+    ["invalidFixture", entry.invalidFixture],
+    ["noisyValidFixture", entry.noisyValidFixture],
+    ["missingInvalidFixture", entry.missingInvalidFixture],
+    ["falsePositiveEscapeHatch", entry.falsePositiveEscapeHatch],
+    ["fingerprintStability", entry.fingerprintStability],
+  ] as const).forEach(([field, value]) => {
+    assert.ok(value.length > 20, `${field} is too terse for ${ruleId}`);
+  });
+}
 
 test("rule descriptor thresholds and options match implementation and config defaults", () => {
   const descriptors = ruleDescriptors();

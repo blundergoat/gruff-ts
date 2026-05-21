@@ -96,13 +96,13 @@ const expandedRuleIds = new Set([
 test("cumulative expanded fixture covers every new rule with unique fingerprints", () => {
   const report = analyseProject(cumulativeExpandedFixtureFiles(), cumulativeExpandedFixtureOptions());
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  for (const ruleId of expandedRuleIds) {
+  expandedRuleIds.forEach((ruleId: string) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  }
+  });
   const descriptorIds = new Set(ruleDescriptors().map((descriptor) => descriptor.ruleId));
-  for (const ruleId of ruleIds) {
+  ruleIds.forEach((ruleId) => {
     assert.equal(descriptorIds.has(ruleId), true, `missing descriptor for emitted rule ${ruleId}`);
-  }
+  });
   assert.equal(new Set(report.findings.map((finding) => finding.fingerprint)).size, report.findings.length);
 
   const sampleMessages = new Map(report.findings.filter((finding) => expandedRuleIds.has(finding.ruleId)).map((finding) => [finding.ruleId, finding.message]));

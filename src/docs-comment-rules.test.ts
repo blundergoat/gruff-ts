@@ -36,9 +36,9 @@ function parseDiagnostics(file: DiagnosticSourceFile, source: string): string {
   return source + file.displayPath;
 }
 `);
-  for (const ruleId of ["docs.missing-file-overview", "docs.missing-interface-doc", "docs.missing-function-doc"]) {
+  ["docs.missing-file-overview", "docs.missing-interface-doc", "docs.missing-function-doc"].forEach((ruleId) => {
     assert.equal(documentedReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
-  }
+  });
 });
 
 test("comment quality rules extract only real comments", () => {
@@ -232,15 +232,15 @@ function undocumentedSideEffect(path: string): void {
 }
 `);
   const findingsByRule = new Map<string, Set<string>>();
-  for (const finding of report.findings) {
+  report.findings.forEach((finding) => {
     const symbols = findingsByRule.get(finding.ruleId) ?? new Set<string>();
     symbols.add(finding.symbol ?? String(finding.metadata.thresholdKind ?? "-"));
     findingsByRule.set(finding.ruleId, symbols);
-  }
+  });
 
-  for (const [ruleId, symbol, expected] of documentationContextExpectations()) {
+  documentationContextExpectations().forEach(([ruleId, symbol, expected]) => {
     assert.equal(findingsByRule.get(ruleId)?.has(symbol), expected, `${ruleId} ${symbol}`);
-  }
+  });
 });
 
 /** Generates repeated branch lines without making the outer test look complex. */
@@ -269,8 +269,8 @@ function documentationContextExpectations(): Array<[string, string, boolean]> {
 }
 
 // Fixture covers source-literal detection and fingerprint stability without private helper access.
-test("fixture purpose detector matrix", () => {
-  const source = [
+function fixturePurposeMatrixSource(): string {
+  return [
     "const report = analyseFixture(`",
     ...largeFixtureSourceLines("matrixValue"),
     "`);",
@@ -299,7 +299,10 @@ test("fixture purpose detector matrix", () => {
     "const generatedFixtureSource = Array.from({ length: 13 }, (_value, index) => \"const generated\" + index + \" = \" + index + \";\").join(\"\\n\");",
     "const generatedWithoutPurposeFixtureSource = Array.from({ length: 13 }, (_value, index) => \"const generatedMissing\" + index + \" = \" + index + \";\").join(\"\\n\");",
   ].join("\n");
-  const report = analyseFixture(source, { fileName: "fixture-purpose.test.ts" });
+}
+
+test("fixture purpose detector matrix", () => {
+  const report = analyseFixture(fixturePurposeMatrixSource(), { fileName: "fixture-purpose.test.ts" });
   const findings = report.findings.filter((finding) => finding.ruleId === "docs.fixture-purpose-missing");
   const symbols = new Set(findings.map((finding) => finding.symbol));
 
@@ -319,8 +322,8 @@ test("fixture purpose detector matrix", () => {
 });
 
 // Fixture covers setup-block detection and stable fixture-purpose fingerprints.
-test("fixture purpose flags large fixture-heavy test setup without flagging documented setup", () => {
-  const source = [
+function fixturePurposeSetupBlockSource(): string {
+  return [
     "test(\"builds noisy fixture setup\", () => {",
     ...Array.from({ length: 13 }, (_, index) => `  const fixtureValue${index} = ${index};`),
     "  const report = analyseProject({ \"bad.ts\": \"const value = 1;\" });",
@@ -334,7 +337,10 @@ test("fixture purpose flags large fixture-heavy test setup without flagging docu
     "  assert.ok(report);",
     "});",
   ].join("\n");
-  const report = analyseFixture(source, { fileName: "fixture-purpose.test.ts" });
+}
+
+test("fixture purpose flags large fixture-heavy test setup without flagging documented setup", () => {
+  const report = analyseFixture(fixturePurposeSetupBlockSource(), { fileName: "fixture-purpose.test.ts" });
   const fixturePurposeFindings = report.findings.filter((finding) => finding.ruleId === "docs.fixture-purpose-missing");
   assert.equal(fixturePurposeFindings.some((finding) => finding.symbol === "builds noisy fixture setup"), true);
   assert.equal(fixturePurposeFindings.some((finding) => finding.symbol === "builds documented fixture setup"), false);
