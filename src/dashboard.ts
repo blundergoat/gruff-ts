@@ -74,11 +74,11 @@ function renderDashboardScan(response: ServerResponse, input: DashboardRouteInpu
     chdir(input.root);
     const report = analyse({
       paths: [input.scanPath],
-      noConfig: false,
+      shouldSkipConfig: false,
       format: "html",
       failOn: "none",
-      includeIgnored: false,
-      noBaseline: false,
+      shouldIncludeIgnored: false,
+      shouldSkipBaseline: false,
     });
     writeHtmlResponse(response, 200, renderHtml(report, { projectRoot: input.root, scanPath: input.scanPath }));
   } catch (error) {

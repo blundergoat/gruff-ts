@@ -28,15 +28,15 @@ export type FailThreshold = "none" | "advisory" | "warning" | "error";
 export interface AnalysisOptions {
   paths: string[];
   config?: string;
-  noConfig: boolean;
+  shouldSkipConfig: boolean;
   format: OutputFormat;
   failOn: FailThreshold;
-  includeIgnored: boolean;
+  shouldIncludeIgnored: boolean;
   diff?: string;
   historyFile?: string;
   baseline?: string;
   generateBaseline?: string;
-  noBaseline: boolean;
+  shouldSkipBaseline: boolean;
 }
 
 /** Loaded analyzer configuration derived from optional gruff config files. */

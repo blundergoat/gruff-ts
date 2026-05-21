@@ -101,8 +101,9 @@ test("comment quality requires tracking for TODO markers", () => {
 function trackedTodos(): void {}
 `);
   const todoFindings = report.findings.filter((finding) => finding.ruleId === "docs.todo-without-tracking");
+  const expectedUntrackedTodoLine = 8;
   assert.equal(todoFindings.length, 1);
-  assert.equal(todoFindings[0]?.line, 8);
+  assert.equal(todoFindings[0]?.line, expectedUntrackedTodoLine);
 });
 
 test("comment quality requires rationale for non-TypeScript suppressions", () => {
@@ -307,7 +308,8 @@ test("fixture purpose detector matrix", () => {
   assert.equal(symbols.has("generatedWithoutPurposeFixtureSource"), true);
   assert.equal(symbols.has("PARSER_FIXTURE_SOURCE"), false);
   assert.equal(symbols.has("PROSE_FIXTURE_SOURCE"), false);
-  assert.equal(findings.length, 3);
+  const expectedFixturePurposeFindings = 3;
+  assert.equal(findings.length, expectedFixturePurposeFindings);
   assert.equal(findings.every((finding) => Number(finding.metadata.fixtureLines) > 12), true);
 
   const changedBodyReport = analyseFixture(["const report = analyseFixture(`", ...largeFixtureSourceLines("changedMatrixValue"), "`);"].join("\n"), { fileName: "fixture-purpose.test.ts" });

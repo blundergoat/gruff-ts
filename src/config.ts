@@ -47,12 +47,12 @@ function absolutize(projectRoot: string, path: string): string {
   return isAbsolute(path) ? path : join(projectRoot, path);
 }
 
-// Reads the YAML config from disk (if any) and overlays user values onto `defaultConfig`. `noConfig`
+// Reads the YAML config from disk (if any) and overlays user values onto `defaultConfig`. `shouldSkipConfig`
 // is the explicit opt-out; missing default file is silent (returns defaults) so projects without
 // `.gruff-ts.yaml` work zero-config. Throws on malformed YAML — the caller surfaces it as a fatal CLI error.
 function loadConfig(projectRoot: string, options: AnalysisOptions): Config {
   const config = defaultConfig();
-  if (options.noConfig) {
+  if (options.shouldSkipConfig) {
     return config;
   }
   const path = selectedConfigPath(projectRoot, options);

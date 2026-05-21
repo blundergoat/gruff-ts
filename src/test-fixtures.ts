@@ -29,8 +29,8 @@ export interface AnalyseProjectOptions {
   config?: Record<string, unknown>;
   configPath?: string;
   executableFiles?: string[];
-  includeIgnored?: boolean;
-  noConfig?: boolean;
+  shouldIncludeIgnored?: boolean;
+  shouldSkipConfig?: boolean;
   paths?: string[];
 }
 
@@ -46,7 +46,7 @@ export function analyseFixture(source: string, options: AnalyseFixtureOptions = 
     {
       ...(options.config ? { config: options.config } : {}),
       ...(typeof options.configPath === "string" ? { configPath: options.configPath } : {}),
-      ...(typeof options.noConfig === "boolean" ? { noConfig: options.noConfig } : {}),
+      ...(typeof options.shouldSkipConfig === "boolean" ? { shouldSkipConfig: options.shouldSkipConfig } : {}),
     },
   );
 }
@@ -90,11 +90,11 @@ export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions)
   return analyse({
     paths: options.paths ?? ["."],
     ...(typeof options.configPath === "string" ? { config: options.configPath } : {}),
-    noConfig: options.noConfig ?? !(options.config || options.configPath),
+    shouldSkipConfig: options.shouldSkipConfig ?? !(options.config || options.configPath),
     format: "json",
     failOn: "none",
-    includeIgnored: options.includeIgnored ?? false,
-    noBaseline: true,
+    shouldIncludeIgnored: options.shouldIncludeIgnored ?? false,
+    shouldSkipBaseline: true,
   });
 }
 
@@ -182,7 +182,7 @@ export function isGitIgnoredByGit(projectRoot: string, path: string): boolean {
 }
 
 // Starts a dashboard server for one test and always closes it afterward.
-export async function withDashboard(projectRoot: string, run: (baseUrl: string) => Promise<void>): Promise<void> {
+export async function withDashboard(projectRoot: string, run: (endpoint: string) => Promise<void>): Promise<void> {
   const port = await freePort();
   const child = spawn("./bin/gruff-ts", ["dashboard", "--host", "127.0.0.1", "--port", String(port), "--project-root", projectRoot], {
     cwd: REPO_ROOT,
@@ -197,10 +197,10 @@ export async function withDashboard(projectRoot: string, run: (baseUrl: string) 
   child.stderr.on("data", (chunk: string) => {
     output += chunk;
   });
-  const baseUrl = `http://127.0.0.1:${port}`;
+  const baseEndpoint = `http://127.0.0.1:${port}`;
   try {
-    await waitForUrl(`${baseUrl}/health`, output);
-    await run(baseUrl);
+    await waitForEndpoint(`${baseEndpoint}/health`, output);
+    await run(baseEndpoint);
   } finally {
     child.kill();
     await new Promise<void>((resolve) => {
@@ -232,14 +232,14 @@ export async function freePort(): Promise<number> {
   });
 }
 
-// Polls a dashboard URL until it responds or reports the captured server output.
-export async function waitForUrl(url: string, output: string): Promise<void> {
+// Polls a dashboard endpoint until it responds or reports the captured server output.
+export async function waitForEndpoint(endpoint: string, output: string): Promise<void> {
   const deadline = Date.now() + 5000;
   const processOutput = output;
   let lastError: unknown;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(endpoint);
       if (response.ok) {
         return;
       }
@@ -249,14 +249,14 @@ export async function waitForUrl(url: string, output: string): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error(`timed out waiting for ${url}: ${String(lastError)}\n${processOutput}`);
+  throw new Error(`timed out waiting for ${endpoint}: ${String(lastError)}\n${processOutput}`);
 }
 
 // Fetches response text and fails the test with status details on non-OK responses.
-export async function fetchText(url: string): Promise<string> {
-  const response = await fetch(url);
+export async function fetchText(endpoint: string): Promise<string> {
+  const response = await fetch(endpoint);
   const text = await response.text();
-  assert.equal(response.ok, true, `${url} returned ${response.status}: ${text}`);
+  assert.equal(response.ok, true, `${endpoint} returned ${response.status}: ${text}`);
   return text;
 }
 

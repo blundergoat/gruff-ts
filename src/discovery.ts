@@ -67,7 +67,7 @@ function discoverSourceInput(projectRoot: string, input: string, options: Analys
     pushSourceFile(projectRoot, absolute, discovery.files);
     return;
   }
-  const gitIgnoreRules = options.includeIgnored ? [] : gitIgnoreRulesForDirectory(projectRoot, absolute);
+  const gitIgnoreRules = options.shouldIncludeIgnored ? [] : gitIgnoreRulesForDirectory(projectRoot, absolute);
   walk(projectRoot, absolute, options, config, discovery.ignoredPaths, discovery.files, gitIgnoreRules);
 }
 
@@ -90,7 +90,7 @@ function walk(
       }
     }
     if (entry.isDirectory()) {
-      walk(projectRoot, absolute, options, config, ignoredPaths, files, options.includeIgnored ? gitIgnoreRules : appendGitIgnoreRules(projectRoot, absolute, gitIgnoreRules));
+      walk(projectRoot, absolute, options, config, ignoredPaths, files, options.shouldIncludeIgnored ? gitIgnoreRules : appendGitIgnoreRules(projectRoot, absolute, gitIgnoreRules));
     } else if (entry.isFile()) {
       pushSourceFile(projectRoot, absolute, files);
     }
@@ -133,13 +133,13 @@ function isIgnoredDiscoveryPath(display: string, isDirectory: boolean, options: 
 // Default directory ignores only apply to directories, never to files — a file named "tmp" should
 // still be scanned. `--include-ignored` opts out entirely.
 function isDefaultIgnoredDiscoveryPath(display: string, isDirectory: boolean, options: AnalysisOptions): boolean {
-  return !options.includeIgnored && isDirectory && isDefaultIgnoredDir(display);
+  return !options.shouldIncludeIgnored && isDirectory && isDefaultIgnoredDir(display);
 }
 
 // Mirrors git's own rule evaluation order; bypassed entirely by `--include-ignored` for callers
 // that want to scan the full tree.
 function isGitIgnoredDiscoveryPath(display: string, isDirectory: boolean, options: AnalysisOptions, gitIgnoreRules: GitIgnoreRule[]): boolean {
-  return !options.includeIgnored && isGitIgnoredPath(gitIgnoreRules, display, isDirectory);
+  return !options.shouldIncludeIgnored && isGitIgnoredPath(gitIgnoreRules, display, isDirectory);
 }
 
 // Walks .gitignore files top-down from project root to the target directory so child rules can

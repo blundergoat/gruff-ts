@@ -285,7 +285,7 @@ rules:
     severity: warning
 `,
     },
-    { noConfig: false },
+    { shouldSkipConfig: false },
   );
   assert.equal(report.findings.some((finding) => finding.ruleId === "complexity.npath"), true);
 });
@@ -312,7 +312,7 @@ allowlists:
   acceptedAbbreviations: [xy]
 `,
     },
-    { noConfig: false },
+    { shouldSkipConfig: false },
   );
   assert.equal(report.findings.some((finding) => finding.ruleId === "naming.short-variable"), false);
 });
@@ -353,23 +353,19 @@ test("directory discovery respects root and nested gitignore rules", () => {
       "nested/allowed.ts": `eval("allowed");
 `,
     },
-    { noConfig: true },
+    { shouldSkipConfig: true },
   );
 
-  assert.deepEqual([...evalFindingFiles(report)].sort(), ["keep.ignored.ts", "nested/allowed.ts", "tracked.ts"]);
-  assert.equal(report.paths.analysedFiles, 3);
+  const expectedTrackedFiles = ["keep.ignored.ts", "nested/allowed.ts", "tracked.ts"];
+  assert.deepEqual([...evalFindingFiles(report)].sort(), expectedTrackedFiles); assert.equal(report.paths.analysedFiles, expectedTrackedFiles.length);
   assert.deepEqual(
     report.paths.ignoredPaths.filter((path) => ["ignored-dir", "ignored.ts", "nested/blocked.ts", "skip.ignored.ts"].includes(path)).sort(),
     ["ignored-dir", "ignored.ts", "nested/blocked.ts", "skip.ignored.ts"],
   );
 });
 
-// Fixture covers gitignore parity against git check-ignore for ignored and tracked path cases.
-test("gitignore fixture expectations match git check-ignore when git is available", () => {
-  if (!gitAvailable()) {
-    return;
-  }
-
+// Fixture covers gitignore parity against git check-ignore for ignored and tracked path cases; spawns git and writes a temporary filesystem tree.
+test("gitignore fixture expectations match git check-ignore when git is available", { skip: !gitAvailable() }, () => {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-gitignore-"));
   try {
     writeFixtureFiles(dir, {
@@ -414,14 +410,14 @@ paths:
 `,
   };
 
-  const normalReport = analyseProject(files, { noConfig: false });
+  const normalReport = analyseProject(files, { shouldSkipConfig: false });
   assert.deepEqual([...evalFindingFiles(normalReport)].sort(), ["visible.ts"]);
   assert.deepEqual(
     normalReport.paths.ignoredPaths.filter((path) => ["ignored.ts", "node_modules", "policy"].includes(path)).sort(),
     ["ignored.ts", "node_modules", "policy"],
   );
 
-  const includeReport = analyseProject(files, { includeIgnored: true, noConfig: false });
+  const includeReport = analyseProject(files, { shouldIncludeIgnored: true, shouldSkipConfig: false });
   assert.deepEqual([...evalFindingFiles(includeReport)].sort(), ["ignored.ts", "node_modules/pkg/index.ts", "visible.ts"]);
   assert.deepEqual(includeReport.paths.ignoredPaths.filter((path) => ["ignored.ts", "node_modules", "policy"].includes(path)).sort(), ["policy"]);
 });
@@ -438,11 +434,11 @@ test("directory discovery includes non-gitignored repository config surfaces", (
       ".github/workflows/ci.yaml": "name: ci\n",
       ".goat-flow/config.yaml": "version: 1\n",
     },
-    { noConfig: true },
+    { shouldSkipConfig: true },
   );
 
-  assert.equal(report.paths.analysedFiles, 5);
-  assert.deepEqual(report.paths.ignoredPaths.sort(), [".claude/settings.local.json", ".codex/local.json"]);
+  const expectedAnalysedFileCount = 5;
+  assert.equal(report.paths.analysedFiles, expectedAnalysedFileCount); assert.deepEqual(report.paths.ignoredPaths.sort(), [".claude/settings.local.json", ".codex/local.json"]);
 });
 
 test("explicit file inputs are scanned even when gitignored", () => {
@@ -452,7 +448,7 @@ test("explicit file inputs are scanned even when gitignored", () => {
       "ignored.ts": `eval("ignored");
 `,
     },
-    { noConfig: true, paths: ["ignored.ts"] },
+    { shouldSkipConfig: true, paths: ["ignored.ts"] },
   );
 
   assert.deepEqual([...evalFindingFiles(report)], ["ignored.ts"]);
@@ -471,7 +467,7 @@ rules:
     enabled: false
 `,
     },
-    { noConfig: false },
+    { shouldSkipConfig: false },
   );
   assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
 });
@@ -677,8 +673,8 @@ function work(): void {
     config: { rules: { "docs.todo-density": { threshold: 2, severity: "advisory" } } },
   });
   const finding = report.findings.find((candidate) => candidate.ruleId === "docs.todo-density");
-  assert.equal(finding?.message, "File contains 2 TODO/FIXME markers.");
-  assert.equal(finding?.line, 4);
+  const expectedFirstTodoLine = 4;
+  assert.equal(finding?.message, "File contains 2 TODO/FIXME markers."); assert.equal(finding?.line, expectedFirstTodoLine);
 
   const relaxedReport = analyseFixture(source, {
     config: { rules: { "docs.todo-density": { threshold: 3, severity: "advisory" } } },

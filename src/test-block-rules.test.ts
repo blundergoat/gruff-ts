@@ -15,11 +15,11 @@ const SOURCE_FILE: SourceFile = {
 
 const BASE_OPTIONS: AnalysisOptions = {
   paths: [],
-  noConfig: true,
+  shouldSkipConfig: true,
   format: "json",
   failOn: "none",
-  includeIgnored: false,
-  noBaseline: true,
+  shouldIncludeIgnored: false,
+  shouldSkipBaseline: true,
 };
 
 const TEST_START_LINE = 3;

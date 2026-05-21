@@ -12,10 +12,14 @@ import type { Config, Finding, Severity } from "./types.ts";
 
 // Read-once snapshot of a discovered file. Lines are cached because cross-file project rules
 // scan each source repeatedly — splitting once amortises the cost across rule passes.
+// `templateMaskedLines` mirrors `lines` but blanks out `` ` `` template-literal body characters
+// (single/double-quoted strings stay intact), so syntax-pattern rules can skip fixture
+// template-literal content without losing real `import ... from "..."` detection.
 export interface ProjectSource {
   file: SourceFile;
   source: string;
   lines: string[];
+  templateMaskedLines: string[];
 }
 
 // Project-wide aggregate built once per scan and reused by every architecture rule (cycle detection,
@@ -257,7 +261,7 @@ function largeModuleConcentrationFinding(candidate: LargeModuleCandidate, severi
 // specifier) so the import graph and cycle detection both see the same stable, deterministic order.
 function importEdgesForSource(source: ProjectSource, sourcePaths: Set<string>): ImportEdge[] {
   const edges: ImportEdge[] = [];
-  for (const [index, line] of source.lines.entries()) {
+  for (const [index, line] of source.templateMaskedLines.entries()) {
     edges.push(...importEdgesForLine(source.file.displayPath, line, index + 1, sourcePaths));
   }
   return edges.sort((left, right) => left.line - right.line || left.specifier.localeCompare(right.specifier));

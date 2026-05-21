@@ -23,7 +23,7 @@ import { analyseTestBlock } from "./test-block-rules.ts";
 import { analyseProjectConfigRules } from "./project-config-rules.ts";
 import { scoreReport, summarize } from "./scoring.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
-import { maskNonCode, parseDiagnostics } from "./source-text.ts";
+import { maskNonCode, maskTemplateLiteralBodies, parseDiagnostics } from "./source-text.ts";
 import { todoMarkerSummary } from "./text-scans.ts";
 import type { AnalysisOptions, AnalysisReport, Config, Finding, RunDiagnostic } from "./types.ts";
 
@@ -151,7 +151,8 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
     try {
       const source = readFileSync(file.absolutePath, "utf8");
       const lines = source.split(/\r?\n/);
-      projectSources.push({ file, source, lines });
+      const templateMaskedLines = maskTemplateLiteralBodies(source).split(/\r?\n/);
+      projectSources.push({ file, source, lines, templateMaskedLines });
       diagnostics.push(...parseDiagnostics(file, source));
       findings.push(...analyseSource(file, source, config));
     } catch (error) {
@@ -189,7 +190,7 @@ function applyBaselineOptions(projectRoot: string, options: AnalysisOptions, fin
     return generateBaselineResult(projectRoot, options.generateBaseline, findings);
   }
 
-  if (options.noBaseline) {
+  if (options.shouldSkipBaseline) {
     return { findings };
   }
 

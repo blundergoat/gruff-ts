@@ -393,12 +393,17 @@ function pushMagicThresholdFindings(file: SourceFile, source: string, codeSource
 // Two candidate sources: a named constant (`const maxThings = N`) or a `threshold()` default call.
 // Either is treated as policy-shaped numeric — ordinary arithmetic constants stay quiet.
 function magicThresholdCandidate(rawLine: string, codeLine: string): MagicThresholdCandidate | undefined {
-  return namedThresholdCandidate(rawLine) ?? configDefaultThresholdCandidate(rawLine, codeLine);
+  return namedThresholdCandidate(rawLine, codeLine) ?? configDefaultThresholdCandidate(rawLine, codeLine);
 }
 
 // Identifiers ending in Threshold/Limit/Cap/Budget/Timeout/Tolerance/Weight/Score/Max/Min/Default/
 // Entropy/Length signal "policy number". `-1`, `0`, `1`, `2` are exempt because they're usually sentinels.
-function namedThresholdCandidate(rawLine: string): MagicThresholdCandidate | undefined {
+// Gates on the masked `codeLine` so template-literal fixture content (where the same line appears as
+// source text but inside a backtick) does not trip the rule.
+function namedThresholdCandidate(rawLine: string, codeLine: string): MagicThresholdCandidate | undefined {
+  if (!/\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*(?:Threshold|Limit|Cap|Budget|Timeout|Tolerance|Weight|Score|Max|Min|Default|Entropy|Length)[A-Za-z0-9_$]*\b/i.test(codeLine)) {
+    return undefined;
+  }
   const named = rawLine.match(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*(?:Threshold|Limit|Cap|Budget|Timeout|Tolerance|Weight|Score|Max|Min|Default|Entropy|Length)[A-Za-z0-9_$]*)\b[^=\n]*=\s*(-?\d+(?:\.\d+)?)/i);
   const label = named?.[1];
   const thresholdValue = named?.[2];

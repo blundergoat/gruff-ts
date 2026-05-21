@@ -336,10 +336,12 @@ function safe(userId: string): void {
   }
 
   const newFunctionFindings = report.findings.filter((finding) => finding.ruleId === "security.new-function");
+  const expectedStringTimerFindings = 3;
+  const expectedProtoAccessFindings = 2;
   assert.equal(newFunctionFindings.length, 1);
-  assert.equal(report.findings.filter((finding) => finding.ruleId === "security.string-timer").length, 3);
+  assert.equal(report.findings.filter((finding) => finding.ruleId === "security.string-timer").length, expectedStringTimerFindings);
   assert.equal(report.findings.filter((finding) => finding.ruleId === "security.javascript-url").length, 1);
-  assert.equal(report.findings.filter((finding) => finding.ruleId === "security.proto-access").length, 2);
+  assert.equal(report.findings.filter((finding) => finding.ruleId === "security.proto-access").length, expectedProtoAccessFindings);
 });
 
 test("process exec exempts fixed local test harnesses but reports dynamic commands", () => {
@@ -366,9 +368,10 @@ function run(userCommand: string): void {
   });
 
   const processExecFindings = report.findings.filter((finding) => finding.ruleId === "security.process-exec");
+  const expectedRunnerExecFindings = 2;
   assert.equal(processExecFindings.some((finding) => finding.filePath === "src/harness.test.ts"), false);
   assert.equal(processExecFindings.some((finding) => finding.filePath === "src/test-fixtures.ts"), false);
-  assert.equal(processExecFindings.filter((finding) => finding.filePath === "src/runner.ts").length, 2);
+  assert.equal(processExecFindings.filter((finding) => finding.filePath === "src/runner.ts").length, expectedRunnerExecFindings);
 });
 
 test("risk expansion finds direct modernisation and waste rules with safe non-candidates", () => {
@@ -421,8 +424,9 @@ function finish(): void {
   ]) {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   }
+  const expectedBooleanCastFindings = 2;
   assert.equal(report.findings.filter((finding) => finding.ruleId === "modernisation.loose-equality").length, 1);
-  assert.equal(report.findings.filter((finding) => finding.ruleId === "waste.redundant-boolean-cast").length, 2);
+  assert.equal(report.findings.filter((finding) => finding.ruleId === "waste.redundant-boolean-cast").length, expectedBooleanCastFindings);
 });
 
 test("risk expansion finds scoped test-quality rules", () => {

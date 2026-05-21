@@ -132,7 +132,7 @@ function assertBaselineRoundTrip(baselineDir: string): number {
   const [target] = entries;
   assertBaselineEntryMetadata(baseline.schemaVersion, target);
 
-  const suppressed = analyse({ ...baseOptions, noBaseline: false, baseline: baselinePath });
+  const suppressed = analyse({ ...baseOptions, shouldSkipBaseline: false, baseline: baselinePath });
   assert.equal(suppressed.baseline?.suppressed, report.findings.length);
   assert.equal(suppressed.findings.length, 0);
   assertMismatchedBaselineEntryReportsFinding(baselineDir, "wrong-rule.json", baseline, target, (entry) => ({ ...entry, ruleId: "security.wrong-rule" }));
@@ -144,11 +144,11 @@ function assertBaselineRoundTrip(baselineDir: string): number {
 function baselineRoundTripOptions() {
   return {
     paths: ["."],
-    noConfig: true,
+    shouldSkipConfig: true,
     format: "json" as const,
     failOn: "none" as const,
-    includeIgnored: false,
-    noBaseline: true,
+    shouldIncludeIgnored: false,
+    shouldSkipBaseline: true,
   };
 }
 
@@ -210,7 +210,7 @@ function assertMismatchedBaselineEntryReportsFinding(
   const path = join(baselineDir, fileName);
   const entries = (baseline.entries ?? []).map((entry, index) => (index === 0 ? mutateFirstEntry(entry) : entry));
   writeFileSync(path, JSON.stringify({ ...baseline, entries }));
-  const report = analyse({ ...baselineRoundTripOptions(), noBaseline: false, baseline: path });
+  const report = analyse({ ...baselineRoundTripOptions(), shouldSkipBaseline: false, baseline: path });
   assert.equal(report.findings.some((finding) => finding.fingerprint === target.fingerprint && finding.ruleId === target.ruleId && finding.filePath === target.filePath), true);
 }
 
@@ -244,7 +244,7 @@ function unsafe(value: string): void {
   );
 });
 
-// Fixture covers deterministic project graph findings for deep imports and cycles.
+// Fixture covers deterministic project graph findings for deep imports and cycles; the deep path and two-file cycle are intentional because the fingerprint contract must stay stable across discovery permutations.
 test("project architecture index finds deterministic cross-file findings", () => {
   const files = {
     "src/app/feature/controller.ts": `import { sharedValue } from "../../../shared/value";

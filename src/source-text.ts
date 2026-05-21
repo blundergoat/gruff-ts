@@ -280,6 +280,100 @@ function maskNonCode(source: string): string {
   return result;
 }
 
+// Replaces only `` ` `` template-literal body characters with spaces. Unlike `maskNonCode`, single
+// and double-quoted string bodies are preserved so syntax-pattern rules (e.g. import edges) still
+// see the specifier text on real `import ... from "..."` lines. Used by `import-edge` style rules
+// that must ignore fixture content embedded in template literals without losing real imports.
+function maskTemplateLiteralBodies(source: string): string {
+  let result = "";
+  const state = templateMaskState();
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index] ?? "";
+    const next = source[index + 1] ?? "";
+    const step = templateMaskCharacter(character, next, state);
+    result += step.text;
+    index += step.skip;
+  }
+  return result;
+}
+
+// Mutable lexer state for `maskTemplateLiteralBodies`. Smaller than `MaskState` because the
+// helper only needs to know which quote/comment context the current character sits inside.
+interface TemplateMaskState {
+  quote: '"' | "'" | "`" | undefined;
+  isEscaped: boolean;
+  isLineComment: boolean;
+  isBlockComment: boolean;
+}
+
+// Fresh default state for a single-file template-mask pass.
+function templateMaskState(): TemplateMaskState {
+  return { quote: undefined, isEscaped: false, isLineComment: false, isBlockComment: false };
+}
+
+// Per-character dispatch: newlines clear single-line state; backtick body chars are masked; quoted
+// and commented chars pass through. Skips the regex branch because regex bodies cannot start an import.
+function templateMaskCharacter(character: string, next: string, state: TemplateMaskState): MaskStep {
+  if (character === "\n") return templateMaskNewline(state);
+  if (state.isLineComment) return { text: character, skip: 0 };
+  if (state.isBlockComment) return templateMaskBlockComment(character, next, state);
+  if (state.quote) return templateMaskQuotedCharacter(character, state);
+  return templateMaskCodeCharacter(character, next, state);
+}
+
+// Newlines clear line-comment state and any non-template quote; template literals survive across lines.
+function templateMaskNewline(state: TemplateMaskState): MaskStep {
+  state.isLineComment = false;
+  if (state.quote !== "`") {
+    state.quote = undefined;
+  }
+  return { text: "\n", skip: 0 };
+}
+
+// Inside a block comment: pass body through and detect the closing `*/`.
+function templateMaskBlockComment(character: string, next: string, state: TemplateMaskState): MaskStep {
+  if (character === "*" && next === "/") {
+    state.isBlockComment = false;
+    return { text: "*/", skip: 1 };
+  }
+  return { text: character, skip: 0 };
+}
+
+// Inside any quoted string: bodies of `` ` `` get masked, single/double-quote bodies pass through.
+function templateMaskQuotedCharacter(character: string, state: TemplateMaskState): MaskStep {
+  const masked = state.quote === "`";
+  if (state.isEscaped) {
+    state.isEscaped = false;
+    return { text: masked ? " " : character, skip: 0 };
+  }
+  if (character === "\\") {
+    state.isEscaped = true;
+    return { text: masked ? " " : character, skip: 0 };
+  }
+  if (character === state.quote) {
+    state.quote = undefined;
+    return { text: character, skip: 0 };
+  }
+  return { text: masked ? " " : character, skip: 0 };
+}
+
+// In code: detect comment openers and the three quote types, otherwise pass through.
+function templateMaskCodeCharacter(character: string, next: string, state: TemplateMaskState): MaskStep {
+  if (character === "/" && next === "/") {
+    state.isLineComment = true;
+    return { text: "//", skip: 1 };
+  }
+  if (character === "/" && next === "*") {
+    state.isBlockComment = true;
+    return { text: "/*", skip: 1 };
+  }
+  if (character === '"' || character === "'" || character === "`") {
+    state.quote = character;
+    return { text: character, skip: 0 };
+  }
+  return { text: character, skip: 0 };
+}
+
 // Mutable lexer state for the masking pass. Mirrors `DelimiterScanState` because both passes solve
 // the same code-vs-literal problem, but `maskNonCode` runs over the whole file rather than line-by-line.
 interface MaskState {
@@ -564,4 +658,4 @@ function isNonWhitespaceCharacter(character: string): boolean {
   return character !== "" && character !== " " && character !== "\t" && character !== "\r" && character !== "\n";
 }
 
-export { codeLineForMatching, maskNonCode, parseDiagnostics };
+export { codeLineForMatching, maskNonCode, maskTemplateLiteralBodies, parseDiagnostics };

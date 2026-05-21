@@ -247,23 +247,23 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
   const format = stringChoice(rawOptions.format, ["text", "json", "html", "markdown", "github", "hotspot", "sarif"], "text");
   const failOn = stringChoice(rawOptions.failOn, ["none", "advisory", "warning", "error"], "error");
   const baselineValue = rawOptions.baseline;
-  const noBaseline =
+  const shouldSkipBaseline =
     baselineValue === false ||
     rawOptions.noBaseline === true;
   return {
     paths,
     ...configOption(rawOptions),
-    noConfig:
+    shouldSkipConfig:
       rawOptions.config === false ||
       rawOptions.noConfig === true,
     format,
     failOn,
-    includeIgnored: rawOptions.includeIgnored === true,
+    shouldIncludeIgnored: rawOptions.includeIgnored === true,
     ...diffOption(rawOptions),
     ...historyFileOption(rawOptions),
     ...baselineOption(baselineValue, context),
     ...generateBaselineOption(rawOptions),
-    noBaseline,
+    shouldSkipBaseline,
   };
 }
 

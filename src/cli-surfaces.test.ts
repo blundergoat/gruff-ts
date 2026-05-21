@@ -122,11 +122,11 @@ test("summary CLI prints compact scan digest without per-finding spam", () => {
 test("json report uses schema version", () => {
   const report = analyse({
     paths: [],
-    noConfig: true,
+    shouldSkipConfig: true,
     format: "json",
     failOn: "none",
-    includeIgnored: false,
-    noBaseline: true,
+    shouldIncludeIgnored: false,
+    shouldSkipBaseline: true,
   });
   const rendered = renderReport(report, "json");
   assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v1"/);
@@ -241,9 +241,12 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(result.level, "error");
   assert.equal(result.message.text, "Avoid eval().");
   assert.equal(result.locations[0].physicalLocation.artifactLocation.uri, "src/bad.ts");
-  assert.equal(result.locations[0].physicalLocation.region.startLine, 7);
-  assert.equal(result.locations[0].physicalLocation.region.startColumn, 3);
-  assert.equal(result.locations[0].physicalLocation.region.endLine, 10);
+  const expectedStartLine = 7;
+  const expectedStartColumn = 3;
+  const expectedEndLine = 10;
+  assert.equal(result.locations[0].physicalLocation.region.startLine, expectedStartLine);
+  assert.equal(result.locations[0].physicalLocation.region.startColumn, expectedStartColumn);
+  assert.equal(result.locations[0].physicalLocation.region.endLine, expectedEndLine);
   assert.equal(result.partialFingerprints.gruffFingerprint, "abc123");
   assert.equal(result.properties.severity, "error");
   assert.equal(result.properties.pillar, "security");
@@ -260,11 +263,24 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(results[2].properties.severity, "advisory");
   assert.equal(payload.runs[0].properties.gruffSchemaVersion, "gruff.analysis.v1");
   assert.equal(payload.runs[0].properties.generatedAt, "2026-05-15T00:00:00.000Z");
-  assert.equal(payload.runs[0].properties.score, 91);
+  const expectedScore = 91;
+  assert.equal(payload.runs[0].properties.score, expectedScore);
   assert.equal(payload.runs[0].properties.grade, "A");
   assert.equal(JSON.parse(renderReport(report, "json")).schemaVersion, "gruff.analysis.v1");
   assert.equal(JSON.stringify(report), beforeSarif);
 });
+
+// Asserts a single SARIF result's invariant shape: rule-index/ruleId stable identity, fingerprint
+// presence, and POSIX-style normalised URI. Factored out of the test body so the loop carries no
+// inline conditional branches.
+function assertSarifResultShape(rules: Array<{ id: string }>, sarifResult: { ruleId: string; ruleIndex?: number; partialFingerprints: { gruffFingerprint: unknown }; locations: Array<{ physicalLocation: { artifactLocation: { uri: string } } }> }): void {
+  assert.equal(typeof sarifResult.partialFingerprints.gruffFingerprint, "string");
+  const indexedRule = typeof sarifResult.ruleIndex === "number" ? rules[sarifResult.ruleIndex] : undefined;
+  assert.equal(indexedRule?.id ?? sarifResult.ruleId, sarifResult.ruleId);
+  const uri = sarifResult.locations[0]?.physicalLocation.artifactLocation.uri ?? "";
+  assert.equal(uri.startsWith("./"), false);
+  assert.equal(uri.includes("\\"), false);
+}
 
 test("analyse CLI emits parseable sarif for both format syntaxes", () => {
   for (const formatArgs of [
@@ -284,13 +300,7 @@ test("analyse CLI emits parseable sarif for both format syntaxes", () => {
     assert.deepEqual(ruleIds, [...ruleIds].sort());
     assert.equal(results.length > 0, true);
     for (const sarifResult of results) {
-      assert.equal(typeof sarifResult.partialFingerprints.gruffFingerprint, "string");
-      if ("ruleIndex" in sarifResult) {
-        assert.equal(rules[sarifResult.ruleIndex].id, sarifResult.ruleId);
-      }
-      const uri = sarifResult.locations[0].physicalLocation.artifactLocation.uri;
-      assert.equal(uri.startsWith("./"), false);
-      assert.equal(uri.includes("\\"), false);
+      assertSarifResultShape(rules, sarifResult);
     }
   }
 });

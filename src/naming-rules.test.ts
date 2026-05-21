@@ -20,7 +20,7 @@ console.log(process, walk, strName, enabled, value);
 `);
 
   // Collects finding symbols for one rule in the naming fixture assertions. Keeps rule output deterministic for snapshots.
-  const byRule = (id: string) => report.findings.filter((finding) => finding.ruleId === id).map((finding) => finding.symbol);
+  const byRule = (ruleId: string) => report.findings.filter((finding) => finding.ruleId === ruleId).map((finding) => finding.symbol);
   assert.deepEqual(byRule("naming.generic-function"), ["process"]);
   assert.deepEqual(byRule("naming.generic-function").includes("walk"), false);
   assert.deepEqual(byRule("naming.hungarian-notation"), ["strName"]);
@@ -284,7 +284,7 @@ test("naming rule pack catalogue coverage", () => {
     "naming.negative-boolean",
     "naming.short-variable",
   ];
-  const descriptors = ruleDescriptors().map((descriptor) => descriptor.ruleId).filter((id) => id.startsWith("naming."));
+  const descriptors = ruleDescriptors().map((descriptor) => descriptor.ruleId).filter((ruleId) => ruleId.startsWith("naming."));
   assert.deepEqual(descriptors, expected);
 
   const yamlSource = readFileSync(".gruff-ts.yaml", "utf8");

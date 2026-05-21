@@ -138,12 +138,12 @@ rules:
   # documentation/advisory: Flags lint, formatter, coverage, or tool suppressions without a maintainer rationale.
   docs.suppression-without-rationale:
     enabled: true
-  # documentation/advisory: Flags files with a high count of TODO/FIXME markers.
+  # documentation/advisory: Flags files with a high count of to-do / fix-me markers.
   docs.todo-density:
     enabled: true
     threshold: 4
     severity: advisory
-  # documentation/advisory: Flags TODO, FIXME, HACK, and XXX comments without tracking context.
+  # documentation/advisory: Flags to-do, fix-me, hack, and xxx comments without tracking context.
   docs.todo-without-tracking:
     enabled: true
   # documentation/advisory: Flags comments or docblocks that only restate the symbol name.

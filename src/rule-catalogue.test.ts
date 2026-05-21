@@ -7,6 +7,23 @@ import { ruleCatalogueCoverageRuleIds } from "./test-fixtures.ts";
 
 const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "missing-invalid"] as const;
 
+// Asserts the descriptor's optionKeys list is sorted and unique. Factored out of the descriptor
+// catalogue test body to preserve a stable sort invariant without an inline `if` branch.
+function assertSortedUniqueOptionKeys(descriptor: { ruleId: string; optionKeys?: readonly string[] }): void {
+  const optionKeys = descriptor.optionKeys ?? [];
+  assert.deepEqual(optionKeys, [...optionKeys].sort(), `option key ordering for ${descriptor.ruleId}`);
+  assert.equal(new Set(optionKeys).size, optionKeys.length, `option key uniqueness for ${descriptor.ruleId}`);
+}
+
+// Asserts the descriptor either has a fixture exemption with a real reason or is covered by a
+// catalogue fixture id. Factored out so the descriptor catalogue test body avoids a branch.
+function assertDescriptorCoverageOrExemption(descriptor: { ruleId: string; fixtureExemption?: string }, coverageIds: Set<string>): void {
+  const exemption = descriptor.fixtureExemption ?? "";
+  const hasExemption = exemption.length > 0;
+  assert.equal(hasExemption || coverageIds.has(descriptor.ruleId), true, `missing positive fixture coverage for ${descriptor.ruleId}`);
+  assert.ok(!hasExemption || exemption.length > 10, `fixture exemption reason for ${descriptor.ruleId}`);
+}
+
 type RuleQualityCategory = (typeof RULE_QUALITY_FIXTURE_CATEGORIES)[number];
 type RuleQualityDescriptor = ReturnType<typeof ruleDescriptors>[number];
 
@@ -397,10 +414,7 @@ test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
     assert.match(descriptor.ruleId, /^[a-z-]+\.[a-z0-9-]+$/);
     assert.ok(descriptor.description.length > 10, `description for ${descriptor.ruleId}`);
     assert.ok(descriptor.remediation.length > 10, `remediation for ${descriptor.ruleId}`);
-    if (descriptor.optionKeys) {
-      assert.deepEqual(descriptor.optionKeys, [...descriptor.optionKeys].sort(), `option key ordering for ${descriptor.ruleId}`);
-      assert.equal(new Set(descriptor.optionKeys).size, descriptor.optionKeys.length, `option key uniqueness for ${descriptor.ruleId}`);
-    }
+    assertSortedUniqueOptionKeys(descriptor);
   }
 
   const coverageIds = ruleCatalogueCoverageRuleIds();
@@ -409,11 +423,7 @@ test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
     assert.equal(descriptorIdSet.has(ruleId), true, `missing descriptor for emitted rule ${ruleId}`);
   }
   for (const descriptor of descriptors) {
-    if (descriptor.fixtureExemption) {
-      assert.ok(descriptor.fixtureExemption.length > 10, `fixture exemption reason for ${descriptor.ruleId}`);
-      continue;
-    }
-    assert.equal(coverageIds.has(descriptor.ruleId), true, `missing positive fixture coverage for ${descriptor.ruleId}`);
+    assertDescriptorCoverageOrExemption(descriptor, coverageIds);
   }
 });
 
@@ -423,24 +433,28 @@ test("rule quality doctrine covers risky scanner descriptors", () => {
   const exceptions = new Map<string, string>(riskyRuleQualityExceptions.map((entry) => [entry.ruleId, entry.reason]));
   const categoryVocabulary = [...RULE_QUALITY_FIXTURE_CATEGORIES].sort();
 
+  const exceptionOnlyIds = riskyRuleIdsRequiringNoisyValidProof.filter((ruleId) => !doctrine.has(ruleId));
+  const doctrineIds = riskyRuleIdsRequiringNoisyValidProof.filter((ruleId) => doctrine.has(ruleId));
+
   for (const ruleId of riskyRuleIdsRequiringNoisyValidProof) {
+    assert.notEqual(descriptors.get(ruleId), undefined, `risky rule has no descriptor: ${ruleId}`);
+    assert.equal(Boolean(doctrine.get(ruleId)) || Boolean(exceptions.get(ruleId)), true, `risky rule missing noisy-valid doctrine or exception: ${ruleId}`);
+  }
+
+  for (const ruleId of exceptionOnlyIds) {
+    const exception = exceptions.get(ruleId) ?? "";
+    assert.ok(exception.length > 80, `risky rule exception is too terse: ${ruleId}`);
+  }
+
+  for (const ruleId of doctrineIds) {
     const descriptor = descriptors.get(ruleId);
-    assert.notEqual(descriptor, undefined, `risky rule has no descriptor: ${ruleId}`);
-
     const entry = doctrine.get(ruleId);
-    const exception = exceptions.get(ruleId);
-    assert.equal(Boolean(entry) || Boolean(exception), true, `risky rule missing noisy-valid doctrine or exception: ${ruleId}`);
-
-    if (!entry) {
-      assert.ok((exception ?? "").length > 80, `risky rule exception is too terse: ${ruleId}`);
-      continue;
-    }
-    assert.equal(exception, undefined, `risky rule should use doctrine or exception, not both: ${ruleId}`);
+    assert.ok(entry, `expected doctrine entry for ${ruleId}`);
+    assert.equal(exceptions.get(ruleId), undefined, `risky rule should use doctrine or exception, not both: ${ruleId}`);
     assert.equal(descriptor?.pillar, entry.expectedPillar, `pillar drift for ${ruleId}`);
     assert.equal(descriptor?.severity, entry.expectedSeverity, `severity drift for ${ruleId}`);
     assert.equal(descriptor?.confidence, entry.expectedConfidence, `confidence drift for ${ruleId}`);
     assert.deepEqual([...entry.fixtureCategories].sort(), categoryVocabulary, `fixture vocabulary for ${ruleId}`);
-
     for (const [field, value] of [
       ["signalSource", entry.signalSource],
       ["invalidFixture", entry.invalidFixture],
