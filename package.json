@@ -14,11 +14,11 @@
     "start-dev": "tsx src/cli.ts dashboard"
   },
   "dependencies": {
-    "@blundergoat/goat-flow": "^1.6.4",
     "commander": "^14.0.2",
     "tsx": "^4.21.0"
   },
   "devDependencies": {
+    "@blundergoat/goat-flow": "^1.6.4",
     "@types/node": "^25.0.0",
     "typescript": "^5.9.3"
   }
