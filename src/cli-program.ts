@@ -2,6 +2,7 @@
 import { Command, Help } from "commander";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { DEFAULT_BASELINE } from "./baseline.ts";
 import { VERSION } from "./constants.ts";
 import { startDashboard } from "./dashboard.ts";
@@ -232,11 +233,21 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action((paths: string[], rawOptions: Record<string, unknown>) => {
+      const startedAt = performance.now();
       const options = normalizeOptions(paths, { ...rawOptions, format: "text" }, { shouldAllowBaselineFlag: true });
       const report = runAnalyse(options);
-      writeCommandOutput(program, renderSummary(report));
+      const elapsedMs = performance.now() - startedAt;
+      writeCommandOutput(program, renderSummary(report, elapsedMs, summaryPathLabel(options.paths, report.run.projectRoot)));
       process.exitCode = exitFor(report, options.failOn);
     });
+}
+
+// Summary output should name the scanned operand, not merely the process cwd used to run gruff-ts.
+function summaryPathLabel(paths: string[], projectRoot: string): string {
+  if (paths.length === 0) {
+    return projectRoot;
+  }
+  return paths.map((path) => resolve(path)).join(", ");
 }
 
 // Single source of truth for translating Commander's loose option bag into the strict

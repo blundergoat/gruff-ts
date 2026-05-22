@@ -83,6 +83,23 @@ test("naming short-variable flags destructured single-letter", () => {
   assert.deepEqual(shorts.map((finding) => finding.symbol).sort(), ["a", "b"]);
 });
 
+test("naming short-variable accepts filesystem adapter abbreviation", () => {
+  // Fixture covers `fs` as both an injected filesystem parameter and a local adapter binding.
+  const report = analyseFixture(`interface ReadonlyFS {
+  exists(path: string): boolean;
+}
+
+function loadConfig(fs: ReadonlyFS): boolean {
+  return fs.exists(".goat-flow/config.yaml");
+}
+
+const fs = createFS(".");
+console.log(loadConfig(fs));
+`);
+  const shorts = report.findings.filter((finding) => finding.ruleId === "naming.short-variable");
+  assert.deepEqual(shorts.map((finding) => finding.symbol), []);
+});
+
 test("naming identifier-quality flags placeholder parameter", () => {
   const report = analyseFixture(`function takesValue(data: unknown): unknown {
   return data;
@@ -118,6 +135,29 @@ test("naming boolean-prefix ignores inferred boolean parameter without annotatio
 `);
   const findings = report.findings.filter((finding) => finding.ruleId === "naming.boolean-prefix");
   assert.deepEqual(findings, []);
+});
+
+test("naming boolean-prefix accepts scanner state and capability booleans", () => {
+  // Fixture covers accepted scanner-state, capability, modal, and adjective boolean names.
+  const report = analyseFixture(`interface HarnessCheck {
+  acknowledged?: boolean;
+  supportsAggregate?: boolean;
+  requiresStack?: boolean;
+  exists?: boolean;
+  artifactRequired?: boolean;
+  nodePtyAvailable?: boolean;
+  mayWriteFiles?: boolean;
+}
+
+function scanContent(scanFenced = true): void {
+  let inCodeBlock = false;
+  const acknowledged = true;
+  const provenanceValidated = true;
+  console.log(scanFenced, inCodeBlock, acknowledged, provenanceValidated);
+}
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.boolean-prefix");
+  assert.deepEqual(findings.map((finding) => finding.symbol), []);
 });
 
 test("naming widening preserves fingerprints for unchanged code", () => {

@@ -33,6 +33,13 @@ const ASSERTION_AND_MOCK_CALLBACK = `
   expect(() => fail()).toThrow(Error);
 `;
 
+const HTTP_STATUS_ASSERTION_CALLBACK = `
+  const res = await fetch(baseUrl);
+  assert.equal(res.status, 200);
+  expect(response.statusCode).toBe(404);
+  assert.equal(retryCount, 3);
+`;
+
 const SETUP_BLOAT_CALLBACK = `
   const one = buildOne();
   const two = buildTwo();
@@ -62,6 +69,17 @@ const STRUCTURAL_CALLBACK = `
   assert.ok(timer);
 `;
 
+const STRUCTURAL_SETUP_ONLY_CALLBACK = `
+  const collected = [];
+  for (const item of items) {
+    collected.push(item);
+  }
+  if (collected.length === 0) {
+    collected.push(fallback);
+  }
+  assert.equal(collected.length, 1);
+`;
+
 test("analyseTestBlock reports assertion and mock quality findings", () => {
   const findings = analyseTestCallback(ASSERTION_AND_MOCK_CALLBACK);
   const magicFinding = findings.find((finding) => finding.ruleId === "test-quality.magic-number-assertion");
@@ -75,11 +93,26 @@ test("analyseTestBlock reports assertion and mock quality findings", () => {
   assert.deepEqual(magicFinding?.metadata, { value: EXPECTED_MAGIC_VALUE });
 });
 
+test("analyseTestBlock ignores HTTP status magic numbers but keeps other numeric assertions", () => {
+  const findings = analyseTestCallback(HTTP_STATUS_ASSERTION_CALLBACK);
+
+  assert.deepEqual(
+    findings.filter((finding) => finding.ruleId === "test-quality.magic-number-assertion").map((finding) => finding.metadata),
+    [{ value: 3 }],
+  );
+});
+
 test("analyseTestBlock reports setup bloat metadata from default config", () => {
   const findings = analyseTestCallback(SETUP_BLOAT_CALLBACK);
 
   assert.deepEqual(ruleIds(findings), ["test-quality.setup-bloat"]);
   assert.deepEqual(findings[0]?.metadata, { setupLines: 13, maxSetupLines: 12 });
+});
+
+test("analyseTestBlock gives broad-flow tests a larger setup budget", () => {
+  const findings = analyseTestCallback(SETUP_BLOAT_CALLBACK, "test/integration/dashboard-server.test.ts");
+
+  assert.deepEqual(ruleIds(findings), []);
 });
 
 test("analyseTestBlock reports structural test smells once per block", () => {
@@ -93,10 +126,16 @@ test("analyseTestBlock reports structural test smells once per block", () => {
   ]);
 });
 
+test("analyseTestBlock ignores setup-only loops and conditionals", () => {
+  const findings = analyseTestCallback(STRUCTURAL_SETUP_ONLY_CALLBACK);
+
+  assert.deepEqual(ruleIds(findings), []);
+});
+
 // Runs one callback-shaped fixture through the test-block rule pass. Invariant: default rule config is used.
-function analyseTestCallback(callbackBody: string): Finding[] {
+function analyseTestCallback(callbackBody: string, displayPath = SOURCE_FILE.displayPath): Finding[] {
   const findings: Finding[] = [];
-  analyseTestBlock(SOURCE_FILE, testBlockFixture(callbackBody), defaultTestConfig(), findings);
+  analyseTestBlock({ ...SOURCE_FILE, displayPath }, testBlockFixture(callbackBody), defaultTestConfig(), findings);
   return findings;
 }
 

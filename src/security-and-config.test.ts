@@ -16,6 +16,8 @@ import {
   TS_IGNORE_DIRECTIVE,
 } from "./test-fixtures.ts";
 
+const EXPECTED_DYNAMIC_PROCESS_EXEC_LINE = 15;
+
 test("extended type-safety rubric finds explicit unsafety without false positives", () => {
   const unsafeReport = analyseFixture(`export function unsafeApi(input: ${"any"}): ${"any"} {
   // ${TS_IGNORE_DIRECTIVE}
@@ -85,6 +87,53 @@ async function reportsFailure(): Promise<void> {
   ["security.async-foreach", "security.floating-promise", "waste.swallowed-catch", "security.throw-non-error"].forEach((ruleId) => {
     assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
   });
+});
+
+test("swallowed catch accepts explicit rationale comments", () => {
+  // Fixture pairs a rationale-only catch with a placeholder-only catch so the rule keeps signal.
+  const report = analyseFixture(`function optionalProbe(): void {
+  try {
+    probe();
+  } catch {
+    // optional detection only; absence is safe
+  }
+}
+
+function cacheWrite(): void {
+  try {
+    writeCache();
+  } catch {
+    // Cache write failure is non-fatal.
+  }
+}
+
+function closeSocket(): void {
+  try {
+    socket.close();
+  } catch {
+    /* already closed */
+  }
+}
+
+function compose(): void {
+  try {
+    readDirectory();
+  } catch {
+    // Directory unreadable: composition continues with what we have.
+  }
+}
+
+function bareSwallow(): void {
+  try {
+    probe();
+  } catch {
+    // ignored
+  }
+}
+`);
+  const swallowed = report.findings.filter((finding) => finding.ruleId === "waste.swallowed-catch");
+  assert.equal(swallowed.length, 1);
+  assert.equal(swallowed[0]?.symbol, undefined);
 });
 
 test("extended type-safety config can disable new rules", () => {
@@ -483,6 +532,31 @@ function changedFiles(mode: string): void {
   });
 
   assert.equal(report.findings.some((finding) => finding.ruleId === "security.process-exec"), false);
+});
+
+test("process exec exempts multi-line fixed command vectors but keeps dynamic calls", () => {
+  const expectedDynamicFindings = 1;
+  const report = analyseProject({
+    "src/fixed-npm.ts": `import { execFileSync, spawn } from "node:child_process";
+const args = [
+  "pack",
+  "--dry-run",
+  "--json",
+  "--ignore-scripts",
+];
+execFileSync(
+  "npm",
+  args,
+  {
+    encoding: "utf8",
+  },
+);
+spawn(userCommand, ["status"]);
+`,
+  });
+  const processExecFindings = report.findings.filter((finding) => finding.ruleId === "security.process-exec");
+  assert.equal(processExecFindings.length, expectedDynamicFindings);
+  assert.equal(processExecFindings[0]?.line, EXPECTED_DYNAMIC_PROCESS_EXEC_LINE);
 });
 
 const SOURCE_TO_SINK_RULE_IDS = [

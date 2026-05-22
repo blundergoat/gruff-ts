@@ -17,6 +17,13 @@ interface TestBlockCheck {
   severity: Severity;
 }
 
+// Captures one assertion matcher plus the capture indexes that hold actual expression and literal.
+interface MagicNumberAssertionPattern {
+  pattern: RegExp;
+  expressionIndex: number;
+  valueIndex: number;
+}
+
 /*
  * Reached when `block.isTest` is true. Four sub-passes in a stable, deterministic order: assertion
  * quality, mock quality, setup bloat, structural rules.
@@ -104,7 +111,7 @@ function analyseSetupBloat(file: SourceFile, block: FunctionBlock, body: string,
     findings.push(blockFinding({ ruleId: "test-quality.global-state-mutation", message: `Test \`${block.name}\` mutates global process or runtime state.`, file, block, severity: "warning", pillar: "test-quality" }));
   }
   const setupLines = setupLineCount(body);
-  const maxSetupLines = threshold(config, "test-quality.setup-bloat", 12);
+  const maxSetupLines = setupBloatThreshold(file, config);
   if (setupLines > maxSetupLines) {
     findings.push(
       blockFindingWithMetadata({
@@ -123,17 +130,70 @@ function analyseSetupBloat(file: SourceFile, block: FunctionBlock, body: string,
 // Pattern-driven checks for sleep/loop/conditional logic plus the `.only`/`.skip` commit gate.
 // Reports each detected structural issue as a stable test-quality finding.
 function analyseTestStructureChecks(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
-  const checks: Array<[string, RegExp, string]> = [
-    ["test-quality.sleep-in-test", /\b(setTimeout|sleep|waitForTimeout)\s*\(/, "Test sleeps instead of synchronising on behaviour."],
-    ["test-quality.loop-in-test", /\b(for|while)\b/, "Test contains loop logic."],
-    ["test-quality.conditional-logic", /\b(if|switch)\b/, "Test contains conditional logic."],
-    ["test-quality.only-skip", /\.(only|skip)\s*\(/, "Focused or skipped test is committed."],
+  const checks: Array<[string, boolean, string]> = [
+    ["test-quality.sleep-in-test", /\b(setTimeout|sleep|waitForTimeout)\s*\(/.test(body), "Test sleeps instead of synchronising on behaviour."],
+    ["test-quality.loop-in-test", controlFlowContainsAssertion(body, /\b(?:for|while)\b/g), "Test contains loop logic around assertions."],
+    ["test-quality.conditional-logic", controlFlowContainsAssertion(body, /\b(?:if|switch)\b/g), "Test contains conditional logic around assertions."],
+    ["test-quality.only-skip", /\.(only|skip)\s*\(/.test(body), "Focused or skipped test is committed."],
   ];
-  for (const [ruleId, pattern, message] of checks) {
-    if (pattern.test(body)) {
+  for (const [ruleId, active, message] of checks) {
+    if (active) {
       findings.push(blockFinding({ ruleId, message, file, block, severity: "advisory", pillar: "test-quality" }));
     }
   }
+}
+
+// Integration, contract, smoke, and performance tests naturally need more environment setup than
+// focused unit tests; keep the default strict for unit tests and double it for broad-flow suites.
+function setupBloatThreshold(file: SourceFile, config: Config): number {
+  const baseThreshold = threshold(config, "test-quality.setup-bloat", 12);
+  return isBroadFlowTestPath(file.displayPath) ? baseThreshold * 2 : baseThreshold;
+}
+
+// Broad-flow tests exercise systems rather than one unit, so longer setup stays below the bloat line.
+function isBroadFlowTestPath(path: string): boolean {
+  return /(?:^|\/)test\/(?:integration|contract|smoke|performance)\//.test(path);
+}
+
+// Structural loop/branch findings now require the control flow to wrap an assertion; setup-only
+// conditionals and fixture-building loops are noisy but not direct test-quality failures.
+function controlFlowContainsAssertion(source: string, pattern: RegExp): boolean {
+  for (const match of source.matchAll(pattern)) {
+    const start = match.index ?? 0;
+    const segment = controlFlowSegment(source, start);
+    if (hasAssertion(segment)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Captures the smallest control-flow segment so assertion detection does not scan the whole test.
+function controlFlowSegment(source: string, start: number): string {
+  const lineEnd = source.indexOf("\n", start);
+  const openBrace = source.indexOf("{", start);
+  if (openBrace === -1 || (lineEnd !== -1 && openBrace > lineEnd)) {
+    return source.slice(start, lineEnd === -1 ? source.length : lineEnd);
+  }
+  const closeBrace = matchingCloseBrace(source, openBrace);
+  return source.slice(start, closeBrace === undefined ? openBrace + 1 : closeBrace + 1);
+}
+
+// Lightweight brace matcher for already-isolated test block text; enough to bound loop/if bodies.
+function matchingCloseBrace(source: string, openBrace: number): number | undefined {
+  let depth = 0;
+  for (let index = openBrace; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === "{") {
+      depth += 1;
+    } else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return undefined;
 }
 
 // Aggregator over the three trivial-assertion shapes — literal-comparison, mirrored-`assert`
@@ -214,21 +274,32 @@ function isNoThrowOnlyTest(source: string): boolean {
 // shapes. `-1`, `0`, `1` are excluded because they're universally idiomatic — the intent is to
 // avoid noise on neutral values and surface only literals whose meaning a maintainer must look up.
 function magicNumberAssertions(source: string): Array<{ value: number }> {
-  const results: Array<{ value: number }> = [];
+  return MAGIC_NUMBER_ASSERTION_PATTERNS.flatMap((candidate) => magicNumberAssertionMatches(source, candidate));
+}
+
+const MAGIC_NUMBER_ASSERTION_PATTERNS: MagicNumberAssertionPattern[] = [
+  { pattern: /\bexpect\s*\(\s*([^)]+?)\s*\)\s*\.\s*to(?:Be|Equal|HaveLength|HaveCount)\s*\(\s*(-?\d+(?:\.\d+)?)\s*\)/g, expressionIndex: 1, valueIndex: 2 },
+  { pattern: /\bassert\.(?:equal|strictEqual|deepEqual)\s*\(\s*([^,\n]+?)\s*,\s*(-?\d+(?:\.\d+)?)(?:\s*,|\s*\))/g, expressionIndex: 1, valueIndex: 2 },
+];
+
+// Extracts reportable numeric literals for one assertion grammar while keeping HTTP statuses quiet.
+function magicNumberAssertionMatches(source: string, candidate: MagicNumberAssertionPattern): Array<{ value: number }> {
   const ignored = new Set([-1, 0, 1]);
-  const patterns = [
-    /\bexpect\s*\([^)]+\)\s*\.\s*to(?:Be|Equal|HaveLength|HaveCount)\s*\(\s*(-?\d+(?:\.\d+)?)\s*\)/g,
-    /\bassert\.(?:equal|strictEqual|deepEqual)\s*\(\s*[^,\n]+,\s*(-?\d+(?:\.\d+)?)(?:\s*,|\s*\))/g,
-  ];
-  for (const pattern of patterns) {
-    for (const match of source.matchAll(pattern)) {
-      const expectedNumber = Number(match[1] ?? "0");
-      if (!ignored.has(expectedNumber)) {
-        results.push({ value: expectedNumber });
-      }
+  const results: Array<{ value: number }> = [];
+  for (const match of source.matchAll(candidate.pattern)) {
+    const expression = match[candidate.expressionIndex] ?? "";
+    const expectedNumber = Number(match[candidate.valueIndex] ?? "0");
+    if (!ignored.has(expectedNumber) && !isHttpStatusAssertion(expression, expectedNumber)) {
+      results.push({ value: expectedNumber });
     }
   }
   return results;
+}
+
+// HTTP response status codes are intentionally numeric at assertion sites; naming every 200/404
+// would add ceremony without making the test clearer.
+function isHttpStatusAssertion(expression: string, expectedNumber: number): boolean {
+  return Number.isInteger(expectedNumber) && expectedNumber >= 100 && expectedNumber <= 599 && /\b(?:status|statusCode)\b/.test(expression);
 }
 
 // `const mockX = vi.fn(...)` declarations whose binding appears only once in the body — that one

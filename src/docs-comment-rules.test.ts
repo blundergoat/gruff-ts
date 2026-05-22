@@ -89,6 +89,33 @@ function newFeature(): void {}
   assert.equal(staleFindings.some((finding) => finding.message.includes("src/old-file.ts")), false);
 });
 
+test("comment quality stale-comment ignores prose that only looks like a symbol", () => {
+  // Fixture separates ordinary prose comments from a backticked stale-symbol reference.
+  const report = analyseFixture(`/**
+ * Read-only filesystem interface for scanner tests.
+ */
+interface ReadonlyFS {
+  exists(path: string): boolean;
+}
+
+/**
+ * Symlink helper that skips hosts without permissions.
+ */
+function symlinkOrSkip(): boolean {
+  return true;
+}
+
+/**
+ * \`OldFeature\` helper that documents the replacement.
+ */
+function newFeature(): void {}
+`);
+  const staleFindings = report.findings.filter((finding) => finding.ruleId === "docs.stale-comment");
+  assert.equal(staleFindings.some((finding) => finding.symbol === "ReadonlyFS"), false);
+  assert.equal(staleFindings.some((finding) => finding.symbol === "symlinkOrSkip"), false);
+  assert.equal(staleFindings.some((finding) => finding.symbol === "newFeature"), true);
+});
+
 test("comment quality requires tracking for TODO markers", () => {
   const report = analyseFixture(`/**
  * Exercises tracked and untracked task-marker comments.

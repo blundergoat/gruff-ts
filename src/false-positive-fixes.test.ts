@@ -83,9 +83,13 @@ test("FP-#2 sensitive-data.high-entropy-string suppresses repo path-shape string
   const realSecret = HIGH_ENTROPY_FIXTURE_VALUE;
   const report = analyseFixture(`const ref = ".goat-flow/tasks/0.1/M38-css-metrics-and-todo-density-calibration.md";
 const otherRef = "src/cli/audit/check-content-quality.ts";
+const adrRef = "ADR-025-block-all-git-push.md";
+const absoluteTaskRef = "/repo/.goat-flow/tasks/1.7.0/M00-side-menu-navigation.md";
 const secret = "${realSecret}";
 void ref;
 void otherRef;
+void adrRef;
+void absoluteTaskRef;
 void secret;
 `);
   const findings = report.findings.filter((entry) => entry.ruleId === "sensitive-data.high-entropy-string");

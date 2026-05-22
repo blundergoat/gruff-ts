@@ -11,6 +11,7 @@ import { type NamingSurface, pushAbbreviationAt, pushBooleanPrefixAt, pushIdenti
 import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
+import { byteLine } from "./text-scans.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
 // Descriptor for one regex-backed line rule. `pattern` is the cheap test and `globalPattern`
@@ -71,8 +72,9 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
     analyseLineRuleContext(context);
   });
 
+  analyseProcessExecCalls(file, source, codeSource, findings);
   analyseUselessCatches(file, codeSource, findings);
-  analyseSwallowedCatches(file, codeSource, findings);
+  analyseSwallowedCatches(file, source, codeSource, findings);
 }
 
 // All per-line checks for a single line in their stable, deterministic emission order. Each helper
@@ -87,7 +89,6 @@ function analyseLineRuleContext(context: LineRuleContext): void {
   pushNullishCoalescingFindings(context);
   pushLooseEqualityFinding(context);
   pushStringTimerFinding(context);
-  pushProcessExecFinding(context);
   analyseSecurityFlowLine(context.file, context.codeLine, context.lineNumber, context.findings);
   pushPatternCheckFindings(context);
   pushVariableNameFindings(context);
@@ -250,17 +251,6 @@ function pushStringTimerFinding(context: LineRuleContext): void {
   }
 }
 
-/*
- * `exec` / `execSync` / `spawn` with potentially user-influenced arguments. The local-harness
- * escape hatch keeps gruff's own test process invocations quiet. Reports the stable
- * `security.process-exec` finding.
- */
-function pushProcessExecFinding(context: LineRuleContext): void {
-  if (processExecCandidate(context.codeLine) && !isFixedArgvProcessCall(context.line, context.codeLine)) {
-    context.findings.push(finding({ ruleId: "security.process-exec", message: "Child-process execution is used; validate arguments are not user-controlled.", file: context.file, line: context.lineNumber, severity: "warning", pillar: "security" }));
-  }
-}
-
 // Runs the descriptor-driven line checks split into code-shape vs literal-aware. Literal checks
 // use `rawPatternStartsInCode` to confirm the match starts in real code, not inside a comment.
 // Reports each matching rule's stable line-anchored finding.
@@ -409,26 +399,124 @@ function stringTimerCandidate(codeLine: string): boolean {
   );
 }
 
-// Targets child_process-style calls: bare `exec(...)`, `spawn(...)`, `execFile(...)`, sync variants,
-// `fork(...)`, and module-receiver forms (`child_process.exec(`, `cp.spawnSync(`). Excludes
-// member-access `.exec(` (the canonical RegExp.exec) unless the receiver is a known process module.
-function processExecCandidate(codeLine: string): boolean {
-  if (/\b(?:child_process|childProcess|cp)\.(?:exec|spawn|execFile|execSync|execFileSync|spawnSync|fork)\s*\(/.test(codeLine)) {
-    return true;
+/*
+ * Targets child_process-style calls across single- and multi-line expressions. Stable invariant:
+ * masked-source matching keeps fixture strings quiet. Unmatched calls recover by being skipped
+ * rather than guessed, while fixed literal-command argv calls stay quiet.
+ */
+function analyseProcessExecCalls(file: SourceFile, rawSource: string, codeSource: string, findings: Finding[]): void {
+  const processCallPattern = /\b(?:(child_process|childProcess|cp)\.)?(exec|spawn|execFile|execSync|execFileSync|spawnSync|fork)\s*\(/g;
+  for (const match of codeSource.matchAll(processCallPattern)) {
+    const start = match.index ?? 0;
+    const callName = match[2] ?? "";
+    if (!callName || isMemberProcessExecFalsePositive(codeSource, start, Boolean(match[1]))) {
+      continue;
+    }
+    const openParen = start + match[0].length - 1;
+    const closeParen = matchingCloseParen(codeSource, openParen);
+    if (closeParen === undefined) {
+      continue;
+    }
+    const codeSegment = codeSource.slice(start, closeParen + 1);
+    const rawSegment = rawSource.slice(start, closeParen + 1);
+    if (isSafeProcessExecCall(file, callName, rawSource, start, rawSegment, codeSegment)) {
+      continue;
+    }
+    findings.push(finding({ ruleId: "security.process-exec", message: "Child-process execution is used; validate arguments are not user-controlled.", file, line: byteLine(codeSource, start), severity: "warning", pillar: "security" }));
   }
-  return /(?:^|[^.\w$])(?:exec|spawn|execFile|execSync|execFileSync|spawnSync|fork)\s*\(/.test(codeLine);
 }
 
-// Fixed command vectors are intentionally not shell-interpolated, so this rule stays focused on
-// dynamic commands and shell-enabled process calls rather than every safe `execFile("tool", argv)`.
-function isFixedArgvProcessCall(rawLine: string, codeLine: string): boolean {
-  if (/\bshell\s*:\s*true\b/.test(codeLine)) {
+// Excludes ordinary member calls such as `pattern.exec(...)`; module receivers like `cp.exec(...)`
+// remain valid process-exec candidates.
+function isMemberProcessExecFalsePositive(codeSource: string, start: number, hasProcessReceiver: boolean): boolean {
+  return !hasProcessReceiver && codeSource[start - 1] === ".";
+}
+
+// Tiny parenthesis matcher over masked source. Strings and comments are already blanked by
+// `maskNonCode`, so nested call parentheses are the only structure this needs to balance.
+function matchingCloseParen(source: string, openParen: number): number | undefined {
+  let depth = 0;
+  for (let index = openParen; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return undefined;
+}
+
+// Fixed command vectors and known safe wrappers are intentionally not shell-interpolated, so this
+// rule stays focused on dynamic commands and shell-enabled process calls.
+function isSafeProcessExecCall(file: SourceFile, callName: string, rawSource: string, callStart: number, rawSegment: string, codeSegment: string): boolean {
+  return (
+    isFixedArgvProcessCallSegment(callName, rawSource, callStart, rawSegment, codeSegment) ||
+    isSafeExecWrapperCall(file, callName, codeSegment) ||
+    isFixedTestHarnessProcessCall(file, callName, rawSegment, codeSegment)
+  );
+}
+
+// Suppresses argv-form process calls where the command is fixed by a literal, `process.execPath`,
+// a local const literal selector, or a terminal-binary version probe.
+function isFixedArgvProcessCallSegment(callName: string, rawSource: string, callStart: number, rawSegment: string, codeSegment: string): boolean {
+  if (/\bshell\s*:\s*true\b/.test(codeSegment)) {
     return false;
   }
-  if (!/\b(?:spawn|spawnSync|execFile|execFileSync)\s*\(/.test(codeLine)) {
+  if (!["spawn", "spawnSync", "execFile", "execFileSync"].includes(callName)) {
     return false;
   }
-  return /\b(?:spawn|spawnSync|execFile|execFileSync)\s*\(\s*["'][^"']+["']\s*,\s*(?:\[|[A-Za-z_$][A-Za-z0-9_$]*)/.test(rawLine);
+  const argsText = rawSegment.slice(rawSegment.indexOf("(") + 1, rawSegment.lastIndexOf(")"));
+  return (
+    /^\s*(?:["'][^"']+["']|process\.execPath)\s*(?:,\s*(?:\[|[A-Za-z_$][A-Za-z0-9_$]*)|$)/s.test(argsText) ||
+    isFixedTerminalVersionProbe(argsText) ||
+    hasConstLiteralCommandVector(rawSource, callStart, argsText)
+  );
+}
+
+// Agent/tool discovery commonly runs a manifest-backed terminal binary with `--version`. The
+// argument vector is fixed, and the binary field is a known capability slot rather than request data.
+function isFixedTerminalVersionProbe(argsText: string): boolean {
+  return /^\s*[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\.terminalBinary\s*,\s*\[\s*["']--version["']\s*\]/s.test(argsText);
+}
+
+// The safe-exec module is the wrapper implementation: it validates against an allow-list, rejects
+// unsafe args, sets `shell: false`, and bounds execution. Flagging its one spawn call is noise.
+function isSafeExecWrapperCall(file: SourceFile, callName: string, codeSegment: string): boolean {
+  return /(?:^|\/)safe-exec\.ts$/.test(file.displayPath) && ["spawn", "spawnSync"].includes(callName) && /\bshell\s*:\s*false\b/.test(codeSegment);
+}
+
+// Test harnesses often launch the current Node process or syntax-check a local shell script. Keep
+// dynamic production process calls visible while suppressing those fixed test-driver invocations.
+function isFixedTestHarnessProcessCall(file: SourceFile, callName: string, rawSegment: string, codeSegment: string): boolean {
+  if (!isTestLikeProcessExecPath(file.displayPath) || /\bshell\s*:\s*true\b/.test(codeSegment)) {
+    return false;
+  }
+  const argsText = rawSegment.slice(rawSegment.indexOf("(") + 1, rawSegment.lastIndexOf(")"));
+  if (/^\s*process\.execPath\s*,\s*\[/.test(argsText)) {
+    return true;
+  }
+  return ["exec", "execSync"].includes(callName) && /^\s*(?:"node scripts\/[^"]+"|'node scripts\/[^']+'|`(?:bash -n|wc -l\b)[^`]*`)/s.test(argsText);
+}
+
+// Test-only paths get a few extra fixed-harness exemptions; production paths still report them.
+function isTestLikeProcessExecPath(path: string): boolean {
+  return /(?:^|\/)(?:test|tests)\/|(?:^|\/)[^/]+\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path);
+}
+
+// Handles local command variables such as `const whichCmd = platform ? "where" : "which"` when
+// the call still uses an argv array. Calls or templates in the declaration remain reportable.
+function hasConstLiteralCommandVector(rawSource: string, callStart: number, argsText: string): boolean {
+  const firstArg = argsText.match(/^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*,\s*(?:\[|[A-Za-z_$][A-Za-z0-9_$]*)/s)?.[1];
+  if (!firstArg) {
+    return false;
+  }
+  const declaration = rawSource.slice(0, callStart).match(new RegExp(`\\bconst\\s+${escapeRegex(firstArg)}\\s*=\\s*([^;]+);\\s*$`, "s"));
+  const initializer = declaration?.[1] ?? "";
+  return /["'][^"']+["']/.test(initializer) && !/[`$()[\]{}]/.test(initializer);
 }
 
 

@@ -330,6 +330,22 @@ export function fromA(): string {
   );
 });
 
+test("project graph ignores type-only import cycles", () => {
+  const report = analyseProject({
+    "src/types/a.ts": `import type { B } from "./b";
+export interface A {
+  b: B;
+}
+`,
+    "src/types/b.ts": `import type { A } from "./a";
+export interface B {
+  a: A;
+}
+`,
+  });
+  assert.equal(report.findings.some((finding) => finding.ruleId === "design.circular-import"), false);
+});
+
 // Fixture for the test-adequacy rule sweep: covers missing-nearby-test, snapshot-only,
 // no-throw-only, plus exemption paths for `.d.ts`, fixtures/, and generated/.
 const TEST_ADEQUACY_FIXTURE = {
@@ -380,6 +396,23 @@ test("project test adequacy checks nearby coverage and shallow tests", () => {
 
   const missingTestPaths = report.findings.filter((finding) => finding.ruleId === "test-quality.missing-nearby-test").map((finding) => finding.filePath);
   assert.deepEqual(missingTestPaths, ["src/payments.ts"]);
+});
+
+test("project test adequacy accepts central tests that import the source", () => {
+  const report = analyseProject({
+    "src/cli/audit/check-agent-setup.ts": `export function checkAgentSetup(): string {
+  return "ok";
+}
+`,
+    "test/unit/audit-command.test.ts": `import assert from "node:assert/strict";
+import { checkAgentSetup } from "../../src/cli/audit/check-agent-setup";
+
+test("checks agent setup", () => {
+  assert.equal(checkAgentSetup(), "ok");
+});
+`,
+  });
+  assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.missing-nearby-test"), false);
 });
 
 test("expanded scanner config disables and overrides new rules", () => {

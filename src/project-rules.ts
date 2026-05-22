@@ -45,6 +45,7 @@ interface ImportEdge {
   specifier: string;
   line: number;
   parentSegments: number;
+  isTypeOnly: boolean;
   targetPath?: string;
 }
 
@@ -178,7 +179,7 @@ function circularImportFinding(index: ProjectIndex, cycle: ImportCycle): Finding
 // fallback keeps finding metadata stable when no edge could be located on the parsed source.
 function circularImportLine(index: ProjectIndex, anchorPath: string, cycle: ImportCycle): number {
   const anchorEdges = index.importsByFile.get(anchorPath) ?? [];
-  return anchorEdges.find((edge) => edge.targetPath && cycle.files.includes(edge.targetPath))?.line ?? 1;
+  return anchorEdges.find((edge) => !edge.isTypeOnly && edge.targetPath && cycle.files.includes(edge.targetPath))?.line ?? 1;
 }
 
 /*
@@ -280,7 +281,7 @@ function importEdgesForSource(source: ProjectSource, sourcePaths: Set<string>): 
 function importEdgesForLine(importerPath: string, lineSource: string, line: number, sourcePaths: Set<string>): ImportEdge[] {
   const edges: ImportEdge[] = [];
   for (const match of lineSource.matchAll(/\b(?:import|export)\b(?:[^"'`]*?\bfrom\s*)?\s*["']([^"']+)["']/g)) {
-    const edge = importEdgeForSpecifier(importerPath, match[1] ?? "", line, sourcePaths);
+    const edge = importEdgeForSpecifier(importerPath, match[1] ?? "", line, sourcePaths, isTypeOnlyImportStatement(match[0] ?? ""));
     if (edge) {
       edges.push(edge);
     }
@@ -290,7 +291,7 @@ function importEdgesForLine(importerPath: string, lineSource: string, line: numb
 
 // Builds an edge with `parentSegments` (counted from `..` hops) and an optional `targetPath` that
 // points to a file gruff has actually discovered. Used by both the cycle detector and the deep-import rule.
-function importEdgeForSpecifier(importerPath: string, specifier: string, line: number, sourcePaths: Set<string>): ImportEdge | undefined {
+function importEdgeForSpecifier(importerPath: string, specifier: string, line: number, sourcePaths: Set<string>, isTypeOnly: boolean): ImportEdge | undefined {
   if (!specifier.startsWith(".")) {
     return undefined;
   }
@@ -299,8 +300,14 @@ function importEdgeForSpecifier(importerPath: string, specifier: string, line: n
     specifier,
     line,
     parentSegments: specifier.split("/").filter((segment) => segment === "..").length,
+    isTypeOnly,
     ...(targetPath ? { targetPath } : {}),
   };
+}
+
+// Type-only imports disappear at runtime, so they should not participate in circular-import cycles.
+function isTypeOnlyImportStatement(importStatement: string): boolean {
+  return /\b(?:import|export)\s+type\b/.test(importStatement);
 }
 
 // Tries every extension / barrel form (see `importPathCandidates`). The first match wins because
@@ -357,7 +364,7 @@ function visitImportCycle(
   seen: Set<string>,
   cycles: Map<string, string[]>,
 ): void {
-  const targets = [...new Set((index.importsByFile.get(current) ?? []).map((edge) => edge.targetPath).filter(isString))].sort();
+  const targets = [...new Set((index.importsByFile.get(current) ?? []).filter((edge) => !edge.isTypeOnly).map((edge) => edge.targetPath).filter(isString))].sort();
   for (const target of targets) {
     if (target === start && path.length > 1) {
       const files = [...path].sort();
@@ -385,10 +392,11 @@ export function isProductionSourcePath(path: string): boolean {
  * cases, so the rule is intentionally conservative.
  */
 function analyseMissingNearbyTests(index: ProjectIndex, findings: Finding[]): void {
-  const testPaths = new Set(index.scriptSources.filter((source) => isTestPath(source.file.displayPath)).map((source) => source.file.displayPath));
+  const testSources = index.scriptSources.filter((source) => isTestPath(source.file.displayPath));
+  const testPaths = new Set(testSources.map((source) => source.file.displayPath));
   for (const source of index.scriptSources.filter((candidate) => isProductionSourcePath(candidate.file.displayPath))) {
     const exported = source.exportedSurface;
-    if (!exported || hasNearbyTest(source.file.displayPath, testPaths)) {
+    if (!exported || hasNearbyTest(source.file.displayPath, testPaths) || hasCentralTestImport(source.file.displayPath, testSources, index.importsByFile)) {
       continue;
     }
     findings.push(
@@ -406,6 +414,12 @@ function analyseMissingNearbyTests(index: ProjectIndex, findings: Finding[]): vo
       }),
     );
   }
+}
+
+// Centralized `test/unit` or `test/integration` suites often import the source directly instead
+// of matching filenames. Treat that import edge as nearby enough to avoid layout false positives.
+function hasCentralTestImport(sourcePath: string, testSources: ProjectSource[], importsByFile: Map<string, ImportEdge[]>): boolean {
+  return testSources.some((testSource) => (importsByFile.get(testSource.file.displayPath) ?? []).some((edge) => edge.targetPath === sourcePath));
 }
 
 // Returns the first exported callable/value seen — one finding per file is sufficient because

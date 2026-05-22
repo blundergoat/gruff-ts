@@ -46,7 +46,7 @@ export function pushNegativeBooleanAt(file: SourceFile, line: number, name: stri
  * `naming.boolean-prefix` finding.
  */
 export function pushBooleanPrefixAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
-  if (hasBooleanPrefix(name, config.booleanPrefixes)) {
+  if (hasBooleanPrefix(name, config.booleanPrefixes) || isAcceptedBooleanStateName(name)) {
     return;
   }
   findings.push(
@@ -63,6 +63,15 @@ export function pushBooleanPrefixAt(file: SourceFile, line: number, name: string
       metadata: { identifierName: name, surface },
     }),
   );
+}
+
+const ACCEPTED_BOOLEAN_STATE_NAMES = new Set(["acknowledged", "exists", "validated", "detected", "resolved", "selected", "installed"]);
+const ACCEPTED_BOOLEAN_STATE_SUFFIXES = ["Available", "Required", "Validated", "Detected", "Resolved", "Selected", "Installed"];
+
+// Some booleans are state adjectives rather than predicate phrases. Keep this list deliberately
+// narrow so vague names such as `ready` or `enabled` still get the maintainability prompt.
+function isAcceptedBooleanStateName(name: string): boolean {
+  return ACCEPTED_BOOLEAN_STATE_NAMES.has(name.toLowerCase()) || ACCEPTED_BOOLEAN_STATE_SUFFIXES.some((suffix) => name.endsWith(suffix));
 }
 
 /*

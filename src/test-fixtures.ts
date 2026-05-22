@@ -589,6 +589,7 @@ ${"test"}("setup bloat and control flow", () => {
   if (one) {
     for (const setupEntry of [one, two, three]) {
       sleep(setupEntry);
+      assert.ok(setupEntry);
     }
   }
   setTimeout(() => undefined, 1);

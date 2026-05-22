@@ -113,6 +113,8 @@ test("console globals suppress normal output and completion emits a script", () 
 test("summary CLI prints compact scan digest without per-finding spam", () => {
   const output = execFileSync("./bin/gruff-ts", ["summary", "fixtures/sample.ts", "--fail-on=none", "--no-config", "--no-baseline"], { encoding: "utf8" });
   assert.match(output, /^gruff-ts 0\.1\.0 summary/);
+  assert.equal(output.includes(`Path: ${join(process.cwd(), "fixtures/sample.ts")}\n`), true);
+  assert.match(output, /^Duration: (?:\d+ms|\d+\.\d{2}s)$/m);
   assert.match(output, /Per-pillar counts:/);
   assert.match(output, /Top rules:/);
   assert.match(output, /Top file offenders:/);

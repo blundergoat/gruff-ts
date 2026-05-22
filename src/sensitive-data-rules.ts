@@ -217,12 +217,27 @@ function isExcludedHighEntropyCandidate(candidateText: string, minLength: number
 // rather than a secret. The combined gate keeps the rule firing on real high-entropy material that
 // happens to contain slashes.
 function isRepoPathShape(candidateText: string): boolean {
-  if (!candidateText.includes("/")) {
+  const normalized = candidateText.replaceAll("\\", "/");
+  const hasKnownExtension = /\.(?:md|mdx|ts|tsx|js|jsx|mjs|cjs|json|yaml|yml|toml|html|css|svg|sh)$/.test(candidateText);
+  if (!hasKnownExtension) {
     return false;
   }
-  const hasKnownExtension = /\.(?:md|mdx|ts|tsx|js|jsx|mjs|cjs|json|yaml|yml|toml|html|css|svg|sh)$/.test(candidateText);
-  const hasKnownPrefix = /^(?:\.?[A-Za-z][A-Za-z0-9_-]*\/)+/.test(candidateText);
-  return hasKnownExtension && hasKnownPrefix;
+  if (!normalized.includes("/")) {
+    return isRepoPathLikeFilename(normalized);
+  }
+  return hasKnownRepoPathSegment(normalized);
+}
+
+// Basename-only docs and milestone filenames such as `ADR-024-...md` and `M00-...md`
+// appear in fixtures without a directory prefix but are still path references, not secrets.
+function isRepoPathLikeFilename(candidateText: string): boolean {
+  return /^(?:ADR-\d{3}|M\d{2,3})-[A-Za-z0-9_.-]+\.(?:md|mdx)$/i.test(candidateText);
+}
+
+// Path references may be repo-relative under source directories or fixture-absolute under `/repo`.
+// Requiring a known repository segment keeps slash-containing tokens from being over-suppressed.
+function hasKnownRepoPathSegment(candidateText: string): boolean {
+  return /(?:^|\/)(?:\.goat-flow|src|test|tests|fixtures?|docs|scripts|bin|workflow|package(?:-lock)?\.json)(?:\/|$)/.test(candidateText);
 }
 
 // All-hex strings — typical for SHA digests, content hashes, and tooling identifiers.

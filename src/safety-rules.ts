@@ -52,10 +52,11 @@ export function analyseUselessCatches(file: SourceFile, source: string, findings
  * only `// intentional` is still a swallowed catch but a real `console.error` is not. Reports
  * the stable `waste.swallowed-catch` finding.
  */
-export function analyseSwallowedCatches(file: SourceFile, source: string, findings: Finding[]): void {
-  for (const match of source.matchAll(/\bcatch\s*(?:\(([^)]*)\))?\s*\{([\s\S]*?)\}/g)) {
+export function analyseSwallowedCatches(file: SourceFile, rawSource: string, codeSource: string, findings: Finding[]): void {
+  for (const match of codeSource.matchAll(/\bcatch\s*(?:\(([^)]*)\))?\s*\{([\s\S]*?)\}/g)) {
     const body = match[2] ?? "";
-    if (!isSwallowedCatchBody(body)) {
+    const rawBody = rawCatchBody(rawSource, codeSource, match);
+    if (!isSwallowedCatchBody(body) || hasIntentionalCatchRationale(rawBody)) {
       continue;
     }
     const binding = (match[1] ?? "").trim();
@@ -64,7 +65,7 @@ export function analyseSwallowedCatches(file: SourceFile, source: string, findin
         ruleId: "waste.swallowed-catch",
         message: "catch block swallows an error without rethrowing, returning, or reporting it.",
         filePath: file.displayPath,
-        line: byteLine(source, match.index ?? 0),
+        line: byteLine(rawSource, match.index ?? 0),
         severity: "warning",
         pillar: "waste",
         confidence: "medium",
@@ -73,6 +74,24 @@ export function analyseSwallowedCatches(file: SourceFile, source: string, findin
       }),
     );
   }
+}
+
+// Maps a catch-body match from masked code back to raw source so rationale comments remain visible.
+function rawCatchBody(rawSource: string, codeSource: string, match: RegExpMatchArray): string {
+  const start = match.index ?? 0;
+  const openBrace = codeSource.indexOf("{", start);
+  const closeBrace = start + (match[0]?.length ?? 0) - 1;
+  return openBrace === -1 || closeBrace <= openBrace ? "" : rawSource.slice(openBrace + 1, closeBrace);
+}
+
+// Comment-only catches are acceptable when the comment gives a rationale such as "already closed",
+// "cache write failure is non-fatal", or "composition continues"; placeholders still surface.
+function hasIntentionalCatchRationale(body: string): boolean {
+  return (
+    /(?:\/\/|\/\*)/.test(body) &&
+    (hasSuppressionRationale(body) ||
+      /\b(?:already (?:closed|dead|gone)|optional|best effort|missing|unreadable|not a directory|doesn't exist|not available|non-fatal|cache write failure|composition continues|try next location|server unavailable|must not affect|explicit launch|malformed messages|template missing|sets [A-Za-z_$][A-Za-z0-9_$]* = false|skip agents? that fail)\b/i.test(body))
+  );
 }
 
 /*

@@ -173,11 +173,13 @@ function sarifLevel(severity: Severity): "error" | "warning" | "note" {
  * Compact stable digest used by the `summary` command. Intentionally not part of the JSON report
  * contract — output shape can evolve without bumping schemaVersion. Top-N lists are truncated to 10.
  */
-function renderSummary(report: AnalysisReport): string {
+function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: string): string {
   const pillarCounts = countBy(report.findings, (finding) => finding.pillar);
   const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
   const lines = [
     `gruff-ts ${report.tool.version} summary`,
+    `Path: ${pathLabel ?? report.run.projectRoot}`,
+    ...(typeof elapsedMs === "number" ? [`Duration: ${formatSummaryDuration(elapsedMs)}`] : []),
     `Score: ${report.score.composite.toFixed(1)} (${report.score.grade})`,
     `Findings: ${report.summary.total} total, ${report.summary.error} error, ${report.summary.warning} warning, ${report.summary.advisory} advisory`,
     `Analysed files: ${report.paths.analysedFiles}`,
@@ -198,6 +200,15 @@ function renderSummary(report: AnalysisReport): string {
     ),
   );
   return `${lines.join("\n")}\n`;
+}
+
+// Human-sized summary runtime without pretending sub-millisecond precision is useful.
+function formatSummaryDuration(elapsedMs: number): string {
+  const bounded = Math.max(0, elapsedMs);
+  if (bounded < 1000) {
+    return `${Math.round(bounded)}ms`;
+  }
+  return `${(bounded / 1000).toFixed(2)}s`;
 }
 
 function countBy<T extends string>(findings: Finding[], keyFor: (finding: Finding) => T): Map<T, number> {

@@ -29,10 +29,10 @@ const UNMATCHED_YAML_SCALAR: ParsedYamlScalar = { isMatched: false, value: undef
 function defaultConfig(): Config {
   return {
     ignoredPaths: [],
-    acceptedAbbreviations: new Set(["id", "db", "io", "ui", "tx", "rx"]),
+    acceptedAbbreviations: new Set(["id", "db", "fs", "io", "ui", "tx", "rx"]),
     secretPreviews: new Set(),
     bannedGenericNames: new Set(["process", "handle", "doit", "run", "execute", "manage"]),
-    booleanPrefixes: new Set(["is", "has", "can", "should", "does", "did", "was", "will"]),
+    booleanPrefixes: new Set(["is", "has", "can", "should", "does", "did", "was", "will", "may", "in", "scan", "supports", "requires"]),
     hungarianPrefixes: new Set(["str", "obj", "arr", "bool", "int", "num"]),
     placeholderNames: new Set(["foo", "bar", "baz", "tmp", "temp", "thing", "stuff", "data", "value", "item"]),
     abbreviationDenylist: new Set(["ctx", "pkg", "opts", "fn", "idx", "cb"]),

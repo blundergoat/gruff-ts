@@ -332,13 +332,34 @@ function pushStaleDeclarationCommentFinding(file: SourceFile, comment: CommentRe
 // method|contract|type>`. Both forms appear in real comments and either is sufficient evidence
 // that the comment intends to name a specific symbol.
 function referencedDeclarationName(text: string, kind: CommentedDeclaration["kind"]): string | undefined {
-  const identifier = "([A-Za-z_$][A-Za-z0-9_$]*)";
-  const direct = text.match(new RegExp(["\\b", kind, "\\s+`?", identifier, "`?"].join(""), "i"));
-  if (direct?.[1]) {
-    return direct[1];
+  const directBackticked = text.match(new RegExp(["\\b", kind, "\\s+`([A-Za-z_$][A-Za-z0-9_$]*)`"].join(""), "i"));
+  if (directBackticked?.[1]) {
+    return directBackticked[1];
   }
-  const leading = text.match(new RegExp(["^`?", identifier, "`?\\s+(?:", kind, "|helper|method|contract|type)\\b"].join(""), "i"));
-  return leading?.[1];
+  const directCodeLike = text.match(new RegExp(["\\b", kind, "\\s+([A-Za-z_$][A-Za-z0-9_$]*)"].join(""), "i"));
+  if (directCodeLike?.[1] && isCodeLikeIdentifier(directCodeLike[1])) {
+    return directCodeLike[1];
+  }
+  return leadingReferencedDeclarationName(text, kind);
+}
+
+// The leading form is intentionally stricter than `<kind> name`: ordinary English such as
+// "Read-only filesystem interface" or "Symlink helper" must not become a stale-symbol finding.
+function leadingReferencedDeclarationName(text: string, kind: CommentedDeclaration["kind"]): string | undefined {
+  const backticked = text.match(new RegExp(["^`([A-Za-z_$][A-Za-z0-9_$]*)`\\s+(?:", kind, "|helper|method|contract|type)\\b"].join(""), "i"));
+  if (backticked?.[1]) {
+    return backticked[1];
+  }
+  const codeLike = text.match(new RegExp(["^([A-Za-z_$][A-Za-z0-9_$]*)\\s+(?:", kind, "|helper|method|contract|type)\\b"].join(""), "i"));
+  if (codeLike?.[1] && isCodeLikeIdentifier(codeLike[1])) {
+    return codeLike[1];
+  }
+  return undefined;
+}
+
+// Requires a real identifier marker beyond normal prose capitalization.
+function isCodeLikeIdentifier(name: string): boolean {
+  return /[A-Z].*[A-Z]|[a-z][A-Z]|[_$]|\d/.test(name);
 }
 
 /*
