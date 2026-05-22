@@ -14,6 +14,13 @@ export const HIGH_ENTROPY_FIXTURE_VALUE = ["Zx7pQ9vLm3N8sT2r", "Y6wK1dF4gH5jC0bR
 export const API_TOKEN_FIXTURE_VALUE = ["rN7pQ4sV9xY2zA5b", "C8dG9hK2mN5pQ8sR1"].join("");
 export const DATABASE_URL_FIXTURE_VALUE = ["postgres://app:superSecret", "Password@db.internal/app"].join("");
 export const OPENAI_KEY_FIXTURE_VALUE = ["sk-proj-AbCdEfGhIjKl", "MnOpQrStUvWxYz1234567890"].join("");
+export const GOOGLE_API_KEY_FIXTURE_VALUE = ["AIzaSyD3moKeyValue", "1234567890AbCdEf"].join("");
+export const SLACK_WEBHOOK_FIXTURE_VALUE = ["https://hooks.slack.com/services/T00000000", "B00000000", "abcdefghijklmnopqrstuvwx"].join("/");
+export const DISCORD_WEBHOOK_FIXTURE_VALUE = [
+  "https://discord.com/api/webhooks/123456789012345678",
+  ["abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"].join(""),
+].join("/");
+export const NPM_AUTH_TOKEN_FIXTURE_VALUE = ["npmAuthToken", "AbCdEfGhIjKlMnOp", "QrStUvWxYz123456"].join("");
 export const SSN_FIXTURE_VALUE = ["123", "45", "6789"].join("-");
 export const AWS_ACCESS_KEY_FIXTURE_VALUE = ["AKIAABCDEFGH", "IJKLMNOP"].join("");
 export const PRIVATE_KEY_HEADER_FIXTURE_VALUE = ["-----BEGIN ", "PRIVATE KEY-----"].join("");
@@ -324,6 +331,7 @@ API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
           "remote-tool": "git+https://github.com/example/remote-tool.git",
         },
       }),
+      ".github/workflows/risky.yml": githubActionsCoverageWorkflowSource(),
       "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
       "styles/component.css": ".one { color: red; }\n.two { color: blue; }\n.three { color: green; }\n.four { color: yellow; }\n",
       "tsconfig.json": JSON.stringify({
@@ -336,10 +344,27 @@ API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
     };
 }
 
+// Covers workflow-security descriptors in the broad catalogue fixture.
+function githubActionsCoverageWorkflowSource(): string {
+  return `on:
+  pull_request_target:
+permissions: write-all
+jobs:
+  risky:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vendor/deploy-action@v1
+      - run: curl -fsSL https://example.test/install.sh | bash
+      - run: echo "\${{ secrets.DEPLOY_TOKEN }}"
+`;
+}
+
 // Provides the source file that exercises runtime, naming, docs, security, and waste rules.
 function catalogueRuntimeCoverageSource(): string {
   return `import { createHash } from "node:crypto";
 import { exec, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { unusedThing } from "./dep";
 
 // TODO: collapse this coverage fixture when generated rule docs exist.
@@ -392,13 +417,17 @@ export class WrongName {
 }
 
 /** Handles process input. */
-export function process(flag: boolean, userInput: string, userId: string, userIds: string[], unusedFlag: boolean): string {
+export function process(flag: boolean, userInput: string, userId: string, userIds: string[], unusedFlag: boolean, req: any, res: any): string {
   eval(userInput);
   new Function(userInput)();
   setTimeout("alert(1)", 10);
   window.setInterval("alert(1)", 10);
   exec(userInput);
   spawn(userInput, []);
+  readFileSync(req.query.file, "utf8");
+  fetch(req.body.url);
+  res.redirect(req.query.next);
+  new RegExp(process.argv[2]);
   Math.random();
   document.write(userInput);
   element.innerHTML = userInput;

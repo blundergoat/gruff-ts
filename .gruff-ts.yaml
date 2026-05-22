@@ -239,11 +239,29 @@ rules:
   # security/warning: Flags document.write usage.
   security.document-write:
     enabled: true
+  # security/warning: Flags external input used to construct regular expressions.
+  security.dynamic-regexp:
+    enabled: true
   # security/error: Flags eval() dynamic code execution.
   security.eval-call:
     enabled: true
   # security/warning: Flags promise-like calls without await, return, or void.
   security.floating-promise:
+    enabled: true
+  # security/warning: Flags GitHub Actions workflows that grant broad write permissions.
+  security.github-actions-broad-permissions:
+    enabled: true
+  # security/warning: Flags pull_request_target workflows paired with risky execution or trust context.
+  security.github-actions-pull-request-target:
+    enabled: true
+  # security/warning: Flags workflow run steps that pipe remote downloads to a shell.
+  security.github-actions-remote-shell:
+    enabled: true
+  # security/warning: Flags pull request workflows that reference GitHub secrets.
+  security.github-actions-secrets-in-pr:
+    enabled: true
+  # security/warning: Flags third-party GitHub Actions that are not pinned to a full commit SHA.
+  security.github-actions-unpinned-action:
     enabled: true
   # security/warning: Flags innerHTML assignment.
   security.inner-html:
@@ -256,6 +274,12 @@ rules:
     enabled: true
   # security/error: Flags Function constructor dynamic code execution.
   security.new-function:
+    enabled: true
+  # security/warning: Flags external input sent to redirect or navigation sinks.
+  security.open-redirect-candidate:
+    enabled: true
+  # security/warning: Flags external input sent to filesystem path sinks.
+  security.path-traversal-candidate:
     enabled: true
   # security/warning: Flags child-process execution calls.
   security.process-exec:
@@ -271,6 +295,9 @@ rules:
     enabled: true
   # security/warning: Flags SQL text composed with runtime string interpolation.
   security.sql-concatenation:
+    enabled: true
+  # security/warning: Flags external input sent to network request sinks.
+  security.ssrf-candidate:
     enabled: true
   # security/warning: Flags string callbacks passed to timers.
   security.string-timer:

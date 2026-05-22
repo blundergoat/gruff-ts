@@ -10,6 +10,7 @@ import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts"
 import { type NamingSurface, pushAbbreviationAt, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { isTestPath } from "./project-rules.ts";
 import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
+import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
@@ -88,6 +89,7 @@ function analyseLineRuleContext(context: LineRuleContext): void {
   pushLooseEqualityFinding(context);
   pushStringTimerFinding(context);
   pushProcessExecFinding(context);
+  analyseSecurityFlowLine(context.file, context.codeLine, context.lineNumber, context.findings);
   pushPatternCheckFindings(context);
   pushVariableNameFindings(context);
 }
@@ -408,20 +410,29 @@ function stringTimerCandidate(codeLine: string): boolean {
   );
 }
 
-// Targets child_process-style calls: bare `exec(...)`, `spawn(...)`, `execFile(...)`, `execSync`,
-// `spawnSync`, and module-receiver forms (`child_process.exec(`, `cp.exec(`, `execa.shell(`). Excludes
+// Targets child_process-style calls: bare `exec(...)`, `spawn(...)`, `execFile(...)`, sync variants,
+// `fork(...)`, and module-receiver forms (`child_process.exec(`, `cp.spawnSync(`). Excludes
 // member-access `.exec(` (the canonical RegExp.exec) unless the receiver is a known process module.
 function processExecCandidate(codeLine: string): boolean {
-  if (/\b(?:child_process|childProcess|execa|cp)\.(?:exec|spawn|execFile|execSync|spawnSync|fork)\s*\(/.test(codeLine)) {
+  if (/\b(?:child_process|childProcess|cp)\.(?:exec|spawn|execFile|execSync|execFileSync|spawnSync|fork)\s*\(/.test(codeLine)) {
     return true;
   }
-  return /(?:^|[^.\w$])(?:exec|spawn|execFile|execSync|spawnSync)\s*\(/.test(codeLine);
+  return /(?:^|[^.\w$])(?:exec|spawn|execFile|execSync|execFileSync|spawnSync|fork)\s*\(/.test(codeLine);
 }
 
 // False-positive escape hatch for gruff's own tests: spawning a literal relative path with an array
 // of args (the safe `spawn("./bin", ["…"])` form) inside a test file does not need to be flagged.
 function isFixedLocalProcessHarness(file: SourceFile, rawLine: string, codeLine: string): boolean {
-  return isProcessHarnessPath(file.displayPath) && /\b(?:spawn|spawnSync|execFile)\s*\(/.test(codeLine) && /\b(?:spawn|spawnSync|execFile)\s*\(\s*["']\.{1,2}\/[^"']*["']\s*,\s*\[/.test(rawLine);
+  return isProcessHarnessPath(file.displayPath) && !/\bshell\s*:\s*true\b/.test(codeLine) && isFixedArgvProcessCall(rawLine, codeLine);
+}
+
+// Test harnesses frequently execute the local CLI or fixed tools with argv arrays. Those calls are
+// intentionally not shell-interpolated, so they stay quiet unless a shell option is enabled.
+function isFixedArgvProcessCall(rawLine: string, codeLine: string): boolean {
+  if (!/\b(?:spawn|spawnSync|execFile|execFileSync)\s*\(/.test(codeLine)) {
+    return false;
+  }
+  return /\b(?:spawn|spawnSync|execFile|execFileSync)\s*\(\s*["'][^"']+["']\s*,\s*\[/.test(rawLine);
 }
 
 // Shared test helper modules are harness code even when their filenames are not `.test.ts`.

@@ -20,6 +20,7 @@ import { analyseDocRules, analyseFileOverviewDoc, analyseInterfaceDocs } from ".
 import { analyseLineRules } from "./line-rules.ts";
 import { pushAbbreviationAt, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { analyseTestBlock } from "./test-block-rules.ts";
+import { analyseGithubActionsRules } from "./github-actions-rules.ts";
 import { analyseProjectConfigRules } from "./project-config-rules.ts";
 import { scoreReport, summarize } from "./scoring.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
@@ -318,6 +319,7 @@ function analyseTextRules(file: SourceFile, source: string, config: Config, find
   }
 
   analyseSensitiveData(file, source, config, findings);
+  analyseGithubActionsRules(file, source, findings);
   analyseProjectConfigRules(file, source, findings);
 }
 

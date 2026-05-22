@@ -17,10 +17,10 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
     ["sensitive-data.aws-access-key", /AKIA[0-9A-Z]{16}/g, "AWS access key pattern detected."],
     ["sensitive-data.private-key", /BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY/g, "Private key block detected."],
     ["sensitive-data.jwt-token", /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "JWT-looking token detected."],
-    ["sensitive-data.database-url-password", /[a-z]+:\/\/[^:\s]+:[^@\s]+@/g, "Database URL appears to include a password."],
+    ["sensitive-data.database-url-password", /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|amqp|amqps|mssql):\/\/[^\/\s:@]+:[^\/\s@]+@/g, "Database URL appears to include a password."],
     [
       "sensitive-data.api-key-pattern",
-      /\b(?:sk_live_[A-Za-z0-9_-]{12,}|sk_test_[A-Za-z0-9_-]{12,}|sk-proj-[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g,
+      /\b(?:sk_live_[A-Za-z0-9_-]{12,}|sk_test_[A-Za-z0-9_-]{12,}|sk-proj-[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gh[ousr]_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+|https:\/\/discord(?:app)?\.com\/api\/webhooks\/[0-9]+\/[A-Za-z0-9_-]+)\b/g,
       "API key pattern detected.",
     ],
     ["sensitive-data.pii-pattern", /\b\d{3}-\d{2}-\d{4}\b/g, "PII-like identifier pattern detected."],
@@ -34,7 +34,34 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
   }
 
   analyseHardcodedEnvironmentValues(file, source, config, findings);
+  analyseNpmAuthTokens(file, source, config, findings);
   analyseHighEntropyStrings(file, source, config, findings);
+}
+
+function analyseNpmAuthTokens(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
+  const lines = source.split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
+    const token = npmAuthTokenValue(line);
+    if (!token) {
+      continue;
+    }
+    pushSensitiveFinding(
+      config,
+      findings,
+      file,
+      "sensitive-data.api-key-pattern",
+      "npm auth token pattern detected.",
+      index + 1,
+      token,
+      "high",
+      { keyName: "_authToken" },
+    );
+  }
+}
+
+function npmAuthTokenValue(line: string): string | undefined {
+  const match = line.match(/(?:^|:)_authToken\s*=\s*([A-Za-z0-9_-]{20,})\b/);
+  return match?.[1];
 }
 
 // Targets `KEY=value` and `KEY: value` assignments where the key name signals secrets (API_KEY,
@@ -132,7 +159,7 @@ function hardcodedEnvValue(line: string, minLength: number): { keyName: string; 
 // Matches the documented secret-key vocabulary (API_KEY, TOKEN, SECRET, PASSWORD, DATABASE_URL,
 // DSN, CREDENTIAL). Expanding this list will widen sensitive-data coverage — keep it intentional.
 function envValueCandidate(line: string): { keyName: string; value: string } | undefined {
-  const match = line.match(/^\s*([A-Z][A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)[A-Z0-9_]*)\s*[:=]\s*["']?([^"'\s#]+)["']?/i);
+  const match = line.match(/^\s*((?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)|[A-Z][A-Z0-9_-]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)[A-Z0-9_-]*)\s*[:=]\s*["']?([^"'\s#]+)["']?/i);
   const keyName = match?.[1] ?? "";
   const secretValue = match?.[2] ?? "";
   if (!keyName) {

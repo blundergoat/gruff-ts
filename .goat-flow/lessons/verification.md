@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-22
+last_reviewed: 2026-05-23
 ---
 
 # Verification lessons
@@ -133,6 +133,10 @@ last_reviewed: 2026-05-22
 The local deny-dangerous hook blocks verification wrappers that obscure nested execution. During discovery-scope verification, one `node` heredoc was blocked because JavaScript template-literal backticks looked like hidden command substitution, and a later `node -e` wrapper around `spawnSync("./bin/gruff-ts", ...)` was blocked because the shell-executing primitive hid the real command from hook review.
 
 Run the target command directly, save output to `/tmp` if parsing is needed, then use a non-spawning parser command against that file.
+
+**Updated:** 2026-05-23
+
+Workflow-security fixture smoke tests can trip the same hook if the shell command itself contains a literal remote-shell sample. Build risky fixture strings inside the test or temp-file writer from separated tokens, then run `gruff-ts` from the temp project root so workflow path gating still sees `.github/workflows/...`.
 
 ## Lesson: run `npm run check` after every `src/cli.ts` edit, not just before commit
 

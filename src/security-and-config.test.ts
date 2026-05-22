@@ -7,7 +7,11 @@ import {
   analyseProject,
   API_TOKEN_FIXTURE_VALUE,
   DATABASE_URL_FIXTURE_VALUE,
+  DISCORD_WEBHOOK_FIXTURE_VALUE,
+  GOOGLE_API_KEY_FIXTURE_VALUE,
+  NPM_AUTH_TOKEN_FIXTURE_VALUE,
   OPENAI_KEY_FIXTURE_VALUE,
+  SLACK_WEBHOOK_FIXTURE_VALUE,
   SSN_FIXTURE_VALUE,
   TS_IGNORE_DIRECTIVE,
 } from "./test-fixtures.ts";
@@ -125,6 +129,13 @@ const CLEAN_PACKAGE_JSON_FIXTURE = {
 };
 
 const RISKY_PACKAGE_RULE_IDS = ["security.remote-install-script", "security.risky-lifecycle-script", "security.url-dependency", "waste.broad-runtime-version"];
+const GITHUB_ACTIONS_RULE_IDS = [
+  "security.github-actions-broad-permissions",
+  "security.github-actions-pull-request-target",
+  "security.github-actions-remote-shell",
+  "security.github-actions-secrets-in-pr",
+  "security.github-actions-unpinned-action",
+];
 
 test("dependency and package config health detects risky package settings", () => {
   const report = analyseProject(RISKY_PACKAGE_JSON_FIXTURE);
@@ -136,6 +147,55 @@ test("dependency and package config health detects risky package settings", () =
   RISKY_PACKAGE_RULE_IDS.forEach((ruleId) => {
     assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
   });
+});
+
+test("github actions workflow security rules are path-gated and require risky context", () => {
+  const pinnedSha = "0123456789abcdef0123456789abcdef01234567";
+  const report = analyseProject({
+    ".github/workflows/risky.yml": `on:
+  pull_request_target:
+permissions: write-all
+jobs:
+  risky:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vendor/deploy-action@v1
+      - run: curl -fsSL https://example.test/install.sh | bash
+      - run: echo "\${{ secrets.DEPLOY_TOKEN }}"
+`,
+    ".github/workflows/safe.yaml": `on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  safe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vendor/deploy-action@${pinnedSha}
+      - run: curl -fsSL https://example.test/install.sh > install.sh
+      - run: echo "no secrets"
+`,
+    "docs/workflow.yml": `on:
+  pull_request_target:
+permissions: write-all
+jobs:
+  docs:
+    steps:
+      - uses: vendor/deploy-action@v1
+      - run: curl -fsSL https://example.test/install.sh | bash
+`,
+  });
+
+  const workflowFindings = report.findings.filter((finding) => finding.ruleId.startsWith("security.github-actions-"));
+  const ruleIds = new Set(workflowFindings.map((finding) => finding.ruleId));
+  GITHUB_ACTIONS_RULE_IDS.forEach((ruleId) => {
+    assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
+    assert.equal(workflowFindings.filter((finding) => finding.ruleId === ruleId).length, 1, `expected one ${ruleId}`);
+  });
+  assert.equal(workflowFindings.every((finding) => finding.filePath === ".github/workflows/risky.yml"), true);
+  const pullRequestTargetFinding = workflowFindings.find((finding) => finding.ruleId === "security.github-actions-pull-request-target");
+  assert.deepEqual(pullRequestTargetFinding?.metadata.riskContext, ["checkout", "run", "secrets", "write-permissions"]);
 });
 
 test("package bin health detects missing and non-executable targets", () => {
@@ -207,6 +267,9 @@ function redactedSecretsFixtureSource(): string {
   return `API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
 DATABASE_URL=${DATABASE_URL_FIXTURE_VALUE}
 OPENAI_API_KEY=${OPENAI_KEY_FIXTURE_VALUE}
+GOOGLE_API_KEY=${GOOGLE_API_KEY_FIXTURE_VALUE}
+SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_FIXTURE_VALUE}
+DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_FIXTURE_VALUE}
 PATIENT_SSN=${SSN_FIXTURE_VALUE}
 `;
 }
@@ -219,6 +282,9 @@ test("risk expansion redacts sensitive data in all render formats", () => {
   const apiToken = API_TOKEN_FIXTURE_VALUE;
   const databaseUrl = DATABASE_URL_FIXTURE_VALUE;
   const openAiKey = OPENAI_KEY_FIXTURE_VALUE;
+  const googleApiKey = GOOGLE_API_KEY_FIXTURE_VALUE;
+  const slackWebhook = SLACK_WEBHOOK_FIXTURE_VALUE;
+  const discordWebhook = DISCORD_WEBHOOK_FIXTURE_VALUE;
   const ssn = SSN_FIXTURE_VALUE;
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   SENSITIVE_DATA_RULE_IDS.forEach((ruleId) => {
@@ -226,7 +292,7 @@ test("risk expansion redacts sensitive data in all render formats", () => {
   });
   REDACTED_RENDER_FORMATS.forEach((format) => {
     const rendered = renderReport(report, format);
-    [apiToken, databaseUrl, openAiKey, ssn].forEach((secret) => {
+    [apiToken, databaseUrl, openAiKey, googleApiKey, slackWebhook, discordWebhook, ssn].forEach((secret) => {
       assert.equal(rendered.includes(secret), false, `${format} leaked ${secret}`);
     });
     assert.match(rendered, /redacted/);
@@ -267,6 +333,25 @@ test("risk expansion ignores package integrity hashes", () => {
     { fileName: "package-lock.json" },
   );
   assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), false);
+});
+
+test("sensitive-data expansion scans secret dotfiles and avoids css url credentials", () => {
+  const report = analyseProject({
+    ".npmrc": `//registry.npmjs.org/:_authToken=${NPM_AUTH_TOKEN_FIXTURE_VALUE}
+`,
+    ".pypirc": `[pypi]
+password = ${["pY7sK2mN8qR4", "vT6xW9zA1bC3"].join("")}
+`,
+    "styles/fonts.css": `@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap");
+`,
+  });
+
+  const apiKeyFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.api-key-pattern");
+  assert.equal(report.paths.analysedFiles, 3);
+  assert.equal(apiKeyFindings.some((finding) => finding.filePath === ".npmrc"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value" && finding.filePath === ".pypirc"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.database-url-password" && finding.filePath === "styles/fonts.css"), false);
+  assert.equal(renderReport(report, "json").includes(NPM_AUTH_TOKEN_FIXTURE_VALUE), false);
 });
 
 // Fixture covers executable security sinks while keeping noisy safe references nearby.
@@ -345,6 +430,11 @@ test("process exec exempts fixed local test harnesses but reports dynamic comman
 const child = spawn("./bin/gruff-ts", ["summary"]);
 void child;
 `,
+    "src/harness-shell.test.ts": `import { spawn } from "node:child_process";
+
+const child = spawn("./bin/gruff-ts", ["summary"], { shell: true });
+void child;
+`,
     "src/test-fixtures.ts": `import { spawn } from "node:child_process";
 
 export function withHarness(): void {
@@ -352,20 +442,69 @@ export function withHarness(): void {
   void child;
 }
 `,
-    "src/runner.ts": `import { spawn, execFile } from "node:child_process";
+    "src/runner.ts": `import { spawn, execFile, execSync, execFileSync, spawnSync, fork } from "node:child_process";
 
 function run(userCommand: string): void {
   spawn(userCommand, []);
   execFile(userCommand, []);
+  execSync(userCommand);
+  execFileSync(userCommand, []);
+  spawnSync(userCommand, []);
+  fork(userCommand);
+  const match = /unsafe/.exec(userCommand);
+  const globalPattern = /unsafe/g;
+  globalPattern["exec"](userCommand);
+  void match;
 }
 `,
   });
 
   const processExecFindings = report.findings.filter((finding) => finding.ruleId === "security.process-exec");
-  const expectedRunnerExecFindings = 2;
+  const expectedRunnerExecFindings = 6;
   assert.equal(processExecFindings.some((finding) => finding.filePath === "src/harness.test.ts"), false);
   assert.equal(processExecFindings.some((finding) => finding.filePath === "src/test-fixtures.ts"), false);
+  assert.equal(processExecFindings.filter((finding) => finding.filePath === "src/harness-shell.test.ts").length, 1);
   assert.equal(processExecFindings.filter((finding) => finding.filePath === "src/runner.ts").length, expectedRunnerExecFindings);
+});
+
+const SOURCE_TO_SINK_RULE_IDS = [
+  "security.path-traversal-candidate",
+  "security.ssrf-candidate",
+  "security.open-redirect-candidate",
+  "security.dynamic-regexp",
+];
+
+test("source-to-sink security rubrics require visible external input in risky sinks", () => {
+  const report = analyseFixture(`import { readFileSync } from "node:fs";
+
+function unsafe(req: any, res: any): void {
+  readFileSync(req.query.file, "utf8");
+  fetch(req.body.url);
+  res.redirect(req.query.next);
+  new RegExp(process.argv[2]);
+}
+
+function safe(req: any, res: any): void {
+  const localPath = "config.json";
+  readFileSync(localPath, "utf8");
+  fetch("https://example.test/health");
+  res.redirect("/dashboard");
+  new RegExp("^[a-z]+$");
+  const docs = "fetch(req.query.url); res.redirect(req.query.next);";
+  void docs;
+}
+`);
+  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
+  SOURCE_TO_SINK_RULE_IDS.forEach((ruleId) => {
+    assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
+  });
+  SOURCE_TO_SINK_RULE_IDS.forEach((ruleId) => {
+    assert.equal(report.findings.filter((finding) => finding.ruleId === ruleId).length, 1, `expected one ${ruleId}`);
+  });
+  const pathFinding = report.findings.find((finding) => finding.ruleId === "security.path-traversal-candidate");
+  assert.equal(pathFinding?.confidence, "medium");
+  assert.equal(pathFinding?.metadata.sourceKind, "request");
+  assert.equal(pathFinding?.metadata.sinkKind, "filesystem-path");
 });
 
 test("risk expansion finds direct modernisation and waste rules with safe non-candidates", () => {

@@ -54,14 +54,23 @@ const expandedRuleIds = new Set([
   "naming.identifier-quality",
   "security.async-foreach",
   "security.disabled-tls-verification",
+  "security.dynamic-regexp",
   "security.floating-promise",
+  "security.github-actions-broad-permissions",
+  "security.github-actions-pull-request-target",
+  "security.github-actions-remote-shell",
+  "security.github-actions-secrets-in-pr",
+  "security.github-actions-unpinned-action",
   "security.insecure-random",
   "security.javascript-url",
   "security.new-function",
+  "security.open-redirect-candidate",
+  "security.path-traversal-candidate",
   "security.process-exec",
   "security.proto-access",
   "security.remote-install-script",
   "security.sql-concatenation",
+  "security.ssrf-candidate",
   "security.string-timer",
   "security.throw-non-error",
   "security.url-dependency",
@@ -162,6 +171,18 @@ PATIENT_SSN=${SSN_FIXTURE_VALUE}
         "remote-tool": "git+https://github.com/example/remote-tool.git",
       },
     }),
+    ".github/workflows/risky.yml": `on:
+  pull_request_target:
+permissions: write-all
+jobs:
+  risky:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vendor/deploy-action@v1
+      - run: curl -fsSL https://example.test/install.sh | bash
+      - run: echo "\${{ secrets.DEPLOY_TOKEN }}"
+`,
     "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
     "styles/expanded.css": ".a { color: red; }\n.b { color: blue; }\n.c { color: green; }\n.d { color: yellow; }\n",
     "tsconfig.json": JSON.stringify({
@@ -270,11 +291,15 @@ export function unsafePublicApi(input: ${"any"}): ${"any"} {
   return user${"!"}.name;
 }
 
-async function unsafe(userInput: string, userId: string, userIds: string[]): Promise<void> {
+async function unsafe(userInput: string, userId: string, userIds: string[], req: any, res: any): Promise<void> {
   new Function(userInput)();
   setTimeout("alert(1)", 10);
   window.setInterval("alert(1)", 10);
   spawn(userInput, []);
+  readFileSync(req.query.file, "utf8");
+  fetch(req.body.url);
+  res.redirect(req.query.next);
+  new RegExp(process.argv[2]);
   Math.random();
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
   const insecureAgent = { rejectUnauthorized: false, minVersion: "TLSv1" };

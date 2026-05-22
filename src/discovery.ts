@@ -105,10 +105,15 @@ function pushSourceFile(projectRoot: string, absolutePath: string, files: Source
   const isScript = ["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(extension);
   const isText =
     ["conf", "config", "css", "env", "ini", "json", "toml", "xml", "yaml", "yml"].includes(extension) ||
-    name.startsWith(".env");
+    name.startsWith(".env") ||
+    isExactSecretTextFile(name);
   if (isScript || isText) {
     files.push({ absolutePath, displayPath: displayPath(projectRoot, absolutePath), isScript });
   }
+}
+
+function isExactSecretTextFile(name: string): boolean {
+  return [".npmrc", ".pypirc", ".envrc", ".netrc"].includes(name);
 }
 
 // The default-ignore list is part of the documented schema contract: callers can override with
