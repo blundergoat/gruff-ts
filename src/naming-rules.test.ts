@@ -270,6 +270,24 @@ console.log(widgetEtag, WIDGET_ETAG);
   assert.deepEqual(findings, []);
 });
 
+test("naming acronym-case ignores fixture constants beside idiomatic locals", () => {
+  const report = analyseFixture(`const API_TOKEN_FIXTURE_VALUE = "redacted";
+const googleApiKey = "redacted";
+console.log(API_TOKEN_FIXTURE_VALUE, googleApiKey);
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.acronym-case");
+  assert.deepEqual(findings, []);
+});
+
+test("naming acronym-case ignores lower and title acronym mix without all caps", () => {
+  const report = analyseFixture(`const apiToken = "redacted";
+const googleApiKey = "redacted";
+console.log(apiToken, googleApiKey);
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.acronym-case");
+  assert.deepEqual(findings, []);
+});
+
 // Canonical list of naming-pillar rule ids. Ordering matters: the catalogue test asserts the
 // descriptor output matches this list exactly.
 const NAMING_PILLAR_RULE_IDS = [

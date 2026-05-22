@@ -22,8 +22,8 @@ test("FP-#10 security.inner-html ignores empty-string DOM clearing", () => {
 });
 
 test("FP-#3 security.process-exec skips RegExp.exec call sites", () => {
-  // Fixture: rule.pattern.exec is a RegExp call and must not fire; the two child_process calls on
-  // lines 5 and 6 must fire as the only real findings.
+  // Fixture: rule.pattern.exec is a RegExp call and must not fire; the two user-controlled
+  // child_process calls on lines 5 and 6 must fire as the only real findings.
   const expectedFindingCount = 2;
   const expectedFiringLines = [5, 6];
   const report = analyseFixture(`import { exec, spawn } from "node:child_process";
@@ -31,7 +31,7 @@ function check(rule: { pattern: RegExp }, line: string, cmd: string): void {
   const match = rule.pattern.exec(line);
   void match;
   exec(cmd);
-  spawn("ls", ["-la"]);
+  spawn(cmd, ["-la"]);
 }
 `);
   const findings = report.findings.filter((entry) => entry.ruleId === "security.process-exec");

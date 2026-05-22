@@ -8,7 +8,6 @@ import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts";
 import { type NamingSurface, pushAbbreviationAt, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
-import { isTestPath } from "./project-rules.ts";
 import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
@@ -257,7 +256,7 @@ function pushStringTimerFinding(context: LineRuleContext): void {
  * `security.process-exec` finding.
  */
 function pushProcessExecFinding(context: LineRuleContext): void {
-  if (processExecCandidate(context.codeLine) && !isFixedLocalProcessHarness(context.file, context.line, context.codeLine)) {
+  if (processExecCandidate(context.codeLine) && !isFixedArgvProcessCall(context.line, context.codeLine)) {
     context.findings.push(finding({ ruleId: "security.process-exec", message: "Child-process execution is used; validate arguments are not user-controlled.", file: context.file, line: context.lineNumber, severity: "warning", pillar: "security" }));
   }
 }
@@ -420,24 +419,16 @@ function processExecCandidate(codeLine: string): boolean {
   return /(?:^|[^.\w$])(?:exec|spawn|execFile|execSync|execFileSync|spawnSync|fork)\s*\(/.test(codeLine);
 }
 
-// False-positive escape hatch for gruff's own tests: spawning a literal relative path with an array
-// of args (the safe `spawn("./bin", ["…"])` form) inside a test file does not need to be flagged.
-function isFixedLocalProcessHarness(file: SourceFile, rawLine: string, codeLine: string): boolean {
-  return isProcessHarnessPath(file.displayPath) && !/\bshell\s*:\s*true\b/.test(codeLine) && isFixedArgvProcessCall(rawLine, codeLine);
-}
-
-// Test harnesses frequently execute the local CLI or fixed tools with argv arrays. Those calls are
-// intentionally not shell-interpolated, so they stay quiet unless a shell option is enabled.
+// Fixed command vectors are intentionally not shell-interpolated, so this rule stays focused on
+// dynamic commands and shell-enabled process calls rather than every safe `execFile("tool", argv)`.
 function isFixedArgvProcessCall(rawLine: string, codeLine: string): boolean {
+  if (/\bshell\s*:\s*true\b/.test(codeLine)) {
+    return false;
+  }
   if (!/\b(?:spawn|spawnSync|execFile|execFileSync)\s*\(/.test(codeLine)) {
     return false;
   }
-  return /\b(?:spawn|spawnSync|execFile|execFileSync)\s*\(\s*["'][^"']+["']\s*,\s*\[/.test(rawLine);
-}
-
-// Shared test helper modules are harness code even when their filenames are not `.test.ts`.
-function isProcessHarnessPath(path: string): boolean {
-  return isTestPath(path) || /(?:^|\/)test-fixtures\.[cm]?[tj]sx?$/.test(path);
+  return /\b(?:spawn|spawnSync|execFile|execFileSync)\s*\(\s*["'][^"']+["']\s*,\s*(?:\[|[A-Za-z_$][A-Za-z0-9_$]*)/.test(rawLine);
 }
 
 

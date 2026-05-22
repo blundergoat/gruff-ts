@@ -38,6 +38,7 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
   analyseHighEntropyStrings(file, source, config, findings);
 }
 
+// Stable redaction contract: parses `_authToken=` config lines even when values lack an npm_ prefix.
 function analyseNpmAuthTokens(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const lines = source.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
@@ -59,6 +60,7 @@ function analyseNpmAuthTokens(file: SensitiveSourceFile, source: string, config:
   }
 }
 
+// Extracts the token portion from scoped or registry-prefixed npm auth config lines.
 function npmAuthTokenValue(line: string): string | undefined {
   const match = line.match(/(?:^|:)_authToken\s*=\s*([A-Za-z0-9_-]{20,})\b/);
   return match?.[1];

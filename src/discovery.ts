@@ -112,6 +112,7 @@ function pushSourceFile(projectRoot: string, absolutePath: string, files: Source
   }
 }
 
+// Exact extensionless secret files stay scannable without opening the door to every dotfile.
 function isExactSecretTextFile(name: string): boolean {
   return [".npmrc", ".pypirc", ".envrc", ".netrc"].includes(name);
 }

@@ -276,6 +276,7 @@ PATIENT_SSN=${SSN_FIXTURE_VALUE}
 
 const SENSITIVE_DATA_RULE_IDS = ["sensitive-data.hardcoded-env-value", "sensitive-data.api-key-pattern", "sensitive-data.database-url-password", "sensitive-data.pii-pattern"];
 const REDACTED_RENDER_FORMATS = ["text", "json", "markdown", "github", "html", "sarif"] as const;
+const EXPECTED_SECRET_DOTFILE_ANALYSED_FILES = 3;
 
 test("risk expansion redacts sensitive data in all render formats", () => {
   const report = analyseFixture(redactedSecretsFixtureSource(), { fileName: ".env" });
@@ -347,7 +348,7 @@ password = ${["pY7sK2mN8qR4", "vT6xW9zA1bC3"].join("")}
   });
 
   const apiKeyFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.api-key-pattern");
-  assert.equal(report.paths.analysedFiles, 3);
+  assert.equal(report.paths.analysedFiles, EXPECTED_SECRET_DOTFILE_ANALYSED_FILES);
   assert.equal(apiKeyFindings.some((finding) => finding.filePath === ".npmrc"), true);
   assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value" && finding.filePath === ".pypirc"), true);
   assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.database-url-password" && finding.filePath === "styles/fonts.css"), false);
@@ -467,6 +468,23 @@ function run(userCommand: string): void {
   assert.equal(processExecFindings.filter((finding) => finding.filePath === "src/runner.ts").length, expectedRunnerExecFindings);
 });
 
+test("process exec exempts fixed command vectors", () => {
+  const report = analyseProject({
+    "src/fixed-git.ts": `import { execFileSync } from "node:child_process";
+
+function changedFiles(mode: string): void {
+  const args = ["diff", "--name-only"];
+  if (mode === "staged") {
+    args.push("--cached");
+  }
+  execFileSync("git", args, { encoding: "utf8" });
+}
+`,
+  });
+
+  assert.equal(report.findings.some((finding) => finding.ruleId === "security.process-exec"), false);
+});
+
 const SOURCE_TO_SINK_RULE_IDS = [
   "security.path-traversal-candidate",
   "security.ssrf-candidate",
@@ -475,6 +493,7 @@ const SOURCE_TO_SINK_RULE_IDS = [
 ];
 
 test("source-to-sink security rubrics require visible external input in risky sinks", () => {
+  // Fixture covers every same-line source-to-sink rule plus safe literal non-candidates.
   const report = analyseFixture(`import { readFileSync } from "node:fs";
 
 function unsafe(req: any, res: any): void {

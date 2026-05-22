@@ -4,11 +4,13 @@ import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import type { Finding } from "./types.ts";
 
+// External input token that can be visibly matched on one source line.
 interface SourceToken {
   kind: string;
   pattern: RegExp;
 }
 
+// One source-to-sink heuristic: a risky call pattern plus the remediation attached to its finding.
 interface SecurityFlowRule {
   ruleId: string;
   message: string;
@@ -55,6 +57,7 @@ const SECURITY_FLOW_RULES: readonly SecurityFlowRule[] = [
   },
 ];
 
+// Same-line matching is intentional: reports stable candidate findings without implying full taint analysis.
 export function analyseSecurityFlowLine(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   const source = sourceToken(codeLine);
   if (!source) {
@@ -67,10 +70,12 @@ export function analyseSecurityFlowLine(file: SourceFile, codeLine: string, line
   }
 }
 
+// Returns the first visible external-input token so emitted metadata stays deterministic.
 function sourceToken(codeLine: string): SourceToken | undefined {
   return SOURCE_TOKENS.find((source) => source.pattern.test(codeLine));
 }
 
+// Confirms the external-input token appears inside the same bounded sink call segment.
 function sourceAppearsInSink(codeLine: string, sourcePattern: RegExp, callPattern: RegExp): boolean {
   callPattern.lastIndex = 0;
   for (const call of codeLine.matchAll(callPattern)) {
@@ -82,13 +87,16 @@ function sourceAppearsInSink(codeLine: string, sourcePattern: RegExp, callPatter
   return false;
 }
 
+// Keeps matching on one visible call because multiline dataflow is deliberately out of scope.
 function singleLineCallSegment(codeLine: string, callStart: number): string {
+  // maxSegmentLength limit: 240 chars covers normal calls while avoiding later same-line matches.
   const maxSegmentLength = 240;
   const segment = codeLine.slice(callStart, callStart + maxSegmentLength);
   const close = segment.indexOf(")");
   return close === -1 ? segment : segment.slice(0, close + 1);
 }
 
+// Stable finding contract for source-to-sink rules: medium confidence plus source/sink metadata only.
 function securityFlowFinding(file: SourceFile, line: number, rule: SecurityFlowRule, sourceKind: string): Finding {
   return makeFinding({
     ruleId: rule.ruleId,

@@ -122,42 +122,71 @@ function acronymCaseClass(token: string): "upper" | "lower" | "title" {
 }
 
 /*
- * Reports when an acronym from `config.knownAcronyms` appears in two or more case forms in one
- * file. Like `analyseInconsistentCasing`, the finding anchors on the second occurrence so the
- * stable fingerprint sticks to the divergence rather than the established style.
+ * Reports when an acronym from `config.knownAcronyms` appears as all-caps plus another case form.
+ * The all-caps gate exists because lower/title-only forms like `apiToken` beside `googleApiKey`
+ * are idiomatic enough to avoid noisy findings. Like `analyseInconsistentCasing`, the finding
+ * anchors on the second occurrence so the stable fingerprint sticks to the divergence.
  */
 export function analyseAcronymCase(file: SourceFile, inventory: DeclaredIdentifier[], config: Config, findings: Finding[]): void {
   const observed = new Map<string, Map<string, { name: string; line: number }>>();
   for (const entry of inventory) {
-    for (const token of tokensForAcronymCheck(entry.name)) {
-      const lower = token.toLowerCase();
-      if (!config.knownAcronyms.has(lower)) continue;
-      const cases = observed.get(lower) ?? new Map();
-      const caseKey = acronymCaseClass(token);
-      if (!cases.has(caseKey)) cases.set(caseKey, { name: entry.name, line: entry.line });
-      observed.set(lower, cases);
-    }
+    recordAcronymCases(observed, config, entry);
   }
   for (const [acronym, cases] of observed) {
-    if (cases.size < 2) continue;
-    const occurrences = [...cases.values()].sort((a, b) => a.line - b.line);
-    const second = occurrences[1];
-    if (!second) continue;
-    findings.push(
-      makeFinding({
-        ruleId: "naming.acronym-case",
-        message: `Acronym \`${acronym.toUpperCase()}\` appears in multiple cases in this file.`,
-        filePath: file.displayPath,
-        line: second.line,
-        severity: "advisory",
-        pillar: "naming",
-        confidence: "medium",
-        symbol: second.name,
-        remediation: "Use one casing for each acronym throughout the file.",
-        metadata: { acronym: acronym.toUpperCase(), variants: [...cases.keys()].sort() },
-      }),
-    );
+    pushAcronymCaseFinding(file, acronym, cases, findings);
   }
+}
+
+// Adds one identifier's acronym tokens to the observed case map, skipping fixture-only constants.
+function recordAcronymCases(observed: Map<string, Map<string, { name: string; line: number }>>, config: Config, entry: DeclaredIdentifier): void {
+  if (isFixtureIdentifier(entry.name)) {
+    return;
+  }
+  for (const token of tokensForAcronymCheck(entry.name)) {
+    const lower = token.toLowerCase();
+    if (!config.knownAcronyms.has(lower)) continue;
+    const cases = observed.get(lower) ?? new Map();
+    const caseKey = acronymCaseClass(token);
+    if (!cases.has(caseKey)) cases.set(caseKey, { name: entry.name, line: entry.line });
+    observed.set(lower, cases);
+  }
+}
+
+// Reports the stable acronym-case finding only after the all-caps-vs-other drift gate passes.
+function pushAcronymCaseFinding(file: SourceFile, acronym: string, cases: Map<string, { name: string; line: number }>, findings: Finding[]): void {
+  if (!shouldReportAcronymCase(cases)) {
+    return;
+  }
+  const occurrences = [...cases.values()].sort((a, b) => a.line - b.line);
+  const second = occurrences[1];
+  if (!second) {
+    return;
+  }
+  findings.push(
+    makeFinding({
+      ruleId: "naming.acronym-case",
+      message: `Acronym \`${acronym.toUpperCase()}\` appears in multiple cases in this file.`,
+      filePath: file.displayPath,
+      line: second.line,
+      severity: "advisory",
+      pillar: "naming",
+      confidence: "medium",
+      symbol: second.name,
+      remediation: "Use one casing for each acronym throughout the file.",
+      metadata: { acronym: acronym.toUpperCase(), variants: [...cases.keys()].sort() },
+    }),
+  );
+}
+
+// Requires an upper-case acronym plus a different case; lower/title-only mixes stay quiet.
+function shouldReportAcronymCase(cases: Map<string, { name: string; line: number }>): boolean {
+  return cases.has("upper") && cases.size >= 2;
+}
+
+// Fixture constants often use SCREAMING_SNAKE vendor token names that should not force local
+// camelCase variables to adopt the same acronym style.
+function isFixtureIdentifier(name: string): boolean {
+  return /(?:^|[_-])fixture(?:[_-]|$)/i.test(name);
 }
 
 /*
