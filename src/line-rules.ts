@@ -99,7 +99,7 @@ function codeLineChecks(): LineRuleCheck[] {
     { ruleId: "security.eval-call", pattern: /\beval\s*\(/, message: "eval() executes dynamic code.", severity: "error", pillar: "security" },
     { ruleId: "security.new-function", pattern: /\bnew\s+Function\s*\(|(?:^|[=(:,])\s*Function\s*\(/, message: "Function constructor executes dynamic code.", severity: "error", pillar: "security" },
     { ruleId: "security.insecure-random", pattern: /\bMath\.random\s*\(/, message: "Math.random() is not suitable for security-sensitive randomness.", severity: "warning", pillar: "security" },
-    { ruleId: "security.inner-html", pattern: /\.innerHTML\s*=|\bdangerouslySetInnerHTML\b/, message: "HTML injection sink can introduce XSS.", severity: "warning", pillar: "security" },
+    { ruleId: "security.inner-html", pattern: /\.innerHTML\s*=(?!\s*(?:""|''))|\bdangerouslySetInnerHTML\b/, message: "HTML injection sink can introduce XSS.", severity: "warning", pillar: "security" },
     { ruleId: "security.proto-access", pattern: /\.__proto__\b/, message: "Direct __proto__ access can enable prototype pollution.", severity: "warning", pillar: "security" },
     { ruleId: "security.document-write", pattern: /\bdocument\.write\s*\(/, message: "document.write() can introduce injection risks.", severity: "warning", pillar: "security" },
     { ruleId: "waste.redundant-boolean-cast", pattern: /\b(?:if|while)\s*\(\s*(?:!!\s*[A-Za-z_$][A-Za-z0-9_$.]*|Boolean\s*\()/, message: "Condition contains a redundant boolean cast.", severity: "advisory", pillar: "waste" },
@@ -270,10 +270,22 @@ function pushPatternCheckFindings(context: LineRuleContext): void {
     }
   }
   for (const check of context.literalChecks) {
+    if (isSuppressedByPathContext(check.ruleId, context.file.displayPath)) {
+      continue;
+    }
     if (rawPatternStartsInCode(context.line, context.codeLine, check.globalPattern ?? check.pattern)) {
       context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: check.severity, pillar: check.pillar }));
     }
   }
+}
+
+// Per-rule path-context allowlist. CLI entry points, build scripts, and server diagnostic modules
+// are expected to write to stdout; the console-log rule would otherwise drown them in advisories.
+function isSuppressedByPathContext(ruleId: string, displayPath: string): boolean {
+  if (ruleId !== "waste.console-log") {
+    return false;
+  }
+  return /(?:^|\/)(?:scripts|bin)\//.test(displayPath) || /(?:^|\/)cli[/.]/i.test(displayPath) || /(?:^|\/)server[/.]/i.test(displayPath);
 }
 
 // Per-line variable-name pass that runs short/identifier-quality/abbreviation checks on both
@@ -396,16 +408,20 @@ function stringTimerCandidate(codeLine: string): boolean {
   );
 }
 
-// Triggers on any `exec`, `spawn`, or `execFile` call. Conservative on purpose — pairs with
-// `isFixedLocalProcessHarness` which carves out the safe local-harness case.
+// Targets child_process-style calls: bare `exec(...)`, `spawn(...)`, `execFile(...)`, `execSync`,
+// `spawnSync`, and module-receiver forms (`child_process.exec(`, `cp.exec(`, `execa.shell(`). Excludes
+// member-access `.exec(` (the canonical RegExp.exec) unless the receiver is a known process module.
 function processExecCandidate(codeLine: string): boolean {
-  return /\b(?:exec|spawn|execFile)\s*\(/.test(codeLine);
+  if (/\b(?:child_process|childProcess|execa|cp)\.(?:exec|spawn|execFile|execSync|spawnSync|fork)\s*\(/.test(codeLine)) {
+    return true;
+  }
+  return /(?:^|[^.\w$])(?:exec|spawn|execFile|execSync|spawnSync)\s*\(/.test(codeLine);
 }
 
 // False-positive escape hatch for gruff's own tests: spawning a literal relative path with an array
 // of args (the safe `spawn("./bin", ["…"])` form) inside a test file does not need to be flagged.
 function isFixedLocalProcessHarness(file: SourceFile, rawLine: string, codeLine: string): boolean {
-  return isProcessHarnessPath(file.displayPath) && /\b(?:spawn|execFile)\s*\(/.test(codeLine) && /\b(?:spawn|execFile)\s*\(\s*["']\.{1,2}\/[^"']*["']\s*,\s*\[/.test(rawLine);
+  return isProcessHarnessPath(file.displayPath) && /\b(?:spawn|spawnSync|execFile)\s*\(/.test(codeLine) && /\b(?:spawn|spawnSync|execFile)\s*\(\s*["']\.{1,2}\/[^"']*["']\s*,\s*\[/.test(rawLine);
 }
 
 // Shared test helper modules are harness code even when their filenames are not `.test.ts`.

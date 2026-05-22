@@ -5,9 +5,10 @@ TypeScript and JavaScript projects. It scans source, tests, package metadata,
 and common config files, then reports quality findings across 11 pillars with
 stable fingerprints for baselines and repeatable machine output.
 
-The 0.1 release ships 111 rules across 11 pillars, JSON/HTML/Markdown/GitHub
+The 0.1 release ships 112 rules across 11 pillars, JSON/HTML/Markdown/GitHub
 /SARIF/hotspot output, baseline support, changed-file filtering, local score
-history, a rule catalogue, and a dark local dashboard.
+history, a rule catalogue, and a dark local dashboard. Scanned file types
+include TypeScript, JavaScript, CSS, JSON, YAML, TOML, INI, XML, and `.env*`.
 
 ## Install
 

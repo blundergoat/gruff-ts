@@ -32,9 +32,11 @@ function parseDiagnostics(file: DiagnosticSourceFile, source: string): RunDiagno
       return [parseErrorDiagnostic(file, index + 1)];
     }
   }
-  if (hasUnbalancedDelimiterCount(ctx.counts)) {
-    return [parseErrorDiagnostic(file, lines.length)];
-  }
+  // Intentional: the EOF imbalance check was removed in M38 false-positive triage. The brace
+  // scanner is a regex-vs-division heuristic, not a real parser, and produces drift on valid
+  // TypeScript containing nested template literals, regex literals with parens in character
+  // classes, and similar constructs. tsc owns syntax validation; gruff's job here is to catch
+  // obvious local mismatches (negative counts) rather than rediscover end-of-file parser errors.
   return [];
 }
 
@@ -48,6 +50,9 @@ interface DelimiterCounts {
 
 // Lexer state for the delimiter scanner. `previousCode` is the last non-whitespace executable
 // character — required because `/` may start a regex or a division depending on what came before.
+// `templateInterpolationStack` records the brace count at each `${` so a matching `}` can re-enter
+// template literal mode; without it, nested-template-literal files like `\`\${x.map(n => \`\${n}\`)}\``
+// flip out of quote mode early and start counting code-level braces inside the string body.
 interface DelimiterScanState {
   quote: string | undefined;
   isEscaped: boolean;
@@ -56,6 +61,7 @@ interface DelimiterScanState {
   isInRegexCharClass: boolean;
   isRegexEscaped: boolean;
   previousCode: string;
+  templateInterpolationStack: number[];
 }
 
 // Bundles state + counts so per-character handlers can mutate both without threading two arguments.
@@ -82,6 +88,7 @@ function defaultDelimiterScanState(): DelimiterScanState {
     isInRegexCharClass: false,
     isRegexEscaped: false,
     previousCode: "",
+    templateInterpolationStack: [],
   };
 }
 
@@ -106,8 +113,7 @@ function scanDelimiterCharacter(line: string, offset: number, ctx: DelimiterScan
     return scanBlockCommentDelimiter(character, next, ctx.scan);
   }
   if (ctx.scan.quote) {
-    scanQuotedDelimiter(character, ctx.scan);
-    return continueScan();
+    return scanQuotedDelimiter(character, next, ctx);
   }
   if (ctx.scan.isInRegex) {
     scanRegexDelimiter(character, ctx.scan);
@@ -128,14 +134,30 @@ function scanBlockCommentDelimiter(character: string, next: string, scan: Delimi
 
 // Inside a string or template literal. `\` arms `isEscaped` so the next character (including a
 // closing quote) is treated as literal text. Necessary to handle `"\\\""` and similar correctly.
-function scanQuotedDelimiter(character: string, scan: DelimiterScanState): void {
+// Template literals also recognise `${` as an interpolation opener — the scanner pushes the current
+// brace count onto a stack, exits quote mode, and counts the opening `{` so a matching `}` re-enters
+// template literal mode. Without this, nested-template files mis-attribute later `\`` as the closer.
+function scanQuotedDelimiter(character: string, next: string, ctx: DelimiterScanContext): ScanStep {
+  const scan = ctx.scan;
   if (scan.isEscaped) {
     scan.isEscaped = false;
-  } else if (character === "\\") {
+    return continueScan();
+  }
+  if (character === "\\") {
     scan.isEscaped = true;
-  } else if (character === scan.quote) {
+    return continueScan();
+  }
+  if (scan.quote === "`" && character === "$" && next === "{") {
+    scan.templateInterpolationStack.push(ctx.counts.braces);
+    scan.quote = undefined;
+    ctx.counts.braces += 1;
+    scan.previousCode = "{";
+    return skipNextCharacter();
+  }
+  if (character === scan.quote) {
     scan.quote = undefined;
   }
+  return continueScan();
 }
 
 // Inside `/regex/`. `[...]` character classes can legally contain `/`, so the closing slash
@@ -208,8 +230,16 @@ function scanRegexStart(line: string, offset: number, character: string, scan: D
 
 // Updates the delimiter tallies and remembers this character as `previousCode` so the next `/`
 // can decide regex-vs-division. Whitespace is not recorded; it would corrupt the regex heuristic.
+// Also detects when a `}` returns to a saved template-interpolation depth and transitions the
+// scanner back into template-literal mode.
 function scanPlainCodeDelimiter(character: string, ctx: DelimiterScanContext): ScanStep {
   countDelimiter(character, ctx.counts);
+  if (character === "}" && ctx.scan.templateInterpolationStack.length > 0 && ctx.counts.braces === (ctx.scan.templateInterpolationStack[ctx.scan.templateInterpolationStack.length - 1] ?? -1)) {
+    ctx.scan.templateInterpolationStack.pop();
+    ctx.scan.quote = "`";
+    ctx.scan.previousCode = "`";
+    return continueScan();
+  }
   if (character.trim() !== "") {
     ctx.scan.previousCode = character;
   }

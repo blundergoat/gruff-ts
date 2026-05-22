@@ -640,14 +640,14 @@ function work(): void {
 }
 `;
   const report = analyseFixture(source, {
-    config: { rules: { "docs.todo-density": { threshold: 2, severity: "advisory" } } },
+    config: { rules: { "docs.todo-density": { enabled: true, threshold: 2, severity: "advisory" } } },
   });
   const finding = report.findings.find((candidate) => candidate.ruleId === "docs.todo-density");
   const expectedFirstTodoLine = 4;
   assert.equal(finding?.message, "File contains 2 TODO/FIXME markers."); assert.equal(finding?.line, expectedFirstTodoLine);
 
   const relaxedReport = analyseFixture(source, {
-    config: { rules: { "docs.todo-density": { threshold: 3, severity: "advisory" } } },
+    config: { rules: { "docs.todo-density": { enabled: true, threshold: 3, severity: "advisory" } } },
   });
   assert.equal(relaxedReport.findings.some((finding) => finding.ruleId === "docs.todo-density"), false);
 });

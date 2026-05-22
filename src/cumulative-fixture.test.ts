@@ -80,6 +80,7 @@ const expandedRuleIds = new Set([
   "test-quality.snapshot-only-test",
   "test-quality.trivial-assertion",
   "test-quality.unused-mock",
+  "size.stylesheet-length",
   "waste.commented-out-code",
   "waste.empty-function",
   "waste.exported-any",
@@ -162,6 +163,7 @@ PATIENT_SSN=${SSN_FIXTURE_VALUE}
       },
     }),
     "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
+    "styles/expanded.css": ".a { color: red; }\n.b { color: blue; }\n.c { color: green; }\n.d { color: yellow; }\n",
     "tsconfig.json": JSON.stringify({
       compilerOptions: {
         strict: false,
@@ -408,7 +410,12 @@ test("setup bloat", () => {
 `;
 }
 
-// Applies only the custom NPath threshold because this fixture intentionally exercises branch fanout.
+/*
+ * Custom NPath threshold because the runtime fixture deliberately exercises wide branch fanout
+ * that would not trip the production default; the low stylesheet-length threshold lets a tiny CSS
+ * file stand in for a 1500+ line stylesheet, intentional because inflating the cumulative fixture
+ * corpus would slow every test run without adding behavioural coverage.
+ */
 function cumulativeExpandedFixtureOptions(): Parameters<typeof analyseProject>[1] {
-  return { config: { rules: { "complexity.npath": { threshold: 20, severity: "warning" } } } };
+  return { config: { rules: { "complexity.npath": { threshold: 20, severity: "warning" }, "size.stylesheet-length": { threshold: 3, severity: "warning" } } } };
 }

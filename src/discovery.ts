@@ -104,7 +104,7 @@ function pushSourceFile(projectRoot: string, absolutePath: string, files: Source
   const name = basename(absolutePath);
   const isScript = ["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(extension);
   const isText =
-    ["conf", "config", "env", "ini", "json", "toml", "xml", "yaml", "yml"].includes(extension) ||
+    ["conf", "config", "css", "env", "ini", "json", "toml", "xml", "yaml", "yml"].includes(extension) ||
     name.startsWith(".env");
   if (isScript || isText) {
     files.push({ absolutePath, displayPath: displayPath(projectRoot, absolutePath), isScript });

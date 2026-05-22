@@ -219,6 +219,9 @@ function pushMissingFunctionDocFinding(context: BlockRuleContext): void {
 // Empty bodies are sometimes intentional placeholders, hence the advisory severity rather than
 // warning. Reports `waste.empty-function` when the body strips to whitespace/comments only.
 function pushEmptyFunctionFinding(context: BlockRuleContext): void {
+  if (isBodyLessDeclaration(context.block) || isDeclarationFile(context.file)) {
+    return;
+  }
   if (isEmptyFunctionBody(context.block.codeBody)) {
     context.findings.push(blockFinding({ ruleId: "waste.empty-function", message: `Function \`${context.block.name}\` has no executable body.`, file: context.file, block: context.block, severity: "advisory", pillar: "waste" }));
   }
@@ -227,6 +230,9 @@ function pushEmptyFunctionFinding(context: BlockRuleContext): void {
 // `_`-prefixed parameters are exempted (the standard "intentionally unused" convention).
 // Reports `waste.unused-parameter` for parameter names that never appear in the callable body.
 function pushUnusedParameterFindings(context: BlockRuleContext): void {
+  if (isBodyLessDeclaration(context.block) || isDeclarationFile(context.file)) {
+    return;
+  }
   for (const parameter of parameterNames(context.block.params)) {
     if (!isUnusedParameter(context, parameter.name)) {
       continue;
@@ -235,11 +241,39 @@ function pushUnusedParameterFindings(context: BlockRuleContext): void {
   }
 }
 
+// Skips interface methods, type-literal methods, function-type aliases, abstract members, and
+// overload signatures — all of which look like a function declaration ending in `;` rather than `{`,
+// and have no real body to check for emptiness or parameter usage.
+function isBodyLessDeclaration(block: FunctionBlock): boolean {
+  for (const rawLine of block.codeBody.split("\n")) {
+    const trimmed = rawLine.trim();
+    if (trimmed === "" || trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
+      continue;
+    }
+    return /\)[^{;]*;\s*$/.test(trimmed);
+  }
+  return false;
+}
+
+// TypeScript `.d.ts` files only declare types; every callable in them is a signature, never an
+// implementation, so the empty/unused-parameter rules are categorically misapplied there.
+function isDeclarationFile(file: SourceFile): boolean {
+  return file.displayPath.endsWith(".d.ts");
+}
+
 // Word-boundary regex against the masked function body. The body is masked so a parameter mentioned
-// only in a string literal would still count as unused — that matches the intent of the rule.
+// only in a string literal would still count as unused — that matches the intent of the rule. A
+// loose `${...param...}` regex over the raw body catches parameters used only inside template
+// interpolations, which the mask would otherwise hide.
 function isUnusedParameter(context: BlockRuleContext, parameterName: string): boolean {
+  if (parameterName.startsWith("_")) {
+    return false;
+  }
   const escaped = escapeRegex(parameterName);
-  return !parameterName.startsWith("_") && !new RegExp(`\\b${escaped}\\b`).test(context.functionBody);
+  if (new RegExp(`\\b${escaped}\\b`).test(context.functionBody)) {
+    return false;
+  }
+  return !new RegExp(`\\$\\{[^}]*\\b${escaped}\\b[^}]*\\}`).test(context.block.body);
 }
 
 /*
@@ -607,11 +641,25 @@ function isFunctionPrefixLine(trimmedLine: string): boolean {
   return trimmedLine.startsWith("@") || trimmedLine.startsWith("/**") || trimmedLine.startsWith("*") || trimmedLine === "";
 }
 
-// Generic "is there any assertion at all" probe used by missing-assertion rules. Accepts both
-// `assert(...)`/`assert.foo(...)` and `expect(...)`, including the assertion-count helpers
-// `expect.assertions()` / `expect.hasAssertions()` so tests that delegate counting still pass.
+// Generic "is there any assertion at all" probe used by missing-assertion rules. Accepts standard
+// `assert(...)` / `assert.foo(...)` / `expect(...)` (including `expect.assertions()` / `expect.hasAssertions()`)
+// PLUS project-local helpers shaped like `assertFoo(...)`, `expectFoo(...)`, `fooCheck(...)`, and
+// promise-rejection patterns (`rejects.`, `doesNotReject(`). Custom helpers are common in mature
+// test suites and missing them produced false positives in M38 false-positive triage.
 export function hasAssertion(source: string): boolean {
-  return /\bassert(?:\.[A-Za-z]+)?\s*\(/.test(source) || /\bexpect(?:\.(?:assertions|hasAssertions))?\s*\(/.test(source);
+  if (/\bassert(?:\.[A-Za-z]+|[A-Z][A-Za-z0-9_$]*)?\s*\(/.test(source)) {
+    return true;
+  }
+  if (/\bexpect(?:\.(?:assertions|hasAssertions)|[A-Z][A-Za-z0-9_$]*)?\s*\(/.test(source)) {
+    return true;
+  }
+  if (/\b[A-Za-z_$][A-Za-z0-9_$]*Check\s*\(/.test(source)) {
+    return true;
+  }
+  if (/\.(?:rejects|resolves)\b/.test(source) || /\b(?:doesNotReject|rejects)\s*\(/.test(source)) {
+    return true;
+  }
+  return false;
 }
 
 // Setup-bloat metric: counts non-ignorable lines preceding the first assertion in the body. Stops

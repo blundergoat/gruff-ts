@@ -293,20 +293,38 @@ function analyseProjectIndex(projectSources: ProjectSource[], config: Config): F
  */
 function analyseTextRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
   const lines = lineCount(source);
-  const fileLengthThreshold = threshold(config, "size.file-length", 750);
-  if (!isGeneratedLockfile(file.displayPath)) {
+  if (isCssPath(file.displayPath)) {
+    const stylesheetThreshold = threshold(config, "size.stylesheet-length", 1500);
+    if (lines > stylesheetThreshold) {
+      findings.push(finding({ ruleId: "size.stylesheet-length", message: `Stylesheet has ${lines} lines, above the threshold of ${stylesheetThreshold}.`, file, line: 1, severity: ruleSeverity(config, "size.stylesheet-length", "warning"), pillar: "size" }));
+    }
+  } else if (!isGeneratedLockfile(file.displayPath)) {
+    const fileLengthThreshold = threshold(config, "size.file-length", 750);
     if (lines > fileLengthThreshold) {
       findings.push(finding({ ruleId: "size.file-length", message: `File has ${lines} lines, above the threshold of ${fileLengthThreshold}.`, file, line: 1, severity: ruleSeverity(config, "size.file-length", "warning"), pillar: "size" }));
     }
   }
 
-  const todoMarkers = todoMarkerSummary(source, file.isScript);
-  if (todoMarkers.count >= threshold(config, "docs.todo-density", 4)) {
-    findings.push(finding({ ruleId: "docs.todo-density", message: `File contains ${todoMarkers.count} TODO/FIXME markers.`, file, line: todoMarkers.firstLine, severity: ruleSeverity(config, "docs.todo-density", "advisory"), pillar: "documentation" }));
+  /*
+   * Opt-in by default per M38 (.goat-flow/tasks/0.1/M38-css-metrics-and-todo-density-calibration.md):
+   * raw marker density produced too many false positives in other gruff projects; prefer the
+   * context-aware docs.todo-without-tracking rule when task-marker scanning matters.
+   */
+  if (config.rules.get("docs.todo-density")?.enabled === true) {
+    const todoMarkers = todoMarkerSummary(source, file.isScript);
+    if (todoMarkers.count >= threshold(config, "docs.todo-density", 4)) {
+      findings.push(finding({ ruleId: "docs.todo-density", message: `File contains ${todoMarkers.count} TODO/FIXME markers.`, file, line: todoMarkers.firstLine, severity: ruleSeverity(config, "docs.todo-density", "advisory"), pillar: "documentation" }));
+    }
   }
 
   analyseSensitiveData(file, source, config, findings);
   analyseProjectConfigRules(file, source, findings);
+}
+
+// CSS paths use a dedicated size rule (`size.stylesheet-length`) so stylesheets can have a
+// different threshold and message from generic source files.
+function isCssPath(displayPath: string): boolean {
+  return displayPath.toLowerCase().endsWith(".css");
 }
 
 // Counts the same logical lines as `source.split(/\r?\n/)` without allocating the full line array.
@@ -337,7 +355,7 @@ function analyseTypeScriptRules(file: SourceFile, source: string, config: Config
   const comments = commentRecords(source);
   analyseFileOverviewDoc(file, source, findings);
   analyseBlocks(file, blocks, config, findings);
-  analyseUnusedImports(file, codeSource, findings);
+  analyseUnusedImports(file, codeSource, source, findings);
   analyseLineRules(file, source, codeSource, config, findings);
   analyseUnreachable(file, codeSource, findings);
   analyseDocRules(file, source, codeSource, findings);

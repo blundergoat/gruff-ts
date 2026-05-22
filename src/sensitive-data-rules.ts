@@ -177,8 +177,23 @@ function isHighEntropySecretCandidate(candidateText: string, minLength: number):
 
 // Entropy false-positive escape hatches. Hex digests and SRI hashes both look "high entropy" but
 // are well-known non-secrets — without these exclusions, package-lock.json scans become noise.
+// Repo-relative path-shaped strings (slashes plus a known extension and a conventional prefix
+// segment) also clear the entropy bar without being secrets; the path-shape guard suppresses them.
 function isExcludedHighEntropyCandidate(candidateText: string, minLength: number): boolean {
-  return candidateText.length < minLength || isHexDigest(candidateText) || isSubresourceIntegrityHash(candidateText);
+  return candidateText.length < minLength || isHexDigest(candidateText) || isSubresourceIntegrityHash(candidateText) || isRepoPathShape(candidateText);
+}
+
+// Path-shape guard: a string that contains at least one `/`, has a path-like extension, AND lives
+// under a conventional source/docs/test/workflow prefix is almost always a repo-relative reference
+// rather than a secret. The combined gate keeps the rule firing on real high-entropy material that
+// happens to contain slashes.
+function isRepoPathShape(candidateText: string): boolean {
+  if (!candidateText.includes("/")) {
+    return false;
+  }
+  const hasKnownExtension = /\.(?:md|mdx|ts|tsx|js|jsx|mjs|cjs|json|yaml|yml|toml|html|css|svg|sh)$/.test(candidateText);
+  const hasKnownPrefix = /^(?:\.?[A-Za-z][A-Za-z0-9_-]*\/)+/.test(candidateText);
+  return hasKnownExtension && hasKnownPrefix;
 }
 
 // All-hex strings — typical for SHA digests, content hashes, and tooling identifiers.

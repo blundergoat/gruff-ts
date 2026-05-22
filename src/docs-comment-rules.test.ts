@@ -74,7 +74,7 @@ test("comment quality stale-comment flags stale references", () => {
  */
 // See \`src/missing-file.ts\` before changing this helper.
 // Unknown scanner rule docs.removed-rule should be deleted.
-// Run with --removed-flag when debugging.
+// Run gruff-ts with --removed-flag when debugging.
 // legacy migration note mentions \`src/old-file.ts\` intentionally.
 function currentFeature(): void {}
 

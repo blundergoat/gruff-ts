@@ -139,8 +139,10 @@ rules:
   docs.suppression-without-rationale:
     enabled: true
   # documentation/advisory: Flags files with a high count of to-do / fix-me markers.
+  # Disabled by default: prefer docs.todo-without-tracking, which checks for
+  # owner/issue/date context instead of raw marker count.
   docs.todo-density:
-    enabled: true
+    enabled: false
     threshold: 4
     severity: advisory
   # documentation/advisory: Flags to-do, fix-me, hack, and xxx comments without tracking context.
@@ -324,6 +326,11 @@ rules:
   size.parameter-count:
     enabled: true
     threshold: 7
+    severity: warning
+  # size/warning: Flags stylesheets longer than configured thresholds.
+  size.stylesheet-length:
+    enabled: true
+    threshold: 1500
     severity: warning
   # test-quality/advisory: Flags tests with conditional logic.
   test-quality.conditional-logic:

@@ -30,7 +30,7 @@ Initial public release.
 
 ### Rules
 
-- 111 rule descriptors across 11 public pillars:
+- 112 rule descriptors across 11 public pillars:
   - `complexity` (3): cognitive, cyclomatic, npath.
   - `dead-code` (1): unused-private-method.
   - `design` (6): circular-import, deep-relative-import, god-function,
@@ -42,7 +42,7 @@ Initial public release.
     missing-invariant-doc, missing-why-for-complex-code,
     magic-threshold-without-rationale, fixture-purpose-missing,
     suppression-without-rationale, stale-comment, stale-param-tag,
-    useless-docblock, todo-density, todo-without-tracking.
+    useless-docblock, todo-density (opt-in), todo-without-tracking.
   - `modernisation` (14): date-now-candidate, double-cast, loose-equality,
     non-null-assertion, nullish-coalescing-candidate, object-spread-candidate,
     optional-chaining-candidate, public-property, readonly-property-candidate,
@@ -61,7 +61,8 @@ Initial public release.
   - `sensitive-data` (8): api-key-pattern, aws-access-key,
     database-url-password, hardcoded-env-value, high-entropy-string,
     jwt-token, pii-pattern, private-key.
-  - `size` (3): file-length, function-length, parameter-count.
+  - `size` (4): file-length, function-length, parameter-count,
+    stylesheet-length.
   - `test-quality` (15): conditional-logic, exception-type-only,
     global-state-mutation, loop-in-test, magic-number-assertion,
     missing-nearby-test, mock-only-test, no-assertions, no-throw-only-test,

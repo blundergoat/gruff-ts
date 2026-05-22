@@ -256,11 +256,17 @@ function pushStaleRuleReferenceFindings(file: SourceFile, comment: CommentRecord
 
 /*
  * Each double-dash option in a comment must appear in `cliFlags` (parsed from the CLI source) or
- * it counts as a stale reference. Historical context comments stay exempt by design. Reports the
- * stable `docs.stale-comment` finding for each unknown option name.
+ * it counts as a stale reference. The rule's value is catching gruff-ts maintainers who rename a
+ * flag and forget to update its references — so the check only fires when the comment also names
+ * gruff-ts (or invokes the gruff/gruff-ts binary). In any other project, flag references belong to
+ * that project's CLI, not gruff-ts, and validating them against gruff-ts's own option surface
+ * produces only noise. Reports the stable `docs.stale-comment` finding for each unknown option.
  */
 function pushStaleCliFlagReferenceFindings(file: SourceFile, comment: CommentRecord, optionFlagSet: Set<string>, findings: Finding[]): void {
   if (isHistoricalContextComment(comment.text)) {
+    return;
+  }
+  if (!mentionsGruffCli(comment.text)) {
     return;
   }
   for (const match of comment.text.matchAll(/(?<![A-Za-z0-9])--[a-z][a-z0-9-]*/g)) {
@@ -270,6 +276,12 @@ function pushStaleCliFlagReferenceFindings(file: SourceFile, comment: CommentRec
     }
     findings.push(staleCommentFinding(file, comment, `Comment references unknown CLI flag \`${flag}\`.`, { staleReference: flag, referenceType: "cliFlag" }));
   }
+}
+
+// True when the comment names the gruff-ts CLI by binary or product name. Acts as the activation
+// gate for the unknown-CLI-flag check; comments that talk about other tools' flags never trip it.
+function mentionsGruffCli(text: string): boolean {
+  return /\bgruff(?:-ts)?\b/i.test(text);
 }
 
 // Static list of valid CLI options. Hand-curated rather than parsed from the Commander definition

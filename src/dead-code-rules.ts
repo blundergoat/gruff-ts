@@ -37,6 +37,7 @@ export function analyseDeadCode(file: SourceFile, source: string, findings: Find
 // reports `waste.unreachable-code` with stable, deterministic fingerprint anchors.
 export function analyseUnreachable(file: SourceFile, source: string, findings: Finding[]): void {
   let didPreviousTerminate = false;
+  let isInConditionalBranch = false;
   source.split(/\r?\n/).forEach((line, index) => {
     const trimmed = line.trim();
     const branchLabel = isBranchLabel(trimmed);
@@ -46,8 +47,21 @@ export function analyseUnreachable(file: SourceFile, source: string, findings: F
     if (isUnreachableStatement(trimmed, didPreviousTerminate, branchLabel)) {
       findings.push(finding({ ruleId: "waste.unreachable-code", message: "Statement appears after a terminating statement.", file, line: index + 1, severity: "warning", pillar: "waste" }));
     }
-    didPreviousTerminate = isTerminatingStatement(trimmed);
+    // A terminating statement inside a braceless conditional body does not unconditionally exit:
+    // `if (x)\n  return y;\nnextLine` — `nextLine` runs when `x` is falsy. Tracking the prior line's
+    // conditional-opener shape suppresses the false positive on compact guard clauses.
+    didPreviousTerminate = isTerminatingStatement(trimmed) && !isInConditionalBranch;
+    isInConditionalBranch = isBracelessConditionalOpener(trimmed);
   });
+}
+
+// Detects single-line conditional/loop openers that begin a one-statement body (no `{`). The next
+// line is the conditional body, so any terminator there is conditional rather than unconditional.
+function isBracelessConditionalOpener(trimmed: string): boolean {
+  if (trimmed.endsWith("{") || trimmed.endsWith("}")) {
+    return false;
+  }
+  return /^(?:if|else\s+if|for|while)\s*\(/.test(trimmed) || /^else\b/.test(trimmed) || /^do\b/.test(trimmed);
 }
 
 // `case X:` / `default:` open a new control path, so the unreachable walker must reset its
@@ -70,14 +84,21 @@ function isTerminatingStatement(trimmedLine: string): boolean {
   return /^(?:return|throw|process\.exit)\b/.test(trimmedLine) && trimmedLine.endsWith(";");
 }
 
-// Reports `waste.unused-import` for every named specifier whose local name appears nowhere else
-// in the file. Default imports and namespace imports are out of scope because the regex anchors
-// on `{ … }`; walking lines in source order keeps the reports stable and deterministic.
-export function analyseUnusedImports(file: SourceFile, source: string, findings: Finding[]): void {
+/*
+ * Reports `waste.unused-import` for every named specifier whose local name appears nowhere else
+ * in the file. Default imports and namespace imports are out of scope because the regex anchors
+ * on `{ … }`; walking lines in source order keeps the reports stable and deterministic. Receives
+ * both the masked code and the raw source so identifiers referenced inside template-literal
+ * `${...}` interpolations (which the mask would otherwise blank out) still count as used. Never
+ * throws — every regex is anchored and the input shape is validated upstream by the analyser; the
+ * helper writes to `findings` and returns void. Part of the public per-file rule contract that
+ * baselines depend on, so finding ordering and message shape are intentionally stable across releases.
+ */
+export function analyseUnusedImports(file: SourceFile, source: string, rawSource: string, findings: Finding[]): void {
   const lines = source.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
     for (const specifier of namedImportSpecifiers(line)) {
-      const name = unusedImportName(source, specifier);
+      const name = unusedImportName(source, rawSource, specifier);
       if (!name) {
         continue;
       }
@@ -115,15 +136,21 @@ function hasNamedImportBraces(openBrace: number, closeBrace: number): boolean {
 }
 
 // The local binding (after `as`, if present) must appear in the source exactly once — the
-// declaration itself. More than one match means the import is referenced somewhere and is not
-// dead; returning undefined suppresses the finding.
-function unusedImportName(source: string, specifier: string): string | undefined {
+// declaration itself. More than one match in the masked code, OR a `${...name...}` template-literal
+// interpolation in the raw source, counts as a real reference. Returning undefined suppresses the finding.
+function unusedImportName(source: string, rawSource: string, specifier: string): string | undefined {
   const name = localImportName(specifier);
   if (!name) {
     return undefined;
   }
   const escaped = escapeRegex(name);
-  return countMatches(source, new RegExp(`\\b${escaped}\\b`, "g")) > 1 ? undefined : name;
+  if (countMatches(source, new RegExp(`\\b${escaped}\\b`, "g")) > 1) {
+    return undefined;
+  }
+  if (new RegExp(`\\$\\{[^}]*\\b${escaped}\\b[^}]*\\}`).test(rawSource)) {
+    return undefined;
+  }
+  return name;
 }
 
 // Single makeFinding factory for `waste.unused-import`. The local binding name lands in both the
