@@ -23,6 +23,8 @@ Please include:
 - Affected command or output format.
 - Whether sensitive data is exposed in findings, reports, dashboard output, or
   logs.
+- Whether a baseline, SARIF upload, GitHub annotation output, or dashboard scan
+  endpoint is involved.
 
 ## Security Boundaries
 
@@ -33,6 +35,8 @@ Please include:
   must be escaped.
 - The scanner is heuristic and is not a vulnerability scanner or dependency
   advisory database.
+- Baselines suppress matching fingerprints. For security-focused CI, prefer
+  `gruff-ts analyse . --no-baseline --fail-on=error`.
 
 ## Disclosure Expectations
 

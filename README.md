@@ -1,13 +1,15 @@
 # gruff-ts
 
-`gruff-ts` is a dependency-light Node.js CLI for statically analysing
-TypeScript and JavaScript projects. It scans source, tests, package metadata,
-and common config files, then reports quality findings across 11 pillars with
+`gruff-ts` is a static analyzer for TypeScript and JavaScript projects. The
+dependency-light Node.js CLI scans source, tests, package metadata, and
+common config files, then reports quality findings across 11 pillars with
 stable fingerprints for baselines and repeatable machine output.
 
-The 0.1 release includes 86 rules, JSON/HTML/Markdown/GitHub output, baseline
-support, changed-file filtering, local score history, a rule catalogue, and a
-dark local dashboard.
+The 0.1.0 release ships 121 rules across 11 pillars,
+JSON/HTML/Markdown/GitHub/SARIF/hotspot output, baseline support, changed-file
+filtering, local score history, a rule catalogue, and a dark local dashboard.
+Scanned file types include TypeScript, JavaScript, CSS, JSON, YAML, TOML, INI,
+XML, and `.env*`.
 
 ## Install
 
@@ -70,7 +72,7 @@ Findings are grouped into 11 public pillars:
 - `design`
 
 Inspect the exact rule ids, severities, confidence levels, remediation text,
-and threshold keys:
+threshold values, and options:
 
 ```bash
 gruff-ts list-rules
@@ -117,6 +119,7 @@ stdout is a TTY; `--ansi` forces colour and `--no-ansi` disables it.
 | `markdown` | Short Markdown summary. |
 | `github` | GitHub Actions annotation commands. |
 | `hotspot` | Compact `gruff.hotspot.v1` top-offender payload. |
+| `sarif` | SARIF 2.1.0 code-scanning output. |
 
 Examples:
 
@@ -124,6 +127,7 @@ Examples:
 gruff-ts analyse . --format=json --fail-on=none
 gruff-ts analyse . --format=github --fail-on=warning
 gruff-ts analyse . --format=hotspot --fail-on=none
+gruff-ts analyse . --format=sarif --fail-on=none > gruff.sarif
 ```
 
 `report` supports `html` and `json`:
@@ -162,6 +166,13 @@ gruff-ts analyse . --diff=staged --format=json --fail-on=none
 
 `--diff` accepts `working-tree`, `staged`, `unstaged`, or a base ref.
 
+Security-focused CI can run without baseline suppression so new error-severity
+security or sensitive-data findings cannot be hidden by an adoption baseline:
+
+```bash
+gruff-ts analyse . --no-baseline --fail-on=error
+```
+
 ## Baselines And History
 
 Baselines suppress existing findings by stable fingerprint so teams can adopt
@@ -175,6 +186,9 @@ gruff-ts analyse . --no-baseline --fail-on=none
 
 Baseline files use `schemaVersion: "gruff.baseline.v1"`.
 
+`report` is intended for raw inspection output and does not accept
+`--baseline`; use `analyse` when you need baseline suppression in CI.
+
 Append local score history:
 
 ```bash
@@ -183,18 +197,23 @@ gruff-ts analyse . --history-file .gruff-history.json --fail-on=none
 
 ## Configuration
 
-`analyse` auto-loads the first default config file it finds:
+`analyse` auto-loads the first supported config file it finds in the project root:
 
-1. `.gruff.json`
-2. `.gruff.yaml`
-3. `.gruff.yml`
+1. `.gruff-ts.yaml`
+2. `.gruff.json`
+3. `.gruff.yaml`
+4. `.gruff.yml`
 
 Use an explicit config or skip config loading:
 
 ```bash
-gruff-ts analyse . --config .gruff.yaml
+gruff-ts analyse . --config .gruff-ts.yaml
 gruff-ts analyse . --no-config
 ```
+
+Recursive scans respect root and nested `.gitignore` files. Use
+`--include-ignored` to include default and Git-ignored paths for a run;
+`paths.ignore` entries still apply as project policy.
 
 Minimal YAML example:
 
@@ -211,13 +230,11 @@ allowlists:
 
 rules:
   complexity.cyclomatic:
-    thresholds:
-      warn: 10
-      error: 20
+    threshold: 10
+    severity: warning
   size.file-length:
-    thresholds:
-      warn: 400
-      error: 800
+    threshold: 400
+    severity: warning
 ```
 
 See [Configuration](docs/CONFIGURATION.md) for the full config shape and
@@ -266,11 +283,20 @@ npm run start-dev
 ./bin/gruff-ts analyse . --fail-on=none
 ```
 
-The runtime is intentionally concentrated in `src/cli.ts`, with tests in
-`src/cli.test.ts`.
+Source lives under `src/`: `src/cli.ts` is the thin bootstrap,
+`src/cli-program.ts` owns Commander wiring, `src/analyser.ts` orchestrates the
+scan, `src/rules.ts` holds the descriptor catalogue, and focused sibling
+modules own rule packs and renderers. Tests live in focused `src/*.test.ts`
+files.
+
+To bump the released version, run `scripts/bump-version.sh <new-version>` - it
+updates `package.json` and `src/constants.ts` in lockstep so the CLI
+`--version` output stays consistent with the published package.
+
+## Author
+
+Built by [Matthew Hansen](https://www.blundergoat.com/about).
 
 ## License
 
-`package.json` currently declares `proprietary`. If this project is intended to
-be open source, add a `LICENSE` file and update package metadata before the
-public release.
+[MIT](LICENSE)

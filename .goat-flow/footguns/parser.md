@@ -1,12 +1,12 @@
 ---
 category: parser
-last_reviewed: 2026-05-10
+last_reviewed: 2026-05-18
 hallucination-risk: high
 ---
 
 # Parser footguns (`src/cli.ts`)
 
-Static-analysis surfaces that look like a real TS parser but are actually regex/character heuristics. Agents reading the code from names alone (`functionBlocks`, `parseDiagnostics`, `analyseDeadCode`) tend to over-trust them — that is the trap.
+Static-analysis surfaces that look like a real TS parser but are actually regex/character heuristics. Agents reading the code from names alone (`functionBlocks`, `parseDiagnostics`, `analyseDeadCode`) tend to over-trust them - that is the trap.
 
 ## Footgun: `functionBlocks` is regex-based, not a TS AST
 
@@ -14,11 +14,12 @@ Static-analysis surfaces that look like a real TS parser but are actually regex/
 
 `functionBlocks` (`src/cli.ts`, search: `function functionBlocks`) walks lines and matches one of four hand-rolled patterns. It does NOT understand:
 
-- Generics in parameter lists (`<T>(...)`) — the param regex `\(([^)]*)\)` stops at the first `)`.
-- Multi-line parameter lists — only the first line of the signature is captured for `params`.
-- Decorators or overload signatures — `functionStartIndex` walks back over `@`/`/**`/`*`/blank lines but not over multiple overload declarations.
-- Object-method shorthand inside object literals — matches anything with `name(args):` pattern, so config-like literals can be mistaken for methods.
+- Generics in parameter lists (`<T>(...)`) - the param regex `\(([^)]*)\)` stops at the first `)`.
+- Multi-line parameter lists - only the first line of the signature is captured for `params`.
+- Decorators or overload signatures - `functionStartIndex` walks back over `@`/`/**`/`*`/blank lines but not over multiple overload declarations.
+- Object-method shorthand inside object literals - matches anything with `name(args):` pattern, so config-like literals can be mistaken for methods.
 - The "test" classifier (`block.isTest`) trips on any function whose name `startsWith("test")`, not only Node-test/Vitest/Mocha calls.
+- `FunctionBlock.startLine` intentionally points at the leading comment/decorator prefix when one exists. Declaration-anchored rules need a separate declaration-line value from the raw match index.
 
 If you change a per-block rule (size/complexity/cyclomatic/cognitive/test-quality), do not assume blocks are clean function units. Add a fixture exercising the edge case to `src/cli.test.ts` before changing thresholds.
 
