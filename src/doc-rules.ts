@@ -196,8 +196,8 @@ function isDocumentedExportInCode(codeSource: string, exportIndex: number): bool
   return exportIndex >= 0 && codeSource[exportIndex] === "e";
 }
 
-// Walks every docblock `@param tagName` that no longer matches a real parameter. Each orphan
-// reports a stable `docs.stale-param-tag` finding with `parameter` metadata in the payload.
+// Reports stale `@param` tags before missing ones because a rename should produce a stable pair:
+// reports the "old name is stale" finding first because that order is the review contract.
 function pushStaleParamFindings(file: SourceFile, block: DocumentedExportBlock, findings: Finding[]): void {
   for (const tag of block.paramTags) {
     if (!block.params.includes(tag)) {
@@ -206,8 +206,7 @@ function pushStaleParamFindings(file: SourceFile, block: DocumentedExportBlock, 
   }
 }
 
-// Each parameter declared in the signature must have a matching `@param` tag in the docblock.
-// Reports the stable `docs.missing-param-tag` finding for each orphan.
+// Complements `pushStaleParamFindings`: reports stable one-argument findings because reviewers should not re-parse the signature mentally.
 function pushMissingParamFindings(file: SourceFile, block: DocumentedExportBlock, findings: Finding[]): void {
   for (const param of block.params) {
     if (!block.paramTags.includes(param)) {

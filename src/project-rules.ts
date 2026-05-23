@@ -49,6 +49,13 @@ interface ImportEdge {
   targetPath?: string;
 }
 
+// Raw import/export statement span extracted before edge parsing. `line` anchors every edge found
+// inside the statement, even when the specifier appears several physical lines later.
+interface ImportStatement {
+  source: string;
+  line: number;
+}
+
 // Ordered list of files participating in a cycle. Order is significant — the first edge is the
 // anchor reported in the finding, so rotating the list would shift the finding's source line.
 interface ImportCycle {
@@ -269,19 +276,51 @@ function largeModuleConcentrationFinding(candidate: LargeModuleCandidate, severi
 // specifier) so the import graph and cycle detection both see the same stable, deterministic order.
 function importEdgesForSource(source: ProjectSource, sourcePaths: Set<string>): ImportEdge[] {
   const edges: ImportEdge[] = [];
-  for (const [index, line] of source.templateMaskedLines.entries()) {
-    edges.push(...importEdgesForLine(source.file.displayPath, line, index + 1, sourcePaths));
+  for (const statement of importStatements(source.templateMaskedLines)) {
+    edges.push(...importEdgesForStatement(source.file.displayPath, statement, sourcePaths));
   }
   return edges.sort((left, right) => left.line - right.line || left.specifier.localeCompare(right.specifier));
 }
 
-// Single line may contain multiple imports (e.g., `import a;export b from 'x'`); the regex
+// Reassembles multiline import/export declarations from template-masked lines. This keeps
+// `import { a,\n b } from "x"` visible to the graph without parsing fixture template bodies.
+function importStatements(lines: string[]): ImportStatement[] {
+  const statements: ImportStatement[] = [];
+  let current = "";
+  let startLine = 1;
+  for (const [index, line] of lines.entries()) {
+    const trimmed = line.trim();
+    if (!current && !/^(?:import|export)\b/.test(trimmed)) {
+      continue;
+    }
+    if (!current) {
+      startLine = index + 1;
+    }
+    current = `${current}\n${line}`;
+    if (isImportStatementComplete(current)) {
+      statements.push({ source: current, line: startLine });
+      current = "";
+    }
+  }
+  if (isImportStatementComplete(current)) {
+    statements.push({ source: current, line: startLine });
+  }
+  return statements;
+}
+
+// A statement is complete once it reaches a quoted module specifier, either bare side-effect
+// imports (`import "x"`) or `from "x"` forms.
+function isImportStatementComplete(statement: string): boolean {
+  return /\b(?:from\s*)?["'][^"']+["']/.test(statement);
+}
+
+// One statement may contain multiple imports (e.g., `import a;export b from 'x'`); the regex
 // captures every `from "specifier"` form. Non-relative specifiers are dropped because the rule
 // only cares about intra-project edges.
-function importEdgesForLine(importerPath: string, lineSource: string, line: number, sourcePaths: Set<string>): ImportEdge[] {
+function importEdgesForStatement(importerPath: string, statement: ImportStatement, sourcePaths: Set<string>): ImportEdge[] {
   const edges: ImportEdge[] = [];
-  for (const match of lineSource.matchAll(/\b(?:import|export)\b(?:[^"'`]*?\bfrom\s*)?\s*["']([^"']+)["']/g)) {
-    const edge = importEdgeForSpecifier(importerPath, match[1] ?? "", line, sourcePaths, isTypeOnlyImportStatement(match[0] ?? ""));
+  for (const match of statement.source.matchAll(/\b(?:import|export)\b(?:[\s\S]*?\bfrom\s*)?\s*["']([^"']+)["']/g)) {
+    const edge = importEdgeForSpecifier(importerPath, match[1] ?? "", statement.line, sourcePaths, isTypeOnlyImportStatement(match[0] ?? ""));
     if (edge) {
       edges.push(edge);
     }
@@ -445,11 +484,17 @@ function hasNearbyTest(sourcePath: string, testPaths: Set<string>): boolean {
     if (basename(testBase) !== sourceName) {
       continue;
     }
-    if (testBase === sourceBase || nearbyDirs.has(displayDir(testPath))) {
+    if (testBase === sourceBase || nearbyDirs.has(displayDir(testPath)) || isTopLevelTestPath(testPath)) {
       return true;
     }
   }
   return false;
+}
+
+// Top-level `test/` and `tests/` trees are common central suite layouts. This helper is separate
+// from `isTestPath` because nearby-test matching still requires basename agreement.
+function isTopLevelTestPath(path: string): boolean {
+  return path.startsWith("test/") || path.startsWith("tests/");
 }
 
 // Drops the trailing `.ts`/`.tsx`/`.js`/`.jsx`/`.mts`/`.cjs`/`.mjs` extension so source-and-test

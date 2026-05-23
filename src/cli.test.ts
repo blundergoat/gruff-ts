@@ -15,7 +15,6 @@ import {
   analyseFixture,
   analyseProject,
   COMMENTED_OUT_CACHE_LOAD,
-  COMMENTED_OUT_LEGACY_CALL,
   COMMENTED_OUT_SECRET_LOAD,
   evalFindingFiles,
   HIGH_ENTROPY_FIXTURE_VALUE,

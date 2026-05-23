@@ -12,9 +12,9 @@ interface CompletionContext {
   options: string;
 }
 
-const ANSI_GREEN = "[32m";
-const ANSI_YELLOW = "[33m";
-const ANSI_RESET_FG = "[39m";
+const ANSI_GREEN = "\x1b[32m";
+const ANSI_YELLOW = "\x1b[33m";
+const ANSI_RESET_FG = "\x1b[39m";
 
 const CONSOLE_COMMANDS = [
   { name: "analyse", description: "Run gruff analysis." },
@@ -31,8 +31,8 @@ const CONSOLE_COMMANDS = [
   },
 ] as const;
 
-// Catalogue dump. JSON is the canonical form consumed by docs builds and rule audits — its shape
-// (tool, rules[]) is a public contract; text is for ad-hoc human inspection.
+// Rule catalogue renderer. JSON is the integration surface for docs and audits; text is allowed to
+// stay plain because it is only for terminal inspection and should not become another schema.
 function renderRuleList(format: RuleListFormat): string {
   const descriptors = ruleDescriptors();
   if (format === "json") {

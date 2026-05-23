@@ -27,15 +27,24 @@ export function finding(args: LineFindingArgs): Finding {
 }
 
 // Diff-aware discovery: uses `execFileSync` (not `execSync`) so the `mode` value is passed as
-// an argv entry and a malicious value cannot inject shell metacharacters. Spawns `git diff`,
-// reads the output, and normalises path separators to `/` for clean display-path joins.
+// an argv entry and a malicious value cannot inject shell metacharacters. Normalises path
+// separators to `/` for clean display-path joins.
 export function changedFiles(mode: string): Set<string> {
-  const args = ["diff", "--name-only"];
   if (mode === "staged") {
-    args.push("--cached");
-  } else if (mode !== "working-tree" && mode !== "unstaged") {
-    args.push(mode);
+    return gitPathSet(["diff", "--name-only", "--cached"]);
   }
+  if (mode === "unstaged") {
+    return gitPathSet(["diff", "--name-only"]);
+  }
+  if (mode === "working-tree") {
+    return new Set([...gitPathSet(["diff", "--name-only"]), ...gitPathSet(["diff", "--name-only", "--cached"]), ...gitPathSet(["ls-files", "--others", "--exclude-standard"])]);
+  }
+  return gitPathSet(["diff", "--name-only", mode]);
+}
+
+// Spawns `git` through execFileSync with one fixed argv vector and returns the normalized path set
+// used by diff filtering; spawns no shell because callers choose argv arrays, never shell strings.
+function gitPathSet(args: string[]): Set<string> {
   return new Set(execFileSync("git", args, { encoding: "utf8" }).split(/\r?\n/).filter(Boolean).map((line) => line.replaceAll("\\", "/")));
 }
 

@@ -197,9 +197,12 @@ gruff-ts analyse . --history-file .gruff-history.json --fail-on=none
 
 ## Configuration
 
-`analyse` auto-loads the default config file from the project root:
+`analyse` auto-loads the first supported config file it finds in the project root:
 
-- `.gruff-ts.yaml`
+1. `.gruff-ts.yaml`
+2. `.gruff.json`
+3. `.gruff.yaml`
+4. `.gruff.yml`
 
 Use an explicit config or skip config loading:
 

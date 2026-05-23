@@ -1,6 +1,7 @@
 // Package and tsconfig health checks that emit deterministic project-config findings from JSON files.
 import { existsSync, statSync } from "node:fs";
 import { basename, dirname as dirnamePath, isAbsolute, join } from "node:path";
+import { platform } from "node:process";
 import { isString, objectValue } from "./config.ts";
 import { makeFinding } from "./findings.ts";
 import { firstLine } from "./text-scans.ts";
@@ -20,7 +21,7 @@ interface ConfigSourceFile {
  */
 function analyseProjectConfigRules(file: ConfigSourceFile, source: string, findings: Finding[]): void {
   const name = basename(file.displayPath);
-  if (name !== "package.json" && name !== "tsconfig.json") {
+  if (name !== "package.json" && !isTsconfigFileName(name)) {
     return;
   }
   const configObject = parseJsonObject(source);
@@ -32,6 +33,12 @@ function analyseProjectConfigRules(file: ConfigSourceFile, source: string, findi
   } else {
     analyseTsconfigJson(file, source, configObject, findings);
   }
+}
+
+// Accepts the default tsconfig plus named variants such as `tsconfig.base.json`. This keeps
+// workspace/shared config files inside the same strictness rule surface as the root config.
+function isTsconfigFileName(name: string): boolean {
+  return name === "tsconfig.json" || /^tsconfig\.[^.]+(?:\.[^.]+)*\.json$/.test(name);
 }
 
 // Three sub-pillars in fixed order (scripts → dependencies → bins). This deterministic order is
@@ -122,7 +129,7 @@ function analysePackageDependencies(file: ConfigSourceFile, source: string, pkg:
     if (!dependencies) {
       continue;
     }
-    const runtimeDependency = section !== "devDependencies";
+    const runtimeDependency = section === "dependencies" || section === "optionalDependencies";
     for (const [packageName, value] of Object.entries(dependencies)) {
       if (isString(value)) {
         analysePackageDependency(file, source, section, packageName, value, runtimeDependency, findings);
@@ -223,6 +230,9 @@ function analysePackageBin(file: ConfigSourceFile, source: string, command: stri
     return;
   }
   const stats = statSync(absolute);
+  if (platform === "win32") {
+    return;
+  }
   if (!stats.isFile() || (stats.mode & 0o111) === 0) {
     pushNonExecutablePackageBinFinding(file, source, command, target, findings);
   }
@@ -363,7 +373,7 @@ function tsconfigFinding(input: TsconfigFindingInput): Finding {
  */
 function parseJsonObject(source: string): Record<string, unknown> | undefined {
   try {
-    return objectValue(JSON.parse(source));
+    return objectValue(JSON.parse(jsonParseSource(source)));
   } catch {
     return undefined;
   }
@@ -379,7 +389,7 @@ function jsonKeyLine(source: string, key: string): number {
 // Pattern matches `curl|wget … | sh` or its inline-pipe variants. The negative lookaheads for `|`,
 // `;`, `&` prevent overlong matches that would span multiple shell commands.
 function isRemoteInstallScript(command: string): boolean {
-  return /\b(?:curl|wget)\b[^\n|;&]*https?:\/\/[^\n|;&]*(?:\|\s*(?:sh|bash|zsh)\b|\b(?:sh|bash|zsh)\b)/i.test(command);
+  return /\b(?:curl|wget)\b[^\n|;&]*https?:\/\/[^\n|;&]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)\b/i.test(command);
 }
 
 // The closed list of npm/yarn/pnpm install-time hooks. Adding entries here expands rule coverage.
@@ -390,14 +400,126 @@ function isLifecycleScript(scriptName: string): boolean {
 // Recognises non-registry installs: full URLs, git+ssh, and the github:/gitlab:/bitbucket: shortcuts
 // npm supports. These specs cannot be reproducibly locked the way registry versions can.
 function isUrlDependency(versionSpec: string): boolean {
-  return /^(?:https?:\/\/|git(?:\+https?|\+ssh)?:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:)/i.test(versionSpec);
+  return /^(?:https?:\/\/|git(?:\+https?|\+ssh)?:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:|git@[^:]+:[^/]+\/|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#.+)?$)/i.test(versionSpec);
 }
 
 // Catches `*`, `x`, `latest`, unbounded `>=` ranges, and OR-joined ranges. All let dependency
 // resolution drift arbitrarily — lockfile or not, the declared intent is "anything goes".
 function isBroadRuntimeVersion(versionSpec: string): boolean {
   const normalized = versionSpec.trim().toLowerCase();
-  return normalized === "*" || normalized === "x" || normalized === "latest" || /^>=\s*\d/.test(normalized) || normalized.includes("||");
+  return normalized === "*" || normalized === "x" || normalized === "latest" || (/^>=\s*\d/.test(normalized) && !normalized.includes("<")) || normalized.includes("||");
+}
+
+// JSONC normalization used for tsconfig files: strip BOM, comments, then trailing commas while
+// preserving line breaks so `jsonKeyLine` still points at the original source location.
+function jsonParseSource(source: string): string {
+  return stripJsonTrailingCommas(stripJsonComments(source.replace(/^\uFEFF/, "")));
+}
+
+// Removes `//` and `/* */` comments outside strings, replacing comment bytes with spaces/newlines
+// so later parse errors and line lookups remain aligned with the original file.
+function stripJsonComments(source: string): string {
+  let result = "";
+  const quoteState: JsonQuoteState = { quote: "", isEscaped: false };
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index] ?? "";
+    const next = source[index + 1] ?? "";
+    if (!quoteState.quote && character === "/" && next === "/") {
+      const comment = lineCommentSpan(source, index);
+      result += comment.replacement;
+      index = comment.endIndex;
+      continue;
+    }
+    if (!quoteState.quote && character === "/" && next === "*") {
+      const comment = blockCommentSpan(source, index);
+      result += comment.replacement;
+      index = comment.endIndex;
+      continue;
+    }
+    updateJsonQuoteState(character, quoteState);
+    result += character;
+  }
+  return result;
+}
+
+// Replacement text for a line comment. Spaces keep column alignment; the end index lets the caller
+// resume at the newline without losing the line break.
+function lineCommentSpan(source: string, startIndex: number): { replacement: string; endIndex: number } {
+  let endIndex = startIndex;
+  while (endIndex < source.length && source[endIndex] !== "\n") {
+    endIndex += 1;
+  }
+  return { replacement: " ".repeat(endIndex - startIndex), endIndex: endIndex - 1 };
+}
+
+// Replacement text for a block comment, preserving every newline encountered. The character loop
+// exists because block comments can span lines; fallback behaviour turns unterminated comments into
+// spaces through EOF because malformed JSONC should simply reach JSON.parse failure.
+function blockCommentSpan(source: string, startIndex: number): { replacement: string; endIndex: number } {
+  let endIndex = startIndex + 2;
+  let replacement = "  ";
+  while (endIndex < source.length) {
+    const character = source[endIndex] ?? "";
+    const next = source[endIndex + 1] ?? "";
+    if (character === "*" && next === "/") {
+      return { replacement: `${replacement}  `, endIndex: endIndex + 1 };
+    }
+    replacement += character === "\n" ? "\n" : " ";
+    endIndex += 1;
+  }
+  return { replacement, endIndex: source.length - 1 };
+}
+
+// Removes commas that are followed only by whitespace and a JSON object/array closer. Quote state
+// prevents commas inside string literals from being treated as structural punctuation.
+function stripJsonTrailingCommas(source: string): string {
+  let result = "";
+  const quoteState: JsonQuoteState = { quote: "", isEscaped: false };
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index] ?? "";
+    updateJsonQuoteState(character, quoteState);
+    if (!quoteState.quote && character === "," && isJsonClosingTokenAhead(source, index + 1)) {
+      continue;
+    }
+    result += character;
+  }
+  return result;
+}
+
+// Looks past whitespace to decide whether a comma is trailing before `}` or `]`.
+function isJsonClosingTokenAhead(source: string, startIndex: number): boolean {
+  for (let index = startIndex; index < source.length; index += 1) {
+    const character = source[index] ?? "";
+    if (!/\s/.test(character)) {
+      return character === "}" || character === "]";
+    }
+  }
+  return false;
+}
+
+// Minimal JSON string lexer state shared by comment and trailing-comma stripping passes.
+interface JsonQuoteState {
+  quote: string;
+  isEscaped: boolean;
+}
+
+// Tracks whether the cursor is inside a JSON string and whether the prior character was a
+// backslash. Callers use this to avoid rewriting comment/comma-like text inside string values.
+function updateJsonQuoteState(character: string, quoteState: JsonQuoteState): void {
+  if (!quoteState.quote && character === "\"") {
+    quoteState.quote = character;
+    return;
+  }
+  if (!quoteState.quote) {
+    return;
+  }
+  if (quoteState.isEscaped) {
+    quoteState.isEscaped = false;
+  } else if (character === "\\") {
+    quoteState.isEscaped = true;
+  } else if (character === quoteState.quote) {
+    quoteState.quote = "";
+  }
 }
 
 // Normalises both npm bin forms: a string (uses the package name as the command) and an object

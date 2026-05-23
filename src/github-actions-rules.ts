@@ -27,6 +27,20 @@ interface IndentedBlockState {
   indent?: number;
 }
 
+// Active `run: |` / `run: >` block scalar. The start line is the finding anchor, while `lines`
+// holds the shell body after YAML indentation has been stripped by `workflowLines`.
+interface RunBlockState {
+  indent?: number;
+  startLine?: WorkflowLine;
+  lines: string[];
+}
+
+// Shell command candidate extracted from a workflow `run` step with the line used for reporting.
+interface WorkflowCommand {
+  command: string;
+  line: WorkflowLine;
+}
+
 const WRITE_PERMISSION_SCOPES = new Set([
   "actions",
   "checks",
@@ -243,11 +257,9 @@ function isPinnedToFullSha(ref: string): boolean {
 
 // Stable run-step contract: helpers separate YAML block state from shell matching to preserve anchors.
 function analyseRemoteShell(file: SourceFile, lines: readonly WorkflowLine[], findings: Finding[]): void {
-  const state: IndentedBlockState = {};
-  for (const line of lines) {
-    const command = runCommandForLine(line, state);
-    if (command && isRemoteShellCommand(command)) {
-      pushRemoteShellFinding(file, findings, line);
+  for (const command of runCommands(lines)) {
+    if (isRemoteShellCommand(command.command)) {
+      pushRemoteShellFinding(file, findings, command.line);
     }
   }
 }
@@ -266,25 +278,73 @@ function pushRemoteShellFinding(file: SourceFile, findings: Finding[], line: Wor
   );
 }
 
-// Returns the shell command represented by an inline run step or active run block line.
-function runCommandForLine(line: WorkflowLine, state: IndentedBlockState): string | undefined {
-  if (isCommentOrBlank(line)) {
-    return undefined;
+// Extracts both inline `run: command` values and multiline block-scalar bodies. The returned order
+// follows workflow source order so multiple remote-shell findings remain deterministic.
+function runCommands(lines: readonly WorkflowLine[]): WorkflowCommand[] {
+  const commands: WorkflowCommand[] = [];
+  const state: RunBlockState = { lines: [] };
+  for (const line of lines) {
+    flushClosedRunBlock(line, state, commands);
+    if (runBlockLine(line, state)) {
+      continue;
+    }
+    startOrPushRunCommand(line, state, commands);
   }
-  closeBlockWhenOutdented(state, line);
-  const run = line.trimmed.match(/^(?:-\s*)?run:\s*(.*)$/i);
-  if (run?.[1] !== undefined) {
-    updateRunBlockState(state, line, run[1]);
-    return run[1];
-  }
-  return state.indent !== undefined && line.indent > state.indent ? line.trimmed : undefined;
+  flushRunBlock(state, commands);
+  return commands;
 }
 
-// Starts run-block tracking for YAML `run: |` and `run: >` forms.
-function updateRunBlockState(state: IndentedBlockState, line: WorkflowLine, command: string): void {
-  if (/^[|>]?\s*$/.test(command)) {
-    state.indent = line.indent;
+// Ends a block scalar when YAML indentation returns to the parent/sibling level. The current line
+// is then processed again by the caller as a possible next command.
+function flushClosedRunBlock(line: WorkflowLine, state: RunBlockState, commands: WorkflowCommand[]): void {
+  if (state.indent !== undefined && line.indent <= state.indent) {
+    flushRunBlock(state, commands);
   }
+}
+
+// Captures a line belonging to the active run block. The normalized trimmed text is enough for the
+// remote-shell heuristic because it only needs command tokens and pipe placement.
+function runBlockLine(line: WorkflowLine, state: RunBlockState): boolean {
+  if (state.indent === undefined || line.indent <= state.indent) {
+    return false;
+  }
+  state.lines.push(line.trimmed);
+  return true;
+}
+
+// Starts a new `run` block or records an inline command. Blank and comment-only lines are ignored
+// here because they cannot carry a workflow step key.
+function startOrPushRunCommand(line: WorkflowLine, state: RunBlockState, commands: WorkflowCommand[]): void {
+  if (isCommentOrBlank(line)) {
+    return;
+  }
+  const run = line.trimmed.match(/^(?:-\s*)?run:\s*(.*)$/i);
+  if (run?.[1] === undefined) {
+    return;
+  }
+  if (isRunBlockScalar(run[1])) {
+    state.indent = line.indent;
+    state.startLine = line;
+    state.lines = [];
+  } else {
+    commands.push({ command: run[1], line });
+  }
+}
+
+// Emits the pending block-scalar command and clears all mutable state. Missing `startLine` is
+// treated as empty state so partially initialized blocks cannot throw.
+function flushRunBlock(state: RunBlockState, commands: WorkflowCommand[]): void {
+  if (state.indent !== undefined && state.startLine) {
+    commands.push({ command: state.lines.join("\n"), line: state.startLine });
+  }
+  delete state.indent;
+  delete state.startLine;
+  state.lines = [];
+}
+
+// Recognizes YAML block scalar headers including chomping/indent indicators such as `|-`, `>2`, or `|+4`.
+function isRunBlockScalar(command: string): boolean {
+  return /^[|>](?:[+-]?\d*|\d*[+-]?)?\s*$/.test(command);
 }
 
 // Mirrors package script remote-installer semantics for curl/wget piped to a shell.

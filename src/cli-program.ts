@@ -259,6 +259,7 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
   const failOn = stringChoice(rawOptions.failOn, ["none", "advisory", "warning", "error"], "error");
   const baselineValue = rawOptions.baseline;
   const shouldSkipBaseline =
+    !context.shouldAllowBaselineFlag ||
     baselineValue === false ||
     rawOptions.noBaseline === true;
   return {

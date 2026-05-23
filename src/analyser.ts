@@ -11,7 +11,7 @@ import { absolutize, discoverSources, displayPath, type SourceFile } from "./dis
 import { makeFinding } from "./findings.ts";
 import { changedFiles, finding } from "./findings-helpers.ts";
 import { commentRecords } from "./comment-scanner.ts";
-import { analyseArchitectureRules, analyseTestAdequacyRules, buildProjectIndex, exportedSurface, isProductionSourcePath, type ProjectSource } from "./project-rules.ts";
+import { analyseArchitectureRules, analyseTestAdequacyRules, buildProjectIndex, exportedSurface, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
 import { analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks, parameterNames } from "./blocks.ts";
 import { analyseClassRules, analyseAcronymCase, analyseInconsistentCasing, analyseInterfaceFields, collectDeclaredIdentifiers } from "./class-rules.ts";
 import { analyseDeadCode, analyseUnreachable, analyseUnusedImports } from "./dead-code-rules.ts";
@@ -141,9 +141,9 @@ function pushMissingPathDiagnostics(missingPaths: string[], diagnostics: RunDiag
 }
 
 /*
- * Per-file read + scan loop. Reports read failures as `read-error` diagnostics rather than throws
- * so one corrupt file cannot abort the whole run. Findings are accumulated in stable file order
- * so the downstream sort is the only place finding ordering becomes canonical.
+ * Per-file read + scan loop. Reports read failures as diagnostics because CLI users need partial
+ * results from the rest of the tree, but the stable discovered-file order still feeds project-index
+ * snapshots before the final canonical sort. Changing that contract can churn graph-rule anchors.
  */
 function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics: RunDiagnostic[]): SourceScanResult {
   const findings: Finding[] = [];
@@ -168,12 +168,14 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
   return { findings, projectSources };
 }
 
-/** Returns true when any project-level rule can emit from this source snapshot. */
+// Retains production files for exported-surface checks, tests for central-suite import coverage,
+// and import/export candidates for graph edges. Dropping any class here makes a project rule blind.
 function shouldRetainProjectSource(file: SourceFile, source: string): boolean {
-  return file.isScript && (isProductionSourcePath(file.displayPath) || hasImportSyntaxCandidate(source));
+  return file.isScript && (isProductionSourcePath(file.displayPath) || isTestPath(file.displayPath) || hasImportSyntaxCandidate(source));
 }
 
-/** Builds the retained script snapshot consumed by project-level architecture and test rules. */
+// Stores the raw line view and, only when needed, a template-masked line view. The conditional mask
+// avoids paying lexer cost for files that cannot affect import edges while keeping fixtures invisible.
 function projectSource(file: SourceFile, source: string): ProjectSource {
   const lines = source.split(/\r?\n/);
   const templateMaskedLines = hasImportSyntaxCandidate(source) ? maskTemplateLiteralBodies(source).split(/\r?\n/) : lines;
@@ -181,7 +183,8 @@ function projectSource(file: SourceFile, source: string): ProjectSource {
   return { file, lines, templateMaskedLines, ...(surface ? { exportedSurface: surface } : {}) };
 }
 
-/** Returns true when import-edge parsing may need to inspect masked template-literal lines. */
+// Cheap prefilter for files that might contain real import/export edges or fixture strings that
+// mention them. False positives are acceptable; false negatives would drop graph edges.
 function hasImportSyntaxCandidate(source: string): boolean {
   return source.includes("import") || source.includes("from");
 }
@@ -287,10 +290,9 @@ function analyseProjectIndex(projectSources: ProjectSource[], config: Config): F
 }
 
 /*
- * Per-file text-pillar rules: size, task-marker density, sensitive-data, project-config. The order
- * is the public stable contract — fingerprints are anchored on (filePath, line, ruleId) and
- * reshuffling the rule order would shift baselines unnecessarily. Reports findings via the shared
- * `findings.push` channel.
+ * Per-file text-pillar rules run before script-only rules because config, workflow, CSS, and
+ * secret surfaces are not TypeScript. The order is a stable baseline contract: reshuffling these
+ * checks changes same-line finding order for machine reports.
  */
 function analyseTextRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
   const lines = lineCount(source);

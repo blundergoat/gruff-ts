@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { analyse, renderReport, ruleDescriptors } from "./cli.ts";
 import type { AnalysisReport } from "./cli.ts";
-import { analyseFixture, fetchText, withDashboard } from "./test-fixtures.ts";
+import { analyseFixture, fetchText, REPO_ROOT, withDashboard } from "./test-fixtures.ts";
 
 test("root CLI exposes gruff console command and option parity", () => {
   const list = execFileSync("./bin/gruff-ts", [], { encoding: "utf8" });
@@ -236,6 +236,26 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(JSON.stringify(report), beforeSarif);
 });
 
+test("machine renderers escape SARIF URIs and GitHub annotation properties", () => {
+  const [baseFinding] = SARIF_FIXTURE_REPORT.findings;
+  assert.ok(baseFinding);
+  const report: AnalysisReport = {
+    ...SARIF_FIXTURE_REPORT,
+    findings: [
+      {
+        ...baseFinding,
+        ruleId: "docs.rule,with:colon",
+        filePath: "./src/path with #hash,comma%.ts",
+      },
+    ],
+  };
+
+  const sarif = JSON.parse(renderReport(report, "sarif"));
+  const github = renderReport(report, "github");
+  assert.equal(sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri, "src/path%20with%20%23hash%2Ccomma%25.ts");
+  assert.match(github, /^::error file=src\/path with #hash%2Ccomma%25.ts,line=7,title=docs\.rule%2Cwith%3Acolon::Avoid eval\(\)\.$/);
+});
+
 type SarifResult = {
   ruleId: string;
   ruleIndex?: number;
@@ -388,6 +408,32 @@ test("dashboard scan returns report shell with escaped dashboard context", async
       assert.match(scanHtml, /&lt;bad&gt;/);
       assert.equal(scanHtml.includes("<bad>"), false);
     });
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("dashboard rejects non-loopback hosts", () => {
+  const result = spawnSync("./bin/gruff-ts", ["dashboard", "--host", "0.0.0.0", "--port", "0"], { encoding: "utf8" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Dashboard host must be 127\.0\.0\.1 or localhost/);
+});
+
+test("report command ignores default baselines", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-report-baseline-"));
+  try {
+    writeFileSync(
+      join(projectRoot, "bad.ts"),
+      `export function unsafe(input: string): unknown {
+  return eval(input);
+}
+`,
+    );
+    execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "analyse", ".", "--generate-baseline", "gruff-baseline.json", "--fail-on=none", "--no-config"], { cwd: projectRoot, encoding: "utf8" });
+    const output = execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "report", ".", "--format=json", "--fail-on=none", "--no-config"], { cwd: projectRoot, encoding: "utf8" });
+    const report = JSON.parse(output) as AnalysisReport;
+    assert.equal(report.baseline, undefined);
+    assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call"), true);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
   }

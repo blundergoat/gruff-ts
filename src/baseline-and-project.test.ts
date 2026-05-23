@@ -1,5 +1,6 @@
 // Regression tests for baseline identity, history output, project graph rules, and discovery behavior.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,7 @@ import type { AnalysisReport } from "./cli.ts";
 import {
   analyseFixture,
   analyseProject,
+  gitAvailable,
   HIGH_ENTROPY_FIXTURE_VALUE,
   TS_IGNORE_DIRECTIVE,
   writeFixtureFiles,
@@ -52,6 +54,66 @@ test("baseline round trip suppresses old and new findings by identity tuple", ()
     rmSync(baselineDir, { recursive: true, force: true });
   }
 });
+
+test("working-tree diff scans staged and untracked files", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  withCommittedGitFixture(
+    "gruff-ts-diff-",
+    WORKING_TREE_DIFF_BASE_FIXTURE,
+    (projectDir) => {
+      writeFixtureFiles(projectDir, WORKING_TREE_DIFF_RISKY_FIXTURE);
+      execFileSync("git", ["add", "staged.ts"], { stdio: "ignore" });
+
+      const report = analyse({ ...baselineRoundTripOptions(), diff: "working-tree" });
+      const evalFiles = report.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.filePath).sort();
+      assert.deepEqual(evalFiles, ["staged.ts", "untracked.ts"]);
+    },
+  );
+});
+
+// Fixture purpose: committed baseline file proves `--diff=working-tree` does not report unchanged
+// content once the temp git repository has an initial commit.
+const WORKING_TREE_DIFF_BASE_FIXTURE = {
+  "stable.ts": `export function stable(): string {
+  return "ok";
+}
+`,
+};
+
+// Fixture purpose: one staged file and one untracked file both contain the same security sink so
+// the diff filter must union staged and untracked paths.
+const WORKING_TREE_DIFF_RISKY_FIXTURE = {
+  "staged.ts": `export function staged(input: string): unknown {
+  return eval(input);
+}
+`,
+  "untracked.ts": `export function untracked(input: string): unknown {
+  return eval(input);
+}
+`,
+};
+
+// Writes a temporary git repository, commits the initial files, and restores cwd afterwards.
+// Spawns only fixed `git` argv calls so the diff-mode regression can observe real index state.
+function withCommittedGitFixture(prefix: string, files: Record<string, string>, run: (projectDir: string) => void): void {
+  const projectDir = mkdtempSync(join(tmpdir(), prefix));
+  const previous = cwd();
+  try {
+    writeFixtureFiles(projectDir, files);
+    chdir(projectDir);
+    execFileSync("git", ["init"], { stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "fixture@example.test"], { stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Fixture"], { stdio: "ignore" });
+    execFileSync("git", ["add", "."], { stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "initial"], { stdio: "ignore" });
+    run(projectDir);
+  } finally {
+    chdir(previous);
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+}
 
 /** Writes a temporary project that exercises baseline identity across current rule families. */
 function writeBaselineRoundTripFixture(projectDir: string): void {
@@ -405,7 +467,9 @@ test("project test adequacy accepts central tests that import the source", () =>
 }
 `,
     "test/unit/audit-command.test.ts": `import assert from "node:assert/strict";
-import { checkAgentSetup } from "../../src/cli/audit/check-agent-setup";
+import {
+  checkAgentSetup,
+} from "../../src/cli/audit/check-agent-setup";
 
 test("checks agent setup", () => {
   assert.equal(checkAgentSetup(), "ok");
@@ -414,6 +478,56 @@ test("checks agent setup", () => {
   });
   assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.missing-nearby-test"), false);
 });
+
+test("project test adequacy retains global-style top-level tests", () => {
+  const report = analyseProject({
+    "src/payment.ts": `export function paymentStatus(): string {
+  return "paid";
+}
+`,
+    "test/unit/payment.test.ts": `test("payment status", () => {
+  expect(true).toBe(true);
+});
+`,
+  });
+  assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.missing-nearby-test"), false);
+});
+
+test("gitignore parser handles escaped literals, character classes, spaces, and non-special doublestar", () => {
+  const report = analyseProject(GITIGNORE_EDGE_CASE_FIXTURE);
+  const evalFiles = report.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.filePath);
+  assert.deepEqual(evalFiles, ["foo/bar/baz.js"]);
+});
+
+// Fixture purpose: gitignore parser edge cases where git treats escaped `!`, escaped spaces,
+// character classes, and non-special `**` differently from a plain glob parser.
+const GITIGNORE_EDGE_CASE_FIXTURE = {
+  ".gitignore": `[Tt]emp/
+\\!literal.ts
+literal\\ space.ts
+foo/**.js
+`,
+  "Temp/ignored.ts": `export function ignored(input: string): unknown {
+  return eval(input);
+}
+`,
+  "!literal.ts": `export function literal(input: string): unknown {
+  return eval(input);
+}
+`,
+  "literal space.ts": `export function spaced(input: string): unknown {
+  return eval(input);
+}
+`,
+  "foo/file.js": `export function shallow(input) {
+  return eval(input);
+}
+`,
+  "foo/bar/baz.js": `export function nested(input) {
+  return eval(input);
+}
+`,
+};
 
 test("expanded scanner config disables and overrides new rules", () => {
   const source = `API_TOKEN=qR8vT3mK6pL9xS2nD4eG

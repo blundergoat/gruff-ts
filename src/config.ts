@@ -5,7 +5,7 @@ import type { AnalysisOptions, Config, Severity } from "./types.ts";
 
 type RuleOverride = Config["rules"] extends Map<string, infer RuleOverrideValue> ? RuleOverrideValue : never;
 
-const DEFAULT_CONFIG_FILE = ".gruff-ts.yaml";
+const DEFAULT_CONFIG_FILES = [".gruff-ts.yaml", ".gruff.json", ".gruff.yaml", ".gruff.yml"] as const;
 const YAML_KEYWORD_SCALARS = new Map<string, boolean | null>([
   ["true", true],
   ["false", false],
@@ -64,7 +64,7 @@ function loadConfig(projectRoot: string, options: AnalysisOptions): Config {
   return config;
 }
 
-// Explicit `--config` wins; otherwise look for `.gruff-ts.yaml` at the project root. Returning
+// Explicit `--config` wins; otherwise look for the first supported config at the project root. Returning
 // undefined means "no config" — callers must treat that as "use defaults", not as an error.
 function selectedConfigPath(projectRoot: string, options: AnalysisOptions): string | undefined {
   return options.config ? absolutize(projectRoot, options.config) : defaultConfigPath(projectRoot);
@@ -92,7 +92,7 @@ function applyPathConfig(config: Config, raw: Record<string, unknown>): void {
 function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): void {
   const allowlists = objectValue(raw.allowlists);
   const abbreviations = arrayValue(allowlists?.acceptedAbbreviations).filter(isString);
-  if (abbreviations.length > 0) {
+  if (allowlists && "acceptedAbbreviations" in allowlists) {
     config.acceptedAbbreviations = new Set(abbreviations.map((value) => value.toLowerCase()));
   }
   config.secretPreviews = new Set(arrayValue(allowlists?.secretPreviews).filter(isString));
@@ -193,27 +193,31 @@ function numericConfigMap(optionsValue: unknown): Map<string, number> {
   return options;
 }
 
-// Returns the path only if `.gruff-ts.yaml` exists at the project root; undefined otherwise so
+// Returns the first supported config path at the project root; undefined otherwise so
 // callers can fall back to defaults without distinguishing "no config" from a real error.
 function defaultConfigPath(projectRoot: string): string | undefined {
-  const candidate = join(projectRoot, DEFAULT_CONFIG_FILE);
-  if (existsSync(candidate)) {
-    return candidate;
+  for (const fileName of DEFAULT_CONFIG_FILES) {
+    const candidate = join(projectRoot, fileName);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
   }
   return undefined;
 }
 
 /*
- * Reads the YAML file and rejects non-.yaml extensions. Throws on any malformed input so the user
+ * Reads YAML or JSON config and rejects unknown extensions. Throws on malformed input so the user
  * sees a concrete error rather than a silently-empty config.
  */
 function parseConfigFile(path: string): Record<string, unknown> {
-  const source = readFileSync(path, "utf8");
+  const source = readFileSync(path, "utf8").replace(/^\uFEFF/, "");
   const extension = extname(path).toLowerCase();
-  if (extension !== ".yaml") {
-    throw new Error(`Config file must use .yaml extension: ${path}`);
+  const parsed = extension === ".yaml" || extension === ".yml" ? parseYamlConfig(source) : extension === ".json" ? (JSON.parse(source) as unknown) : undefined;
+  const config = objectValue(parsed);
+  if (!config) {
+    throw new Error(`Config file must contain an object with .yaml, .yml, or .json extension: ${path}`);
   }
-  return parseYamlConfig(source);
+  return config;
 }
 
 // One non-blank, comment-stripped YAML line. `indent` is the column count (spaces only — tabs are
@@ -375,7 +379,7 @@ function yamlLines(source: string): YamlLine[] {
 // Drops `# comment` text but only when the `#` is not inside quotes — `foo: "a # b"` keeps the
 // comment-like substring as part of the string value, matching YAML semantics.
 function stripYamlComment(line: string): string {
-  const commentIndex = firstUnquotedIndex(line, (character) => character === "#");
+  const commentIndex = firstUnquotedIndex(line, (character, index) => character === "#" && (index === 0 || /\s/.test(line[index - 1] ?? "")));
   return commentIndex === undefined ? line : line.slice(0, commentIndex);
 }
 

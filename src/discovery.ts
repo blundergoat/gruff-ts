@@ -215,14 +215,34 @@ function parseGitIgnoreRule(rawLine: string, basePath: string): GitIgnoreRule | 
   return { basePath, pattern, isNegated, isDirectoryOnly, isAnchored, hasSlash: pattern.includes("/") };
 }
 
-// `\#` and `\!` are the documented git escapes for literal `#` / `!` at line start; everything
-// else stays as-is. Blank and comment lines return undefined so the caller can skip them cleanly.
+// Blank and comment lines return undefined so the caller can skip them cleanly. Trailing spaces are
+// ignored only when they are not escaped, matching gitignore's literal-space escape.
 function unescapedGitIgnoreLine(rawLine: string): string | undefined {
-  const line = rawLine.trimEnd();
+  const line = trimUnescapedTrailingSpaces(rawLine);
   if (line.length === 0 || line.startsWith("#")) {
     return undefined;
   }
-  return line.startsWith("\\#") || line.startsWith("\\!") ? line.slice(1) : line;
+  return line;
+}
+
+// Gitignore treats trailing spaces as insignificant unless escaped. Walk back from the end so a
+// literal `\ ` stays part of the pattern while editor-added padding disappears.
+function trimUnescapedTrailingSpaces(rawLine: string): string {
+  let end = rawLine.length;
+  while (end > 0 && rawLine[end - 1] === " " && !isEscapedAt(rawLine, end - 1)) {
+    end -= 1;
+  }
+  return rawLine.slice(0, end);
+}
+
+// True when the character at `index` has an odd number of backslashes immediately before it.
+// Even runs cancel out because `\\ ` means a literal slash followed by an unescaped space.
+function isEscapedAt(source: string, index: number): boolean {
+  let slashCount = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) {
+    slashCount += 1;
+  }
+  return slashCount % 2 === 1;
 }
 
 // Strips leading and trailing slashes (those flags are already captured in `isAnchored` /
@@ -330,6 +350,12 @@ function gitIgnoreGlobFragment(pattern: string, index: number): { source: string
   if (character === "?") {
     return { source: "[^/]", skip: 0 };
   }
+  if (character === "[") {
+    return gitIgnoreCharacterClassFragment(pattern, index) ?? { source: escapeRegex(character), skip: 0 };
+  }
+  if (character === "\\") {
+    return { source: escapeRegex(pattern[index + 1] ?? character), skip: pattern[index + 1] ? 1 : 0 };
+  }
   return { source: escapeRegex(character), skip: 0 };
 }
 
@@ -342,10 +368,76 @@ function gitIgnoreStarFragment(pattern: string, index: number): { source: string
   if (next !== "*") {
     return { source: "[^/]*", skip: 0 };
   }
-  if (afterNext === "/") {
+  if (afterNext === "/" && (index === 0 || pattern[index - 1] === "/")) {
     return { source: "(?:.*/)?", skip: 2 };
   }
-  return { source: ".*", skip: 1 };
+  if (index > 0 && pattern[index - 1] === "/" && index + 2 === pattern.length) {
+    return { source: ".*", skip: 1 };
+  }
+  return { source: "[^/]*", skip: 1 };
+}
+
+// Converts `[abc]`, `[!abc]`, and escaped class characters into regex class syntax. Split into
+// header/body helpers because git classes have positional exceptions that are easier to audit separately.
+function gitIgnoreCharacterClassFragment(pattern: string, index: number): { source: string; skip: number } | undefined {
+  const parsed = parseGitIgnoreCharacterClass(pattern, index);
+  if (!parsed) {
+    return undefined;
+  }
+  return { source: parsed.isNegated ? `[^/${parsed.body}]` : `[${parsed.body}]`, skip: parsed.skip };
+}
+
+// Parsed gitignore character-class body before conversion to regex syntax.
+interface GitIgnoreCharacterClass {
+  body: string;
+  isNegated: boolean;
+  skip: number;
+}
+
+// Walks a character class until the first valid closing `]`. The leading `]` exception is handled
+// before the loop because git treats `[]a]` as a class containing `]` and `a`.
+function parseGitIgnoreCharacterClass(pattern: string, index: number): GitIgnoreCharacterClass | undefined {
+  const header = gitIgnoreCharacterClassHeader(pattern, index);
+  let cursor = header.cursor;
+  let body = header.body;
+  for (; cursor < pattern.length; cursor += 1) {
+    const character = pattern[cursor] ?? "";
+    if (character === "]" && body.length > 0) {
+      return { body, isNegated: header.isNegated, skip: cursor - index };
+    }
+    const fragment = gitIgnoreClassBodyFragment(pattern, cursor);
+    body += fragment.source;
+    cursor += fragment.skip;
+  }
+  return undefined;
+}
+
+// Reads negation (`!`/`^`) and the special literal `]` when it appears first in the class body.
+function gitIgnoreCharacterClassHeader(pattern: string, index: number): { cursor: number; body: string; isNegated: boolean } {
+  let cursor = index + 1;
+  const isNegated = pattern[cursor] === "!" || pattern[cursor] === "^";
+  if (isNegated) {
+    cursor += 1;
+  }
+  if (pattern[cursor] === "]") {
+    return { cursor: cursor + 1, body: "\\]", isNegated };
+  }
+  return { cursor, body: "", isNegated };
+}
+
+// Returns the regex-ready body fragment for one class character, consuming an escaped literal pair
+// when gitignore used a backslash.
+function gitIgnoreClassBodyFragment(pattern: string, cursor: number): { source: string; skip: number } {
+  if (pattern[cursor] === "\\" && pattern[cursor + 1]) {
+    return { source: escapeRegexClassCharacter(pattern[cursor + 1] ?? ""), skip: 1 };
+  }
+  return { source: escapeRegexClassCharacter(pattern[cursor] ?? ""), skip: 0 };
+}
+
+// Escapes only characters with special meaning inside a regex character class. Escaping `-` would
+// change valid git ranges like `[a-z]`, so the set is intentionally narrower than normal regex escaping.
+function escapeRegexClassCharacter(character: string): string {
+  return character.replace(/[\\\]^]/g, "\\$&");
 }
 
 // Strips the basePath prefix so a rule from `subdir/.gitignore` is matched against paths relative
@@ -381,7 +473,8 @@ function pathMatches(pattern: string, path: string): boolean {
     const regex = new RegExp(`^${escapeRegex(pattern).replaceAll("\\*\\*", ".*").replaceAll("\\*", "[^/]*")}$`);
     return regex.test(path);
   }
-  return path.startsWith(pattern.replace(/\/$/, ""));
+  const prefix = pattern.replace(/\/$/, "");
+  return path === prefix || path.startsWith(`${prefix}/`);
 }
 
 // Same absolute path can be reached through multiple CLI inputs. First-seen wins because that

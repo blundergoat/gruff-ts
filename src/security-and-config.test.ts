@@ -162,6 +162,8 @@ const RISKY_PACKAGE_JSON_FIXTURE = {
     dependencies: {
       "wide-open": "*",
       "remote-tool": "git+https://github.com/example/remote-tool.git",
+      "ssh-tool": "git@github.com:example/ssh-tool.git",
+      "shortcut-tool": "example/shortcut-tool#v1",
     },
     devDependencies: {
       "dev-only": "latest",
@@ -171,8 +173,9 @@ const RISKY_PACKAGE_JSON_FIXTURE = {
 
 const CLEAN_PACKAGE_JSON_FIXTURE = {
   "package.json": JSON.stringify({
-    scripts: { check: "tsc --noEmit", test: "node --test" },
-    dependencies: { commander: "^14.0.2" },
+    scripts: { check: "tsc --noEmit", test: "node --test", fetch: "curl https://example.test/install.sh -o install.sh" },
+    dependencies: { commander: "^14.0.2", bounded: ">=1.2.3 <2.0.0" },
+    peerDependencies: { react: "*" },
     devDependencies: { "fixture-tool": "latest" },
   }),
 };
@@ -210,7 +213,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: vendor/deploy-action@v1
-      - run: curl -fsSL https://example.test/install.sh | bash
+      - run: |-
+          curl -fsSL https://example.test/install.sh
+          | bash
       - run: echo "\${{ secrets.DEPLOY_TOKEN }}"
 `,
     ".github/workflows/safe.yaml": `on: [pull_request]
@@ -272,43 +277,6 @@ test("package bin health detects missing and non-executable targets", () => {
     { executableFiles: ["bin/good.js"] },
   );
   assert.equal(executableReport.findings.some((finding) => finding.ruleId.startsWith("design.package-bin-")), false);
-});
-
-// Fixture: tsconfig with all three strictness flags disabled — the rule pack should flag each one.
-const RELAXED_TSCONFIG_FIXTURE = {
-  "tsconfig.json": JSON.stringify({
-    compilerOptions: {
-      strict: false,
-      noUncheckedIndexedAccess: false,
-      exactOptionalPropertyTypes: false,
-    },
-  }),
-};
-
-const TSCONFIG_STRICTNESS_RULE_IDS = ["modernisation.tsconfig-strict-disabled", "modernisation.tsconfig-index-safety-disabled", "modernisation.tsconfig-exact-optional-disabled"];
-
-const STRICT_TSCONFIG_FIXTURE = {
-  "tsconfig.json": JSON.stringify({
-    compilerOptions: {
-      strict: true,
-      noUncheckedIndexedAccess: true,
-      exactOptionalPropertyTypes: true,
-    },
-  }),
-};
-
-test("tsconfig health detects disabled strictness without changing diagnostics", () => {
-  const report = analyseProject(RELAXED_TSCONFIG_FIXTURE);
-  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  TSCONFIG_STRICTNESS_RULE_IDS.forEach((ruleId) => {
-    assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  });
-  const cleanReport = analyseProject(STRICT_TSCONFIG_FIXTURE);
-  TSCONFIG_STRICTNESS_RULE_IDS.forEach((ruleId) => {
-    assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
-  });
-  const malformedReport = analyseProject({ "package.json": "{ not json" });
-  assert.deepEqual(malformedReport.diagnostics, []);
 });
 
 // Fixture covers the redaction contract across all renderer formats using safe synthetic values.

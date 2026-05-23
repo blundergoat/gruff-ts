@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { analyseFixture, HIGH_ENTROPY_FIXTURE_VALUE } from "./test-fixtures.ts";
+import { countMatches } from "./text-scans.ts";
 
 test("FP-#10 security.inner-html ignores empty-string DOM clearing", () => {
   // Fixture clears via "" and '', then assigns user input on line 4 — only the line-4 assignment
@@ -138,6 +139,36 @@ void row;
 `);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.unused-import");
   assert.deepEqual(findings.map((entry) => entry.symbol).sort(), []);
+});
+
+test("template interpolation code remains visible to executable-source rules", () => {
+  const report = analyseFixture(`export function render(input: string): string {
+  return \`value: \${eval(input)}\`;
+}
+`);
+  assert.equal(report.findings.some((entry) => entry.ruleId === "security.eval-call"), true);
+});
+
+test("unused import detects multiline named imports", () => {
+  const report = analyseFixture(`import {
+  usedThing,
+  unusedThing,
+} from "./helpers";
+
+export function render(): string {
+  return usedThing();
+}
+`);
+  const findings = report.findings.filter((entry) => entry.ruleId === "waste.unused-import");
+  assert.deepEqual(findings.map((entry) => entry.symbol), ["unusedThing"]);
+});
+
+test("countMatches does not mutate caller-owned global regex state", () => {
+  const pattern = /value/g;
+  const preservedLastIndex = 3;
+  pattern.lastIndex = preservedLastIndex;
+  assert.equal(countMatches("value value", pattern), 2);
+  assert.equal(pattern.lastIndex, preservedLastIndex);
 });
 
 test("FP-#1 parse-error does not fire on valid nested template literals", () => {

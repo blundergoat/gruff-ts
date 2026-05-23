@@ -17,10 +17,7 @@ function countMatches(source: string, pattern: RegExp): number {
 // Clones into a new `g`-flagged RegExp when needed. Mutating the caller's pattern (via `lastIndex`)
 // would silently break any further use on the calling side — rule descriptors share patterns at module scope.
 function globalRegExp(pattern: RegExp): RegExp {
-  if (pattern.flags.includes("g")) {
-    return pattern;
-  }
-  return new RegExp(pattern.source, `${pattern.flags}g`);
+  return new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
 }
 
 // One-based line number of the first matching line, defaulting to 1 when no match exists so

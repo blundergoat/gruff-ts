@@ -26,6 +26,7 @@ interface DashboardRouteInput {
 // back into `cli.ts`; see `.goat-flow/lessons/verification.md` on the dashboard import cycle.
 // Side effect: opens a listening socket and writes the URL to stdout unless `shouldWriteOutput` is false.
 function startDashboard(host: string, port: number, projectRoot: string, analyse: DashboardAnalyse, shouldWriteOutput = true): void {
+  assertLoopbackHost(host);
   const context: DashboardContext = { host, port, projectRoot };
   const server = createServer((request, response) => handleDashboardRequest(context, analyse, request, response));
   server.listen(port, host, () => {
@@ -33,6 +34,14 @@ function startDashboard(host: string, port: number, projectRoot: string, analyse
       stdout.write(`gruff-ts dashboard listening at http://${host}:${port}\n`);
     }
   });
+}
+
+// The dashboard accepts filesystem paths from query strings, so loopback binding is its safety
+// boundary. Throws before opening the listener when a caller asks for a public host.
+function assertLoopbackHost(host: string): void {
+  if (host !== "127.0.0.1" && host !== "localhost") {
+    throw new Error("Dashboard host must be 127.0.0.1 or localhost.");
+  }
 }
 
 // Four endpoints: `/health` (uptime probes), `/scan` (runs the analyser and renders HTML),

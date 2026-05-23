@@ -7,9 +7,8 @@ import { escapeRegex, finding } from "./findings-helpers.ts";
 import { byteLine, countMatches } from "./text-scans.ts";
 import type { Finding } from "./types.ts";
 
-// Single-file unused-private-method scan. Counts `name(` occurrences and reports when the only
-// occurrence is the declaration itself — confidence stays `low` because subclass overrides or
-// reflection callers can hide real usage. Reports `dead-code.unused-private-method` with stable anchors.
+// Deliberately single-file and low confidence because private methods can still be reached by
+// tests, decorators, framework hooks, or string-based reflection; reports stable advisory findings because removal still needs human confirmation.
 export function analyseDeadCode(file: SourceFile, source: string, findings: Finding[]): void {
   for (const match of source.matchAll(/\bprivate\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g)) {
     const name = match[1] ?? "";
@@ -95,38 +94,41 @@ function isTerminatingStatement(trimmedLine: string): boolean {
  * baselines depend on, so finding ordering and message shape are intentionally stable across releases.
  */
 export function analyseUnusedImports(file: SourceFile, source: string, rawSource: string, findings: Finding[]): void {
-  const lines = source.split(/\r?\n/);
-  for (const [index, line] of lines.entries()) {
-    for (const specifier of namedImportSpecifiers(line)) {
+  for (const statement of namedImportStatements(source)) {
+    for (const specifier of namedImportSpecifiers(statement.source)) {
       const name = unusedImportName(source, rawSource, specifier);
       if (!name) {
         continue;
       }
-      findings.push(unusedImportFinding(file, name, index + 1));
+      findings.push(unusedImportFinding(file, name, statement.line));
     }
   }
 }
 
-// Slices the `{ a, b as c }` body out of a named-import line and splits on commas. No AST: a
+// One complete named-import declaration, including multiline `{ ... }` bodies, plus the anchor
+// line where the `import` keyword began. Keeping the original source preserves alias parsing.
+interface NamedImportStatement {
+  source: string;
+  line: number;
+}
+
+// Finds only named import declarations and spans across newlines until the matching `from` source.
+// The non-greedy body keeps adjacent imports from merging into one statement.
+function namedImportStatements(source: string): NamedImportStatement[] {
+  return [...source.matchAll(/\bimport\s+(?:type\s+)?\{[\s\S]*?\}\s+from\s*["'][^"']+["']/g)].map((match) => ({ source: match[0] ?? "", line: byteLine(source, match.index ?? 0) }));
+}
+
+// Slices the `{ a, b as c }` body out of a named-import statement and splits on commas. No AST: a
 // regex-light approach is sufficient because `analyseUnusedImports` runs after the comment mask,
 // so commas inside string defaults never reach this function.
-function namedImportSpecifiers(line: string): string[] {
-  const trimmed = line.trim();
-  if (!isNamedImportLine(trimmed)) {
-    return [];
-  }
+function namedImportSpecifiers(source: string): string[] {
+  const trimmed = source.trim();
   const openBrace = trimmed.indexOf(String.fromCharCode(123));
   const closeBrace = trimmed.indexOf(String.fromCharCode(125), openBrace + 1);
   if (!hasNamedImportBraces(openBrace, closeBrace)) {
     return [];
   }
   return trimmed.slice(openBrace + 1, closeBrace).split(",");
-}
-
-// `import … from "…"` shape gate. `from` must be present — bare side-effect imports like
-// `import "./polyfill"` have no named specifiers to analyse and are excluded here.
-function isNamedImportLine(trimmedLine: string): boolean {
-  return trimmedLine.startsWith("import ") && trimmedLine.includes(" from ");
 }
 
 // Both braces present and well-ordered. Indexes come from raw `indexOf` calls, so this guards

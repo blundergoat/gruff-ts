@@ -154,7 +154,12 @@ function sarifPhysicalLocation(finding: Finding): Record<string, unknown> {
 // SARIF artifact URIs are POSIX-style relative paths. Strips leading `./` (which SARIF consumers
 // treat as absolute or as a different path) and converts Windows-style separators.
 function sarifUri(filePath: string): string {
-  return filePath.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "");
+  return filePath
+    .replaceAll("\\", "/")
+    .replace(/^(?:\.\/)+/, "")
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/");
 }
 
 // SARIF has three levels; gruff's "advisory" maps to "note" because that's the documented soft-warning level.
@@ -170,8 +175,9 @@ function sarifLevel(severity: Severity): "error" | "warning" | "note" {
 }
 
 /*
- * Compact stable digest used by the `summary` command. Intentionally not part of the JSON report
- * contract — output shape can evolve without bumping schemaVersion. Top-N lists are truncated to 10.
+ * Compact digest for humans in terminals. It intentionally stays outside the JSON schema contract
+ * because the CLI should be able to improve wording/layout without a schema bump; callers that need
+ * durable machine output should use `analyse --format=json` instead.
  */
 function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: string): string {
   const pillarCounts = countBy(report.findings, (finding) => finding.pillar);
@@ -262,12 +268,18 @@ function renderMarkdown(report: AnalysisReport): string {
   ].join("\n");
 }
 
-// GitHub Actions `::workflow command` syntax. `%`, newline, and CR must be encoded per Actions
-// spec or the annotation will be silently truncated; see `escapeCommand` for the stable rules.
+// GitHub Actions `::workflow command` syntax. Public contract invariant: file/title properties
+// must be normalized and command-escaped before interpolation because commas and colons delimit the property list.
 function renderGithub(report: AnalysisReport): string {
   return report.findings
-    .map((finding) => `::${githubLevel(finding.severity)} file=${finding.filePath},line=${finding.line ?? 1},title=${escapeCommand(finding.ruleId)}::${escapeCommand(finding.message)}`)
+    .map((finding) => `::${githubLevel(finding.severity)} file=${escapeCommandProperty(githubAnnotationPath(finding.filePath))},line=${finding.line ?? 1},title=${escapeCommandProperty(finding.ruleId)}::${escapeCommand(finding.message)}`)
     .join("\n");
+}
+
+// GitHub annotation paths are repository-relative POSIX paths. Leading `./` and Windows
+// separators produce duplicate annotations for the same file, so normalize them once here.
+function githubAnnotationPath(filePath: string): string {
+  return filePath.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "");
 }
 
 // Extra metadata appended to dashboard-served HTML. Static-file consumers never see it because the
@@ -325,8 +337,8 @@ function htmlMetaRow(label: string, metaValue: string): string {
   return `<div><span class="label">${escapedLabel}</span><span class="val">${escapedValue}</span></div>`;
 }
 
-// Diagnostics section, omitted entirely when none exist so a clean report has no empty header.
-// Diagnostics are the user's surfacing of parse/IO failures and must reach the rendered output stable.
+// Diagnostics are parse/IO failures, not normal findings. HTML renders them before score sections
+// because partial scans must remain visibly incomplete; omitting empty diagnostics is the stable contract.
 function htmlDiagnostics(report: AnalysisReport): string {
   if (report.diagnostics.length === 0) {
     return "";
@@ -521,8 +533,8 @@ function severityClass(severity: Severity): string {
   return severity === "error" ? "fail" : severity === "warning" ? "warn" : "note";
 }
 
-// Same idea as `severityClass`: collapses any grade letter to one of {a,b,c,d,f,n} so the caller
-// can interpolate it into a CSS class name without escaping.
+// Constrains grade text to known CSS suffixes before interpolation. Unknown future grades degrade
+// to neutral styling instead of creating user-influenced class names.
 function gradeClass(gradeValue: string): string {
   const letter = gradeValue[0]?.toLowerCase() ?? "n";
   return ["a", "b", "c", "d", "f"].includes(letter) ? letter : "n";
@@ -648,6 +660,10 @@ function githubLevel(severity: Severity): "notice" | "warning" | "error" {
 // `%0A` replacement would itself be re-encoded.
 function escapeCommand(commandText: string): string {
   return commandText.replaceAll("%", "%25").replaceAll("\n", "%0A").replaceAll("\r", "%0D");
+}
+
+function escapeCommandProperty(propertyText: string): string {
+  return escapeCommand(propertyText).replaceAll(":", "%3A").replaceAll(",", "%2C");
 }
 
 // Four-character HTML entity escape (`&`, `<`, `>`, `"`). `&` must be first so the other entities

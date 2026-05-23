@@ -12,7 +12,8 @@ interface DiagnosticSourceFile {
 }
 
 /**
- * Checks TypeScript or JavaScript source for obviously unbalanced delimiters.
+ * Lightweight delimiter sanity check for TypeScript/JavaScript. This is not a parser; it only
+ * reports closers that outrun openers because those are local enough for a heuristic to trust.
  *
  * @param file - Source metadata used to skip non-script inputs and report paths.
  * @param source - Raw file text to scan for delimiter balance.
@@ -296,9 +297,8 @@ function isRegexLiteralStart(previousCode: string, beforeSlash: string): boolean
   return previousCode === "" || "([{=,:!&|?;".includes(previousCode) || /\breturn$/.test(beforeSlash.trimEnd());
 }
 
-// Returns `source` with comments, strings, and regex bodies replaced by spaces. Line and column
-// offsets are preserved so callers can map matches back to the original — this is the standard
-// pre-filter for any rule that must run regex against "code shape only".
+// Masks non-code bytes without changing offsets. Regex-driven rules rely on the 1:1 byte mapping
+// to report raw-source line numbers while avoiding matches inside comments, strings, and regex bodies.
 function maskNonCode(source: string): string {
   let result = "";
   const state = defaultMaskState();
@@ -415,6 +415,7 @@ interface MaskState {
   isRegexCharClass: boolean;
   isRegexEscaped: boolean;
   previousCode: string;
+  templateInterpolationDepth: number;
 }
 
 // `text` is what gets written for this character (space for masked, original for code, "  " for
@@ -435,6 +436,7 @@ function defaultMaskState(): MaskState {
     isRegexCharClass: false,
     isRegexEscaped: false,
     previousCode: "",
+    templateInterpolationDepth: 0,
   };
 }
 
@@ -453,7 +455,7 @@ function maskNonCodeCharacter(source: string, index: number, state: MaskState): 
     return maskBlockComment(character, next, state);
   }
   if (state.quote) {
-    return maskQuotedCharacter(character, state);
+    return maskQuotedCharacter(character, next, state);
   }
   if (state.isRegex) {
     return maskRegexCharacter(character, state);
@@ -486,7 +488,7 @@ function maskBlockComment(character: string, next: string, state: MaskState): Ma
 
 // Inside a string: mask body characters but emit the closing quote unchanged so downstream rules
 // can still see the quote boundary. `\` arms `isEscaped` to keep the next character literal.
-function maskQuotedCharacter(character: string, state: MaskState): MaskStep {
+function maskQuotedCharacter(character: string, next: string, state: MaskState): MaskStep {
   if (state.isEscaped) {
     state.isEscaped = false;
     return maskSingleCharacter();
@@ -494,6 +496,12 @@ function maskQuotedCharacter(character: string, state: MaskState): MaskStep {
   if (character === "\\") {
     state.isEscaped = true;
     return maskSingleCharacter();
+  }
+  if (state.quote === "`" && character === "$" && next === "{") {
+    state.quote = undefined;
+    state.templateInterpolationDepth += 1;
+    state.previousCode = "{";
+    return { text: "${", skip: 1 };
   }
   if (character === state.quote) {
     state.previousCode = character;
@@ -534,12 +542,35 @@ function maskRegexCharacter(character: string, state: MaskState): MaskStep {
 // otherwise be misread as a regex start; detect regex before quote because no quote begins with `/`.
 function maskCodeCharacter(source: string, index: number, character: string, next: string, state: MaskState): MaskStep {
   return (
+    maskTemplateInterpolationBrace(character, state) ??
     maskLineCommentStart(character, next, state) ??
     maskBlockCommentStart(character, next, state) ??
     maskRegexStart(source, index, character, state) ??
     maskQuoteStart(character, state) ??
     maskPlainCodeCharacter(character, state)
   );
+}
+
+// While inside a template `${...}` expression, braces are executable code and must stay visible.
+// The depth counter returns to backtick masking only after the matching interpolation closer.
+function maskTemplateInterpolationBrace(character: string, state: MaskState): MaskStep | undefined {
+  if (state.templateInterpolationDepth === 0) {
+    return undefined;
+  }
+  if (character === "{") {
+    state.templateInterpolationDepth += 1;
+    state.previousCode = character;
+    return { text: character, skip: 0 };
+  }
+  if (character === "}") {
+    state.templateInterpolationDepth -= 1;
+    state.previousCode = character;
+    if (state.templateInterpolationDepth === 0) {
+      state.quote = "`";
+    }
+    return { text: character, skip: 0 };
+  }
+  return undefined;
 }
 
 // Detects `//` and arms line-comment mode; the actual masking happens on subsequent characters
