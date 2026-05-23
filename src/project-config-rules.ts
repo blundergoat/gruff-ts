@@ -318,24 +318,32 @@ function packageBinFinding(input: PackageBinFindingInput): Finding {
  */
 function analyseTsconfigJson(file: ConfigSourceFile, source: string, tsconfigData: Record<string, unknown>, findings: Finding[]): void {
   const compilerOptions = objectValue(tsconfigData.compilerOptions) ?? {};
+  const hasExtends = typeof tsconfigData.extends === "string" || Array.isArray(tsconfigData.extends);
   const checks: Array<[string, string, string]> = [
     ["strict", "modernisation.tsconfig-strict-disabled", "`strict` is disabled, reducing TypeScript's baseline safety checks."],
     ["noUncheckedIndexedAccess", "modernisation.tsconfig-index-safety-disabled", "`noUncheckedIndexedAccess` is disabled, so indexed reads can silently ignore undefined."],
     ["exactOptionalPropertyTypes", "modernisation.tsconfig-exact-optional-disabled", "`exactOptionalPropertyTypes` is disabled, weakening optional property contracts."],
   ];
   for (const [optionName, ruleId, message] of checks) {
-    if (compilerOptions[optionName] !== true) {
-      findings.push(
-        tsconfigFinding({
-          file,
-          source,
-          ruleId,
-          message,
-          optionName,
-          currentValue: compilerOptions[optionName] ?? null,
-        }),
-      );
+    const optionValue = compilerOptions[optionName];
+    if (optionValue === true) {
+      continue;
     }
+    // When the tsconfig `extends` another file we can't see the resolved compilerOptions, so an
+    // absent flag may already be `true` in the base. Only an explicit `false` is reportable.
+    if (optionValue === undefined && hasExtends) {
+      continue;
+    }
+    findings.push(
+      tsconfigFinding({
+        file,
+        source,
+        ruleId,
+        message,
+        optionName,
+        currentValue: optionValue ?? null,
+      }),
+    );
   }
 }
 

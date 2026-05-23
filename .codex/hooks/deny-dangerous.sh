@@ -439,15 +439,26 @@ mask_safe_quoted_heredoc_bodies() {
   local delimiter=""
   local in_body=0
   local mask_body=0
-  local single_quoted_re="<<-?[[:space:]]*'([^']+)'"
-  local double_quoted_re='<<-?[[:space:]]*"([^"]+)"'
+  local strip_tabs=0
+  local compare_line=""
+  local single_quoted_re="<<(-)?[[:space:]]*'([^']+)'"
+  local double_quoted_re='<<(-)?[[:space:]]*"([^"]+)"'
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     if (( in_body )); then
-      if [[ "$line" == "$delimiter" ]]; then
+      # `<<-` heredocs allow the terminator to be indented with tabs; bash strips leading tabs
+      # before matching. Without this, a tab-indented closer leaves us trapped in_body and the
+      # rest of the script (including any post-heredoc commands) is silently masked.
+      if (( strip_tabs )); then
+        compare_line="${line#"${line%%[!$'\t']*}"}"
+      else
+        compare_line="$line"
+      fi
+      if [[ "$compare_line" == "$delimiter" ]]; then
         output+="$line"$'\n'
         in_body=0
         mask_body=0
+        strip_tabs=0
         delimiter=""
       elif (( mask_body )); then
         output+="__goat_quoted_heredoc_body__"$'\n'
@@ -459,7 +470,11 @@ mask_safe_quoted_heredoc_bodies() {
 
     output+="$line"$'\n'
     if [[ "$line" =~ $single_quoted_re ]] || [[ "$line" =~ $double_quoted_re ]]; then
-      delimiter="${BASH_REMATCH[1]}"
+      strip_tabs=0
+      if [[ -n "${BASH_REMATCH[1]}" ]]; then
+        strip_tabs=1
+      fi
+      delimiter="${BASH_REMATCH[2]}"
       if heredoc_opener_executes_shell "$line"; then
         mask_body=0
       else

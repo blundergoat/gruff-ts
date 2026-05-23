@@ -27,8 +27,9 @@ export function finding(args: LineFindingArgs): Finding {
 }
 
 // Diff-aware discovery: uses `execFileSync` (not `execSync`) so the `mode` value is passed as
-// an argv entry and a malicious value cannot inject shell metacharacters. Normalises path
-// separators to `/` for clean display-path joins.
+// an argv entry and a malicious value cannot inject shell metacharacters. Custom-mode values pass
+// through `--end-of-options` so a leading `-` cannot be reinterpreted as a `git diff` flag
+// (e.g., `--output=…`). Normalises path separators to `/` for clean display-path joins.
 export function changedFiles(mode: string): Set<string> {
   if (mode === "staged") {
     return gitPathSet(["diff", "--name-only", "--cached"]);
@@ -39,7 +40,7 @@ export function changedFiles(mode: string): Set<string> {
   if (mode === "working-tree") {
     return new Set([...gitPathSet(["diff", "--name-only"]), ...gitPathSet(["diff", "--name-only", "--cached"]), ...gitPathSet(["ls-files", "--others", "--exclude-standard"])]);
   }
-  return gitPathSet(["diff", "--name-only", mode]);
+  return gitPathSet(["diff", "--name-only", "--end-of-options", mode]);
 }
 
 // Spawns `git` through execFileSync with one fixed argv vector and returns the normalized path set

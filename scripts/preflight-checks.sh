@@ -235,6 +235,7 @@ gruff_ts_check() {
   local report_path
   local error_path
   local status
+  local summary_status=0
   local printed=0
 
   report_path=$(make_temp_file json) || return 1
@@ -244,7 +245,8 @@ gruff_ts_check() {
   status=$?
 
   if [[ -s "$report_path" ]]; then
-    gruff_report_summary "$report_path" || return $?
+    gruff_report_summary "$report_path"
+    summary_status=$?
     printed=1
   fi
 
@@ -255,7 +257,10 @@ gruff_ts_check() {
     cat "$error_path"
   fi
 
-  return "$status"
+  if ((status != 0)); then
+    return "$status"
+  fi
+  return "$summary_status"
 }
 
 shellcheck_check() {
@@ -312,11 +317,6 @@ summary() {
 }
 
 main() {
-  local npm_status=0
-  local gruff_status=0
-  local shellcheck_status=0
-  local summary_status=0
-
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
     return 0
@@ -341,27 +341,17 @@ main() {
   fi
 
   run_step "TypeScript + tests" npm_check
-  npm_status=$?
 
   run_step "Gruff full-project scan" gruff_ts_check
-  gruff_status=$?
 
   if command -v shellcheck >/dev/null 2>&1; then
     run_step "Shell scripts (shellcheck)" shellcheck_check
-    shellcheck_status=$?
   else
     step "Shell scripts (shellcheck)"
     skip "shellcheck not found"
   fi
 
   summary
-  summary_status=$?
-
-  if ((npm_status != 0 || gruff_status != 0 || shellcheck_status != 0)); then
-    return 1
-  fi
-
-  return "$summary_status"
 }
 
 main "$@"
