@@ -50,7 +50,7 @@ function analysePackageJson(file: ConfigSourceFile, source: string, pkg: Record<
 }
 
 /*
- * Iterates `package.json#scripts` in declaration order — the stable Finding[] emission contract
+ * Iterates `package.json#scripts` in declaration order - the stable Finding[] emission contract
  * relies on this. Each script is funnelled through both the remote-installer and lifecycle-script
  * checks because one script can match both.
  */
@@ -94,7 +94,7 @@ function pushRemoteInstallScriptFinding(file: ConfigSourceFile, source: string, 
 
 /*
  * Reports the stable `security.risky-lifecycle-script` finding for any preinstall/install/
- * postinstall/prepare/prepublish/prepublishOnly hook — these run automatically and even disabling
+ * postinstall/prepare/prepublish/prepublishOnly hook - these run automatically and even disabling
  * install scripts in npm config is not universally honoured. Flagged as `warning` rather than
  * `error` because some packages legitimately need them.
  */
@@ -209,7 +209,7 @@ function pushBroadRuntimeDependencyFinding(
 
 /*
  * Expands `bin` into (command, target) pairs (handling both string and object forms), then checks
- * each one in a deterministic, stable order. Returns nothing when `bin` is absent — the rule does
+ * each one in a deterministic, stable order. Returns nothing when `bin` is absent - the rule does
  * not require packages to ship CLIs.
  */
 function analysePackageBins(file: ConfigSourceFile, source: string, pkg: Record<string, unknown>, findings: Finding[]): void {
@@ -246,7 +246,7 @@ function packageBinPath(file: ConfigSourceFile, target: string): string {
 
 /*
  * Reports the `design.package-bin-missing` finding for a declared bin whose file does not exist
- * on disk — emitted with stable command + target metadata that other tooling can key off.
+ * on disk - emitted with stable command + target metadata that other tooling can key off.
  */
 function pushMissingPackageBinFinding(file: ConfigSourceFile, source: string, command: string, target: string, findings: Finding[]): void {
   findings.push(
@@ -263,7 +263,7 @@ function pushMissingPackageBinFinding(file: ConfigSourceFile, source: string, co
 }
 
 /*
- * Reports the stable `design.package-bin-not-executable` finding — the file exists but lacks the
+ * Reports the stable `design.package-bin-not-executable` finding - the file exists but lacks the
  * execute bit. Common on Windows checkouts; the remediation message reminds maintainers to also
  * keep the shebang valid.
  */
@@ -313,7 +313,7 @@ function packageBinFinding(input: PackageBinFindingInput): Finding {
 /*
  * Three TypeScript strictness flags whose absence is a documentation-worthy compromise: `strict`,
  * `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`. Reports each missing flag as its own
- * finding; the list is intentionally short — adding new flags here changes the rule surface and
+ * finding; the list is intentionally short - adding new flags here changes the rule surface and
  * warrants a schema discussion.
  */
 function analyseTsconfigJson(file: ConfigSourceFile, source: string, tsconfigData: Record<string, unknown>, findings: Finding[]): void {
@@ -359,7 +359,7 @@ interface TsconfigFindingInput {
 }
 
 // Single makeFinding site for tsconfig strictness findings. `optionName` is the symbol anchor and
-// `currentValue` is preserved verbatim in metadata for downstream tooling — both are part of the stable contract.
+// `currentValue` is preserved verbatim in metadata for downstream tooling - both are part of the stable contract.
 function tsconfigFinding(input: TsconfigFindingInput): Finding {
   return makeFinding({
     ruleId: input.ruleId,
@@ -377,7 +377,7 @@ function tsconfigFinding(input: TsconfigFindingInput): Finding {
 
 /*
  * Swallows parse errors and returns undefined as a fallback so a malformed package.json doesn't
- * fail the whole analysis run — the rest of the file scan continues.
+ * fail the whole analysis run - the rest of the file scan continues.
  */
 function parseJsonObject(source: string): Record<string, unknown> | undefined {
   try {
@@ -387,7 +387,7 @@ function parseJsonObject(source: string): Record<string, unknown> | undefined {
   }
 }
 
-// Approximate line lookup — finds the first `"key":` occurrence. JSON allows the same key in
+// Approximate line lookup - finds the first `"key":` occurrence. JSON allows the same key in
 // nested objects, but for package.json/tsconfig the top-level keys we report on are unique.
 function jsonKeyLine(source: string, key: string): number {
   const escapedKey = escapeRegex(key);
@@ -412,7 +412,7 @@ function isUrlDependency(versionSpec: string): boolean {
 }
 
 // Catches `*`, `x`, `latest`, unbounded `>=` ranges, and OR-joined ranges. All let dependency
-// resolution drift arbitrarily — lockfile or not, the declared intent is "anything goes".
+// resolution drift arbitrarily - lockfile or not, the declared intent is "anything goes".
 function isBroadRuntimeVersion(versionSpec: string): boolean {
   const normalized = versionSpec.trim().toLowerCase();
   return normalized === "*" || normalized === "x" || normalized === "latest" || (/^>=\s*\d/.test(normalized) && !normalized.includes("<")) || normalized.includes("||");
@@ -546,7 +546,7 @@ function packageBinEntries(pkg: Record<string, unknown>): Array<[string, string]
   return Object.entries(bins).filter((entry): entry is [string, string] => isString(entry[1]));
 }
 
-// Local copy of the regex-escape helper — `discovery.ts` has its own copy because this module
+// Local copy of the regex-escape helper - `discovery.ts` has its own copy because this module
 // is intentionally a leaf with no cross-module dependency on path helpers.
 function escapeRegex(rawText: string): string {
   return rawText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

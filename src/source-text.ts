@@ -50,7 +50,7 @@ interface DelimiterCounts {
 }
 
 // Lexer state for the delimiter scanner. `previousCode` is the last non-whitespace executable
-// character — required because `/` may start a regex or a division depending on what came before.
+// character - required because `/` may start a regex or a division depending on what came before.
 // `templateInterpolationStack` records the brace count at each `${` so a matching `}` can re-enter
 // template literal mode; without it, nested-template-literal files like `\`\${x.map(n => \`\${n}\`)}\``
 // flip out of quote mode early and start counting code-level braces inside the string body.
@@ -105,7 +105,7 @@ function scanDelimiterLine(line: string, ctx: DelimiterScanContext): void {
   }
 }
 
-// State-machine dispatch: block-comment, string, regex, or code. Order matters — once inside a
+// State-machine dispatch: block-comment, string, regex, or code. Order matters - once inside a
 // block comment, characters must not be re-interpreted as a quote or regex opener.
 function scanDelimiterCharacter(line: string, offset: number, ctx: DelimiterScanContext): ScanStep {
   const character = line[offset] ?? "";
@@ -135,7 +135,7 @@ function scanBlockCommentDelimiter(character: string, next: string, scan: Delimi
 
 // Inside a string or template literal. `\` arms `isEscaped` so the next character (including a
 // closing quote) is treated as literal text. Necessary to handle `"\\\""` and similar correctly.
-// Template literals also recognise `${` as an interpolation opener — the scanner pushes the current
+// Template literals also recognise `${` as an interpolation opener - the scanner pushes the current
 // brace count onto a stack, exits quote mode, and counts the opening `{` so a matching `}` re-enters
 // template literal mode. Without this, nested-template files mis-attribute later `\`` as the closer.
 function scanQuotedDelimiter(character: string, next: string, ctx: DelimiterScanContext): ScanStep {
@@ -190,7 +190,7 @@ function scanCodeDelimiter(line: string, offset: number, character: string, next
   );
 }
 
-// `//` ends the line for delimiter purposes — anything to the right is comment text.
+// `//` ends the line for delimiter purposes - anything to the right is comment text.
 function scanLineCommentStart(character: string, next: string): ScanStep | undefined {
   if (character === "/" && next === "/") {
     return stopLineScan();
@@ -216,7 +216,7 @@ function scanQuoteStart(character: string, scan: DelimiterScanState): ScanStep |
   return undefined;
 }
 
-// `/` is ambiguous in JS — it can start a regex or be division. `isRegexLiteralStart` decides based
+// `/` is ambiguous in JS - it can start a regex or be division. `isRegexLiteralStart` decides based
 // on the previous non-whitespace token; getting this wrong would let division `a / b / c` enter
 // regex mode and absorb everything to the next slash.
 function scanRegexStart(line: string, offset: number, character: string, scan: DelimiterScanState): ScanStep | undefined {
@@ -265,7 +265,7 @@ function countDelimiter(character: string, counts: DelimiterCounts): void {
   }
 }
 
-// Negative on any of the three means a closer ran ahead of its opener — caller reports immediately
+// Negative on any of the three means a closer ran ahead of its opener - caller reports immediately
 // at the current line because the original mismatch is local, not at EOF.
 function hasNegativeDelimiterCount(counts: DelimiterCounts): boolean {
   return counts.braces < 0 || counts.parentheses < 0 || counts.brackets < 0;
@@ -278,7 +278,7 @@ function hasUnbalancedDelimiterCount(counts: DelimiterCounts): boolean {
 
 /*
  * Emits a `parse-error` diagnostic. The CLI exit contract forces a non-zero exit (see `exitFor`)
- * whenever diagnostics fire — this builder reports failures so a broken file in the scan tree
+ * whenever diagnostics fire - this builder reports failures so a broken file in the scan tree
  * cannot hide silently rather than throw the error or recover quietly.
  */
 function parseErrorDiagnostic(file: DiagnosticSourceFile, line: number): RunDiagnostic {
@@ -440,7 +440,7 @@ function defaultMaskState(): MaskState {
   };
 }
 
-// Newlines short-circuit first — single-line `//` comments must clear at line end, and ordinary
+// Newlines short-circuit first - single-line `//` comments must clear at line end, and ordinary
 // quotes do too, but template literals (` ` `) survive across lines.
 function maskNonCodeCharacter(source: string, index: number, state: MaskState): MaskStep {
   const character = source[index] ?? "";
@@ -628,7 +628,7 @@ function maskSingleCharacter(): MaskStep {
   return { text: " ", skip: 0 };
 }
 
-// Cheaper, line-local mask used when rules don't need full lexer state — strips line-comments and
+// Cheaper, line-local mask used when rules don't need full lexer state - strips line-comments and
 // string bodies but does not track block comments. Use `maskNonCode` instead when state must
 // survive across lines.
 function codeLineForMatching(line: string): string {
@@ -698,7 +698,7 @@ function continueScan(): ScanStep {
   return { skip: 0, shouldStopLine: false };
 }
 
-// Skip one extra character — used to swallow the second half of a two-character token like `*/`.
+// Skip one extra character - used to swallow the second half of a two-character token like `*/`.
 function skipNextCharacter(): ScanStep {
   return { skip: 1, shouldStopLine: false };
 }

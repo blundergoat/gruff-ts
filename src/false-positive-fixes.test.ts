@@ -1,13 +1,13 @@
 // Lock-in tests for the 11 false-positive fixes triaged after the M38 goat-flow report.
 // Each test pairs a fixture that USED to trigger a false positive with a fixture that should
-// still legitimately fire — so future refactors cannot silently un-fix any of them.
+// still legitimately fire - so future refactors cannot silently un-fix any of them.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { analyseFixture, HIGH_ENTROPY_FIXTURE_VALUE } from "./test-fixtures.ts";
 import { countMatches } from "./text-scans.ts";
 
 test("FP-#10 security.inner-html ignores empty-string DOM clearing", () => {
-  // Fixture clears via "" and '', then assigns user input on line 4 — only the line-4 assignment
+  // Fixture clears via "" and '', then assigns user input on line 4 - only the line-4 assignment
   // should fire because it's the actual injection sink.
   const expectedFiringLine = 4;
   const expectedFindingCount = 1;

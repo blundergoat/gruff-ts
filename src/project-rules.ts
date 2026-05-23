@@ -18,7 +18,7 @@ export interface ProjectExportedSurface {
 }
 
 // Read-once snapshot of a discovered file. Lines are cached because cross-file project rules
-// scan each source repeatedly — splitting once amortises the cost across rule passes.
+// scan each source repeatedly - splitting once amortises the cost across rule passes.
 // `templateMaskedLines` mirrors `lines` but blanks out `` ` `` template-literal body characters
 // (single/double-quoted strings stay intact), so syntax-pattern rules can skip fixture
 // template-literal content without losing real `import ... from "..."` detection.
@@ -56,7 +56,7 @@ interface ImportStatement {
   line: number;
 }
 
-// Ordered list of files participating in a cycle. Order is significant — the first edge is the
+// Ordered list of files participating in a cycle. Order is significant - the first edge is the
 // anchor reported in the finding, so rotating the list would shift the finding's source line.
 interface ImportCycle {
   files: string[];
@@ -86,7 +86,7 @@ interface LargeModuleCandidate extends ModuleLineCount {
 }
 
 // Sorts sources by display path so every cross-file rule sees the same order regardless of which
-// filesystem yielded what entries first — the stable input ordering is what keeps reports deterministic.
+// filesystem yielded what entries first - the stable input ordering is what keeps reports deterministic.
 export function buildProjectIndex(projectSources: ProjectSource[]): ProjectIndex {
   const sources = [...projectSources].sort((left, right) => left.file.displayPath.localeCompare(right.file.displayPath));
   const scriptSources = sources.filter((source) => source.file.isScript);
@@ -191,7 +191,7 @@ function circularImportLine(index: ProjectIndex, anchorPath: string, cycle: Impo
 
 /*
  * Reports the largest directory if it crosses the configured share-of-project threshold. Single
- * stable finding (the worst case) rather than one per directory — keeps the rule a noise-tolerant signal.
+ * stable finding (the worst case) rather than one per directory - keeps the rule a noise-tolerant signal.
  */
 function analyseLargeModuleConcentration(index: ProjectIndex, config: Config, findings: Finding[]): void {
   const candidate = largeModuleCandidate(index, largeModuleThresholds(config));
@@ -240,7 +240,7 @@ function exceedsLargeModuleThresholds(largest: ModuleLineCount, sharePercent: nu
 }
 
 // Counts only production sources (tests, fixtures, declarations excluded) sorted by descending
-// line count so the caller can take the head without re-scanning — keeps the rule deterministic and stable.
+// line count so the caller can take the head without re-scanning - keeps the rule deterministic and stable.
 function productionModuleLineCounts(index: ProjectIndex): ModuleLineCount[] {
   return index.scriptSources
     .filter((source) => isProductionSourcePath(source.file.displayPath))
@@ -249,7 +249,7 @@ function productionModuleLineCounts(index: ProjectIndex): ModuleLineCount[] {
 }
 
 // Single makeFinding site for the rule. All threshold values are surfaced in metadata so reviewers
-// can see why the rule fired without re-running with the same config — keeps reports stable for audits.
+// can see why the rule fired without re-running with the same config - keeps reports stable for audits.
 function largeModuleConcentrationFinding(candidate: LargeModuleCandidate, severity: Severity): Finding {
   return makeFinding({
     ruleId: "design.large-module-concentration",
@@ -420,14 +420,14 @@ function visitImportCycle(
 }
 
 // Production = not a test, not a `.d.ts`, not a fixture, not under `generated/`. Conservative on
-// purpose — adding a path category here changes the rule surface of every production-only rule.
+// purpose - adding a path category here changes the rule surface of every production-only rule.
 export function isProductionSourcePath(path: string): boolean {
   return !isTestPath(path) && !isDeclarationPath(path) && !isFixtureLikePath(path) && !path.split("/").includes("generated");
 }
 
 /*
  * Reports exported callables whose file has no neighbouring `.test.ts` / `.spec.ts`. The stable
- * neighbour rules (`hasNearbyTest`) define what counts — false positives are likelier than missed
+ * neighbour rules (`hasNearbyTest`) define what counts - false positives are likelier than missed
  * cases, so the rule is intentionally conservative.
  */
 function analyseMissingNearbyTests(index: ProjectIndex, findings: Finding[]): void {
@@ -461,7 +461,7 @@ function hasCentralTestImport(sourcePath: string, testSources: ProjectSource[], 
   return testSources.some((testSource) => (importsByFile.get(testSource.file.displayPath) ?? []).some((edge) => edge.targetPath === sourcePath));
 }
 
-// Returns the first exported callable/value seen — one finding per file is sufficient because
+// Returns the first exported callable/value seen - one finding per file is sufficient because
 // the rule's signal is "this file ships an API surface", not "every export is untested".
 export function exportedSurface(source: string): ProjectExportedSurface | undefined {
   const match = source.match(/\bexport\s+(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
@@ -516,7 +516,7 @@ function displayDir(path: string): string {
 }
 
 // POSIX-style join that handles the empty-prefix case so `joinDisplay("", "x")` returns `"x"`,
-// not `"/x"` — needed for paths that live directly at the project root.
+// not `"/x"` - needed for paths that live directly at the project root.
 function joinDisplay(left: string, right: string): string {
   return left ? `${left}/${right}` : right;
 }
@@ -539,7 +539,7 @@ export function isFixtureLikePath(path: string): boolean {
 }
 
 // Converts platform-native paths to the POSIX-style report shape used in every Finding. Must be
-// idempotent — repeated normalisation must produce the same string.
+// idempotent - repeated normalisation must produce the same string.
 function normalizeDisplayPath(path: string): string {
   return path.replaceAll("\\", "/").replace(/^\.\//, "");
 }

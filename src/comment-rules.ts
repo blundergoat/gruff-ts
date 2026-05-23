@@ -171,7 +171,7 @@ function hasTodoTracking(text: string): boolean {
 
 /*
  * Targets `eslint-disable`, `biome-ignore`, coverage `istanbul ignore`, etc. when no maintainer
- * rationale is attached — the false-positive escape hatch is explicit because TS suppression
+ * rationale is attached - the false-positive escape hatch is explicit because TS suppression
  * directives have their own dedicated rule. Reports the stable `docs.suppression-without-rationale` finding.
  */
 function pushSuppressionWithoutRationaleFinding(file: SourceFile, comment: CommentRecord, findings: Finding[]): void {
@@ -195,7 +195,7 @@ function pushSuppressionWithoutRationaleFinding(file: SourceFile, comment: Comme
 }
 
 // Returns the suppression keyword that triggered the rule. `@ts-*` directives are explicitly
-// excluded — they have their own dedicated rule (`pushTsDirectiveFinding`).
+// excluded - they have their own dedicated rule (`pushTsDirectiveFinding`).
 function suppressionDirective(text: string): string | undefined {
   if (/@ts-(?:ignore|expect-error|nocheck|check)\b/.test(text)) {
     return undefined;
@@ -257,7 +257,7 @@ function pushStaleRuleReferenceFindings(file: SourceFile, comment: CommentRecord
 /*
  * Each double-dash option in a comment must appear in `cliFlags` (parsed from the CLI source) or
  * it counts as a stale reference. The rule's value is catching gruff-ts maintainers who rename a
- * flag and forget to update its references — so the check only fires when the comment also names
+ * flag and forget to update its references - so the check only fires when the comment also names
  * gruff-ts (or invokes the gruff/gruff-ts binary). In any other project, flag references belong to
  * that project's CLI, not gruff-ts, and validating them against gruff-ts's own option surface
  * produces only noise. Reports the stable `docs.stale-comment` finding for each unknown option.
@@ -285,7 +285,7 @@ function mentionsGruffCli(text: string): boolean {
 }
 
 // Static list of valid CLI options. Hand-curated rather than parsed from the Commander definition
-// at runtime because the stale-CLI-flag rule must not depend on import order — both files would
+// at runtime because the stale-CLI-flag rule must not depend on import order - both files would
 // otherwise have to load the analyser to power their checks.
 function knownCliFlags(): Set<string> {
   return new Set([
@@ -364,7 +364,7 @@ function isCodeLikeIdentifier(name: string): boolean {
 
 /*
  * Public block-doc comments are exempted on purpose because their first words usually mirror the
- * API surface — that's the documented JSDoc convention, not a useless docblock. Reports the stable
+ * API surface - that's the documented JSDoc convention, not a useless docblock. Reports the stable
  * `docs.useless-docblock` finding otherwise.
  */
 function pushRestatingSignatureCommentFinding(file: SourceFile, comment: CommentRecord, declaration: CommentedDeclaration, findings: Finding[]): void {
@@ -429,7 +429,7 @@ function hasMagicThresholdSignal(codeSource: string): boolean {
 }
 
 // Two candidate sources: a named constant (`const maxThings = N`) or a `threshold()` default call.
-// Either is treated as policy-shaped numeric — ordinary arithmetic constants stay quiet.
+// Either is treated as policy-shaped numeric - ordinary arithmetic constants stay quiet.
 function magicThresholdCandidate(rawLine: string, codeLine: string): MagicThresholdCandidate | undefined {
   return namedThresholdCandidate(rawLine, codeLine) ?? configDefaultThresholdCandidate(rawLine, codeLine);
 }
@@ -456,7 +456,7 @@ function namedThresholdCandidate(rawLine: string, codeLine: string): MagicThresh
 
 // Cheap gate first: only look for the four-arg `threshold(config, "rule", "key", N)` form when the
 // masked code actually contains `threshold(`. Required because labels come from raw text but the
-// call shape must originate in executable code — masked code is the only stable signal for that.
+// call shape must originate in executable code - masked code is the only stable signal for that.
 function configDefaultThresholdCandidate(rawLine: string, codeLine: string): MagicThresholdCandidate | undefined {
   if (!/\bthreshold\s*\(/.test(codeLine)) {
     return undefined;
@@ -534,7 +534,7 @@ function restatementStopWords(kind: CommentedDeclaration["kind"]): Set<string> {
 }
 
 // Trailing-`s` stripping for words longer than 3 characters. Crude but adequate for restating-
-// signature detection — covers `findings`/`finding`, `imports`/`import`, etc.
+// signature detection - covers `findings`/`finding`, `imports`/`import`, etc.
 function stemCommentWord(word: string): string {
   return word.length > 3 && word.endsWith("s") ? word.slice(0, -1) : word;
 }
@@ -559,7 +559,7 @@ function isHistoricalContextComment(text: string): boolean {
 
 // Single makeFinding factory for every stale-comment variant. `symbol` is omitted (not set to
 // undefined) via conditional spread because exactOptionalPropertyTypes treats the two as different
-// shapes — the omission keeps stable fingerprints round-tripping across baseline reads and writes.
+// shapes - the omission keeps stable fingerprints round-tripping across baseline reads and writes.
 function staleCommentFinding(file: SourceFile, comment: CommentRecord, message: string, metadata: Record<string, string>): Finding {
   const symbol = metadata["symbol"];
   return makeFinding({
@@ -576,7 +576,7 @@ function staleCommentFinding(file: SourceFile, comment: CommentRecord, message: 
   });
 }
 
-// Reverse scan through the comment list — the closest comment whose `endLine < line` wins, but
+// Reverse scan through the comment list - the closest comment whose `endLine < line` wins, but
 // only when nothing but blank lines sits between them. Anything else means the comment documents
 // a different declaration.
 function leadingCommentForLine(lines: string[], comments: CommentRecord[], line: number): CommentRecord | undefined {
@@ -593,7 +593,7 @@ function leadingCommentForLine(lines: string[], comments: CommentRecord[], line:
   return undefined;
 }
 
-// Tighter sibling of `hasOnlyBlankFixturePurposeGap` — exclusive upper bound. Used by
+// Tighter sibling of `hasOnlyBlankFixturePurposeGap` - exclusive upper bound. Used by
 // `leadingCommentForLine` to confirm no executable token sits between a comment and its declaration.
 function hasOnlyBlankLines(lines: string[], startLine: number, endLine: number): boolean {
   for (let line = startLine; line < endLine; line += 1) {

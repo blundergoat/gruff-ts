@@ -127,7 +127,7 @@ export function pushIdentifierQualityAt(file: SourceFile, line: number, name: st
 /*
  * Reports `naming.abbreviation` when the name is on `abbreviationDenylist` and not on the user's
  * `acceptedAbbreviations` allowlist. `surface` distinguishes parameter / variable / interface-field
- * — same stable rule contract, different metadata, so consumers can filter on origin.
+ * - same stable rule contract, different metadata, so consumers can filter on origin.
  */
 export function pushAbbreviationAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
   if (config.rules.get("naming.abbreviation")?.enabled !== true) {

@@ -4,7 +4,7 @@ import { basename, extname, isAbsolute, join, relative } from "node:path";
 import type { AnalysisOptions, Config } from "./types.ts";
 
 // `absolutePath` is what `node:fs` operates on; `displayPath` is the project-relative POSIX form
-// embedded in findings and baselines. They must stay aligned — diverging them breaks fingerprint stability.
+// embedded in findings and baselines. They must stay aligned - diverging them breaks fingerprint stability.
 export interface SourceFile {
   absolutePath: string;
   displayPath: string;
@@ -39,7 +39,7 @@ interface GitIgnoreRule {
 }
 
 // Public entry point. Reads from the filesystem and returns a sorted, deduped, deterministic
-// result so finding ordering and report-path metadata remain stable across runs — this is part of
+// result so finding ordering and report-path metadata remain stable across runs - this is part of
 // the schema invariant that makes baseline matching reproducible.
 export function discoverSources(projectRoot: string, options: AnalysisOptions, config: Config): SourceDiscoveryResult {
   const discovery: SourceDiscovery = { files: [], missingPaths: [], ignoredPaths: new Set<string>() };
@@ -98,7 +98,7 @@ function walk(
 }
 
 // Single source of truth for which extensions count as scannable. Adding a new file kind here will
-// expand the rule set's reach across an entire project — coordinate with rule descriptors before changing.
+// expand the rule set's reach across an entire project - coordinate with rule descriptors before changing.
 function pushSourceFile(projectRoot: string, absolutePath: string, files: SourceFile[]): void {
   const extension = extname(absolutePath).slice(1).toLowerCase();
   const name = basename(absolutePath);
@@ -124,7 +124,7 @@ function isDefaultIgnoredDir(path: string): boolean {
   return [".git", ".hg", ".svn", ".idea", ".vscode", "build", "cache", "coverage", "dist", "generated", "node_modules", "target", "tmp", "vendor"].includes(first);
 }
 
-// Three independent ignore sources combined with OR. Order is for short-circuit only — semantically
+// Three independent ignore sources combined with OR. Order is for short-circuit only - semantically
 // the union of (built-in defaults, parsed .gitignore stack, user config patterns) is what counts.
 function isIgnoredDiscoveryPath(display: string, isDirectory: boolean, options: AnalysisOptions, config: Config, gitIgnoreRules: GitIgnoreRule[]): boolean {
   if (isDefaultIgnoredDiscoveryPath(display, isDirectory, options)) {
@@ -136,7 +136,7 @@ function isIgnoredDiscoveryPath(display: string, isDirectory: boolean, options: 
   return config.ignoredPaths.some((pattern) => pathMatches(pattern, display));
 }
 
-// Default directory ignores only apply to directories, never to files — a file named "tmp" should
+// Default directory ignores only apply to directories, never to files - a file named "tmp" should
 // still be scanned. `--include-ignored` opts out entirely.
 function isDefaultIgnoredDiscoveryPath(display: string, isDirectory: boolean, options: AnalysisOptions): boolean {
   return !options.shouldIncludeIgnored && isDirectory && isDefaultIgnoredDir(display);
@@ -149,7 +149,7 @@ function isGitIgnoredDiscoveryPath(display: string, isDirectory: boolean, option
 }
 
 // Walks .gitignore files top-down from project root to the target directory so child rules can
-// override parents — this must match git's documented inheritance order or the scan will diverge
+// override parents - this must match git's documented inheritance order or the scan will diverge
 // from `git status` on the same tree, and reads each `.gitignore` it encounters along the way.
 function gitIgnoreRulesForDirectory(projectRoot: string, directory: string): GitIgnoreRule[] {
   if (!isInsideProject(projectRoot, directory)) {
@@ -195,7 +195,7 @@ function parseGitIgnoreRules(source: string, basePath: string): GitIgnoreRule[] 
 
 // Extracts the four flags git applies per pattern: negation (`!`), directory-only (trailing `/`),
 // path-scoped (leading `/` or contains `/`), and the cleaned pattern itself. Undefined return means
-// the line was blank or a comment — callers must not treat it as a "match nothing" rule.
+// the line was blank or a comment - callers must not treat it as a "match nothing" rule.
 function parseGitIgnoreRule(rawLine: string, basePath: string): GitIgnoreRule | undefined {
   const initial = unescapedGitIgnoreLine(rawLine);
   if (!initial) {
@@ -291,7 +291,7 @@ function gitIgnoreFileRuleMatches(rule: GitIgnoreRule, relativePath: string, isD
   return relativePath.split("/").some((segment) => gitIgnoreGlobMatches(rule.pattern, segment));
 }
 
-// Like the file matcher but only considers directory segments — `node_modules/` must not match the
+// Like the file matcher but only considers directory segments - `node_modules/` must not match the
 // leaf file name even if a file happened to be called `node_modules`.
 function gitIgnoreDirectoryRuleMatches(rule: GitIgnoreRule, relativePath: string, isDirectory: boolean): boolean {
   if (isPathScopedGitIgnoreRule(rule)) {
@@ -302,7 +302,7 @@ function gitIgnoreDirectoryRuleMatches(rule: GitIgnoreRule, relativePath: string
   return directorySegments.some((segment) => gitIgnoreGlobMatches(rule.pattern, segment));
 }
 
-// A rule is "path scoped" when it was anchored (leading `/`) or contained a `/` — both signal that
+// A rule is "path scoped" when it was anchored (leading `/`) or contained a `/` - both signal that
 // the pattern should be matched against multi-segment sub-paths rather than individual names.
 function isPathScopedGitIgnoreRule(rule: GitIgnoreRule): boolean {
   return rule.isAnchored || rule.hasSlash;
@@ -310,7 +310,7 @@ function isPathScopedGitIgnoreRule(rule: GitIgnoreRule): boolean {
 
 // Enumerates progressively longer prefixes of `relativePath` so a single-segment pattern can match
 // at any nesting depth. `shouldIncludeFilePath` controls whether the leaf segment is part of the prefix set
-// — directory-only rules omit it because `dir/` must not match a file called `dir`.
+// - directory-only rules omit it because `dir/` must not match a file called `dir`.
 function gitIgnorePathCandidates(relativePath: string, isDirectory: boolean, shouldIncludeFilePath: boolean): string[] {
   const segments = relativePath.split("/");
   const limit = isDirectory || shouldIncludeFilePath ? segments.length : segments.length - 1;
@@ -441,7 +441,7 @@ function escapeRegexClassCharacter(character: string): string {
 }
 
 // Strips the basePath prefix so a rule from `subdir/.gitignore` is matched against paths relative
-// to `subdir`. Returns undefined when `display` is outside the base — those rules cannot apply.
+// to `subdir`. Returns undefined when `display` is outside the base - those rules cannot apply.
 function pathRelativeToBase(basePath: string, display: string): string | undefined {
   if (basePath.length === 0) {
     return display === "." ? "" : display;
@@ -460,7 +460,7 @@ function isInsideProject(projectRoot: string, path: string): boolean {
 }
 
 // User config ignore patterns. Simpler than gitignore: literal, `prefix/**`, glob with `*` / `**`,
-// or plain prefix. No negation — config ignores are additive on top of gitignore.
+// or plain prefix. No negation - config ignores are additive on top of gitignore.
 function pathMatches(pattern: string, path: string): boolean {
   if (pattern === path) {
     return true;
@@ -495,7 +495,7 @@ export function absolutize(projectRoot: string, path: string): string {
   return isAbsolute(path) ? path : join(projectRoot, path);
 }
 
-// Project-relative form with forward slashes — the report contract uses POSIX-style display paths
+// Project-relative form with forward slashes - the report contract uses POSIX-style display paths
 // on every platform. "" collapses to "." so the root has a stable label in findings.
 export function displayPath(projectRoot: string, path: string): string {
   const relativePath = relative(projectRoot, path).replaceAll("\\", "/");

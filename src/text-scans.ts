@@ -1,5 +1,5 @@
 // Empty-match guard (`lastIndex += 1`) prevents zero-width patterns like /(?=)/g from looping forever.
-// Caller's RegExp is never mutated — `globalRegExp` clones it when the global flag is missing.
+// Caller's RegExp is never mutated - `globalRegExp` clones it when the global flag is missing.
 function countMatches(source: string, pattern: RegExp): number {
   const globalPattern = globalRegExp(pattern);
   let count = 0;
@@ -15,7 +15,7 @@ function countMatches(source: string, pattern: RegExp): number {
 }
 
 // Clones into a new `g`-flagged RegExp when needed. Mutating the caller's pattern (via `lastIndex`)
-// would silently break any further use on the calling side — rule descriptors share patterns at module scope.
+// would silently break any further use on the calling side - rule descriptors share patterns at module scope.
 function globalRegExp(pattern: RegExp): RegExp {
   return new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
 }
@@ -42,7 +42,7 @@ interface CommentScanStep {
   isDone: boolean;
 }
 
-// Task-marker counter consumed by the density rule. Skipping strings is mandatory — markers inside
+// Task-marker counter consumed by the density rule. Skipping strings is mandatory - markers inside
 // string literals must not inflate the count, or every fixture string containing a task keyword
 // would trip. `isScript` flips `#` line-comment recognition for shell-like config files.
 function todoMarkerSummary(source: string, isScript: boolean): { count: number; firstLine: number } {
@@ -67,7 +67,7 @@ function todoMarkerSummary(source: string, isScript: boolean): { count: number; 
   return { count, firstLine: firstLine || 1 };
 }
 
-// Returns only the comment portions of `line` — strings, regex literals, and code are dropped.
+// Returns only the comment portions of `line` - strings, regex literals, and code are dropped.
 // Mutates `state` so block comments and template literals can carry across line boundaries.
 function commentTextForLine(line: string, state: TodoMarkerScanState, isScript: boolean): string {
   let comment = "";
@@ -87,7 +87,7 @@ function commentTextForLine(line: string, state: TodoMarkerScanState, isScript: 
 }
 
 // Three-state dispatcher: in a block comment, in a quoted string, or in executable code. Each
-// branch must be exhaustive — falling through would let a task keyword inside a string get counted.
+// branch must be exhaustive - falling through would let a task keyword inside a string get counted.
 function commentScanStep(line: string, index: number, state: TodoMarkerScanState, isScript: boolean): CommentScanStep {
   const character = line[index] ?? "";
   const next = line[index + 1] ?? "";
@@ -137,7 +137,7 @@ function blockStartScanStep(character: string, next: string, state: TodoMarkerSc
 }
 
 // Slices the comment payload after `//` (or `#` in config files) and signals `isDone: true` so the
-// caller stops walking the line — everything to the right is comment text.
+// caller stops walking the line - everything to the right is comment text.
 function lineCommentScanStep(line: string, index: number, character: string, next: string, isScript: boolean): CommentScanStep {
   if (character === "/" && next === "/") {
     return { comment: line.slice(index + 2), skip: line.length, isDone: true };
@@ -159,7 +159,7 @@ function blockCommentScanStep(character: string, next: string, state: TodoMarker
 }
 
 // Consumes the body of a string/template literal. `\` toggles `isEscaped` so the next character
-// is not interpreted as the closing quote — necessary for sequences like `"\""` and `"\\\""`.
+// is not interpreted as the closing quote - necessary for sequences like `"\""` and `"\\\""`.
 function quotedScanStep(character: string, state: TodoMarkerScanState): CommentScanStep {
   if (state.isEscaped) {
     state.isEscaped = false;
@@ -171,7 +171,7 @@ function quotedScanStep(character: string, state: TodoMarkerScanState): CommentS
   return emptyCommentScanStep();
 }
 
-// No-op step used by branches that consumed a character but produced no comment text — keeps the
+// No-op step used by branches that consumed a character but produced no comment text - keeps the
 // caller loop branchless at the cost of one allocation per non-comment character.
 function emptyCommentScanStep(): CommentScanStep {
   return { comment: "", skip: 0, isDone: false };

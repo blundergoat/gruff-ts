@@ -346,7 +346,7 @@ function blockCommentText(lines: string[], startIndex: number, knownEndIndex?: n
 }
 
 // Forward scan for the next line containing `*/`. Returns undefined for unterminated comments,
-// which the caller treats as "no useful text" rather than throwing — partial-scan robustness.
+// which the caller treats as "no useful text" rather than throwing - partial-scan robustness.
 function blockCommentEndIndex(lines: string[], startIndex: number): number | undefined {
   for (let index = startIndex; index < lines.length; index += 1) {
     if ((lines[index] ?? "").includes("*/")) {

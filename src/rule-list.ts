@@ -5,7 +5,7 @@ import { ruleDescriptors } from "./rules.ts";
 type RuleListFormat = "text" | "json";
 type CompletionShell = "bash" | "fish" | "zsh";
 
-// Pre-formatted token strings, not arrays — the shell-specific renderers paste them straight into
+// Pre-formatted token strings, not arrays - the shell-specific renderers paste them straight into
 // completion scripts (bash `$commands`, zsh `_describe`, etc.) so the formatting must already be shell-safe.
 interface CompletionContext {
   commands: string;
@@ -72,7 +72,7 @@ function renderConsoleList(shouldUseAnsi = false): string {
 }
 
 // Two-column row: label padded to `width`, then description. Width is fixed per section so the
-// catalogue lines up regardless of label length — matches Symfony console output conventions.
+// catalogue lines up regardless of label length - matches Symfony console output conventions.
 function formatConsoleRow(label: string, description: string, width: number, shouldUseAnsi: boolean): string {
   const paddedLabel = ansiWrap(label, ANSI_GREEN, shouldUseAnsi);
   const padding = " ".repeat(Math.max(1, width - label.length));
@@ -90,7 +90,7 @@ function ansiWrap(text: string, color: string, shouldUseAnsi: boolean): string {
   return `${ansiColor}${text}${ANSI_RESET_FG}`;
 }
 
-// Dispatches by shell with bash as the default — chosen because bash completion is most likely to
+// Dispatches by shell with bash as the default - chosen because bash completion is most likely to
 // be installed and least likely to break silently if the user pipes the output through `source`.
 function renderCompletionScript(shell: CompletionShell): string {
   const context = completionContext();
@@ -103,7 +103,7 @@ function renderCompletionScript(shell: CompletionShell): string {
   return renderBashCompletion(context);
 }
 
-// Filters out `help` from the completion list — Commander handles it implicitly and exposing it
+// Filters out `help` from the completion list - Commander handles it implicitly and exposing it
 // would suggest `gruff-ts help` is a real subcommand on equal footing with `analyse`.
 function completionContext(): CompletionContext {
   return {
@@ -112,7 +112,7 @@ function completionContext(): CompletionContext {
   };
 }
 
-// Fish's `complete` builtin is invoked once per token. Trailing newline matters — fish ignores
+// Fish's `complete` builtin is invoked once per token. Trailing newline matters - fish ignores
 // the final entry without one.
 function renderFishCompletion(context: CompletionContext): string {
   return [
@@ -123,7 +123,7 @@ function renderFishCompletion(context: CompletionContext): string {
   ].join("\n");
 }
 
-// `#compdef gruff-ts` must be on line 1 — zsh's autoloader rejects the file otherwise. Uses
+// `#compdef gruff-ts` must be on line 1 - zsh's autoloader rejects the file otherwise. Uses
 // `_arguments` rather than `_describe` so option completion still works after a subcommand.
 function renderZshCompletion(context: CompletionContext): string {
   return [
@@ -170,7 +170,7 @@ function renderBashCompletion({ commands, options }: CompletionContext): string 
   ].join("\n");
 }
 
-// Bash is the fallback for any unknown shell name — see `renderCompletionScript` for why bash wins.
+// Bash is the fallback for any unknown shell name - see `renderCompletionScript` for why bash wins.
 function completionShell(shellName: unknown): CompletionShell {
   return shellName === "fish" || shellName === "zsh" ? shellName : "bash";
 }

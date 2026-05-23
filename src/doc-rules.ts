@@ -50,7 +50,7 @@ export function exportedDeclarations(source: string, codeSource: string): Export
 }
 
 /*
- * Skips functions and interfaces — those have dedicated rules (`docs.missing-function-doc`,
+ * Skips functions and interfaces - those have dedicated rules (`docs.missing-function-doc`,
  * `docs.missing-interface-doc`). Reports the stable `docs.missing-public-doc` finding for
  * classes/types/enums without a leading JSDoc-style block comment.
  */
@@ -179,13 +179,13 @@ function documentedExportBlock(source: string, codeSource: string, match: RegExp
   };
 }
 
-// `index ?? 0` adapter for the standard regex API — match.index is technically optional under
+// `index ?? 0` adapter for the standard regex API - match.index is technically optional under
 // strict TypeScript even though every real match has it.
 function regexMatchStart(match: RegExpMatchArray): number {
   return match.index ?? 0;
 }
 
-// `match[index] ?? ""` adapter — keeps callers from sprinkling default-empty handling.
+// `match[index] ?? ""` adapter - keeps callers from sprinkling default-empty handling.
 function regexGroup(match: RegExpMatchArray, index: number): string {
   return match[index] ?? "";
 }
@@ -281,7 +281,7 @@ function docParamTagName(line: string): string | undefined {
 }
 
 // Removes a leading `{Type}` cluster from a `@param` tag tail. Returns the empty string when the
-// braces are unbalanced — a malformed tag should not contribute a phantom parameter name.
+// braces are unbalanced - a malformed tag should not contribute a phantom parameter name.
 function stripDocParamType(rest: string): string {
   if (!rest.startsWith(String.fromCharCode(123))) {
     return rest;
@@ -329,7 +329,7 @@ function hasDocCommentBeforeLine(source: string, line: number): boolean {
 }
 
 // `/**` openers and `*` continuation lines are both docblock material. Plain `//` comments are
-// intentionally excluded — those are tracked separately by `hasLeadingCommentBeforeLine`.
+// intentionally excluded - those are tracked separately by `hasLeadingCommentBeforeLine`.
 function isDocCommentLine(trimmedLine: string): boolean {
   return trimmedLine.startsWith("/**") || trimmedLine.startsWith("*");
 }
@@ -342,7 +342,7 @@ function isDocCommentSearchBoundary(trimmedLine: string): boolean {
 
 // File-overview presence check for `docs.missing-file-overview`. Skips a shebang first because
 // scripts conventionally place `#!` on line 1, then asks whether the first real line is a
-// comment — that is the contract the rule reports against.
+// comment - that is the contract the rule reports against.
 function hasFileOverviewComment(source: string): boolean {
   const lines = source.split(/\r?\n/);
   let index = firstMeaningfulLineIndex(lines);
@@ -356,7 +356,7 @@ function hasFileOverviewComment(source: string): boolean {
 }
 
 // Returns the index of the first non-blank line at or after `start`. The implementation does
-// not skip comments — callers asking for "first meaningful line" treat comment text as a
+// not skip comments - callers asking for "first meaningful line" treat comment text as a
 // meaningful signal (file-overview detection wants to land on the comment itself).
 function firstMeaningfulLineIndex(lines: string[], start = 0): number | undefined {
   for (let index = start; index < lines.length; index += 1) {

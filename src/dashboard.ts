@@ -6,7 +6,7 @@ import type { AnalysisOptions, AnalysisReport } from "./types.ts";
 
 type DashboardAnalyse = (options: AnalysisOptions) => AnalysisReport;
 
-// Host/port/projectRoot frozen at server start. The dashboard binds to a loopback host only —
+// Host/port/projectRoot frozen at server start. The dashboard binds to a loopback host only -
 // `startDashboard` callers must not relax this without auditing for unauthenticated remote scans.
 interface DashboardContext {
   host: string;
@@ -16,7 +16,7 @@ interface DashboardContext {
 
 // Per-request projectRoot + scanPath. Sourced from `?projectRoot` and `?path` query parameters and
 // fed straight to `chdir`/`analyse`, so untrusted values would let a caller pivot the analyser to
-// arbitrary directories — only acceptable because the server is loopback-only.
+// arbitrary directories - only acceptable because the server is loopback-only.
 interface DashboardRouteInput {
   root: string;
   scanPath: string;
@@ -46,7 +46,7 @@ function assertLoopbackHost(host: string): void {
 
 // Four endpoints: `/health` (uptime probes), `/scan` (runs the analyser and renders HTML),
 // `/` (control page), anything else → 404. `/health` is the only response that survives proxies
-// uncached — the scan and home responses set `no-store` so the dashboard always sees fresh output.
+// uncached - the scan and home responses set `no-store` so the dashboard always sees fresh output.
 function handleDashboardRequest(context: DashboardContext, analyse: DashboardAnalyse, request: IncomingMessage, response: ServerResponse): void {
   const url = new URL(request.url ?? "/", `http://${context.host}:${context.port}`);
   if (url.pathname === "/health") {
@@ -75,7 +75,7 @@ function dashboardRouteInput(url: URL, projectRoot: string): DashboardRouteInput
 }
 
 // chdirs into the caller-requested project root, runs `analyse`, and always restores the previous
-// cwd in `finally` — leaking the chdir would corrupt subsequent requests. The loopback server must
+// cwd in `finally` - leaking the chdir would corrupt subsequent requests. The loopback server must
 // keep serving on analyser failure, so the catch reports the error as a rendered fallback page.
 function renderDashboardScan(response: ServerResponse, input: DashboardRouteInput, analyse: DashboardAnalyse): void {
   const previous = cwd();

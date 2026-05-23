@@ -196,14 +196,14 @@ function matchingCloseBrace(source: string, openBrace: number): number | undefin
   return undefined;
 }
 
-// Aggregator over the three trivial-assertion shapes — literal-comparison, mirrored-`assert`
+// Aggregator over the three trivial-assertion shapes - literal-comparison, mirrored-`assert`
 // arguments, mirrored-`expect` arguments. Splitting the checks keeps each regex focused and
 // debuggable while this top-level keeps the call site for `test-quality.trivial-assertion` short.
 function hasTrivialAssertion(source: string): boolean {
   return hasLiteralTrivialAssertion(source) || hasRepeatedAssertArgument(source) || hasRepeatedExpectArgument(source);
 }
 
-// Targets `assert.ok(true)` and `assert.equal(literal, sameLiteral)` shapes — both prove nothing
+// Targets `assert.ok(true)` and `assert.equal(literal, sameLiteral)` shapes - both prove nothing
 // at runtime. The backreference `\1` is what makes the second pattern detect mirrored literals
 // across the supported `equal` / `strictEqual` / `deepEqual` variants.
 function hasLiteralTrivialAssertion(source: string): boolean {
@@ -215,7 +215,7 @@ function hasLiteralTrivialAssertion(source: string): boolean {
 
 // Walks every `assert.equal(a, b)` call and normalises both arguments before comparison so that
 // `foo;` and `foo` collapse to the same key. Mirrored expressions indicate the assertion would
-// pass regardless of behaviour — reports as a trivial assertion.
+// pass regardless of behaviour - reports as a trivial assertion.
 function hasRepeatedAssertArgument(source: string): boolean {
   for (const match of source.matchAll(/\bassert\.(?:equal|strictEqual|deepEqual)\s*\(\s*([^,\n]+?)\s*,\s*([^,\n)]+?)(?:\s*,|\s*\))/g)) {
     if (normalizeAssertionExpression(match[1] ?? "") === normalizeAssertionExpression(match[2] ?? "")) {
@@ -237,7 +237,7 @@ function hasRepeatedExpectArgument(source: string): boolean {
   return false;
 }
 
-// Trims whitespace and strips a trailing semicolon so that `foo;` and `foo` compare as equal —
+// Trims whitespace and strips a trailing semicolon so that `foo;` and `foo` compare as equal -
 // preserves the deterministic mirrored-argument detection across whitespace variations.
 function normalizeAssertionExpression(expression: string): string {
   return expression.trim().replace(/;$/, "");
@@ -257,7 +257,7 @@ function isSnapshotOnlyTest(source: string): boolean {
 }
 
 // Same shape as `isSnapshotOnlyTest` but for `doesNotThrow` / `not.toThrow`. A test that asserts
-// only the absence of an exception is weak — `test-quality.no-throw-only-test` reports it so
+// only the absence of an exception is weak - `test-quality.no-throw-only-test` reports it so
 // authors can add a real behaviour assertion alongside.
 function isNoThrowOnlyTest(source: string): boolean {
   if (!/\bassert\.doesNotThrow\s*\(|\.\s*not\s*\.\s*toThrow\s*\(/.test(source)) {
@@ -271,7 +271,7 @@ function isNoThrowOnlyTest(source: string): boolean {
 }
 
 // Pulls every numeric expected value out of `expect(...).toBe(n)` and `assert.equal(actual, n)`
-// shapes. `-1`, `0`, `1` are excluded because they're universally idiomatic — the intent is to
+// shapes. `-1`, `0`, `1` are excluded because they're universally idiomatic - the intent is to
 // avoid noise on neutral values and surface only literals whose meaning a maintainer must look up.
 function magicNumberAssertions(source: string): Array<{ value: number }> {
   return MAGIC_NUMBER_ASSERTION_PATTERNS.flatMap((candidate) => magicNumberAssertionMatches(source, candidate));
@@ -302,7 +302,7 @@ function isHttpStatusAssertion(expression: string, expectedNumber: number): bool
   return Number.isInteger(expectedNumber) && expectedNumber >= 100 && expectedNumber <= 599 && /\b(?:status|statusCode)\b/.test(expression);
 }
 
-// `const mockX = vi.fn(...)` declarations whose binding appears only once in the body — that one
+// `const mockX = vi.fn(...)` declarations whose binding appears only once in the body - that one
 // occurrence is the declaration itself, so the mock is created but never wired in. Reports the
 // names for `test-quality.unused-mock` to anchor on.
 function unusedMockVariables(source: string): string[] {
@@ -321,7 +321,7 @@ function unusedMockVariables(source: string): string[] {
 
 // Three gates in order: a mock factory must exist, a mock-call matcher must be asserted, and
 // *every* `expect(target)` argument must look like a mock/stub/spy name. All three together
-// signal a test that only verifies its own scaffolding — flagged for `test-quality.mock-only-test`.
+// signal a test that only verifies its own scaffolding - flagged for `test-quality.mock-only-test`.
 function isMockOnlyTest(source: string): boolean {
   if (!/\b(?:vi|jest)\.fn\s*\(|\b(?:createMock|mock|sinon\.stub)\s*\(/.test(source)) {
     return false;

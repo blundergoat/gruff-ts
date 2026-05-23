@@ -36,7 +36,7 @@ function renderReport(report: AnalysisReport, format: OutputFormat): string {
 
 /*
  * SARIF 2.1.0 output for GitHub code-scanning uploads. Kept as one large object literal because
- * the SARIF schema demands a specific shape — splitting it up obscures which fields are required.
+ * the SARIF schema demands a specific shape - splitting it up obscures which fields are required.
  * `partialFingerprints.gruffFingerprint` is the cross-tool stable identifier; GitHub uses it to
  * dedupe alerts across re-uploads, so it must match the Finding fingerprint exactly.
  */
@@ -85,7 +85,7 @@ function renderSarif(report: AnalysisReport): string {
 
 /*
  * Maps one Finding into a SARIF result row. The stable, deterministic fingerprint in
- * `partialFingerprints` is the public contract — GitHub code-scanning keys alerts off it.
+ * `partialFingerprints` is the public contract - GitHub code-scanning keys alerts off it.
  */
 function sarifResult(finding: Finding, ruleIndices: Map<string, number>): Record<string, unknown> {
   const result: Record<string, unknown> = {
@@ -127,7 +127,7 @@ function sarifResult(finding: Finding, ruleIndices: Map<string, number>): Record
 
 /*
  * Constructs the stable SARIF `physicalLocation` object. `startLine` and column/endLine are only
- * populated when the Finding carries them — SARIF requires `region` to be omitted (not empty)
+ * populated when the Finding carries them - SARIF requires `region` to be omitted (not empty)
  * when there is no line context.
  */
 function sarifPhysicalLocation(finding: Finding): Record<string, unknown> {
@@ -245,7 +245,7 @@ function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText:
 }
 
 /*
- * Default terminal output. Findings are listed verbatim (no truncation) — the analyser keeps them
+ * Default terminal output. Findings are listed verbatim (no truncation) - the analyser keeps them
  * sorted into the stable order, so piping into `grep` produces deterministic results.
  */
 function renderText(report: AnalysisReport): string {
@@ -300,7 +300,7 @@ interface DashboardRenderContext {
 /*
  * Self-contained HTML output (CSS inlined, no external assets) so reports can be archived or
  * emailed. The schema invariant: every Finding listed in the report must be reachable through
- * deep links — the on-page JS in `dashboardJs` relies on stable `data-path` attributes.
+ * deep links - the on-page JS in `dashboardJs` relies on stable `data-path` attributes.
  */
 function renderHtml(report: AnalysisReport, dashboardContext?: DashboardRenderContext): string {
   const bodySections = [
@@ -331,13 +331,13 @@ ${bodySections}
 }
 
 // Top banner: path count, format, fail-on, schema version. The schemaVersion text is the
-// contract surface — operators eyeball it to confirm the report shape they expect.
+// contract surface - operators eyeball it to confirm the report shape they expect.
 function htmlMasthead(report: AnalysisReport): string {
   const paths = report.paths.analysedFiles === 0 ? "." : `${report.paths.analysedFiles} analysed ${report.paths.analysedFiles === 1 ? "file" : "files"}`;
   return `<header class="masthead"><div class="brand"><div class="wordmark">gruff</div><div class="tagline">ts/js code quality - inspection report</div></div><div class="meta">${htmlMetaRow("paths", paths)}${htmlMetaRow("format", report.run.format)}${htmlMetaRow("fail", report.run.failOn)}${htmlMetaRow("schema", report.schemaVersion)}<div class="inspection-id">gruff-ts ${escapeHtml(report.tool.version)}</div></div></header>`;
 }
 
-// Single key/value row. Both inputs are escaped — they reach this function as user-influenced
+// Single key/value row. Both inputs are escaped - they reach this function as user-influenced
 // strings (paths, format names) and would otherwise enable injection in archived reports.
 function htmlMetaRow(label: string, metaValue: string): string {
   const escapedLabel = escapeHtml(label);
@@ -356,7 +356,7 @@ function htmlDiagnostics(report: AnalysisReport): string {
 }
 
 // HTML markup for one diagnostic entry. The `diagnostic-type`/`diagnostic-message`/`diagnostic-location`
-// span classes are part of the stable HTML report contract — the dashboard CSS and any downstream
+// span classes are part of the stable HTML report contract - the dashboard CSS and any downstream
 // scraping keys off them, so the structure here must stay invariant across renderer changes.
 function htmlDiagnosticEntry(diagnostic: AnalysisReport["diagnostics"][number]): string {
   const lineSuffix = diagnostic.line ? `:${diagnostic.line}` : "";
@@ -387,7 +387,7 @@ function htmlVerdict(report: AnalysisReport): string {
   return `<section class="verdict"><div class="grade-stamp ${gradeCssClass}"><div class="grade-letter">${escapedGrade}</div><div class="grade-score">${scoreText} / 100</div></div><div class="verdict-body"><div class="verdict-headline">Inspection complete.<br><em>${escapedSummary}</em></div><div class="verdict-stats">${stats}</div></div></section>`;
 }
 
-// Headline sentence. Counts only warning/error findings — advisories are intentionally excluded
+// Headline sentence. Counts only warning/error findings - advisories are intentionally excluded
 // from the verdict text because they are below the stable "needs attention" threshold.
 function verdictSummary(report: AnalysisReport): string {
   const thresholdFindings = report.summary.warning + report.summary.error;
@@ -398,7 +398,7 @@ function verdictSummary(report: AnalysisReport): string {
   return `${thresholdFindings} ${thresholdFindings === 1 ? "finding" : "findings"} at warning or error severity across ${pillars.size} ${pillars.size === 1 ? "pillar" : "pillars"}.`;
 }
 
-// One stat card (number + label). `className` is a curated, non-escaped CSS class — callers must
+// One stat card (number + label). `className` is a curated, non-escaped CSS class - callers must
 // not pass user input here or it would break the layout in archived reports.
 function htmlStat(number: string, label: string, className: string): string {
   const escapedClassName = escapeHtml(className);
@@ -408,7 +408,7 @@ function htmlStat(number: string, label: string, className: string): string {
 }
 
 /*
- * Pillar score grid in the same order the analyser produced — the stable composite score is the
+ * Pillar score grid in the same order the analyser produced - the stable composite score is the
  * mean of these pillars (see `scoreReport`), so visual order matches the headline-grade derivation.
  */
 function htmlPillars(report: AnalysisReport): string {
@@ -425,7 +425,7 @@ function htmlPillars(report: AnalysisReport): string {
 }
 
 // Top-10 offender table, ordered by ascending score (worst first). `scoreReport` already truncated
-// the list to 10 — this stable, deterministic limit is part of the public report contract.
+// the list to 10 - this stable, deterministic limit is part of the public report contract.
 function htmlOffenders(report: AnalysisReport): string {
   const rows =
     report.score.topOffenders.length === 0
@@ -441,7 +441,7 @@ function htmlOffenders(report: AnalysisReport): string {
 
 /*
  * Histogram of cyclomatic-complexity buckets. The 5 fixed buckets are part of the stable visual
- * vocabulary maintainers learn over time — adding a new bucket would invalidate that mental model.
+ * vocabulary maintainers learn over time - adding a new bucket would invalidate that mental model.
  */
 function htmlDistribution(report: AnalysisReport): string {
   const distribution = cyclomaticDistribution(report);
@@ -461,7 +461,7 @@ function htmlDistribution(report: AnalysisReport): string {
 
 /*
  * Pre-seeded with zero counts for every bucket so the resulting record has a stable key order
- * in JSON dumps. Findings outside `complexity.cyclomatic` are ignored — see `cyclomaticFindingBucket`.
+ * in JSON dumps. Findings outside `complexity.cyclomatic` are ignored - see `cyclomaticFindingBucket`.
  */
 function cyclomaticDistribution(report: AnalysisReport): Record<string, number> {
   const distribution: Record<string, number> = { "1-5": 0, "6-10": 0, "11-15": 0, "16-20": 0, "21+": 0 };
@@ -475,7 +475,7 @@ function cyclomaticDistribution(report: AnalysisReport): Record<string, number> 
 }
 
 // Extracts the cyclomatic number from the finding message because the metadata schema doesn't
-// expose it as a top-level field — coupling the renderer to the message text is acceptable here
+// expose it as a top-level field - coupling the renderer to the message text is acceptable here
 // because the message format is itself part of the stable rule contract.
 function cyclomaticFindingBucket(finding: Finding): string | undefined {
   if (finding.ruleId !== "complexity.cyclomatic") {
@@ -486,7 +486,7 @@ function cyclomaticFindingBucket(finding: Finding): string | undefined {
   return complexityValue === undefined ? undefined : cyclomaticBucket(complexityValue);
 }
 
-// Linear walk in descending-minimum order so the first match wins — required because `21+` and
+// Linear walk in descending-minimum order so the first match wins - required because `21+` and
 // `16-20` would otherwise both apply to a value of 25.
 function cyclomaticBucket(complexityValue: number): string | undefined {
   for (const bucket of CYCLOMATIC_BUCKETS) {
@@ -498,7 +498,7 @@ function cyclomaticBucket(complexityValue: number): string | undefined {
 }
 
 // One-line caption that quantifies how many functions exceed CC=10. The pluralisation handling
-// matters — "1 functions exceed" reads poorly enough that a reviewer would file it as a regression.
+// matters - "1 functions exceed" reads poorly enough that a reviewer would file it as a regression.
 function cyclomaticSummary(distribution: Record<string, number>): string {
   const moderate = distribution["11-15"] ?? 0;
   const high = distribution["16-20"] ?? 0;
@@ -525,7 +525,7 @@ function htmlFindings(report: AnalysisReport): string {
 }
 
 /*
- * Page-bottom strip with tool version and schema string — those are the two stable identifiers a
+ * Page-bottom strip with tool version and schema string - those are the two stable identifiers a
  * reviewer can use to reproduce a historical report.
  */
 function htmlFooter(report: AnalysisReport): string {
@@ -556,7 +556,7 @@ function gradeClass(gradeValue: string): string {
 
 // Single inline stylesheet for both static reports and dashboard-served pages. `shouldIncludeDiagnostics`
 // appends the diagnostic-section rules only when the report actually has them, keeping clean
-// reports leaner. Hand-maintained CSS — no preprocessor.
+// reports leaner. Hand-maintained CSS - no preprocessor.
 function htmlReportCss(shouldIncludeDiagnostics: boolean): string {
   const baseCss = `:root{--ink:#0d0c0a;--ink-2:#161412;--ink-3:#1f1c19;--paper:#f3e9d2;--paper-dim:#b5ab94;--paper-mute:#7d735f;--rule:#2a2622;--forge:#e85d04;--grade-a:#7fa15a;--grade-b:#b8b450;--grade-c:#d08c36;--grade-d:#c2552b;--grade-f:#8b2828;--advisory:#b5ab94;--serif:Georgia,'Iowan Old Style',serif;--mono:'JetBrains Mono','IBM Plex Mono',ui-monospace,monospace}*{box-sizing:border-box;margin:0;padding:0}html{background:var(--ink);scrollbar-gutter:stable}body{font-family:var(--mono);color:var(--paper);background:var(--ink);min-height:100vh;line-height:1.5;font-size:14px;padding:48px 32px}.paper{max-width:1180px;margin:0 auto 24px;background:var(--ink-2);border:1px solid var(--rule);position:relative;padding:56px 64px 48px;scrollbar-gutter:stable}.corner-tr,.corner-bl,.paper:before,.paper:after{content:'';position:absolute;width:22px;height:22px;border:1px solid var(--forge)}.paper:before{top:12px;left:12px;border-right:0;border-bottom:0}.paper:after{bottom:12px;right:12px;border-left:0;border-top:0}.corner-tr{top:12px;right:12px;border-left:0;border-bottom:0}.corner-bl{bottom:12px;left:12px;border-right:0;border-top:0}.masthead{display:grid;grid-template-columns:1fr auto;gap:32px;padding-bottom:28px;border-bottom:1px solid var(--rule);align-items:end}.wordmark{font-family:var(--serif);font-weight:900;font-size:96px;line-height:.85;color:var(--paper);font-style:italic}.wordmark:after{content:'-ts';color:var(--forge);font-style:normal;font-size:.45em;margin-left:.15em;vertical-align:super}.tagline{margin-top:12px;font-size:11px;letter-spacing:0;color:var(--paper-mute);text-transform:uppercase}.meta{text-align:right;font-size:11px;color:var(--paper-dim);line-height:1.9}.label{color:var(--paper-mute);text-transform:uppercase;letter-spacing:0;margin-right:8px}.val{color:var(--paper)}.inspection-id{margin-top:10px;color:var(--forge);font-weight:700;font-size:12px;letter-spacing:0}.section-head{font-size:11px;letter-spacing:0;color:var(--paper-mute);text-transform:uppercase;padding-bottom:16px;margin-bottom:20px;border-bottom:1px solid var(--rule);display:flex;justify-content:space-between;align-items:baseline;font-family:var(--mono);font-weight:500;line-height:1.5}.section-head:before{content:'>';margin-right:10px;color:var(--forge);font-family:var(--serif);font-size:14px;font-style:italic}.aside{color:var(--paper-mute);font-size:10px;letter-spacing:0}.verdict{display:grid;grid-template-columns:auto 1fr;gap:56px;padding:48px 0;border-bottom:1px solid var(--rule);align-items:center}.grade-stamp{width:220px;height:220px;border:3px solid currentColor;color:var(--grade-b);display:flex;flex-direction:column;align-items:center;justify-content:center;transform:rotate(-4deg)}.grade-stamp.a,.grade.a,.grade-pill.a{color:var(--grade-a)}.grade-stamp.b,.grade.b,.grade-pill.b{color:var(--grade-b)}.grade-stamp.c,.grade.c,.grade-pill.c{color:var(--grade-c)}.grade-stamp.d,.grade.d,.grade-pill.d{color:var(--grade-d)}.grade-stamp.f,.grade.f,.grade-pill.f{color:var(--grade-f)}.grade-letter{font-family:var(--serif);font-style:italic;font-weight:900;font-size:112px;line-height:1}.grade-score{font-size:13px;letter-spacing:0}.verdict-body{display:flex;flex-direction:column;gap:18px}.verdict-headline{font-family:var(--serif);font-style:italic;font-weight:600;font-size:38px;line-height:1.15}.verdict-headline em{color:var(--forge)}.verdict-stats{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--rule);padding-top:20px}.stat{border-right:1px solid var(--rule);padding:0 18px}.stat:first-child{padding-left:0}.stat:last-child{border-right:0}.verdict-stats .num{font-family:var(--serif);font-weight:800;font-size:32px;line-height:1}.verdict-stats .num.warn{color:var(--grade-c)}.verdict-stats .num.fail{color:var(--grade-f)}.verdict-stats .num.note{color:var(--advisory)}.lbl{font-size:10px;text-transform:uppercase;letter-spacing:0;color:var(--paper-mute);margin-top:8px}.pillars,.offenders,.chart-section{padding:48px 0;border-bottom:1px solid var(--rule)}.pillar-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--rule);border:1px solid var(--rule)}.pillar{background:var(--ink-2);padding:24px 20px;display:flex;flex-direction:column;gap:14px}.pillar .name{font-size:10px;text-transform:uppercase;letter-spacing:0;color:var(--paper-mute)}.pillar .grade{font-family:var(--serif);font-weight:800;font-style:italic;font-size:52px;line-height:.9}.breakdown{font-size:11px;color:var(--paper-dim);line-height:1.7}.row{display:flex;justify-content:space-between;gap:8px}.key{color:var(--paper-mute)}table{width:100%;border-collapse:collapse;font-size:13px;table-layout:auto;font-family:var(--mono)}th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:0;color:var(--paper-mute);font-weight:500;padding:12px 14px 12px 0;border-bottom:1px solid var(--rule)}th:last-child,td:last-child{padding-right:0}th.num,td.num{text-align:right;padding-left:18px}td{padding:14px 14px 14px 0;border-bottom:1px solid var(--ink-3);color:var(--paper-dim);font-size:13px;font-family:var(--mono);font-weight:500;line-height:1.4}td.num{color:var(--paper);font-variant-numeric:tabular-nums}.file-path{color:var(--paper);font-weight:500}.grade-pill{display:inline-block;font-family:var(--serif);font-style:italic;font-weight:800;font-size:18px;line-height:1;padding:4px 10px;border:1.5px solid currentColor;min-width:36px;text-align:center}.chart-summary{color:var(--paper-dim);font-size:12px;margin:-6px 0 18px}.chart-card{border:1px solid var(--rule);padding:24px;background:var(--ink-3)}.title{font-size:10px;text-transform:uppercase;letter-spacing:0;color:var(--paper-mute);margin-bottom:24px}.histogram{display:flex;align-items:flex-end;gap:6px;height:180px;padding-bottom:20px;border-bottom:1px solid var(--rule)}.bar{flex:1;background:var(--forge);position:relative;min-height:4px}.bar.warn{background:var(--grade-c)}.bar.fail{background:var(--grade-f)}.bar .count{position:absolute;top:-22px;left:50%;transform:translateX(-50%);font-size:11px}.histogram-axis{display:flex;gap:6px;margin-top:8px;font-size:10px;color:var(--paper-mute)}.histogram-axis span{flex:1;text-align:center}.findings{padding:48px 0}.finding{display:grid;grid-template-columns:auto 1fr auto;gap:24px;padding:18px 0;border-bottom:1px solid var(--ink-3);align-items:start}.severity{font-size:9px;text-transform:uppercase;letter-spacing:0;padding:4px 10px;border:1px solid currentColor;margin-top:2px;min-width:76px;text-align:center}.severity.fail{color:var(--grade-f)}.severity.warn{color:var(--grade-c)}.severity.note{color:var(--paper-mute)}.rule{font-size:10px;color:var(--forge);text-transform:uppercase;letter-spacing:0;margin-bottom:6px;font-family:var(--mono);font-weight:700;line-height:1.5}.msg{font-family:var(--serif);font-weight:500;font-size:17px;color:var(--paper);line-height:1.4}.loc{font-size:11px;color:var(--paper-mute);margin-top:8px}.loc code{color:var(--paper-dim);background:var(--ink-3);padding:1px 6px;border:1px solid var(--rule)}.loc-link{color:inherit;text-decoration:none}.loc-link:focus-visible{outline:2px solid var(--forge);outline-offset:3px}.points{font-size:10px;color:var(--paper-mute);text-align:right;letter-spacing:0;min-width:96px;padding-left:12px}.empty{color:var(--paper-dim);font-size:12px}.footer{margin-top:48px;padding-top:24px;border-top:1px solid var(--rule);display:grid;grid-template-columns:1fr auto 1fr;gap:24px;align-items:center;font-size:10px;color:var(--paper-mute);letter-spacing:0;text-transform:uppercase}.center{font-family:var(--serif);font-style:italic;font-size:13px;color:var(--paper-dim);text-transform:none;letter-spacing:0}.right{text-align:right}@media(max-width:900px){body{padding:16px}.paper{padding:28px 20px}.wordmark{font-size:64px}.masthead,.verdict{grid-template-columns:1fr}.meta{text-align:left}.grade-stamp{margin:0 auto}.pillar-grid{grid-template-columns:repeat(2,1fr)}.verdict-stats{grid-template-columns:repeat(2,1fr);gap:16px}.stat{border-right:0;padding:0}.verdict-headline{font-size:28px}.footer{grid-template-columns:1fr}.center,.right{text-align:left}}@media(max-width:560px){.pillar-grid{grid-template-columns:1fr}.finding{grid-template-columns:1fr}.points{text-align:left;padding-left:0}.verdict-stats{grid-template-columns:1fr}.histogram{height:140px}}`;
   const reportCss = `${baseCss}.dashboard-context{padding:28px 0;border-bottom:1px solid var(--rule)}.dashboard-context-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.dashboard-context-grid>div{border:1px solid var(--rule);background:var(--ink-3);padding:12px 14px}.dashboard-context .label{display:block;margin:0 0 6px}.dashboard-context .val{overflow-wrap:anywhere}@media(max-width:700px){.dashboard-context-grid{grid-template-columns:1fr}}@media(max-width:560px){.offender-list thead{display:none}.offender-list,.offender-list tbody,.offender-list tr,.offender-list td{display:block;width:100%}.offender-list tr{border-bottom:1px solid var(--ink-3);padding:10px 0}.offender-list td{border-bottom:0;padding:6px 0}.offender-list td.num{text-align:left;padding-left:0}}`;
@@ -608,7 +608,7 @@ function dashboardScanUrl(projectRoot: string, scanPath: string): string {
 }
 
 // Friendly failure page served when `renderDashboardScan` catches an analyser throw. All inputs
-// are escaped — `message` is the error text and could contain attacker-controlled file path fragments.
+// are escaped - `message` is the error text and could contain attacker-controlled file path fragments.
 function dashboardErrorHtml(message: string, projectRoot: string, scanPath: string): string {
   const escapedMessage = escapeHtml(message);
   const escapedProjectRoot = escapeHtml(projectRoot);
@@ -635,7 +635,7 @@ function dashboardErrorHtml(message: string, projectRoot: string, scanPath: stri
 }
 
 // Inline stylesheet shared by the dashboard shell and its error page. Inlined (not linked) so the
-// dashboard works without separate asset routes — keeping it self-contained matters for offline use.
+// dashboard works without separate asset routes - keeping it self-contained matters for offline use.
 function dashboardCss(): string {
   return `:root{color-scheme:dark;--ink:#0d0c0a;--ink-2:#161412;--panel:#1f1c19;--paper:#f3e9d2;--paper-dim:#b5ab94;--paper-mute:#7d735f;--rule:#2a2622;--forge:#e85d04;--forge-dark:#b94402;--mono:'JetBrains Mono','IBM Plex Mono',ui-monospace,monospace}*{box-sizing:border-box}html,body{height:100%;margin:0;background:var(--ink);color:var(--paper);font-family:var(--mono);font-size:14px;line-height:1.5}.report-frame{position:fixed;inset:0;width:100%;height:100%;border:0;background:var(--ink)}.controls-toggle{position:fixed;top:18px;right:18px;z-index:3;width:44px;height:44px;border:1px solid rgba(232,93,4,.75);border-radius:8px;background:var(--forge);color:#170b05;font:700 22px/1 var(--mono);display:grid;place-items:center;cursor:pointer;box-shadow:0 16px 36px rgba(0,0,0,.38)}.controls-toggle:hover,.controls-toggle:focus-visible{background:#ff7a1a;outline:2px solid rgba(243,233,210,.75);outline-offset:3px}.controls-panel{position:fixed;z-index:2;top:74px;right:18px;width:min(420px,calc(100vw - 36px));max-height:calc(100vh - 92px);overflow:auto;background:rgba(31,28,25,.98);border:1px solid var(--rule);border-radius:8px;padding:20px;box-shadow:0 24px 70px rgba(0,0,0,.5)}[hidden]{display:none!important}.controls-head{border-bottom:1px solid var(--rule);padding-bottom:14px;margin-bottom:16px}.controls-head h1{margin:0;font-size:18px;font-weight:800}.controls-head p{margin:4px 0 0;color:var(--paper-mute);font-size:12px;text-transform:uppercase}.scan-form{display:grid;gap:14px}.scan-form label{display:grid;gap:6px;color:var(--paper-dim);font-size:12px;text-transform:uppercase}.scan-form input{width:100%;font:inherit;color:var(--paper);background:var(--ink-2);border:1px solid var(--rule);border-radius:6px;padding:10px 11px;min-width:0}.scan-form input:focus{outline:2px solid var(--forge);outline-offset:2px}.scan-state{display:flex;justify-content:space-between;gap:12px;border:1px solid var(--rule);background:var(--ink-2);border-radius:6px;padding:10px 11px;color:var(--paper-mute)}.scan-state strong{color:var(--paper);font-weight:700;text-align:right}.actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.actions button{font:inherit;border:1px solid var(--forge);border-radius:6px;padding:10px 12px;background:var(--forge);color:#170b05;font-weight:800;cursor:pointer}.actions button.secondary{background:transparent;color:var(--paper);border-color:var(--rule)}.actions button:disabled{opacity:.6;cursor:wait}.scan-error{max-width:720px;margin:8vh auto;padding:48px;background:var(--panel);border:1px solid var(--rule);color:var(--paper)}.scan-error h1{margin:0 0 16px;font-size:28px}.scan-error p{color:var(--paper-dim);overflow-wrap:anywhere}.scan-error dl{display:grid;grid-template-columns:auto 1fr;gap:8px 16px;margin:24px 0 0}.scan-error dt{color:var(--paper-mute);text-transform:uppercase}.scan-error dd{margin:0;overflow-wrap:anywhere}@media(max-width:560px){.controls-toggle{top:12px;right:12px}.controls-panel{top:64px;right:12px;width:calc(100vw - 24px);max-height:calc(100vh - 76px);padding:16px}.actions{grid-template-columns:1fr}.scan-error{margin:0;min-height:100vh;padding:28px 20px}.scan-error dl{grid-template-columns:1fr}}`;
 }
@@ -664,13 +664,13 @@ function grade(score: number): string {
   return "F";
 }
 
-// Three GitHub annotation levels — gruff's "advisory" collapses to "notice" because Actions has
+// Three GitHub annotation levels - gruff's "advisory" collapses to "notice" because Actions has
 // no fourth tier and "notice" is the documented soft-warning level.
 function githubLevel(severity: Severity): "notice" | "warning" | "error" {
   return severity === "error" ? "error" : severity === "warning" ? "warning" : "notice";
 }
 
-// Actions workflow-command escaping per the documented spec. `%` must be first — otherwise the
+// Actions workflow-command escaping per the documented spec. `%` must be first - otherwise the
 // `%0A` replacement would itself be re-encoded.
 function escapeCommand(commandText: string): string {
   return commandText.replaceAll("%", "%25").replaceAll("\n", "%0A").replaceAll("\r", "%0D");

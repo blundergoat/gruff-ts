@@ -7,7 +7,7 @@ import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import type { Finding, Pillar, Severity } from "./types.ts";
 
-// Input bundle for `finding()` — the lowest-cost finding factory. Captures everything the caller
+// Input bundle for `finding()` - the lowest-cost finding factory. Captures everything the caller
 // must supply for a line-anchored Finding; shared defaults (confidence "high", empty metadata)
 // are added inside the builder so callers don't repeat them at every rule site.
 export interface LineFindingArgs {
@@ -20,7 +20,7 @@ export interface LineFindingArgs {
 }
 
 // Cheapest finding factory: line-anchored, no symbol, confidence "high". Produces the
-// (ruleId, filePath, line) tuple that every per-line emission relies on — this tuple is the
+// (ruleId, filePath, line) tuple that every per-line emission relies on - this tuple is the
 // stable fingerprint that drives baseline matching and report determinism.
 export function finding(args: LineFindingArgs): Finding {
   return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.line, severity: args.severity, pillar: args.pillar, confidence: "high" });
@@ -50,7 +50,7 @@ function gitPathSet(args: string[]): Set<string> {
 }
 
 // Strips directory and trailing extension. Used by `naming.class-file-mismatch` so the exported
-// symbol name and the file stem normalise to the same shape — both sides must agree on this
+// symbol name and the file stem normalise to the same shape - both sides must agree on this
 // canonical form for the deterministic comparison to be meaningful.
 export function fileBaseName(path: string): string {
   return basename(path).replace(/\.[^.]+$/, "");
@@ -64,7 +64,7 @@ export function normalizedIdentifier(identifier: string): string {
 
 // Inserts a space at every camelCase boundary, then splits on any non-alphanumeric run. Acronym
 // runs (`HTTPServer`) stay intact because the inserted boundary is `lower → Upper`, not
-// `Upper → Upper` — callers comparing word lists rely on this to keep tokens aligned.
+// `Upper → Upper` - callers comparing word lists rely on this to keep tokens aligned.
 export function splitIdentifierWords(identifier: string): string[] {
   return identifier
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -74,7 +74,7 @@ export function splitIdentifierWords(identifier: string): string[] {
 }
 
 // Counts newlines before the offset to get a 0-based line number. `Math.max(0, …)` guards against
-// negative input — callers occasionally pass `match.index` which is typed as optional.
+// negative input - callers occasionally pass `match.index` which is typed as optional.
 export function lineOffset(source: string, index: number): number {
   return source.slice(0, Math.max(0, index)).split("\n").length - 1;
 }
@@ -101,7 +101,7 @@ export function isGenericName(name: string, bannedNames: Set<string>): boolean {
 }
 
 // Escapes the standard regex metacharacters so user-supplied strings (rule IDs, identifiers,
-// paths) can be embedded in dynamic patterns without altering their meaning. Hot path —
+// paths) can be embedded in dynamic patterns without altering their meaning. Hot path -
 // used by every rule that builds a per-source RegExp.
 export function escapeRegex(source: string): string {
   return source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

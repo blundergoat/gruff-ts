@@ -109,7 +109,7 @@ gruff-ts/
 ```
 
 Generated/gitignored at runtime (paths exist only after the user runs them):
-- `gruff-baseline.json` — written by `analyse --generate-baseline`
-- `.gruff-history.json` — written by `analyse --history-file <path>`
-- `.goat-flow/scratchpad/gruff-ts-extended-baseline.json` — local close-out smoke baseline
-- `dist/` — reserved; project ships TS directly via tsx, no compiled output today
+- `gruff-baseline.json` - written by `analyse --generate-baseline`
+- `.gruff-history.json` - written by `analyse --history-file <path>`
+- `.goat-flow/scratchpad/gruff-ts-extended-baseline.json` - local close-out smoke baseline
+- `dist/` - reserved; project ships TS directly via tsx, no compiled output today

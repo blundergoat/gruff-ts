@@ -4,7 +4,7 @@ import type { AnalysisReport, FailThreshold, Finding, Pillar, Severity } from ".
 
 // Builds the per-pillar and per-file score breakdown that ships in `gruff.analysis.v1`. The composite
 // score is the mean of pillar scores so adding a pillar shifts the headline number, and `topOffenders`
-// is intentionally truncated to 10 — both shapes are part of the public report contract.
+// is intentionally truncated to 10 - both shapes are part of the public report contract.
 function scoreReport(findings: Finding[]): AnalysisReport["score"] {
   const byPillar = new Map<Pillar, Finding[]>();
   const byFile = new Map<string, Finding[]>();
@@ -50,7 +50,7 @@ function exitFor(report: AnalysisReport, failOn: FailThreshold): number {
 }
 
 // Severity ladder: "none" never triggers, "advisory" triggers on anything, "warning" needs at least
-// warning, "error" needs error. Order is intentional — `failOn=warning` must still trigger on errors.
+// warning, "error" needs error. Order is intentional - `failOn=warning` must still trigger on errors.
 function thresholdTriggered(thresholdValue: FailThreshold, severity: Severity): boolean {
   if (thresholdValue === "none") {
     return false;

@@ -32,7 +32,7 @@ type ContextDocFindingInput = ContextDocFindingDetails & {
 };
 
 // Materialises one finding per missing context class. Each callable can theoretically produce
-// four (complex, side-effect, error-behavior, invariant) — the four classes are independent signals.
+// four (complex, side-effect, error-behavior, invariant) - the four classes are independent signals.
 // Reports each detected gap as a stable doc-context finding.
 export function pushFunctionContextFindings(file: SourceFile, block: FunctionBlock, comment: CommentRecord, config: Config, findings: Finding[]): void {
   for (const detail of functionContextDocFindings(block, comment.text, config)) {
@@ -61,7 +61,7 @@ export function pushDeclarationContextFindings(file: SourceFile, lines: string[]
   );
 }
 
-// Evaluates four context classes independently — collected into a list rather than emitted directly
+// Evaluates four context classes independently - collected into a list rather than emitted directly
 // so the caller can apply a single stable mapping over them.
 function functionContextDocFindings(block: FunctionBlock, commentText: string, config: Config): ContextDocFindingDetails[] {
   const details: ContextDocFindingDetails[] = [];
@@ -162,13 +162,13 @@ function isComplexContextCandidate(block: FunctionBlock, config: Config): boolea
   );
 }
 
-// Vocabulary list signalling "the comment explains why" — the missing-why rule passes when any
+// Vocabulary list signalling "the comment explains why" - the missing-why rule passes when any
 // listed word appears. Adding entries here loosens the rule; removing them tightens it.
 function hasComplexWhyMarker(text: string): boolean {
   return /\b(?:because|why|intentional|tradeoff|compat|avoid|preserve)\b/i.test(text);
 }
 
-// Vocabulary for "comment names a side effect". Pairs with `SIDE_EFFECT_BODY_PATTERNS` — if the
+// Vocabulary for "comment names a side effect". Pairs with `SIDE_EFFECT_BODY_PATTERNS` - if the
 // body matches and none of these words appear, the missing-side-effect rule fires.
 function hasSideEffectMarker(text: string): boolean {
   return /\b(?:writes|reads|persists|mutates|starts|spawns|network|filesystem|environment)\b/i.test(text);
@@ -202,7 +202,7 @@ function hasSideEffectSignal(name: string, body: string): boolean {
   return SIDE_EFFECT_BODY_PATTERNS.some((pattern) => pattern.test(body)) || /^(?:write|recordHistory|startDashboard)\b/.test(name);
 }
 
-// Detects throw, catch, process.exit, diagnostic emission, or finding/diagnostic push patterns —
+// Detects throw, catch, process.exit, diagnostic emission, or finding/diagnostic push patterns -
 // the five places error behaviour can hide inside a callable body.
 function hasErrorBehaviorSignal(body: string): boolean {
   return /\bthrow\b|\bcatch\b|\bprocess\.exit\s*\(|\bdiagnosticType\s*:|\b(?:findings|diagnostics)\.push\s*\(/.test(body);
@@ -225,7 +225,7 @@ function hasInvariantInterfaceSignal(lines: string[], declaration: CommentedDecl
   return /\b(?:fingerprint|schemaVersion|baseline|report|Finding|AnalysisReport|Baseline|stable|deterministic)\b/i.test(signalText);
 }
 
-// Collects lines from the declaration until the first `}` at column 0 — used to feed the interface
+// Collects lines from the declaration until the first `}` at column 0 - used to feed the interface
 // body to vocabulary detectors. A more precise parser would help but is unnecessary for word matches.
 function declarationBlockText(lines: string[], line: number): string {
   const start = Math.max(0, line - 1);

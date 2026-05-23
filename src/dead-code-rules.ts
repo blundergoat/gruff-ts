@@ -47,7 +47,7 @@ export function analyseUnreachable(file: SourceFile, source: string, findings: F
       findings.push(finding({ ruleId: "waste.unreachable-code", message: "Statement appears after a terminating statement.", file, line: index + 1, severity: "warning", pillar: "waste" }));
     }
     // A terminating statement inside a braceless conditional body does not unconditionally exit:
-    // `if (x)\n  return y;\nnextLine` — `nextLine` runs when `x` is falsy. Tracking the prior line's
+    // `if (x)\n  return y;\nnextLine` - `nextLine` runs when `x` is falsy. Tracking the prior line's
     // conditional-opener shape suppresses the false positive on compact guard clauses.
     didPreviousTerminate = isTerminatingStatement(trimmed) && !isInConditionalBranch;
     isInConditionalBranch = isBracelessConditionalOpener(trimmed);
@@ -64,7 +64,7 @@ function isBracelessConditionalOpener(trimmed: string): boolean {
 }
 
 // `case X:` / `default:` open a new control path, so the unreachable walker must reset its
-// terminator flag here — otherwise the first statement in a fallthrough case looks dead.
+// terminator flag here - otherwise the first statement in a fallthrough case looks dead.
 function isBranchLabel(trimmedLine: string): boolean {
   return /^(?:case\b.*:|default\s*:)$/.test(trimmedLine);
 }
@@ -77,7 +77,7 @@ function isUnreachableStatement(trimmedLine: string, didPreviousTerminate: boole
 }
 
 // `return`, `throw`, and `process.exit(...)` exit the current control path. The trailing `;`
-// requirement filters out expressions like `return foo()` split across lines — without it the
+// requirement filters out expressions like `return foo()` split across lines - without it the
 // walker would falsely flag the continuation as unreachable.
 function isTerminatingStatement(trimmedLine: string): boolean {
   return /^(?:return|throw|process\.exit)\b/.test(trimmedLine) && trimmedLine.endsWith(";");
@@ -89,7 +89,7 @@ function isTerminatingStatement(trimmedLine: string): boolean {
  * on `{ … }`; walking lines in source order keeps the reports stable and deterministic. Receives
  * both the masked code and the raw source so identifiers referenced inside template-literal
  * `${...}` interpolations (which the mask would otherwise blank out) still count as used. Never
- * throws — every regex is anchored and the input shape is validated upstream by the analyser; the
+ * throws - every regex is anchored and the input shape is validated upstream by the analyser; the
  * helper writes to `findings` and returns void. Part of the public per-file rule contract that
  * baselines depend on, so finding ordering and message shape are intentionally stable across releases.
  */
@@ -137,7 +137,7 @@ function hasNamedImportBraces(openBrace: number, closeBrace: number): boolean {
   return openBrace !== -1 && closeBrace !== -1 && closeBrace > openBrace;
 }
 
-// The local binding (after `as`, if present) must appear in the source exactly once — the
+// The local binding (after `as`, if present) must appear in the source exactly once - the
 // declaration itself. More than one match in the masked code, OR a `${...name...}` template-literal
 // interpolation in the raw source, counts as a real reference. Returning undefined suppresses the finding.
 function unusedImportName(source: string, rawSource: string, specifier: string): string | undefined {

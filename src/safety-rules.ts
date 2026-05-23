@@ -17,7 +17,7 @@ export function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: 
 }
 
 // Three reliability rules per line: async-forEach, floating-promise, non-Error throw. Order is
-// the stable contract — reshuffling shifts per-block emission and churns baselines.
+// the stable contract - reshuffling shifts per-block emission and churns baselines.
 export function analyseReliabilityLine(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   pushAsyncForEachFinding(file, codeLine, lineNumber, findings);
   pushFloatingPromiseFinding(file, codeLine, lineNumber, findings);
@@ -212,7 +212,7 @@ function pushAsyncForEachFinding(file: SourceFile, codeLine: string, lineNumber:
 
 /*
  * A promise-shaped call started as a bare statement, with no `await`, `return`, `void`, or chain.
- * Such promises lose their reject path — exceptions land in an unhandled-rejection. Reports
+ * Such promises lose their reject path - exceptions land in an unhandled-rejection. Reports
  * the stable `security.floating-promise` finding.
  */
 function pushFloatingPromiseFinding(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
@@ -262,7 +262,7 @@ function pushNonErrorThrowFinding(file: SourceFile, codeLine: string, lineNumber
 }
 
 // Returns the directive name only when the suffix following a TypeScript suppression directive
-// has no meaningful rationale. Heuristic is intentionally lenient — three real words usually means
+// has no meaningful rationale. Heuristic is intentionally lenient - three real words usually means
 // the maintainer wrote a reason.
 function tsDirectiveWithoutRationale(line: string): { directive: string } | undefined {
   const match = line.match(/@ts-(ignore|expect-error)\b(.*)$/);
@@ -329,7 +329,7 @@ function isPromiseLikeCall(callName: string): boolean {
   return callName === "fetch" || /(?:Async|Promise)$/.test(localName);
 }
 
-// Allow `throw new XxxError(...)` and `throw e` (bare identifier — usually a rethrow), reject literals.
+// Allow `throw new XxxError(...)` and `throw e` (bare identifier - usually a rethrow), reject literals.
 // Returns a truncated preview because the full expression can be arbitrarily long.
 function nonErrorThrowExpression(codeLine: string): string | undefined {
   const match = codeLine.match(/\bthrow\s+(.+?);?$/);
@@ -345,7 +345,7 @@ function nonErrorThrowExpression(codeLine: string): string | undefined {
 
 // Strips both line and block comments before testing for emptiness. A catch body holding only a
 // throwaway placeholder comment reads as a deliberate swallow but documents nothing about the
-// recovery path — that is still the rule's signal.
+// recovery path - that is still the rule's signal.
 function isSwallowedCatchBody(body: string): boolean {
   const meaningful = body
     .replace(/\/\/.*$/gm, "")

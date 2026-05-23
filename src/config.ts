@@ -24,7 +24,7 @@ interface ParsedYamlScalar {
 const UNMATCHED_YAML_SCALAR: ParsedYamlScalar = { isMatched: false, value: undefined };
 
 // Built-in defaults applied before any user config overlays. The string lists here (accepted
-// abbreviations, banned generic names, boolean prefixes, …) are the stable rule contract — they
+// abbreviations, banned generic names, boolean prefixes, …) are the stable rule contract - they
 // shape what every gruff scan emits by default and changing them shifts the public rule surface.
 function defaultConfig(): Config {
   return {
@@ -49,7 +49,7 @@ function absolutize(projectRoot: string, path: string): string {
 
 // Reads the YAML config from disk (if any) and overlays user values onto `defaultConfig`. `shouldSkipConfig`
 // is the explicit opt-out; missing default file is silent (returns defaults) so projects without
-// `.gruff-ts.yaml` work zero-config. Throws on malformed YAML — the caller surfaces it as a fatal CLI error.
+// `.gruff-ts.yaml` work zero-config. Throws on malformed YAML - the caller surfaces it as a fatal CLI error.
 function loadConfig(projectRoot: string, options: AnalysisOptions): Config {
   const config = defaultConfig();
   if (options.shouldSkipConfig) {
@@ -65,7 +65,7 @@ function loadConfig(projectRoot: string, options: AnalysisOptions): Config {
 }
 
 // Explicit `--config` wins; otherwise look for the first supported config at the project root. Returning
-// undefined means "no config" — callers must treat that as "use defaults", not as an error.
+// undefined means "no config" - callers must treat that as "use defaults", not as an error.
 function selectedConfigPath(projectRoot: string, options: AnalysisOptions): string | undefined {
   return options.config ? absolutize(projectRoot, options.config) : defaultConfigPath(projectRoot);
 }
@@ -79,7 +79,7 @@ function applyConfigValues(config: Config, raw: Record<string, unknown>): void {
   applyRuleConfig(config, raw);
 }
 
-// Replaces `ignoredPaths` with the user list. Non-string entries are silently dropped — invalid
+// Replaces `ignoredPaths` with the user list. Non-string entries are silently dropped - invalid
 // YAML shapes should not abort the analysis run.
 function applyPathConfig(config: Config, raw: Record<string, unknown>): void {
   const paths = objectValue(raw.paths);
@@ -105,7 +105,7 @@ function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): voi
   applyNamingAllowlist(config, allowlists, "knownAcronyms");
 }
 
-// Replaces the entire list when the user provides that key — there is no merge with defaults.
+// Replaces the entire list when the user provides that key - there is no merge with defaults.
 // The "set the whole list" semantic is intentional so users can deliberately empty a list.
 function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "bannedGenericNames" | "booleanPrefixes" | "hungarianPrefixes" | "placeholderNames" | "abbreviationDenylist" | "negativeBooleanAllowed" | "knownAcronyms"): void {
   if (!allowlists || !(key in allowlists)) {
@@ -115,7 +115,7 @@ function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown
 }
 
 // Per-rule overrides under the `rules:` key. Each entry can carry enabled / threshold / severity /
-// options — only the keys the user actually sets become overrides; unset keys fall through to defaults.
+// options - only the keys the user actually sets become overrides; unset keys fall through to defaults.
 function applyRuleConfig(config: Config, raw: Record<string, unknown>): void {
   const rules = objectValue(raw.rules);
   if (!rules) {
@@ -220,7 +220,7 @@ function parseConfigFile(path: string): Record<string, unknown> {
   return config;
 }
 
-// One non-blank, comment-stripped YAML line. `indent` is the column count (spaces only — tabs are
+// One non-blank, comment-stripped YAML line. `indent` is the column count (spaces only - tabs are
 // rejected upstream) and is the sole signal used to nest blocks. `content` is whitespace-trimmed.
 interface YamlLine {
   indent: number;
@@ -236,7 +236,7 @@ interface YamlParser {
 
 /*
  * Custom YAML parser that intentionally supports only a documented subset (mappings, arrays,
- * scalars, inline `[]`/`{}`) — keeps gruff free of a yaml dependency. Throws on malformed input
+ * scalars, inline `[]`/`{}`) - keeps gruff free of a yaml dependency. Throws on malformed input
  * because silently misparsing config would produce wrong findings and a stable but broken baseline.
  */
 function parseYamlConfig(source: string): Record<string, unknown> {
@@ -329,7 +329,7 @@ function parseNestedYamlValue(parser: YamlParser, indent: number, fallback: unkn
 }
 
 /*
- * Throws when a mapping line has no `:` separator — the parser cannot recover, and a silent skip
+ * Throws when a mapping line has no `:` separator - the parser cannot recover, and a silent skip
  * would hide a real config typo from the user.
  */
 function yamlKeyValuePair(content: string): [string, string] {
@@ -340,7 +340,7 @@ function yamlKeyValuePair(content: string): [string, string] {
   return pair;
 }
 
-// `- ` or bare `-` only — two-dash openers and ambiguous variants are not sequence entries.
+// `- ` or bare `-` only - two-dash openers and ambiguous variants are not sequence entries.
 function isYamlArrayLine(line: YamlLine): boolean {
   return line.content.startsWith("- ") || line.content === "-";
 }
@@ -376,7 +376,7 @@ function yamlLines(source: string): YamlLine[] {
   return lines;
 }
 
-// Drops `# comment` text but only when the `#` is not inside quotes — `foo: "a # b"` keeps the
+// Drops `# comment` text but only when the `#` is not inside quotes - `foo: "a # b"` keeps the
 // comment-like substring as part of the string value, matching YAML semantics.
 function stripYamlComment(line: string): string {
   const commentIndex = firstUnquotedIndex(line, (character, index) => character === "#" && (index === 0 || /\s/.test(line[index - 1] ?? "")));
@@ -439,7 +439,7 @@ function parseYamlKeywordScalar(trimmed: string): ParsedYamlScalar {
   return UNMATCHED_YAML_SCALAR;
 }
 
-// Strict numeric pattern — no octals, no special floats. Numbers that don't fit fall through to
+// Strict numeric pattern - no octals, no special floats. Numbers that don't fit fall through to
 // bare-string handling, so `0xFF` or `1e10` stay as strings rather than producing surprising values.
 function parseYamlNumberScalar(trimmed: string): ParsedYamlScalar {
   if (YAML_NUMBER_SCALAR.test(trimmed)) {
@@ -465,7 +465,7 @@ function parseYamlInlineArray(arrayText: string): unknown[] {
 }
 
 // Quote-aware split on commas. Treating a quoted comma as a separator would corrupt entries like
-// `["a, b", "c"]` — same reason `splitYamlKeyValue` is also quote-aware.
+// `["a, b", "c"]` - same reason `splitYamlKeyValue` is also quote-aware.
 function splitYamlInlineItems(itemsText: string): string[] {
   const items: string[] = [];
   let start = 0;
@@ -534,7 +534,7 @@ function consumeQuotedCharacter(character: string, state: QuoteScanState): boole
   return true;
 }
 
-// Single and double quotes only — YAML allows backticks elsewhere but they're not part of the
+// Single and double quotes only - YAML allows backticks elsewhere but they're not part of the
 // supported subset here, and the parser would have to reject them anyway.
 function isYamlQuote(character: string): boolean {
   return character === "\"" || character === "'";
@@ -572,14 +572,14 @@ function unquoteYaml(scalarText: string): string {
   });
 }
 
-// Rules are enabled by default — the absence of a config entry means "use the descriptor default",
+// Rules are enabled by default - the absence of a config entry means "use the descriptor default",
 // which is the documented contract for how unset rules behave.
 function ruleEnabled(config: Config, ruleId: string): boolean {
   return config.rules.get(ruleId)?.enabled ?? true;
 }
 
 // Resolves a threshold for the rule. Callers pass the descriptor default so this helper alone
-// determines whether config can override — keeps every rule's threshold lookup uniform.
+// determines whether config can override - keeps every rule's threshold lookup uniform.
 function threshold(config: Config, ruleId: string, defaultValue: number): number {
   return config.rules.get(ruleId)?.threshold ?? defaultValue;
 }
@@ -602,7 +602,7 @@ function objectValue(configValue: unknown): Record<string, unknown> | undefined 
   return typeof configValue === "object" && configValue !== null && !Array.isArray(configValue) ? (configValue as Record<string, unknown>) : undefined;
 }
 
-// Returns the array or an empty array — never undefined — so callers can iterate without a guard.
+// Returns the array or an empty array - never undefined - so callers can iterate without a guard.
 function arrayValue(configValue: unknown): unknown[] {
   return Array.isArray(configValue) ? configValue : [];
 }

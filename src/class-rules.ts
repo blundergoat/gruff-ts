@@ -66,7 +66,7 @@ function casingCanonicalKey(name: string): string {
 /*
  * Groups identifiers by their canonical key and reports the second-seen variant whenever two or
  * more spellings exist. The "second variant" anchor keeps the stable fingerprint on the diverging
- * identifier rather than the original — useful when the original form is the project convention.
+ * identifier rather than the original - useful when the original form is the project convention.
  */
 export function analyseInconsistentCasing(file: SourceFile, inventory: DeclaredIdentifier[], findings: Finding[]): void {
   const groups = new Map<string, DeclaredIdentifier[]>();
@@ -113,7 +113,7 @@ function tokensForAcronymCheck(name: string): string[] {
   return tokens;
 }
 
-// Three-bucket classification used to detect when one project uses both `URL` and `Url` styles —
+// Three-bucket classification used to detect when one project uses both `URL` and `Url` styles -
 // the rule flags drift when two of the three buckets are seen for the same acronym in one file.
 function acronymCaseClass(token: string): "upper" | "lower" | "title" {
   if (token === token.toUpperCase()) return "upper";

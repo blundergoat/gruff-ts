@@ -94,7 +94,7 @@ interface DiscoverySummary {
   missingPaths: string[];
 }
 
-// Output of the per-file scan pass — both the findings produced and the cached source bodies that
+// Output of the per-file scan pass - both the findings produced and the cached source bodies that
 // later project-level rules need to operate against the deterministic stable shape used by baselines.
 interface SourceScanResult {
   findings: Finding[];
@@ -103,7 +103,7 @@ interface SourceScanResult {
 
 /*
  * Result of applying a baseline (suppression) or generating a new one. The optional `baseline`
- * matches the `gruff.analysis.v1` schema's baseline metadata — present only when a baseline file
+ * matches the `gruff.analysis.v1` schema's baseline metadata - present only when a baseline file
  * was actually used or generated, so the report stays stable across baseline-disabled runs.
  */
 interface BaselineApplication {
@@ -129,7 +129,7 @@ function filterDiffSources(discovery: DiscoverySummary, options: AnalysisOptions
 }
 
 // Emits a `missing-path` diagnostic per path that the user requested but discovery could not
-// resolve. Diagnostics force a non-zero exit (see `exitFor`); never throws — partial scans should still report.
+// resolve. Diagnostics force a non-zero exit (see `exitFor`); never throws - partial scans should still report.
 function pushMissingPathDiagnostics(missingPaths: string[], diagnostics: RunDiagnostic[]): void {
   for (const missingPath of missingPaths) {
     diagnostics.push({
@@ -226,7 +226,7 @@ function applyBaselineOptions(projectRoot: string, options: AnalysisOptions, fin
 
 /*
  * Writes the baseline file via writeBaseline and returns the report-shaped metadata. `suppressed: 0`
- * because generation does not filter findings — every current finding is captured in the stable baseline.
+ * because generation does not filter findings - every current finding is captured in the stable baseline.
  */
 function generateBaselineResult(projectRoot: string, baselineFile: string, findings: Finding[]): BaselineApplication {
   const baselinePath = absolutize(projectRoot, baselineFile);
@@ -259,7 +259,7 @@ function applySelectedBaseline(projectRoot: string, selected: BaselineSelection,
 }
 
 // Picks an explicit `--baseline` path first, then the conventional `gruff-baseline.json` at the
-// project root. Returning undefined means "no baseline" — the stable contract preserves report shape.
+// project root. Returning undefined means "no baseline" - the stable contract preserves report shape.
 function selectedBaseline(projectRoot: string, options: AnalysisOptions): BaselineSelection | undefined {
   if (options.baseline) {
     return { path: absolutize(projectRoot, options.baseline), source: "explicit" };
@@ -429,7 +429,7 @@ function isGenericParameterCandidate(context: BlockRuleContext, paramCount: numb
 }
 
 // Only called after `isGenericParameterCandidate` has gated the placeholder check on the function's
-// complexity and length — reaching this helper means the rule decided the finding is wanted.
+// complexity and length - reaching this helper means the rule decided the finding is wanted.
 // Reports the stable `naming.generic-parameter` finding.
 function pushGenericParameterAt(file: SourceFile, line: number, name: string, findings: Finding[]): void {
   findings.push(

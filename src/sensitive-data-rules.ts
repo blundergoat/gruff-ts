@@ -4,14 +4,14 @@ import { makeFinding } from "./findings.ts";
 import { byteLine } from "./text-scans.ts";
 import type { Config, Finding } from "./types.ts";
 
-// Just the display path — sensitive-data rules anchor findings on file path + line and never need
+// Just the display path - sensitive-data rules anchor findings on file path + line and never need
 // the absolute path. Keeping this trimmed keeps the contract narrow for testability.
 interface SensitiveSourceFile {
   displayPath: string;
 }
 
 // Pillar entry point. The pattern array order is the deterministic emission order for findings,
-// which the fingerprint contract depends on — reordering would churn baselines without behaviour change.
+// which the fingerprint contract depends on - reordering would churn baselines without behaviour change.
 function analyseSensitiveData(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const patterns: Array<[string, RegExp, string]> = [
     ["sensitive-data.aws-access-key", /AKIA[0-9A-Z]{16}/g, "AWS access key pattern detected."],
@@ -68,7 +68,7 @@ function npmAuthTokenValue(line: string): string | undefined {
 
 // Targets `KEY=value` and `KEY: value` assignments where the key name signals secrets (API_KEY,
 // TOKEN, PASSWORD…). The `minLength` threshold keeps short fixture values like `PLACEHOLDER`
-// from churning the baseline — it is part of the rule's stable, deterministic contract.
+// from churning the baseline - it is part of the rule's stable, deterministic contract.
 function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const minLength = threshold(config, "sensitive-data.hardcoded-env-value", 16);
   const lines = source.split(/\r?\n/);
@@ -149,7 +149,7 @@ function pushSensitiveFinding(
 }
 
 // Two-stage filter: parse the line into a (key, value) pair, then apply the secret-shape filters.
-// Splitting them keeps the regex simple — the line shape is shared, only the value test changes.
+// Splitting them keeps the regex simple - the line shape is shared, only the value test changes.
 function hardcodedEnvValue(line: string, minLength: number): { keyName: string; value: string } | undefined {
   const candidate = envValueCandidate(line);
   if (!candidate || !isHardcodedEnvCandidate(candidate.value, minLength)) {
@@ -159,7 +159,7 @@ function hardcodedEnvValue(line: string, minLength: number): { keyName: string; 
 }
 
 // Matches the documented secret-key vocabulary (API_KEY, TOKEN, SECRET, PASSWORD, DATABASE_URL,
-// DSN, CREDENTIAL). Expanding this list will widen sensitive-data coverage — keep it intentional.
+// DSN, CREDENTIAL). Expanding this list will widen sensitive-data coverage - keep it intentional.
 function envValueCandidate(line: string): { keyName: string; value: string } | undefined {
   const match = line.match(/^\s*((?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)|[A-Z][A-Z0-9_-]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)[A-Z0-9_-]*)\s*[:=]\s*["']?([^"'\s#]+)["']?/i);
   const keyName = match?.[1] ?? "";
@@ -171,13 +171,13 @@ function envValueCandidate(line: string): { keyName: string; value: string } | u
 }
 
 // Three predicates combined: long enough, not a literal placeholder, and shape-like (letters + digits).
-// All three are required — dropping any one regresses to noisy findings on fixture values.
+// All three are required - dropping any one regresses to noisy findings on fixture values.
 function isHardcodedEnvCandidate(secretValue: string, minLength: number): boolean {
   return secretValue.length >= minLength && !isPlaceholderSecretValue(secretValue) && hasLetterAndDigit(secretValue);
 }
 
 // Allowlist of obvious fixture words. Case-insensitive so `Placeholder`, `PASSWORD` and similar
-// fixture values stay quiet. Extend deliberately — the cost of a missing word is a false positive.
+// fixture values stay quiet. Extend deliberately - the cost of a missing word is a false positive.
 function isPlaceholderSecretValue(secretValue: string): boolean {
   return /^(?:x-api-key|token|secret|password|example|sample|placeholder)$/i.test(secretValue);
 }
@@ -205,7 +205,7 @@ function isHighEntropySecretCandidate(candidateText: string, minLength: number):
 }
 
 // Entropy false-positive escape hatches. Hex digests and SRI hashes both look "high entropy" but
-// are well-known non-secrets — without these exclusions, package-lock.json scans become noise.
+// are well-known non-secrets - without these exclusions, package-lock.json scans become noise.
 // Repo-relative path-shaped strings (slashes plus a known extension and a conventional prefix
 // segment) also clear the entropy bar without being secrets; the path-shape guard suppresses them.
 function isExcludedHighEntropyCandidate(candidateText: string, minLength: number): boolean {
@@ -240,7 +240,7 @@ function hasKnownRepoPathSegment(candidateText: string): boolean {
   return /(?:^|\/)(?:\.goat-flow|src|test|tests|fixtures?|docs|scripts|bin|workflow|package(?:-lock)?\.json)(?:\/|$)/.test(candidateText);
 }
 
-// All-hex strings — typical for SHA digests, content hashes, and tooling identifiers.
+// All-hex strings - typical for SHA digests, content hashes, and tooling identifiers.
 function isHexDigest(candidateText: string): boolean {
   return /^[0-9a-f]+$/i.test(candidateText);
 }
@@ -264,7 +264,7 @@ function hasEnoughDistinctCharacters(candidateText: string): boolean {
 }
 
 // Standard Shannon entropy in bits per symbol. The 4.0-bit threshold in the caller corresponds
-// roughly to a uniform alphabet of 16 distinct characters — the typical floor for real secrets.
+// roughly to a uniform alphabet of 16 distinct characters - the typical floor for real secrets.
 function shannonEntropy(candidateText: string): number {
   const counts = new Map<string, number>();
   for (const character of candidateText) {

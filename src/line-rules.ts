@@ -27,7 +27,7 @@ interface LineRuleCheck {
 
 /*
  * Per-line scratch state shared across every line rule in a single pass. `codeLine` is the
- * comment-masked variant — checks that must stay stable against literal content operate on it.
+ * comment-masked variant - checks that must stay stable against literal content operate on it.
  */
 interface LineRuleContext {
   file: SourceFile;
@@ -110,7 +110,7 @@ function codeLineChecks(): LineRuleCheck[] {
 
 // Rules that need to see the raw line including literals (e.g., `"javascript:"` URL detection,
 // `"md5"` weak-crypto match). Global patterns are auto-generated so global-match operations stay
-// safe — see `withGlobalPattern`.
+// safe - see `withGlobalPattern`.
 function literalLineChecks(): LineRuleCheck[] {
   const checks: LineRuleCheck[] = [
     { ruleId: "security.weak-crypto", pattern: /\b(?:createHash|createHmac)\s*\(\s*["'](?:md5|sha1)["']|\bcreateCipher\s*\(|\b(?:secureProtocol|minVersion|maxVersion)\s*:\s*["'](?:SSLv2_method|SSLv3_method|TLSv1(?:_method)?|TLSv1\.1)["']/i, message: "Weak cryptographic primitive is used.", severity: "warning", pillar: "security" },
@@ -208,7 +208,7 @@ function pushOptionalChainingFindings(context: LineRuleContext): void {
   }
 }
 
-// Targets `x || defaultValue` patterns where the fallback is a literal — `??` would preserve
+// Targets `x || defaultValue` patterns where the fallback is a literal - `??` would preserve
 // legitimately-falsy values (0, "", false). Reports `modernisation.nullish-coalescing-candidate`.
 function pushNullishCoalescingFindings(context: LineRuleContext): void {
   for (const fallback of context.codeLine.matchAll(/=\s*([A-Za-z_$][A-Za-z0-9_$.]*)\s*\|\|\s*(["'`]\s*["'`]|\d+|true|false)/g)) {
@@ -373,7 +373,7 @@ function isLooseEqualityCandidate(codeLine: string, index: number, operator: str
   return !isStrictEqualityOperator(codeLine, index, operator) && !isNullEqualityComparison(codeLine, index, operator);
 }
 
-// Looks one char before and after — `===` shows up as `==` plus a trailing `=`. The leading `!` /
+// Looks one char before and after - `===` shows up as `==` plus a trailing `=`. The leading `!` /
 // `=` check catches `!==` and `===` from either side.
 function isStrictEqualityOperator(codeLine: string, index: number, operator: string): boolean {
   const before = codeLine[index - 1] ?? "";
@@ -381,7 +381,7 @@ function isStrictEqualityOperator(codeLine: string, index: number, operator: str
   return before === "=" || before === "!" || after === "=";
 }
 
-// `x == null` matches both null and undefined and is a documented idiom — exempting it is the
+// `x == null` matches both null and undefined and is a documented idiom - exempting it is the
 // rule's intentional false-positive escape hatch. 24-character lookback window is large enough to
 // span `someObject.field == null` without matching unrelated tokens.
 function isNullEqualityComparison(codeLine: string, index: number, operator: string): boolean {
@@ -526,7 +526,7 @@ const HUNGARIAN_PREFIX_REGEX_CACHE = new WeakMap<Set<string>, RegExp | null>();
 
 // Counterpart to `booleanPrefixRegex` for the `naming.hungarian-notation` rule. Returns a global
 // regex (callers iterate matches) anchored to declaration keywords + visibility modifiers, so a
-// reference to `IUser` inside a comment is not flagged — the regex is part of the stable contract.
+// reference to `IUser` inside a comment is not flagged - the regex is part of the stable contract.
 function hungarianPrefixRegex(prefixes: Set<string>): RegExp | null {
   if (HUNGARIAN_PREFIX_REGEX_CACHE.has(prefixes)) {
     return HUNGARIAN_PREFIX_REGEX_CACHE.get(prefixes) ?? null;

@@ -11,7 +11,7 @@ function absolutize(projectRoot: string, path: string): string {
   return isAbsolute(path) ? path : join(projectRoot, path);
 }
 
-// Project-relative form with forward slashes — the report contract uses POSIX-style display paths on
+// Project-relative form with forward slashes - the report contract uses POSIX-style display paths on
 // every platform. "" collapses to "." so the project root has a stable label in history entries.
 function displayPath(projectRoot: string, path: string): string {
   const relativePath = relative(projectRoot, path).replaceAll("\\", "/");
@@ -58,7 +58,7 @@ function applyBaseline(path: string, findings: Finding[]): Finding[] {
 /*
  * Appends one row to the score-history JSON file and trims to the most recent 100 entries so the
  * dashboard sparkline never grows unbounded. The stable contract: writes via writeFileSync, and on
- * persistence failure it reports a `history-error` diagnostic and recovers — a flaky history file
+ * persistence failure it reports a `history-error` diagnostic and recovers - a flaky history file
  * must not fail the analysis run.
  */
 function recordHistory(projectRoot: string, historyFile: string, findings: Finding[], diagnostics: RunDiagnostic[]): void {

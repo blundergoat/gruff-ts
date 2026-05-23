@@ -28,7 +28,7 @@ function writeCommandOutput(program: Command, output: string): void {
   process.stdout.write(output.endsWith("\n") ? output : `${output}\n`);
 }
 
-// `--silent` and `--quiet` both suppress non-error stdout — they are intentionally treated the same
+// `--silent` and `--quiet` both suppress non-error stdout - they are intentionally treated the same
 // here because Commander exposes them as independent flags but the CLI's contract is uniform.
 function outputSuppressed(program: Command): boolean {
   const options = program.opts() as { quiet?: boolean; silent?: boolean };
@@ -136,7 +136,7 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
 }
 
 // Emits the static completion script for the requested shell. Does not touch the filesystem or
-// run a scan — callers pipe the output into their shell config themselves.
+// run a scan - callers pipe the output into their shell config themselves.
 function registerCompletionCommand(program: Command): void {
   program
     .command("completion")
@@ -252,7 +252,7 @@ function summaryPathLabel(paths: string[], projectRoot: string): string {
 
 // Single source of truth for translating Commander's loose option bag into the strict
 // `AnalysisOptions` shape that drives baseline matching. The fingerprint contract is the invariant:
-// two CLI invocations producing identical AnalysisOptions must produce identical, stable findings —
+// two CLI invocations producing identical AnalysisOptions must produce identical, stable findings -
 // adding new fields here without folding them into that hash is a deterministic-output regression.
 function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, context: NormalizeContext): AnalysisOptions {
   const format = stringChoice(rawOptions.format, ["text", "json", "html", "markdown", "github", "hotspot", "sarif"], "text");
@@ -280,7 +280,7 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
 }
 
 // Conditional spreads (not `config: undefined`) because `AnalysisOptions` runs under
-// `exactOptionalPropertyTypes` — the absent and `undefined` cases are not interchangeable.
+// `exactOptionalPropertyTypes` - the absent and `undefined` cases are not interchangeable.
 function configOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "config">> {
   return typeof rawOptions.config === "string" ? { config: rawOptions.config } : {};
 }

@@ -1,5 +1,5 @@
 // Detects large test/fixture sources that need a purpose comment. Three candidate kinds in one
-// pass — template-literal fixtures, generated array fixtures, and high-setup test blocks — then
+// pass - template-literal fixtures, generated array fixtures, and high-setup test blocks - then
 // reports `docs.fixture-purpose-missing` for each candidate without a nearby explanation comment.
 import { type FunctionBlock, setupLineCount } from "./blocks.ts";
 import { type CommentRecord } from "./comment-scanner.ts";
@@ -9,7 +9,7 @@ import { makeFinding } from "./findings.ts";
 import { isFixtureLikePath, isTestPath } from "./project-rules.ts";
 import type { Config, Finding } from "./types.ts";
 
-// Below 12 lines, a fixture is short enough to read at a glance — requiring a purpose header
+// Below 12 lines, a fixture is short enough to read at a glance - requiring a purpose header
 // would just be noise; above this threshold, the next reader needs the intent spelled out.
 const FIXTURE_PURPOSE_MIN_LINES = 12;
 
@@ -38,7 +38,7 @@ export interface FixturePurposeInput {
   findings: Finding[];
 }
 
-// Test/fixture paths only — gated up front so production source never reports fixture-purpose
+// Test/fixture paths only - gated up front so production source never reports fixture-purpose
 // findings. Reports the stable `docs.fixture-purpose-missing` finding for each candidate.
 export function pushFixturePurposeFindings(input: FixturePurposeInput): void {
   const { file, source, codeSource, lines, comments, blocks, config, findings } = input;
@@ -108,7 +108,7 @@ function hasFixturePurposeCandidateSignal(codeSource: string, blocks: FunctionBl
   return blocks.some((block) => block.isTest) || /\b(?:analyseFixture|analyseProject|writeFileSync|Array\.from)\s*\(/.test(codeSource) || /\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*(?:Fixture|FIXTURE)[A-Za-z0-9_$]*\b[^=\n]*=/.test(codeSource);
 }
 
-// Composite key prevents two fixture candidates landing at the same line/symbol/kind tuple — a
+// Composite key prevents two fixture candidates landing at the same line/symbol/kind tuple - a
 // real case when one declaration triggers both a template-literal match and a generated-array match.
 function pushUniqueFixturePurposeCandidate(candidates: FixturePurposeCandidate[], seen: Set<string>, candidate: FixturePurposeCandidate): void {
   const key = `${candidate.line}\0${candidate.symbol}\0${candidate.targetKind}`;
@@ -154,7 +154,7 @@ function fixtureTemplateTrigger(codeLine: string): { symbol: string; targetKind:
   return fixtureName ? { symbol: fixtureName, targetKind: "fixture-constant" } : undefined;
 }
 
-// Identifier names matching `*Fixture` or `*FIXTURE` are treated as opt-in markers — projects
+// Identifier names matching `*Fixture` or `*FIXTURE` are treated as opt-in markers - projects
 // signal "this is fixture data" with that suffix, so it's the natural trigger for the rule.
 function fixtureConstantName(codeLine: string): string | undefined {
   return codeLine.match(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*(?:Fixture|FIXTURE)[A-Za-z0-9_$]*)\b[^=\n]*=/)?.[1];
@@ -211,7 +211,7 @@ function fixtureLineInsideBlock(block: FunctionBlock, occupiedLines: Set<number>
 }
 
 // Either the canonical fixture-generation calls (analyseFixture / writeFileSync / mkdtempSync /
-// Array.from) or an identifier containing "fixture". The narrow allowlist is deliberate — broader
+// Array.from) or an identifier containing "fixture". The narrow allowlist is deliberate - broader
 // matchers would catch ordinary production code that happens to construct test data.
 function hasFixtureSetupSignal(source: string): boolean {
   return /\b(?:analyseFixture|writeFileSync|mkdtempSync|Array\.from)\s*\(/.test(source) || hasFixtureIdentifier(source);
@@ -234,7 +234,7 @@ function isLargeSourceFixtureText(text: string): boolean {
   return fixtureLineCount(text) > FIXTURE_PURPOSE_MIN_LINES && /\b(?:function|class|interface|type|enum|const|let|var|import|export|test|it)\b/.test(text);
 }
 
-// Newline-count, not "nonblank-line count" — the rule cares about apparent fixture size as the
+// Newline-count, not "nonblank-line count" - the rule cares about apparent fixture size as the
 // maintainer sees it, including blank padding.
 function fixtureLineCount(text: string): number {
   return text.split(/\r?\n/).length;
@@ -268,7 +268,7 @@ function templateLiteralAtLine(source: string, lineOffsets: number[], lineNumber
   return end === undefined ? undefined : source.slice(firstBacktick + 1, end);
 }
 
-// Linear walk respecting `\`` escapes. Does NOT handle `${…}` interpolation specially — fixture
+// Linear walk respecting `\`` escapes. Does NOT handle `${…}` interpolation specially - fixture
 // templates rarely contain nested backticks, and a stricter parse would not help the rule's signal.
 function closingTemplateLiteralIndex(source: string, startIndex: number): number | undefined {
   let isEscaped = false;
@@ -316,7 +316,7 @@ function leadingFixturePurposeComment(lines: string[], comments: CommentRecord[]
   return undefined;
 }
 
-// Identical to `hasOnlyBlankLines` but with an inclusive upper bound — fixtures may have one
+// Identical to `hasOnlyBlankLines` but with an inclusive upper bound - fixtures may have one
 // extra blank line of breathing room above them that ordinary declaration comments do not.
 function hasOnlyBlankFixturePurposeGap(lines: string[], startLine: number, endLine: number): boolean {
   for (let line = startLine; line <= endLine; line += 1) {

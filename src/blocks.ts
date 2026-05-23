@@ -56,7 +56,7 @@ export interface BlockRuleContext {
 }
 
 // NPath approximation result. `isCapped: true` signals the value hit `NPATH_CAP` and is a lower
-// bound — the finding message uses this to mark capped values rather than implying precision.
+// bound - the finding message uses this to mark capped values rather than implying precision.
 export interface NpathResult {
   value: number;
   isCapped: boolean;
@@ -111,7 +111,7 @@ export function blockRuleContext(file: SourceFile, block: FunctionBlock, config:
 }
 
 /*
- * Per-block rule sequence. The ordering is the stable baseline contract — every block emits its
+ * Per-block rule sequence. The ordering is the stable baseline contract - every block emits its
  * findings in this exact deterministic order, so reshuffling the call list churns fingerprints
  * even when no rule changes.
  */
@@ -130,7 +130,7 @@ export function analyseBlockRules(context: BlockRuleContext): void {
   pushUselessReturnFindings(context);
 }
 
-// Default threshold 200, default severity `warning` — functions past that length are usually a
+// Default threshold 200, default severity `warning` - functions past that length are usually a
 // maintenance signal, not a stylistic preference. Reports `size.function-length` when the block exceeds the limit.
 function pushFunctionLengthFinding(context: BlockRuleContext): void {
   const functionLengthThreshold = threshold(context.config, "size.function-length", 200);
@@ -148,7 +148,7 @@ function pushParameterCountFinding(context: BlockRuleContext): void {
   }
 }
 
-// Default threshold 15. Counts conditional keywords + boolean operators in the code body — see
+// Default threshold 15. Counts conditional keywords + boolean operators in the code body - see
 // `blockRuleContext` for the pre-computed value. Reports `complexity.cyclomatic` when exceeded.
 function pushCyclomaticFinding(context: BlockRuleContext): void {
   if (context.cyclomatic > threshold(context.config, "complexity.cyclomatic", 15)) {
@@ -156,7 +156,7 @@ function pushCyclomaticFinding(context: BlockRuleContext): void {
   }
 }
 
-// Default threshold 15. Cognitive complexity is cyclomatic + max nesting depth — captures the
+// Default threshold 15. Cognitive complexity is cyclomatic + max nesting depth - captures the
 // "deeply nested" intuition pure cyclomatic misses. Reports `complexity.cognitive` when exceeded.
 function pushCognitiveFinding(context: BlockRuleContext): void {
   const cognitive = context.cyclomatic + maxNestingDepth(context.block.codeBody);
@@ -177,7 +177,7 @@ function pushNpathFinding(context: BlockRuleContext): void {
 
 /*
  * Stable `complexity.npath` finding factory. `capped` and `cap` are surfaced in metadata so
- * downstream tooling can distinguish "5000" from "≥ NPATH_CAP" — both would render as the same
+ * downstream tooling can distinguish "5000" from "≥ NPATH_CAP" - both would render as the same
  * value otherwise.
  */
 function npathFinding(context: BlockRuleContext, npath: NpathResult, thresholdValue: number, severity: Severity): Finding {
@@ -242,7 +242,7 @@ function pushUnusedParameterFindings(context: BlockRuleContext): void {
 }
 
 // Skips interface methods, type-literal methods, function-type aliases, abstract members, and
-// overload signatures — all of which look like a function declaration ending in `;` rather than `{`,
+// overload signatures - all of which look like a function declaration ending in `;` rather than `{`,
 // and have no real body to check for emptiness or parameter usage.
 function isBodyLessDeclaration(block: FunctionBlock): boolean {
   for (const rawLine of block.codeBody.split("\n")) {
@@ -262,7 +262,7 @@ function isDeclarationFile(file: SourceFile): boolean {
 }
 
 // Word-boundary regex against the masked function body. The body is masked so a parameter mentioned
-// only in a string literal would still count as unused — that matches the intent of the rule. A
+// only in a string literal would still count as unused - that matches the intent of the rule. A
 // loose `${...param...}` regex over the raw body catches parameters used only inside template
 // interpolations, which the mask would otherwise hide.
 function isUnusedParameter(context: BlockRuleContext, parameterName: string): boolean {
@@ -338,7 +338,7 @@ function pushUselessReturnFindings(context: BlockRuleContext): void {
 
 // Approximation: each decision keyword (`if`, `case`, `catch`, loops) and short-circuit operator
 // doubles the count. Optional chaining is stripped first so `a?.b` and `??` don't inflate the
-// signal. Capped at `NPATH_CAP` — the `capped` flag tells callers to report the value as ≥, not =.
+// signal. Capped at `NPATH_CAP` - the `capped` flag tells callers to report the value as ≥, not =.
 export function approximateNpath(source: string): NpathResult {
   let pathCount = 1;
   let isCapped = false;
@@ -355,7 +355,7 @@ export function approximateNpath(source: string): NpathResult {
   return { value: pathCount, isCapped };
 }
 
-// Strips line and block comments before measuring — a body containing only documentation is still
+// Strips line and block comments before measuring - a body containing only documentation is still
 // considered empty for the `waste.empty-function` check, since no executable statements run.
 function isEmptyFunctionBody(source: string): boolean {
   const body = functionBodyContent(source)
@@ -380,7 +380,7 @@ export function functionBodyContent(source: string): string {
 
 // Walks upward past blank lines and the closing `}` looking for a final `return;`. Returns the
 // line offset of that statement (zero-based) or an empty list if the last real line is anything
-// else — used by `waste.redundant-variable` so the finding anchors on the actual statement.
+// else - used by `waste.redundant-variable` so the finding anchors on the actual statement.
 function terminalBareReturnLines(source: string): number[] {
   const lines = source.split(/\r?\n/);
   let current = lines.length - 1;
@@ -396,7 +396,7 @@ function terminalBareReturnLines(source: string): number[] {
 }
 
 // Splits on `,` then strips visibility modifiers, `...rest`, default values, and type annotations
-// in that order. Final filter rejects entries whose name isn't a plain identifier — destructured
+// in that order. Final filter rejects entries whose name isn't a plain identifier - destructured
 // parameters land in that bucket and are intentionally invisible to per-parameter rules.
 export function parameterNames(params: string): Array<{ name: string; raw: string }> {
   return params
@@ -412,7 +412,7 @@ export function parameterNames(params: string): Array<{ name: string; raw: strin
 }
 
 // Detects the `const x = expr; return x;` pattern. The regex backreference `\1` enforces that the
-// returned identifier matches the declared one — used by `waste.redundant-variable` to surface
+// returned identifier matches the declared one - used by `waste.redundant-variable` to surface
 // pointless temporaries with deterministic line offsets.
 function redundantVariableReturns(source: string): Array<{ name: string; lineOffset: number }> {
   const results: Array<{ name: string; lineOffset: number }> = [];
@@ -423,7 +423,7 @@ function redundantVariableReturns(source: string): Array<{ name: string; lineOff
 }
 
 // Deepest `{` / `}` nesting reached across the body, minus one so the body's own outer braces
-// don't count. The `Math.max(0, …)` clamp protects against unbalanced inputs — feeds the nesting
+// don't count. The `Math.max(0, …)` clamp protects against unbalanced inputs - feeds the nesting
 // component of `complexity.cognitive` and must stay deterministic across runs.
 export function maxNestingDepth(source: string): number {
   let depth = 0;
@@ -537,7 +537,7 @@ function functionEndIndex(scan: FunctionBlockScan, index: number): number {
 }
 
 // Brace-depth walker over masked code lines. Operates on `codeLines` so braces inside strings or
-// comments don't disturb the depth counter — the masker preserves brace positions in real code
+// comments don't disturb the depth counter - the masker preserves brace positions in real code
 // and neutralises them everywhere else, keeping the body slice stable.
 function blockFunctionEndIndex(scan: FunctionBlockScan, index: number): number {
   const state: FunctionBodyScanState = { depth: 0, hasSeenOpen: false };
@@ -555,7 +555,7 @@ function blockFunctionEndIndex(scan: FunctionBlockScan, index: number): number {
 }
 
 // Per-character transition for the brace-depth walker. Setting `hasSeenOpen` on `{` is the
-// invariant `isFunctionBodyClosed` relies on — without it, the walker would treat the
+// invariant `isFunctionBodyClosed` relies on - without it, the walker would treat the
 // pre-open state (depth 0) as already closed.
 function applyFunctionBodyCharacter(state: FunctionBodyScanState, character: string): void {
   if (character === "{") {
@@ -567,7 +567,7 @@ function applyFunctionBodyCharacter(state: FunctionBodyScanState, character: str
 }
 
 // Termination predicate for the brace-depth walker. Requires `hasSeenOpen` so the initial
-// pre-body state doesn't read as already closed — the depth counter is only meaningful after the
+// pre-body state doesn't read as already closed - the depth counter is only meaningful after the
 // first `{`.
 function isFunctionBodyClosed(state: FunctionBodyScanState): boolean {
   return state.hasSeenOpen && state.depth <= 0;
@@ -591,7 +591,7 @@ function expressionArrowEndIndex(codeLines: string[], index: number): number | u
   return index;
 }
 
-// `=>` exists and no `{` follows it — that means the body is a bare expression, not a block.
+// `=>` exists and no `{` follows it - that means the body is a bare expression, not a block.
 // The distinction matters because expression bodies need a different end-of-block strategy.
 function isExpressionArrowLine(line: string, arrowIndex: number): boolean {
   return arrowIndex !== -1 && !line.slice(arrowIndex + 2).includes("{");
@@ -620,7 +620,7 @@ function isControlBlockName(name: string): boolean {
 
 // Walks upward from the declaration line absorbing decorator (`@`), docblock (`/**`, `*`), and
 // blank lines so the function block includes its leading documentation. Stops at the first real
-// code line above — that boundary becomes the block's start line.
+// code line above - that boundary becomes the block's start line.
 function functionStartIndex(lines: string[], index: number): number {
   let start = index;
   while (start > 0) {
@@ -681,7 +681,7 @@ export function setupLineCount(source: string): number {
 }
 
 // Filter for `setupLineCount`. Blank lines plus the two closer shapes (`}` and `});`) shouldn't
-// inflate the count — those are syntax, not setup work.
+// inflate the count - those are syntax, not setup work.
 function isIgnorableSetupLine(trimmedLine: string): boolean {
   return trimmedLine.length === 0 || trimmedLine === "});" || trimmedLine === "}";
 }
