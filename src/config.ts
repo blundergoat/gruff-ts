@@ -619,4 +619,4 @@ function isSeverity(configValue: unknown): configValue is Severity {
   return configValue === "advisory" || configValue === "warning" || configValue === "error";
 }
 
-export { isString, loadConfig, objectValue, optionNumber, ruleEnabled, ruleSeverity, threshold };
+export { defaultConfigPath, isString, loadConfig, objectValue, optionNumber, ruleEnabled, ruleSeverity, threshold };

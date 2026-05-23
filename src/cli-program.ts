@@ -6,6 +6,7 @@ import { performance } from "node:perf_hooks";
 import { DEFAULT_BASELINE } from "./baseline.ts";
 import { VERSION } from "./constants.ts";
 import { startDashboard } from "./dashboard.ts";
+import { promptYesNo, shouldPromptForInit, writeDefaultConfig } from "./init-config.ts";
 import { renderReport, renderSummary } from "./report-renderers.ts";
 import { completionShell, renderCompletionScript, renderConsoleList, renderRuleList, type RuleListFormat } from "./rule-list.ts";
 import { exitFor } from "./scoring.ts";
@@ -35,6 +36,48 @@ function outputSuppressed(program: Command): boolean {
   return options.quiet === true || options.silent === true;
 }
 
+// Per-command config-loading state passed into maybePromptInitConfig. analyse/summary/report
+// take both flags from normalizeOptions; dashboard has no equivalent flags so it passes
+// `{ shouldSkipConfig: false, hasExplicitConfig: false }`.
+interface InitPromptOptions {
+  shouldSkipConfig: boolean;
+  hasExplicitConfig: boolean;
+}
+
+// Asks the user whether to run `init` when no config exists, then writes the file if they agree.
+// Called from analyse/summary/report/dashboard before kicking off their main work so the
+// freshly-written file is picked up by loadConfig on the same invocation. Pure decision logic
+// lives in shouldPromptForInit; this function only handles orchestration and side effects.
+async function maybePromptInitConfig(program: Command, projectRoot: string, options: InitPromptOptions): Promise<void> {
+  const programOptions = program.opts() as { interaction?: boolean };
+  const context = {
+    projectRoot,
+    shouldSkipConfig: options.shouldSkipConfig,
+    hasExplicitConfig: options.hasExplicitConfig,
+    isInteractionAllowed: programOptions.interaction !== false,
+    isOutputSuppressed: outputSuppressed(program),
+    isStdinTty: process.stdin.isTTY === true,
+    isStderrTty: process.stderr.isTTY === true,
+  };
+  if (!shouldPromptForInit(context)) {
+    return;
+  }
+  const accepted = await promptYesNo(`No gruff config found at ${projectRoot}. Run 'gruff-ts init' to create .gruff-ts.yaml? [y/N] `);
+  if (!accepted) {
+    return;
+  }
+  const result = writeDefaultConfig(projectRoot, false);
+  if (result.status === "written") {
+    process.stderr.write(`Wrote ${result.path}\n`);
+  }
+}
+
+// AnalysisOptions → InitPromptOptions shim used by analyse/summary/report so they share one
+// branch and shouldSkipConfig stays the single source of truth for opt-out behaviour.
+function promptOptionsFromAnalysis(options: AnalysisOptions): InitPromptOptions {
+  return { shouldSkipConfig: options.shouldSkipConfig, hasExplicitConfig: typeof options.config === "string" };
+}
+
 // Three-state ANSI resolution: explicit `--ansi` forces colour, explicit `--no-ansi` forbids it,
 // otherwise autodetect from TTY. Required because pipelines and CI logs would otherwise eat colour codes.
 function ansiEnabled(program: Command): boolean {
@@ -56,6 +99,7 @@ export function buildProgram(runAnalyse: AnalyseRunner): Command {
   registerAnalyseCommand(program, runAnalyse);
   registerCompletionCommand(program);
   registerDashboardCommand(program, runAnalyse);
+  registerInitCommand(program);
   registerListCommand(program);
   registerListRulesCommand(program);
   registerReportCommand(program, runAnalyse);
@@ -127,8 +171,9 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
-    .action((paths: string[], rawOptions: Record<string, unknown>) => {
+    .action(async (paths: string[], rawOptions: Record<string, unknown>) => {
       const options = normalizeOptions(paths, rawOptions, { shouldAllowBaselineFlag: true });
+      await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
       const report = runAnalyse(options);
       writeCommandOutput(program, renderReport(report, options.format));
       process.exitCode = exitFor(report, options.failOn);
@@ -156,8 +201,30 @@ function registerDashboardCommand(program: Command, runAnalyse: AnalyseRunner): 
     .option("--host <host>", "Host to bind.", "127.0.0.1")
     .option("--port <port>", "Port to bind.", "8767")
     .option("--project-root <path>", "Default project root.", ".")
+    .action(async (rawOptions: Record<string, unknown>) => {
+      const projectRoot = resolve(String(rawOptions.projectRoot ?? "."));
+      await maybePromptInitConfig(program, projectRoot, { shouldSkipConfig: false, hasExplicitConfig: false });
+      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), projectRoot, runAnalyse, !outputSuppressed(program));
+    });
+}
+
+// Writes the default `.gruff-ts.yaml` to the current working directory. Refuses to clobber an
+// existing config unless `--force` is passed; sets process.exitCode=1 in that case so scripted
+// callers can detect the refusal without parsing stdout.
+function registerInitCommand(program: Command): void {
+  program
+    .command("init")
+    .description("Write the default .gruff-ts.yaml to the current directory.")
+    .option("--force", "Overwrite an existing .gruff-ts.yaml file.")
     .action((rawOptions: Record<string, unknown>) => {
-      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), resolve(String(rawOptions.projectRoot ?? ".")), runAnalyse, !outputSuppressed(program));
+      const result = writeDefaultConfig(process.cwd(), rawOptions.force === true);
+      if (result.status === "exists") {
+        process.stderr.write(`Refusing to overwrite existing config: ${result.path}. Re-run with --force to replace it.\n`);
+        process.exitCode = 1;
+        return;
+      }
+      const verb = result.status === "overwritten" ? "Overwrote" : "Wrote";
+      writeCommandOutput(program, `${verb} ${result.path}`);
     });
 }
 
@@ -200,9 +267,10 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     .option("--fail-on <severity>", "Finding severity that fails the run.", "none")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
-    .action((paths: string[], rawOptions: Record<string, unknown>) => {
+    .action(async (paths: string[], rawOptions: Record<string, unknown>) => {
       const format = rawOptions.format === "json" ? "json" : "html";
       const options = normalizeOptions(paths, { ...rawOptions, format }, { shouldAllowBaselineFlag: false });
+      await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
       const report = runAnalyse(options);
       const rendered = renderReport(report, format);
       if (typeof rawOptions.output === "string") {
@@ -232,9 +300,10 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
-    .action((paths: string[], rawOptions: Record<string, unknown>) => {
-      const startedAt = performance.now();
+    .action(async (paths: string[], rawOptions: Record<string, unknown>) => {
       const options = normalizeOptions(paths, { ...rawOptions, format: "text" }, { shouldAllowBaselineFlag: true });
+      await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
+      const startedAt = performance.now();
       const report = runAnalyse(options);
       const elapsedMs = performance.now() - startedAt;
       writeCommandOutput(program, renderSummary(report, elapsedMs, summaryPathLabel(options.paths, report.run.projectRoot)));

@@ -1,0 +1,195 @@
+// Renders the default .gruff-ts.yaml file from the rule descriptor registry so `gruff-ts init`
+// can drop a config into a fresh project that mirrors the analyser's effective defaults.
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { createInterface } from "node:readline/promises";
+import { defaultConfigPath } from "./config.ts";
+import { ruleDescriptors } from "./rules.ts";
+import type { RuleDescriptor } from "./types.ts";
+
+const DEFAULT_CONFIG_FILE_NAME = ".gruff-ts.yaml";
+
+// Default option values for rules with `optionKeys`. The source of truth is the
+// `optionNumber(config, ruleId, key, default)` call site in the rule implementation; mirroring
+// them here keeps `gruff-ts init` self-contained. `init-config.test.ts` asserts the values
+// here match the implementation defaults so drift fails the test suite, not user projects.
+const RULE_OPTION_DEFAULTS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
+  "design.large-module-concentration": { minFiles: 4, minLines: 80 },
+  "naming.generic-parameter": { minCyclomatic: 8, minLineCount: 30, minParameters: 3 },
+};
+
+// Rules that are registered in the catalogue but require `enabled: true` to activate (they
+// branch on `=== true` rather than `?? true`). Generated config emits them as `enabled: false`
+// so the file faithfully describes the analyser's effective default behaviour.
+const OPT_IN_RULE_IDS: ReadonlySet<string> = new Set(["docs.todo-density", "naming.abbreviation"]);
+
+// Default starter list copied from `defaultConfig()` in config.ts. Generated separately because
+// the YAML form (a block sequence) is more reviewable than the inline `[...]` form a Set would emit.
+const DEFAULT_ACCEPTED_ABBREVIATIONS: readonly string[] = ["id", "db", "fs", "io", "ui", "tx", "rx"];
+
+interface InitResult {
+  path: string;
+  status: "written" | "overwritten" | "exists";
+}
+
+// Inputs the analyse/summary actions must collect before deciding whether to ask the user about
+// running `init`. Kept as an explicit shape so the predicate is testable without TTY mocking.
+interface InitPromptContext {
+  projectRoot: string;
+  shouldSkipConfig: boolean;
+  hasExplicitConfig: boolean;
+  isInteractionAllowed: boolean;
+  isOutputSuppressed: boolean;
+  isStdinTty: boolean;
+  isStderrTty: boolean;
+}
+
+/**
+ * Render the default .gruff-ts.yaml content from the rule descriptor registry.
+ *
+ * @returns A YAML document string terminated by a trailing newline.
+ */
+function renderDefaultConfig(): string {
+  return [renderPathsSection(), "", renderAllowlistsSection(), "", renderRulesSection()].join("\n") + "\n";
+}
+
+/**
+ * Write the default config to `<projectRoot>/.gruff-ts.yaml`. Refuses to clobber an existing
+ * file unless `force` is true; performs a filesystem write side effect when it does write.
+ *
+ * @param projectRoot Directory to write the config file into.
+ * @param force Overwrite an existing config file when true.
+ * @returns The resolved path and whether a file was written, overwritten, or skipped.
+ */
+function writeDefaultConfig(projectRoot: string, force: boolean): InitResult {
+  const path = join(projectRoot, DEFAULT_CONFIG_FILE_NAME);
+  const fileExists = existsSync(path);
+  if (fileExists && !force) {
+    return { path, status: "exists" };
+  }
+  writeFileSync(path, renderDefaultConfig());
+  return { path, status: fileExists ? "overwritten" : "written" };
+}
+
+// `paths.ignore` defaults to empty - discovery.ts already filters node_modules, .git, etc.
+// regardless of config, so the starter file should not pre-populate project-specific exclusions.
+function renderPathsSection(): string {
+  return ["paths:", "  ignore: []"].join("\n");
+}
+
+// `acceptedAbbreviations` is emitted as a block sequence for reviewability; the seven naming
+// allowlists below it stay commented out so users see the override knobs without changing defaults.
+function renderAllowlistsSection(): string {
+  return [
+    "allowlists:",
+    "  acceptedAbbreviations:",
+    ...DEFAULT_ACCEPTED_ABBREVIATIONS.map((abbreviation) => `    - ${abbreviation}`),
+    "  secretPreviews: []",
+    "  # Names that trigger naming.generic-function. Each key replaces the built-in",
+    "  # default when present; an empty list disables that rule's blacklist branch.",
+    "  # Default: [process, handle, doit, run, execute, manage]",
+    "  # bannedGenericNames: [process, handle, doit, run, execute, manage]",
+    "  # Accepted prefixes for boolean identifiers. Names without one of these",
+    "  # prefixes trigger naming.boolean-prefix.",
+    "  # Default: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires]",
+    "  # booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires]",
+    "  # Hungarian type-style prefixes flagged by naming.hungarian-notation.",
+    "  # Default: [str, obj, arr, bool, int, num]",
+    "  # hungarianPrefixes: [str, obj, arr, bool, int, num]",
+    "  # Placeholder words flagged as generic by naming.identifier-quality. The",
+    "  # numbered-suffix branch (foo1, value2) stays active even when this is empty.",
+    "  # Default: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]",
+    "  # placeholderNames: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]",
+    "  # Abbreviations flagged by the opt-in naming.abbreviation rule. Case-insensitive.",
+    "  # Default: [ctx, pkg, opts, fn, idx, cb]",
+    "  # abbreviationDenylist: [ctx, pkg, opts, fn, idx, cb]",
+    "  # Negative-framed boolean names that should NOT trigger naming.negative-boolean.",
+    "  # Defaults are HTTP-header conventions; add project terms as needed.",
+    "  # Default: [nostore, nofollow, noreferrer, noscript, noindex]",
+    "  # negativeBooleanAllowed: [nostore, nofollow, noreferrer, noscript, noindex]",
+    "  # Known acronyms whose mixed casings trigger naming.acronym-case. Stored",
+    "  # case-insensitively; match is against canonical lowercase.",
+    "  # Default: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]",
+    "  # knownAcronyms: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]",
+  ].join("\n");
+}
+
+// Walks the registry in its canonical (sorted) order so the generated YAML is byte-stable.
+function renderRulesSection(): string {
+  const lines = ["rules:"];
+  for (const descriptor of ruleDescriptors()) {
+    lines.push(...renderRuleEntry(descriptor));
+  }
+  return lines.join("\n");
+}
+
+// One rule entry: a `# pillar/severity: description` comment line, the rule id, `enabled`, then
+// threshold/severity/options only when the descriptor declares them. Omitting absent keys keeps
+// the generated file aligned with the descriptor's actual contract.
+function renderRuleEntry(descriptor: RuleDescriptor): string[] {
+  const lines: string[] = [];
+  lines.push(`  # ${descriptor.pillar}/${descriptor.severity}: ${descriptor.description}`);
+  lines.push(`  ${descriptor.ruleId}:`);
+  lines.push(`    enabled: ${OPT_IN_RULE_IDS.has(descriptor.ruleId) ? "false" : "true"}`);
+  if (typeof descriptor.threshold === "number") {
+    lines.push(`    threshold: ${descriptor.threshold}`);
+    lines.push(`    severity: ${descriptor.severity}`);
+  }
+  const optionDefaults = RULE_OPTION_DEFAULTS[descriptor.ruleId];
+  if (optionDefaults) {
+    lines.push("    options:");
+    for (const [key, value] of Object.entries(optionDefaults)) {
+      lines.push(`      ${key}: ${value}`);
+    }
+  }
+  return lines;
+}
+
+/**
+ * Decide whether the analyse/summary actions should prompt the user to run `init`.
+ *
+ * Returns true only when every gate passes: interaction is allowed, output isn't suppressed, the
+ * user hasn't already opted in (--config) or out (--no-config) of config loading, stdin and
+ * stderr are both TTYs (so the prompt can be shown and answered), and no supported config file
+ * is already present at the project root.
+ *
+ * @param context CLI-collected state needed to make the decision.
+ * @returns Whether the prompt should be shown.
+ */
+function shouldPromptForInit(context: InitPromptContext): boolean {
+  if (!context.isInteractionAllowed) {
+    return false;
+  }
+  if (context.isOutputSuppressed) {
+    return false;
+  }
+  if (context.shouldSkipConfig || context.hasExplicitConfig) {
+    return false;
+  }
+  if (!context.isStdinTty || !context.isStderrTty) {
+    return false;
+  }
+  return defaultConfigPath(context.projectRoot) === undefined;
+}
+
+/**
+ * Ask the user a yes/no question on stderr and return their answer.
+ *
+ * Defaults to "no" when the user just presses enter so the prompt is safe to dismiss. Reads from
+ * stdin; closes the readline interface in a finally so a Ctrl-C exits cleanly.
+ *
+ * @param question Prompt text written to stderr verbatim.
+ * @returns True when the user typed y or yes (case-insensitive); false otherwise.
+ */
+async function promptYesNo(question: string): Promise<boolean> {
+  const readlineInterface = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const answer = await readlineInterface.question(question);
+    return /^(y|yes)$/i.test(answer.trim());
+  } finally {
+    readlineInterface.close();
+  }
+}
+
+export type { InitPromptContext, InitResult };
+export { DEFAULT_CONFIG_FILE_NAME, OPT_IN_RULE_IDS, RULE_OPTION_DEFAULTS, promptYesNo, renderDefaultConfig, shouldPromptForInit, writeDefaultConfig };
