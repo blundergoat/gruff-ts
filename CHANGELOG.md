@@ -2,7 +2,7 @@
 
 ## [0.1.0] - 2026-05-23
 
-Initial public release.
+Initial public release of the `@blundergoat/gruff-ts` npm package.
 
 - TypeScript/JavaScript code quality scanner: 121 rules across 11 pillars
   (complexity, dead-code, design, documentation, modernisation, naming,

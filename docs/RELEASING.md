@@ -1,15 +1,15 @@
 # Releasing
 
-This checklist prepares the public `0.1.0` release and subsequent `0.1.x`
-patch releases.
+This checklist prepares the public `@blundergoat/gruff-ts@0.1.0` release and
+subsequent `0.1.x` patch releases.
 
 ## Bump The Version
 
 `scripts/bump-version.sh <semver>` updates `package.json` and
 `src/constants.ts` together so the CLI `--version` output and the published
-package version cannot drift apart. For the initial `0.1.0` release, the
-version should already be `0.1.0`; use `--check` instead of bumping unless the
-release version changes.
+`@blundergoat/gruff-ts` package version cannot drift apart. For the initial
+`0.1.0` release, the version should already be `0.1.0`; use `--check` instead
+of bumping unless the release version changes.
 
 ```bash
 scripts/bump-version.sh --check
@@ -47,7 +47,7 @@ update `CHANGELOG.md` and run `npm run check`.
 
 ## Package Review
 
-Preview package contents:
+Preview `@blundergoat/gruff-ts` package contents:
 
 ```bash
 npm pack --dry-run
@@ -59,7 +59,7 @@ The package should include:
 - `src/` (all runtime `.ts` files; `src/**/*.test.ts` files are excluded by
   `.npmignore`)
 - `scripts/` (`bump-version.sh`, `check.sh`, `preflight-checks.sh`,
-  `start-dev.sh`, `test-performance.sh`)
+  `npm-publish.sh`, `start-dev.sh`, `test-performance.sh`)
 - `fixtures/sample.ts`
 - `README.md`
 - `CHANGELOG.md`
@@ -84,14 +84,16 @@ The package must exclude:
 ## Publish
 
 ```bash
-npm publish
+bash scripts/npm-publish.sh
 ```
 
-Use the appropriate npm access flag for the package ownership model.
+The script verifies npm auth, checks version lockstep, runs
+`scripts/preflight-checks.sh`, prints an `npm publish --dry-run` summary, and
+prompts before publishing.
 
 ## After Publishing
 
-- [ ] Install the published package in a temporary project.
+- [ ] Install `@blundergoat/gruff-ts` in a temporary project.
 - [ ] Run `gruff-ts --help`.
 - [ ] Run `gruff-ts analyse . --fail-on=none`.
 - [ ] Run `gruff-ts summary . --fail-on=none`.

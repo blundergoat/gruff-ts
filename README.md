@@ -13,10 +13,10 @@ XML, and `.env*`.
 
 ## Install
 
-From npm after publishing:
+Install the scoped npm package; it exposes the `gruff-ts` CLI command:
 
 ```bash
-npm install --save-dev gruff-ts
+npm install --save-dev @blundergoat/gruff-ts
 npx gruff-ts analyse . --fail-on=none
 ```
 
@@ -291,7 +291,8 @@ files.
 
 To bump the released version, run `scripts/bump-version.sh <new-version>` - it
 updates `package.json` and `src/constants.ts` in lockstep so the CLI
-`--version` output stays consistent with the published package.
+`--version` output stays consistent with the published `@blundergoat/gruff-ts`
+package.
 
 ## Author
 
