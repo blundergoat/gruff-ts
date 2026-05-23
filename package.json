@@ -1,5 +1,5 @@
 {
-  "name": "gruff-ts",
+  "name": "@blundergoat/gruff-ts",
   "version": "0.1.0",
   "description": "Static analyzer for TypeScript and JavaScript projects - 121 rules across 11 quality pillars, SARIF output, baselines, and a local dashboard.",
   "license": "MIT",
@@ -37,7 +37,7 @@
   },
   "type": "module",
   "bin": {
-    "gruff-ts": "./bin/gruff-ts"
+    "gruff-ts": "bin/gruff-ts"
   },
   "scripts": {
     "check": "tsc --noEmit && npm test",

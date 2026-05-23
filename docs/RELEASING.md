@@ -59,7 +59,7 @@ The package should include:
 - `src/` (all runtime `.ts` files; `src/**/*.test.ts` files are excluded by
   `.npmignore`)
 - `scripts/` (`bump-version.sh`, `check.sh`, `preflight-checks.sh`,
-  `start-dev.sh`, `test-performance.sh`)
+  `npm-publish.sh`, `start-dev.sh`, `test-performance.sh`)
 - `fixtures/sample.ts`
 - `README.md`
 - `CHANGELOG.md`
@@ -84,10 +84,12 @@ The package must exclude:
 ## Publish
 
 ```bash
-npm publish
+bash scripts/npm-publish.sh
 ```
 
-Use the appropriate npm access flag for the package ownership model.
+The script verifies npm auth, checks version lockstep, runs
+`scripts/preflight-checks.sh`, prints an `npm publish --dry-run` summary, and
+prompts before publishing.
 
 ## After Publishing
 

@@ -16,7 +16,7 @@ XML, and `.env*`.
 From npm after publishing:
 
 ```bash
-npm install --save-dev gruff-ts
+npm install --save-dev @blundergoat/gruff-ts
 npx gruff-ts analyse . --fail-on=none
 ```
 
