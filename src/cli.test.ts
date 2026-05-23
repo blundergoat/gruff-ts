@@ -69,6 +69,14 @@ test("sleeps without assertion", async () => {
   assert.equal(fingerprints.get("modernisation.public-property"), "c80058bf4fd46024");
 });
 
+const FIRST_SLICE_RULE_IDS = new Set([
+  "waste.commented-out-code",
+  "naming.identifier-quality",
+  "test-quality.trivial-assertion",
+  "security.weak-crypto",
+  "sensitive-data.high-entropy-string",
+]);
+
 test("analysis finds first-slice portable TypeScript rules", () => {
   const secret = HIGH_ENTROPY_FIXTURE_VALUE;
   // Fixture covers portable source-text, line, function-block, test-block, and sensitive-data seams.
@@ -91,19 +99,12 @@ function testBuildsValue(): void {
   assert.equal("not a test", "not a test");
 }
 `);
-  const firstSliceRuleIds = new Set([
-    "waste.commented-out-code",
-    "naming.identifier-quality",
-    "test-quality.trivial-assertion",
-    "security.weak-crypto",
-    "sensitive-data.high-entropy-string",
-  ]);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  firstSliceRuleIds.forEach((ruleId: string) => {
+  FIRST_SLICE_RULE_IDS.forEach((ruleId: string) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
 
-  const firstSliceFindings = report.findings.filter((finding) => firstSliceRuleIds.has(finding.ruleId));
+  const firstSliceFindings = report.findings.filter((finding) => FIRST_SLICE_RULE_IDS.has(finding.ruleId));
   assert.equal(new Set(firstSliceFindings.map((finding) => finding.fingerprint)).size, firstSliceFindings.length);
 
   const helperTestFindings = report.findings.filter((finding) => finding.pillar === "test-quality" && finding.symbol === "testBuildsValue");
@@ -622,7 +623,7 @@ test("scanner guardrail fixtures keep live finding fingerprints stable", () => {
   const identity = (report: AnalysisReport) =>
     report.findings
       .filter((finding) => ruleIds.has(finding.ruleId))
-      .map((finding) => `${finding.ruleId}:${finding.filePath}:${finding.line ?? 0}:${finding.fingerprint}`)
+      .map((finding) => [finding.ruleId, finding.filePath, finding.line ?? 0, finding.fingerprint].join(":"))
       .sort();
   assert.deepEqual(identity(noisy), identity(base));
 });

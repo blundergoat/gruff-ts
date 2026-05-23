@@ -191,7 +191,7 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
     `Analysed files: ${report.paths.analysedFiles}`,
   ];
   if (report.diagnostics.length > 0) {
-    lines.push("", "Diagnostics:", ...report.diagnostics.map((diagnostic) => `- ${diagnostic.diagnosticType}: ${diagnostic.message}${diagnostic.filePath ? ` (${diagnostic.filePath})` : ""}`));
+    lines.push("", "Diagnostics:", ...report.diagnostics.map(summaryDiagnosticLine));
   }
   lines.push("", "Per-pillar counts:");
   lines.push(...renderRankedCounts(pillarCounts, "No findings by pillar."));
@@ -206,6 +206,14 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
     ),
   );
   return `${lines.join("\n")}\n`;
+}
+
+// Shared text formatter for diagnostic rows in plain-text summaries and the `text` format. Stable
+// "- {type}: {message} (path)" shape is part of the contract that scripts grepping the text output
+// rely on, so the format must stay deterministic across both call sites.
+function summaryDiagnosticLine(diagnostic: AnalysisReport["diagnostics"][number]): string {
+  const location = diagnostic.filePath ? ` (${diagnostic.filePath})` : "";
+  return `- ${diagnostic.diagnosticType}: ${diagnostic.message}${location}`;
 }
 
 // Human-sized summary runtime without pretending sub-millisecond precision is useful.
@@ -247,7 +255,7 @@ function renderText(report: AnalysisReport): string {
     `Analysed files: ${report.paths.analysedFiles}`,
   ];
   if (report.diagnostics.length > 0) {
-    lines.push("", "Diagnostics:", ...report.diagnostics.map((diagnostic) => `- ${diagnostic.diagnosticType}: ${diagnostic.message}${diagnostic.filePath ? ` (${diagnostic.filePath})` : ""}`));
+    lines.push("", "Diagnostics:", ...report.diagnostics.map(summaryDiagnosticLine));
   }
   if (report.findings.length > 0) {
     lines.push("", "Findings:", ...report.findings.map((finding) => `- [${finding.severity}] ${finding.filePath}:${finding.line ?? 1} ${finding.ruleId} - ${finding.message}`));
@@ -343,13 +351,19 @@ function htmlDiagnostics(report: AnalysisReport): string {
   if (report.diagnostics.length === 0) {
     return "";
   }
-  const diagnostics = report.diagnostics
-    .map((diagnostic) => {
-      const location = diagnostic.filePath ? `<span class="diagnostic-location">${escapeHtml(diagnostic.filePath)}${diagnostic.line ? `:${diagnostic.line}` : ""}</span>` : "";
-      return `<div class="diagnostic"><span class="diagnostic-type">${escapeHtml(diagnostic.diagnosticType)}</span><span class="diagnostic-message">${escapeHtml(diagnostic.message)}</span>${location}</div>`;
-    })
-    .join("");
+  const diagnostics = report.diagnostics.map(htmlDiagnosticEntry).join("");
   return `<section class="diagnostics"><h2 class="section-head">diagnostics <span class="aside">run messages</span></h2><div class="diagnostic-list">${diagnostics}</div></section>`;
+}
+
+// HTML markup for one diagnostic entry. The `diagnostic-type`/`diagnostic-message`/`diagnostic-location`
+// span classes are part of the stable HTML report contract — the dashboard CSS and any downstream
+// scraping keys off them, so the structure here must stay invariant across renderer changes.
+function htmlDiagnosticEntry(diagnostic: AnalysisReport["diagnostics"][number]): string {
+  const lineSuffix = diagnostic.line ? `:${diagnostic.line}` : "";
+  const location = diagnostic.filePath
+    ? `<span class="diagnostic-location">${escapeHtml(diagnostic.filePath)}${lineSuffix}</span>`
+    : "";
+  return `<div class="diagnostic"><span class="diagnostic-type">${escapeHtml(diagnostic.diagnosticType)}</span><span class="diagnostic-message">${escapeHtml(diagnostic.message)}</span>${location}</div>`;
 }
 
 // Dashboard-only banner that names the project root and scan path. Static reports never include
@@ -662,6 +676,8 @@ function escapeCommand(commandText: string): string {
   return commandText.replaceAll("%", "%25").replaceAll("\n", "%0A").replaceAll("\r", "%0D");
 }
 
+// Property-list variant of `escapeCommand`: also escapes `:` and `,` because GitHub workflow
+// commands use them as the property-list delimiters between `file`, `line`, `title`, etc.
 function escapeCommandProperty(propertyText: string): string {
   return escapeCommand(propertyText).replaceAll(":", "%3A").replaceAll(",", "%2C");
 }
