@@ -224,8 +224,20 @@ function registerInitCommand(program: Command): void {
         return;
       }
       const verb = result.status === "overwritten" ? "Overwrote" : "Wrote";
-      writeCommandOutput(program, `${verb} ${result.path}`);
+      writeCommandOutput(program, initSuccessMessage(verb, result.path));
     });
+}
+
+// Keeps `init` as a config-only write while pointing existing projects at the adoption flow.
+function initSuccessMessage(verb: "Wrote" | "Overwrote", configPath: string): string {
+  return [
+    `${verb} ${configPath}`,
+    "",
+    "Next: generate an adoption baseline with:",
+    "  gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none",
+    "Then gate new findings with:",
+    "  gruff-ts analyse . --baseline gruff-baseline.json --fail-on=warning",
+  ].join("\n");
 }
 
 // Mirrors the bare-root help output. Exists so users coming from Symfony's console conventions

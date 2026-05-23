@@ -189,6 +189,7 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
     `Score: ${report.score.composite.toFixed(1)} (${report.score.grade})`,
     `Findings: ${report.summary.total} total, ${report.summary.error} error, ${report.summary.warning} warning, ${report.summary.advisory} advisory`,
     `Analysed files: ${report.paths.analysedFiles}`,
+    ...(report.baseline ? [summaryBaselineLine(report.baseline)] : []),
   ];
   if (report.diagnostics.length > 0) {
     lines.push("", "Diagnostics:", ...report.diagnostics.map(summaryDiagnosticLine));
@@ -214,6 +215,15 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
 function summaryDiagnosticLine(diagnostic: AnalysisReport["diagnostics"][number]): string {
   const location = diagnostic.filePath ? ` (${diagnostic.filePath})` : "";
   return `- ${diagnostic.diagnosticType}: ${diagnostic.message}${location}`;
+}
+
+// Documents the summary baseline contract so suppressed findings are not mistaken for a clean scan.
+function summaryBaselineLine(baseline: NonNullable<AnalysisReport["baseline"]>): string {
+  if (baseline.generated) {
+    return `Baseline: generated ${baseline.path}; current findings still shown`;
+  }
+  const findingNoun = baseline.suppressed === 1 ? "finding" : "findings";
+  return `Baseline: ${baseline.source} ${baseline.path}; suppressed ${baseline.suppressed} ${findingNoun}`;
 }
 
 // Human-sized summary runtime without pretending sub-millisecond precision is useful.

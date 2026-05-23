@@ -118,7 +118,34 @@ test("summary CLI prints compact scan digest without per-finding spam", () => {
   assert.match(output, /Per-pillar counts:/);
   assert.match(output, /Top rules:/);
   assert.match(output, /Top file offenders:/);
+  assert.equal(/^Baseline:/m.test(output), false);
   assert.equal(output.includes("Findings:\n- ["), false);
+});
+
+test("summary CLI reports generated and applied baseline metadata", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-summary-baseline-"));
+  try {
+    const samplePath = join(projectRoot, "sample.ts");
+    const baselinePath = join(projectRoot, "gruff-baseline.json");
+    writeFileSync(samplePath, "eval('bad');\n");
+    const generated = execFileSync(
+      "./bin/gruff-ts",
+      ["summary", samplePath, "--generate-baseline", baselinePath, "--fail-on=none", "--no-config"],
+      { encoding: "utf8" },
+    );
+    assert.match(generated, /^Baseline: generated .*gruff-baseline\.json; current findings still shown$/m);
+    assert.match(generated, /^Findings: [1-9]\d* total/m);
+
+    const applied = execFileSync(
+      "./bin/gruff-ts",
+      ["summary", samplePath, "--baseline", baselinePath, "--fail-on=none", "--no-config"],
+      { encoding: "utf8" },
+    );
+    assert.match(applied, /^Baseline: explicit .*gruff-baseline\.json; suppressed [1-9]\d* findings$/m);
+    assert.match(applied, /^Findings: 0 total, 0 error, 0 warning, 0 advisory$/m);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
 });
 
 test("json report uses schema version", () => {

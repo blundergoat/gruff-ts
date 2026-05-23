@@ -27,6 +27,7 @@ const OPT_IN_RULE_IDS: ReadonlySet<string> = new Set(["docs.todo-density", "nami
 // the YAML form (a block sequence) is more reviewable than the inline `[...]` form a Set would emit.
 const DEFAULT_ACCEPTED_ABBREVIATIONS: readonly string[] = ["id", "db", "fs", "io", "ui", "tx", "rx"];
 
+// Result of an init write attempt, including the no-clobber branch for existing config files.
 interface InitResult {
   path: string;
   status: "written" | "overwritten" | "exists";
@@ -58,13 +59,13 @@ function renderDefaultConfig(): string {
  * file unless `force` is true; performs a filesystem write side effect when it does write.
  *
  * @param projectRoot Directory to write the config file into.
- * @param force Overwrite an existing config file when true.
+ * @param shouldOverwrite Overwrite an existing config file when true.
  * @returns The resolved path and whether a file was written, overwritten, or skipped.
  */
-function writeDefaultConfig(projectRoot: string, force: boolean): InitResult {
+function writeDefaultConfig(projectRoot: string, shouldOverwrite: boolean): InitResult {
   const path = join(projectRoot, DEFAULT_CONFIG_FILE_NAME);
   const fileExists = existsSync(path);
-  if (fileExists && !force) {
+  if (fileExists && !shouldOverwrite) {
     return { path, status: "exists" };
   }
   writeFileSync(path, renderDefaultConfig());
@@ -74,7 +75,17 @@ function writeDefaultConfig(projectRoot: string, force: boolean): InitResult {
 // `paths.ignore` defaults to empty - discovery.ts already filters node_modules, .git, etc.
 // regardless of config, so the starter file should not pre-populate project-specific exclusions.
 function renderPathsSection(): string {
-  return ["paths:", "  ignore: []"].join("\n");
+  return [
+    "paths:",
+    "  # Recursive scans already respect .gitignore plus built-in default directories",
+    "  # such as .git, node_modules, dist, coverage, generated, tmp, and vendor.",
+    "  # Add project-specific generated or local outputs here when Git does not ignore them.",
+    "  # Examples:",
+    "  #   - \"out/**\"",
+    "  #   - \".next/**\"",
+    "  #   - \"src/generated/**\"",
+    "  ignore: []",
+  ].join("\n");
 }
 
 // `acceptedAbbreviations` is emitted as a block sequence for reviewability; the seven naming
