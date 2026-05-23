@@ -34,6 +34,13 @@ allowlists:
     - api
     - cli
   secretPreviews: []
+  bannedGenericNames: [process, handle, doit, run, execute, manage]
+  booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires]
+  hungarianPrefixes: [str, obj, arr, bool, int, num]
+  placeholderNames: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]
+  abbreviationDenylist: [ctx, pkg, opts, fn, idx, cb]
+  negativeBooleanAllowed: [nostore, nofollow, noreferrer, noscript, noindex]
+  knownAcronyms: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]
 
 rules:
   rule.id:
@@ -95,6 +102,23 @@ allowlists:
 
 Prefer fixing false positives with a narrow config entry instead of disabling an
 entire sensitive-data rule.
+
+Naming allowlists tune the 0.1.0 naming pack without changing rule ids or
+fingerprints:
+
+| Key | Used by | Default behavior |
+| --- | --- | --- |
+| `acceptedAbbreviations` | `naming.short-variable` | Adds short names that should not be flagged. |
+| `bannedGenericNames` | `naming.generic-function` | Replaces the built-in generic function-name denylist. |
+| `booleanPrefixes` | `naming.boolean-prefix` | Replaces the accepted boolean-name prefixes such as `is`, `has`, `should`, `may`, `supports`, and `requires`. |
+| `hungarianPrefixes` | `naming.hungarian-notation` | Replaces type-style prefixes to flag. |
+| `placeholderNames` | `naming.identifier-quality`, `naming.generic-parameter` | Replaces placeholder words; numbered suffix checks stay active. |
+| `abbreviationDenylist` | `naming.abbreviation` | Replaces the opt-in abbreviation denylist. |
+| `negativeBooleanAllowed` | `naming.negative-boolean` | Replaces domain terms allowed to start with `no`. |
+| `knownAcronyms` | `naming.acronym-case` | Replaces acronyms checked for mixed casing. |
+
+For replace-style allowlists, use an empty list (`[]`) when you intentionally
+want no entries.
 
 ## Rule Controls
 
@@ -174,3 +198,20 @@ rules:
     threshold: 12
     severity: advisory
 ```
+
+## Adoption Defaults
+
+Two noisy-by-nature rules are present in the public catalogue but disabled by
+default in this repo config:
+
+```yaml
+rules:
+  docs.todo-density:
+    enabled: false
+  naming.abbreviation:
+    enabled: false
+```
+
+`docs.todo-without-tracking` remains enabled because it checks whether a TODO
+has owner, issue, date, ADR, or task context instead of counting raw TODO
+markers.

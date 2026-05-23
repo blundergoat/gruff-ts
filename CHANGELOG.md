@@ -2,9 +2,9 @@
 
 All notable changes to `gruff-ts` are documented here.
 
-This project follows semantic versioning once public releases begin.
+This project follows semantic versioning for public releases.
 
-## [0.1.0] - 2026-05-19
+## [0.1.0] - 2026-05-23
 
 Initial public release.
 
@@ -30,7 +30,7 @@ Initial public release.
 
 ### Rules
 
-- 112 rule descriptors across 11 public pillars:
+- 121 rule descriptors across 11 public pillars:
   - `complexity` (3): cognitive, cyclomatic, npath.
   - `dead-code` (1): unused-private-method.
   - `design` (6): circular-import, deep-relative-import, god-function,
@@ -53,11 +53,16 @@ Initial public release.
     class-file-mismatch, generic-function, generic-parameter,
     hungarian-notation, identifier-quality, inconsistent-casing,
     negative-boolean, short-variable.
-  - `security` (18): async-foreach, disabled-tls-verification, document-write,
-    eval-call, floating-promise, inner-html, insecure-random, javascript-url,
-    new-function, process-exec, proto-access, remote-install-script,
-    risky-lifecycle-script, sql-concatenation, string-timer, throw-non-error,
-    url-dependency, weak-crypto.
+  - `security` (27): async-foreach, disabled-tls-verification, document-write,
+    dynamic-regexp, eval-call, floating-promise,
+    github-actions-broad-permissions, github-actions-pull-request-target,
+    github-actions-remote-shell, github-actions-secrets-in-pr,
+    github-actions-unpinned-action, inner-html, insecure-random,
+    javascript-url, new-function, open-redirect-candidate,
+    path-traversal-candidate, process-exec, proto-access,
+    remote-install-script, risky-lifecycle-script, sql-concatenation,
+    ssrf-candidate, string-timer, throw-non-error, url-dependency,
+    weak-crypto.
   - `sensitive-data` (8): api-key-pattern, aws-access-key,
     database-url-password, hardcoded-env-value, high-entropy-string,
     jwt-token, pii-pattern, private-key.
@@ -112,6 +117,8 @@ Initial public release.
   Configured `paths.ignore` still applies.
 - `--history-file <path>` appends per-run score history as a local JSON file.
 - Exit codes: `0` clean, `1` finding met `--fail-on`, `2` scan diagnostics.
+- A strict security-oriented pass can use `--no-baseline --fail-on=error` so
+  adoption baselines do not suppress error-severity security findings.
 
 ### Dashboard
 
@@ -123,16 +130,18 @@ Initial public release.
 ### Source Layout
 
 - Runtime lives under `src/`:
-  - `cli.ts` — analyser entry point and scanner orchestration.
+  - `cli.ts` — thin bootstrap and public re-export shell.
   - `cli-program.ts` — Commander program wiring and option normalization.
+  - `analyser.ts` — scan orchestration and per-file/project rule fanout.
   - `discovery.ts` — source-file discovery and `.gitignore` handling.
-  - `rules.ts` — pillar rule descriptors and matchers.
-  - `sensitive-data-rules.ts` — sensitive-data rule descriptors and detectors.
-  - `project-config-rules.ts` — package/tsconfig rule descriptors.
+  - `rules.ts` — canonical rule descriptor catalogue.
+  - `security-flow-rules.ts`, `github-actions-rules.ts`, `safety-rules.ts`,
+    `sensitive-data-rules.ts`, and `project-config-rules.ts` — focused rule
+    packs.
   - `baseline.ts`, `config.ts`, `dashboard.ts`, `findings.ts`,
     `rule-list.ts`, `scoring.ts`, `source-text.ts`, `text-scans.ts`,
-    `report-renderers.ts`, `constants.ts`, `types.ts`.
-- Tests in `src/cli.test.ts`.
+    `report-renderers.ts`, `constants.ts`, and `types.ts`.
+- Tests live in focused `src/*.test.ts` files.
 
 ### Tooling
 

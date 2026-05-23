@@ -40,6 +40,9 @@ Human scan digest:
 gruff-ts summary . --fail-on=none
 ```
 
+The summary output includes the scanned path, elapsed duration, total findings,
+per-pillar counts, top rules, and top file offenders.
+
 Schema strings:
 
 - `gruff.analysis.v1` for full analysis reports.
@@ -64,6 +67,23 @@ gruff-ts analyse . --diff=origin/main --format=github --fail-on=warning
 
 `--diff` filters findings to changed files after analysis.
 
+For SARIF consumers, write SARIF output from `analyse` and upload the generated
+file with your platform's code-scanning upload step:
+
+```bash
+gruff-ts analyse . --format=sarif --fail-on=none > gruff.sarif
+```
+
+For a strict security-oriented gate, bypass baselines and fail on error-severity
+findings:
+
+```bash
+gruff-ts analyse . --no-baseline --fail-on=error
+```
+
+This is useful when an adoption baseline exists for general quality debt but
+security and sensitive-data errors should still break CI.
+
 ## Baselines
 
 Generate an adoption baseline:
@@ -86,6 +106,9 @@ gruff-ts analyse . --no-baseline --fail-on=none
 
 Review baseline diffs carefully. A baseline suppresses matching fingerprints, so
 unexpected additions can hide findings.
+
+`report` intentionally renders raw scan results and does not accept a
+`--baseline` option. Use `analyse` for baseline-aware machine output.
 
 ## HTML Reports
 

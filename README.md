@@ -5,10 +5,11 @@ TypeScript and JavaScript projects. It scans source, tests, package metadata,
 and common config files, then reports quality findings across 11 pillars with
 stable fingerprints for baselines and repeatable machine output.
 
-The 0.1 release ships 112 rules across 11 pillars, JSON/HTML/Markdown/GitHub
-/SARIF/hotspot output, baseline support, changed-file filtering, local score
-history, a rule catalogue, and a dark local dashboard. Scanned file types
-include TypeScript, JavaScript, CSS, JSON, YAML, TOML, INI, XML, and `.env*`.
+The 0.1.0 release ships 121 rules across 11 pillars,
+JSON/HTML/Markdown/GitHub/SARIF/hotspot output, baseline support, changed-file
+filtering, local score history, a rule catalogue, and a dark local dashboard.
+Scanned file types include TypeScript, JavaScript, CSS, JSON, YAML, TOML, INI,
+XML, and `.env*`.
 
 ## Install
 
@@ -165,6 +166,13 @@ gruff-ts analyse . --diff=staged --format=json --fail-on=none
 
 `--diff` accepts `working-tree`, `staged`, `unstaged`, or a base ref.
 
+Security-focused CI can run without baseline suppression so new error-severity
+security or sensitive-data findings cannot be hidden by an adoption baseline:
+
+```bash
+gruff-ts analyse . --no-baseline --fail-on=error
+```
+
 ## Baselines And History
 
 Baselines suppress existing findings by stable fingerprint so teams can adopt
@@ -177,6 +185,9 @@ gruff-ts analyse . --no-baseline --fail-on=none
 ```
 
 Baseline files use `schemaVersion: "gruff.baseline.v1"`.
+
+`report` is intended for raw inspection output and does not accept
+`--baseline`; use `analyse` when you need baseline suppression in CI.
 
 Append local score history:
 
@@ -269,10 +280,11 @@ npm run start-dev
 ./bin/gruff-ts analyse . --fail-on=none
 ```
 
-Source lives under `src/` (CLI in `src/cli.ts`, rules in `src/rules.ts`,
-sensitive-data rules in `src/sensitive-data-rules.ts`, project-config rules in
-`src/project-config-rules.ts`, with shared helpers in sibling files). Tests
-live in `src/cli.test.ts`.
+Source lives under `src/`: `src/cli.ts` is the thin bootstrap,
+`src/cli-program.ts` owns Commander wiring, `src/analyser.ts` orchestrates the
+scan, `src/rules.ts` holds the descriptor catalogue, and focused sibling
+modules own rule packs and renderers. Tests live in focused `src/*.test.ts`
+files.
 
 To bump the released version, run `scripts/bump-version.sh <new-version>` — it
 updates `package.json` and `src/constants.ts` in lockstep so the CLI

@@ -2,7 +2,7 @@
 
 ## System Overview
 
-`gruff-ts` is a single-binary Node.js CLI that statically analyses TypeScript/JavaScript projects and emits findings, reports, baselines, and rule catalogue metadata. The runtime is split across ~32 modules under `src/`, with `src/cli.ts` (19 lines) as a thin shell that wires `analyse` from `src/analyser.ts` into the commander program built by `src/cli-program.ts`. The dependency surface stays minimal — `commander` + `tsx` only — and baselines stay deterministic byte-stable JSON.
+`gruff-ts` is a dependency-light Node.js/ESM CLI that statically analyses TypeScript/JavaScript projects and common config/text assets, then emits findings, reports, baselines, SARIF, and rule catalogue metadata. The 0.1.0 release exposes 121 rules across 11 public pillars. The runtime is split across focused modules under `src/`, with `src/cli.ts` (19 lines) as a thin shell that wires `analyse` from `src/analyser.ts` into the commander program built by `src/cli-program.ts`. The dependency surface stays minimal — `commander` + `tsx` only — and baselines stay deterministic byte-stable JSON.
 
 Seven primary command surfaces, registered in `src/cli-program.ts`:`buildProgram`:
 
@@ -39,13 +39,14 @@ Seven primary command surfaces, registered in `src/cli-program.ts`:`buildProgram
 State is filesystem-only — there is no database, queue, or external API.
 
 - **Inputs:** source files matched by `src/discovery.ts`:`discoverSources` with hardcoded ignore set in `src/discovery.ts`:`isDefaultIgnoredDir`; optional `.gruff-ts.yaml` config; optional baseline JSON; optional history JSON.
-- **Outputs:** stdout (`text`/`json`/`markdown`/`github`/`hotspot`), self-contained dark HTML reports (also stdout unless `report --output`), compact summary text, shell completion scripts, the local dashboard shell/scan HTML, `list-rules` text or unversioned JSON catalogue output, `gruff-baseline.json` when `--generate-baseline` is set, `.gruff-history.json` when `--history-file` is passed.
+- **Outputs:** stdout (`text`/`json`/`html`/`markdown`/`github`/`hotspot`/`sarif`), self-contained dark HTML reports (also stdout unless `report --output`), compact summary text, shell completion scripts, the local dashboard shell/scan HTML, `list-rules` text or unversioned JSON catalogue output, `gruff-baseline.json` when `--generate-baseline` is set, `.gruff-history.json` when `--history-file` is passed.
 - **Schemas (public contract):** `gruff.analysis.v1` (the `AnalysisReport`), `gruff.baseline.v1` (the suppression file written by `src/baseline.ts`:`writeBaseline`), `gruff.hotspot.v1` (the trimmed top-offenders payload in `src/report-renderers.ts`'s `hotspot` branch). Bumping any of these is a breaking change for downstream consumers.
 - **Determinism:** `Finding.fingerprint` (sha256 of `ruleId\0filePath\0line\0symbol`, sliced to 16 chars in `src/findings.ts`:`makeFinding`) is the dedupe and baseline-match key. Findings are sorted by `(filePath, line, ruleId, message)` before dedupe so the report bytes are stable across runs.
 
 ## Deployment / Operations
 
-- Distributed as an npm package (`package.json` declares `bin.gruff-ts → ./bin/gruff-ts`). License is `proprietary`.
-- No CI workflow files (the `.github` directory is absent). `scripts/check.sh` and `scripts/start-dev.sh` are the only orchestration entry points beyond `npm run`.
-- Local validation gate: `npm run check` runs `tsc --noEmit && npm test` (Node test runner via `node --import tsx --test`). `src/cli.test.ts` (105 tests as of 2026-05-20) covers analyser rules, baselines, determinism, rule descriptors, console command parity, summary output, report rendering, dashboard shell anchors, and JSON schema markers.
-- Runtime targets Node 25 / ESM (`"type": "module"`) and TypeScript 5.9 with `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `allowImportingTsExtensions`.
+- Distributed as an npm package (`package.json` declares `bin.gruff-ts → ./bin/gruff-ts`). License is MIT.
+- CI lives in `.github/workflows/ci.yml` and runs on pushes/PRs to `main` and `dev`: install with `npm ci`, run `npm run check`, then self-scan with `./bin/gruff-ts analyse . --fail-on=advisory`.
+- Local validation gate: `npm run check` runs `tsc --noEmit && npm test` (Node test runner via `node --import tsx --test src/**/*.test.ts`). Focused `src/*.test.ts` files cover analyser rules, baselines, determinism, rule descriptors, console command parity, summary output, report rendering, dashboard shell anchors, SARIF, config, and JSON schema markers.
+- Release validation helpers live in `scripts/`: `bump-version.sh`, `check.sh`, `preflight-checks.sh`, `start-dev.sh`, and `test-performance.sh`.
+- Runtime is ESM (`"type": "module"`) and TypeScript 5.9 with `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, and `allowImportingTsExtensions`.
