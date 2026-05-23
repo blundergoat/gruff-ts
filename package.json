@@ -1,9 +1,40 @@
 {
   "name": "gruff-ts",
   "version": "0.1.0",
-  "description": "TypeScript project quality analyzer.",
+  "description": "Static analyzer for TypeScript and JavaScript projects - 121 rules across 11 quality pillars, SARIF output, baselines, and a local dashboard.",
   "license": "MIT",
   "author": "Matthew Hansen (https://www.blundergoat.com/about)",
+  "homepage": "https://github.com/blundergoat/gruff-ts#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blundergoat/gruff-ts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/blundergoat/gruff-ts/issues"
+  },
+  "keywords": [
+    "typescript",
+    "javascript",
+    "static-analysis",
+    "code-quality",
+    "linter",
+    "analyzer",
+    "cli",
+    "sarif",
+    "baseline",
+    "fingerprint",
+    "complexity",
+    "dead-code",
+    "security",
+    "naming",
+    "dashboard",
+    "ci",
+    "github-actions",
+    "nodejs"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "bin": {
     "gruff-ts": "./bin/gruff-ts"

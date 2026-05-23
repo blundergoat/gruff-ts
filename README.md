@@ -1,8 +1,8 @@
 # gruff-ts
 
-`gruff-ts` is a dependency-light Node.js CLI for statically analysing
-TypeScript and JavaScript projects. It scans source, tests, package metadata,
-and common config files, then reports quality findings across 11 pillars with
+`gruff-ts` is a static analyzer for TypeScript and JavaScript projects. The
+dependency-light Node.js CLI scans source, tests, package metadata, and
+common config files, then reports quality findings across 11 pillars with
 stable fingerprints for baselines and repeatable machine output.
 
 The 0.1.0 release ships 121 rules across 11 pillars,
@@ -289,7 +289,7 @@ scan, `src/rules.ts` holds the descriptor catalogue, and focused sibling
 modules own rule packs and renderers. Tests live in focused `src/*.test.ts`
 files.
 
-To bump the released version, run `scripts/bump-version.sh <new-version>` — it
+To bump the released version, run `scripts/bump-version.sh <new-version>` - it
 updates `package.json` and `src/constants.ts` in lockstep so the CLI
 `--version` output stays consistent with the published package.
 
