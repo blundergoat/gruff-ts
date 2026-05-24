@@ -6,7 +6,20 @@ paths:
   #   - "out/**"
   #   - ".next/**"
   #   - "src/generated/**"
-  ignore: []
+  # Generated lockfiles below also have built-in analyser heuristics (size.file-length skip,
+  # SRI-hash allowlist for sensitive-data); listed here for explicit visibility.
+  ignore:
+    - ".agents/**"
+    - ".claude/**"
+    - ".codex/**"
+    - ".github/**"
+    - ".goat-flow/**"
+    - "fixtures/**"
+    - "package-lock.json"
+    - "npm-shrinkwrap.json"
+    - "yarn.lock"
+    - "pnpm-lock.yaml"
+    - "bun.lockb"
 
 allowlists:
   acceptedAbbreviations:

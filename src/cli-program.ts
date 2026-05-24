@@ -330,15 +330,24 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     });
 }
 
-function parseSummaryFormat(value: string): "text" | "json" {
-  if (value === "text" || value === "json") {
-    return value;
+/*
+ * Commander `--format` argParser for the summary command. Throws `InvalidArgumentError` when the
+ * input is neither `text` nor `json`; commander reports that as a usage error and exits non-zero
+ * before the command body runs.
+ */
+function parseSummaryFormat(rawFormat: string): "text" | "json" {
+  if (rawFormat === "text" || rawFormat === "json") {
+    return rawFormat;
   }
   throw new InvalidArgumentError("must be text or json");
 }
 
-function parseNonNegativeInteger(value: string): number {
-  const parsed = Number(value);
+/*
+ * Commander argParser for `--top`-style numeric flags. Throws `InvalidArgumentError` on non-integer
+ * or negative input so commander reports a usage error and exits non-zero before the command runs.
+ */
+function parseNonNegativeInteger(rawCount: string): number {
+  const parsed = Number(rawCount);
   if (!Number.isInteger(parsed) || parsed < 0) {
     throw new InvalidArgumentError("must be a non-negative integer");
   }

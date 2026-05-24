@@ -3,7 +3,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { defaultConfigPath } from "./config.ts";
+import { defaultConfigPath, loadConfig } from "./config.ts";
 import { ruleDescriptors } from "./rules.ts";
 import type { RuleDescriptor } from "./types.ts";
 
@@ -43,15 +43,20 @@ interface InitPromptContext {
 /**
  * Render the default .gruff-ts.yaml content from the rule descriptor registry.
  *
+ * @param ignoredPaths Optional `paths.ignore` entries to inject verbatim (block-sequence form). The
+ *   `gruff-ts init --force` flow forwards the existing file's entries so user-curated exclusions
+ *   survive regeneration; an empty list emits `ignore: []` for fresh projects.
  * @returns A YAML document string terminated by a trailing newline.
  */
-function renderDefaultConfig(): string {
-  return [renderPathsSection(), "", renderAllowlistsSection(), "", renderRulesSection()].join("\n") + "\n";
+function renderDefaultConfig(ignoredPaths: readonly string[] = []): string {
+  return [renderPathsSection(ignoredPaths), "", renderAllowlistsSection(), "", renderRulesSection()].join("\n") + "\n";
 }
 
 /**
  * Write the default config to `<projectRoot>/.gruff-ts.yaml`. Refuses to clobber an existing
- * file unless `force` is true; performs a filesystem write side effect when it does write.
+ * file unless `force` is true; performs a filesystem write side effect when it does write. When
+ * overwriting, the existing file's `paths.ignore` entries are preserved so `init --force` does not
+ * silently erase project-specific recursive-scan exclusions.
  *
  * @param projectRoot Directory to write the config file into.
  * @param shouldOverwrite Overwrite an existing config file when true.
@@ -63,14 +68,38 @@ function writeDefaultConfig(projectRoot: string, shouldOverwrite: boolean): Init
   if (fileExists && !shouldOverwrite) {
     return { path, status: "exists" };
   }
-  writeFileSync(path, renderDefaultConfig());
+  const preservedIgnoredPaths = fileExists ? readExistingIgnoredPaths(projectRoot) : [];
+  writeFileSync(path, renderDefaultConfig(preservedIgnoredPaths));
   return { path, status: fileExists ? "overwritten" : "written" };
 }
 
-// `paths.ignore` defaults to empty - discovery.ts already filters node_modules, .git, etc.
-// regardless of config, so the starter file should not pre-populate project-specific exclusions.
-function renderPathsSection(): string {
-  return [
+/*
+ * Recover the existing file's `paths.ignore` block before `init --force` overwrites it. The
+ * try/catch swallows YAML-parse errors and the fallback returns an empty list so a malformed
+ * existing config does not block regeneration - the user is opting into clobbering, but the
+ * documented contract is that curated ignore entries survive when readable.
+ */
+function readExistingIgnoredPaths(projectRoot: string): readonly string[] {
+  try {
+    const config = loadConfig(projectRoot, {
+      paths: [],
+      shouldSkipConfig: false,
+      format: "text",
+      failOn: "none",
+      shouldIncludeIgnored: false,
+      shouldSkipBaseline: true,
+    });
+    return config.ignoredPaths;
+  } catch {
+    return [];
+  }
+}
+
+// `paths.ignore` defaults to empty for fresh projects - discovery.ts already filters node_modules,
+// .git, etc. regardless of config. When `init --force` regenerates an existing config, the caller
+// forwards the existing entries so user-curated exclusions survive.
+function renderPathsSection(ignoredPaths: readonly string[]): string {
+  const header = [
     "paths:",
     "  # Recursive scans already respect .gitignore plus built-in default directories",
     "  # such as .git, node_modules, dist, coverage, generated, tmp, and vendor.",
@@ -79,7 +108,14 @@ function renderPathsSection(): string {
     "  #   - \"out/**\"",
     "  #   - \".next/**\"",
     "  #   - \"src/generated/**\"",
-    "  ignore: []",
+  ];
+  if (ignoredPaths.length === 0) {
+    return [...header, "  ignore: []"].join("\n");
+  }
+  return [
+    ...header,
+    "  ignore:",
+    ...ignoredPaths.map((ignoredPath) => `    - ${JSON.stringify(ignoredPath)}`),
   ].join("\n");
 }
 

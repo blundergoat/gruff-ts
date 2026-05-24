@@ -74,6 +74,28 @@ test("gruff-ts init writes the default config, refuses to overwrite, and respect
   }
 });
 
+test("renderDefaultConfig preserves passed paths.ignore entries as a block sequence", () => {
+  const yaml = renderDefaultConfig([".agents/**", ".claude/**", "fixtures/**"]);
+  assert.match(yaml, /^paths:\n(?:  #.*\n)+  ignore:\n    - "\.agents\/\*\*"\n    - "\.claude\/\*\*"\n    - "fixtures\/\*\*"\n/);
+});
+
+test("gruff-ts init --force preserves the existing paths.ignore entries", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-init-preserve-"));
+  try {
+    const configPath = join(projectRoot, DEFAULT_CONFIG_FILE_NAME);
+    writeFileSync(configPath, renderDefaultConfig([".agents/**", ".goat-flow/**", "fixtures/**"]));
+
+    const overwritten = execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "init", "--force"], { cwd: projectRoot, encoding: "utf8" });
+    assert.match(overwritten, /^Overwrote /);
+
+    const newContent = readFileSync(configPath, "utf8");
+    assert.equal(newContent, renderDefaultConfig([".agents/**", ".goat-flow/**", "fixtures/**"]));
+    assert.match(newContent, /  ignore:\n    - "\.agents\/\*\*"\n    - "\.goat-flow\/\*\*"\n    - "fixtures\/\*\*"/);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
 test("shouldPromptForInit returns true only when every gate passes", () => {
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-prompt-"));
   try {

@@ -209,6 +209,11 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
   return `${lines.join("\n")}\n`;
 }
 
+/*
+ * Renders the stable public `gruff.summary.v1` JSON contract for the `summary --format=json` flow.
+ * The schema shape (scope/score/findings/topRules/topOffenders) is part of that contract - downstream
+ * CI integrations parse it, so field renames or removals are breaking changes for users.
+ */
 function renderSummaryJson(report: AnalysisReport, elapsedMs?: number, pathLabel?: string, top = 10): string {
   const pillarCounts = countBy(report.findings, (finding) => finding.pillar);
   const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);

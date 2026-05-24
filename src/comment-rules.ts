@@ -294,6 +294,7 @@ function knownCliFlags(): Set<string> {
     "--config",
     "--diff",
     "--fail-on",
+    "--force",
     "--format",
     "--generate-baseline",
     "--help",
