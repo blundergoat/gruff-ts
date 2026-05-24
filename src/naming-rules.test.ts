@@ -168,45 +168,6 @@ console.log(process);
   assert.equal(finding?.fingerprint, "6786a041045d82a8");
 });
 
-test("naming abbreviation default disabled produces no findings", () => {
-  const report = analyseFixture(`function takesCtx(ctx: unknown): unknown {
-  return ctx;
-}
-`);
-  const findings = report.findings.filter((finding) => finding.ruleId === "naming.abbreviation");
-  assert.deepEqual(findings, []);
-});
-
-test("naming abbreviation enabled flags ctx parameter", () => {
-  const report = analyseFixture(
-    `function takesCtx(ctx: unknown): unknown {
-  return ctx;
-}
-`,
-    { config: { rules: { "naming.abbreviation": { enabled: true } } } },
-  );
-  const findings = report.findings.filter((finding) => finding.ruleId === "naming.abbreviation");
-  assert.deepEqual(findings.map((finding) => finding.symbol), ["ctx"]);
-  assert.equal(findings[0]?.metadata?.surface, "parameter");
-});
-
-test("naming abbreviation respects acceptedAbbreviations override", () => {
-  const report = analyseFixture(
-    `function takesCtx(ctx: unknown): unknown {
-  return ctx;
-}
-`,
-    {
-      config: {
-        rules: { "naming.abbreviation": { enabled: true } },
-        allowlists: { acceptedAbbreviations: ["ctx"] },
-      },
-    },
-  );
-  const findings = report.findings.filter((finding) => finding.ruleId === "naming.abbreviation");
-  assert.deepEqual(findings, []);
-});
-
 test("naming negative-boolean flags disableCache and noEnabled style names", () => {
   const report = analyseFixture(`const disableCache = true;
 
@@ -331,7 +292,6 @@ console.log(apiToken, googleApiKey);
 // Canonical list of naming-pillar rule ids. Ordering matters: the catalogue test asserts the
 // descriptor output matches this list exactly.
 const NAMING_PILLAR_RULE_IDS = [
-  "naming.abbreviation",
   "naming.acronym-case",
   "naming.boolean-prefix",
   "naming.class-file-mismatch",
@@ -378,18 +338,9 @@ console.log(URL_PATH, urlPath, databaseUrl, DATABASE_URL);
 });
 
 test("naming rule pack cross-rule overlap stays disjoint", () => {
-  const report = analyseFixture(
-    `const ctx = { request: 1 };
-const disableCache = true;
-console.log(ctx, disableCache);
-`,
-    { config: { rules: { "naming.abbreviation": { enabled: true } } } },
-  );
-  const abbreviation = report.findings.filter((finding) => finding.ruleId === "naming.abbreviation").map((finding) => finding.symbol);
-  const shortVariable = report.findings.filter((finding) => finding.ruleId === "naming.short-variable").map((finding) => finding.symbol);
-  assert.equal(abbreviation.includes("ctx"), true);
-  assert.equal(shortVariable.includes("ctx"), false);
-
+  const report = analyseFixture(`const disableCache = true;
+console.log(disableCache);
+`);
   const negative = report.findings.filter((finding) => finding.ruleId === "naming.negative-boolean").map((finding) => finding.symbol);
   const booleanPrefix = report.findings.filter((finding) => finding.ruleId === "naming.boolean-prefix").map((finding) => finding.symbol);
   assert.equal(negative.includes("disableCache"), true);

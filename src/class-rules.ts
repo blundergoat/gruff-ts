@@ -7,7 +7,7 @@ import { type ExportedDeclaration, exportedDeclarations, pushMissingPublicDocFin
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { fileBaseName, finding, normalizedIdentifier } from "./findings-helpers.ts";
-import { pushAbbreviationAt, pushBooleanPrefixAt, pushNegativeBooleanAt } from "./naming-pushers.ts";
+import { pushBooleanPrefixAt, pushNegativeBooleanAt } from "./naming-pushers.ts";
 import { byteLine } from "./text-scans.ts";
 import type { Config, Finding } from "./types.ts";
 
@@ -46,7 +46,7 @@ export function collectDeclaredIdentifiers(source: string, codeSource: string, b
 }
 
 // Walks every interface body line and matches the field declaration regex. Used both for the
-// naming inventory (above) and for the per-field interface rules (boolean prefix, abbreviation).
+// naming inventory (above) and for the per-field interface rules (boolean prefix, negative-boolean).
 function collectInterfaceFieldDeclarations(source: string, codeSource: string): DeclaredIdentifier[] {
   const fieldRegex = /^[ \t]*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\??\s*:/;
   const out: DeclaredIdentifier[] = [];
@@ -190,9 +190,9 @@ function isFixtureIdentifier(name: string): boolean {
 }
 
 /*
- * Walks every interface field and runs three checks per field: abbreviation, boolean prefix,
- * negative boolean. The stable ordering matches `pushAbbreviationAt` → `pushBooleanPrefixAt` →
- * `pushNegativeBooleanAt` so multiple findings on one field surface in a deterministic sequence.
+ * Walks every interface field and runs two checks per boolean field: boolean prefix and
+ * negative boolean. The stable ordering matches `pushBooleanPrefixAt` → `pushNegativeBooleanAt`
+ * so multiple findings on one field surface in a deterministic sequence.
  */
 export function analyseInterfaceFields(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[]): void {
   const fieldRegex = /^[ \t]*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\??\s*:\s*([^;]+)/;
@@ -200,7 +200,6 @@ export function analyseInterfaceFields(file: SourceFile, source: string, codeSou
     const match = sourceLine.match(fieldRegex);
     const name = match?.[1] ?? "";
     if (!name) continue;
-    pushAbbreviationAt(file, lineIndex + 1, name, config, findings, "interface-field");
     if (/^\s*boolean\b/.test(match?.[2] ?? "")) {
       pushBooleanPrefixAt(file, lineIndex + 1, name, config, findings, "interface-field");
       pushNegativeBooleanAt(file, lineIndex + 1, name, config, findings, "interface-field");

@@ -585,7 +585,6 @@ function computeValue(inputText: string): string {
 test("scanner guardrail fixtures keep noisy-valid comments strings regex templates inert", () => {
   const report = analyseProject(SCANNER_GUARDRAIL_NOISY_VALID_FIXTURE);
   const noisyRules = new Set([
-    "docs.todo-density",
     "modernisation.var-declaration",
     "security.eval-call",
     "security.new-function",
@@ -626,30 +625,6 @@ test("scanner guardrail fixtures keep live finding fingerprints stable", () => {
       .map((finding) => [finding.ruleId, finding.filePath, finding.line ?? 0, finding.fingerprint].join(":"))
       .sort();
   assert.deepEqual(identity(noisy), identity(base));
-});
-
-test("todo density counts comment markers without literal false positives", () => {
-  const source = `const descriptor = "TODO/FIXME markers";
-const matcher = /TODO|FIXME/;
-const template = \`TODO inside a fixture string\`;
-// TODO first real marker
-function work(): void {
-  /*
-   * FIXME second real marker
-   */
-}
-`;
-  const report = analyseFixture(source, {
-    config: { rules: { "docs.todo-density": { enabled: true, threshold: 2, severity: "advisory" } } },
-  });
-  const finding = report.findings.find((candidate) => candidate.ruleId === "docs.todo-density");
-  const expectedFirstTodoLine = 4;
-  assert.equal(finding?.message, "File contains 2 TODO/FIXME markers."); assert.equal(finding?.line, expectedFirstTodoLine);
-
-  const relaxedReport = analyseFixture(source, {
-    config: { rules: { "docs.todo-density": { enabled: true, threshold: 3, severity: "advisory" } } },
-  });
-  assert.equal(relaxedReport.findings.some((finding) => finding.ruleId === "docs.todo-density"), false);
 });
 
 test("unreachable-code ignores reachable switch cases after returns", () => {

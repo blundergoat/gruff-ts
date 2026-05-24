@@ -7,7 +7,7 @@
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts";
-import { type NamingSurface, pushAbbreviationAt, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
+import { type NamingSurface, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
@@ -104,7 +104,7 @@ function codeLineChecks(): LineRuleCheck[] {
     { ruleId: "security.inner-html", pattern: /\.innerHTML\s*=(?!\s*(?:""|''))|\bdangerouslySetInnerHTML\b/, message: "HTML injection sink can introduce XSS.", severity: "warning", pillar: "security" },
     { ruleId: "security.proto-access", pattern: /\.__proto__\b/, message: "Direct __proto__ access can enable prototype pollution.", severity: "warning", pillar: "security" },
     { ruleId: "security.document-write", pattern: /\bdocument\.write\s*\(/, message: "document.write() can introduce injection risks.", severity: "warning", pillar: "security" },
-    { ruleId: "waste.redundant-boolean-cast", pattern: /\b(?:if|while)\s*\(\s*(?:!!\s*[A-Za-z_$][A-Za-z0-9_$.]*|Boolean\s*\()/, message: "Condition contains a redundant boolean cast.", severity: "advisory", pillar: "waste" },
+    { ruleId: "waste.redundant-boolean-cast", pattern: /\b(?:if|while)\s*\(\s*(?:!!\s*[A-Za-z_$][A-Za-z0-9_$.]*|Boolean\s*\()/, message: "Condition contains a redundant boolean cast.", severity: "advisory", pillar: "maintainability" },
   ];
 }
 
@@ -120,8 +120,8 @@ function literalLineChecks(): LineRuleCheck[] {
     { ruleId: "security.sql-concatenation", pattern: /\b(?:query|execute|raw)\s*\(\s*(?:`[^`]*(?:SELECT|INSERT|UPDATE|DELETE)[^`]*\$\{|["'][^"']*(?:SELECT|INSERT|UPDATE|DELETE)[^"']*["']\s*\+)/i, message: "SQL text is composed with runtime string interpolation.", severity: "warning", pillar: "security" },
     { ruleId: "modernisation.date-now-candidate", pattern: /\bnew\s+Date\s*\(\s*\)\s*\.getTime\s*\(\s*\)|\bNumber\s*\(\s*new\s+Date\s*\(\s*\)\s*\)/, message: "Current-time expression can use Date.now().", severity: "advisory", pillar: "modernisation" },
     { ruleId: "modernisation.object-spread-candidate", pattern: /\bObject\.assign\s*\(\s*\{\s*\}\s*,/, message: "Object.assign clone can usually use object spread.", severity: "advisory", pillar: "modernisation" },
-    { ruleId: "waste.console-log", pattern: /\bconsole\.(log|debug)\s*\(/, message: "console logging is committed in source.", severity: "advisory", pillar: "waste" },
-    { ruleId: "waste.any-type", pattern: /:\s*any\b|as\s+any\b/, message: "any weakens TypeScript's type guarantees.", severity: "warning", pillar: "waste" },
+    { ruleId: "waste.console-log", pattern: /\bconsole\.(log|debug)\s*\(/, message: "console logging is committed in source.", severity: "advisory", pillar: "maintainability" },
+    { ruleId: "waste.any-type", pattern: /:\s*any\b|as\s+any\b/, message: "any weakens TypeScript's type guarantees.", severity: "warning", pillar: "maintainability" },
     { ruleId: "modernisation.var-declaration", pattern: /\bvar\s+[A-Za-z_$]/, message: "var declaration should usually be let or const.", severity: "advisory", pillar: "modernisation" },
   ];
   return checks.map(withGlobalPattern);
@@ -143,7 +143,7 @@ function withGlobalPattern(check: LineRuleCheck): LineRuleCheck {
  */
 function pushCommentedOutCodeFinding(context: LineRuleContext): void {
   if (isCommentedOutCode(context.line)) {
-    context.findings.push(finding({ ruleId: "waste.commented-out-code", message: "Comment appears to contain disabled source code.", file: context.file, line: context.lineNumber, severity: "advisory", pillar: "waste" }));
+    context.findings.push(finding({ ruleId: "waste.commented-out-code", message: "Comment appears to contain disabled source code.", file: context.file, line: context.lineNumber, severity: "advisory", pillar: "maintainability" }));
   }
 }
 
@@ -279,19 +279,17 @@ function isSuppressedByPathContext(ruleId: string, displayPath: string): boolean
   return /(?:^|\/)(?:scripts|bin)\//.test(displayPath) || /(?:^|\/)cli[/.]/i.test(displayPath) || /(?:^|\/)server[/.]/i.test(displayPath);
 }
 
-// Per-line variable-name pass that runs short/identifier-quality/abbreviation checks on both
+// Per-line variable-name pass that runs short/identifier-quality checks on both
 // regular `const`/`let` declarations and destructured names. Reports any findings produced.
 function pushVariableNameFindings(context: LineRuleContext): void {
   for (const match of context.codeLine.matchAll(context.variables)) {
     const name = match[1] ?? "";
     pushShortVariableFinding(context, name);
     pushIdentifierQualityFinding(context, name);
-    pushAbbreviationAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
   }
   for (const name of destructuredLocalNames(context.codeLine)) {
     pushShortVariableAt(context.file, context.lineNumber, name, context.config, context.findings, "destructure");
     pushIdentifierQualityAt(context.file, context.lineNumber, name, context.config, context.findings, "destructure");
-    pushAbbreviationAt(context.file, context.lineNumber, name, context.config, context.findings, "destructure");
   }
 }
 

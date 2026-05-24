@@ -41,7 +41,6 @@ allowlists:
   booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires]
   hungarianPrefixes: [str, obj, arr, bool, int, num]
   placeholderNames: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]
-  abbreviationDenylist: [ctx, pkg, opts, fn, idx, cb]
   negativeBooleanAllowed: [nostore, nofollow, noreferrer, noscript, noindex]
   knownAcronyms: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]
 
@@ -116,7 +115,6 @@ fingerprints:
 | `booleanPrefixes` | `naming.boolean-prefix` | Replaces the accepted boolean-name prefixes such as `is`, `has`, `should`, `may`, `supports`, and `requires`. |
 | `hungarianPrefixes` | `naming.hungarian-notation` | Replaces type-style prefixes to flag. |
 | `placeholderNames` | `naming.identifier-quality`, `naming.generic-parameter` | Replaces placeholder words; numbered suffix checks stay active. |
-| `abbreviationDenylist` | `naming.abbreviation` | Replaces the opt-in abbreviation denylist. |
 | `negativeBooleanAllowed` | `naming.negative-boolean` | Replaces domain terms allowed to start with `no`. |
 | `knownAcronyms` | `naming.acronym-case` | Replaces acronyms checked for mixed casing. |
 
@@ -165,6 +163,8 @@ gruff-ts list-rules
 gruff-ts list-rules --format=json
 ```
 
+See [Rules](./rules.md) for the full rule catalogue grouped by pillar.
+
 ## Example Project Config
 
 ```yaml
@@ -201,20 +201,3 @@ rules:
     threshold: 12
     severity: advisory
 ```
-
-## Adoption Defaults
-
-Two noisy-by-nature rules are present in the public catalogue but disabled by
-default in this repo config:
-
-```yaml
-rules:
-  docs.todo-density:
-    enabled: false
-  naming.abbreviation:
-    enabled: false
-```
-
-`docs.todo-without-tracking` remains enabled because it checks whether a TODO
-has owner, issue, date, ADR, or task context instead of counting raw TODO
-markers.

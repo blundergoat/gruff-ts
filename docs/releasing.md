@@ -5,11 +5,11 @@ subsequent `0.1.x` patch releases.
 
 ## Bump The Version
 
-`scripts/bump-version.sh <semver>` updates `package.json` and
-`src/constants.ts` together so the CLI `--version` output and the published
-`@blundergoat/gruff-ts` package version cannot drift apart. For the initial
-`0.1.0` release, the version should already be `0.1.0`; use `--check` instead
-of bumping unless the release version changes.
+`scripts/bump-version.sh <semver>` updates `package.json`,
+`package-lock.json`, and `src/constants.ts` together so the CLI `--version`
+output and the published `@blundergoat/gruff-ts` package version cannot drift
+apart. For the initial `0.1.0` release, the version should already be `0.1.0`;
+use `--check` instead of bumping unless the release version changes.
 
 ```bash
 scripts/bump-version.sh --check
@@ -30,9 +30,10 @@ update `CHANGELOG.md` and run `npm run check`.
       explicitly accepted `human-verification-pending` milestones.
 - [ ] `LICENSE` is present and `package.json` `license` field matches.
 - [ ] `npm run check` passes.
-- [ ] `scripts/preflight-checks.sh` passes (runs `npm run check`, a full
-      `gruff-ts` self-scan, and `shellcheck` on `scripts/*.sh` when
-      `shellcheck` is installed).
+- [ ] `scripts/preflight-checks.sh` passes (checks version lockstep and npm
+      publication status, runs `npm audit --audit-level=moderate`,
+      `npm run check`, a full `gruff-ts` self-scan, and `shellcheck` on
+      `scripts/*.sh` when `shellcheck` is installed).
 - [ ] `npm pack --dry-run` shows only publishable runtime, docs, scripts, and
       metadata files.
 - [ ] Local smoke scan succeeds:
@@ -58,8 +59,9 @@ The package should include:
 - `bin/gruff-ts`
 - `src/` (all runtime `.ts` files; `src/**/*.test.ts` files are excluded by
   `.npmignore`)
-- `scripts/` (`bump-version.sh`, `check.sh`, `preflight-checks.sh`,
-  `npm-publish.sh`, `start-dev.sh`, `test-performance.sh`)
+- `scripts/` (`bump-version.sh`, `check.sh`, `dependency-install.sh`,
+  `dependency-update.sh`, `preflight-checks.sh`, `npm-publish.sh`,
+  `start-dev.sh`, `test-performance.sh`)
 - `fixtures/sample.ts`
 - `README.md`
 - `CHANGELOG.md`

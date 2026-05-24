@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-23
+last_reviewed: 2026-05-24
 ---
 
 # Verification lessons
@@ -275,3 +275,23 @@ Workflow-security fixture smoke tests can trip the same hook if the shell comman
 **Evidence:** `src/docs-comment-rules.test.ts` + `(search: "comment quality requires rationale for non-TypeScript suppressions")`; the corrected fixture uses one concatenated source expression so `TS_IGNORE_DIRECTIVE` is visible to import analysis without adding setup lines.
 
 **Prevention:** When a fixture token must be visible outside a template literal, prefer a compact concatenated expression over line-array builders unless the test already has setup budget and a nearby fixture-purpose comment.
+
+## Lesson: self-scan CLI onboarding changes before close-out
+
+**Created:** 2026-05-24
+
+**What happened:** During baseline-onboarding work, `npm run check` passed but `./bin/gruff-ts summary . --fail-on=none --no-baseline` exposed new gruff findings from newly added helper functions and a CLI test that used a dynamic binary path for `execFileSync`.
+
+**Evidence:** `src/report-renderers.ts` + `(search: "function summaryBaselineLine")`; `src/cli-surfaces.test.ts` + `(search: "summary CLI reports generated and applied baseline metadata")` - the corrected version documents the baseline summary contract and uses the fixed local `./bin/gruff-ts` command vector.
+
+**Prevention:** For scanner-facing CLI or renderer changes, run a self-scan after the normal test gate, then remove avoidable new findings before closing. In CLI tests, prefer fixed local command vectors when possible so process-exec findings remain focused on dynamic commands.
+
+## Lesson: baseline smoke tests must keep project root stable
+
+**Created:** 2026-05-24
+
+**What happened:** A manual baseline smoke generated `gruff-baseline.json` from the repository cwd against an absolute `/tmp/.../sample.ts`, then tried to auto-apply it from the temp project cwd. Default baseline application appeared to fail because the finding `filePath` identity changed from a repo-relative temp path to `sample.ts`.
+
+**Evidence:** `src/baseline.ts` + `(search: "function applyBaseline")`; `src/analyser.ts` + `(search: "function selectedBaseline")` - baseline matching includes `(fingerprint, ruleId, filePath)`, and default baseline discovery is rooted at the current project root.
+
+**Prevention:** Generate and apply baseline smoke artifacts from the same project root. If testing absolute path operands, assert that changed display paths intentionally do not match the baseline.

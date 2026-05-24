@@ -35,7 +35,6 @@ function defaultConfig(): Config {
     booleanPrefixes: new Set(["is", "has", "can", "should", "does", "did", "was", "will", "may", "in", "scan", "supports", "requires"]),
     hungarianPrefixes: new Set(["str", "obj", "arr", "bool", "int", "num"]),
     placeholderNames: new Set(["foo", "bar", "baz", "tmp", "temp", "thing", "stuff", "data", "value", "item"]),
-    abbreviationDenylist: new Set(["ctx", "pkg", "opts", "fn", "idx", "cb"]),
     negativeBooleanAllowed: new Set(["nostore", "nofollow", "noreferrer", "noscript", "noindex"]),
     knownAcronyms: new Set(["url", "http", "https", "id", "xml", "json", "html", "css", "api", "sql", "db", "io", "ui", "uuid", "ip", "tcp", "udp", "ast", "cli", "npm"]),
     rules: new Map(),
@@ -100,14 +99,13 @@ function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): voi
   applyNamingAllowlist(config, allowlists, "booleanPrefixes");
   applyNamingAllowlist(config, allowlists, "hungarianPrefixes");
   applyNamingAllowlist(config, allowlists, "placeholderNames");
-  applyNamingAllowlist(config, allowlists, "abbreviationDenylist");
   applyNamingAllowlist(config, allowlists, "negativeBooleanAllowed");
   applyNamingAllowlist(config, allowlists, "knownAcronyms");
 }
 
 // Replaces the entire list when the user provides that key - there is no merge with defaults.
 // The "set the whole list" semantic is intentional so users can deliberately empty a list.
-function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "bannedGenericNames" | "booleanPrefixes" | "hungarianPrefixes" | "placeholderNames" | "abbreviationDenylist" | "negativeBooleanAllowed" | "knownAcronyms"): void {
+function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "bannedGenericNames" | "booleanPrefixes" | "hungarianPrefixes" | "placeholderNames" | "negativeBooleanAllowed" | "knownAcronyms"): void {
   if (!allowlists || !(key in allowlists)) {
     return;
   }
@@ -619,4 +617,4 @@ function isSeverity(configValue: unknown): configValue is Severity {
   return configValue === "advisory" || configValue === "warning" || configValue === "error";
 }
 
-export { isString, loadConfig, objectValue, optionNumber, ruleEnabled, ruleSeverity, threshold };
+export { defaultConfigPath, isString, loadConfig, objectValue, optionNumber, ruleEnabled, ruleSeverity, threshold };

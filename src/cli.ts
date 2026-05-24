@@ -13,7 +13,10 @@ export type { AnalysisReport, Finding, OutputFormat, Pillar, RuleDescriptor, Sev
 const buildProgram = (): ReturnType<typeof buildCliProgram> => buildCliProgram(analyse);
 
 if (import.meta.url === pathToFileURL(argv[1] ?? "").href) {
-  buildProgram().parse(argv);
+  // Action handlers in cli-program.ts are async (await maybePromptInitConfig). parseAsync is
+  // required so rejections after the first await surface through Commander's error path instead
+  // of escaping as unhandled promise rejections.
+  await buildProgram().parseAsync(argv);
 }
 
 export { absolutize, analyse, buildProgram, displayPath, renderReport, ruleDescriptors };

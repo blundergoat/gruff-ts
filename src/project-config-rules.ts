@@ -198,7 +198,7 @@ function pushBroadRuntimeDependencyFinding(
       filePath: file.displayPath,
       line: jsonKeyLine(source, packageName),
       severity: "advisory",
-      pillar: "waste",
+      pillar: "maintainability",
       confidence: "medium",
       symbol: packageName,
       remediation: "Use a bounded semver range and rely on the lockfile for repeatable installs.",

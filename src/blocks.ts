@@ -223,7 +223,7 @@ function pushEmptyFunctionFinding(context: BlockRuleContext): void {
     return;
   }
   if (isEmptyFunctionBody(context.block.codeBody)) {
-    context.findings.push(blockFinding({ ruleId: "waste.empty-function", message: `Function \`${context.block.name}\` has no executable body.`, file: context.file, block: context.block, severity: "advisory", pillar: "waste" }));
+    context.findings.push(blockFinding({ ruleId: "waste.empty-function", message: `Function \`${context.block.name}\` has no executable body.`, file: context.file, block: context.block, severity: "advisory", pillar: "maintainability" }));
   }
 }
 
@@ -287,7 +287,7 @@ function unusedParameterFinding(context: BlockRuleContext, parameterName: string
     filePath: context.file.displayPath,
     line: context.block.startLine,
     severity: "advisory",
-    pillar: "waste",
+    pillar: "maintainability",
     confidence: "medium",
     symbol: context.block.name,
     remediation: "Remove the parameter or prefix it with _ if it is intentionally unused.",
@@ -306,7 +306,7 @@ function pushRedundantVariableFindings(context: BlockRuleContext): void {
         filePath: context.file.displayPath,
         line: context.block.startLine + redundant.lineOffset,
         severity: "advisory",
-        pillar: "waste",
+        pillar: "maintainability",
         confidence: "medium",
         symbol: redundant.name,
         remediation: "Return the expression directly.",
@@ -327,7 +327,7 @@ function pushUselessReturnFindings(context: BlockRuleContext): void {
         filePath: context.file.displayPath,
         line: context.block.startLine + lineOffset,
         severity: "advisory",
-        pillar: "waste",
+        pillar: "maintainability",
         confidence: "medium",
         symbol: context.block.name,
         remediation: "Remove the final return statement.",

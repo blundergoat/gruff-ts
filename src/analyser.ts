@@ -1,5 +1,5 @@
-// Analyser pipeline: walks discovered sources, runs every rule pass (size, complexity, dead-code,
-// waste, naming, documentation, modernisation, security, sensitive-data, test-quality, design),
+// Analyser pipeline: walks discovered sources, runs every rule pass (complexity, dead-code, design,
+// documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality),
 // aggregates findings into the `gruff.analysis.v1` schema, and exposes `analyse` to the CLI shell.
 import { existsSync, readFileSync } from "node:fs";
 import { cwd } from "node:process";
@@ -18,14 +18,13 @@ import { analyseDeadCode, analyseUnreachable, analyseUnusedImports } from "./dea
 import { analyseCommentQualityRules } from "./comment-rules.ts";
 import { analyseDocRules, analyseFileOverviewDoc, analyseInterfaceDocs } from "./doc-rules.ts";
 import { analyseLineRules } from "./line-rules.ts";
-import { pushAbbreviationAt, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
+import { pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { analyseTestBlock } from "./test-block-rules.ts";
 import { analyseGithubActionsRules } from "./github-actions-rules.ts";
 import { analyseProjectConfigRules } from "./project-config-rules.ts";
 import { scoreReport, summarize } from "./scoring.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
 import { maskNonCode, maskTemplateLiteralBodies, parseDiagnostics } from "./source-text.ts";
-import { todoMarkerSummary } from "./text-scans.ts";
 import type { AnalysisOptions, AnalysisReport, Config, Finding, RunDiagnostic } from "./types.ts";
 
 /**
@@ -308,18 +307,6 @@ function analyseTextRules(file: SourceFile, source: string, config: Config, find
     }
   }
 
-  /*
-   * Opt-in by default per M38 (.goat-flow/tasks/0.1/M38-css-metrics-and-todo-density-calibration.md):
-   * raw marker density produced too many false positives in other gruff projects; prefer the
-   * context-aware docs.todo-without-tracking rule when task-marker scanning matters.
-   */
-  if (config.rules.get("docs.todo-density")?.enabled === true) {
-    const todoMarkers = todoMarkerSummary(source, file.isScript);
-    if (todoMarkers.count >= threshold(config, "docs.todo-density", 4)) {
-      findings.push(finding({ ruleId: "docs.todo-density", message: `File contains ${todoMarkers.count} TODO/FIXME markers.`, file, line: todoMarkers.firstLine, severity: ruleSeverity(config, "docs.todo-density", "advisory"), pillar: "documentation" }));
-    }
-  }
-
   analyseSensitiveData(file, source, config, findings);
   analyseGithubActionsRules(file, source, findings);
   analyseProjectConfigRules(file, source, findings);
@@ -390,9 +377,8 @@ function analyseBlocks(file: SourceFile, blocks: FunctionBlock[], config: Config
 }
 
 /*
- * Per-parameter naming-rule fanout. Each parameter is checked for short-name / opaque-abbreviation
- * / placeholder forms; typed booleans get the extra prefix and negative-name checks. Reports findings
- * to the shared sink.
+ * Per-parameter naming-rule fanout. Each parameter is checked for short-name / placeholder forms;
+ * typed booleans get the extra prefix and negative-name checks. Reports findings to the shared sink.
  */
 function pushParameterNamingFindings(context: BlockRuleContext): void {
   const line = context.block.declarationLine;
@@ -400,7 +386,6 @@ function pushParameterNamingFindings(context: BlockRuleContext): void {
   for (const parameter of params) {
     pushShortVariableAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
     pushIdentifierQualityAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
-    pushAbbreviationAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
     if (isBooleanParameter(parameter.raw)) {
       pushBooleanPrefixAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
       pushNegativeBooleanAt(context.file, line, parameter.name, context.config, context.findings, "parameter");

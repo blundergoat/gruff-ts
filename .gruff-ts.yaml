@@ -1,4 +1,13 @@
 paths:
+  # Recursive scans already respect .gitignore plus built-in default directories
+  # such as .git, node_modules, dist, coverage, generated, tmp, and vendor.
+  # Add project-specific generated or local outputs here when Git does not ignore them.
+  # Examples:
+  #   - "out/**"
+  #   - ".next/**"
+  #   - "src/generated/**"
+  # Generated lockfiles below also have built-in analyser heuristics (size.file-length skip,
+  # SRI-hash allowlist for sensitive-data); listed here for explicit visibility.
   ignore:
     - ".agents/**"
     - ".claude/**"
@@ -6,30 +15,30 @@ paths:
     - ".github/**"
     - ".goat-flow/**"
     - "fixtures/**"
+    - "package-lock.json"
+    - "npm-shrinkwrap.json"
+    - "yarn.lock"
+    - "pnpm-lock.yaml"
+    - "bun.lockb"
 
 allowlists:
   acceptedAbbreviations:
     - id
     - db
+    - fs
     - io
     - ui
     - tx
     - rx
-    - ts
-    - ast
-    - cli
-    - api
-    - env
-    - npath
   secretPreviews: []
   # Names that trigger naming.generic-function. Each key replaces the built-in
   # default when present; an empty list disables that rule's blacklist branch.
   # Default: [process, handle, doit, run, execute, manage]
-  # bannedGenericNames: [process, handle, doit, run, execute, manage, walk]
+  # bannedGenericNames: [process, handle, doit, run, execute, manage]
   # Accepted prefixes for boolean identifiers. Names without one of these
   # prefixes trigger naming.boolean-prefix.
-  # Default: [is, has, can, should, does, did, was, will]
-  # booleanPrefixes: [is, has, can, should, does, did, was, will]
+  # Default: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires]
+  # booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires]
   # Hungarian type-style prefixes flagged by naming.hungarian-notation.
   # Default: [str, obj, arr, bool, int, num]
   # hungarianPrefixes: [str, obj, arr, bool, int, num]
@@ -37,9 +46,6 @@ allowlists:
   # numbered-suffix branch (foo1, value2) stays active even when this is empty.
   # Default: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]
   # placeholderNames: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]
-  # Abbreviations flagged by the opt-in naming.abbreviation rule. Case-insensitive.
-  # Default: [ctx, pkg, opts, fn, idx, cb]
-  # abbreviationDenylist: [ctx, pkg, opts, fn, idx, cb]
   # Negative-framed boolean names that should NOT trigger naming.negative-boolean.
   # Defaults are HTTP-header conventions; add project terms as needed.
   # Default: [nostore, nofollow, noreferrer, noscript, noindex]
@@ -102,7 +108,7 @@ rules:
   # documentation/advisory: Flags commented functions whose error behavior is not described.
   docs.missing-error-behavior-doc:
     enabled: true
-  # documentation/advisory: Flags TypeScript files without a top-of-file purpose comment.
+  # documentation/advisory: Flags source files without a top-of-file purpose comment.
   docs.missing-file-overview:
     enabled: true
   # documentation/advisory: Flags functions without a leading maintainer comment.
@@ -138,14 +144,7 @@ rules:
   # documentation/advisory: Flags lint, formatter, coverage, or tool suppressions without a maintainer rationale.
   docs.suppression-without-rationale:
     enabled: true
-  # documentation/advisory: Flags files with a high count of to-do / fix-me markers.
-  # Disabled by default: prefer docs.todo-without-tracking, which checks for
-  # owner/issue/date context instead of raw marker count.
-  docs.todo-density:
-    enabled: false
-    threshold: 4
-    severity: advisory
-  # documentation/advisory: Flags to-do, fix-me, hack, and xxx comments without tracking context.
+  # documentation/advisory: Flags TODO, FIXME, HACK, and XXX comments without tracking context.
   docs.todo-without-tracking:
     enabled: true
   # documentation/advisory: Flags comments or docblocks that only restate the symbol name.
@@ -193,13 +192,10 @@ rules:
   # modernisation/advisory: Flags var declarations.
   modernisation.var-declaration:
     enabled: true
-  # naming/advisory: Flags identifiers in allowlists.abbreviationDenylist. Opt-in.
-  naming.abbreviation:
-    enabled: false
   # naming/advisory: Flags mixed casings of a known acronym in one file.
   naming.acronym-case:
     enabled: true
-  # naming/advisory: Flags boolean names without intent-revealing prefixes.
+  # naming/advisory: Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields.
   naming.boolean-prefix:
     enabled: true
   # naming/advisory: Flags exported classes whose name differs from the file name.
@@ -218,16 +214,16 @@ rules:
   # naming/advisory: Flags identifiers named after storage type prefixes.
   naming.hungarian-notation:
     enabled: true
-  # naming/advisory: Flags placeholder or numbered identifiers.
+  # naming/advisory: Flags placeholder or numbered identifiers on declarations, function parameters, and destructured locals.
   naming.identifier-quality:
     enabled: true
-  # naming/advisory: Flags the same canonical identifier appearing in multiple casings within one file.
+  # naming/advisory: Flags the same canonical identifier appearing in two different surface forms (for example CONSTANT_CASE and camelCase) in one file.
   naming.inconsistent-casing:
     enabled: true
-  # naming/advisory: Flags boolean identifiers framed as a negation.
+  # naming/advisory: Flags boolean identifiers framed as a negation on declarations, parameters, and interface fields.
   naming.negative-boolean:
     enabled: true
-  # naming/advisory: Flags very short variable names outside common loop counters.
+  # naming/advisory: Flags very short variable names outside common loop counters; covers declarations, function parameters, and destructured locals.
   naming.short-variable:
     enabled: true
   # security/warning: Flags async callbacks passed to forEach.
@@ -339,12 +335,12 @@ rules:
   # sensitive-data/error: Flags private key block markers.
   sensitive-data.private-key:
     enabled: true
-  # size/warning: Flags files longer than configured thresholds.
+  # size/warning: Flags files longer than the configured threshold.
   size.file-length:
     enabled: true
     threshold: 750
     severity: warning
-  # size/warning: Flags functions longer than configured thresholds.
+  # size/warning: Flags functions longer than the configured threshold.
   size.function-length:
     enabled: true
     threshold: 200
@@ -354,7 +350,7 @@ rules:
     enabled: true
     threshold: 7
     severity: warning
-  # size/warning: Flags stylesheets longer than configured thresholds.
+  # size/warning: Flags stylesheets longer than the configured threshold.
   size.stylesheet-length:
     enabled: true
     threshold: 1500
@@ -406,45 +402,45 @@ rules:
   # test-quality/advisory: Flags mocks created but not used.
   test-quality.unused-mock:
     enabled: true
-  # waste/warning: Flags any type usage.
+  # maintainability/warning: Flags any type usage.
   waste.any-type:
     enabled: true
-  # waste/advisory: Flags broad runtime dependency version ranges.
+  # maintainability/advisory: Flags broad runtime dependency version ranges.
   waste.broad-runtime-version:
     enabled: true
-  # waste/advisory: Flags comments that appear to contain disabled code.
+  # maintainability/advisory: Flags comments that appear to contain disabled code.
   waste.commented-out-code:
     enabled: true
-  # waste/advisory: Flags console log/debug calls in source.
+  # maintainability/advisory: Flags console log/debug calls in source.
   waste.console-log:
     enabled: true
-  # waste/advisory: Flags functions with no executable body.
+  # maintainability/advisory: Flags functions with no executable body.
   waste.empty-function:
     enabled: true
-  # waste/warning: Flags exported APIs exposing any.
+  # maintainability/warning: Flags exported APIs exposing any.
   waste.exported-any:
     enabled: true
-  # waste/advisory: Flags redundant boolean casts in condition expressions.
+  # maintainability/advisory: Flags redundant boolean casts in condition expressions.
   waste.redundant-boolean-cast:
     enabled: true
-  # waste/advisory: Flags variables returned immediately after assignment.
+  # maintainability/advisory: Flags variables returned immediately after assignment.
   waste.redundant-variable:
     enabled: true
-  # waste/warning: Flags empty catch blocks.
+  # maintainability/warning: Flags empty catch blocks.
   waste.swallowed-catch:
     enabled: true
-  # waste/warning: Flags statements after terminating statements.
+  # maintainability/warning: Flags statements after terminating statements.
   waste.unreachable-code:
     enabled: true
-  # waste/advisory: Flags named imports with no apparent usage.
+  # maintainability/advisory: Flags named imports with no apparent usage.
   waste.unused-import:
     enabled: true
-  # waste/advisory: Flags parameters with no apparent usage.
+  # maintainability/advisory: Flags parameters with no apparent usage.
   waste.unused-parameter:
     enabled: true
-  # waste/advisory: Flags catch blocks that only rethrow the caught value.
+  # maintainability/advisory: Flags catch blocks that only rethrow the caught value.
   waste.useless-catch:
     enabled: true
-  # waste/advisory: Flags terminal bare return statements in void functions.
+  # maintainability/advisory: Flags terminal bare return statements in void functions.
   waste.useless-return:
     enabled: true

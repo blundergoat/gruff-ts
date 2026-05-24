@@ -1,9 +1,18 @@
 ---
 category: workflow
-last_reviewed: 2026-05-22
+last_reviewed: 2026-05-24
 ---
 
 # Workflow lessons
+
+## Lesson: review pre-existing `M <file>` diffs before editing the same file
+**Created:** 2026-05-24
+
+**What happened:** Session started with `M .gruff-ts.yaml` in `gitStatus`. The agent read the file at its current state, made unrelated edits (deleted two rule blocks plus an `abbreviationDenylist` comment), ran `npm run check` clean, and reported done. The user then committed the work and discovered that `paths.ignore` had silently lost six curated entries (`.agents/**`, `.claude/**`, `.codex/**`, `.github/**`, `.goat-flow/**`, `fixtures/**`). The root cause was a prior `gruff-ts init --force` run that regenerated the YAML from defaults BEFORE the session started; the agent never ran `git diff -- .gruff-ts.yaml` against `HEAD` to see what had already been lost, and let the destruction ride into the user's commit.
+
+**Evidence:** Git log shows the user's commit `bf37f5c` ("feat: rename 'waste' pillar to 'maintainability'") replacing `paths.ignore` with `ignore: []`. The agent's first read of `.gruff-ts.yaml` showed `ignore: []` already in place, while `git show HEAD:.gruff-ts.yaml` still had the curated list. `M .gruff-ts.yaml` in the session-start `gitStatus` was the only warning sign, and the agent ignored it.
+
+**Prevention:** When a session begins with a user-curated config (`*.yaml`, `*.toml`, `package.json`, `tsconfig.json`, `.gruff-ts.yaml`, …) showing `M` in `gitStatus`, the FIRST action before editing that file is `git diff -- <path>` against `HEAD`. If the diff shows entries being deleted from a sequence or values being reset, surface that to the user BEFORE applying your own edits - do not let it ride. The cost is one tool call; the alternative is silently bundling a customisation loss into a user commit. Tooling that regenerates config from defaults (init/scaffold/migrate flows) is the dominant cause of this pattern.
 
 ## Lesson: never declare a release ready without auditing the active task folder
 **Created:** 2026-05-22

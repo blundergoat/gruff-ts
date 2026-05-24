@@ -26,7 +26,7 @@ function renderReport(report: AnalysisReport, format: OutputFormat): string {
     case "github":
       return renderGithub(report);
     case "hotspot":
-      return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders }, null, 2);
+      return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders.slice(0, 10) }, null, 2);
     case "sarif":
       return renderSarif(report);
     case "text":
@@ -179,7 +179,7 @@ function sarifLevel(severity: Severity): "error" | "warning" | "note" {
  * because the CLI should be able to improve wording/layout without a schema bump; callers that need
  * durable machine output should use `analyse --format=json` instead.
  */
-function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: string): string {
+function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: string, top = 10): string {
   const pillarCounts = countBy(report.findings, (finding) => finding.pillar);
   const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
   const lines = [
@@ -189,23 +189,54 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
     `Score: ${report.score.composite.toFixed(1)} (${report.score.grade})`,
     `Findings: ${report.summary.total} total, ${report.summary.error} error, ${report.summary.warning} warning, ${report.summary.advisory} advisory`,
     `Analysed files: ${report.paths.analysedFiles}`,
+    ...(report.baseline ? [summaryBaselineLine(report.baseline)] : []),
   ];
   if (report.diagnostics.length > 0) {
     lines.push("", "Diagnostics:", ...report.diagnostics.map(summaryDiagnosticLine));
   }
   lines.push("", "Per-pillar counts:");
   lines.push(...renderRankedCounts(pillarCounts, "No findings by pillar."));
-  lines.push("", "Top rules:");
-  lines.push(...renderRankedCounts(ruleCounts, "No rule findings."));
-  lines.push("", "Top file offenders:");
+  lines.push("", `Top ${top} rules:`);
+  lines.push(...renderRankedCounts(ruleCounts, "No rule findings.", top));
+  lines.push("", `Top ${top} file offenders:`);
   lines.push(
     ...(
       report.score.topOffenders.length === 0
         ? ["- No file offenders."]
-        : report.score.topOffenders.map((offender) => `- ${offender.filePath}: ${offender.findings} findings, score ${offender.score.toFixed(1)}`)
+        : report.score.topOffenders.slice(0, top).map((offender) => `- ${offender.filePath}: ${offender.findings} findings, score ${offender.score.toFixed(1)}`)
     ),
   );
   return `${lines.join("\n")}\n`;
+}
+
+/*
+ * Renders the stable public `gruff.summary.v1` JSON contract for the `summary --format=json` flow.
+ * The schema shape (scope/score/findings/topRules/topOffenders) is part of that contract - downstream
+ * CI integrations parse it, so field renames or removals are breaking changes for users.
+ */
+function renderSummaryJson(report: AnalysisReport, elapsedMs?: number, pathLabel?: string, top = 10): string {
+  const pillarCounts = countBy(report.findings, (finding) => finding.pillar);
+  const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
+  const payload = {
+    schemaVersion: "gruff.summary.v1",
+    tool: report.tool,
+    scope: {
+      paths: pathLabel ?? report.run.projectRoot,
+      projectRoot: report.run.projectRoot,
+      analysedFiles: report.paths.analysedFiles,
+      ignoredPaths: report.paths.ignoredPaths.length,
+      missingPaths: report.paths.missingPaths.length,
+      diagnostics: report.diagnostics.length,
+      elapsedSeconds: typeof elapsedMs === "number" ? Number((elapsedMs / 1000).toFixed(3)) : undefined,
+    },
+    score: report.score,
+    findings: report.summary,
+    baseline: report.baseline,
+    pillars: renderRankedCountRows(pillarCounts),
+    topRules: renderRankedCountRows(ruleCounts, top),
+    topOffenders: report.score.topOffenders.slice(0, top),
+  };
+  return `${JSON.stringify(payload, null, 2)}\n`;
 }
 
 // Shared text formatter for diagnostic rows in plain-text summaries and the `text` format. Stable
@@ -214,6 +245,15 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
 function summaryDiagnosticLine(diagnostic: AnalysisReport["diagnostics"][number]): string {
   const location = diagnostic.filePath ? ` (${diagnostic.filePath})` : "";
   return `- ${diagnostic.diagnosticType}: ${diagnostic.message}${location}`;
+}
+
+// Documents the summary baseline contract so suppressed findings are not mistaken for a clean scan.
+function summaryBaselineLine(baseline: NonNullable<AnalysisReport["baseline"]>): string {
+  if (baseline.generated) {
+    return `Baseline: generated ${baseline.path}; current findings still shown`;
+  }
+  const findingNoun = baseline.suppressed === 1 ? "finding" : "findings";
+  return `Baseline: ${baseline.source} ${baseline.path}; suppressed ${baseline.suppressed} ${findingNoun}`;
 }
 
 // Human-sized summary runtime without pretending sub-millisecond precision is useful.
@@ -234,14 +274,21 @@ function countBy<T extends string>(findings: Finding[], keyFor: (finding: Findin
   return counts;
 }
 
-function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText: string): string[] {
+function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText: string, limit?: number): string[] {
   if (counts.size === 0) {
     return [`- ${emptyText}`];
   }
   return [...counts.entries()]
     .sort(([leftKey, leftCount], [rightKey, rightCount]) => rightCount - leftCount || leftKey.localeCompare(rightKey))
-    .slice(0, 10)
+    .slice(0, limit ?? counts.size)
     .map(([key, count]) => `- ${key}: ${count}`);
+}
+
+function renderRankedCountRows<T extends string>(counts: Map<T, number>, limit?: number): Array<{ name: T; count: number }> {
+  return [...counts.entries()]
+    .sort(([leftKey, leftCount], [rightKey, rightCount]) => rightCount - leftCount || leftKey.localeCompare(rightKey))
+    .slice(0, limit ?? counts.size)
+    .map(([name, count]) => ({ name, count }));
 }
 
 /*
@@ -424,13 +471,15 @@ function htmlPillars(report: AnalysisReport): string {
   return `<section class="pillars"><h2 class="section-head">pillar grades <span class="aside">weighted composite</span></h2><div class="pillar-grid">${items}</div></section>`;
 }
 
-// Top-10 offender table, ordered by ascending score (worst first). `scoreReport` already truncated
-// the list to 10 - this stable, deterministic limit is part of the public report contract.
+// Top-10 offender table, ordered by ascending score (worst first). `scoreReport` returns the full
+// sorted list; summary and hotspot apply their own caps from the same source. The HTML report caps
+// at 10 rows so the visual layout stays stable regardless of project size - that 10 is the contract.
 function htmlOffenders(report: AnalysisReport): string {
   const rows =
     report.score.topOffenders.length === 0
       ? '<tr><td colspan="4">No offenders found.</td></tr>'
       : report.score.topOffenders
+          .slice(0, 10)
           .map((file) => {
             const letter = grade(file.score);
             return `<tr><td class="file-path">${htmlLocation(file.filePath)}</td><td class="num">${file.score.toFixed(1)}</td><td class="num">${file.findings}</td><td class="num"><span class="grade-pill ${gradeClass(letter)}">${letter}</span></td></tr>`;
@@ -688,4 +737,4 @@ function escapeHtml(htmlText: string): string {
   return htmlText.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
-export { dashboardErrorHtml, dashboardHomeHtml, grade, renderHtml, renderReport, renderSummary };
+export { dashboardErrorHtml, dashboardHomeHtml, grade, renderHtml, renderReport, renderSummary, renderSummaryJson };

@@ -68,9 +68,9 @@ Update docs when behavior changes:
 
 - `README.md` for user-facing workflow changes.
 - `CHANGELOG.md` for release-visible changes.
-- `docs/CONFIGURATION.md` for config shape or threshold changes.
-- `docs/REPORTS_AND_CI.md` for output, CI, dashboard, or baseline changes.
-- `docs/RELEASING.md` for release process changes.
+- `docs/configuration.md` for config shape or threshold changes.
+- `docs/reports-and-ci.md` for output, CI, dashboard, or baseline changes.
+- `docs/releasing.md` for release process changes.
 
 ## Pull Request Checklist
 

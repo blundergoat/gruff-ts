@@ -124,37 +124,6 @@ export function pushIdentifierQualityAt(file: SourceFile, line: number, name: st
   );
 }
 
-/*
- * Reports `naming.abbreviation` when the name is on `abbreviationDenylist` and not on the user's
- * `acceptedAbbreviations` allowlist. `surface` distinguishes parameter / variable / interface-field
- * - same stable rule contract, different metadata, so consumers can filter on origin.
- */
-export function pushAbbreviationAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
-  if (config.rules.get("naming.abbreviation")?.enabled !== true) {
-    return;
-  }
-  if (config.acceptedAbbreviations.has(name.toLowerCase())) {
-    return;
-  }
-  if (!config.abbreviationDenylist.has(name.toLowerCase())) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "naming.abbreviation",
-      message: `Identifier \`${name}\` uses an opaque abbreviation.`,
-      filePath: file.displayPath,
-      line,
-      severity: "advisory",
-      pillar: "naming",
-      confidence: "medium",
-      symbol: name,
-      remediation: "Use the full domain term or add the abbreviation to allowlists.acceptedAbbreviations.",
-      metadata: { identifierName: name, surface },
-    }),
-  );
-}
-
 // Returns `"generic"` for low-information names from the configured set, `"numbered"` for
 // `foo1` / `bar2` style trailing-digit identifiers, or undefined when the name is acceptable.
 // The variant string lands in finding metadata so consumers can split the two failure modes.

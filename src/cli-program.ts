@@ -1,12 +1,13 @@
 // Commander CLI shell wiring that keeps option normalization and stdout behavior outside the analyzer.
-import { Command, Help } from "commander";
+import { Command, Help, InvalidArgumentError } from "commander";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { DEFAULT_BASELINE } from "./baseline.ts";
 import { VERSION } from "./constants.ts";
 import { startDashboard } from "./dashboard.ts";
-import { renderReport, renderSummary } from "./report-renderers.ts";
+import { promptYesNo, shouldPromptForInit, writeDefaultConfig } from "./init-config.ts";
+import { renderReport, renderSummary, renderSummaryJson } from "./report-renderers.ts";
 import { completionShell, renderCompletionScript, renderConsoleList, renderRuleList, type RuleListFormat } from "./rule-list.ts";
 import { exitFor } from "./scoring.ts";
 import type { AnalysisOptions, AnalysisReport } from "./types.ts";
@@ -35,6 +36,49 @@ function outputSuppressed(program: Command): boolean {
   return options.quiet === true || options.silent === true;
 }
 
+// Per-command config-loading state passed into maybePromptInitConfig. analyse/summary/report
+// take both flags from normalizeOptions; dashboard has no equivalent flags so it passes
+// `{ shouldSkipConfig: false, hasExplicitConfig: false }`.
+interface InitPromptOptions {
+  shouldSkipConfig: boolean;
+  hasExplicitConfig: boolean;
+}
+
+// Asks the user whether to run `init` when no config exists, then writes the file if they agree.
+// Called from analyse/summary/report/dashboard before kicking off their main work so the
+// freshly-written file is picked up by loadConfig on the same invocation. Pure decision logic
+// lives in shouldPromptForInit; this function only handles orchestration and side effects.
+async function maybePromptInitConfig(program: Command, projectRoot: string, options: InitPromptOptions): Promise<void> {
+  const programOptions = program.opts() as { interaction?: boolean };
+  const context = {
+    projectRoot,
+    shouldSkipConfig: options.shouldSkipConfig,
+    hasExplicitConfig: options.hasExplicitConfig,
+    isInteractionAllowed: programOptions.interaction !== false,
+    isOutputSuppressed: outputSuppressed(program),
+    isStdinTty: process.stdin.isTTY === true,
+    isStdoutTty: process.stdout.isTTY === true,
+    isStderrTty: process.stderr.isTTY === true,
+  };
+  if (!shouldPromptForInit(context)) {
+    return;
+  }
+  const accepted = await promptYesNo(`No gruff config found at ${projectRoot}. Run 'gruff-ts init' to create .gruff-ts.yaml? [y/N] `);
+  if (!accepted) {
+    return;
+  }
+  const result = writeDefaultConfig(projectRoot, false);
+  if (result.status === "written") {
+    process.stderr.write(`Wrote ${result.path}\n`);
+  }
+}
+
+// AnalysisOptions → InitPromptOptions shim used by analyse/summary/report so they share one
+// branch and shouldSkipConfig stays the single source of truth for opt-out behaviour.
+function promptOptionsFromAnalysis(options: AnalysisOptions): InitPromptOptions {
+  return { shouldSkipConfig: options.shouldSkipConfig, hasExplicitConfig: typeof options.config === "string" };
+}
+
 // Three-state ANSI resolution: explicit `--ansi` forces colour, explicit `--no-ansi` forbids it,
 // otherwise autodetect from TTY. Required because pipelines and CI logs would otherwise eat colour codes.
 function ansiEnabled(program: Command): boolean {
@@ -56,6 +100,7 @@ export function buildProgram(runAnalyse: AnalyseRunner): Command {
   registerAnalyseCommand(program, runAnalyse);
   registerCompletionCommand(program);
   registerDashboardCommand(program, runAnalyse);
+  registerInitCommand(program);
   registerListCommand(program);
   registerListRulesCommand(program);
   registerReportCommand(program, runAnalyse);
@@ -127,8 +172,9 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
-    .action((paths: string[], rawOptions: Record<string, unknown>) => {
+    .action(async (paths: string[], rawOptions: Record<string, unknown>) => {
       const options = normalizeOptions(paths, rawOptions, { shouldAllowBaselineFlag: true });
+      await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
       const report = runAnalyse(options);
       writeCommandOutput(program, renderReport(report, options.format));
       process.exitCode = exitFor(report, options.failOn);
@@ -156,9 +202,43 @@ function registerDashboardCommand(program: Command, runAnalyse: AnalyseRunner): 
     .option("--host <host>", "Host to bind.", "127.0.0.1")
     .option("--port <port>", "Port to bind.", "8767")
     .option("--project-root <path>", "Default project root.", ".")
-    .action((rawOptions: Record<string, unknown>) => {
-      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), resolve(String(rawOptions.projectRoot ?? ".")), runAnalyse, !outputSuppressed(program));
+    .action(async (rawOptions: Record<string, unknown>) => {
+      const projectRoot = resolve(String(rawOptions.projectRoot ?? "."));
+      await maybePromptInitConfig(program, projectRoot, { shouldSkipConfig: false, hasExplicitConfig: false });
+      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), projectRoot, runAnalyse, !outputSuppressed(program));
     });
+}
+
+// Writes the default `.gruff-ts.yaml` to the current working directory. Refuses to clobber an
+// existing config unless `--force` is passed; sets process.exitCode=1 in that case so scripted
+// callers can detect the refusal without parsing stdout.
+function registerInitCommand(program: Command): void {
+  program
+    .command("init")
+    .description("Write the default .gruff-ts.yaml to the current directory.")
+    .option("--force", "Write .gruff-ts.yaml even when another supported config (.gruff.yaml/.yml/.json) is present; overwrites .gruff-ts.yaml if it exists.")
+    .action((rawOptions: Record<string, unknown>) => {
+      const result = writeDefaultConfig(process.cwd(), rawOptions.force === true);
+      if (result.status === "exists") {
+        process.stderr.write(`Refusing to overwrite existing config: ${result.path}. Re-run with --force to replace it.\n`);
+        process.exitCode = 1;
+        return;
+      }
+      const verb = result.status === "overwritten" ? "Overwrote" : "Wrote";
+      writeCommandOutput(program, initSuccessMessage(verb, result.path));
+    });
+}
+
+// Keeps `init` as a config-only write while pointing existing projects at the adoption flow.
+function initSuccessMessage(verb: "Wrote" | "Overwrote", configPath: string): string {
+  return [
+    `${verb} ${configPath}`,
+    "",
+    "Next: generate an adoption baseline with:",
+    "  gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none",
+    "Then gate new findings with:",
+    "  gruff-ts analyse . --baseline gruff-baseline.json --fail-on=warning",
+  ].join("\n");
 }
 
 // Mirrors the bare-root help output. Exists so users coming from Symfony's console conventions
@@ -173,12 +253,12 @@ function registerListCommand(program: Command): void {
 }
 
 // Read-only catalogue dump. JSON is the canonical form consumed by docs builds; text is for humans.
-// Anything other than `json` falls back to `text` rather than erroring so old aliases keep working.
+// `--format` is validated by `parseSummaryFormat`; unsupported values fail fast as a usage error.
 function registerListRulesCommand(program: Command): void {
   program
     .command("list-rules")
     .description("List gruff rule metadata.")
-    .option("--format <format>", "Output format: text or json.", "text")
+    .option("--format <format>", "Output format: text or json.", parseSummaryFormat, "text")
     .action((rawOptions: Record<string, unknown>) => {
       const format: RuleListFormat = rawOptions.format === "json" ? "json" : "text";
       writeCommandOutput(program, renderRuleList(format));
@@ -200,9 +280,10 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     .option("--fail-on <severity>", "Finding severity that fails the run.", "none")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
-    .action((paths: string[], rawOptions: Record<string, unknown>) => {
+    .action(async (paths: string[], rawOptions: Record<string, unknown>) => {
       const format = rawOptions.format === "json" ? "json" : "html";
       const options = normalizeOptions(paths, { ...rawOptions, format }, { shouldAllowBaselineFlag: false });
+      await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
       const report = runAnalyse(options);
       const rendered = renderReport(report, format);
       if (typeof rawOptions.output === "string") {
@@ -214,8 +295,7 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     });
 }
 
-// Same analyser run as `analyse` but renders only the pillar/rule/offender digest. Format is locked
-// to `text` because the summary shape is intentionally not part of the JSON report contract.
+// Same analyser run as `analyse` but renders only the pillar/rule/offender digest.
 function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("summary")
@@ -225,6 +305,8 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .argument("[paths...]", "Files or directories to analyse.")
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
+    .option("--format <format>", "Output format: text or json.", parseSummaryFormat, "text")
+    .option("--top <n>", "How many top rules and file offenders to list.", parseNonNegativeInteger, 10)
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
@@ -232,14 +314,45 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
-    .action((paths: string[], rawOptions: Record<string, unknown>) => {
-      const startedAt = performance.now();
+    .action(async (paths: string[], rawOptions: Record<string, unknown>) => {
       const options = normalizeOptions(paths, { ...rawOptions, format: "text" }, { shouldAllowBaselineFlag: true });
+      const summaryFormat = rawOptions.format === "json" ? "json" : "text";
+      const top = typeof rawOptions.top === "number" ? rawOptions.top : 10;
+      await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
+      const startedAt = performance.now();
       const report = runAnalyse(options);
       const elapsedMs = performance.now() - startedAt;
-      writeCommandOutput(program, renderSummary(report, elapsedMs, summaryPathLabel(options.paths, report.run.projectRoot)));
+      const pathLabel = summaryPathLabel(options.paths, report.run.projectRoot);
+      const rendered = summaryFormat === "json"
+        ? renderSummaryJson(report, elapsedMs, pathLabel, top)
+        : renderSummary(report, elapsedMs, pathLabel, top);
+      writeCommandOutput(program, rendered);
       process.exitCode = exitFor(report, options.failOn);
     });
+}
+
+/*
+ * Commander `--format` argParser for the summary command. Throws `InvalidArgumentError` when the
+ * input is neither `text` nor `json`; commander reports that as a usage error and exits non-zero
+ * before the command body runs.
+ */
+function parseSummaryFormat(rawFormat: string): "text" | "json" {
+  if (rawFormat === "text" || rawFormat === "json") {
+    return rawFormat;
+  }
+  throw new InvalidArgumentError("must be text or json");
+}
+
+/*
+ * Commander argParser for `--top`-style numeric flags. Throws `InvalidArgumentError` on non-integer
+ * or negative input so commander reports a usage error and exits non-zero before the command runs.
+ */
+function parseNonNegativeInteger(rawCount: string): number {
+  const parsed = Number(rawCount);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new InvalidArgumentError("must be a non-negative integer");
+  }
+  return parsed;
 }
 
 // Summary output should name the scanned operand, not merely the process cwd used to run gruff-ts.
