@@ -1,5 +1,5 @@
 // Commander CLI shell wiring that keeps option normalization and stdout behavior outside the analyzer.
-import { Command, Help } from "commander";
+import { Command, Help, InvalidArgumentError } from "commander";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -7,7 +7,7 @@ import { DEFAULT_BASELINE } from "./baseline.ts";
 import { VERSION } from "./constants.ts";
 import { startDashboard } from "./dashboard.ts";
 import { promptYesNo, shouldPromptForInit, writeDefaultConfig } from "./init-config.ts";
-import { renderReport, renderSummary } from "./report-renderers.ts";
+import { renderReport, renderSummary, renderSummaryJson } from "./report-renderers.ts";
 import { completionShell, renderCompletionScript, renderConsoleList, renderRuleList, type RuleListFormat } from "./rule-list.ts";
 import { exitFor } from "./scoring.ts";
 import type { AnalysisOptions, AnalysisReport } from "./types.ts";
@@ -257,7 +257,7 @@ function registerListRulesCommand(program: Command): void {
   program
     .command("list-rules")
     .description("List gruff rule metadata.")
-    .option("--format <format>", "Output format: text or json.", "text")
+    .option("--format <format>", "Output format: text or json.", parseSummaryFormat, "text")
     .action((rawOptions: Record<string, unknown>) => {
       const format: RuleListFormat = rawOptions.format === "json" ? "json" : "text";
       writeCommandOutput(program, renderRuleList(format));
@@ -294,8 +294,7 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     });
 }
 
-// Same analyser run as `analyse` but renders only the pillar/rule/offender digest. Format is locked
-// to `text` because the summary shape is intentionally not part of the JSON report contract.
+// Same analyser run as `analyse` but renders only the pillar/rule/offender digest.
 function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("summary")
@@ -305,6 +304,8 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .argument("[paths...]", "Files or directories to analyse.")
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
+    .option("--format <format>", "Output format: text or json.", "text")
+    .option("--top <n>", "How many top rules and file offenders to list.", parseNonNegativeInteger, 10)
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
@@ -314,13 +315,34 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>) => {
       const options = normalizeOptions(paths, { ...rawOptions, format: "text" }, { shouldAllowBaselineFlag: true });
+      const summaryFormat = rawOptions.format === "json" ? "json" : "text";
+      const top = typeof rawOptions.top === "number" ? rawOptions.top : 10;
       await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
       const startedAt = performance.now();
       const report = runAnalyse(options);
       const elapsedMs = performance.now() - startedAt;
-      writeCommandOutput(program, renderSummary(report, elapsedMs, summaryPathLabel(options.paths, report.run.projectRoot)));
+      const pathLabel = summaryPathLabel(options.paths, report.run.projectRoot);
+      const rendered = summaryFormat === "json"
+        ? renderSummaryJson(report, elapsedMs, pathLabel, top)
+        : renderSummary(report, elapsedMs, pathLabel, top);
+      writeCommandOutput(program, rendered);
       process.exitCode = exitFor(report, options.failOn);
     });
+}
+
+function parseSummaryFormat(value: string): "text" | "json" {
+  if (value === "text" || value === "json") {
+    return value;
+  }
+  throw new InvalidArgumentError("must be text or json");
+}
+
+function parseNonNegativeInteger(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new InvalidArgumentError("must be a non-negative integer");
+  }
+  return parsed;
 }
 
 // Summary output should name the scanned operand, not merely the process cwd used to run gruff-ts.

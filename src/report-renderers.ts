@@ -179,7 +179,7 @@ function sarifLevel(severity: Severity): "error" | "warning" | "note" {
  * because the CLI should be able to improve wording/layout without a schema bump; callers that need
  * durable machine output should use `analyse --format=json` instead.
  */
-function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: string): string {
+function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: string, top = 10): string {
   const pillarCounts = countBy(report.findings, (finding) => finding.pillar);
   const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
   const lines = [
@@ -196,17 +196,42 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
   }
   lines.push("", "Per-pillar counts:");
   lines.push(...renderRankedCounts(pillarCounts, "No findings by pillar."));
-  lines.push("", "Top rules:");
-  lines.push(...renderRankedCounts(ruleCounts, "No rule findings."));
-  lines.push("", "Top file offenders:");
+  lines.push("", `Top ${top} rules:`);
+  lines.push(...renderRankedCounts(ruleCounts, "No rule findings.", top));
+  lines.push("", `Top ${top} file offenders:`);
   lines.push(
     ...(
       report.score.topOffenders.length === 0
         ? ["- No file offenders."]
-        : report.score.topOffenders.map((offender) => `- ${offender.filePath}: ${offender.findings} findings, score ${offender.score.toFixed(1)}`)
+        : report.score.topOffenders.slice(0, top).map((offender) => `- ${offender.filePath}: ${offender.findings} findings, score ${offender.score.toFixed(1)}`)
     ),
   );
   return `${lines.join("\n")}\n`;
+}
+
+function renderSummaryJson(report: AnalysisReport, elapsedMs?: number, pathLabel?: string, top = 10): string {
+  const pillarCounts = countBy(report.findings, (finding) => finding.pillar);
+  const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
+  const payload = {
+    schemaVersion: "gruff.summary.v1",
+    tool: report.tool,
+    scope: {
+      paths: pathLabel ?? report.run.projectRoot,
+      projectRoot: report.run.projectRoot,
+      analysedFiles: report.paths.analysedFiles,
+      ignoredPaths: report.paths.ignoredPaths.length,
+      missingPaths: report.paths.missingPaths.length,
+      diagnostics: report.diagnostics.length,
+      elapsedSeconds: typeof elapsedMs === "number" ? Number((elapsedMs / 1000).toFixed(3)) : undefined,
+    },
+    score: report.score,
+    findings: report.summary,
+    baseline: report.baseline,
+    pillars: renderRankedCountRows(pillarCounts),
+    topRules: renderRankedCountRows(ruleCounts, top),
+    topOffenders: report.score.topOffenders.slice(0, top),
+  };
+  return `${JSON.stringify(payload, null, 2)}\n`;
 }
 
 // Shared text formatter for diagnostic rows in plain-text summaries and the `text` format. Stable
@@ -244,14 +269,21 @@ function countBy<T extends string>(findings: Finding[], keyFor: (finding: Findin
   return counts;
 }
 
-function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText: string): string[] {
+function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText: string, limit?: number): string[] {
   if (counts.size === 0) {
     return [`- ${emptyText}`];
   }
   return [...counts.entries()]
     .sort(([leftKey, leftCount], [rightKey, rightCount]) => rightCount - leftCount || leftKey.localeCompare(rightKey))
-    .slice(0, 10)
+    .slice(0, limit ?? counts.size)
     .map(([key, count]) => `- ${key}: ${count}`);
+}
+
+function renderRankedCountRows<T extends string>(counts: Map<T, number>, limit?: number): Array<{ name: T; count: number }> {
+  return [...counts.entries()]
+    .sort(([leftKey, leftCount], [rightKey, rightCount]) => rightCount - leftCount || leftKey.localeCompare(rightKey))
+    .slice(0, limit ?? counts.size)
+    .map(([name, count]) => ({ name, count }));
 }
 
 /*
@@ -698,4 +730,4 @@ function escapeHtml(htmlText: string): string {
   return htmlText.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
-export { dashboardErrorHtml, dashboardHomeHtml, grade, renderHtml, renderReport, renderSummary };
+export { dashboardErrorHtml, dashboardHomeHtml, grade, renderHtml, renderReport, renderSummary, renderSummaryJson };

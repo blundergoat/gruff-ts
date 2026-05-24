@@ -119,10 +119,26 @@ test("summary CLI prints compact scan digest without per-finding spam", () => {
   assert.equal(output.includes(`Path: ${join(process.cwd(), "fixtures/sample.ts")}\n`), true);
   assert.match(output, /^Duration: (?:\d+ms|\d+\.\d{2}s)$/m);
   assert.match(output, /Per-pillar counts:/);
-  assert.match(output, /Top rules:/);
-  assert.match(output, /Top file offenders:/);
+  assert.match(output, /Top 10 rules:/);
+  assert.match(output, /Top 10 file offenders:/);
   assert.equal(/^Baseline:/m.test(output), false);
   assert.equal(output.includes("Findings:\n- ["), false);
+});
+
+test("summary CLI supports json format and top limit", () => {
+  const output = execFileSync(
+    "./bin/gruff-ts",
+    ["summary", "fixtures/sample.ts", "--format=json", "--top=1", "--fail-on=none", "--no-config", "--no-baseline"],
+    { encoding: "utf8" },
+  );
+  const payload = JSON.parse(output) as {
+    schemaVersion?: string;
+    topRules?: unknown[];
+    topOffenders?: unknown[];
+  };
+  assert.equal(payload.schemaVersion, "gruff.summary.v1");
+  assert.equal(payload.topRules?.length, 1);
+  assert.ok((payload.topOffenders?.length ?? 0) <= 1);
 });
 
 test("summary CLI reports generated and applied baseline metadata", () => {

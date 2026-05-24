@@ -27,11 +27,12 @@ Scanned file types include TypeScript, JavaScript, CSS, JSON, YAML, TOML, INI, X
 
 ## Install
 
-Install the scoped npm package:
+Install as a project dev dependency:
 
 ```bash
 npm install --save-dev @blundergoat/gruff-ts
-npx gruff-ts analyse . --fail-on=none
+./node_modules/.bin/gruff-ts init
+./node_modules/.bin/gruff-ts summary
 ```
 
 From this checkout:
@@ -44,20 +45,26 @@ npm install
 ## Quick Start
 
 ```bash
+# Create the project config.
+./node_modules/.bin/gruff-ts init
+
+# Review the current finding mix.
+./node_modules/.bin/gruff-ts summary
+
 # Explore without failing because of findings.
-gruff-ts analyse . --fail-on=none
+./node_modules/.bin/gruff-ts analyse . --fail-on=none
 
 # Gate on warning and error findings.
-gruff-ts analyse . --fail-on=warning
+./node_modules/.bin/gruff-ts analyse . --fail-on=warning
 
 # Emit SARIF for code scanning.
-gruff-ts analyse . --format=sarif --fail-on=none > gruff-ts.sarif
+./node_modules/.bin/gruff-ts analyse . --format=sarif --fail-on=none > gruff-ts.sarif
 
 # Generate a fresh-start baseline.
-gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none
+./node_modules/.bin/gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none
 
 # Start the local dashboard.
-gruff-ts dashboard
+./node_modules/.bin/gruff-ts dashboard
 ```
 
 Open `http://127.0.0.1:8767/` for the dashboard.
@@ -107,19 +114,19 @@ Global console options match the broader gruff CLI surface: `--silent`, `--quiet
 Generic CI command:
 
 ```bash
-gruff-ts analyse . --format=github --fail-on=warning
+./node_modules/.bin/gruff-ts analyse . --format=github --fail-on=warning
 ```
 
 SARIF jobs can write an artifact for code scanning:
 
 ```bash
-gruff-ts analyse . --format=sarif --fail-on=none > gruff-ts.sarif
+./node_modules/.bin/gruff-ts analyse . --format=sarif --fail-on=none > gruff-ts.sarif
 ```
 
 Security-focused gates can bypass adoption baselines:
 
 ```bash
-gruff-ts analyse . --no-baseline --fail-on=error
+./node_modules/.bin/gruff-ts analyse . --no-baseline --fail-on=error
 ```
 
 ## Configuration
@@ -173,23 +180,23 @@ The v0.1 catalogue contains 121 rules:
 | `test-quality` | 15 |
 | `waste` | 14 |
 
-Use `gruff-ts list-rules --format=json` for exact rule IDs, severities, confidence levels, remediation text, thresholds, and options.
+Use `./node_modules/.bin/gruff-ts list-rules --format=json` for exact rule IDs, severities, confidence levels, remediation text, thresholds, and options.
 
 ## Baselines And Changed-Code Scans
 
 Baselines suppress reviewed findings by stable fingerprint:
 
 ```bash
-gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none
-gruff-ts analyse . --baseline gruff-baseline.json --fail-on=warning
-gruff-ts analyse . --no-baseline --fail-on=none
+./node_modules/.bin/gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none
+./node_modules/.bin/gruff-ts analyse . --baseline gruff-baseline.json --fail-on=warning
+./node_modules/.bin/gruff-ts analyse . --no-baseline --fail-on=none
 ```
 
 Changed-file scans use Git only when requested:
 
 ```bash
-gruff-ts analyse . --diff=working-tree --format=github --fail-on=warning
-gruff-ts analyse . --diff=staged --format=json --fail-on=none
+./node_modules/.bin/gruff-ts analyse . --diff=working-tree --format=github --fail-on=warning
+./node_modules/.bin/gruff-ts analyse . --diff=staged --format=json --fail-on=none
 ```
 
 `--diff` accepts `working-tree`, `staged`, `unstaged`, or a base ref. `report` renders raw inspection output and does not accept `--baseline`; use `analyse` when baseline suppression matters.
@@ -197,10 +204,12 @@ gruff-ts analyse . --diff=staged --format=json --fail-on=none
 ## Dashboard
 
 ```bash
-gruff-ts dashboard --host 127.0.0.1 --port 8767 --project-root .
+./node_modules/.bin/gruff-ts dashboard --host 127.0.0.1 --port 8767 --project-root .
 ```
 
 The dashboard serves a local iframe report and compact controls panel. It has no authentication; keep the default loopback bind unless the network is trusted. The `/scan` endpoint analyses filesystem paths from request parameters, so the bind address is the main safety boundary.
+
+In polyglot repositories, `gruff-ts` defaults to port `8767`, `gruff-rs` defaults to `8766`, and `gruff-go`, `gruff-php`, and `gruff-py` default to `8765`; use `--port` when running multiple dashboards at the same time.
 
 ## Trust Boundary
 
