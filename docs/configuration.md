@@ -165,6 +165,8 @@ gruff-ts list-rules
 gruff-ts list-rules --format=json
 ```
 
+See [Rules](./rules.md) for the full rule catalogue grouped by pillar.
+
 ## Example Project Config
 
 ```yaml
