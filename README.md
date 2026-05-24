@@ -10,7 +10,7 @@
 | Runtime | Node.js `22+` |
 | Package | `@blundergoat/gruff-ts` |
 | Binary | `gruff-ts` |
-| Rule catalogue | 121 rules across 11 pillars |
+| Rule catalogue | 119 rules across 11 pillars |
 | Primary config | `.gruff-ts.yaml`; `.gruff.json`, `.gruff.yaml`, and `.gruff.yml` are fallback files |
 | Analysis schema | `gruff.analysis.v1` |
 | Baseline schema | `gruff.baseline.v1` |
@@ -76,6 +76,7 @@ Open `http://127.0.0.1:8767/` for the dashboard.
 | `analyse [paths...]` | Run the analyzer and print findings. |
 | `summary [paths...]` | Print compact score, pillar, rule, and file summaries. |
 | `report [paths...]` | Render an HTML or JSON report to stdout or `--output`. |
+| `init` | Write the default `.gruff-ts.yaml` to the current directory (`--force` to overwrite). |
 | `list-rules` | Print rule metadata as text or JSON. |
 | `dashboard` | Serve the local browser dashboard. |
 | `completion [shell]` | Print a shell completion script for `bash`, `zsh`, or `fish`. |
@@ -164,17 +165,17 @@ See [Configuration](docs/configuration.md) for the full config shape.
 
 ## Rules And Pillars
 
-The v0.1 catalogue contains 121 rules:
+The v0.1 catalogue contains 119 rules:
 
 | Pillar | Rules |
 | --- | ---: |
 | `complexity` | 3 |
 | `dead-code` | 1 |
 | `design` | 6 |
-| `documentation` | 18 |
+| `documentation` | 17 |
 | `maintainability` | 14 |
 | `modernisation` | 14 |
-| `naming` | 11 |
+| `naming` | 10 |
 | `security` | 27 |
 | `sensitive-data` | 8 |
 | `size` | 4 |

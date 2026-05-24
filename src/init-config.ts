@@ -29,7 +29,9 @@ interface InitResult {
 }
 
 // Inputs the analyse/summary actions must collect before deciding whether to ask the user about
-// running `init`. Kept as an explicit shape so the predicate is testable without TTY mocking.
+// running `init`. Kept as an explicit shape so the predicate is testable without TTY mocking. All
+// three stream TTY states matter: stdin so the answer can be typed, stderr so the prompt is seen,
+// and stdout so a piped consumer (e.g. `... --format=json | jq`) does not block on hidden input.
 interface InitPromptContext {
   projectRoot: string;
   shouldSkipConfig: boolean;
@@ -37,6 +39,7 @@ interface InitPromptContext {
   isInteractionAllowed: boolean;
   isOutputSuppressed: boolean;
   isStdinTty: boolean;
+  isStdoutTty: boolean;
   isStderrTty: boolean;
 }
 
@@ -53,24 +56,29 @@ function renderDefaultConfig(ignoredPaths: readonly string[] = []): string {
 }
 
 /**
- * Write the default config to `<projectRoot>/.gruff-ts.yaml`. Refuses to clobber an existing
- * file unless `force` is true; performs a filesystem write side effect when it does write. When
- * overwriting, the existing file's `paths.ignore` entries are preserved so `init --force` does not
- * silently erase project-specific recursive-scan exclusions.
+ * Write the default config to `<projectRoot>/.gruff-ts.yaml`. Refuses to clobber when ANY supported
+ * config file is present (the four-name precedence list in `DEFAULT_CONFIG_FILES`), not just
+ * `.gruff-ts.yaml` - otherwise `init` would silently create a higher-precedence file alongside an
+ * existing `.gruff.yaml` / `.gruff.yml` / `.gruff.json` and quietly change the effective config.
+ * When overwriting an existing `.gruff-ts.yaml`, the file's `paths.ignore` entries are preserved
+ * so `init --force` does not erase project-specific recursive-scan exclusions.
  *
  * @param projectRoot Directory to write the config file into.
  * @param shouldOverwrite Overwrite an existing config file when true.
- * @returns The resolved path and whether a file was written, overwritten, or skipped.
+ * @returns The resolved path and whether a file was written, overwritten, or skipped. When the
+ *   refusal is triggered by a non-canonical name, `path` points at that file so the caller's
+ *   error message names the actual blocker.
  */
 function writeDefaultConfig(projectRoot: string, shouldOverwrite: boolean): InitResult {
-  const path = join(projectRoot, DEFAULT_CONFIG_FILE_NAME);
-  const fileExists = existsSync(path);
-  if (fileExists && !shouldOverwrite) {
-    return { path, status: "exists" };
+  const targetPath = join(projectRoot, DEFAULT_CONFIG_FILE_NAME);
+  const existingConfigPath = defaultConfigPath(projectRoot);
+  if (existingConfigPath !== undefined && !shouldOverwrite) {
+    return { path: existingConfigPath, status: "exists" };
   }
-  const preservedIgnoredPaths = fileExists ? readExistingIgnoredPaths(projectRoot) : [];
-  writeFileSync(path, renderDefaultConfig(preservedIgnoredPaths));
-  return { path, status: fileExists ? "overwritten" : "written" };
+  const targetExists = existsSync(targetPath);
+  const preservedIgnoredPaths = targetExists ? readExistingIgnoredPaths(projectRoot) : [];
+  writeFileSync(targetPath, renderDefaultConfig(preservedIgnoredPaths));
+  return { path: targetPath, status: targetExists ? "overwritten" : "written" };
 }
 
 /*
@@ -188,9 +196,10 @@ function renderRuleEntry(descriptor: RuleDescriptor): string[] {
  * Decide whether the analyse/summary actions should prompt the user to run `init`.
  *
  * Returns true only when every gate passes: interaction is allowed, output isn't suppressed, the
- * user hasn't already opted in (--config) or out (--no-config) of config loading, stdin and
- * stderr are both TTYs (so the prompt can be shown and answered), and no supported config file
- * is already present at the project root.
+ * user hasn't already opted in (--config) or out (--no-config) of config loading, all three
+ * standard streams are TTYs (stdin to type, stderr to display, stdout to confirm the run is not
+ * piping machine output to a downstream consumer), and no supported config file is already
+ * present at the project root.
  *
  * @param context CLI-collected state needed to make the decision.
  * @returns Whether the prompt should be shown.
@@ -205,7 +214,7 @@ function shouldPromptForInit(context: InitPromptContext): boolean {
   if (context.shouldSkipConfig || context.hasExplicitConfig) {
     return false;
   }
-  if (!context.isStdinTty || !context.isStderrTty) {
+  if (!context.isStdinTty || !context.isStdoutTty || !context.isStderrTty) {
     return false;
   }
   return defaultConfigPath(context.projectRoot) === undefined;

@@ -57,6 +57,7 @@ async function maybePromptInitConfig(program: Command, projectRoot: string, opti
     isInteractionAllowed: programOptions.interaction !== false,
     isOutputSuppressed: outputSuppressed(program),
     isStdinTty: process.stdin.isTTY === true,
+    isStdoutTty: process.stdout.isTTY === true,
     isStderrTty: process.stderr.isTTY === true,
   };
   if (!shouldPromptForInit(context)) {
@@ -252,7 +253,7 @@ function registerListCommand(program: Command): void {
 }
 
 // Read-only catalogue dump. JSON is the canonical form consumed by docs builds; text is for humans.
-// Anything other than `json` falls back to `text` rather than erroring so old aliases keep working.
+// `--format` is validated by `parseSummaryFormat`; unsupported values fail fast as a usage error.
 function registerListRulesCommand(program: Command): void {
   program
     .command("list-rules")
@@ -304,7 +305,7 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .argument("[paths...]", "Files or directories to analyse.")
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
-    .option("--format <format>", "Output format: text or json.", "text")
+    .option("--format <format>", "Output format: text or json.", parseSummaryFormat, "text")
     .option("--top <n>", "How many top rules and file offenders to list.", parseNonNegativeInteger, 10)
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")

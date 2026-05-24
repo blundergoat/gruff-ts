@@ -74,6 +74,23 @@ test("gruff-ts init writes the default config, refuses to overwrite, and respect
   }
 });
 
+test("gruff-ts init refuses to write .gruff-ts.yaml when a non-canonical supported config already exists", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-init-precedence-"));
+  try {
+    const incumbentPath = join(projectRoot, ".gruff.yaml");
+    writeFileSync(incumbentPath, "rules: {}\n");
+
+    const refused = spawnSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "init"], { cwd: projectRoot, encoding: "utf8" });
+    assert.equal(refused.status, 1, "init must refuse so .gruff-ts.yaml does not silently take precedence");
+    assert.equal(refused.stdout, "");
+    assert.match(refused.stderr, /Refusing to overwrite existing config: .*\.gruff\.yaml/);
+    assert.equal(existsSync(join(projectRoot, DEFAULT_CONFIG_FILE_NAME)), false, "must not create the higher-precedence file");
+    assert.equal(readFileSync(incumbentPath, "utf8"), "rules: {}\n", "incumbent config must remain untouched");
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
 test("renderDefaultConfig preserves passed paths.ignore entries as a block sequence", () => {
   const yaml = renderDefaultConfig([".agents/**", ".claude/**", "fixtures/**"]);
   assert.match(yaml, /^paths:\n(?:  #.*\n)+  ignore:\n    - "\.agents\/\*\*"\n    - "\.claude\/\*\*"\n    - "fixtures\/\*\*"\n/);
@@ -116,6 +133,7 @@ test("shouldPromptForInit suppresses on every individual opt-out gate", () => {
     assert.equal(shouldPromptForInit({ ...promptContext(projectRoot), shouldSkipConfig: true }), false);
     assert.equal(shouldPromptForInit({ ...promptContext(projectRoot), hasExplicitConfig: true }), false);
     assert.equal(shouldPromptForInit({ ...promptContext(projectRoot), isStdinTty: false }), false);
+    assert.equal(shouldPromptForInit({ ...promptContext(projectRoot), isStdoutTty: false }), false);
     assert.equal(shouldPromptForInit({ ...promptContext(projectRoot), isStderrTty: false }), false);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
@@ -153,6 +171,7 @@ function promptContext(projectRoot: string): InitPromptContext {
     isInteractionAllowed: true,
     isOutputSuppressed: false,
     isStdinTty: true,
+    isStdoutTty: true,
     isStderrTty: true,
   };
 }
