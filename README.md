@@ -31,8 +31,8 @@ Install as a project dev dependency:
 
 ```bash
 npm install --save-dev @blundergoat/gruff-ts
-./node_modules/.bin/gruff-ts init
-./node_modules/.bin/gruff-ts summary
+npx gruff-ts init
+npx gruff-ts summary
 ```
 
 From this checkout:
@@ -46,25 +46,25 @@ npm install
 
 ```bash
 # Create the project config.
-./node_modules/.bin/gruff-ts init
+npx gruff-ts init
 
 # Review the current finding mix.
-./node_modules/.bin/gruff-ts summary
+npx gruff-ts summary
 
 # Explore without failing because of findings.
-./node_modules/.bin/gruff-ts analyse . --fail-on=none
+npx gruff-ts analyse . --fail-on=none
 
 # Gate on warning and error findings.
-./node_modules/.bin/gruff-ts analyse . --fail-on=warning
+npx gruff-ts analyse . --fail-on=warning
 
 # Emit SARIF for code scanning.
-./node_modules/.bin/gruff-ts analyse . --format=sarif --fail-on=none > gruff-ts.sarif
+npx gruff-ts analyse . --format=sarif --fail-on=none > gruff-ts.sarif
 
 # Generate a fresh-start baseline.
-./node_modules/.bin/gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none
+npx gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none
 
 # Start the local dashboard.
-./node_modules/.bin/gruff-ts dashboard
+npx gruff-ts dashboard
 ```
 
 Open `http://127.0.0.1:8767/` for the dashboard.
@@ -115,19 +115,19 @@ Global console options match the broader gruff CLI surface: `--silent`, `--quiet
 Generic CI command:
 
 ```bash
-./node_modules/.bin/gruff-ts analyse . --format=github --fail-on=warning
+npx gruff-ts analyse . --format=github --fail-on=warning
 ```
 
 SARIF jobs can write an artifact for code scanning:
 
 ```bash
-./node_modules/.bin/gruff-ts analyse . --format=sarif --fail-on=none > gruff-ts.sarif
+npx gruff-ts analyse . --format=sarif --fail-on=none > gruff-ts.sarif
 ```
 
 Security-focused gates can bypass adoption baselines:
 
 ```bash
-./node_modules/.bin/gruff-ts analyse . --no-baseline --fail-on=error
+npx gruff-ts analyse . --no-baseline --fail-on=error
 ```
 
 ## Configuration
@@ -181,23 +181,23 @@ The v0.1 catalogue contains 119 rules:
 | `size` | 4 |
 | `test-quality` | 15 |
 
-Use `./node_modules/.bin/gruff-ts list-rules --format=json` for exact rule IDs, severities, confidence levels, remediation text, thresholds, and options.
+Use `npx gruff-ts list-rules --format=json` for exact rule IDs, severities, confidence levels, remediation text, thresholds, and options.
 
 ## Baselines And Changed-Code Scans
 
 Baselines suppress reviewed findings by stable fingerprint:
 
 ```bash
-./node_modules/.bin/gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none
-./node_modules/.bin/gruff-ts analyse . --baseline gruff-baseline.json --fail-on=warning
-./node_modules/.bin/gruff-ts analyse . --no-baseline --fail-on=none
+npx gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none
+npx gruff-ts analyse . --baseline gruff-baseline.json --fail-on=warning
+npx gruff-ts analyse . --no-baseline --fail-on=none
 ```
 
 Changed-file scans use Git only when requested:
 
 ```bash
-./node_modules/.bin/gruff-ts analyse . --diff=working-tree --format=github --fail-on=warning
-./node_modules/.bin/gruff-ts analyse . --diff=staged --format=json --fail-on=none
+npx gruff-ts analyse . --diff=working-tree --format=github --fail-on=warning
+npx gruff-ts analyse . --diff=staged --format=json --fail-on=none
 ```
 
 `--diff` accepts `working-tree`, `staged`, `unstaged`, or a base ref. `report` renders raw inspection output and does not accept `--baseline`; use `analyse` when baseline suppression matters.
@@ -205,7 +205,7 @@ Changed-file scans use Git only when requested:
 ## Dashboard
 
 ```bash
-./node_modules/.bin/gruff-ts dashboard --host 127.0.0.1 --port 8767 --project-root .
+npx gruff-ts dashboard --host 127.0.0.1 --port 8767 --project-root .
 ```
 
 The dashboard serves a local iframe report and compact controls panel. It has no authentication; keep the default loopback bind unless the network is trusted. The `/scan` endpoint analyses filesystem paths from request parameters, so the bind address is the main safety boundary.
