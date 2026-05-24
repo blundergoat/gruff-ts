@@ -26,7 +26,7 @@ function renderReport(report: AnalysisReport, format: OutputFormat): string {
     case "github":
       return renderGithub(report);
     case "hotspot":
-      return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders }, null, 2);
+      return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders.slice(0, 10) }, null, 2);
     case "sarif":
       return renderSarif(report);
     case "text":
@@ -471,13 +471,15 @@ function htmlPillars(report: AnalysisReport): string {
   return `<section class="pillars"><h2 class="section-head">pillar grades <span class="aside">weighted composite</span></h2><div class="pillar-grid">${items}</div></section>`;
 }
 
-// Top-10 offender table, ordered by ascending score (worst first). `scoreReport` already truncated
-// the list to 10 - this stable, deterministic limit is part of the public report contract.
+// Top-10 offender table, ordered by ascending score (worst first). `scoreReport` returns the full
+// sorted list; the HTML report caps at 10 rows so the visual layout stays stable regardless of
+// project size. Summary and hotspot apply their own caps from the same source list.
 function htmlOffenders(report: AnalysisReport): string {
   const rows =
     report.score.topOffenders.length === 0
       ? '<tr><td colspan="4">No offenders found.</td></tr>'
       : report.score.topOffenders
+          .slice(0, 10)
           .map((file) => {
             const letter = grade(file.score);
             return `<tr><td class="file-path">${htmlLocation(file.filePath)}</td><td class="num">${file.score.toFixed(1)}</td><td class="num">${file.findings}</td><td class="num"><span class="grade-pill ${gradeClass(letter)}">${letter}</span></td></tr>`;

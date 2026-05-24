@@ -216,7 +216,7 @@ function registerInitCommand(program: Command): void {
   program
     .command("init")
     .description("Write the default .gruff-ts.yaml to the current directory.")
-    .option("--force", "Overwrite an existing .gruff-ts.yaml file.")
+    .option("--force", "Write .gruff-ts.yaml even when another supported config (.gruff.yaml/.yml/.json) is present; overwrites .gruff-ts.yaml if it exists.")
     .action((rawOptions: Record<string, unknown>) => {
       const result = writeDefaultConfig(process.cwd(), rawOptions.force === true);
       if (result.status === "exists") {

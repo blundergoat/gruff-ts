@@ -9,6 +9,7 @@ Onboarding flow, machine-readable summaries, and a `waste` → `maintainability`
 - **Added**: `summary --format=json` emits the new `gruff.summary.v1` schema; `summary --top <n>` controls digest size; a baseline status line surfaces source and suppression count. `dashboard --project-root <path>` sets the default scan root.
 - **Added**: docs index (`docs/README.md`) plus `ci-integration.md`, `dashboard.md`, `output-formats.md`, `rules.md`; CI now runs `npm audit --audit-level=moderate`.
 - **Fixed**: `summary`/`list-rules` `--format` rejects unsupported values via Commander instead of coercing to `text`; CLI switched to `parseAsync` so async handler rejections exit with the correct code.
+- **Fixed**: `summary --top <n>` now actually controls file-offender count beyond 10. `gruff.analysis.v1` `score.topOffenders` is now the full sorted file list (was capped at 10); HTML report and `--format=hotspot` still cap their own output at 10 rows. `init --force` help text now reflects that it also overrides the refusal triggered by non-canonical configs (`.gruff.yaml`/`.yml`/`.json`). `--top` added to the known-CLI-flag list so comments documenting it no longer trip `docs.stale-comment`.
 - **Changed**: docs filenames lowercased (`CONFIGURATION.md` → `configuration.md`, `RELEASING.md` → `releasing.md`, `REPORTS_AND_CI.md` → `reports-and-ci.md`).
 
 ## [0.1.0] - 2026-05-23

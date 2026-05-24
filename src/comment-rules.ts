@@ -310,6 +310,7 @@ function knownCliFlags(): Set<string> {
     "--project-root",
     "--quiet",
     "--silent",
+    "--top",
     "--verbose",
     "--version",
   ]);
