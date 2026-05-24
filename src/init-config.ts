@@ -56,12 +56,14 @@ function renderDefaultConfig(ignoredPaths: readonly string[] = []): string {
 }
 
 /**
- * Write the default config to `<projectRoot>/.gruff-ts.yaml`. Refuses to clobber when ANY supported
- * config file is present (the four-name precedence list in `DEFAULT_CONFIG_FILES`), not just
- * `.gruff-ts.yaml` - otherwise `init` would silently create a higher-precedence file alongside an
- * existing `.gruff.yaml` / `.gruff.yml` / `.gruff.json` and quietly change the effective config.
- * When overwriting an existing `.gruff-ts.yaml`, the file's `paths.ignore` entries are preserved
- * so `init --force` does not erase project-specific recursive-scan exclusions.
+ * Write the default config to `<projectRoot>/.gruff-ts.yaml`. Performs a filesystem write side
+ * effect when no supported config exists, or when `shouldOverwrite` is true and `.gruff-ts.yaml`
+ * is the incumbent. Refuses to clobber (no side effect) when ANY supported config file is present
+ * (the four-name precedence list in `DEFAULT_CONFIG_FILES`), not just `.gruff-ts.yaml` -
+ * otherwise `init` would silently create a higher-precedence file alongside an existing
+ * `.gruff.yaml` / `.gruff.yml` / `.gruff.json` and quietly change the effective config. When
+ * overwriting an existing `.gruff-ts.yaml`, the file's `paths.ignore` entries are preserved so
+ * `init --force` does not erase project-specific recursive-scan exclusions.
  *
  * @param projectRoot Directory to write the config file into.
  * @param shouldOverwrite Overwrite an existing config file when true.
