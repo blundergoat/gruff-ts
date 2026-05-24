@@ -2,68 +2,14 @@
 
 ## [0.1.1] - 2026-05-24
 
-Onboarding flow, machine-readable summaries, and a `waste` →
-`maintainability` pillar rename. Catalogue is now 119 rules across 11
-pillars.
+Onboarding flow, machine-readable summaries, and a `waste` → `maintainability` pillar rename. Catalogue is now 119 rules across 11 pillars.
 
-### Breaking changes
-
-- **Pillar `waste` → `maintainability`.** Rule IDs are unchanged (still
-  `waste.any-type`, `waste.console-log`, etc.) so existing
-  `.gruff-ts.yaml` configs keep working without edits. But every
-  consumer of the pillar *name* must update: text / JSON / SARIF output
-  parsers, dashboard navigation, and the exported `Pillar` TypeScript
-  union (which no longer includes `"waste"`).
-- **Rules removed: `docs.todo-density`, `naming.abbreviation`.** Both
-  were opt-in advisories, disabled by default. If either was enabled in
-  your `.gruff-ts.yaml`, the rule entry is now silently ignored.
-- **Config key removed: `allowlists.abbreviationDenylist`** (consumed
-  only by the removed `naming.abbreviation` rule). Silently ignored;
-  delete it from `.gruff-ts.yaml` when convenient.
-
-### Added
-
-- **`gruff-ts init`** writes the default `.gruff-ts.yaml` to the current
-  directory. Refuses to overwrite when any of the supported config names
-  (`.gruff-ts.yaml`, `.gruff.json`, `.gruff.yaml`, `.gruff.yml`) is
-  already present; `--force` overrides. When `--force` regenerates an
-  existing `.gruff-ts.yaml`, the file's `paths.ignore` entries are
-  preserved. A successful write prints the recommended adoption-flow
-  next steps (generate a baseline, then gate new findings).
-- **Auto-prompt for `init`** in `analyse`, `summary`, `report`, and
-  `dashboard` when no config is found in the project. Gated by
-  `--no-interaction`, output suppression (`--silent`/`--quiet`), and
-  TTY checks on stdin, stdout, and stderr — the prompt never fires in
-  pipelines, CI, or scripted runs.
-- **`summary --format=json`** emits a machine-readable digest under the
-  new stable schema `gruff.summary.v1` (joins the existing
-  `gruff.analysis.v1`, `gruff.baseline.v1`, and `gruff.hotspot.v1`).
-- **`summary --top <n>`** controls how many top rules and file
-  offenders the digest lists (default 10).
-- **Baseline status line** in `summary` output, surfacing the
-  baseline source and how many findings it suppressed.
-- **`dashboard --project-root <path>`** sets the default project root
-  the dashboard scans.
-- **Docs**: `docs/README.md` (index), `docs/ci-integration.md`,
-  `docs/dashboard.md`, `docs/output-formats.md`, and
-  `docs/rules.md` (catalogue reference).
-- **CI**: `npm audit --audit-level=moderate` gate in `.github/workflows/ci.yml`.
-
-### Fixed
-
-- `summary --format` and `list-rules --format` reject unsupported values
-  with a Commander usage error instead of silently coercing to `text` —
-  typos like `--format=jsno` no longer exit zero with the wrong output.
-- CLI entrypoint switched to `parseAsync`, so rejections inside async
-  action handlers surface through Commander's error path with the right
-  exit code instead of escaping as unhandled promise rejections.
-
-### Changed
-
-- Docs filenames lowercased: `docs/CONFIGURATION.md` →
-  `docs/configuration.md`, `docs/RELEASING.md` → `docs/releasing.md`,
-  `docs/REPORTS_AND_CI.md` → `docs/reports-and-ci.md`. Update bookmarks
-  and external links.
+- **Breaking**: pillar `waste` renamed to `maintainability` — rule IDs unchanged, but text/JSON/SARIF parsers, dashboard nav, and the `Pillar` TypeScript union must update. Rules `docs.todo-density` and `naming.abbreviation` removed (both opt-in advisories), along with the now-unused `allowlists.abbreviationDenylist` config key; stale entries are silently ignored.
+- **Added**: `gruff-ts init` writes the default `.gruff-ts.yaml`, refusing to overwrite any supported config name without `--force` (which preserves existing `paths.ignore` entries). `analyse`, `summary`, `report`, and `dashboard` auto-prompt for `init` when no config is found, gated by `--no-interaction`, `--silent`/`--quiet`, and TTY checks so it never fires in CI.
+- **Added**: `summary --format=json` emits the new `gruff.summary.v1` schema; `summary --top <n>` controls digest size; a baseline status line surfaces source and suppression count. `dashboard --project-root <path>` sets the default scan root.
+- **Added**: docs index (`docs/README.md`) plus `ci-integration.md`, `dashboard.md`, `output-formats.md`, `rules.md`; CI now runs `npm audit --audit-level=moderate`.
+- **Fixed**: `summary`/`list-rules` `--format` rejects unsupported values via Commander instead of coercing to `text`; CLI switched to `parseAsync` so async handler rejections exit with the correct code.
+- **Changed**: docs filenames lowercased (`CONFIGURATION.md` → `configuration.md`, `RELEASING.md` → `releasing.md`, `REPORTS_AND_CI.md` → `reports-and-ci.md`).
 
 ## [0.1.0] - 2026-05-23
 
