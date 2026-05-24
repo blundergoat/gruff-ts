@@ -78,7 +78,10 @@ function writeDefaultConfig(projectRoot: string, shouldOverwrite: boolean): Init
     return { path: existingConfigPath, status: "exists" };
   }
   const targetExists = existsSync(targetPath);
-  const preservedIgnoredPaths = targetExists ? readExistingIgnoredPaths(projectRoot) : [];
+  // Preserve paths.ignore from whichever supported config exists, not just `.gruff-ts.yaml` -
+  // otherwise `init --force` against a project with only `.gruff.yaml`/`.yml`/`.json` would
+  // silently drop user-curated ignore entries when generating the new canonical file.
+  const preservedIgnoredPaths = existingConfigPath !== undefined ? readExistingIgnoredPaths(projectRoot) : [];
   writeFileSync(targetPath, renderDefaultConfig(preservedIgnoredPaths));
   return { path: targetPath, status: targetExists ? "overwritten" : "written" };
 }

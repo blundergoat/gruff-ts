@@ -108,7 +108,10 @@ print_outdated() {
 
 read_direct_dependencies() {
   local field="$1"
-  node -e "const pkg = require('./package.json'); console.log(Object.keys(pkg['$field'] || {}).join('\n'));"
+  # Print one key per line, nothing for an empty section. `console.log(keys.join("\n"))` would
+  # emit a lone newline when the section is empty, and `mapfile -t` would then read a single
+  # empty element, causing the install loop below to run `npm install --save-prod @latest`.
+  node -e "const pkg = require('./package.json'); for (const key of Object.keys(pkg['$field'] || {})) console.log(key);"
 }
 
 install_latest_dependencies() {

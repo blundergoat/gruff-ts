@@ -113,6 +113,24 @@ test("gruff-ts init --force preserves the existing paths.ignore entries", () => 
   }
 });
 
+test("gruff-ts init --force preserves paths.ignore from a non-canonical supported config", () => {
+  // Regression: the preservation gate previously checked only `.gruff-ts.yaml`, so projects whose
+  // incumbent was `.gruff.yaml`/`.yml`/`.json` lost their curated ignore entries on `init --force`.
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-init-preserve-noncanonical-"));
+  try {
+    const incumbentPath = join(projectRoot, ".gruff.yaml");
+    writeFileSync(incumbentPath, renderDefaultConfig([".agents/**", "fixtures/**"]));
+
+    const overwritten = execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "init", "--force"], { cwd: projectRoot, encoding: "utf8" });
+    assert.match(overwritten, new RegExp(`^Wrote .*${DEFAULT_CONFIG_FILE_NAME}`));
+
+    const newContent = readFileSync(join(projectRoot, DEFAULT_CONFIG_FILE_NAME), "utf8");
+    assert.match(newContent, /  ignore:\n    - "\.agents\/\*\*"\n    - "fixtures\/\*\*"/);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
 test("shouldPromptForInit returns true only when every gate passes", () => {
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-prompt-"));
   try {

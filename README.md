@@ -246,6 +246,7 @@ Source lives under `src/`: `src/cli.ts` is the bootstrap, `src/cli-program.ts` o
 
 - [Changelog](CHANGELOG.md)
 - [Configuration](docs/configuration.md)
+- [Rules catalogue](docs/rules.md)
 - [Reports and CI](docs/reports-and-ci.md)
 - [Release checklist](docs/releasing.md)
 - [Contributing](CONTRIBUTING.md)
