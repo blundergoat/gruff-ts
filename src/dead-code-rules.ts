@@ -44,7 +44,7 @@ export function analyseUnreachable(file: SourceFile, source: string, findings: F
       didPreviousTerminate = false;
     }
     if (isUnreachableStatement(trimmed, didPreviousTerminate, branchLabel)) {
-      findings.push(finding({ ruleId: "waste.unreachable-code", message: "Statement appears after a terminating statement.", file, line: index + 1, severity: "warning", pillar: "waste" }));
+      findings.push(finding({ ruleId: "waste.unreachable-code", message: "Statement appears after a terminating statement.", file, line: index + 1, severity: "warning", pillar: "maintainability" }));
     }
     // A terminating statement inside a braceless conditional body does not unconditionally exit:
     // `if (x)\n  return y;\nnextLine` - `nextLine` runs when `x` is falsy. Tracking the prior line's
@@ -165,7 +165,7 @@ function unusedImportFinding(file: SourceFile, name: string, line: number): Find
     filePath: file.displayPath,
     line,
     severity: "advisory",
-    pillar: "waste",
+    pillar: "maintainability",
     confidence: "medium",
     symbol: name,
     remediation: "Remove the unused import.",

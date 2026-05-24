@@ -608,8 +608,6 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
           "complexity.cyclomatic": { threshold: 2, severity: "warning" },
           "complexity.npath": { threshold: 2, severity: "warning" },
           "design.large-module-concentration": { threshold: 35, severity: "advisory", options: { minFiles: 4, minLines: 8 } },
-          "docs.todo-density": { enabled: true, threshold: 1, severity: "advisory" },
-          "naming.abbreviation": { enabled: true },
           "size.file-length": { threshold: 8, severity: "warning" },
           "size.function-length": { threshold: 8, severity: "warning" },
           "size.parameter-count": { threshold: 3, severity: "warning" },

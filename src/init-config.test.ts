@@ -1,4 +1,4 @@
-// Behavioural coverage for `gruff-ts init`: registry parity, opt-in handling, option-default drift
+// Behavioural coverage for `gruff-ts init`: registry parity, enabled-state handling, option-default drift
 // guard, parser round-trip, and the CLI overwrite-guard contract.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { loadConfig } from "./config.ts";
-import { DEFAULT_CONFIG_FILE_NAME, OPT_IN_RULE_IDS, RULE_OPTION_DEFAULTS, renderDefaultConfig, shouldPromptForInit } from "./init-config.ts";
+import { DEFAULT_CONFIG_FILE_NAME, RULE_OPTION_DEFAULTS, renderDefaultConfig, shouldPromptForInit } from "./init-config.ts";
 import type { InitPromptContext } from "./init-config.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { REPO_ROOT } from "./test-fixtures.ts";
@@ -18,7 +18,7 @@ test("renderDefaultConfig includes every descriptor rule id", () => {
   assertDefaultConfigIncludesEveryDescriptor(yaml);
 });
 
-test("renderDefaultConfig emits opt-in rules as enabled:false and others as enabled:true", () => {
+test("renderDefaultConfig emits every descriptor rule as enabled:true", () => {
   const yaml = renderDefaultConfig();
   assertDefaultConfigOptInStates(yaml);
 });
@@ -142,12 +142,11 @@ function assertDefaultConfigIncludesEveryDescriptor(yaml: string): void {
   }
 }
 
-// Verifies opt-in rule defaults against the literal rendered YAML, before loadConfig overlays defaults.
+// Verifies default enabled states against the literal rendered YAML, before loadConfig overlays defaults.
 function assertDefaultConfigOptInStates(yaml: string): void {
   for (const descriptor of ruleDescriptors()) {
     const block = renderedRuleBlock(yaml, descriptor.ruleId);
-    const expected = OPT_IN_RULE_IDS.has(descriptor.ruleId) ? "false" : "true";
-    assert.equal(renderedRuleField(block, "enabled"), expected, `enabled mismatch for ${descriptor.ruleId}`);
+    assert.equal(renderedRuleField(block, "enabled"), "true", `enabled mismatch for ${descriptor.ruleId}`);
   }
 }
 
@@ -170,7 +169,7 @@ function assertLoadedConfigContainsEveryRule(ruleOverrides: Config["rules"]): vo
   for (const descriptor of ruleDescriptors()) {
     const ruleOverride = ruleOverrides.get(descriptor.ruleId);
     assert.notEqual(ruleOverride, undefined, `loadConfig dropped ${descriptor.ruleId}`);
-    assert.equal(ruleOverride?.enabled, !OPT_IN_RULE_IDS.has(descriptor.ruleId), `enabled state mismatch for ${descriptor.ruleId}`);
+    assert.equal(ruleOverride?.enabled, true, `enabled state mismatch for ${descriptor.ruleId}`);
   }
 }
 

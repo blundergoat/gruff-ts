@@ -172,13 +172,13 @@ The v0.1 catalogue contains 121 rules:
 | `dead-code` | 1 |
 | `design` | 6 |
 | `documentation` | 18 |
+| `maintainability` | 14 |
 | `modernisation` | 14 |
 | `naming` | 11 |
 | `security` | 27 |
 | `sensitive-data` | 8 |
 | `size` | 4 |
 | `test-quality` | 15 |
-| `waste` | 14 |
 
 Use `./node_modules/.bin/gruff-ts list-rules --format=json` for exact rule IDs, severities, confidence levels, remediation text, thresholds, and options.
 

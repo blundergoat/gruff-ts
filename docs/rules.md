@@ -1,6 +1,6 @@
 # Rules
 
-`gruff-ts` exposes 121 rules across 11 pillars. This list is generated from the
+`gruff-ts` exposes 119 rules across 11 pillars. This list is generated from the
 public rule catalogue used by `gruff-ts list-rules`; severity, confidence,
 thresholds, and option names are the defaults before project config overrides.
 
@@ -15,14 +15,14 @@ gruff-ts list-rules --format=json
 - complexity: 3
 - dead-code: 1
 - design: 6
-- documentation: 18
+- documentation: 17
+- maintainability: 14
 - modernisation: 14
-- naming: 11
+- naming: 10
 - security: 27
 - sensitive-data: 8
 - size: 4
 - test-quality: 15
-- waste: 14
 
 ## Complexity
 
@@ -60,7 +60,6 @@ gruff-ts list-rules --format=json
 - `docs.stale-comment` (advisory; medium confidence): Flags comments that reference missing files, unknown rules, stale CLI flags, or the wrong declaration.
 - `docs.stale-param-tag` (advisory; medium confidence): Flags @param tags for parameters no longer in the signature.
 - `docs.suppression-without-rationale` (advisory; medium confidence): Flags lint, formatter, coverage, or tool suppressions without a maintainer rationale.
-- `docs.todo-density` (advisory; high confidence; threshold 4): Flags files with a high count of TODO/FIXME markers (opt-in, disabled by default).
 - `docs.todo-without-tracking` (advisory; high confidence): Flags TODO, FIXME, HACK, and XXX comments without tracking context.
 - `docs.useless-docblock` (advisory; medium confidence): Flags comments or docblocks that only restate the symbol name.
 
@@ -83,7 +82,6 @@ gruff-ts list-rules --format=json
 
 ## Naming
 
-- `naming.abbreviation` (advisory; medium confidence): Flags identifiers in the project abbreviation denylist (opt-in, disabled by default).
 - `naming.acronym-case` (advisory; medium confidence): Flags mixed casings of a known acronym in one file.
 - `naming.boolean-prefix` (advisory; medium confidence): Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields.
 - `naming.class-file-mismatch` (advisory; medium confidence): Flags exported classes whose name differs from the file name.
@@ -161,7 +159,7 @@ gruff-ts list-rules --format=json
 - `test-quality.trivial-assertion` (warning; high confidence): Flags tautological assertions.
 - `test-quality.unused-mock` (advisory; medium confidence): Flags mocks created but not used.
 
-## Waste
+## Maintainability
 
 - `waste.any-type` (warning; high confidence): Flags any type usage.
 - `waste.broad-runtime-version` (advisory; medium confidence): Flags broad runtime dependency version ranges.

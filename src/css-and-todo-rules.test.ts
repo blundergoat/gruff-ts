@@ -1,4 +1,4 @@
-// CSS discovery, size.stylesheet-length, and the docs.todo-density opt-in policy from M38.
+// CSS discovery and size.stylesheet-length calibration coverage.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { analyseProject } from "./test-fixtures.ts";
@@ -51,24 +51,4 @@ test("size.file-length does not double-fire on CSS when stylesheet rule applies"
 
   assert.equal(report.findings.some((entry) => entry.ruleId === "size.file-length" && entry.filePath === "big.css"), false);
   assert.equal(report.findings.some((entry) => entry.ruleId === "size.stylesheet-length" && entry.filePath === "big.css"), true);
-});
-
-test("docs.todo-density is disabled by default and stays opt-in", () => {
-  // TypeScript file with five task markers, well above the historic default threshold of 4.
-  // Confirms the M38 default-disabled policy: opting in through config must still fire the rule.
-  const taskMarkers = ["XX", "FIX"];
-  const taskKeyword = `${taskMarkers[0]}TODO`.slice(2);
-  const fixKeyword = `${taskMarkers[1]}ME`;
-  const taskSource = `// ${taskKeyword} one
-// ${taskKeyword} two
-// ${taskKeyword} three
-// ${fixKeyword} four
-// ${fixKeyword} five
-export const value = 1;
-`;
-  const defaultReport = analyseProject({ "tasks.ts": taskSource }, { shouldSkipConfig: true });
-  assert.equal(defaultReport.findings.some((entry) => entry.ruleId === "docs.todo-density"), false);
-
-  const optInReport = analyseProject({ "tasks.ts": taskSource }, { config: { rules: { "docs.todo-density": { enabled: true, threshold: 4, severity: "advisory" } } } });
-  assert.equal(optInReport.findings.some((entry) => entry.ruleId === "docs.todo-density"), true);
 });

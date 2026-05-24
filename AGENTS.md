@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`gruff-ts` - TypeScript project quality analyzer. Dependency-light Node.js/ESM CLI with a thin `src/cli.ts` bootstrap and focused runtime modules under `src/`. It scans TypeScript, JavaScript, CSS, and common config/text files (json, yaml, toml, env, ini, xml, npmrc-style secret files) and emits findings across 11 pillars (size, complexity, dead-code, waste, naming, documentation, modernisation, security, sensitive-data, test-quality, design). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v1`) and report snapshots (`gruff.analysis.v1`) round-trip without churn.
+`gruff-ts` - TypeScript project quality analyzer. Dependency-light Node.js/ESM CLI with a thin `src/cli.ts` bootstrap and focused runtime modules under `src/`. It scans TypeScript, JavaScript, CSS, and common config/text files (json, yaml, toml, env, ini, xml, npmrc-style secret files) and emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v1`) and report snapshots (`gruff.analysis.v1`) round-trip without churn.
 
 goat-flow version: 1.7.0
 

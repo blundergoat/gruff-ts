@@ -5,8 +5,8 @@
 Initial public release of the `@blundergoat/gruff-ts` npm package.
 
 - TypeScript/JavaScript code quality scanner: 121 rules across 11 pillars
-  (complexity, dead-code, design, documentation, modernisation, naming,
-  security, sensitive-data, size, test-quality, waste).
+  (complexity, dead-code, design, documentation, maintainability,
+  modernisation, naming, security, sensitive-data, size, test-quality).
 - CLI commands: `analyse`, `summary`, `report`, `list-rules`, `dashboard`,
   `completion`.
 - Output formats: `text`, `json`, `html`, `markdown`, `github`, `hotspot`,

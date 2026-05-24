@@ -192,7 +192,7 @@ const SARIF_FIXTURE_REPORT: AnalysisReport = {
   diagnostics: [],
   findings: [
     { ruleId: "security.eval-call", message: "Avoid eval().", filePath: "./src\\bad.ts", line: 7, endLine: 10, column: 3, severity: "error", pillar: "security", secondaryPillars: ["sensitive-data"], tier: "v0.1", confidence: "high", symbol: "run", remediation: "Use a dispatch table.", metadata: { target: "eval" }, fingerprint: "abc123" },
-    { ruleId: "waste.console-log", message: "Avoid console logging.", filePath: "src\\warn.ts", line: 8, severity: "warning", pillar: "waste", secondaryPillars: [], tier: "v0.1", confidence: "high", metadata: {}, fingerprint: "def456" },
+    { ruleId: "waste.console-log", message: "Avoid console logging.", filePath: "src\\warn.ts", line: 8, severity: "warning", pillar: "maintainability", secondaryPillars: [], tier: "v0.1", confidence: "high", metadata: {}, fingerprint: "def456" },
     { ruleId: "docs.missing-public-doc", message: "Document public exports.", filePath: "./src/docs.ts", line: 9, severity: "advisory", pillar: "documentation", secondaryPillars: [], tier: "v0.1", confidence: "medium", metadata: { exported: true }, fingerprint: "ghi789" },
   ],
   score: {

@@ -18,11 +18,6 @@ const RULE_OPTION_DEFAULTS: Readonly<Record<string, Readonly<Record<string, numb
   "naming.generic-parameter": { minCyclomatic: 8, minLineCount: 30, minParameters: 3 },
 };
 
-// Rules that are registered in the catalogue but require `enabled: true` to activate (they
-// branch on `=== true` rather than `?? true`). Generated config emits them as `enabled: false`
-// so the file faithfully describes the analyser's effective default behaviour.
-const OPT_IN_RULE_IDS: ReadonlySet<string> = new Set(["docs.todo-density", "naming.abbreviation"]);
-
 // Default starter list copied from `defaultConfig()` in config.ts. Generated separately because
 // the YAML form (a block sequence) is more reviewable than the inline `[...]` form a Set would emit.
 const DEFAULT_ACCEPTED_ABBREVIATIONS: readonly string[] = ["id", "db", "fs", "io", "ui", "tx", "rx"];
@@ -111,9 +106,6 @@ function renderAllowlistsSection(): string {
     "  # numbered-suffix branch (foo1, value2) stays active even when this is empty.",
     "  # Default: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]",
     "  # placeholderNames: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]",
-    "  # Abbreviations flagged by the opt-in naming.abbreviation rule. Case-insensitive.",
-    "  # Default: [ctx, pkg, opts, fn, idx, cb]",
-    "  # abbreviationDenylist: [ctx, pkg, opts, fn, idx, cb]",
     "  # Negative-framed boolean names that should NOT trigger naming.negative-boolean.",
     "  # Defaults are HTTP-header conventions; add project terms as needed.",
     "  # Default: [nostore, nofollow, noreferrer, noscript, noindex]",
@@ -141,7 +133,7 @@ function renderRuleEntry(descriptor: RuleDescriptor): string[] {
   const lines: string[] = [];
   lines.push(`  # ${descriptor.pillar}/${descriptor.severity}: ${descriptor.description}`);
   lines.push(`  ${descriptor.ruleId}:`);
-  lines.push(`    enabled: ${OPT_IN_RULE_IDS.has(descriptor.ruleId) ? "false" : "true"}`);
+  lines.push("    enabled: true");
   if (typeof descriptor.threshold === "number") {
     lines.push(`    threshold: ${descriptor.threshold}`);
     lines.push(`    severity: ${descriptor.severity}`);
@@ -203,4 +195,4 @@ async function promptYesNo(question: string): Promise<boolean> {
 }
 
 export type { InitPromptContext, InitResult };
-export { DEFAULT_CONFIG_FILE_NAME, OPT_IN_RULE_IDS, RULE_OPTION_DEFAULTS, promptYesNo, renderDefaultConfig, shouldPromptForInit, writeDefaultConfig };
+export { DEFAULT_CONFIG_FILE_NAME, RULE_OPTION_DEFAULTS, promptYesNo, renderDefaultConfig, shouldPromptForInit, writeDefaultConfig };
