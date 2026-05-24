@@ -6,8 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { analyse, renderReport, ruleDescriptors } from "./cli.ts";
+import { VERSION } from "./constants.ts";
 import type { AnalysisReport } from "./cli.ts";
 import { analyseFixture, fetchText, REPO_ROOT, withDashboard } from "./test-fixtures.ts";
+
+const VERSION_PATTERN = VERSION.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 test("root CLI exposes gruff console command and option parity", () => {
   const list = execFileSync("./bin/gruff-ts", [], { encoding: "utf8" });
@@ -16,7 +19,7 @@ test("root CLI exposes gruff console command and option parity", () => {
 
   assert.equal(help, list);
   assert.equal(explicitList, list);
-  assert.match(list, /^gruff-ts 0\.1\.0\n\nUsage:\n  command \[options\] \[arguments\]/);
+  assert.match(list, new RegExp(`^gruff-ts ${VERSION_PATTERN}\\n\\nUsage:\\n  command \\[options\\] \\[arguments\\]`));
   ["-h, --help", "--silent", "-q, --quiet", "-V, --version", "--ansi|--no-ansi", "-n, --no-interaction", "-v|vv|vvv, --verbose"].forEach((option) => {
     assert.match(list, new RegExp(option.replace(/[|]/g, "\\|")));
   });
@@ -29,7 +32,7 @@ test("root CLI mirrors gruff php ANSI menu styling", () => {
   const ansiMenu = execFileSync("./bin/gruff-ts", ["--ansi"], { encoding: "utf8" });
   const plainMenu = execFileSync("./bin/gruff-ts", ["--no-ansi"], { encoding: "utf8" });
 
-  assert.match(ansiMenu, /gruff-ts \u001b\[32m0\.1\.0\u001b\[39m/);
+  assert.match(ansiMenu, new RegExp(`gruff-ts \\x1B\\[32m${VERSION_PATTERN}\\x1B\\[39m`));
   assert.match(ansiMenu, /\u001b\[33mUsage:\u001b\[39m/);
   assert.match(ansiMenu, /\u001b\[33mOptions:\u001b\[39m/);
   assert.match(ansiMenu, /\u001b\[32m-h, --help\u001b\[39m/);
@@ -47,7 +50,7 @@ test("list-rules CLI prints text and deterministic json", () => {
 /** Spawns the rule catalogue command and verifies representative metadata. */
 function assertRuleListTextOutput(): boolean {
   const text = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
-  assert.match(text, /gruff-ts 0\.1\.0 rules \(\d+\)/);
+  assert.match(text, new RegExp(`gruff-ts ${VERSION_PATTERN} rules \\(\\d+\\)`));
   assert.match(text, /security\.eval-call \| security \| error \| high \|/);
   assert.match(text, /complexity\.npath \| complexity \| warning \| medium \| .*threshold: 20/);
   return true;
@@ -112,7 +115,7 @@ test("console globals suppress normal output and completion emits a script", () 
 
 test("summary CLI prints compact scan digest without per-finding spam", () => {
   const output = execFileSync("./bin/gruff-ts", ["summary", "fixtures/sample.ts", "--fail-on=none", "--no-config", "--no-baseline"], { encoding: "utf8" });
-  assert.match(output, /^gruff-ts 0\.1\.0 summary/);
+  assert.match(output, new RegExp(`^gruff-ts ${VERSION_PATTERN} summary`));
   assert.equal(output.includes(`Path: ${join(process.cwd(), "fixtures/sample.ts")}\n`), true);
   assert.match(output, /^Duration: (?:\d+ms|\d+\.\d{2}s)$/m);
   assert.match(output, /Per-pillar counts:/);
@@ -316,7 +319,7 @@ test("analyse CLI emits parseable sarif for both format syntaxes", () => {
     assert.equal(payload.version, "2.1.0");
     assert.equal(payload.runs.length, 1);
     assert.equal(payload.runs[0].tool.driver.name, "gruff-ts");
-    assert.equal(payload.runs[0].tool.driver.semanticVersion, "0.1.0");
+    assert.equal(payload.runs[0].tool.driver.semanticVersion, VERSION);
     assert.deepEqual(ruleIds, [...ruleIds].sort());
     assert.equal(results.length > 0, true);
     results.forEach((sarifResult: SarifResult) => assertSarifResultShape(rules, sarifResult));
