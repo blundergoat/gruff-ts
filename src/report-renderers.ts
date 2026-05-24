@@ -472,8 +472,8 @@ function htmlPillars(report: AnalysisReport): string {
 }
 
 // Top-10 offender table, ordered by ascending score (worst first). `scoreReport` returns the full
-// sorted list; the HTML report caps at 10 rows so the visual layout stays stable regardless of
-// project size. Summary and hotspot apply their own caps from the same source list.
+// sorted list; summary and hotspot apply their own caps from the same source. The HTML report caps
+// at 10 rows so the visual layout stays stable regardless of project size - that 10 is the contract.
 function htmlOffenders(report: AnalysisReport): string {
   const rows =
     report.score.topOffenders.length === 0

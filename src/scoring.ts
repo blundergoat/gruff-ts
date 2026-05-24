@@ -4,8 +4,8 @@ import type { AnalysisReport, FailThreshold, Finding, Pillar, Severity } from ".
 
 // Builds the per-pillar and per-file score breakdown that ships in `gruff.analysis.v1`. The composite
 // score is the mean of pillar scores so adding a pillar shifts the headline number. `topOffenders` is
-// the full file list sorted worst-first; renderers cap it themselves (HTML and hotspot keep their
-// 10-row UX, summary honours `--top`) so `summary --top 25` no longer silently returns 10 rows.
+// the full file list sorted worst-first; renderers cap it themselves (HTML/hotspot keep their 10-row
+// UX, summary honours `--top`). The field shape is part of the `gruff.analysis.v1` schema contract.
 function scoreReport(findings: Finding[]): AnalysisReport["score"] {
   const byPillar = new Map<Pillar, Finding[]>();
   const byFile = new Map<string, Finding[]>();
