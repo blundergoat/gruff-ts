@@ -1,5 +1,5 @@
 // Text, HTML, SARIF, hotspot, and dashboard renderers for the stable analysis report.
-import type { AnalysisReport, Finding, OutputFormat, Severity } from "./types.ts";
+import type { AnalysisReport, Finding, OutputFormat, Pillar, Severity } from "./types.ts";
 import { ruleDescriptors } from "./rules.ts";
 
 const CYCLOMATIC_BUCKETS = [
@@ -180,8 +180,8 @@ function sarifLevel(severity: Severity): "error" | "warning" | "note" {
  * durable machine output should use `analyse --format=json` instead.
  */
 function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: string, top = 10): string {
-  const pillarCounts = countBy(report.findings, (finding) => finding.pillar);
   const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
+  const pillarRows = buildPillarRows(report);
   const lines = [
     `gruff-ts ${report.tool.version} summary`,
     `Path: ${pathLabel ?? report.run.projectRoot}`,
@@ -194,8 +194,7 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
   if (report.diagnostics.length > 0) {
     lines.push("", "Diagnostics:", ...report.diagnostics.map(summaryDiagnosticLine));
   }
-  lines.push("", "Per-pillar counts:");
-  lines.push(...renderRankedCounts(pillarCounts, "No findings by pillar."));
+  lines.push("", ...renderPillarsBlock(pillarRows));
   lines.push("", `Top ${top} rules:`);
   lines.push(...renderRankedCounts(ruleCounts, "No rule findings.", top));
   lines.push("", `Top ${top} file offenders:`);
@@ -210,15 +209,18 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
 }
 
 /*
- * Renders the stable public `gruff.summary.v1` JSON contract for the `summary --format=json` flow.
- * The schema shape (scope/score/findings/topRules/topOffenders) is part of that contract - downstream
- * CI integrations parse it, so field renames or removals are breaking changes for users.
+ * Renders the stable public `gruff.summary.v2` JSON contract for the `summary --format=json` flow.
+ * Phase 2 of the cross-port harmonisation replaces the flat `{pillar, count}` shape with rich
+ * per-pillar objects carrying grade, score, applicability, and per-severity counts (findings,
+ * advisory, warning, error). The schema-version string is bumped because downstream CI consumers
+ * parse this payload and the field-set is no longer compatible with v1; scope/score/topRules/
+ * topOffenders remain unchanged.
  */
 function renderSummaryJson(report: AnalysisReport, elapsedMs?: number, pathLabel?: string, top = 10): string {
-  const pillarCounts = countBy(report.findings, (finding) => finding.pillar);
   const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
+  const pillarRows = buildPillarRows(report);
   const payload = {
-    schemaVersion: "gruff.summary.v1",
+    schemaVersion: "gruff.summary.v2",
     tool: report.tool,
     scope: {
       paths: pathLabel ?? report.run.projectRoot,
@@ -232,7 +234,17 @@ function renderSummaryJson(report: AnalysisReport, elapsedMs?: number, pathLabel
     score: report.score,
     findings: report.summary,
     baseline: report.baseline,
-    pillars: renderRankedCountRows(pillarCounts),
+    pillars: pillarRows.map((row) => ({
+      pillar: row.pillar,
+      grade: row.grade,
+      score: row.score,
+      penalty: row.penalty,
+      applicable: row.applicable,
+      findings: row.findings,
+      advisory: row.advisory,
+      warning: row.warning,
+      error: row.error,
+    })),
     topRules: renderRankedCountRows(ruleCounts, top),
     topOffenders: report.score.topOffenders.slice(0, top),
   };
@@ -274,6 +286,108 @@ function countBy<T extends string>(findings: Finding[], keyFor: (finding: Findin
   return counts;
 }
 
+// Aggregated per-pillar row used by both the text and JSON summary renderers. `applicable` is
+// derived from the rule catalogue rather than the live findings so the row set stays stable across
+// runs (a pillar with zero findings today is still applicable). `grade` is derived from `score`
+// via the shared `grade()` helper so historical pillar scores keep their existing grade letters.
+interface PillarRow {
+  pillar: Pillar;
+  grade: string;
+  score: number;
+  penalty: number;
+  applicable: boolean;
+  findings: number;
+  advisory: number;
+  warning: number;
+  error: number;
+}
+
+/*
+ * Builds the canonical cross-port pillar row list shared by `gruff.summary.v2` text and JSON.
+ * Sources the score from `report.score.pillars` (the analyser-computed pillar score) and derives
+ * per-severity counts from `report.findings`. Pillars present in the rule catalogue but absent
+ * from `report.score.pillars` (no findings this run) default to a clean A/100 row so the column
+ * layout always shows every applicable pillar - matching the cross-port harmonised contract.
+ */
+function buildPillarRows(report: AnalysisReport): PillarRow[] {
+  const applicablePillars = applicablePillarSet();
+  const scoreByPillar = new Map(report.score.pillars.map((entry) => [entry.pillar, entry] as const));
+  const severityByPillar = new Map<Pillar, { advisory: number; warning: number; error: number }>();
+  for (const finding of report.findings) {
+    const counts = severityByPillar.get(finding.pillar) ?? { advisory: 0, warning: 0, error: 0 };
+    counts[finding.severity] += 1;
+    severityByPillar.set(finding.pillar, counts);
+  }
+  const rows: PillarRow[] = [...applicablePillars].map((pillar) => {
+    const scoreEntry = scoreByPillar.get(pillar);
+    const severities = severityByPillar.get(pillar) ?? { advisory: 0, warning: 0, error: 0 };
+    const score = scoreEntry?.score ?? 100;
+    const penalty = scoreEntry?.penalty ?? 0;
+    const findings = scoreEntry?.findings ?? 0;
+    return {
+      pillar,
+      grade: grade(score),
+      score,
+      penalty,
+      applicable: true,
+      findings,
+      advisory: severities.advisory,
+      warning: severities.warning,
+      error: severities.error,
+    };
+  });
+  rows.sort((leftRow, rightRow) => {
+    if (leftRow.findings !== rightRow.findings) {
+      return rightRow.findings - leftRow.findings;
+    }
+    return leftRow.pillar.localeCompare(rightRow.pillar);
+  });
+  return rows;
+}
+
+// Pillar applicability is sourced from the rule catalogue: a pillar is applicable when at least
+// one rule declares it. This keeps the cross-port `gruff.summary.v2` contract stable - every
+// pillar that *could* fire shows up even when the current run produced zero findings for it.
+function applicablePillarSet(): Set<Pillar> {
+  const pillars = new Set<Pillar>();
+  for (const descriptor of ruleDescriptors()) {
+    pillars.add(descriptor.pillar);
+  }
+  return pillars;
+}
+
+/*
+ * Text renderer for the `Pillars` block in `gruff-ts summary`. Column widths are computed from the
+ * actual data (max pillar-name length, max digits per severity column) with a 3-char minimum value
+ * width so single-digit cells still leave visual breathing room before the next column. This
+ * matches the cross-port canonical byte-for-byte layout: leading "Pillars" header, 2-space row
+ * indent, pillar name padded to max-name-width + 1 space, single-letter grade, 1-space separator,
+ * score right-aligned in 6 chars with 2 decimals, then findings/advisory/warning/error cells
+ * separated by 3 spaces and trimmed of trailing whitespace on the final column.
+ */
+function renderPillarsBlock(rows: PillarRow[]): string[] {
+  if (rows.length === 0) {
+    return ["Pillars", "  (none)"];
+  }
+  const nameWidth = Math.max(...rows.map((row) => row.pillar.length));
+  const findingsWidth = Math.max(3, ...rows.map((row) => String(row.findings).length));
+  const advisoryWidth = Math.max(3, ...rows.map((row) => String(row.advisory).length));
+  const warningWidth = Math.max(3, ...rows.map((row) => String(row.warning).length));
+  const errorWidth = Math.max(3, ...rows.map((row) => String(row.error).length));
+  const lines = ["Pillars"];
+  for (const row of rows) {
+    const name = row.pillar.padEnd(nameWidth);
+    const score = row.score.toFixed(2).padStart(6);
+    const findingsCell = `findings=${String(row.findings).padEnd(findingsWidth)}`;
+    const advisoryCell = `advisory=${String(row.advisory).padEnd(advisoryWidth)}`;
+    const warningCell = `warning=${String(row.warning).padEnd(warningWidth)}`;
+    const errorCell = `error=${String(row.error).padEnd(errorWidth)}`;
+    const line = `  ${name} ${row.grade} ${score} ${findingsCell}   ${advisoryCell}   ${warningCell}   ${errorCell}`.replace(/\s+$/, "");
+    lines.push(line);
+  }
+  return lines;
+}
+
 function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText: string, limit?: number): string[] {
   if (counts.size === 0) {
     return [`- ${emptyText}`];
@@ -311,7 +425,10 @@ function renderText(report: AnalysisReport): string {
 }
 
 // Truncates to 50 findings because Markdown previews (PR comments, READMEs) start mangling longer
-// tables. The stable JSON or HTML renderers stay the canonical full-fidelity output.
+// tables. The stable JSON or HTML renderers stay the canonical full-fidelity output. The Pillars
+// block is inserted near the top of the report (between the severity counts and the findings list)
+// so it stays visible in CI logs and PR comment previews; it shares its data and sort order with
+// the text/JSON/HTML pillar renderers via `buildPillarRows` so all four surfaces stay byte-aligned.
 function renderMarkdown(report: AnalysisReport): string {
   return [
     "# gruff-ts report",
@@ -319,8 +436,45 @@ function renderMarkdown(report: AnalysisReport): string {
     `Score: **${report.score.composite.toFixed(1)} (${report.score.grade})**`,
     "",
     `Findings: ${report.summary.advisory} advisory, ${report.summary.warning} warning, ${report.summary.error} error.`,
+    "",
+    ...renderMarkdownPillarsTable(buildPillarRows(report)),
+    "",
     ...report.findings.slice(0, 50).map((finding) => `- \`${finding.ruleId}\` \`${finding.filePath}\`:${finding.line ?? 1} - ${finding.message}`),
   ].join("\n");
+}
+
+/*
+ * Canonical 7-column Pillars table shared by the cross-port markdown contract. The header,
+ * separator (right-aligned numeric columns), and row format match the gruff-go markdown reporter
+ * byte-for-byte so downstream tooling (PR comment scrapers, dashboards parsing the markdown body)
+ * keys off a single shape. Row order is sourced from `buildPillarRows` (findings DESC, then pillar
+ * ASC); scores render with two decimals; pipes in pillar/grade cells are escaped so a future
+ * pillar/grade name containing `|` cannot break the table.
+ */
+function renderMarkdownPillarsTable(rows: PillarRow[]): string[] {
+  const lines = [
+    "## Pillars",
+    "",
+    "| Pillar | Grade | Score | Findings | Advisory | Warning | Error |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+  ];
+  if (rows.length === 0) {
+    lines.push("| _(none)_ |  |  |  |  |  |  |");
+    return lines;
+  }
+  for (const row of rows) {
+    lines.push(
+      `| ${escapeMarkdownCell(row.pillar)} | ${escapeMarkdownCell(row.grade)} | ${row.score.toFixed(2)} | ${row.findings} | ${row.advisory} | ${row.warning} | ${row.error} |`,
+    );
+  }
+  return lines;
+}
+
+// Escapes the pipe character so a pillar/grade name containing `|` cannot terminate the table row.
+// Markdown's table syntax has no other reserved cell characters - newlines are already impossible
+// inside a single-line `lines.push` interpolation - so this single replacement is sufficient.
+function escapeMarkdownCell(value: string): string {
+  return value.replaceAll("|", "\\|");
 }
 
 // GitHub Actions `::workflow command` syntax. Public contract invariant: file/title properties
@@ -455,20 +609,24 @@ function htmlStat(number: string, label: string, className: string): string {
 }
 
 /*
- * Pillar score grid in the same order the analyser produced - the stable composite score is the
- * mean of these pillars (see `scoreReport`), so visual order matches the headline-grade derivation.
+ * Canonical Pillars table - cross-port harmonised contract shared by text, JSON, and HTML
+ * summaries. Sources rows from `buildPillarRows` (Phase 2 helper) so column data and sort order
+ * (findings DESC, then pillar ASC) match the text/JSON renderers byte-for-byte. The seven columns
+ * - pillar, grade, score, findings, advisory, warning, error - are the public contract surface;
+ * downstream consumers parsing the HTML report key off the column order and `pillar-grid` anchor.
  */
 function htmlPillars(report: AnalysisReport): string {
-  const items =
-    report.score.pillars.length === 0
-      ? '<div class="empty">No pillar findings.</div>'
-      : report.score.pillars
-          .map((pillar) => {
-            const letter = grade(pillar.score);
-            return `<div class="pillar"><div class="name">${escapeHtml(pillar.pillar)}</div><div class="grade ${gradeClass(letter)}">${letter}</div><div class="breakdown"><div class="row"><span class="key">score</span><span class="val">${pillar.score.toFixed(1)}</span></div><div class="row"><span class="key">findings</span><span class="val">${pillar.findings}</span></div></div></div>`;
+  const rows = buildPillarRows(report);
+  const body =
+    rows.length === 0
+      ? '<tr><td colspan="7">No pillar findings.</td></tr>'
+      : rows
+          .map((row) => {
+            const letter = row.grade;
+            return `<tr><td class="pillar-name">${escapeHtml(row.pillar)}</td><td class="num"><span class="grade-pill ${gradeClass(letter)}">${escapeHtml(letter)}</span></td><td class="num">${row.score.toFixed(2)}</td><td class="num">${row.findings}</td><td class="num">${row.advisory}</td><td class="num">${row.warning}</td><td class="num">${row.error}</td></tr>`;
           })
           .join("");
-  return `<section class="pillars"><h2 class="section-head">pillar grades <span class="aside">weighted composite</span></h2><div class="pillar-grid">${items}</div></section>`;
+  return `<section class="pillars"><h2 class="section-head">Pillars <span class="aside">grade, score, findings by severity</span></h2><div class="pillar-grid"><table class="pillar-table"><thead><tr><th scope="col">pillar</th><th scope="col" class="num">grade</th><th scope="col" class="num">score</th><th scope="col" class="num">findings</th><th scope="col" class="num">advisory</th><th scope="col" class="num">warning</th><th scope="col" class="num">error</th></tr></thead><tbody>${body}</tbody></table></div></section>`;
 }
 
 // Top-10 offender table, ordered by ascending score (worst first). `scoreReport` returns the full
@@ -607,7 +765,7 @@ function gradeClass(gradeValue: string): string {
 // appends the diagnostic-section rules only when the report actually has them, keeping clean
 // reports leaner. Hand-maintained CSS - no preprocessor.
 function htmlReportCss(shouldIncludeDiagnostics: boolean): string {
-  const baseCss = `:root{--ink:#0d0c0a;--ink-2:#161412;--ink-3:#1f1c19;--paper:#f3e9d2;--paper-dim:#b5ab94;--paper-mute:#7d735f;--rule:#2a2622;--forge:#e85d04;--grade-a:#7fa15a;--grade-b:#b8b450;--grade-c:#d08c36;--grade-d:#c2552b;--grade-f:#8b2828;--advisory:#b5ab94;--serif:Georgia,'Iowan Old Style',serif;--mono:'JetBrains Mono','IBM Plex Mono',ui-monospace,monospace}*{box-sizing:border-box;margin:0;padding:0}html{background:var(--ink);scrollbar-gutter:stable}body{font-family:var(--mono);color:var(--paper);background:var(--ink);min-height:100vh;line-height:1.5;font-size:14px;padding:48px 32px}.paper{max-width:1180px;margin:0 auto 24px;background:var(--ink-2);border:1px solid var(--rule);position:relative;padding:56px 64px 48px;scrollbar-gutter:stable}.corner-tr,.corner-bl,.paper:before,.paper:after{content:'';position:absolute;width:22px;height:22px;border:1px solid var(--forge)}.paper:before{top:12px;left:12px;border-right:0;border-bottom:0}.paper:after{bottom:12px;right:12px;border-left:0;border-top:0}.corner-tr{top:12px;right:12px;border-left:0;border-bottom:0}.corner-bl{bottom:12px;left:12px;border-right:0;border-top:0}.masthead{display:grid;grid-template-columns:1fr auto;gap:32px;padding-bottom:28px;border-bottom:1px solid var(--rule);align-items:end}.wordmark{font-family:var(--serif);font-weight:900;font-size:96px;line-height:.85;color:var(--paper);font-style:italic}.wordmark:after{content:'-ts';color:var(--forge);font-style:normal;font-size:.45em;margin-left:.15em;vertical-align:super}.tagline{margin-top:12px;font-size:11px;letter-spacing:0;color:var(--paper-mute);text-transform:uppercase}.meta{text-align:right;font-size:11px;color:var(--paper-dim);line-height:1.9}.label{color:var(--paper-mute);text-transform:uppercase;letter-spacing:0;margin-right:8px}.val{color:var(--paper)}.inspection-id{margin-top:10px;color:var(--forge);font-weight:700;font-size:12px;letter-spacing:0}.section-head{font-size:11px;letter-spacing:0;color:var(--paper-mute);text-transform:uppercase;padding-bottom:16px;margin-bottom:20px;border-bottom:1px solid var(--rule);display:flex;justify-content:space-between;align-items:baseline;font-family:var(--mono);font-weight:500;line-height:1.5}.section-head:before{content:'>';margin-right:10px;color:var(--forge);font-family:var(--serif);font-size:14px;font-style:italic}.aside{color:var(--paper-mute);font-size:10px;letter-spacing:0}.verdict{display:grid;grid-template-columns:auto 1fr;gap:56px;padding:48px 0;border-bottom:1px solid var(--rule);align-items:center}.grade-stamp{width:220px;height:220px;border:3px solid currentColor;color:var(--grade-b);display:flex;flex-direction:column;align-items:center;justify-content:center;transform:rotate(-4deg)}.grade-stamp.a,.grade.a,.grade-pill.a{color:var(--grade-a)}.grade-stamp.b,.grade.b,.grade-pill.b{color:var(--grade-b)}.grade-stamp.c,.grade.c,.grade-pill.c{color:var(--grade-c)}.grade-stamp.d,.grade.d,.grade-pill.d{color:var(--grade-d)}.grade-stamp.f,.grade.f,.grade-pill.f{color:var(--grade-f)}.grade-letter{font-family:var(--serif);font-style:italic;font-weight:900;font-size:112px;line-height:1}.grade-score{font-size:13px;letter-spacing:0}.verdict-body{display:flex;flex-direction:column;gap:18px}.verdict-headline{font-family:var(--serif);font-style:italic;font-weight:600;font-size:38px;line-height:1.15}.verdict-headline em{color:var(--forge)}.verdict-stats{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--rule);padding-top:20px}.stat{border-right:1px solid var(--rule);padding:0 18px}.stat:first-child{padding-left:0}.stat:last-child{border-right:0}.verdict-stats .num{font-family:var(--serif);font-weight:800;font-size:32px;line-height:1}.verdict-stats .num.warn{color:var(--grade-c)}.verdict-stats .num.fail{color:var(--grade-f)}.verdict-stats .num.note{color:var(--advisory)}.lbl{font-size:10px;text-transform:uppercase;letter-spacing:0;color:var(--paper-mute);margin-top:8px}.pillars,.offenders,.chart-section{padding:48px 0;border-bottom:1px solid var(--rule)}.pillar-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--rule);border:1px solid var(--rule)}.pillar{background:var(--ink-2);padding:24px 20px;display:flex;flex-direction:column;gap:14px}.pillar .name{font-size:10px;text-transform:uppercase;letter-spacing:0;color:var(--paper-mute)}.pillar .grade{font-family:var(--serif);font-weight:800;font-style:italic;font-size:52px;line-height:.9}.breakdown{font-size:11px;color:var(--paper-dim);line-height:1.7}.row{display:flex;justify-content:space-between;gap:8px}.key{color:var(--paper-mute)}table{width:100%;border-collapse:collapse;font-size:13px;table-layout:auto;font-family:var(--mono)}th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:0;color:var(--paper-mute);font-weight:500;padding:12px 14px 12px 0;border-bottom:1px solid var(--rule)}th:last-child,td:last-child{padding-right:0}th.num,td.num{text-align:right;padding-left:18px}td{padding:14px 14px 14px 0;border-bottom:1px solid var(--ink-3);color:var(--paper-dim);font-size:13px;font-family:var(--mono);font-weight:500;line-height:1.4}td.num{color:var(--paper);font-variant-numeric:tabular-nums}.file-path{color:var(--paper);font-weight:500}.grade-pill{display:inline-block;font-family:var(--serif);font-style:italic;font-weight:800;font-size:18px;line-height:1;padding:4px 10px;border:1.5px solid currentColor;min-width:36px;text-align:center}.chart-summary{color:var(--paper-dim);font-size:12px;margin:-6px 0 18px}.chart-card{border:1px solid var(--rule);padding:24px;background:var(--ink-3)}.title{font-size:10px;text-transform:uppercase;letter-spacing:0;color:var(--paper-mute);margin-bottom:24px}.histogram{display:flex;align-items:flex-end;gap:6px;height:180px;padding-bottom:20px;border-bottom:1px solid var(--rule)}.bar{flex:1;background:var(--forge);position:relative;min-height:4px}.bar.warn{background:var(--grade-c)}.bar.fail{background:var(--grade-f)}.bar .count{position:absolute;top:-22px;left:50%;transform:translateX(-50%);font-size:11px}.histogram-axis{display:flex;gap:6px;margin-top:8px;font-size:10px;color:var(--paper-mute)}.histogram-axis span{flex:1;text-align:center}.findings{padding:48px 0}.finding{display:grid;grid-template-columns:auto 1fr auto;gap:24px;padding:18px 0;border-bottom:1px solid var(--ink-3);align-items:start}.severity{font-size:9px;text-transform:uppercase;letter-spacing:0;padding:4px 10px;border:1px solid currentColor;margin-top:2px;min-width:76px;text-align:center}.severity.fail{color:var(--grade-f)}.severity.warn{color:var(--grade-c)}.severity.note{color:var(--paper-mute)}.rule{font-size:10px;color:var(--forge);text-transform:uppercase;letter-spacing:0;margin-bottom:6px;font-family:var(--mono);font-weight:700;line-height:1.5}.msg{font-family:var(--serif);font-weight:500;font-size:17px;color:var(--paper);line-height:1.4}.loc{font-size:11px;color:var(--paper-mute);margin-top:8px}.loc code{color:var(--paper-dim);background:var(--ink-3);padding:1px 6px;border:1px solid var(--rule)}.loc-link{color:inherit;text-decoration:none}.loc-link:focus-visible{outline:2px solid var(--forge);outline-offset:3px}.points{font-size:10px;color:var(--paper-mute);text-align:right;letter-spacing:0;min-width:96px;padding-left:12px}.empty{color:var(--paper-dim);font-size:12px}.footer{margin-top:48px;padding-top:24px;border-top:1px solid var(--rule);display:grid;grid-template-columns:1fr auto 1fr;gap:24px;align-items:center;font-size:10px;color:var(--paper-mute);letter-spacing:0;text-transform:uppercase}.center{font-family:var(--serif);font-style:italic;font-size:13px;color:var(--paper-dim);text-transform:none;letter-spacing:0}.right{text-align:right}@media(max-width:900px){body{padding:16px}.paper{padding:28px 20px}.wordmark{font-size:64px}.masthead,.verdict{grid-template-columns:1fr}.meta{text-align:left}.grade-stamp{margin:0 auto}.pillar-grid{grid-template-columns:repeat(2,1fr)}.verdict-stats{grid-template-columns:repeat(2,1fr);gap:16px}.stat{border-right:0;padding:0}.verdict-headline{font-size:28px}.footer{grid-template-columns:1fr}.center,.right{text-align:left}}@media(max-width:560px){.pillar-grid{grid-template-columns:1fr}.finding{grid-template-columns:1fr}.points{text-align:left;padding-left:0}.verdict-stats{grid-template-columns:1fr}.histogram{height:140px}}`;
+  const baseCss = `:root{--ink:#0d0c0a;--ink-2:#161412;--ink-3:#1f1c19;--paper:#f3e9d2;--paper-dim:#b5ab94;--paper-mute:#7d735f;--rule:#2a2622;--forge:#e85d04;--grade-a:#7fa15a;--grade-b:#b8b450;--grade-c:#d08c36;--grade-d:#c2552b;--grade-f:#8b2828;--advisory:#b5ab94;--serif:Georgia,'Iowan Old Style',serif;--mono:'JetBrains Mono','IBM Plex Mono',ui-monospace,monospace}*{box-sizing:border-box;margin:0;padding:0}html{background:var(--ink);scrollbar-gutter:stable}body{font-family:var(--mono);color:var(--paper);background:var(--ink);min-height:100vh;line-height:1.5;font-size:14px;padding:48px 32px}.paper{max-width:1180px;margin:0 auto 24px;background:var(--ink-2);border:1px solid var(--rule);position:relative;padding:56px 64px 48px;scrollbar-gutter:stable}.corner-tr,.corner-bl,.paper:before,.paper:after{content:'';position:absolute;width:22px;height:22px;border:1px solid var(--forge)}.paper:before{top:12px;left:12px;border-right:0;border-bottom:0}.paper:after{bottom:12px;right:12px;border-left:0;border-top:0}.corner-tr{top:12px;right:12px;border-left:0;border-bottom:0}.corner-bl{bottom:12px;left:12px;border-right:0;border-top:0}.masthead{display:grid;grid-template-columns:1fr auto;gap:32px;padding-bottom:28px;border-bottom:1px solid var(--rule);align-items:end}.wordmark{font-family:var(--serif);font-weight:900;font-size:96px;line-height:.85;color:var(--paper);font-style:italic}.wordmark:after{content:'-ts';color:var(--forge);font-style:normal;font-size:.45em;margin-left:.15em;vertical-align:super}.tagline{margin-top:12px;font-size:11px;letter-spacing:0;color:var(--paper-mute);text-transform:uppercase}.meta{text-align:right;font-size:11px;color:var(--paper-dim);line-height:1.9}.label{color:var(--paper-mute);text-transform:uppercase;letter-spacing:0;margin-right:8px}.val{color:var(--paper)}.inspection-id{margin-top:10px;color:var(--forge);font-weight:700;font-size:12px;letter-spacing:0}.section-head{font-size:11px;letter-spacing:0;color:var(--paper-mute);text-transform:uppercase;padding-bottom:16px;margin-bottom:20px;border-bottom:1px solid var(--rule);display:flex;justify-content:space-between;align-items:baseline;font-family:var(--mono);font-weight:500;line-height:1.5}.section-head:before{content:'>';margin-right:10px;color:var(--forge);font-family:var(--serif);font-size:14px;font-style:italic}.aside{color:var(--paper-mute);font-size:10px;letter-spacing:0}.verdict{display:grid;grid-template-columns:auto 1fr;gap:56px;padding:48px 0;border-bottom:1px solid var(--rule);align-items:center}.grade-stamp{width:220px;height:220px;border:3px solid currentColor;color:var(--grade-b);display:flex;flex-direction:column;align-items:center;justify-content:center;transform:rotate(-4deg)}.grade-stamp.a,.grade.a,.grade-pill.a{color:var(--grade-a)}.grade-stamp.b,.grade.b,.grade-pill.b{color:var(--grade-b)}.grade-stamp.c,.grade.c,.grade-pill.c{color:var(--grade-c)}.grade-stamp.d,.grade.d,.grade-pill.d{color:var(--grade-d)}.grade-stamp.f,.grade.f,.grade-pill.f{color:var(--grade-f)}.grade-letter{font-family:var(--serif);font-style:italic;font-weight:900;font-size:112px;line-height:1}.grade-score{font-size:13px;letter-spacing:0}.verdict-body{display:flex;flex-direction:column;gap:18px}.verdict-headline{font-family:var(--serif);font-style:italic;font-weight:600;font-size:38px;line-height:1.15}.verdict-headline em{color:var(--forge)}.verdict-stats{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--rule);padding-top:20px}.stat{border-right:1px solid var(--rule);padding:0 18px}.stat:first-child{padding-left:0}.stat:last-child{border-right:0}.verdict-stats .num{font-family:var(--serif);font-weight:800;font-size:32px;line-height:1}.verdict-stats .num.warn{color:var(--grade-c)}.verdict-stats .num.fail{color:var(--grade-f)}.verdict-stats .num.note{color:var(--advisory)}.lbl{font-size:10px;text-transform:uppercase;letter-spacing:0;color:var(--paper-mute);margin-top:8px}.pillars,.offenders,.chart-section{padding:48px 0;border-bottom:1px solid var(--rule)}.pillar-grid{background:var(--ink-2)}.pillar-table{width:100%;border-collapse:collapse}.pillar-table .pillar-name{color:var(--paper);font-weight:500;text-transform:uppercase;letter-spacing:0;font-size:11px}.pillar-table .grade-pill{font-size:14px;padding:2px 8px;min-width:30px}table{width:100%;border-collapse:collapse;font-size:13px;table-layout:auto;font-family:var(--mono)}th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:0;color:var(--paper-mute);font-weight:500;padding:12px 14px 12px 0;border-bottom:1px solid var(--rule)}th:last-child,td:last-child{padding-right:0}th.num,td.num{text-align:right;padding-left:18px}td{padding:14px 14px 14px 0;border-bottom:1px solid var(--ink-3);color:var(--paper-dim);font-size:13px;font-family:var(--mono);font-weight:500;line-height:1.4}td.num{color:var(--paper);font-variant-numeric:tabular-nums}.file-path{color:var(--paper);font-weight:500}.grade-pill{display:inline-block;font-family:var(--serif);font-style:italic;font-weight:800;font-size:18px;line-height:1;padding:4px 10px;border:1.5px solid currentColor;min-width:36px;text-align:center}.chart-summary{color:var(--paper-dim);font-size:12px;margin:-6px 0 18px}.chart-card{border:1px solid var(--rule);padding:24px;background:var(--ink-3)}.title{font-size:10px;text-transform:uppercase;letter-spacing:0;color:var(--paper-mute);margin-bottom:24px}.histogram{display:flex;align-items:flex-end;gap:6px;height:180px;padding-bottom:20px;border-bottom:1px solid var(--rule)}.bar{flex:1;background:var(--forge);position:relative;min-height:4px}.bar.warn{background:var(--grade-c)}.bar.fail{background:var(--grade-f)}.bar .count{position:absolute;top:-22px;left:50%;transform:translateX(-50%);font-size:11px}.histogram-axis{display:flex;gap:6px;margin-top:8px;font-size:10px;color:var(--paper-mute)}.histogram-axis span{flex:1;text-align:center}.findings{padding:48px 0}.finding{display:grid;grid-template-columns:auto 1fr auto;gap:24px;padding:18px 0;border-bottom:1px solid var(--ink-3);align-items:start}.severity{font-size:9px;text-transform:uppercase;letter-spacing:0;padding:4px 10px;border:1px solid currentColor;margin-top:2px;min-width:76px;text-align:center}.severity.fail{color:var(--grade-f)}.severity.warn{color:var(--grade-c)}.severity.note{color:var(--paper-mute)}.rule{font-size:10px;color:var(--forge);text-transform:uppercase;letter-spacing:0;margin-bottom:6px;font-family:var(--mono);font-weight:700;line-height:1.5}.msg{font-family:var(--serif);font-weight:500;font-size:17px;color:var(--paper);line-height:1.4}.loc{font-size:11px;color:var(--paper-mute);margin-top:8px}.loc code{color:var(--paper-dim);background:var(--ink-3);padding:1px 6px;border:1px solid var(--rule)}.loc-link{color:inherit;text-decoration:none}.loc-link:focus-visible{outline:2px solid var(--forge);outline-offset:3px}.points{font-size:10px;color:var(--paper-mute);text-align:right;letter-spacing:0;min-width:96px;padding-left:12px}.empty{color:var(--paper-dim);font-size:12px}.footer{margin-top:48px;padding-top:24px;border-top:1px solid var(--rule);display:grid;grid-template-columns:1fr auto 1fr;gap:24px;align-items:center;font-size:10px;color:var(--paper-mute);letter-spacing:0;text-transform:uppercase}.center{font-family:var(--serif);font-style:italic;font-size:13px;color:var(--paper-dim);text-transform:none;letter-spacing:0}.right{text-align:right}@media(max-width:900px){body{padding:16px}.paper{padding:28px 20px}.wordmark{font-size:64px}.masthead,.verdict{grid-template-columns:1fr}.meta{text-align:left}.grade-stamp{margin:0 auto}.verdict-stats{grid-template-columns:repeat(2,1fr);gap:16px}.stat{border-right:0;padding:0}.verdict-headline{font-size:28px}.footer{grid-template-columns:1fr}.center,.right{text-align:left}}@media(max-width:560px){.pillar-table thead{display:none}.pillar-table,.pillar-table tbody,.pillar-table tr,.pillar-table td{display:block;width:100%}.pillar-table tr{border-bottom:1px solid var(--ink-3);padding:10px 0}.pillar-table td{border-bottom:0;padding:6px 0}.pillar-table td.num{text-align:left;padding-left:0}.finding{grid-template-columns:1fr}.points{text-align:left;padding-left:0}.verdict-stats{grid-template-columns:1fr}.histogram{height:140px}}`;
   const reportCss = `${baseCss}.dashboard-context{padding:28px 0;border-bottom:1px solid var(--rule)}.dashboard-context-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.dashboard-context-grid>div{border:1px solid var(--rule);background:var(--ink-3);padding:12px 14px}.dashboard-context .label{display:block;margin:0 0 6px}.dashboard-context .val{overflow-wrap:anywhere}@media(max-width:700px){.dashboard-context-grid{grid-template-columns:1fr}}@media(max-width:560px){.offender-list thead{display:none}.offender-list,.offender-list tbody,.offender-list tr,.offender-list td{display:block;width:100%}.offender-list tr{border-bottom:1px solid var(--ink-3);padding:10px 0}.offender-list td{border-bottom:0;padding:6px 0}.offender-list td.num{text-align:left;padding-left:0}}`;
   if (!shouldIncludeDiagnostics) {
     return reportCss;

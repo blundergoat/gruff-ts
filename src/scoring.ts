@@ -15,7 +15,7 @@ function scoreReport(findings: Finding[]): AnalysisReport["score"] {
   }
   const pillars = [...byPillar.entries()].map(([pillar, pillarFindings]) => {
     const penalty = pillarFindings.reduce((sum, finding) => sum + severityPenalty(finding.severity), 0);
-    return { pillar, score: Math.max(0, 100 - penalty), findings: pillarFindings.length };
+    return { pillar, score: Math.max(0, 100 - penalty), penalty, findings: pillarFindings.length };
   });
   const composite = pillars.length === 0 ? 100 : pillars.reduce((sum, pillar) => sum + pillar.score, 0) / pillars.length;
   const topOffenders = [...byFile.entries()]

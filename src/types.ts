@@ -92,7 +92,7 @@ export interface AnalysisReport {
   score: {
     composite: number;
     grade: string;
-    pillars: Array<{ pillar: Pillar; score: number; findings: number }>;
+    pillars: Array<{ pillar: Pillar; score: number; penalty: number; findings: number }>;
     topOffenders: Array<{ filePath: string; score: number; findings: number }>;
   };
   baseline?: { path: string; source: string; suppressed: number; generated: boolean };

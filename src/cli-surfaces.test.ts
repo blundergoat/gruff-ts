@@ -118,7 +118,8 @@ test("summary CLI prints compact scan digest without per-finding spam", () => {
   assert.match(output, new RegExp(`^gruff-ts ${VERSION_PATTERN} summary`));
   assert.equal(output.includes(`Path: ${join(process.cwd(), "fixtures/sample.ts")}\n`), true);
   assert.match(output, /^Duration: (?:\d+ms|\d+\.\d{2}s)$/m);
-  assert.match(output, /Per-pillar counts:/);
+  assert.match(output, /^Pillars$/m);
+  assert.match(output, /^ {2}\S+\s+[A-F]\s+\d+\.\d{2} findings=\d+/m);
   assert.match(output, /Top 10 rules:/);
   assert.match(output, /Top 10 file offenders:/);
   assert.equal(/^Baseline:/m.test(output), false);
@@ -133,12 +134,25 @@ test("summary CLI supports json format and top limit", () => {
   );
   const payload = JSON.parse(output) as {
     schemaVersion?: string;
+    pillars?: Array<{ pillar: string; grade: string; score: number; penalty: number; applicable: boolean; findings: number; advisory: number; warning: number; error: number }>;
     topRules?: unknown[];
     topOffenders?: unknown[];
   };
-  assert.equal(payload.schemaVersion, "gruff.summary.v1");
+  assert.equal(payload.schemaVersion, "gruff.summary.v2");
   assert.equal(payload.topRules?.length, 1);
   assert.ok((payload.topOffenders?.length ?? 0) <= 1);
+  assert.ok(Array.isArray(payload.pillars) && (payload.pillars?.length ?? 0) > 0);
+  const [firstPillar] = payload.pillars ?? [];
+  assert.ok(firstPillar);
+  assert.equal(typeof firstPillar.pillar, "string");
+  assert.match(firstPillar.grade, /^[A-F]$/);
+  assert.equal(typeof firstPillar.score, "number");
+  assert.equal(typeof firstPillar.penalty, "number");
+  assert.equal(firstPillar.applicable, true);
+  assert.equal(typeof firstPillar.findings, "number");
+  assert.equal(typeof firstPillar.advisory, "number");
+  assert.equal(typeof firstPillar.warning, "number");
+  assert.equal(typeof firstPillar.error, "number");
 });
 
 test("summary CLI reports generated and applied baseline metadata", () => {
@@ -198,7 +212,7 @@ const SARIF_FIXTURE_REPORT: AnalysisReport = {
   score: {
     composite: 91,
     grade: "A",
-    pillars: [{ pillar: "security", score: 91, findings: 1 }],
+    pillars: [{ pillar: "security", score: 91, penalty: 9, findings: 1 }],
     topOffenders: [{ filePath: "src/bad.ts", score: 91, findings: 1 }],
   },
 };
@@ -381,7 +395,7 @@ const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
   score: {
     composite: 82.5,
     grade: "B",
-    pillars: [{ pillar: "documentation", score: 84, findings: 1 }],
+    pillars: [{ pillar: "documentation", score: 84, penalty: 16, findings: 1 }],
     topOffenders: [{ filePath: "src/<bad>.ts", score: 88, findings: 1 }],
   },
 };
@@ -400,6 +414,98 @@ test("html report uses dashboard parity anchors and escapes values", () => {
   assert.equal(rendered.includes("0.1.0-test<script>"), false);
   assert.equal(rendered.includes("src/<bad>.ts"), false);
   assert.equal(rendered.includes("<script>alert(1)</script>"), false);
+});
+
+test("html report renders canonical 7-column Pillars table matching text/json shape", () => {
+  const rendered = renderReport(ESCAPING_FIXTURE_REPORT, "html");
+  const pillarsMatch = rendered.match(/<section class="pillars">[\s\S]*?<\/section>/);
+  assert.ok(pillarsMatch, "pillars section not found");
+  const section = pillarsMatch[0];
+
+  assert.match(section, /<h2 class="section-head">Pillars\s/);
+  assert.match(section, /<table class="pillar-table">/);
+  ["pillar", "grade", "score", "findings", "advisory", "warning", "error"].forEach((header, index) => {
+    const numClass = index === 0 ? "" : ' class="num"';
+    assert.match(section, new RegExp(`<th scope="col"${numClass}>${header}</th>`));
+  });
+  const headerOrder = [...section.matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((entry) => entry[1]);
+  assert.deepEqual(headerOrder, ["pillar", "grade", "score", "findings", "advisory", "warning", "error"]);
+
+  const rowMatches = [...section.matchAll(/<tr>(?:(?!<\/?thead).)*?<\/tr>/g)].slice(1);
+  assert.ok(rowMatches.length > 0, "no pillar rows rendered");
+  const rows = rowMatches.map((entry) => {
+    const cells = [...entry[0].matchAll(/<td[^>]*>(?:<span[^>]*>)?([^<]+)(?:<\/span>)?<\/td>/g)].map((cell) => cell[1]);
+    return { pillar: cells[0], grade: cells[1], score: cells[2], findings: Number(cells[3]), advisory: Number(cells[4]), warning: Number(cells[5]), error: Number(cells[6]) };
+  });
+  for (let i = 1; i < rows.length; i += 1) {
+    const previous = rows[i - 1];
+    const current = rows[i];
+    assert.ok(previous && current);
+    if (previous.findings === current.findings) {
+      assert.ok((previous.pillar ?? "") <= (current.pillar ?? ""), `pillar sort broken at ${current.pillar}`);
+    } else {
+      assert.ok(previous.findings > current.findings, `findings sort broken at ${current.pillar}`);
+    }
+  }
+  rows.forEach((row) => {
+    assert.match(row.score ?? "", /^\d+\.\d{2}$/);
+  });
+});
+
+test("markdown report renders canonical 7-column Pillars table matching cross-port shape", () => {
+  const rendered = renderReport(ESCAPING_FIXTURE_REPORT, "markdown");
+
+  assert.match(rendered, /^# gruff-ts report$/m);
+  assert.match(rendered, /^## Pillars$/m);
+  assert.match(rendered, /^\| Pillar \| Grade \| Score \| Findings \| Advisory \| Warning \| Error \|$/m);
+  assert.match(rendered, /^\| --- \| --- \| ---: \| ---: \| ---: \| ---: \| ---: \|$/m);
+
+  // Pillars block must appear before the per-finding bullet list so CI/PR previews see it first.
+  const pillarsHeadingIndex = rendered.indexOf("## Pillars");
+  const firstFindingIndex = rendered.indexOf("- `");
+  assert.ok(pillarsHeadingIndex > 0, "Pillars heading missing");
+  assert.ok(firstFindingIndex > 0, "no findings rendered");
+  assert.ok(pillarsHeadingIndex < firstFindingIndex, "Pillars block should precede the findings list");
+
+  // Extract every data row that sits between the separator and the next blank line.
+  const tableMatch = rendered.match(/\| --- \| --- \| ---: \| ---: \| ---: \| ---: \| ---: \|\n([\s\S]*?)(?:\n\n|$)/);
+  assert.ok(tableMatch, "pillar data rows not found");
+  const dataRows = (tableMatch[1] ?? "").split("\n").filter((line) => line.startsWith("|"));
+  assert.ok(dataRows.length > 0, "no pillar rows rendered");
+
+  const parsedRows = dataRows.map((line) => {
+    const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
+    return {
+      pillar: cells[0] ?? "",
+      grade: cells[1] ?? "",
+      score: cells[2] ?? "",
+      findings: Number(cells[3] ?? "0"),
+      advisory: Number(cells[4] ?? "0"),
+      warning: Number(cells[5] ?? "0"),
+      error: Number(cells[6] ?? "0"),
+    };
+  });
+  parsedRows.forEach((row) => {
+    assert.match(row.score, /^\d+\.\d{2}$/, `score should be 2-decimal: ${row.score}`);
+    assert.match(row.grade, /^[A-F]$/, `grade should be a single letter: ${row.grade}`);
+  });
+  for (let i = 1; i < parsedRows.length; i += 1) {
+    const previous = parsedRows[i - 1];
+    const current = parsedRows[i];
+    assert.ok(previous && current);
+    if (previous.findings === current.findings) {
+      assert.ok(previous.pillar <= current.pillar, `pillar sort broken at ${current.pillar}`);
+    } else {
+      assert.ok(previous.findings > current.findings, `findings sort broken at ${current.pillar}`);
+    }
+  }
+
+  // Every applicable pillar surfaces, including those with zero findings (clean rows render A/100.00).
+  const cleanPillarRow = parsedRows.find((row) => row.pillar === "size");
+  assert.ok(cleanPillarRow, "clean pillar row missing");
+  assert.equal(cleanPillarRow.grade, "A");
+  assert.equal(cleanPillarRow.score, "100.00");
+  assert.equal(cleanPillarRow.findings, 0);
 });
 
 test("html report rendering does not mutate json report output", () => {
