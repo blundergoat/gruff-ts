@@ -1,4 +1,4 @@
-// HTML renderer for `gruff.analysis.v1` plus the dashboard chrome (home shell + error page) that
+// HTML renderer for `gruff.analysis.v2` plus the dashboard chrome (home shell + error page) that
 // serves the same report inside a control panel. Extracted from `report-renderers.ts` so the
 // renderer module stays under the `size.file-length` threshold; the HTML output is part of the
 // stable archived-report contract so the shape of every helper here is invariant.

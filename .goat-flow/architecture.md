@@ -40,7 +40,7 @@ State is filesystem-only - there is no database, queue, or external API.
 
 - **Inputs:** source files matched by `src/discovery.ts`:`discoverSources` with hardcoded ignore set in `src/discovery.ts`:`isDefaultIgnoredDir`; optional `.gruff-ts.yaml` config; optional baseline JSON; optional history JSON.
 - **Outputs:** stdout (`text`/`json`/`html`/`markdown`/`github`/`hotspot`/`sarif`), self-contained dark HTML reports (also stdout unless `report --output`), compact summary text, shell completion scripts, the local dashboard shell/scan HTML, `list-rules` text or unversioned JSON catalogue output, `gruff-baseline.json` when `--generate-baseline` is set, `.gruff-history.json` when `--history-file` is passed.
-- **Schemas (public contract):** `gruff.analysis.v1` (the `AnalysisReport`), `gruff.baseline.v1` (the suppression file written by `src/baseline.ts`:`writeBaseline`), `gruff.hotspot.v1` (the trimmed top-offenders payload in `src/report-renderers.ts`'s `hotspot` branch). Bumping any of these is a breaking change for downstream consumers.
+- **Schemas (public contract):** `gruff.analysis.v2` (the `AnalysisReport`), `gruff.baseline.v1` (the suppression file written by `src/baseline.ts`:`writeBaseline`), `gruff.hotspot.v1` (the trimmed top-offenders payload in `src/report-renderers.ts`'s `hotspot` branch). Bumping any of these is a breaking change for downstream consumers.
 - **Determinism:** `Finding.fingerprint` (sha256 of `ruleId\0filePath\0line\0symbol`, sliced to 16 chars in `src/findings.ts`:`makeFinding`) is the dedupe and baseline-match key. Findings are sorted by `(filePath, line, ruleId, message)` before dedupe so the report bytes are stable across runs.
 
 ## Deployment / Operations

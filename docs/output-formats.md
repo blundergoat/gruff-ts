@@ -14,7 +14,7 @@ Use `text` for local terminal scans:
 
 ## JSON
 
-Use `json` for automation. JSON reports use `gruff.analysis.v1`.
+Use `json` for automation. JSON reports use `gruff.analysis.v2`.
 
 ```sh
 ./bin/gruff-ts analyse src --format=json --fail-on=none > gruff-ts.json

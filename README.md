@@ -12,7 +12,7 @@
 | Binary | `gruff-ts` |
 | Rule catalogue | 119 rules across 11 pillars |
 | Primary config | `.gruff-ts.yaml`; `.gruff.json`, `.gruff.yaml`, and `.gruff.yml` are fallback files |
-| Analysis schema | `gruff.analysis.v1` |
+| Analysis schema | `gruff.analysis.v2` |
 | Baseline schema | `gruff.baseline.v1` |
 | Severity gate | `--fail-on` with `none`, `advisory`, `warning`, `error` |
 | Dashboard | `127.0.0.1:8767` by default |
@@ -91,7 +91,7 @@ Global console options match the broader gruff CLI surface: `--silent`, `--quiet
 | Format | Use it for |
 | --- | --- |
 | `text` | Human terminal output. |
-| `json` | Full `gruff.analysis.v1` report. |
+| `json` | Full `gruff.analysis.v2` report. |
 | `html` | Self-contained inspection report. |
 | `markdown` | Pull-request or issue comment summary. |
 | `github` | GitHub Actions workflow annotations. |
@@ -218,7 +218,7 @@ Default scans are local source inspections. `gruff-ts` parses supported source, 
 
 ## Stability Contract
 
-The `0.1.x` line treats rule IDs, finding fingerprints, baseline identity, `gruff.analysis.v1`, `gruff.baseline.v1`, `gruff.hotspot.v1`, SARIF rendering, and CLI exit semantics as compatibility-sensitive. Breaking changes should be tagged as a future minor release and recorded in [`CHANGELOG.md`](CHANGELOG.md).
+The `0.1.x` line treats rule IDs, finding fingerprints, baseline identity, `gruff.analysis.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`, SARIF rendering, and CLI exit semantics as compatibility-sensitive. Breaking changes should be tagged as a future minor release and recorded in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## How It Compares
 

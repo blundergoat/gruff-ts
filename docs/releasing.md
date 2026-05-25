@@ -30,10 +30,10 @@ update `CHANGELOG.md` and run `npm run check`.
       explicitly accepted `human-verification-pending` milestones.
 - [ ] `LICENSE` is present and `package.json` `license` field matches.
 - [ ] `npm run check` passes.
-- [ ] `scripts/preflight-checks.sh` passes (checks version lockstep and npm
-      publication status, runs `npm audit --audit-level=moderate`,
-      `npm run check`, a full `gruff-ts` self-scan, and `shellcheck` on
-      `scripts/*.sh` when `shellcheck` is installed).
+- [ ] `scripts/preflight-checks.sh` passes (checks version lockstep, runs
+      `npm audit --audit-level=moderate`, `npm run check`, a full `gruff-ts`
+      self-scan, and `shellcheck` on `scripts/*.sh` when `shellcheck` is
+      installed).
 - [ ] `npm pack --dry-run` shows only publishable runtime, docs, scripts, and
       metadata files.
 - [ ] Local smoke scan succeeds:

@@ -352,7 +352,7 @@ function renderText(report: AnalysisReport): string {
 }
 
 /*
- * Markdown renderer for the `gruff.analysis.v1` report. Truncates to 50 findings because Markdown
+ * Markdown renderer for the `gruff.analysis.v2` report. Truncates to 50 findings because Markdown
  * previews (PR comments, READMEs) start mangling longer tables; the JSON and HTML renderers stay
  * the canonical full-fidelity output. Public contract / invariant: the Pillars table is inserted
  * between the severity counts and the per-finding list so CI logs and PR comment previews see it

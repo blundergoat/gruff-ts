@@ -45,7 +45,7 @@ per-pillar counts, top rules, and top file offenders.
 
 Schema strings:
 
-- `gruff.analysis.v1` for full analysis reports.
+- `gruff.analysis.v2` for full analysis reports.
 - `gruff.baseline.v1` for baselines.
 - `gruff.hotspot.v1` for hotspot output.
 

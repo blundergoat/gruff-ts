@@ -80,9 +80,9 @@ export interface RunDiagnostic {
   line?: number;
 }
 
-/** Stable gruff.analysis.v1 report schema returned by analyse and JSON report commands. */
+/** Stable gruff.analysis.v2 report schema returned by analyse and JSON report commands. */
 export interface AnalysisReport {
-  schemaVersion: "gruff.analysis.v1";
+  schemaVersion: "gruff.analysis.v2";
   tool: { name: "gruff-ts"; version: string };
   run: { projectRoot: string; format: OutputFormat; failOn: FailThreshold; generatedAt: string };
   summary: { advisory: number; warning: number; error: number; total: number };

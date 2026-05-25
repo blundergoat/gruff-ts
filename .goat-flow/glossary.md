@@ -12,7 +12,7 @@ This glossary defines terms used by `gruff-ts`, its public reports, and local pr
 
 ### Analysis Report
 
-The complete result of one scan: schema version, tool metadata, run metadata, paths, summary counts, score data, diagnostics, findings, baseline state, and optional history state. Native JSON uses `gruff.analysis.v1`.
+The complete result of one scan: schema version, tool metadata, run metadata, paths, summary counts, score data, diagnostics, findings, baseline state, and optional history state. Native JSON uses `gruff.analysis.v2`.
 
 ### Baseline
 

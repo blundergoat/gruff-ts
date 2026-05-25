@@ -138,9 +138,7 @@ test("summary CLI supports json format and top limit", () => {
   assert.ok(((payload.topOffenders as unknown[] | undefined)?.length ?? 0) <= 1);
   const pillars = payload.pillars as unknown[] | undefined;
   assert.ok(Array.isArray(pillars) && pillars.length > 0);
-  const firstPillar = pillars[0];
-  assert.ok(firstPillar);
-  assertPillarRowShape(firstPillar);
+  pillars.forEach(assertPillarRowShape);
 });
 
 /** Validates one pillar row from the `gruff.summary.v2` JSON output. Accepts the raw parsed
@@ -197,14 +195,14 @@ test("json report uses schema version", () => {
     shouldSkipBaseline: true,
   });
   const rendered = renderReport(report, "json");
-  assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v1"/);
+  assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v2"/);
 });
 
 // Fixture for the SARIF render test. Hoisted out of the test body so the test reaches its first
 // assertion within the setup-bloat threshold; the fixture data itself is non-trivial because it
 // encodes the cross-pillar coverage SARIF must round-trip.
 const SARIF_FIXTURE_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v1",
+  schemaVersion: "gruff.analysis.v2",
   tool: { name: "gruff-ts", version: "0.1.0-test" },
   run: { projectRoot: "/tmp/project", format: "sarif", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 1, warning: 1, error: 1, total: 3 },
@@ -293,12 +291,12 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(results[2].level, "note");
   assert.equal(results[2].locations[0].physicalLocation.artifactLocation.uri, "src/docs.ts");
   assert.equal(results[2].properties.severity, "advisory");
-  assert.equal(payload.runs[0].properties.gruffSchemaVersion, "gruff.analysis.v1");
+  assert.equal(payload.runs[0].properties.gruffSchemaVersion, "gruff.analysis.v2");
   assert.equal(payload.runs[0].properties.generatedAt, "2026-05-15T00:00:00.000Z");
   const expectedScore = 91;
   assert.equal(payload.runs[0].properties.score, expectedScore);
   assert.equal(payload.runs[0].properties.grade, "A");
-  assert.equal(JSON.parse(renderReport(report, "json")).schemaVersion, "gruff.analysis.v1");
+  assert.equal(JSON.parse(renderReport(report, "json")).schemaVersion, "gruff.analysis.v2");
   assert.equal(JSON.stringify(report), beforeSarif);
 });
 
@@ -388,7 +386,7 @@ test("sarif fail-on preserves error exit behavior", () => {
 // Fixture for the HTML render test. Hoisted out of the test body to keep setup-bloat under
 // threshold; the fixture intentionally embeds HTML metacharacters that the renderer must escape.
 const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v1",
+  schemaVersion: "gruff.analysis.v2",
   tool: { name: "gruff-ts", version: "0.1.0-test<script>" },
   run: { projectRoot: "/tmp/project", format: "html", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 0, warning: 1, error: 1, total: 2 },
@@ -599,7 +597,7 @@ test("html report rendering does not mutate json report output", () => {
   renderReport(report, "html");
 
   assert.equal(renderReport(report, "json"), before);
-  assert.match(before, /"schemaVersion": "gruff\.analysis\.v1"/);
+  assert.match(before, /"schemaVersion": "gruff\.analysis\.v2"/);
 });
 
 test("dashboard root uses parity shell and escapes controls", async () => {

@@ -2,10 +2,10 @@
 import { grade } from "./pillar-summary.ts";
 import type { AnalysisReport, FailThreshold, Finding, Pillar, Severity } from "./types.ts";
 
-// Builds the per-pillar and per-file score breakdown that ships in `gruff.analysis.v1`. The composite
+// Builds the per-pillar and per-file score breakdown that ships in `gruff.analysis.v2`. The composite
 // score is the mean of pillar scores so adding a pillar shifts the headline number. `topOffenders` is
 // the full file list sorted worst-first; renderers cap it themselves (HTML/hotspot keep their 10-row
-// UX, summary honours `--top`). The field shape is part of the `gruff.analysis.v1` schema contract.
+// UX, summary honours `--top`). The field shape is part of the `gruff.analysis.v2` schema contract.
 function scoreReport(findings: Finding[]): AnalysisReport["score"] {
   const byPillar = new Map<Pillar, Finding[]>();
   const byFile = new Map<string, Finding[]>();
@@ -29,7 +29,7 @@ function scoreReport(findings: Finding[]): AnalysisReport["score"] {
 }
 
 // Severity tallies emitted in the report summary. The four-key shape (advisory/warning/error/total)
-// is part of the `gruff.analysis.v1` schema and consumers rely on `total` matching the array length.
+// is part of the `gruff.analysis.v2` schema and consumers rely on `total` matching the array length.
 function summarize(findings: Finding[]) {
   return {
     advisory: findings.filter((finding) => finding.severity === "advisory").length,

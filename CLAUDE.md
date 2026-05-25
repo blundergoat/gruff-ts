@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-`gruff-ts` - TypeScript project quality analyzer. Modular Node.js/ESM CLI: a thin `src/cli.ts` shell (~20 lines) delegates to `src/analyser.ts` and ~30 sibling rule modules under `src/` (`blocks.ts`, `line-rules.ts`, `project-rules.ts`, `class-rules.ts`, `dead-code-rules.ts`, `safety-rules.ts`, `naming-pushers.ts`, `comment-rules.ts`, `doc-rules.ts`, `report-renderers.ts`, etc.). It scans TypeScript, JavaScript, CSS, and common config (json, yaml, toml, env) files and emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v1`) and report snapshots (`gruff.analysis.v1`) round-trip without churn.
+`gruff-ts` - TypeScript project quality analyzer. Modular Node.js/ESM CLI: a thin `src/cli.ts` shell (~20 lines) delegates to `src/analyser.ts` and ~30 sibling rule modules under `src/` (`blocks.ts`, `line-rules.ts`, `project-rules.ts`, `class-rules.ts`, `dead-code-rules.ts`, `safety-rules.ts`, `naming-pushers.ts`, `comment-rules.ts`, `doc-rules.ts`, `report-renderers.ts`, etc.). It scans TypeScript, JavaScript, CSS, and common config (json, yaml, toml, env) files and emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v1`) and report snapshots (`gruff.analysis.v2`) round-trip without churn.
 
 goat-flow version: 1.7.0
 
@@ -19,7 +19,7 @@ This repo is the **selected target project**. The controlling goat-flow workspac
 ## Autonomy Tiers
 
 - **Always:** Read source before changing it; run `npm run check` on changed `.ts`; edit within declared scope; append progress lines to the active session log when one exists.
-- **Ask First:** Before touching any of: schema strings (`gruff.analysis.v1`, `gruff.baseline.v1`, `gruff.hotspot.v1`), the `Finding` shape, the default-ignored directory list, baseline file format, dashboard wire format, or `package.json`/`tsconfig.json`. State boundary touched, related code read (file:symbol), footgun checked, local instruction checked, rollback command.
+- **Ask First:** Before touching any of: schema strings (`gruff.analysis.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`), the `Finding` shape, the default-ignored directory list, baseline file format, dashboard wire format, or `package.json`/`tsconfig.json`. State boundary touched, related code read (file:symbol), footgun checked, local instruction checked, rollback command.
 - **Never:** Freeze writes if interrupted; commit/push without explicit ask; relax `tsconfig.json` strict flags; introduce runtime dependencies beyond `commander` + `tsx`; bypass the `deny-dangerous.sh` hook.
 
 ## Hard Rules

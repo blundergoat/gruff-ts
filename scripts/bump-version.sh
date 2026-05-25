@@ -52,7 +52,9 @@ read_package_lock_package_version() {
 }
 
 read_changelog_latest_version() {
-  awk 'match($0, /^##[[:space:]]+\[([^]]+)\]/, m) { print m[1]; exit }' CHANGELOG.md
+  # POSIX awk: avoid gawk's 3-argument match() so this still parses under mawk/BSD awk
+  # (otherwise preflight's version-consistency check hard-fails on those hosts).
+  awk '/^##[[:space:]]+\[/ { sub(/^##[[:space:]]+\[/, ""); sub(/\].*$/, ""); print; exit }' CHANGELOG.md
 }
 
 write_package_version() {
