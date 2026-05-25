@@ -1,5 +1,5 @@
 // Score, grade, and fail-on helpers derived from finding severities for reports and CLI exits.
-import { grade } from "./report-renderers.ts";
+import { grade } from "./pillar-summary.ts";
 import type { AnalysisReport, FailThreshold, Finding, Pillar, Severity } from "./types.ts";
 
 // Builds the per-pillar and per-file score breakdown that ships in `gruff.analysis.v1`. The composite

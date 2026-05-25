@@ -15,7 +15,8 @@ Arguments:
   <new-version>   Target semver, e.g. 0.1.1, 0.2.0, 1.0.0-rc.1.
 
 Options:
-  --check         Verify package.json, package-lock.json, and src/constants.ts already agree.
+  --check         Verify package.json, package-lock.json, src/constants.ts, and CHANGELOG.md
+                  already agree on the same version.
   --help, -h      Show this help.
 
 Notes:
@@ -48,6 +49,10 @@ read_package_lock_version() {
 
 read_package_lock_package_version() {
   node -e 'const fs = require("node:fs"); const data = JSON.parse(fs.readFileSync("package-lock.json", "utf8")); process.stdout.write(String(data.packages?.[""]?.version ?? ""));'
+}
+
+read_changelog_latest_version() {
+  awk 'match($0, /^##[[:space:]]+\[([^]]+)\]/, m) { print m[1]; exit }' CHANGELOG.md
 }
 
 write_package_version() {
@@ -105,7 +110,7 @@ validate_semver() {
 }
 
 check_version_lockstep() {
-  local pkg const_ lock lock_package
+  local pkg const_ lock lock_package changelog
   pkg="$(read_package_version)" || die "failed to read package.json version"
   const_="$(read_constants_version)" || die "failed to read src/constants.ts VERSION"
   lock="$(read_package_lock_version)" || die "failed to read package-lock.json root version"
@@ -118,7 +123,14 @@ check_version_lockstep() {
     printf 'version surfaces disagree: package.json=%s src/constants.ts=%s package-lock.json=%s package-lock.json packages[""]=%s\n' "$pkg" "$const_" "$lock" "$lock_package" >&2
     exit 1
   fi
-  printf 'package.json, package-lock.json, and src/constants.ts agree on %s\n' "$pkg"
+  [[ -f CHANGELOG.md ]] || die "CHANGELOG.md not found"
+  changelog="$(read_changelog_latest_version)" || die "failed to read CHANGELOG.md latest version"
+  [[ -n "$changelog" ]] || die "CHANGELOG.md has no '## [version]' heading"
+  if [[ "$pkg" != "$changelog" ]]; then
+    printf 'CHANGELOG.md latest version %s does not match package.json %s; run scripts/bump-version.sh %s or add a CHANGELOG.md entry for %s\n' "$changelog" "$pkg" "$changelog" "$pkg" >&2
+    exit 1
+  fi
+  printf 'package.json, package-lock.json, src/constants.ts, and CHANGELOG.md agree on %s\n' "$pkg"
 }
 
 main() {

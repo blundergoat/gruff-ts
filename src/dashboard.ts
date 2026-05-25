@@ -1,7 +1,7 @@
 // Loopback dashboard HTTP surface that renders live analyzer reports without exposing remote scans.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { chdir, cwd, stdout } from "node:process";
-import { dashboardErrorHtml, dashboardHomeHtml, renderHtml } from "./report-renderers.ts";
+import { dashboardErrorHtml, dashboardHomeHtml, renderHtml } from "./report-html.ts";
 import type { AnalysisOptions, AnalysisReport } from "./types.ts";
 
 type DashboardAnalyse = (options: AnalysisOptions) => AnalysisReport;

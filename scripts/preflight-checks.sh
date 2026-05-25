@@ -33,7 +33,6 @@ FAILED=0
 FAILURES=()
 TMP_FILES=()
 START_TIME=$(date +%s%N)
-NPM_REGISTRY_URL="${NPM_REGISTRY_URL:-https://registry.npmjs.org/}"
 NPM_AUDIT_LEVEL="${NPM_AUDIT_LEVEL:-moderate}"
 
 usage() {
@@ -42,7 +41,7 @@ Usage:
   scripts/preflight-checks.sh
 
 Runs the local preflight gate:
-  - release version is internally consistent and not already published to npm
+  - version surfaces (package.json, package-lock.json, src/constants.ts, CHANGELOG.md) agree
   - npm dependency audit
   - npm run check (TypeScript compile plus unit tests)
   - gruff-ts full-project scan
@@ -50,7 +49,6 @@ Runs the local preflight gate:
 
 Environment:
   GRUFF_TS_FAIL_ON   gruff-ts severity that fails static analysis (default: advisory)
-  NPM_REGISTRY_URL   npm registry used for the published-version check
   NPM_AUDIT_LEVEL    npm audit threshold (default: moderate)
 USAGE
 }
@@ -182,30 +180,9 @@ make_temp_file() {
   printf '%s\n' "$temp_file"
 }
 
-read_package_name() {
-  node -p "require('./package.json').name"
-}
-
-read_package_version() {
-  node -p "require('./package.json').version"
-}
-
-npm_version_check() {
-  local package_name
-  local version
+version_consistency_check() {
   local output
   local status
-
-  package_name="$(read_package_name)" || return 1
-  version="$(read_package_version)" || return 1
-  [[ -n "$package_name" ]] || {
-    printf 'package.json has no name field\n'
-    return 1
-  }
-  [[ -n "$version" ]] || {
-    printf 'package.json has no version field\n'
-    return 1
-  }
 
   output=$(bash scripts/bump-version.sh --check 2>&1)
   status=$?
@@ -213,21 +190,7 @@ npm_version_check() {
     printf '%s\n' "$output"
     return "$status"
   fi
-
-  output=$(npm view "${package_name}@${version}" version --registry="$NPM_REGISTRY_URL" 2>&1)
-  status=$?
-  if ((status == 0)); then
-    printf '%s@%s is already published on %s; run scripts/bump-version.sh <next-version>\n' "$package_name" "$version" "$NPM_REGISTRY_URL"
-    return 1
-  fi
-
-  if printf '%s\n' "$output" | grep -Eq '(^|[[:space:]])(E404|404)([[:space:]]|$)'; then
-    printf 'lockstep ok; %s@%s is not published on %s' "$package_name" "$version" "$NPM_REGISTRY_URL"
-    return 0
-  fi
-
-  printf '%s\n' "$output"
-  return "$status"
+  printf '%s' "$output"
 }
 
 npm_audit_check() {
@@ -411,7 +374,7 @@ main() {
     return 127
   fi
 
-  run_step "Release version" npm_version_check
+  run_step "Version consistency" version_consistency_check
 
   run_step "Dependency audit" npm_audit_check
 

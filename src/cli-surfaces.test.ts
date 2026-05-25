@@ -132,28 +132,34 @@ test("summary CLI supports json format and top limit", () => {
     ["summary", "fixtures/sample.ts", "--format=json", "--top=1", "--fail-on=none", "--no-config", "--no-baseline"],
     { encoding: "utf8" },
   );
-  const payload = JSON.parse(output) as {
-    schemaVersion?: string;
-    pillars?: Array<{ pillar: string; grade: string; score: number; penalty: number; applicable: boolean; findings: number; advisory: number; warning: number; error: number }>;
-    topRules?: unknown[];
-    topOffenders?: unknown[];
-  };
+  const payload = JSON.parse(output) as Record<string, unknown>;
   assert.equal(payload.schemaVersion, "gruff.summary.v2");
-  assert.equal(payload.topRules?.length, 1);
-  assert.ok((payload.topOffenders?.length ?? 0) <= 1);
-  assert.ok(Array.isArray(payload.pillars) && (payload.pillars?.length ?? 0) > 0);
-  const [firstPillar] = payload.pillars ?? [];
+  assert.equal((payload.topRules as unknown[] | undefined)?.length, 1);
+  assert.ok(((payload.topOffenders as unknown[] | undefined)?.length ?? 0) <= 1);
+  const pillars = payload.pillars as unknown[] | undefined;
+  assert.ok(Array.isArray(pillars) && pillars.length > 0);
+  const firstPillar = pillars[0];
   assert.ok(firstPillar);
-  assert.equal(typeof firstPillar.pillar, "string");
-  assert.match(firstPillar.grade, /^[A-F]$/);
-  assert.equal(typeof firstPillar.score, "number");
-  assert.equal(typeof firstPillar.penalty, "number");
-  assert.equal(firstPillar.applicable, true);
-  assert.equal(typeof firstPillar.findings, "number");
-  assert.equal(typeof firstPillar.advisory, "number");
-  assert.equal(typeof firstPillar.warning, "number");
-  assert.equal(typeof firstPillar.error, "number");
+  assertPillarRowShape(firstPillar);
 });
+
+/** Validates one pillar row from the `gruff.summary.v2` JSON output. Accepts the raw parsed
+ * value so the test does not need a typed interface mirroring the wire schema - the schema
+ * contract lives in `renderSummaryJson`, this helper just confirms the row carries the
+ * documented keys with the documented value types. */
+function assertPillarRowShape(rawRow: unknown): void {
+  assert.ok(rawRow && typeof rawRow === "object");
+  const row = rawRow as Record<string, unknown>;
+  assert.equal(typeof row.pillar, "string");
+  assert.match(String(row.grade), /^[A-F]$/);
+  assert.equal(typeof row.score, "number");
+  assert.equal(typeof row.penalty, "number");
+  assert.equal(row.applicable, true);
+  assert.equal(typeof row.findings, "number");
+  assert.equal(typeof row.advisory, "number");
+  assert.equal(typeof row.warning, "number");
+  assert.equal(typeof row.error, "number");
+}
 
 test("summary CLI reports generated and applied baseline metadata", () => {
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-summary-baseline-"));
@@ -424,19 +430,60 @@ test("html report renders canonical 7-column Pillars table matching text/json sh
 
   assert.match(section, /<h2 class="section-head">Pillars\s/);
   assert.match(section, /<table class="pillar-table">/);
-  ["pillar", "grade", "score", "findings", "advisory", "warning", "error"].forEach((header, index) => {
-    const numClass = index === 0 ? "" : ' class="num"';
-    assert.match(section, new RegExp(`<th scope="col"${numClass}>${header}</th>`));
+  assertHtmlPillarHeaders(section);
+
+  const rows = parseHtmlPillarRows(section);
+  assert.ok(rows.length > 0, "no pillar rows rendered");
+  assertHtmlPillarRowsSorted(rows);
+  assertHtmlPillarScoresWellFormed(rows);
+});
+
+// Parsed shape of one row from the HTML pillar table. Cells may legitimately be undefined if the
+// renderer omits decoration spans, so the typed shape mirrors that uncertainty rather than coerce.
+interface ParsedHtmlPillarRow {
+  pillar: string | undefined;
+  grade: string | undefined;
+  score: string | undefined;
+  findings: number;
+  advisory: number;
+  warning: number;
+  error: number;
+}
+
+const pillarHeaderColumns = ["pillar", "grade", "score", "findings", "advisory", "warning", "error"] as const;
+
+/** Confirms every required column header is present with the expected `class="num"` decoration
+ * and that headers appear in the canonical cross-port order. */
+function assertHtmlPillarHeaders(section: string): void {
+  pillarHeaderColumns.forEach((header, index) => {
+    const numericColumnAttribute = index === 0 ? "" : ' class="num"';
+    assert.match(section, new RegExp(`<th scope="col"${numericColumnAttribute}>${header}</th>`));
   });
   const headerOrder = [...section.matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((entry) => entry[1]);
-  assert.deepEqual(headerOrder, ["pillar", "grade", "score", "findings", "advisory", "warning", "error"]);
+  assert.deepEqual(headerOrder, [...pillarHeaderColumns]);
+}
 
+/** Extracts the body rows from the HTML pillar section into a typed shape so individual
+ * assertions only reference field names, never regex group indices. */
+function parseHtmlPillarRows(section: string): ParsedHtmlPillarRow[] {
   const rowMatches = [...section.matchAll(/<tr>(?:(?!<\/?thead).)*?<\/tr>/g)].slice(1);
-  assert.ok(rowMatches.length > 0, "no pillar rows rendered");
-  const rows = rowMatches.map((entry) => {
+  return rowMatches.map((entry) => {
     const cells = [...entry[0].matchAll(/<td[^>]*>(?:<span[^>]*>)?([^<]+)(?:<\/span>)?<\/td>/g)].map((cell) => cell[1]);
-    return { pillar: cells[0], grade: cells[1], score: cells[2], findings: Number(cells[3]), advisory: Number(cells[4]), warning: Number(cells[5]), error: Number(cells[6]) };
+    return {
+      pillar: cells[0],
+      grade: cells[1],
+      score: cells[2],
+      findings: Number(cells[3]),
+      advisory: Number(cells[4]),
+      warning: Number(cells[5]),
+      error: Number(cells[6]),
+    };
   });
+}
+
+/** Verifies the cross-port sort contract: findings DESC, then pillar ASC. Helper exists so the
+ * test body reads as a list of high-level assertions without inline loops. */
+function assertHtmlPillarRowsSorted(rows: ParsedHtmlPillarRow[]): void {
   for (let i = 1; i < rows.length; i += 1) {
     const previous = rows[i - 1];
     const current = rows[i];
@@ -447,10 +494,14 @@ test("html report renders canonical 7-column Pillars table matching text/json sh
       assert.ok(previous.findings > current.findings, `findings sort broken at ${current.pillar}`);
     }
   }
+}
+
+/** Score column is rendered with two decimal places everywhere. */
+function assertHtmlPillarScoresWellFormed(rows: ParsedHtmlPillarRow[]): void {
   rows.forEach((row) => {
     assert.match(row.score ?? "", /^\d+\.\d{2}$/);
   });
-});
+}
 
 test("markdown report renders canonical 7-column Pillars table matching cross-port shape", () => {
   const rendered = renderReport(ESCAPING_FIXTURE_REPORT, "markdown");
@@ -467,38 +518,13 @@ test("markdown report renders canonical 7-column Pillars table matching cross-po
   assert.ok(firstFindingIndex > 0, "no findings rendered");
   assert.ok(pillarsHeadingIndex < firstFindingIndex, "Pillars block should precede the findings list");
 
-  // Extract every data row that sits between the separator and the next blank line.
-  const tableMatch = rendered.match(/\| --- \| --- \| ---: \| ---: \| ---: \| ---: \| ---: \|\n([\s\S]*?)(?:\n\n|$)/);
-  assert.ok(tableMatch, "pillar data rows not found");
-  const dataRows = (tableMatch[1] ?? "").split("\n").filter((line) => line.startsWith("|"));
-  assert.ok(dataRows.length > 0, "no pillar rows rendered");
-
-  const parsedRows = dataRows.map((line) => {
-    const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
-    return {
-      pillar: cells[0] ?? "",
-      grade: cells[1] ?? "",
-      score: cells[2] ?? "",
-      findings: Number(cells[3] ?? "0"),
-      advisory: Number(cells[4] ?? "0"),
-      warning: Number(cells[5] ?? "0"),
-      error: Number(cells[6] ?? "0"),
-    };
-  });
+  const parsedRows = parseMarkdownPillarRows(rendered);
+  assert.ok(parsedRows.length > 0, "no pillar rows rendered");
   parsedRows.forEach((row) => {
     assert.match(row.score, /^\d+\.\d{2}$/, `score should be 2-decimal: ${row.score}`);
     assert.match(row.grade, /^[A-F]$/, `grade should be a single letter: ${row.grade}`);
   });
-  for (let i = 1; i < parsedRows.length; i += 1) {
-    const previous = parsedRows[i - 1];
-    const current = parsedRows[i];
-    assert.ok(previous && current);
-    if (previous.findings === current.findings) {
-      assert.ok(previous.pillar <= current.pillar, `pillar sort broken at ${current.pillar}`);
-    } else {
-      assert.ok(previous.findings > current.findings, `findings sort broken at ${current.pillar}`);
-    }
-  }
+  assertPillarSortOrder(parsedRows);
 
   // Every applicable pillar surfaces, including those with zero findings (clean rows render A/100.00).
   const cleanPillarRow = parsedRows.find((row) => row.pillar === "size");
@@ -507,6 +533,61 @@ test("markdown report renders canonical 7-column Pillars table matching cross-po
   assert.equal(cleanPillarRow.score, "100.00");
   assert.equal(cleanPillarRow.findings, 0);
 });
+
+// Shape of one parsed row used by the markdown table test. Kept narrow because the test only
+// validates the cross-port column contract; the renderer is the source of truth for everything
+// else (e.g. whitespace, decoration).
+interface ParsedMarkdownPillarRow {
+  pillar: string;
+  grade: string;
+  score: string;
+  findings: number;
+  advisory: number;
+  warning: number;
+  error: number;
+}
+
+/* Extracts every data row between the separator and the next blank line into a typed shape so the
+ * markdown table test can focus on assertions instead of cell parsing. Why this lives outside the
+ * test body: the per-row cell destructuring otherwise pushes the test past the cyclomatic and
+ * cognitive thresholds, hiding the actual contract assertions inside parsing noise. */
+function parseMarkdownPillarRows(rendered: string): ParsedMarkdownPillarRow[] {
+  const tableMatch = rendered.match(/\| --- \| --- \| ---: \| ---: \| ---: \| ---: \| ---: \|\n([\s\S]*?)(?:\n\n|$)/);
+  assert.ok(tableMatch, "pillar data rows not found");
+  const dataRows = (tableMatch[1] ?? "").split("\n").filter((line) => line.startsWith("|"));
+  return dataRows.map(parseMarkdownPillarRow);
+}
+
+/* Splits a single `| cell | cell | … |` line into the typed row contract. Defaults are conservative
+ * empty/zero values because the upstream regex already verified the table has the right shape. */
+function parseMarkdownPillarRow(line: string): ParsedMarkdownPillarRow {
+  const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
+  const [pillar = "", gradeText = "", score = "", findings = "0", advisory = "0", warning = "0", error = "0"] = cells;
+  return {
+    pillar,
+    grade: gradeText,
+    score,
+    findings: Number(findings),
+    advisory: Number(advisory),
+    warning: Number(warning),
+    error: Number(error),
+  };
+}
+
+/** Validates the cross-port sort contract: findings DESC, then pillar ASC. Lifted out so the body
+ * of the markdown test reads as a list of high-level assertions. */
+function assertPillarSortOrder(rows: ParsedMarkdownPillarRow[]): void {
+  for (let i = 1; i < rows.length; i += 1) {
+    const previous = rows[i - 1];
+    const current = rows[i];
+    assert.ok(previous && current);
+    if (previous.findings === current.findings) {
+      assert.ok(previous.pillar <= current.pillar, `pillar sort broken at ${current.pillar}`);
+    } else {
+      assert.ok(previous.findings > current.findings, `findings sort broken at ${current.pillar}`);
+    }
+  }
+}
 
 test("html report rendering does not mutate json report output", () => {
   const report = analyseFixture(`export function process(value: string): string {
