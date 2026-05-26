@@ -107,7 +107,7 @@ test("config schemaVersion is required and must match the supported value", () =
       "bad.ts": "export const value = 1;\n",
       ".gruff-ts.yaml": "paths:\n  ignore: []\n",
     }, { shouldSkipConfig: false }),
-    /Config must include schemaVersion/,
+    /Config must include.*schemaVersion/,
   );
 
   assert.throws(

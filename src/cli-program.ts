@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { cwd } from "node:process";
 import { DEFAULT_BASELINE } from "./baseline.ts";
+import { ConfigLoadError } from "./config-load-error.ts";
 import { loadConfig, minimumSeverityFor } from "./config.ts";
 import { VERSION } from "./constants.ts";
 import { startDashboard } from "./dashboard.ts";
@@ -178,12 +179,14 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
-      const baseOptions = normalizeOptions(paths, rawOptions, { shouldAllowBaselineFlag: true });
-      const options = applyMinimumSeverityPrecedence(baseOptions, "analyse", command);
-      await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
-      const report = runAnalyse(options);
-      writeCommandOutput(program, renderReport(report, options.format));
-      process.exitCode = exitFor(report, options.failOn);
+      await runWithConfigErrorHandling(async () => {
+        const baseOptions = normalizeOptions(paths, rawOptions, { shouldAllowBaselineFlag: true });
+        const options = applyMinimumSeverityPrecedence(baseOptions, "analyse", command);
+        await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
+        const report = runAnalyse(options);
+        writeCommandOutput(program, renderReport(report, options.format));
+        process.exitCode = exitFor(report, options.failOn);
+      });
     });
 }
 
@@ -299,18 +302,20 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
-      const format = rawOptions.format === "json" ? "json" : "html";
-      const baseOptions = normalizeOptions(paths, { ...rawOptions, format }, { shouldAllowBaselineFlag: false });
-      const options = applyMinimumSeverityPrecedence(baseOptions, "report", command);
-      await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
-      const report = runAnalyse(options);
-      const rendered = renderReport(report, format);
-      if (typeof rawOptions.output === "string") {
-        writeFileSync(rawOptions.output, rendered);
-      } else {
-        writeCommandOutput(program, rendered);
-      }
-      process.exitCode = exitFor(report, options.failOn);
+      await runWithConfigErrorHandling(async () => {
+        const format = rawOptions.format === "json" ? "json" : "html";
+        const baseOptions = normalizeOptions(paths, { ...rawOptions, format }, { shouldAllowBaselineFlag: false });
+        const options = applyMinimumSeverityPrecedence(baseOptions, "report", command);
+        await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
+        const report = runAnalyse(options);
+        const rendered = renderReport(report, format);
+        if (typeof rawOptions.output === "string") {
+          writeFileSync(rawOptions.output, rendered);
+        } else {
+          writeCommandOutput(program, rendered);
+        }
+        process.exitCode = exitFor(report, options.failOn);
+      });
     });
 }
 
@@ -334,20 +339,22 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
-      const baseOptions = normalizeOptions(paths, { ...rawOptions, format: "text" }, { shouldAllowBaselineFlag: true });
-      const options = applyMinimumSeverityPrecedence(baseOptions, "summary", command);
-      const summaryFormat = rawOptions.format === "json" ? "json" : "text";
-      const top = typeof rawOptions.top === "number" ? rawOptions.top : 10;
-      await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
-      const startedAt = performance.now();
-      const report = runAnalyse(options);
-      const elapsedMs = performance.now() - startedAt;
-      const pathLabel = summaryPathLabel(options.paths, report.run.projectRoot);
-      const rendered = summaryFormat === "json"
-        ? renderSummaryJson(report, elapsedMs, pathLabel, top)
-        : renderSummary(report, elapsedMs, pathLabel, top);
-      writeCommandOutput(program, rendered);
-      process.exitCode = exitFor(report, options.failOn);
+      await runWithConfigErrorHandling(async () => {
+        const baseOptions = normalizeOptions(paths, { ...rawOptions, format: "text" }, { shouldAllowBaselineFlag: true });
+        const options = applyMinimumSeverityPrecedence(baseOptions, "summary", command);
+        const summaryFormat = rawOptions.format === "json" ? "json" : "text";
+        const top = typeof rawOptions.top === "number" ? rawOptions.top : 10;
+        await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
+        const startedAt = performance.now();
+        const report = runAnalyse(options);
+        const elapsedMs = performance.now() - startedAt;
+        const pathLabel = summaryPathLabel(options.paths, report.run.projectRoot);
+        const rendered = summaryFormat === "json"
+          ? renderSummaryJson(report, elapsedMs, pathLabel, top)
+          : renderSummary(report, elapsedMs, pathLabel, top);
+        writeCommandOutput(program, rendered);
+        process.exitCode = exitFor(report, options.failOn);
+      });
     });
 }
 
@@ -463,9 +470,8 @@ function stringChoice<T extends string>(value: unknown, choices: readonly T[], f
  * `.gruff-ts.yaml` `minimumSeverity.<cmd>` value wins over the binary default. CLI flag always
  * wins when explicitly set. Commander's `getOptionValueSource("failOn")` returns `"cli"` for
  * explicit invocations and `"default"` otherwise, so the source check drives the precedence
- * chain. Config load failures bubble up to the caller because the analyser would surface the
- * same error on the next call - this keeps the user's first sight of a malformed config aligned
- * with where they'd expect it (config-load time, not deep in the analyser).
+ * chain. Throws `ConfigLoadError` on malformed config; CLI action handlers catch and format that
+ * cleanly via `runWithConfigErrorHandling`.
  */
 function applyMinimumSeverityPrecedence(options: AnalysisOptions, command: MinimumSeverityCommand, commanderCommand: Command): AnalysisOptions {
   if (commanderCommand.getOptionValueSource("failOn") === "cli") {
@@ -474,4 +480,24 @@ function applyMinimumSeverityPrecedence(options: AnalysisOptions, command: Minim
   const config = loadConfig(cwd(), options);
   const configuredFailOn = minimumSeverityFor(config, command);
   return configuredFailOn === undefined ? options : { ...options, failOn: configuredFailOn };
+}
+
+/*
+ * Wraps an async command action so a malformed `.gruff-ts.yaml` surfaces as a clean stderr message
+ * and exit code 2, not a raw Node stack trace. Catches `ConfigLoadError` (user-actionable config
+ * bug) and reports it via formatted stderr; rethrows every other exception so an analyser/code
+ * bug still surfaces its stack for debugging. The exit code matches the existing diagnostic
+ * convention in `exitFor` so CI scripts that already handle exit 2 keep working.
+ */
+async function runWithConfigErrorHandling(action: () => Promise<void> | void): Promise<void> {
+  try {
+    await action();
+  } catch (error) {
+    if (error instanceof ConfigLoadError) {
+      process.stderr.write(`gruff-ts: config error\n  ${error.message}\n\nSuggested fix:\n  ${error.suggestion}\n`);
+      process.exitCode = 2;
+      return;
+    }
+    throw error;
+  }
 }

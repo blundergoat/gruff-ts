@@ -1,7 +1,13 @@
 // Config loading and YAML-subset parsing for the analyzer's zero-dependency rule defaults.
 import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, join } from "node:path";
+import { ConfigLoadError } from "./config-load-error.ts";
 import type { AnalysisOptions, Config, FailThreshold, MinimumSeverityCommand, Severity } from "./types.ts";
+
+// Two common suggestion strings reused across the validators. Hoisted out so a future doc-link
+// or wording tweak lands in one place instead of N throw sites.
+const SUGGEST_INIT_FORCE = "Run `gruff-ts init --force` to regenerate the config from current defaults (preserves your `paths.ignore` and `minimumSeverity:` entries).";
+const SUGGEST_EDIT_CONFIG = "Edit `.gruff-ts.yaml` to use a valid value, or run `gruff-ts init --force` to regenerate from defaults.";
 
 type RuleOverride = Config["rules"] extends Map<string, infer RuleOverrideValue> ? RuleOverrideValue : never;
 
@@ -96,10 +102,10 @@ function applyConfigValues(config: Config, raw: Record<string, unknown>): void {
 function applySchemaVersionConfig(raw: Record<string, unknown>): void {
   const schemaVersion = raw.schemaVersion;
   if (schemaVersion === undefined) {
-    throw new Error('Config must include schemaVersion: "gruff-ts.config.v0.1".');
+    throw new ConfigLoadError('Config must include `schemaVersion: gruff-ts.config.v0.1` at the top.', SUGGEST_INIT_FORCE);
   }
   if (schemaVersion !== "gruff-ts.config.v0.1") {
-    throw new Error(`Unsupported schemaVersion: ${JSON.stringify(schemaVersion)}. Supported: "gruff-ts.config.v0.1".`);
+    throw new ConfigLoadError(`Unsupported schemaVersion: ${JSON.stringify(schemaVersion)}. Supported: "gruff-ts.config.v0.1".`, SUGGEST_INIT_FORCE);
   }
 }
 
@@ -125,12 +131,12 @@ function applyMinimumSeverityConfig(config: Config, raw: Record<string, unknown>
  */
 function assertMinimumSeverityCommand(commandName: string): MinimumSeverityCommand {
   if (commandName === "dashboard") {
-    throw new Error('Unknown command in minimumSeverity: "dashboard". The dashboard subcommand does not currently expose a --fail-on flag; configuring its threshold is not supported. Remove the key, or open an issue if dashboard should gate.');
+    throw new ConfigLoadError('Unknown command in minimumSeverity: "dashboard". The dashboard subcommand does not currently expose a --fail-on flag; configuring its threshold is not supported.', "Remove the `dashboard:` line from `minimumSeverity:` in `.gruff-ts.yaml`, or open an issue if dashboard should gate.");
   }
   if (commandName === "analyse" || commandName === "summary" || commandName === "report") {
     return commandName;
   }
-  throw new Error(`Unknown command in minimumSeverity: ${JSON.stringify(commandName)}. Valid keys: analyse, summary, report.`);
+  throw new ConfigLoadError(`Unknown command in minimumSeverity: ${JSON.stringify(commandName)}. Valid keys: analyse, summary, report.`, SUGGEST_EDIT_CONFIG);
 }
 
 /*
@@ -143,7 +149,7 @@ function parseFailThresholdConfig(rawValue: unknown): FailThreshold {
   if (rawValue === "none" || rawValue === "advisory" || rawValue === "warning" || rawValue === "error") {
     return rawValue;
   }
-  throw new Error(`FailThreshold must be one of: advisory, warning, error, none. Got: ${JSON.stringify(rawValue)}.`);
+  throw new ConfigLoadError(`FailThreshold must be one of: advisory, warning, error, none. Got: ${JSON.stringify(rawValue)}.`, SUGGEST_EDIT_CONFIG);
 }
 
 // Per-command lookup used by the CLI precedence chain (CLI flag > config > binary default).
@@ -219,13 +225,13 @@ function assertRuleThresholdConfig(rule: Record<string, unknown>): void {
   const hasThreshold = "threshold" in rule;
   const hasSeverity = "severity" in rule;
   if (hasThreshold && typeof rule.threshold !== "number") {
-    throw new Error('Rule config key "threshold" must be numeric.');
+    throw new ConfigLoadError('Rule config key "threshold" must be numeric.', SUGGEST_EDIT_CONFIG);
   }
   if (hasSeverity && !isSeverity(rule.severity)) {
-    throw new Error('Rule config key "severity" must be "advisory", "warning", or "error".');
+    throw new ConfigLoadError('Rule config key "severity" must be "advisory", "warning", or "error".', SUGGEST_EDIT_CONFIG);
   }
   if (hasThreshold !== hasSeverity) {
-    throw new Error('Rule config keys "threshold" and "severity" must be configured together.');
+    throw new ConfigLoadError('Rule config keys "threshold" and "severity" must be configured together.', SUGGEST_EDIT_CONFIG);
   }
 }
 
@@ -288,7 +294,7 @@ function parseConfigFile(path: string): Record<string, unknown> {
   const parsed = extension === ".yaml" || extension === ".yml" ? parseYamlConfig(source) : extension === ".json" ? (JSON.parse(source) as unknown) : undefined;
   const config = objectValue(parsed);
   if (!config) {
-    throw new Error(`Config file must contain an object with .yaml, .yml, or .json extension: ${path}`);
+    throw new ConfigLoadError(`Config file must contain an object with .yaml, .yml, or .json extension: ${path}`, SUGGEST_INIT_FORCE);
   }
   return config;
 }
@@ -317,7 +323,7 @@ function parseYamlConfig(source: string): Record<string, unknown> {
   const parsedDocument = parser.lines.length === 0 ? {} : parseYamlBlock(parser, parser.lines[0]?.indent ?? 0);
   const config = objectValue(parsedDocument);
   if (!config) {
-    throw new Error("Config YAML must contain a mapping object.");
+    throw new ConfigLoadError("Config YAML must contain a mapping object.", SUGGEST_INIT_FORCE);
   }
   return config;
 }
@@ -408,7 +414,7 @@ function parseNestedYamlValue(parser: YamlParser, indent: number, fallback: unkn
 function yamlKeyValuePair(content: string): [string, string] {
   const pair = splitYamlKeyValue(content);
   if (!pair) {
-    throw new Error(`Invalid YAML mapping line: "${content}".`);
+    throw new ConfigLoadError(`Invalid YAML mapping line: "${content}".`, SUGGEST_INIT_FORCE);
   }
   return pair;
 }
@@ -424,7 +430,7 @@ function isYamlArrayLine(line: YamlLine): boolean {
  */
 function assertYamlIndent(line: YamlLine, indent: number): void {
   if (line.indent > indent) {
-    throw new Error(`Invalid YAML indentation near "${line.content}".`);
+    throw new ConfigLoadError(`Invalid YAML indentation near "${line.content}".`, SUGGEST_INIT_FORCE);
   }
 }
 
@@ -442,7 +448,7 @@ function yamlLines(source: string): YamlLine[] {
     }
     const indentText = withoutComment.match(/^\s*/)?.[0] ?? "";
     if (indentText.includes("\t")) {
-      throw new Error("Tabs are not supported in gruff YAML config indentation.");
+      throw new ConfigLoadError("Tabs are not supported in gruff YAML config indentation.", SUGGEST_INIT_FORCE);
     }
     lines.push({ indent: indentText.length, content: withoutComment.trimStart() });
   }
