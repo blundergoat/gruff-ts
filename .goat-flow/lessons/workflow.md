@@ -78,6 +78,18 @@ That stack-trace dump is hostile to anyone who is not a maintainer of this codeb
 
 **Prevention:** Apply the named-error-class + action-handler-wrapper pattern documented in `.goat-flow/patterns/error-handling.md`. The triage criterion is "is this caused by user input?" If yes, throw a named class with a `suggestion` field and let a CLI wrapper format it. If no (internal invariant, programmer mistake), throw plain `Error` and let the stack trace surface for debugging. The pattern doc carries the reusable shape (class, validators, wrapper, formatting, tests) plus the "when NOT to use" caveats. Use it for any new user-facing error class added later (baseline-load failures, malformed CLI flag values, missing required path arguments, etc.).
 
+## Lesson: run `git status` before describing the working-tree diff or proposing a commit message
+
+**Created:** 2026-05-27
+
+**What happened:** Operator asked "give me one line commit message for uncomitted code." Wrote a sweeping commit message claiming `0.1.2 ships rule-precision tier (M01-M08), minimumSeverity config schema, and graceful config errors` - reasoning from session memory ("here's everything I worked on in this conversation") rather than checking the actual working tree. The operator pushed back: "the uncommitted code just looks like a pattern, lesson entry and changelog? wtf are you doing." `git status` confirmed: three files dirty (`workflow.md`, `error-handling.md`, `CHANGELOG.md`); the rest was already committed in earlier rounds (`b795a64`, `3616b2b`, `23fe460`, etc.) without me running `git status` along the way. The commit message would have been a false claim about scope.
+
+**Evidence:** `git log --oneline -5` showed five recent commits the operator had landed during the session; `git status --short` showed only three modified files. The commit message I proposed described work spanning ~30 file changes, not three.
+
+**Prevention:** Before describing the uncommitted diff, proposing a commit message, or reporting "here is what is ready to commit," run `git status --short` (and `git diff --stat` if more than a handful of files). Never infer the working-tree state from "what I worked on this session" - the operator can commit at any point without telling me, so session memory is a stale model of git state. Treat `git status` the same way as `npm run check`: it is the source of truth, and inferring from elsewhere is a hallucination red flag.
+
+Standing rule: every commit-message-or-diff-description response begins with reading `git status`, full stop. If the user asked for a one-line commit message and the actual diff is three files, write a one-line commit message that describes three files - not the session narrative.
+
 
 
 ## Lesson: review pre-existing `M <file>` diffs before editing the same file
