@@ -1,8 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.3] - 2026-05-26
 
-Rule-precision tier from the 2026-05-25 goat-flow feedback. Plan surgery on 2026-05-26 re-scoped the original "patch 0.1.2" bundle: M01 ships here; M02-M04 and the `minimumSeverity` track are queued for the next minor; M05-M08 target the one after; M09 (informational tier) is deferred until a real user signal arrives. See `.goat-flow/tasks/0.1.2/ISSUE.md` for the release-line allocation.
+Rule-precision tier from the 2026-05-25 goat-flow feedback. Plan surgery on 2026-05-26 re-scoped the original "patch 0.1.2" bundle and the work shipped here (M01-M08) together rather than across multiple patches; M09 (informational tier) is deferred until a real user signal arrives, and the `minimumSeverity` track is queued for a follow-up minor. See `.goat-flow/tasks/0.1.2/ISSUE.md` for the original allocation and `.goat-flow/tasks/0.1.3/` for the deferred minimumSeverity work.
 
 - **Fixed (M01 §1)**: `waste.unreachable-code` no longer fires on the unconditional return that follows a braceless `if`/`while`/`for` with a multi-line predicate. The per-line walker now tracks open-paren balance across the predicate's lines so `if (\n  a &&\n  b\n)\n  return X;\nreturn Y;` correctly treats both returns as reachable. The single-line braceless guard (existing FP-#4) keeps working unchanged; genuine unreachable code (FP-#15) still fires.
 - **Changed (M01 §2.2)**: `waste.swallowed-catch` accepts six additional bare-token rationale comments: `/* ignore */`, `/* ignored */`, `/* cleanup */`, `/* teardown */`, `/* noop */`, `/* no-op */`. `/* silent */` is deliberately excluded — real swallowed-error defects in goat-flow's dashboard-projects.ts use that token and must keep firing. Lock-in tests in `src/false-positive-fixes.test.ts` cover FP-#12 through FP-#20.
