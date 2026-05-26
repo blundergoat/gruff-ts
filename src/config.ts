@@ -1,7 +1,7 @@
 // Config loading and YAML-subset parsing for the analyzer's zero-dependency rule defaults.
 import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, join } from "node:path";
-import type { AnalysisOptions, Config, Severity } from "./types.ts";
+import type { AnalysisOptions, Config, FailThreshold, MinimumSeverityCommand, Severity } from "./types.ts";
 
 type RuleOverride = Config["rules"] extends Map<string, infer RuleOverrideValue> ? RuleOverrideValue : never;
 
@@ -26,17 +26,20 @@ const UNMATCHED_YAML_SCALAR: ParsedYamlScalar = { isMatched: false, value: undef
 // Built-in defaults applied before any user config overlays. The string lists here (accepted
 // abbreviations, banned generic names, boolean prefixes, …) are the stable rule contract - they
 // shape what every gruff scan emits by default and changing them shifts the public rule surface.
+// schemaVersion is fixed at `gruff-ts.config.v0.1` as the schema invariant for this release.
 function defaultConfig(): Config {
   return {
+    schemaVersion: "gruff-ts.config.v0.1",
     ignoredPaths: [],
-    acceptedAbbreviations: new Set(["age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url"]),
+    acceptedAbbreviations: new Set(["age", "app", "cb", "db", "fn", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url"]),
     secretPreviews: new Set(),
     bannedGenericNames: new Set(["process", "handle", "doit", "run", "execute", "manage"]),
-    booleanPrefixes: new Set(["is", "has", "can", "should", "does", "did", "was", "will", "may", "in", "scan", "supports", "requires"]),
+    booleanPrefixes: new Set(["is", "has", "can", "should", "does", "did", "was", "will", "may", "in", "scan", "supports", "requires", "allow", "check", "enable", "exclude", "include", "omit", "skip", "with", "without"]),
     hungarianPrefixes: new Set(["str", "obj", "arr", "bool", "int", "num"]),
     placeholderNames: new Set(["foo", "bar", "baz", "tmp", "temp", "thing", "stuff", "data", "value", "item"]),
     negativeBooleanAllowed: new Set(["nostore", "nofollow", "noreferrer", "noscript", "noindex"]),
     knownAcronyms: new Set(["url", "http", "https", "id", "xml", "json", "html", "css", "api", "sql", "db", "io", "ui", "uuid", "ip", "tcp", "udp", "ast", "cli", "npm"]),
+    minimumSeverity: new Map(),
     rules: new Map(),
   };
 }
@@ -69,13 +72,85 @@ function selectedConfigPath(projectRoot: string, options: AnalysisOptions): stri
   return options.config ? absolutize(projectRoot, options.config) : defaultConfigPath(projectRoot);
 }
 
-// Three top-level sections of the config schema applied in a fixed order: paths → allowlists →
-// rules. Order does not affect correctness today but the stable application order keeps later
-// overrides predictable if interdependencies are added.
+// Top-level sections applied in a fixed order: schemaVersion → minimumSeverity → paths → allowlists
+// → rules. schemaVersion runs first because every later parse depends on the contract version it
+// declares, and minimumSeverity runs next so CLI consumers reading it during normalizeOptions see
+// a populated map. Order does not affect correctness today but the stable application order keeps
+// later overrides predictable if interdependencies are added.
 function applyConfigValues(config: Config, raw: Record<string, unknown>): void {
+  applySchemaVersionConfig(raw);
+  applyMinimumSeverityConfig(config, raw);
   applyPathConfig(config, raw);
   applyAllowlistConfig(config, raw);
   applyRuleConfig(config, raw);
+}
+
+/*
+ * Validates the required `schemaVersion` top-level field. Pre-1.0 break: configs missing the field
+ * or carrying any other version string are rejected (throws with a documented error listing the
+ * supported version) because there is no migration shim under the no-legacy-compat contract. The
+ * function does not mutate the loaded config because the only supported value matches
+ * `defaultConfig().schemaVersion` already; future versions would extend the union and require a
+ * write here. The schema invariant is fixed at `gruff-ts.config.v0.1`.
+ */
+function applySchemaVersionConfig(raw: Record<string, unknown>): void {
+  const schemaVersion = raw.schemaVersion;
+  if (schemaVersion === undefined) {
+    throw new Error('Config must include schemaVersion: "gruff-ts.config.v0.1".');
+  }
+  if (schemaVersion !== "gruff-ts.config.v0.1") {
+    throw new Error(`Unsupported schemaVersion: ${JSON.stringify(schemaVersion)}. Supported: "gruff-ts.config.v0.1".`);
+  }
+}
+
+// Parses the `minimumSeverity:` block into a Map keyed by command name. Validation throws on
+// `dashboard` specifically (no `--fail-on` flag exists for it), on unknown command keys, and on
+// every non-canonical value. Missing block is allowed - it just leaves the map empty so CLI
+// consumers fall through to the binary default.
+function applyMinimumSeverityConfig(config: Config, raw: Record<string, unknown>): void {
+  const block = objectValue(raw.minimumSeverity);
+  if (!block) {
+    return;
+  }
+  for (const [commandName, value] of Object.entries(block)) {
+    config.minimumSeverity.set(assertMinimumSeverityCommand(commandName), parseFailThresholdConfig(value));
+  }
+}
+
+/*
+ * Validates one `minimumSeverity:` map key. Throws on `dashboard` specifically because the
+ * dashboard subcommand has no `--fail-on` flag; accepting the key would silently no-op and
+ * operators would expect a gate that never fires. Throws on unknown commands so typos surface at
+ * load time instead of as silent CI footguns.
+ */
+function assertMinimumSeverityCommand(commandName: string): MinimumSeverityCommand {
+  if (commandName === "dashboard") {
+    throw new Error('Unknown command in minimumSeverity: "dashboard". The dashboard subcommand does not currently expose a --fail-on flag; configuring its threshold is not supported. Remove the key, or open an issue if dashboard should gate.');
+  }
+  if (commandName === "analyse" || commandName === "summary" || commandName === "report") {
+    return commandName;
+  }
+  throw new Error(`Unknown command in minimumSeverity: ${JSON.stringify(commandName)}. Valid keys: analyse, summary, report.`);
+}
+
+/*
+ * Validates one `FailThreshold` value coming from YAML. Throws on every non-canonical value with a
+ * clear error listing the four supported strings. `never` is rejected explicitly because earlier
+ * cross-port drafts considered it as the off-switch value before the family converged on `none`;
+ * guarding against drift back to `never` keeps the cross-port vocabulary aligned.
+ */
+function parseFailThresholdConfig(rawValue: unknown): FailThreshold {
+  if (rawValue === "none" || rawValue === "advisory" || rawValue === "warning" || rawValue === "error") {
+    return rawValue;
+  }
+  throw new Error(`FailThreshold must be one of: advisory, warning, error, none. Got: ${JSON.stringify(rawValue)}.`);
+}
+
+// Per-command lookup used by the CLI precedence chain (CLI flag > config > binary default).
+// Returns undefined when the user did not configure that command so the caller can fall through
+// to the binary default. Exported so the CLI consumers in `cli-program.ts` can consult it.
+function minimumSeverityFor(config: Config, command: MinimumSeverityCommand): FailThreshold | undefined {
+  return config.minimumSeverity.get(command);
 }
 
 // Replaces `ignoredPaths` with the user list. Non-string entries are silently dropped - invalid
@@ -617,4 +692,4 @@ function isSeverity(configValue: unknown): configValue is Severity {
   return configValue === "advisory" || configValue === "warning" || configValue === "error";
 }
 
-export { defaultConfigPath, isString, loadConfig, objectValue, optionNumber, ruleEnabled, ruleSeverity, threshold };
+export { defaultConfigPath, isString, loadConfig, minimumSeverityFor, objectValue, optionNumber, ruleEnabled, ruleSeverity, threshold };

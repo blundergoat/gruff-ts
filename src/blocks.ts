@@ -22,6 +22,12 @@ export interface FunctionBlock {
   body: string;
   codeBody: string;
   isPublic: boolean;
+  // True when the function declaration line itself starts with `export`. Distinct from `isPublic`,
+  // which also matches class `public` modifiers - exports are the top-level API surface, while a
+  // public class method is internal to an exported (or unexported) class. The doc rule splits
+  // severity on this distinction: exported functions warrant warning-tier doc requirements,
+  // internal helpers stay advisory.
+  isExported: boolean;
   isTest: boolean;
   hasLeadingComment: boolean;
   declarationLine: number;
@@ -208,12 +214,20 @@ function pushGenericFunctionFinding(context: BlockRuleContext): void {
   }
 }
 
-// Every non-test function must carry a leading comment. Test blocks are exempted because their
-// `test("name", …)` description already documents intent. Reports `docs.missing-function-doc`.
+/*
+ * Every non-test function must carry a leading comment. Test blocks are exempted because their
+ * `test("name", …)` description already documents intent. Reports
+ * `docs.missing-exported-function-doc` (warning, higher cost of omission on the public API
+ * surface) when `isExported` is true, `docs.missing-internal-function-doc` (advisory) otherwise.
+ */
 function pushMissingFunctionDocFinding(context: BlockRuleContext): void {
-  if (!context.block.isTest && !context.block.hasLeadingComment) {
-    context.findings.push(blockFinding({ ruleId: "docs.missing-function-doc", message: `Function \`${context.block.name}\` is missing a leading maintainer comment.`, file: context.file, block: context.block, severity: "advisory", pillar: "documentation" }));
+  if (context.block.isTest || context.block.hasLeadingComment) {
+    return;
   }
+  const ruleId = context.block.isExported ? "docs.missing-exported-function-doc" : "docs.missing-internal-function-doc";
+  const severity = context.block.isExported ? "warning" : "advisory";
+  const audience = context.block.isExported ? "exported" : "internal";
+  context.findings.push(blockFinding({ ruleId, message: `${audience === "exported" ? "Exported" : "Internal"} function \`${context.block.name}\` is missing a leading maintainer comment.`, file: context.file, block: context.block, severity, pillar: "documentation" }));
 }
 
 // Empty bodies are sometimes intentional placeholders, hence the advisory severity rather than
@@ -473,7 +487,7 @@ function functionBlockPatterns(): RegExp[] {
     /^\s*(?:test|it)\s*\(\s*["'`]([^"'`]+)["'`]\s*,\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
     /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)/,
     /^\s*(?:public|private|protected)?\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*[:{]/,
-    /^\s*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
+    /^\s*(?:export\s+)?(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
   ];
 }
 
@@ -523,6 +537,7 @@ function functionBlockFromMatch(scan: FunctionBlockScan, match: RegExpMatchArray
     body,
     codeBody,
     isPublic: /\bexport\b|\bpublic\b/.test(scan.codeLines.slice(start, index + 1).join("\n")),
+    isExported: /^\s*export\b/.test(scan.codeLines[index] ?? ""),
     isTest: isTestInvocationLine(scan.codeLines[index] ?? ""),
     hasLeadingComment: hasLeadingCommentBeforeLines(scan.lines, index + 1),
     declarationLine: index + 1,

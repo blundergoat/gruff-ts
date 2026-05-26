@@ -153,7 +153,7 @@ const riskyRuleQualityDoctrine = [
     invalidFixture: "commented function over an existing complexity threshold without because/why/tradeoff context",
     noisyValidFixture: "simple commented functions and complex functions whose comments mention why, because, or tradeoffs",
     missingInvalidFixture: "complex control flow remains reported when a restating or generic comment is present",
-    falsePositiveEscapeHatch: "missing comments stay owned by docs.missing-function-doc; the context-doc rules require a leading comment to fire",
+    falsePositiveEscapeHatch: "missing comments stay owned by docs.missing-exported-function-doc / docs.missing-internal-function-doc; the context-doc rules require a leading comment to fire",
     fingerprintStability: "anchor to the leading comment line plus function symbol",
   },
   {
@@ -413,6 +413,26 @@ test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
   });
   descriptors.forEach((descriptor) => {
     assertDescriptorCoverageOrExemption(descriptor, coverageIds);
+  });
+});
+
+test("rule descriptors surface escape-hatch knobs in remediation prose", () => {
+  // M06 contract: every rule that carries a tunable knob (threshold, optionKeys, allowlistKeys)
+  // must point at it from `remediation` so consumers can find the config override without grepping
+  // the source. Threshold rules cite `rules.<ruleId>.threshold`; optionKeys rules name every key
+  // verbatim; allowlistKeys rules cite the `allowlists.<key>` path. Pre-filtering by descriptor
+  // shape avoids in-loop conditionals so the assertion runs as a deterministic table check.
+  const descriptors = ruleDescriptors();
+  descriptors.filter((descriptor) => typeof descriptor.threshold === "number").forEach((descriptor) => {
+    assert.match(descriptor.remediation, /rules\./, `${descriptor.ruleId} remediation missing rules.<id> reference`);
+  });
+  descriptors.filter((descriptor) => descriptor.optionKeys !== undefined).forEach((descriptor) => {
+    (descriptor.optionKeys ?? []).forEach((optionKey) => {
+      assert.match(descriptor.remediation, new RegExp(`\\b${optionKey}\\b`), `${descriptor.ruleId} remediation missing optionKey ${optionKey}`);
+    });
+  });
+  descriptors.filter((descriptor) => descriptor.allowlistKeys !== undefined).forEach((descriptor) => {
+    assert.match(descriptor.remediation, /allowlists\./, `${descriptor.ruleId} remediation missing allowlists. reference`);
   });
 });
 

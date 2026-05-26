@@ -273,6 +273,7 @@ test("loads default gruff-ts yaml config", () => {
 }
 `,
       ".gruff-ts.yaml": `
+schemaVersion: gruff-ts.config.v0.1
 rules:
   "complexity.npath":
     threshold: 3
@@ -302,6 +303,7 @@ test("loads default gruff-ts yaml allowlists", () => {
 console.log(xy);
 `,
       ".gruff-ts.yaml": `
+schemaVersion: gruff-ts.config.v0.1
 allowlists:
   acceptedAbbreviations: [xy]
 `,
@@ -317,6 +319,7 @@ test("loads explicit yaml config path", () => {
       "bad.ts": `eval("console.log(1)");
 `,
       "custom-gruff.yaml": `
+schemaVersion: gruff-ts.config.v0.1
 rules:
   security.eval-call:
     enabled: false
@@ -381,7 +384,7 @@ test("gitignore fixture expectations match git check-ignore when git is availabl
 // Fixture files for the include-ignored test; policy/** stays ignored regardless of include-ignored.
 const INCLUDE_IGNORED_FIXTURE = {
   ".gitignore": "ignored.ts\n",
-  ".gruff-ts.yaml": `\npaths:\n  ignore:\n    - "policy/**"\n`,
+  ".gruff-ts.yaml": `\nschemaVersion: gruff-ts.config.v0.1\npaths:\n  ignore:\n    - "policy/**"\n`,
   "visible.ts": `eval("visible");\n`,
   "ignored.ts": `eval("ignored");\n`,
   "node_modules/pkg/index.ts": `eval("dependency");\n`,
@@ -440,6 +443,7 @@ test("loads default gruff-ts yaml config over no config", () => {
       "bad.ts": `eval("console.log(1)");
 `,
       ".gruff-ts.yaml": `
+schemaVersion: gruff-ts.config.v0.1
 rules:
   security.eval-call:
     enabled: false

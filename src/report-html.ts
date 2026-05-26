@@ -4,6 +4,7 @@
 // stable archived-report contract so the shape of every helper here is invariant.
 import type { AnalysisReport, Finding, Severity } from "./types.ts";
 import { buildPillarRows, grade } from "./pillar-summary.ts";
+import { severityGradeBreakdown } from "./scoring.ts";
 
 const CYCLOMATIC_BUCKETS = [
   { label: "21+", minimum: 21 },
@@ -106,8 +107,27 @@ function htmlVerdict(report: AnalysisReport): string {
   const escapedGrade = escapeHtml(report.score.grade);
   const scoreText = report.score.composite.toFixed(1);
   const escapedSummary = escapeHtml(verdictSummary(report));
+  const breakdown = severityGradeBreakdown(report.findings);
+  const severityPills = htmlSeverityPills(breakdown);
   const stats = `${htmlStat(String(report.summary.total), "findings", "")}${htmlStat(String(report.summary.error), "errors", "fail")}${htmlStat(String(report.summary.warning), "warnings", "warn")}${htmlStat(String(report.summary.advisory), "advisories", "note")}`;
-  return `<section class="verdict"><div class="grade-stamp ${gradeCssClass}"><div class="grade-letter">${escapedGrade}</div><div class="grade-score">${scoreText} / 100</div></div><div class="verdict-body"><div class="verdict-headline">Inspection complete.<br><em>${escapedSummary}</em></div><div class="verdict-stats">${stats}</div></div></section>`;
+  return `<section class="verdict"><div class="grade-stamp ${gradeCssClass}"><div class="grade-letter">${escapedGrade}</div><div class="grade-score">${scoreText} / 100</div></div><div class="verdict-body"><div class="verdict-headline">Inspection complete.<br><em>${escapedSummary}</em></div>${severityPills}<div class="verdict-stats">${stats}</div></div></section>`;
+}
+
+// Three labeled grade pills (Errors / Warnings / Advisory) directly under the verdict headline.
+// Surfaces what the composite grade hides - an F driven entirely by advisories versus an F driven
+// by errors look identical in the headline number but tell very different stories about the work.
+function htmlSeverityPills(breakdown: ReturnType<typeof severityGradeBreakdown>): string {
+  return `<div class="severity-grades">${htmlSeverityPill("Errors", breakdown.error)}${htmlSeverityPill("Warnings", breakdown.warning)}${htmlSeverityPill("Advisory", breakdown.advisory)}</div>`;
+}
+
+// One labeled grade pill. Each label, grade letter, and count is escaped because the CSS class is
+// the only piece passed in unescaped (it comes from `gradeClass` which returns curated values).
+function htmlSeverityPill(label: string, bucket: { grade: string; count: number }): string {
+  const cssClass = gradeClass(bucket.grade);
+  const escapedLabel = escapeHtml(label);
+  const escapedGradeLetter = escapeHtml(bucket.grade);
+  const escapedCount = escapeHtml(String(bucket.count));
+  return `<span class="severity-grade">${escapedLabel} <span class="grade-pill ${cssClass}">${escapedGradeLetter}</span> <span class="severity-count">(${escapedCount})</span></span>`;
 }
 
 // Headline sentence. Counts only warning/error findings - advisories are intentionally excluded

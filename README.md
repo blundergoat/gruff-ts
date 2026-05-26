@@ -108,7 +108,7 @@ Global console options match the broader gruff CLI surface: `--silent`, `--quiet
 | `1` | At least one finding met `--fail-on`. |
 | `2` | Fatal diagnostic such as missing input, parse error, config error, diff failure, baseline failure, or invalid input. |
 
-`analyse` defaults to `--fail-on error`.
+`analyse` and `summary` default to `--fail-on advisory`; `report` defaults to `--fail-on none`. The defaults can be overridden per-project by a `minimumSeverity:` block in `.gruff-ts.yaml`. CLI flag wins over config; config wins over the binary default. See ADR-004 and the Configuration section.
 
 ## CI Usage
 

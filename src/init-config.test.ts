@@ -53,7 +53,7 @@ test("gruff-ts init writes the default config, refuses to overwrite, and respect
   try {
     const firstRun = execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "init"], { cwd: projectRoot, encoding: "utf8" });
     const configPath = join(projectRoot, DEFAULT_CONFIG_FILE_NAME);
-    assert.match(firstRun, new RegExp(`^Wrote .*${DEFAULT_CONFIG_FILE_NAME}\\n\\nNext: generate an adoption baseline with:\\n  gruff-ts analyse \\. --generate-baseline gruff-baseline\\.json --fail-on=none\\nThen gate new findings with:\\n  gruff-ts analyse \\. --baseline gruff-baseline\\.json --fail-on=warning\\n$`));
+    assert.match(firstRun, new RegExp(`^Wrote .*${DEFAULT_CONFIG_FILE_NAME}\\n\\nNext: generate an adoption baseline with:\\n  gruff-ts analyse \\. --generate-baseline gruff-baseline\\.json --fail-on=none\\nThen gate new findings with:\\n  gruff-ts analyse \\. --baseline gruff-baseline\\.json --fail-on=advisory\\n$`));
     const firstContent = readFileSync(configPath, "utf8");
     assert.equal(firstContent, renderDefaultConfig());
     assert.match(firstContent, /# Recursive scans already respect \.gitignore/);
@@ -93,7 +93,7 @@ test("gruff-ts init refuses to write .gruff-ts.yaml when a non-canonical support
 
 test("renderDefaultConfig preserves passed paths.ignore entries as a block sequence", () => {
   const yaml = renderDefaultConfig([".agents/**", ".claude/**", "fixtures/**"]);
-  assert.match(yaml, /^paths:\n(?:  #.*\n)+  ignore:\n    - "\.agents\/\*\*"\n    - "\.claude\/\*\*"\n    - "fixtures\/\*\*"\n/);
+  assert.match(yaml, /paths:\n(?:  #.*\n)+  ignore:\n    - "\.agents\/\*\*"\n    - "\.claude\/\*\*"\n    - "fixtures\/\*\*"\n/);
 });
 
 test("gruff-ts init --force preserves the existing paths.ignore entries", () => {

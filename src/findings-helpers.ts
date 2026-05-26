@@ -106,3 +106,20 @@ export function isGenericName(name: string, bannedNames: Set<string>): boolean {
 export function escapeRegex(source: string): string {
   return source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+/*
+ * Per-rule severity tally for the `summary` Top-N rules block. Walks the findings once and returns
+ * a deterministic Map keyed by ruleId carrying total / error / warning / advisory counts. Lets the
+ * renderer surface "412 (0 err / 0 warn / 412 adv)" rows without re-scanning findings per row. The
+ * count shape mirrors the `summary` schema invariant - total must equal err + warn + adv.
+ */
+export function countRuleSeverities(findings: Finding[]): Map<string, { total: number; error: number; warning: number; advisory: number }> {
+  const counts = new Map<string, { total: number; error: number; warning: number; advisory: number }>();
+  for (const finding of findings) {
+    const entry = counts.get(finding.ruleId) ?? { total: 0, error: 0, warning: 0, advisory: 0 };
+    entry.total += 1;
+    entry[finding.severity] += 1;
+    counts.set(finding.ruleId, entry);
+  }
+  return counts;
+}

@@ -3,14 +3,16 @@ import { Command, Help, InvalidArgumentError } from "commander";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { cwd } from "node:process";
 import { DEFAULT_BASELINE } from "./baseline.ts";
+import { loadConfig, minimumSeverityFor } from "./config.ts";
 import { VERSION } from "./constants.ts";
 import { startDashboard } from "./dashboard.ts";
 import { promptYesNo, shouldPromptForInit, writeDefaultConfig } from "./init-config.ts";
 import { renderReport, renderSummary, renderSummaryJson } from "./report-renderers.ts";
-import { completionShell, renderCompletionScript, renderConsoleList, renderRuleList, type RuleListFormat } from "./rule-list.ts";
+import { completionShell, getRuleDescriptor, renderCompletionScript, renderConsoleList, renderRuleDetail, renderRuleList, type RuleListFormat } from "./rule-list.ts";
 import { exitFor } from "./scoring.ts";
-import type { AnalysisOptions, AnalysisReport } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport, MinimumSeverityCommand } from "./types.ts";
 
 type AnalyseRunner = (options: AnalysisOptions) => AnalysisReport;
 
@@ -156,7 +158,10 @@ function rootHelpText(program: Command, command: Command, helper: Help): string 
 }
 
 // The primary entry point. Sets `process.exitCode` (not `process.exit`) so async writers in the
-// renderer get a chance to flush before Node tears down. Default fail-on is `error`, matching CI.
+// renderer get a chance to flush before Node tears down. The default fail-on is `advisory` because
+// the project's gating philosophy is "show everything, fail on anything"; CI flows that want the
+// old `error`-only behaviour pass `--fail-on=error` explicitly or pin `minimumSeverity.analyse:
+// error` in `.gruff-ts.yaml`. See ADR-004.
 function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("analyse")
@@ -165,15 +170,16 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--format <format>", "Output format: text, json, html, markdown, github, hotspot, or sarif.", "text")
-    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
+    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "advisory")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
     .option("--history-file <path>", "Append score trend history to this JSON file.")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
-    .action(async (paths: string[], rawOptions: Record<string, unknown>) => {
-      const options = normalizeOptions(paths, rawOptions, { shouldAllowBaselineFlag: true });
+    .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
+      const baseOptions = normalizeOptions(paths, rawOptions, { shouldAllowBaselineFlag: true });
+      const options = applyMinimumSeverityPrecedence(baseOptions, "analyse", command);
       await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
       const report = runAnalyse(options);
       writeCommandOutput(program, renderReport(report, options.format));
@@ -237,7 +243,7 @@ function initSuccessMessage(verb: "Wrote" | "Overwrote", configPath: string): st
     "Next: generate an adoption baseline with:",
     "  gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none",
     "Then gate new findings with:",
-    "  gruff-ts analyse . --baseline gruff-baseline.json --fail-on=warning",
+    "  gruff-ts analyse . --baseline gruff-baseline.json --fail-on=advisory",
   ].join("\n");
 }
 
@@ -254,14 +260,26 @@ function registerListCommand(program: Command): void {
 
 // Read-only catalogue dump. JSON is the canonical form consumed by docs builds; text is for humans.
 // `--format` is validated by `parseSummaryFormat`; unsupported values fail fast as a usage error.
+// Optional `<ruleId>` positional switches to single-rule detail mode (M08): no-arg behaviour stays
+// byte-identical to the prior version.
 function registerListRulesCommand(program: Command): void {
   program
     .command("list-rules")
-    .description("List gruff rule metadata.")
+    .description("List gruff rule metadata. Pass a rule id to print details for one rule.")
+    .argument("[ruleId]", "Optional rule id to print details for.")
     .option("--format <format>", "Output format: text or json.", parseSummaryFormat, "text")
-    .action((rawOptions: Record<string, unknown>) => {
+    .action((ruleId: string | undefined, rawOptions: Record<string, unknown>) => {
       const format: RuleListFormat = rawOptions.format === "json" ? "json" : "text";
-      writeCommandOutput(program, renderRuleList(format));
+      if (ruleId === undefined) {
+        writeCommandOutput(program, renderRuleList(format));
+        return;
+      }
+      const descriptor = getRuleDescriptor(ruleId);
+      if (!descriptor) {
+        program.error(`unknown rule "${ruleId}". Run \`gruff-ts list-rules\` to see all rules.`, { exitCode: 2 });
+        return;
+      }
+      writeCommandOutput(program, renderRuleDetail(descriptor, format));
     });
 }
 
@@ -280,9 +298,10 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     .option("--fail-on <severity>", "Finding severity that fails the run.", "none")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
-    .action(async (paths: string[], rawOptions: Record<string, unknown>) => {
+    .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
       const format = rawOptions.format === "json" ? "json" : "html";
-      const options = normalizeOptions(paths, { ...rawOptions, format }, { shouldAllowBaselineFlag: false });
+      const baseOptions = normalizeOptions(paths, { ...rawOptions, format }, { shouldAllowBaselineFlag: false });
+      const options = applyMinimumSeverityPrecedence(baseOptions, "report", command);
       await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
       const report = runAnalyse(options);
       const rendered = renderReport(report, format);
@@ -307,15 +326,16 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--format <format>", "Output format: text or json.", parseSummaryFormat, "text")
     .option("--top <n>", "How many top rules and file offenders to list.", parseNonNegativeInteger, 10)
-    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "error")
+    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "advisory")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
     .option("--history-file <path>", "Append score trend history to this JSON file.")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
-    .action(async (paths: string[], rawOptions: Record<string, unknown>) => {
-      const options = normalizeOptions(paths, { ...rawOptions, format: "text" }, { shouldAllowBaselineFlag: true });
+    .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
+      const baseOptions = normalizeOptions(paths, { ...rawOptions, format: "text" }, { shouldAllowBaselineFlag: true });
+      const options = applyMinimumSeverityPrecedence(baseOptions, "summary", command);
       const summaryFormat = rawOptions.format === "json" ? "json" : "text";
       const top = typeof rawOptions.top === "number" ? rawOptions.top : 10;
       await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
@@ -369,7 +389,7 @@ function summaryPathLabel(paths: string[], projectRoot: string): string {
 // adding new fields here without folding them into that hash is a deterministic-output regression.
 function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, context: NormalizeContext): AnalysisOptions {
   const format = stringChoice(rawOptions.format, ["text", "json", "html", "markdown", "github", "hotspot", "sarif"], "text");
-  const failOn = stringChoice(rawOptions.failOn, ["none", "advisory", "warning", "error"], "error");
+  const failOn = stringChoice(rawOptions.failOn, ["none", "advisory", "warning", "error"], "advisory");
   const baselineValue = rawOptions.baseline;
   const shouldSkipBaseline =
     !context.shouldAllowBaselineFlag ||
@@ -436,4 +456,22 @@ function generateBaselineOption(rawOptions: Record<string, unknown>): Partial<Pi
 
 function stringChoice<T extends string>(value: unknown, choices: readonly T[], fallback: T): T {
   return typeof value === "string" && choices.includes(value as T) ? (value as T) : fallback;
+}
+
+/*
+ * Precedence wiring for `--fail-on`: when the user did NOT pass `--fail-on` explicitly, the
+ * `.gruff-ts.yaml` `minimumSeverity.<cmd>` value wins over the binary default. CLI flag always
+ * wins when explicitly set. Commander's `getOptionValueSource("failOn")` returns `"cli"` for
+ * explicit invocations and `"default"` otherwise, so the source check drives the precedence
+ * chain. Config load failures bubble up to the caller because the analyser would surface the
+ * same error on the next call - this keeps the user's first sight of a malformed config aligned
+ * with where they'd expect it (config-load time, not deep in the analyser).
+ */
+function applyMinimumSeverityPrecedence(options: AnalysisOptions, command: MinimumSeverityCommand, commanderCommand: Command): AnalysisOptions {
+  if (commanderCommand.getOptionValueSource("failOn") === "cli") {
+    return options;
+  }
+  const config = loadConfig(cwd(), options);
+  const configuredFailOn = minimumSeverityFor(config, command);
+  return configuredFailOn === undefined ? options : { ...options, failOn: configuredFailOn };
 }

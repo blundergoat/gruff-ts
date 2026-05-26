@@ -71,4 +71,36 @@ function severityPenalty(severity: Severity): number {
   return severity === "error" ? 8 : severity === "warning" ? 4 : 1.5;
 }
 
-export { scoreReport, summarize, exitFor };
+/*
+ * Per-severity grade breakdown for the human summary block. The composite headline alone hides the
+ * fact that an F can be driven entirely by advisories (goat-flow scan: F at 12.9 with 0 errors / 276
+ * warnings / 1367 advisories). Mirrors the existing pillar formula `100 - count * severityPenalty`
+ * so the math stays consistent with how a single-rule pillar would score. The schema invariant
+ * matters: the composite score and `gruff.analysis.v2` JSON shape stay byte-stable - only the
+ * human renderers surface this breakdown.
+ */
+function severityGradeBreakdown(findings: Finding[]): {
+  error: { grade: string; score: number; count: number };
+  warning: { grade: string; score: number; count: number };
+  advisory: { grade: string; score: number; count: number };
+} {
+  const counts = { error: 0, warning: 0, advisory: 0 };
+  for (const finding of findings) {
+    counts[finding.severity] += 1;
+  }
+  return {
+    error: severityBucket("error", counts.error),
+    warning: severityBucket("warning", counts.warning),
+    advisory: severityBucket("advisory", counts.advisory),
+  };
+}
+
+// Single severity bucket using the same `score = max(0, 100 - count * penalty)` formula as the
+// pillar reduce in `scoreReport`. Returns the bucket plus its grade letter so renderers don't have
+// to import `grade` separately.
+function severityBucket(severity: Severity, count: number): { grade: string; score: number; count: number } {
+  const score = Math.max(0, 100 - count * severityPenalty(severity));
+  return { grade: grade(score), score, count };
+}
+
+export { scoreReport, summarize, exitFor, severityGradeBreakdown };

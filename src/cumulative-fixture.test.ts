@@ -18,8 +18,9 @@ const expandedRuleIds = new Set([
   "docs.fixture-purpose-missing",
   "docs.magic-threshold-without-rationale",
   "docs.missing-error-behavior-doc",
+  "docs.missing-exported-function-doc",
   "docs.missing-file-overview",
-  "docs.missing-function-doc",
+  "docs.missing-internal-function-doc",
   "docs.missing-interface-doc",
   "docs.missing-invariant-doc",
   "docs.missing-param-tag",
@@ -328,7 +329,7 @@ async function unsafe(userInput: string, userId: string, userIds: string[], req:
   try {
     await sendEmailAsync("primary");
   } catch (error) {
-    // ignored
+    // FIXME
   }
   void insecureAgent;
   throw ${JSON.stringify("dynamic failure")};

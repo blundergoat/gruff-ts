@@ -1,9 +1,31 @@
 ---
 category: workflow
-last_reviewed: 2026-05-24
+last_reviewed: 2026-05-26
 ---
 
 # Workflow lessons
+
+## Lesson: milestone close-out must compare self-scan delta, not just `npm run check` pass count
+
+**Created:** 2026-05-26
+
+**What happened:** M01 and M02 both passed `npm run check` cleanly and shipped lock-in tests. The "Verification" gates I followed in each milestone file (run check, paste pass line) reported green. But a baseline self-scan taken BEFORE M01 had 1 finding total; the same scan AFTER M01+M02 reported 11 findings. Ten of those came from the new code I wrote - high NPath in the new functions, large fixtures without purpose comments, self-referential rule firing on rule-descriptor prose, etc. The check passed because TESTS passed; the project's own rule signal got materially worse and the green check missed it.
+
+**Evidence:** `/tmp/gruff-ts-baseline-pre.json` (1 finding pre-M01) vs `/tmp/gruff-ts-self-scan-m02.json` (11 findings post-M02). The new findings tracked back to my own diff: `complexity.npath` on `analyseUnreachable` (NPath 512) and `forOfBodyLineSpan` (NPath 256), `naming.boolean-prefix` on a new local `consequentPending`, `docs.todo-without-tracking` on rule-descriptor prose that mentioned `TODO`/`FIXME`, `docs.fixture-purpose-missing` on the new lock-in test fixtures.
+
+**Prevention:** Before declaring a milestone complete, run `./bin/gruff-ts analyse src --format=json --fail-on=none > /tmp/<milestone>-after.json` and compare against the corresponding pre-milestone scan. The delta surfaces "your new code introduces N new findings" in a way `npm test` cannot. If the delta has self-introduced findings the project would itself flag, do at least the trivial cleanups (renames, comment rephrasings) before close-out. Complexity and large-fixture findings are signal worth either accepting (with a follow-up note) or addressing in a dedicated refactor pass - never both ignoring them and claiming the milestone is clean.
+
+## Lesson: tick `- [ ]` checkboxes inside milestone files as work lands, do not just stamp `Status: complete`
+
+**Created:** 2026-05-27
+
+**What happened:** Closed out the minimumSeverity track by setting `Status: complete (2026-05-27)` at the top of `.goat-flow/tasks/0.1.3/M01-M03 + ISSUE.md`. Every `- [ ]` checkbox inside those files - the Tasks blocks, Testing Gate sections, How checklists in ISSUE.md - was left unticked. Surfaced the work to the operator as "all done," then they opened the files and saw four documents full of `- [ ]` with a top-line `Status: complete` slapped on. Their reaction: "i call bullshit on any of that being completed."
+
+**Evidence:** `.goat-flow/tasks/0.1.3/M01-config-schema-and-cli-wiring.md` line 3 said `Status: complete (2026-05-27)` while lines 116-249 (Tasks section) and 280-307 (Testing Gate) still had every checkbox empty. Same shape for M02, M03, and the parent ISSUE.md's `How` list. The code/test/doc work had actually landed - `npm run check` was green, preflight was clean - but the tracking artifacts inside the task folder claimed nothing was done.
+
+**Prevention:** Before flipping a milestone file's top-line `Status:` to `complete`, open the file and walk every `- [ ]` line. For each one the implementation actually delivered, flip to `- [x]`. For items deferred during execution, leave unticked and add a deferral note nearby (see `.goat-flow/tasks/0.1.2/M03-test-quality-rule-precision.md` for the existing pattern). Apply the same to ISSUE.md `How` checklists. Top-line status without per-task ticks reads as fraud even when the underlying work landed. Standing rule from the operator: "TICK OFF FUCKING CHECKBOX TASKS AS YOU FUCKING COMPLETE THEM."
+
+
 
 ## Lesson: review pre-existing `M <file>` diffs before editing the same file
 **Created:** 2026-05-24

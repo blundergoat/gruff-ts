@@ -47,6 +47,59 @@ test("list-rules CLI prints text and deterministic json", () => {
   assert.equal(assertRuleListJsonOutput(), true);
 });
 
+test("list-rules <ruleId> prints labelled per-rule detail in text mode", () => {
+  // M08: positional argument switches to single-rule explain mode. The text section carries every
+  // populated descriptor field plus the config-key list so an operator can see knobs without
+  // grepping `src/config.ts`.
+  const output = execFileSync("./bin/gruff-ts", ["list-rules", "complexity.cognitive"], { encoding: "utf8" });
+  assert.match(output, /Rule:\s+complexity\.cognitive/);
+  assert.match(output, /Pillar:\s+complexity/);
+  assert.match(output, /Severity:\s+warning/);
+  assert.match(output, /Confidence:\s+high/);
+  assert.match(output, /Threshold:\s+15/);
+  assert.match(output, /Description: /);
+  assert.match(output, /Remediation: /);
+  assert.match(output, /rules\.complexity\.cognitive\.enabled/);
+  assert.match(output, /rules\.complexity\.cognitive\.threshold \(int, default: 15\)/);
+});
+
+test("list-rules <ruleId> renders JSON envelope with tool + rule + configKeys", () => {
+  // JSON variant for docs/integration consumers. Shape: `{ tool: {name, version}, rule: { …descriptor, configKeys: [...] } }`.
+  const text = execFileSync("./bin/gruff-ts", ["list-rules", "naming.generic-parameter", "--format=json"], { encoding: "utf8" });
+  const payload = JSON.parse(text);
+  assert.equal(payload.tool?.name, "gruff-ts");
+  assert.equal(payload.rule?.ruleId, "naming.generic-parameter");
+  assert.deepEqual(payload.rule?.optionKeys, ["minCyclomatic", "minLineCount", "minParameters"]);
+  assert.equal(Array.isArray(payload.rule?.configKeys), true);
+  const enabledKey = payload.rule.configKeys.find((entry: { key: string }) => entry.key === "rules.naming.generic-parameter.enabled");
+  assert.equal(enabledKey?.type, "bool");
+});
+
+test("list-rules unknown id exits 2 with the documented stderr message", () => {
+  // Commander's `program.error({ exitCode: 2 })` is the canonical "usage error" code in this CLI;
+  // hoisting it into a named constant keeps the assertion intent explicit.
+  const expectedUsageErrorExitCode = 2;
+  let exitCode = 0;
+  let stderr = "";
+  try {
+    execFileSync("./bin/gruff-ts", ["list-rules", "not-a-real-rule"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error: unknown) {
+    const failure = error as { status?: number; stderr?: string };
+    exitCode = failure.status ?? 0;
+    stderr = failure.stderr ?? "";
+  }
+  assert.equal(exitCode, expectedUsageErrorExitCode);
+  assert.match(stderr, /unknown rule "not-a-real-rule"/);
+});
+
+test("list-rules (no argument) output is byte-identical across runs", () => {
+  // Regression guard: the new positional must not change the no-arg behaviour. Two runs return
+  // identical bytes; the first run is what users have always seen.
+  const firstRun = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
+  const secondRun = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
+  assert.equal(firstRun, secondRun);
+});
+
 /** Spawns the rule catalogue command and verifies representative metadata. */
 function assertRuleListTextOutput(): boolean {
   const text = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });

@@ -39,8 +39,21 @@ export interface AnalysisOptions {
   shouldSkipBaseline: boolean;
 }
 
-/** Loaded analyzer configuration derived from optional gruff config files. */
+/** Command keys that participate in the `minimumSeverity:` config block. `dashboard` is omitted on purpose - it has no `--fail-on` flag and accepting it as a key would silently no-op. See ADR-004. */
+export type MinimumSeverityCommand = "analyse" | "summary" | "report";
+
+/**
+ * Loaded analyzer configuration derived from optional gruff config files. The schema invariant is
+ * that `schemaVersion` is fixed at the supported version and every field has a defined default in
+ * `defaultConfig()` so consumers can rely on the shape without per-field guards.
+ */
 export interface Config {
+  /**
+   * Required top-level config-schema version. Pre-1.0 break: every `.gruff-ts.yaml` must declare
+   * `schemaVersion: gruff-ts.config.v0.1` or loading throws. Lives in the `gruff-ts.config.*`
+   * namespace, distinct from the output schemas (`gruff.analysis.v2`, etc.). See ADR-004.
+   */
+  schemaVersion: "gruff-ts.config.v0.1";
   ignoredPaths: string[];
   acceptedAbbreviations: Set<string>;
   secretPreviews: Set<string>;
@@ -50,6 +63,12 @@ export interface Config {
   placeholderNames: Set<string>;
   negativeBooleanAllowed: Set<string>;
   knownAcronyms: Set<string>;
+  /**
+   * Per-command default for `--fail-on`. Precedence: CLI flag > this map > binary default.
+   * `dashboard` is intentionally not a valid key (no `--fail-on` flag exists for it); the parser
+   * rejects `dashboard` with a documented error. See ADR-004.
+   */
+  minimumSeverity: Map<MinimumSeverityCommand, FailThreshold>;
   rules: Map<string, { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> }>;
 }
 
@@ -108,5 +127,13 @@ export interface RuleDescriptor {
   remediation: string;
   threshold?: number;
   optionKeys?: readonly string[];
+  /**
+   * Names of `allowlists.*` keys in `.gruff-ts.yaml` that override or extend the rule's
+   * behaviour. Mirrors the `optionKeys` shape but targets the cross-pillar allowlist surface
+   * (e.g. `naming.boolean-prefix` consults `allowlists.booleanPrefixes`). Surfaced in the
+   * `list-rules --format=json` payload and the per-rule remediation text so operators don't
+   * have to grep `.gruff-ts.yaml` and `src/config.ts` to find the override knob.
+   */
+  allowlistKeys?: readonly string[];
   fixtureExemption?: string;
 }

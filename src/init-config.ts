@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { defaultConfigPath, loadConfig } from "./config.ts";
 import { ruleDescriptors } from "./rules.ts";
-import type { RuleDescriptor } from "./types.ts";
+import type { FailThreshold, MinimumSeverityCommand, RuleDescriptor } from "./types.ts";
 
 const DEFAULT_CONFIG_FILE_NAME = ".gruff-ts.yaml";
 
@@ -23,7 +23,7 @@ const RULE_OPTION_DEFAULTS: Readonly<Record<string, Readonly<Record<string, numb
 // Universal-programming abbreviations that earn their place across nearly any codebase; project-specific
 // vocabulary (domain acronyms) should be appended in the user's config rather than added here.
 const DEFAULT_ACCEPTED_ABBREVIATIONS: readonly string[] = [
-  "age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url",
+  "age", "app", "cb", "db", "fn", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url",
 ];
 
 // Result of an init write attempt, including the no-clobber branch for existing config files.
@@ -48,15 +48,74 @@ interface InitPromptContext {
 }
 
 /**
- * Render the default .gruff-ts.yaml content from the rule descriptor registry.
+ * Bundle of values that survive an `init --force` regeneration. `paths.ignore` is preserved
+ * verbatim, `minimumSeverity` is replayed entry-by-entry; the schemaVersion field is fixed for now
+ * because there is only one supported version.
+ */
+interface PreservedInitConfig {
+  ignoredPaths: readonly string[];
+  minimumSeverity: ReadonlyMap<MinimumSeverityCommand, FailThreshold>;
+}
+
+const EMPTY_PRESERVED_CONFIG: PreservedInitConfig = { ignoredPaths: [], minimumSeverity: new Map() };
+
+/**
+ * Render the default .gruff-ts.yaml content from the rule descriptor registry. Output order is
+ * schemaVersion → minimumSeverity → paths → allowlists → rules so the highest-impact CI behaviour
+ * (gating threshold per command) sits near the top of the file. Sections are separated by blank
+ * lines for readability.
  *
- * @param ignoredPaths Optional `paths.ignore` entries to inject verbatim (block-sequence form). The
- *   `gruff-ts init --force` flow forwards the existing file's entries so user-curated exclusions
- *   survive regeneration; an empty list emits `ignore: []` for fresh projects.
+ * @param ignoredPaths Optional `paths.ignore` entries to inject verbatim (block-sequence form).
+ *   The `gruff-ts init --force` flow forwards the existing file's entries so user-curated
+ *   exclusions survive regeneration; an empty list emits `ignore: []` for fresh projects.
+ * @param preservedMinimumSeverity Optional carry-over of the existing config's `minimumSeverity:`
+ *   block. Empty Map falls back to canonical defaults (advisory / advisory / none).
  * @returns A YAML document string terminated by a trailing newline.
  */
-function renderDefaultConfig(ignoredPaths: readonly string[] = []): string {
-  return [renderPathsSection(ignoredPaths), "", renderAllowlistsSection(), "", renderRulesSection()].join("\n") + "\n";
+function renderDefaultConfig(ignoredPaths: readonly string[] = [], preservedMinimumSeverity: ReadonlyMap<MinimumSeverityCommand, FailThreshold> = new Map()): string {
+  return [
+    renderSchemaVersionSection(),
+    "",
+    renderMinimumSeveritySection(preservedMinimumSeverity),
+    "",
+    renderPathsSection(ignoredPaths),
+    "",
+    renderAllowlistsSection(),
+    "",
+    renderRulesSection(),
+  ].join("\n") + "\n";
+}
+
+// Required top-level schema-version field. Documented in ADR-004 because the introduction itself
+// is a pre-1.0 break - every existing config gains this line, no transitional shim.
+function renderSchemaVersionSection(): string {
+  return [
+    "# Config-schema version. Required as of gruff-ts 0.1.4. See ADR-004 (decision log).",
+    "schemaVersion: gruff-ts.config.v0.1",
+  ].join("\n");
+}
+
+// Per-command --fail-on defaults. The canonical out-of-the-box values match the operator's "show
+// everything, fail on anything" philosophy. `dashboard` is intentionally NOT a valid key because
+// the dashboard subcommand has no --fail-on flag and accepting it would be a silent CI footgun.
+function renderMinimumSeveritySection(preserved: ReadonlyMap<MinimumSeverityCommand, FailThreshold>): string {
+  const header = [
+    "# Per-command default for `--fail-on`. CLI flag > this block > binary default.",
+    "# `dashboard` is intentionally NOT a valid key - it has no --fail-on flag. See ADR-004.",
+    "#",
+    "# Values:",
+    "#   error    - exit non-zero only when an error-severity finding fires (strictest gate).",
+    "#   warning  - exit non-zero on warning or error findings (advisory findings pass).",
+    "#   advisory - exit non-zero on any finding at all (advisory, warning, or error).",
+    "#   none     - never exit non-zero from findings (use for raw reporting / baseline generation).",
+    "minimumSeverity:",
+  ];
+  const entries: Array<[MinimumSeverityCommand, FailThreshold]> = [
+    ["analyse", preserved.get("analyse") ?? "advisory"],
+    ["summary", preserved.get("summary") ?? "advisory"],
+    ["report", preserved.get("report") ?? "none"],
+  ];
+  return [...header, ...entries.map(([command, severity]) => `  ${command}: ${severity}`)].join("\n");
 }
 
 /**
@@ -82,21 +141,22 @@ function writeDefaultConfig(projectRoot: string, shouldOverwrite: boolean): Init
     return { path: existingConfigPath, status: "exists" };
   }
   const targetExists = existsSync(targetPath);
-  // Preserve paths.ignore from whichever supported config exists, not just `.gruff-ts.yaml` -
-  // otherwise `init --force` against a project with only `.gruff.yaml`/`.yml`/`.json` would
-  // silently drop user-curated ignore entries when generating the new canonical file.
-  const preservedIgnoredPaths = existingConfigPath !== undefined ? readExistingIgnoredPaths(projectRoot) : [];
-  writeFileSync(targetPath, renderDefaultConfig(preservedIgnoredPaths));
+  // Preserve paths.ignore + minimumSeverity from whichever supported config exists, not just
+  // `.gruff-ts.yaml` - otherwise `init --force` against a project with only
+  // `.gruff.yaml`/`.yml`/`.json` would silently drop user-curated exclusions and command-specific
+  // gating thresholds when generating the new canonical file.
+  const preserved = existingConfigPath !== undefined ? readExistingPreservedConfig(projectRoot) : EMPTY_PRESERVED_CONFIG;
+  writeFileSync(targetPath, renderDefaultConfig(preserved.ignoredPaths, preserved.minimumSeverity));
   return { path: targetPath, status: targetExists ? "overwritten" : "written" };
 }
 
 /*
- * Recover the existing file's `paths.ignore` block before `init --force` overwrites it. The
- * try/catch swallows YAML-parse errors and the fallback returns an empty list so a malformed
- * existing config does not block regeneration - the user is opting into clobbering, but the
- * documented contract is that curated ignore entries survive when readable.
+ * Recover the existing file's `paths.ignore` and `minimumSeverity` blocks before `init --force`
+ * overwrites it. The try/catch swallows YAML-parse errors and the fallback returns empty values
+ * so a malformed existing config does not block regeneration - the user is opting into clobbering,
+ * but the documented contract is that curated entries survive when readable.
  */
-function readExistingIgnoredPaths(projectRoot: string): readonly string[] {
+function readExistingPreservedConfig(projectRoot: string): PreservedInitConfig {
   try {
     const config = loadConfig(projectRoot, {
       paths: [],
@@ -106,9 +166,9 @@ function readExistingIgnoredPaths(projectRoot: string): readonly string[] {
       shouldIncludeIgnored: false,
       shouldSkipBaseline: true,
     });
-    return config.ignoredPaths;
+    return { ignoredPaths: config.ignoredPaths, minimumSeverity: config.minimumSeverity };
   } catch {
-    return [];
+    return EMPTY_PRESERVED_CONFIG;
   }
 }
 
@@ -150,8 +210,8 @@ function renderAllowlistsSection(): string {
     "  # bannedGenericNames: [process, handle, doit, run, execute, manage]",
     "  # Accepted prefixes for boolean identifiers. Names without one of these",
     "  # prefixes trigger naming.boolean-prefix.",
-    "  # Default: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires]",
-    "  # booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires]",
+    "  # Default: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires, allow, check, enable, exclude, include, omit, skip, with, without]",
+    "  # booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires, allow, check, enable, exclude, include, omit, skip, with, without]",
     "  # Hungarian type-style prefixes flagged by naming.hungarian-notation.",
     "  # Default: [str, obj, arr, bool, int, num]",
     "  # hungarianPrefixes: [str, obj, arr, bool, int, num]",

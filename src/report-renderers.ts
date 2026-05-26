@@ -3,9 +3,12 @@
 // `size.file-length` threshold; both files source `buildPillarRows` + `grade` from
 // `pillar-summary.ts` so the cross-format Pillars table stays byte-aligned.
 import type { AnalysisReport, Finding, OutputFormat, Severity } from "./types.ts";
+import { OUTPUT_VOLUME_HINT_THRESHOLD } from "./constants.ts";
+import { countRuleSeverities } from "./findings-helpers.ts";
 import { buildPillarRows, type PillarRow } from "./pillar-summary.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { renderHtml } from "./report-html.ts";
+import { severityGradeBreakdown } from "./scoring.ts";
 
 /*
  * Format dispatcher. `hotspot` is emitted inline (smallest schema) while every other format has a
@@ -179,11 +182,15 @@ function sarifLevel(severity: Severity): "error" | "warning" | "note" {
 function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: string, top = 10): string {
   const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
   const pillarRows = buildPillarRows(report);
+  const breakdown = severityGradeBreakdown(report.findings);
   const lines = [
     `gruff-ts ${report.tool.version} summary`,
     `Path: ${pathLabel ?? report.run.projectRoot}`,
     ...(typeof elapsedMs === "number" ? [`Duration: ${formatSummaryDuration(elapsedMs)}`] : []),
-    `Score: ${report.score.composite.toFixed(1)} (${report.score.grade})`,
+    `Composite: ${report.score.grade} (${report.score.composite.toFixed(1)})`,
+    `  Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
+    `  Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
+    `  Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
     `Findings: ${report.summary.total} total, ${report.summary.error} error, ${report.summary.warning} warning, ${report.summary.advisory} advisory`,
     `Analysed files: ${report.paths.analysedFiles}`,
     ...(report.baseline ? [summaryBaselineLine(report.baseline)] : []),
@@ -193,13 +200,13 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
   }
   lines.push("", ...renderPillarsBlock(pillarRows));
   lines.push("", `Top ${top} rules:`);
-  lines.push(...renderRankedCounts(ruleCounts, "No rule findings.", top));
+  lines.push(...renderRankedRuleRows(report.findings, top));
   lines.push("", `Top ${top} file offenders:`);
   lines.push(
     ...(
       report.score.topOffenders.length === 0
         ? ["- No file offenders."]
-        : report.score.topOffenders.slice(0, top).map((offender) => `- ${offender.filePath}: ${offender.findings} findings, score ${offender.score.toFixed(1)}`)
+        : report.score.topOffenders.slice(0, top).map((offender) => `- ${offender.filePath}: ${offender.findings} findings, quality ${offender.score.toFixed(1)}/100`)
     ),
   );
   return `${lines.join("\n")}\n`;
@@ -315,6 +322,41 @@ function renderPillarsBlock(rows: PillarRow[]): string[] {
   return lines;
 }
 
+/*
+ * Enriched top-N rules renderer. Replaces the plain `- <ruleId>: <count>` form with a per-severity
+ * split plus the rule's one-line description, so an operator triaging 1000+ findings can see
+ * whether the top entry is one error or four hundred advisories at a glance. Description text is
+ * truncated to `DESCRIPTION_BODY_LIMIT` characters with an ellipsis so the row stays legible at 100
+ * columns. Sort order is preserved (count DESC, ruleId ASC) to keep the row-at-position-[0] stable.
+ */
+function renderRankedRuleRows(findings: Finding[], limit?: number): string[] {
+  const severities = countRuleSeverities(findings);
+  if (severities.size === 0) {
+    return ["- No rule findings."];
+  }
+  const descriptions = new Map(ruleDescriptors().map((descriptor) => [descriptor.ruleId, descriptor.description]));
+  const limited = [...severities.entries()]
+    .sort(([leftKey, leftCounts], [rightKey, rightCounts]) => rightCounts.total - leftCounts.total || leftKey.localeCompare(rightKey))
+    .slice(0, limit ?? severities.size);
+  return limited.map(([ruleId, counts]) => {
+    const description = truncateDescription(descriptions.get(ruleId) ?? "");
+    return `- ${ruleId}: ${counts.total} (${counts.error} err / ${counts.warning} warn / ${counts.advisory} adv) - ${description}`;
+  });
+}
+
+/*
+ * 60-char description budget that keeps the rule-row line under ~100 columns even with the longest
+ * ruleId and severity-split. The trailing ellipsis is a single Unicode glyph so terminals that
+ * don't render `...` still see the truncation marker.
+ */
+const DESCRIPTION_BODY_LIMIT = 60;
+
+// Applies the description budget to a single rule's description so each rule row in the summary
+// Top-N block fits on one terminal line. Returns the input unchanged when already short.
+function truncateDescription(text: string): string {
+  return text.length <= DESCRIPTION_BODY_LIMIT ? text : `${text.slice(0, DESCRIPTION_BODY_LIMIT).trimEnd()}…`;
+}
+
 function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText: string, limit?: number): string[] {
   if (counts.size === 0) {
     return [`- ${emptyText}`];
@@ -337,9 +379,13 @@ function renderRankedCountRows<T extends string>(counts: Map<T, number>, limit?:
  * sorted into the stable order, so piping into `grep` produces deterministic results.
  */
 function renderText(report: AnalysisReport): string {
+  const breakdown = severityGradeBreakdown(report.findings);
   const lines = [
     `gruff-ts ${report.tool.version}`,
-    `Score: ${report.score.composite.toFixed(1)} (${report.score.grade}) | Findings: ${report.summary.advisory} advisory, ${report.summary.warning} warning, ${report.summary.error} error`,
+    `Composite: ${report.score.grade} (${report.score.composite.toFixed(1)}) | Findings: ${report.summary.advisory} advisory, ${report.summary.warning} warning, ${report.summary.error} error`,
+    `  Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
+    `  Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
+    `  Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
     `Analysed files: ${report.paths.analysedFiles}`,
   ];
   if (report.diagnostics.length > 0) {
@@ -347,6 +393,9 @@ function renderText(report: AnalysisReport): string {
   }
   if (report.findings.length > 0) {
     lines.push("", "Findings:", ...report.findings.map((finding) => `- [${finding.severity}] ${finding.filePath}:${finding.line ?? 1} ${finding.ruleId} - ${finding.message}`));
+  }
+  if (report.findings.length >= OUTPUT_VOLUME_HINT_THRESHOLD) {
+    lines.push("", `Tip: ${report.findings.length} findings is more than a flat list usefully shows. Try \`gruff-ts summary --top=20\` for a per-rule digest.`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -360,10 +409,14 @@ function renderText(report: AnalysisReport): string {
  * `buildPillarRows` so all four surfaces stay deterministic and byte-aligned across runs.
  */
 function renderMarkdown(report: AnalysisReport): string {
+  const breakdown = severityGradeBreakdown(report.findings);
   return [
     "# gruff-ts report",
     "",
-    `Score: **${report.score.composite.toFixed(1)} (${report.score.grade})**`,
+    `Composite: **${report.score.grade} (${report.score.composite.toFixed(1)})**`,
+    `- Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
+    `- Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
+    `- Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
     "",
     `Findings: ${report.summary.advisory} advisory, ${report.summary.warning} warning, ${report.summary.error} error.`,
     "",

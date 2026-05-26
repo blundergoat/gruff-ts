@@ -132,7 +132,7 @@ function analyseSetupBloat(file: SourceFile, block: FunctionBlock, body: string,
 function analyseTestStructureChecks(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
   const checks: Array<[string, boolean, string]> = [
     ["test-quality.sleep-in-test", /\b(setTimeout|sleep|waitForTimeout)\s*\(/.test(body), "Test sleeps instead of synchronising on behaviour."],
-    ["test-quality.loop-in-test", controlFlowContainsAssertion(body, /\b(?:for|while)\b/g), "Test contains loop logic around assertions."],
+    ["test-quality.loop-in-test", controlFlowContainsNonFixtureLoop(body), "Test contains loop logic around assertions."],
     ["test-quality.conditional-logic", controlFlowContainsAssertion(body, /\b(?:if|switch)\b/g), "Test contains conditional logic around assertions."],
     ["test-quality.only-skip", /\.(only|skip)\s*\(/.test(body), "Focused or skipped test is committed."],
   ];
@@ -141,6 +141,48 @@ function analyseTestStructureChecks(file: SourceFile, block: FunctionBlock, body
       findings.push(blockFinding({ ruleId, message, file, block, severity: "advisory", pillar: "test-quality" }));
     }
   }
+}
+
+// Loop variant of `controlFlowContainsAssertion` that suppresses fixture loops (table-test pattern):
+// loops over a literal array or `Object.entries|keys|values` of a literal where every code path
+// inside the body reaches an assertion. The existing rule fires on ANY loop wrapping an assertion;
+// this widens the precision so parametric coverage doesn't read as control-flow noise.
+function controlFlowContainsNonFixtureLoop(source: string): boolean {
+  for (const match of source.matchAll(/\b(?:for|while)\b/g)) {
+    const start = match.index ?? 0;
+    const segment = controlFlowSegment(source, start);
+    if (!hasAssertion(segment)) {
+      continue;
+    }
+    if (isFixtureLoop(segment)) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+// A "fixture loop" is the table-test pattern: iterable is a literal array OR Object.entries/keys/
+// values of a literal, AND every path through the body terminates in an assertion call. Neither
+// applies to `while` loops or C-style `for (;;)`. Conservative on conditional bodies - the presence
+// of any `if`/`switch`/`case`/`default` inside the body opts out so a branch that doesn't assert
+// is not silently classified as a fixture loop.
+function isFixtureLoop(segment: string): boolean {
+  const braceIndex = segment.indexOf("{");
+  const header = braceIndex === -1 ? segment : segment.slice(0, braceIndex);
+  if (!/\bof\s*\[/.test(header) && !/\bof\s+Object\.(?:entries|keys|values)\s*\(/.test(header)) {
+    return false;
+  }
+  if (braceIndex === -1) {
+    return false;
+  }
+  const body = segment.slice(braceIndex + 1, segment.length - 1);
+  if (/\b(?:if|switch)\s*\(|\bcase\s|\bdefault\s*:/.test(body)) {
+    return false;
+  }
+  const statements = body.split(/[;\n]/).map((statement) => statement.trim()).filter((statement) => statement.length > 0 && statement !== "}" && !/^(?:break|continue)\b/.test(statement));
+  const lastStatement = statements[statements.length - 1] ?? "";
+  return /^(?:assert\.[a-z]+\s*\(|expect\s*\(|[a-z][A-Za-z0-9_]*\.should(?:Be|Equal)?\s*\()/i.test(lastStatement);
 }
 
 // Integration, contract, smoke, and performance tests naturally need more environment setup than

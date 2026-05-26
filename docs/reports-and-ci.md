@@ -125,7 +125,10 @@ gruff-ts report . --format=json --output gruff-report.json
 ```
 
 `report` defaults to `--fail-on none`, making it suitable for local inspection
-and scheduled reporting.
+and scheduled reporting. `analyse` and `summary` default to `--fail-on advisory`
+out of the box; override per-project by setting `minimumSeverity:` in
+`.gruff-ts.yaml`. See `docs/configuration.md` and ADR-004 for the precedence
+chain (CLI flag > config > binary default).
 
 ## Dashboard
 

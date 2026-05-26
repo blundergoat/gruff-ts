@@ -50,9 +50,9 @@ export function exportedDeclarations(source: string, codeSource: string): Export
 }
 
 /*
- * Skips functions and interfaces - those have dedicated rules (`docs.missing-function-doc`,
- * `docs.missing-interface-doc`). Reports the stable `docs.missing-public-doc` finding for
- * classes/types/enums without a leading JSDoc-style block comment.
+ * Skips functions and interfaces - those have dedicated rules (`docs.missing-exported-function-doc`,
+ * `docs.missing-internal-function-doc`, `docs.missing-interface-doc`). Reports the stable
+ * `docs.missing-public-doc` finding for classes/types/enums without a leading JSDoc-style block comment.
  */
 export function pushMissingPublicDocFinding(file: SourceFile, source: string, declaration: ExportedDeclaration, findings: Finding[]): void {
   if (declaration.kind === "function" || declaration.kind === "interface") {
