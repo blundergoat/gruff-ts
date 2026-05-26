@@ -54,6 +54,30 @@ last_reviewed: 2026-05-26
 
 A `git mv` alone is not a move - it's the start of one. The cross-reference sweep is what makes the move correct.
 
+## Lesson: user-facing CLI commands must catch known error classes and print graceful messages
+
+**Created:** 2026-05-27
+
+**What happened:** Shipped the `minimumSeverity` track with new config validators that threw plain `Error` instances when `.gruff-ts.yaml` was malformed. The CLI action handlers had no try/catch, so the exceptions propagated to Commander, then to Node, which printed the raw stack trace. Operator ran `gruff-ts summary .` against a config missing `schemaVersion:` and saw:
+
+```
+/home/devgoat/projects/gruff-workspace/gruff-ts/src/config.ts:99
+    throw new Error('Config must include schemaVersion: "gruff-ts.config.v0.1".');
+          ^
+Error: Config must include schemaVersion: "gruff-ts.config.v0.1".
+    at applySchemaVersionConfig (/home/devgoat/.../src/config.ts:99:11)
+    at applyConfigValues (/home/devgoat/.../src/config.ts:81:3)
+    at loadConfig (/home/devgoat/.../src/config.ts:65:3)
+    ...
+Node.js v22.22.1
+```
+
+That stack-trace dump is hostile to anyone who is not a maintainer of this codebase. The user has no way to know the fix is `gruff-ts init --force` from the message alone; the stack trace adds noise without information; the exit code is whatever Node decides for an uncaught exception, not the documented `2` for config errors.
+
+**Evidence:** Verbatim stack trace pasted by the operator. The error message ("Config must include schemaVersion: ...") was accurate, but everything around it was wrong: no suggested fix, no clean formatting, no controlled exit code, raw file paths from inside the package.
+
+**Prevention:** Apply the named-error-class + action-handler-wrapper pattern documented in `.goat-flow/patterns/error-handling.md`. The triage criterion is "is this caused by user input?" If yes, throw a named class with a `suggestion` field and let a CLI wrapper format it. If no (internal invariant, programmer mistake), throw plain `Error` and let the stack trace surface for debugging. The pattern doc carries the reusable shape (class, validators, wrapper, formatting, tests) plus the "when NOT to use" caveats. Use it for any new user-facing error class added later (baseline-load failures, malformed CLI flag values, missing required path arguments, etc.).
+
 
 
 ## Lesson: review pre-existing `M <file>` diffs before editing the same file
