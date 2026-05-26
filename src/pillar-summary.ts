@@ -63,13 +63,14 @@ function countSeverityByPillar(findings: Finding[]): Map<Pillar, PillarSeverityC
   return severityByPillar;
 }
 
-// Assembles one PillarRow from the optional analyser score entry and optional severity tally.
-// Defaults preserve the clean A/100 row contract when a pillar produced no findings, keeping the
-// `gruff.summary.v2` per-pillar shape deterministic across runs. Invariant: `findings` is derived
-// from the severity tally (not `scoreEntry.findings`) so the row's total and its per-severity
-// columns share a single source and can never disagree - upstream test fixtures sometimes set
-// `scoreEntry.findings` to a value that diverges from the actual Finding list, and the row must
-// reflect the Findings.
+/*
+ * Assembles one PillarRow from the optional analyser score entry and optional severity tally.
+ * Defaults preserve the clean A/100 row contract when a pillar produced no findings, keeping the
+ * `gruff.summary.v2` per-pillar shape deterministic across runs. Invariant: `findings` is derived
+ * from the severity tally (not `scoreEntry.findings`) so the row's total and its per-severity
+ * columns share a single source and can never disagree - the Finding list is the schema's single
+ * source of truth for what was actually reported in this run.
+ */
 function buildPillarRow(pillar: Pillar, scoreEntry: AnalysisReport["score"]["pillars"][number] | undefined, severities: PillarSeverityCounts | undefined): PillarRow {
   const score = scoreEntry?.score ?? 100;
   const counts = severities ?? { advisory: 0, warning: 0, error: 0 };
