@@ -2,7 +2,7 @@
 
 ## [0.1.2] - 2026-05-27
 
-Pillars-table cross-format harmonisation, rule-precision tier, per-command gating threshold, and a CLI default flip. Multi-stage release: started 2026-05-25 with the renderer/schema-v2 work, picked up rule-precision improvements on 2026-05-26, and closed with the config-schema versioning and minimumSeverity block on 2026-05-27. See ADR-004 for the minimumSeverity design and `.goat-flow/tasks/0.1.2/` for the rule-precision milestones (M01-M08; M09 deferred).
+Pillars-table cross-format harmonisation, rule-precision tier, per-command gating threshold, and a CLI default flip. Multi-stage release: started 2026-05-25 with the renderer/schema-v2 work, picked up rule-precision improvements on 2026-05-26, and closed with the config-schema versioning and minimumSeverity block on 2026-05-27. See ADR-004 for the minimumSeverity design and `.goat-flow/tasks/0.1.2/` for the rule-precision milestones (M01-M08 + M10-M12; M09 was deleted as a no-signal milestone).
 
 ### Breaking
 
@@ -43,7 +43,7 @@ Pillars-table cross-format harmonisation, rule-precision tier, per-command gatin
 
 ### Lock-in tests
 
-FP-#12 through FP-#45 added to `src/false-positive-fixes.test.ts`, covering every rule-precision change above plus negative regression guards. M06 / M08 land their tests in `src/rule-catalogue.test.ts` and `src/cli-surfaces.test.ts` respectively. M09 (informational tier) deferred until a real user signal emerges.
+FP-#12 through FP-#45 added to `src/false-positive-fixes.test.ts`, covering every rule-precision change above plus negative regression guards. M06 / M08 land their tests in `src/rule-catalogue.test.ts` and `src/cli-surfaces.test.ts` respectively. M10-M12 (minimumSeverity track) add parser-rejection tests in `src/project-config-rules.test.ts` and an init-preservation regression test in `src/init-config.test.ts`. M09 (informational tier) was deleted as a no-signal milestone.
 
 ### Cross-port status
 

@@ -25,6 +25,35 @@ last_reviewed: 2026-05-26
 
 **Prevention:** Before flipping a milestone file's top-line `Status:` to `complete`, open the file and walk every `- [ ]` line. For each one the implementation actually delivered, flip to `- [x]`. For items deferred during execution, leave unticked and add a deferral note nearby (see `.goat-flow/tasks/0.1.2/M03-test-quality-rule-precision.md` for the existing pattern). Apply the same to ISSUE.md `How` checklists. Top-line status without per-task ticks reads as fraud even when the underlying work landed. Standing rule from the operator: "TICK OFF FUCKING CHECKBOX TASKS AS YOU FUCKING COMPLETE THEM."
 
+## Lesson: moving milestone files across folders requires a cross-reference sweep, not just `git mv`
+
+**Created:** 2026-05-27
+
+**What happened:** Asked to move `.goat-flow/tasks/0.1.3/{ISSUE,M01,M02,M03}.md` into `.goat-flow/tasks/0.1.2/` plus delete `M09-rule-visibility-tier.md`. The moves themselves were trivial (`mv` + `rmdir`), but the files contained internal cross-references (`M01 wired the config-driven defaults`, `M02 owns this`, `M03 is the verification sweep`, `[M01 - ...](M01-...md)` markdown links, `pre-0.1.3 baseline`, `0.1.3 task set`, `Status: shipped as gruff-ts 0.1.4`) and external cross-references (ADR-004's `**Ticket/Context:** .goat-flow/tasks/0.1.3/ISSUE.md`, CHANGELOG bullets mentioning `M09 deferred`, the parent `ISSUE.md`'s release-line allocation table with `→ 0.1.3` annotations on every row). On top of that the files had a `gruff-go's 0.1.2 ISSUE.md, M01 (FailThreshold type), M02 (config schema)` reference that was about a different repo and must NOT be renumbered. Forgetting any one class of these leaves a quietly-broken task folder where milestone files claim to be in 0.1.2 but their prose still says 0.1.3 / M01 / M02.
+
+**Evidence:** After the first `mv` + `rmdir` pass, the moved files still had:
+
+- `M01-config-schema-and-cli-wiring.md` line 1 header: `# M01 -` (should be `# M10`).
+- `M02-init-preservation-and-docs.md` lines 9/24/30/42/76/93/292/300: prose "M01 wired", "as M01 left it", "complete (per M01)", "M03 owns", etc.
+- `M03-verification-and-dogfood.md` ~30 internal cross-refs to M01/M02 of the same track.
+- `ISSUE.md` lines 127-132 with markdown links `[M01 - ...](M01-...md)` to the renamed files.
+- ADR-004 line 6: `**Ticket/Context:** .goat-flow/tasks/0.1.3/ISSUE.md`.
+- Parent `0.1.2/ISSUE.md` had a "Release-line allocation" table claiming everything except M01 was → 0.1.3 or 0.1.4, plus the `Hard constraints` section pointing at `.goat-flow/tasks/0.1.3/`.
+- `CHANGELOG.md` mentioned "M09 deferred" though M09 had just been deleted.
+- The `gruff-go's 0.1.2 ISSUE.md, M01 (FailThreshold type)` reference in `ISSUE-minimumSeverity.md` line 45 looks like an M01 self-reference but is actually about gruff-go's port - touching it would have been wrong.
+
+**Prevention:** When moving milestone files across version folders or renaming them within a folder, run this checklist BEFORE declaring the move done:
+
+1. `grep -rn "<old-path>"` across `CHANGELOG.md`, `docs/`, `README.md`, `.goat-flow/decisions/`, `src/`, and other task folders. Every hit needs updating.
+2. `grep -n "M0[123]\|M0[456]"` (or whatever the renumbered range is) inside each moved file. Update the prose references that name same-track milestones; leave cross-repo references alone (look for paths like `gruff-go/`, `gruff-rs/`, etc.).
+3. `grep -n "old-version\b"` (e.g. `0\.1\.3`) inside the moved files. Replace where it refers to the milestone's own version, leave where it refers to a historical "pre-X" baseline.
+4. Update markdown-link targets (`[M01 - ...](M01-...md)` becomes `[M10 - ...](M10-...md)`).
+5. Update the file header (`# M01 -` -> `# M10 -`).
+6. If a milestone was deleted (not just renumbered), grep for its name in CHANGELOG / docs / parent ISSUE and remove or rephrase those mentions.
+7. After all edits, re-run `grep -rn "<old-path>\|<old-milestone-id>"` to confirm zero stray references.
+
+A `git mv` alone is not a move - it's the start of one. The cross-reference sweep is what makes the move correct.
+
 
 
 ## Lesson: review pre-existing `M <file>` diffs before editing the same file

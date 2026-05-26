@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-05-27
 **Author(s):** Operator, Claude
-**Ticket/Context:** `.goat-flow/tasks/0.1.3/ISSUE.md`, cross-port `gruff-go/.goat-flow/logs/critiques/2026-05-26-config-wording-brainstorm-b5k2x.md`
+**Ticket/Context:** `.goat-flow/tasks/0.1.2/ISSUE-minimumSeverity.md`, cross-port `gruff-go/.goat-flow/logs/critiques/2026-05-26-config-wording-brainstorm-b5k2x.md`
 
 ## Decision
 
