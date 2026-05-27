@@ -1,6 +1,6 @@
 // Analyser pipeline: walks discovered sources, runs every rule pass (complexity, dead-code, design,
 // documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality),
-// aggregates findings into the `gruff.analysis.v1` schema, and exposes `analyse` to the CLI shell.
+// aggregates findings into the `gruff.analysis.v2` schema, and exposes `analyse` to the CLI shell.
 import { existsSync, readFileSync } from "node:fs";
 import { cwd } from "node:process";
 import { basename, join } from "node:path";
@@ -28,7 +28,7 @@ import { maskNonCode, maskTemplateLiteralBodies, parseDiagnostics } from "./sour
 import type { AnalysisOptions, AnalysisReport, Config, Finding, RunDiagnostic } from "./types.ts";
 
 /**
- * Analyse the configured paths and return the stable gruff.analysis.v1 report contract.
+ * Analyse the configured paths and return the stable gruff.analysis.v2 report contract.
  *
  * @param options Normalised analysis options from the CLI or direct callers.
  * @returns Versioned report with fingerprinted findings, diagnostics, paths, and score data.
@@ -64,7 +64,7 @@ function buildAnalysisReport(
 ): AnalysisReport {
   const findings = baselineResult.findings;
   return {
-    schemaVersion: "gruff.analysis.v1",
+    schemaVersion: "gruff.analysis.v2",
     tool: { name: "gruff-ts", version: VERSION },
     run: {
       projectRoot,
@@ -102,7 +102,7 @@ interface SourceScanResult {
 
 /*
  * Result of applying a baseline (suppression) or generating a new one. The optional `baseline`
- * matches the `gruff.analysis.v1` schema's baseline metadata - present only when a baseline file
+ * matches the `gruff.analysis.v2` schema's baseline metadata - present only when a baseline file
  * was actually used or generated, so the report stays stable across baseline-disabled runs.
  */
 interface BaselineApplication {

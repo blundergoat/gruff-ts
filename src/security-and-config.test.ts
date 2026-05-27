@@ -56,7 +56,7 @@ test("extended reliability rubric finds unsafe async patterns without false posi
   try {
     await sendEmailAsync("primary");
   } catch (error) {
-    // ignored
+    // FIXME
   }
   throw ${JSON.stringify("failed")};
 }
@@ -127,7 +127,7 @@ function bareSwallow(): void {
   try {
     probe();
   } catch {
-    // ignored
+    // FIXME
   }
 }
 `);

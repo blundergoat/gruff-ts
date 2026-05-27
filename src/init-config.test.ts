@@ -53,7 +53,7 @@ test("gruff-ts init writes the default config, refuses to overwrite, and respect
   try {
     const firstRun = execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "init"], { cwd: projectRoot, encoding: "utf8" });
     const configPath = join(projectRoot, DEFAULT_CONFIG_FILE_NAME);
-    assert.match(firstRun, new RegExp(`^Wrote .*${DEFAULT_CONFIG_FILE_NAME}\\n\\nNext: generate an adoption baseline with:\\n  gruff-ts analyse \\. --generate-baseline gruff-baseline\\.json --fail-on=none\\nThen gate new findings with:\\n  gruff-ts analyse \\. --baseline gruff-baseline\\.json --fail-on=warning\\n$`));
+    assert.match(firstRun, new RegExp(`^Wrote .*${DEFAULT_CONFIG_FILE_NAME}\\n\\nNext: generate an adoption baseline with:\\n  gruff-ts analyse \\. --generate-baseline gruff-baseline\\.json --fail-on=none\\nThen gate new findings with:\\n  gruff-ts analyse \\. --baseline gruff-baseline\\.json --fail-on=advisory\\n$`));
     const firstContent = readFileSync(configPath, "utf8");
     assert.equal(firstContent, renderDefaultConfig());
     assert.match(firstContent, /# Recursive scans already respect \.gitignore/);
@@ -93,7 +93,7 @@ test("gruff-ts init refuses to write .gruff-ts.yaml when a non-canonical support
 
 test("renderDefaultConfig preserves passed paths.ignore entries as a block sequence", () => {
   const yaml = renderDefaultConfig([".agents/**", ".claude/**", "fixtures/**"]);
-  assert.match(yaml, /^paths:\n(?:  #.*\n)+  ignore:\n    - "\.agents\/\*\*"\n    - "\.claude\/\*\*"\n    - "fixtures\/\*\*"\n/);
+  assert.match(yaml, /paths:\n(?:  #.*\n)+  ignore:\n    - "\.agents\/\*\*"\n    - "\.claude\/\*\*"\n    - "fixtures\/\*\*"\n/);
 });
 
 test("gruff-ts init --force preserves the existing paths.ignore entries", () => {
@@ -108,6 +108,26 @@ test("gruff-ts init --force preserves the existing paths.ignore entries", () => 
     const newContent = readFileSync(configPath, "utf8");
     assert.equal(newContent, renderDefaultConfig([".agents/**", ".goat-flow/**", "fixtures/**"]));
     assert.match(newContent, /  ignore:\n    - "\.agents\/\*\*"\n    - "\.goat-flow\/\*\*"\n    - "fixtures\/\*\*"/);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("gruff-ts init --force preserves paths.ignore from a pre-schemaVersion config", () => {
+  // Regression: 0.2.0 introduced a required `schemaVersion:` field. Routing the preservation
+  // read through the strict loader meant any older `.gruff-ts.yaml` (no schemaVersion) threw
+  // ConfigLoadError, silently dropping the user's curated `paths.ignore` on init --force.
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-init-preserve-legacy-"));
+  try {
+    const configPath = join(projectRoot, DEFAULT_CONFIG_FILE_NAME);
+    writeFileSync(configPath, "paths:\n  ignore:\n    - \"legacy/**\"\n    - \"vendored/**\"\n");
+
+    const overwritten = execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "init", "--force"], { cwd: projectRoot, encoding: "utf8" });
+    assert.match(overwritten, /^Overwrote /);
+
+    const newContent = readFileSync(configPath, "utf8");
+    assert.match(newContent, /schemaVersion: gruff-ts\.config\.v0\.1/);
+    assert.match(newContent, /  ignore:\n    - "legacy\/\*\*"\n    - "vendored\/\*\*"/);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
   }

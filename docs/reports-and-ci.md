@@ -45,7 +45,7 @@ per-pillar counts, top rules, and top file offenders.
 
 Schema strings:
 
-- `gruff.analysis.v1` for full analysis reports.
+- `gruff.analysis.v2` for full analysis reports.
 - `gruff.baseline.v1` for baselines.
 - `gruff.hotspot.v1` for hotspot output.
 
@@ -125,7 +125,10 @@ gruff-ts report . --format=json --output gruff-report.json
 ```
 
 `report` defaults to `--fail-on none`, making it suitable for local inspection
-and scheduled reporting.
+and scheduled reporting. `analyse` and `summary` default to `--fail-on advisory`
+out of the box; override per-project by setting `minimumSeverity:` in
+`.gruff-ts.yaml`. See `docs/configuration.md` and ADR-004 for the precedence
+chain (CLI flag > config > binary default).
 
 ## Dashboard
 

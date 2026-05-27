@@ -1,11 +1,11 @@
 // Score, grade, and fail-on helpers derived from finding severities for reports and CLI exits.
-import { grade } from "./report-renderers.ts";
+import { grade } from "./pillar-summary.ts";
 import type { AnalysisReport, FailThreshold, Finding, Pillar, Severity } from "./types.ts";
 
-// Builds the per-pillar and per-file score breakdown that ships in `gruff.analysis.v1`. The composite
+// Builds the per-pillar and per-file score breakdown that ships in `gruff.analysis.v2`. The composite
 // score is the mean of pillar scores so adding a pillar shifts the headline number. `topOffenders` is
 // the full file list sorted worst-first; renderers cap it themselves (HTML/hotspot keep their 10-row
-// UX, summary honours `--top`). The field shape is part of the `gruff.analysis.v1` schema contract.
+// UX, summary honours `--top`). The field shape is part of the `gruff.analysis.v2` schema contract.
 function scoreReport(findings: Finding[]): AnalysisReport["score"] {
   const byPillar = new Map<Pillar, Finding[]>();
   const byFile = new Map<string, Finding[]>();
@@ -15,7 +15,7 @@ function scoreReport(findings: Finding[]): AnalysisReport["score"] {
   }
   const pillars = [...byPillar.entries()].map(([pillar, pillarFindings]) => {
     const penalty = pillarFindings.reduce((sum, finding) => sum + severityPenalty(finding.severity), 0);
-    return { pillar, score: Math.max(0, 100 - penalty), findings: pillarFindings.length };
+    return { pillar, score: Math.max(0, 100 - penalty), penalty, findings: pillarFindings.length };
   });
   const composite = pillars.length === 0 ? 100 : pillars.reduce((sum, pillar) => sum + pillar.score, 0) / pillars.length;
   const topOffenders = [...byFile.entries()]
@@ -29,7 +29,7 @@ function scoreReport(findings: Finding[]): AnalysisReport["score"] {
 }
 
 // Severity tallies emitted in the report summary. The four-key shape (advisory/warning/error/total)
-// is part of the `gruff.analysis.v1` schema and consumers rely on `total` matching the array length.
+// is part of the `gruff.analysis.v2` schema and consumers rely on `total` matching the array length.
 function summarize(findings: Finding[]) {
   return {
     advisory: findings.filter((finding) => finding.severity === "advisory").length,
@@ -71,4 +71,36 @@ function severityPenalty(severity: Severity): number {
   return severity === "error" ? 8 : severity === "warning" ? 4 : 1.5;
 }
 
-export { scoreReport, summarize, exitFor };
+/*
+ * Per-severity grade breakdown for the human summary block. The composite headline alone hides the
+ * fact that an F can be driven entirely by advisories (goat-flow scan: F at 12.9 with 0 errors / 276
+ * warnings / 1367 advisories). Mirrors the existing pillar formula `100 - count * severityPenalty`
+ * so the math stays consistent with how a single-rule pillar would score. The schema invariant
+ * matters: the composite score and `gruff.analysis.v2` JSON shape stay byte-stable - only the
+ * human renderers surface this breakdown.
+ */
+function severityGradeBreakdown(findings: Finding[]): {
+  error: { grade: string; score: number; count: number };
+  warning: { grade: string; score: number; count: number };
+  advisory: { grade: string; score: number; count: number };
+} {
+  const counts = { error: 0, warning: 0, advisory: 0 };
+  for (const finding of findings) {
+    counts[finding.severity] += 1;
+  }
+  return {
+    error: severityBucket("error", counts.error),
+    warning: severityBucket("warning", counts.warning),
+    advisory: severityBucket("advisory", counts.advisory),
+  };
+}
+
+// Single severity bucket using the same `score = max(0, 100 - count * penalty)` formula as the
+// pillar reduce in `scoreReport`. Returns the bucket plus its grade letter so renderers don't have
+// to import `grade` separately.
+function severityBucket(severity: Severity, count: number): { grade: string; score: number; count: number } {
+  const score = Math.max(0, 100 - count * severityPenalty(severity));
+  return { grade: grade(score), score, count };
+}
+
+export { scoreReport, summarize, exitFor, severityGradeBreakdown };

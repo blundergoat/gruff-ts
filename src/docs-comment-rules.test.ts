@@ -14,7 +14,7 @@ function parseDiagnostics(file: DiagnosticSourceFile, source: string): string {
 `);
   assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-file-overview"), true);
   assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-interface-doc" && finding.symbol === "DiagnosticSourceFile"), true);
-  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-function-doc" && finding.symbol === "parseDiagnostics"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-internal-function-doc" && finding.symbol === "parseDiagnostics"), true);
 
   // Fixture covers documented code that should clear file, interface, and function doc findings.
   const documentedReport = analyseFixture(`/**
@@ -36,7 +36,7 @@ function parseDiagnostics(file: DiagnosticSourceFile, source: string): string {
   return source + file.displayPath;
 }
 `);
-  ["docs.missing-file-overview", "docs.missing-interface-doc", "docs.missing-function-doc"].forEach((ruleId) => {
+  ["docs.missing-file-overview", "docs.missing-interface-doc", "docs.missing-exported-function-doc", "docs.missing-internal-function-doc"].forEach((ruleId) => {
     assert.equal(documentedReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
   });
 });
@@ -289,7 +289,7 @@ function documentationContextExpectations(): Array<[string, string, boolean]> {
     ["docs.magic-threshold-without-rationale", "maxRetryLimit", true],
     ["docs.magic-threshold-without-rationale", "explainedRetryLimit", false],
     ["docs.missing-side-effect-doc", "undocumentedSideEffect", false],
-    ["docs.missing-function-doc", "undocumentedSideEffect", true],
+    ["docs.missing-internal-function-doc", "undocumentedSideEffect", true],
     ["docs.useless-docblock", "restatingComplexFlow", true],
     ["docs.missing-why-for-complex-code", "restatingComplexFlow", false],
   ];
@@ -383,14 +383,14 @@ test("comment rules config disable keeps fixture purpose independent", () => {
   ].join("\n");
   const defaultReport = analyseFixture(source, { fileName: "fixture-purpose.test.ts" });
   assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "docs.fixture-purpose-missing"), true);
-  assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "docs.missing-function-doc" && finding.symbol === "undocumentedHelper"), true);
+  assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "docs.missing-internal-function-doc" && finding.symbol === "undocumentedHelper"), true);
 
   const disabledReport = analyseFixture(source, {
     fileName: "fixture-purpose.test.ts",
     config: { rules: { "docs.fixture-purpose-missing": { enabled: false } } },
   });
   assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "docs.fixture-purpose-missing"), false);
-  assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "docs.missing-function-doc" && finding.symbol === "undocumentedHelper"), true);
+  assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "docs.missing-internal-function-doc" && finding.symbol === "undocumentedHelper"), true);
 });
 
 test("missing public docs are reported once per exported class type or enum", () => {
@@ -415,7 +415,7 @@ export function loadValue(): string {
   assert.equal(report.findings.filter((finding) => finding.ruleId === "docs.missing-public-doc" && finding.symbol === "PublicValue").length, 1);
   assert.equal(report.findings.filter((finding) => finding.ruleId === "docs.missing-public-doc" && finding.symbol === "PublicMode").length, 1);
   assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-public-doc" && finding.symbol === "loadValue"), false);
-  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-function-doc" && finding.symbol === "loadValue"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-exported-function-doc" && finding.symbol === "loadValue"), true);
 });
 
 test("size file-length skips generated lockfiles", () => {

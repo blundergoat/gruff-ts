@@ -150,6 +150,7 @@ function testBlockFixture(callbackBody: string): FunctionBlock {
     body,
     codeBody: body,
     isPublic: false,
+    isExported: false,
     isTest: true,
     hasLeadingComment: true,
     declarationLine: TEST_START_LINE,

@@ -137,7 +137,7 @@ async function unsafe(userInput: string, userIds: string[]): Promise<void> {
   try {
     await sendEmailAsync("primary");
   } catch (error) {
-    // ignored
+    // FIXME
   }
   throw "dynamic failure";
 }

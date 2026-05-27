@@ -77,8 +77,14 @@ function isAcceptedBooleanStateName(name: string): boolean {
 /*
  * Allows the standard `i`, `j`, `k` loop counters and anything on `acceptedAbbreviations`. Reports
  * `naming.short-variable` for any other one or two character name as a stable advisory finding.
+ * `loopBodyLineCount` is the for-of caller's signal: when the binding came from a `for (const X of
+ * Y) { … }` head and the body spans ≤ 10 lines, the rule suppresses the finding because the name's
+ * lifetime is locally obvious. Other call sites (declaration, parameter, destructure) pass undefined.
  */
-export function pushShortVariableAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
+export function pushShortVariableAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface, loopBodyLineCount?: number): void {
+  if (loopBodyLineCount !== undefined && loopBodyLineCount <= 10) {
+    return;
+  }
   if (name.length > 2 || ["i", "j", "k"].includes(name) || config.acceptedAbbreviations.has(name.toLowerCase())) {
     return;
   }

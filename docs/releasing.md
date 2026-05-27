@@ -1,19 +1,20 @@
 # Releasing
 
-This checklist prepares the public `@blundergoat/gruff-ts@0.1.0` release and
-subsequent `0.1.x` patch releases.
+This checklist prepares public `@blundergoat/gruff-ts@0.1.x` patch releases.
+Current release line: `0.2.0`.
 
 ## Bump The Version
 
 `scripts/bump-version.sh <semver>` updates `package.json`,
 `package-lock.json`, and `src/constants.ts` together so the CLI `--version`
 output and the published `@blundergoat/gruff-ts` package version cannot drift
-apart. For the initial `0.1.0` release, the version should already be `0.1.0`;
-use `--check` instead of bumping unless the release version changes.
+apart. For a no-op release (e.g. fixes folded into the current dated version),
+the version should already match; use `--check` instead of bumping unless the
+release version changes.
 
 ```bash
 scripts/bump-version.sh --check
-scripts/bump-version.sh 0.1.1
+scripts/bump-version.sh 0.1.3
 scripts/bump-version.sh --check
 ```
 
@@ -30,10 +31,10 @@ update `CHANGELOG.md` and run `npm run check`.
       explicitly accepted `human-verification-pending` milestones.
 - [ ] `LICENSE` is present and `package.json` `license` field matches.
 - [ ] `npm run check` passes.
-- [ ] `scripts/preflight-checks.sh` passes (checks version lockstep and npm
-      publication status, runs `npm audit --audit-level=moderate`,
-      `npm run check`, a full `gruff-ts` self-scan, and `shellcheck` on
-      `scripts/*.sh` when `shellcheck` is installed).
+- [ ] `scripts/preflight-checks.sh` passes (checks version lockstep, runs
+      `npm audit --audit-level=moderate`, `npm run check`, a full `gruff-ts`
+      self-scan, and `shellcheck` on `scripts/*.sh` when `shellcheck` is
+      installed).
 - [ ] `npm pack --dry-run` shows only publishable runtime, docs, scripts, and
       metadata files.
 - [ ] Local smoke scan succeeds:
@@ -101,5 +102,5 @@ prompts before publishing.
 - [ ] Run `gruff-ts summary . --fail-on=none`.
 - [ ] Run `gruff-ts list-rules`.
 - [ ] Verify `README.md` install instructions from a clean checkout.
-- [ ] Tag the release in git (`git tag v0.1.0 && git push --tags`) and create
+- [ ] Tag the release in git (`git tag v0.2.0 && git push --tags`) and create
       or update public release notes from `CHANGELOG.md`.

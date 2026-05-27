@@ -22,17 +22,27 @@ export interface FunctionBlock {
   body: string;
   codeBody: string;
   isPublic: boolean;
+  // True when the function declaration line itself starts with `export`. Distinct from `isPublic`,
+  // which also matches class `public` modifiers - exports are the top-level API surface, while a
+  // public class method is internal to an exported (or unexported) class. The doc rule splits
+  // severity on this distinction: exported functions warrant warning-tier doc requirements,
+  // internal helpers stay advisory.
+  isExported: boolean;
   isTest: boolean;
   hasLeadingComment: boolean;
   declarationLine: number;
 }
 
 // Working state for the function-block parser. Patterns are precompiled once per file so each
-// callable detection doesn't re-instantiate the same RegExp objects.
+// callable detection doesn't re-instantiate the same RegExp objects. `reExportedNames` carries
+// the file-level scan of `export { foo }` / `export default foo` so a declaration like
+// `function foo() {}` later re-exported via `export { foo }` is still classified as exported
+// (the line-local `^export` check alone would miss this common pattern).
 interface FunctionBlockScan {
   lines: string[];
   codeLines: string[];
   patterns: RegExp[];
+  reExportedNames: ReadonlySet<string>;
 }
 
 const FUNCTION_BLOCK_PATTERNS = functionBlockPatterns();
@@ -208,12 +218,20 @@ function pushGenericFunctionFinding(context: BlockRuleContext): void {
   }
 }
 
-// Every non-test function must carry a leading comment. Test blocks are exempted because their
-// `test("name", …)` description already documents intent. Reports `docs.missing-function-doc`.
+/*
+ * Every non-test function must carry a leading comment. Test blocks are exempted because their
+ * `test("name", …)` description already documents intent. Reports
+ * `docs.missing-exported-function-doc` (warning, higher cost of omission on the public API
+ * surface) when `isExported` is true, `docs.missing-internal-function-doc` (advisory) otherwise.
+ */
 function pushMissingFunctionDocFinding(context: BlockRuleContext): void {
-  if (!context.block.isTest && !context.block.hasLeadingComment) {
-    context.findings.push(blockFinding({ ruleId: "docs.missing-function-doc", message: `Function \`${context.block.name}\` is missing a leading maintainer comment.`, file: context.file, block: context.block, severity: "advisory", pillar: "documentation" }));
+  if (context.block.isTest || context.block.hasLeadingComment) {
+    return;
   }
+  const ruleId = context.block.isExported ? "docs.missing-exported-function-doc" : "docs.missing-internal-function-doc";
+  const severity = context.block.isExported ? "warning" : "advisory";
+  const audience = context.block.isExported ? "exported" : "internal";
+  context.findings.push(blockFinding({ ruleId, message: `${audience === "exported" ? "Exported" : "Internal"} function \`${context.block.name}\` is missing a leading maintainer comment.`, file: context.file, block: context.block, severity, pillar: "documentation" }));
 }
 
 // Empty bodies are sometimes intentional placeholders, hence the advisory severity rather than
@@ -453,6 +471,7 @@ export function functionBlocks(source: string, codeSource = source): FunctionBlo
     lines: source.split(/\r?\n/),
     codeLines: codeSource.split(/\r?\n/),
     patterns: FUNCTION_BLOCK_PATTERNS,
+    reExportedNames: collectReExportedNames(codeSource),
   };
   const blocks: FunctionBlock[] = [];
   scan.codeLines.forEach((line, index) => {
@@ -465,15 +484,49 @@ export function functionBlocks(source: string, codeSource = source): FunctionBlo
   return blocks;
 }
 
+/*
+ * File-level scan for re-exported local declarations. Matches `export { foo }`, `export { foo as
+ * bar }` (the local name `foo` is recorded, not the renamed `bar`), and `export default foo`
+ * (bare-identifier form - `export default function ...` is matched via pattern 2 in
+ * functionBlockPatterns instead, then classified exported because the line itself starts with
+ * `export`). Re-export-from clauses (`export { foo } from "./other"`) are intentionally skipped
+ * via the negative lookahead: those names are not local declarations of this file, so promoting
+ * a same-named local to "exported" would emit a false missing-public-doc finding.
+ *
+ * Operates on the masked codeSource so `export { foo }` inside a string literal or comment is
+ * skipped. Multi-line export blocks work because `[^}]+` spans newlines, and the lookahead
+ * spans whitespace and blanked-comment runs that the masker collapses to spaces.
+ */
+function collectReExportedNames(codeSource: string): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const match of codeSource.matchAll(/export\s*\{([^}]+)\}(?!\s*from\b)/g)) {
+    for (const entry of (match[1] ?? "").split(",")) {
+      const local = entry.trim().split(/\s+as\s+/)[0]?.trim();
+      if (local && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(local)) {
+        names.add(local);
+      }
+    }
+  }
+  for (const match of codeSource.matchAll(/^\s*export\s+default\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$/gm)) {
+    if (match[1]) {
+      names.add(match[1]);
+    }
+  }
+  return names;
+}
+
 // Four callable shapes in the order `functionBlockMatch` tries them: `test()` / `it()` bodies,
 // `function` declarations, class methods, and arrow assignments. Pattern[0] is intentionally
-// first because test bodies must match before the generic arrow pattern claims them.
+// first because test bodies must match before the generic arrow pattern claims them. Pattern[1]
+// accepts an optional `default` after `export` so `export default function foo() {}` parses into
+// a FunctionBlock - the CHANGELOG's exported-doc-rule contract advertises that shape and the
+// missing `default` token previously made those declarations invisible to every block-level rule.
 function functionBlockPatterns(): RegExp[] {
   return [
     /^\s*(?:test|it)\s*\(\s*["'`]([^"'`]+)["'`]\s*,\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
-    /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)/,
+    /^\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)/,
     /^\s*(?:public|private|protected)?\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*[:{]/,
-    /^\s*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
+    /^\s*(?:export\s+)?(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
   ];
 }
 
@@ -523,6 +576,7 @@ function functionBlockFromMatch(scan: FunctionBlockScan, match: RegExpMatchArray
     body,
     codeBody,
     isPublic: /\bexport\b|\bpublic\b/.test(scan.codeLines.slice(start, index + 1).join("\n")),
+    isExported: /^\s*export\b/.test(scan.codeLines[index] ?? "") || scan.reExportedNames.has(match[1] ?? ""),
     isTest: isTestInvocationLine(scan.codeLines[index] ?? ""),
     hasLeadingComment: hasLeadingCommentBeforeLines(scan.lines, index + 1),
     declarationLine: index + 1,

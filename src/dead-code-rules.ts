@@ -31,27 +31,73 @@ export function analyseDeadCode(file: SourceFile, source: string, findings: Find
   }
 }
 
-// Line-by-line walker that resets the terminator flag at every `case:` / `default:` so dead-code
-// detection respects control-flow boundaries. Each line is walked once in source order, then
-// reports `waste.unreachable-code` with stable, deterministic fingerprint anchors.
+/*
+ * Line-by-line walker that resets the terminator flag at every `case:` / `default:` because
+ * dead-code detection must respect control-flow boundaries. Each line is walked once in source
+ * order; the per-line state-machine update is extracted into `advanceUnreachableState` to keep
+ * this loop's branching low. Reports `waste.unreachable-code` with stable, deterministic
+ * fingerprint anchors so baselines and report snapshots round-trip without churn.
+ */
 export function analyseUnreachable(file: SourceFile, source: string, findings: Finding[]): void {
-  let didPreviousTerminate = false;
-  let isInConditionalBranch = false;
+  let state: UnreachableScanState = { didPreviousTerminate: false, conditionalParenDepth: 0, isConsequentPending: false };
   source.split(/\r?\n/).forEach((line, index) => {
     const trimmed = line.trim();
     const branchLabel = isBranchLabel(trimmed);
-    if (branchLabel) {
-      didPreviousTerminate = false;
-    }
-    if (isUnreachableStatement(trimmed, didPreviousTerminate, branchLabel)) {
+    const didPriorTerminate = branchLabel ? false : state.didPreviousTerminate;
+    if (isUnreachableStatement(trimmed, didPriorTerminate, branchLabel)) {
       findings.push(finding({ ruleId: "waste.unreachable-code", message: "Statement appears after a terminating statement.", file, line: index + 1, severity: "warning", pillar: "maintainability" }));
     }
-    // A terminating statement inside a braceless conditional body does not unconditionally exit:
-    // `if (x)\n  return y;\nnextLine` - `nextLine` runs when `x` is falsy. Tracking the prior line's
-    // conditional-opener shape suppresses the false positive on compact guard clauses.
-    didPreviousTerminate = isTerminatingStatement(trimmed) && !isInConditionalBranch;
-    isInConditionalBranch = isBracelessConditionalOpener(trimmed);
+    state = advanceUnreachableState(trimmed, { ...state, didPreviousTerminate: didPriorTerminate });
   });
+}
+
+// Working state for the unreachable walker. Tracking these three fields together keeps the
+// state-machine transitions explicit and lets the per-line update return a fresh value rather
+// than mutating shared scope.
+interface UnreachableScanState {
+  didPreviousTerminate: boolean;
+  conditionalParenDepth: number;
+  isConsequentPending: boolean;
+}
+
+/*
+ * Computes the next walker state from the current line. The conditional-context check (inside the
+ * predicate parens, or on the consequent line) drives whether a terminator on this line counts as
+ * unconditional. Branching is intentional here because the multi-line predicate has three discrete
+ * cases: opener line, inside-predicate continuation, and "no longer in a predicate." Splitting
+ * them inline would invariably reintroduce the npath the wrapper was trying to avoid.
+ */
+function advanceUnreachableState(trimmed: string, state: UnreachableScanState): UnreachableScanState {
+  const isInConditionalBranch = state.conditionalParenDepth > 0 || state.isConsequentPending;
+  const didPreviousTerminate = isTerminatingStatement(trimmed) && !isInConditionalBranch;
+  if (isBracelessConditionalOpener(trimmed)) {
+    const balance = parenBalance(trimmed);
+    const conditionalParenDepth = balance > 0 ? balance : 0;
+    return { didPreviousTerminate, conditionalParenDepth, isConsequentPending: conditionalParenDepth === 0 };
+  }
+  if (state.conditionalParenDepth > 0) {
+    const conditionalParenDepth = Math.max(0, state.conditionalParenDepth + parenBalance(trimmed));
+    return { didPreviousTerminate, conditionalParenDepth, isConsequentPending: conditionalParenDepth === 0 };
+  }
+  return { didPreviousTerminate, conditionalParenDepth: 0, isConsequentPending: false };
+}
+
+// Net paren balance for one line of masked code (opens minus closes). String-literal parens are
+// already blanked upstream by the masker, so the count is reliable for predicate-depth tracking.
+function parenBalance(text: string): number {
+  return countChar(text, "(") - countChar(text, ")");
+}
+
+// Counts a single character's occurrences without allocating a match array. Used to balance parens
+// across the lines of a multi-line conditional predicate in `analyseUnreachable`.
+function countChar(text: string, character: string): number {
+  let count = 0;
+  for (const char of text) {
+    if (char === character) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 // Detects single-line conditional/loop openers that begin a one-statement body (no `{`). The next

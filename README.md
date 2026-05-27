@@ -1,18 +1,18 @@
 # gruff-ts
 
-`gruff-ts` is an opinionated static analyzer for TypeScript and JavaScript projects. The dependency-light Node.js CLI scans source, tests, package metadata, and common config files, then emits reports for terminals, CI annotations, SARIF consumers, static HTML, and a local dashboard. It is heuristic static analysis; run it beside `tsc`, ESLint, tests, dependency scanners, and code review, not instead of them.
+`gruff-ts` is an opinionated static analyser for TypeScript and JavaScript projects. The dependency-light Node.js CLI scans source, tests, package metadata, and common config files, then emits reports for terminals, CI annotations, SARIF consumers, static HTML, and a local dashboard. It is heuristic static analysis; run it beside `tsc`, ESLint, tests, dependency scanners, and code review, not instead of them.
 
 ## Status At A Glance
 
 | Field | Value |
 | --- | --- |
-| Release line | Published `0.1.0` package line |
+| Release line | Published `0.2.0` package line |
 | Runtime | Node.js `22+` |
 | Package | `@blundergoat/gruff-ts` |
 | Binary | `gruff-ts` |
 | Rule catalogue | 119 rules across 11 pillars |
 | Primary config | `.gruff-ts.yaml`; `.gruff.json`, `.gruff.yaml`, and `.gruff.yml` are fallback files |
-| Analysis schema | `gruff.analysis.v1` |
+| Analysis schema | `gruff.analysis.v2` |
 | Baseline schema | `gruff.baseline.v1` |
 | Severity gate | `--fail-on` with `none`, `advisory`, `warning`, `error` |
 | Dashboard | `127.0.0.1:8767` by default |
@@ -31,8 +31,8 @@ Install as a project dev dependency:
 
 ```bash
 npm install --save-dev @blundergoat/gruff-ts
-./node_modules/.bin/gruff-ts init
-./node_modules/.bin/gruff-ts summary
+npx gruff-ts init
+npx gruff-ts summary
 ```
 
 From this checkout:
@@ -46,25 +46,25 @@ npm install
 
 ```bash
 # Create the project config.
-./node_modules/.bin/gruff-ts init
+npx gruff-ts init
 
 # Review the current finding mix.
-./node_modules/.bin/gruff-ts summary
+npx gruff-ts summary
 
 # Explore without failing because of findings.
-./node_modules/.bin/gruff-ts analyse . --fail-on=none
+npx gruff-ts analyse . --fail-on=none
 
 # Gate on warning and error findings.
-./node_modules/.bin/gruff-ts analyse . --fail-on=warning
+npx gruff-ts analyse . --fail-on=warning
 
 # Emit SARIF for code scanning.
-./node_modules/.bin/gruff-ts analyse . --format=sarif --fail-on=none > gruff-ts.sarif
+npx gruff-ts analyse . --format=sarif --fail-on=none > gruff-ts.sarif
 
 # Generate a fresh-start baseline.
-./node_modules/.bin/gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none
+npx gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none
 
 # Start the local dashboard.
-./node_modules/.bin/gruff-ts dashboard
+npx gruff-ts dashboard
 ```
 
 Open `http://127.0.0.1:8767/` for the dashboard.
@@ -73,7 +73,7 @@ Open `http://127.0.0.1:8767/` for the dashboard.
 
 | Command | Purpose |
 | --- | --- |
-| `analyse [paths...]` | Run the analyzer and print findings. |
+| `analyse [paths...]` | Run the analyser and print findings. |
 | `summary [paths...]` | Print compact score, pillar, rule, and file summaries. |
 | `report [paths...]` | Render an HTML or JSON report to stdout or `--output`. |
 | `init` | Write the default `.gruff-ts.yaml` to the current directory (`--force` to overwrite). |
@@ -91,7 +91,7 @@ Global console options match the broader gruff CLI surface: `--silent`, `--quiet
 | Format | Use it for |
 | --- | --- |
 | `text` | Human terminal output. |
-| `json` | Full `gruff.analysis.v1` report. |
+| `json` | Full `gruff.analysis.v2` report. |
 | `html` | Self-contained inspection report. |
 | `markdown` | Pull-request or issue comment summary. |
 | `github` | GitHub Actions workflow annotations. |
@@ -108,26 +108,26 @@ Global console options match the broader gruff CLI surface: `--silent`, `--quiet
 | `1` | At least one finding met `--fail-on`. |
 | `2` | Fatal diagnostic such as missing input, parse error, config error, diff failure, baseline failure, or invalid input. |
 
-`analyse` defaults to `--fail-on error`.
+`analyse` and `summary` default to `--fail-on advisory`; `report` defaults to `--fail-on none`. The defaults can be overridden per-project by a `minimumSeverity:` block in `.gruff-ts.yaml`. CLI flag wins over config; config wins over the binary default. See ADR-004 and the Configuration section.
 
 ## CI Usage
 
 Generic CI command:
 
 ```bash
-./node_modules/.bin/gruff-ts analyse . --format=github --fail-on=warning
+npx gruff-ts analyse . --format=github --fail-on=warning
 ```
 
 SARIF jobs can write an artifact for code scanning:
 
 ```bash
-./node_modules/.bin/gruff-ts analyse . --format=sarif --fail-on=none > gruff-ts.sarif
+npx gruff-ts analyse . --format=sarif --fail-on=none > gruff-ts.sarif
 ```
 
 Security-focused gates can bypass adoption baselines:
 
 ```bash
-./node_modules/.bin/gruff-ts analyse . --no-baseline --fail-on=error
+npx gruff-ts analyse . --no-baseline --fail-on=error
 ```
 
 ## Configuration
@@ -181,23 +181,23 @@ The v0.1 catalogue contains 119 rules:
 | `size` | 4 |
 | `test-quality` | 15 |
 
-Use `./node_modules/.bin/gruff-ts list-rules --format=json` for exact rule IDs, severities, confidence levels, remediation text, thresholds, and options.
+Use `npx gruff-ts list-rules --format=json` for exact rule IDs, severities, confidence levels, remediation text, thresholds, and options.
 
 ## Baselines And Changed-Code Scans
 
 Baselines suppress reviewed findings by stable fingerprint:
 
 ```bash
-./node_modules/.bin/gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none
-./node_modules/.bin/gruff-ts analyse . --baseline gruff-baseline.json --fail-on=warning
-./node_modules/.bin/gruff-ts analyse . --no-baseline --fail-on=none
+npx gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none
+npx gruff-ts analyse . --baseline gruff-baseline.json --fail-on=warning
+npx gruff-ts analyse . --no-baseline --fail-on=none
 ```
 
 Changed-file scans use Git only when requested:
 
 ```bash
-./node_modules/.bin/gruff-ts analyse . --diff=working-tree --format=github --fail-on=warning
-./node_modules/.bin/gruff-ts analyse . --diff=staged --format=json --fail-on=none
+npx gruff-ts analyse . --diff=working-tree --format=github --fail-on=warning
+npx gruff-ts analyse . --diff=staged --format=json --fail-on=none
 ```
 
 `--diff` accepts `working-tree`, `staged`, `unstaged`, or a base ref. `report` renders raw inspection output and does not accept `--baseline`; use `analyse` when baseline suppression matters.
@@ -205,7 +205,7 @@ Changed-file scans use Git only when requested:
 ## Dashboard
 
 ```bash
-./node_modules/.bin/gruff-ts dashboard --host 127.0.0.1 --port 8767 --project-root .
+npx gruff-ts dashboard --host 127.0.0.1 --port 8767 --project-root .
 ```
 
 The dashboard serves a local iframe report and compact controls panel. It has no authentication; keep the default loopback bind unless the network is trusted. The `/scan` endpoint analyses filesystem paths from request parameters, so the bind address is the main safety boundary.
@@ -218,7 +218,7 @@ Default scans are local source inspections. `gruff-ts` parses supported source, 
 
 ## Stability Contract
 
-The `0.1.x` line treats rule IDs, finding fingerprints, baseline identity, `gruff.analysis.v1`, `gruff.baseline.v1`, `gruff.hotspot.v1`, SARIF rendering, and CLI exit semantics as compatibility-sensitive. Breaking changes should be tagged as a future minor release and recorded in [`CHANGELOG.md`](CHANGELOG.md).
+The `0.1.x` line treats rule IDs, finding fingerprints, baseline identity, `gruff.analysis.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`, SARIF rendering, and CLI exit semantics as compatibility-sensitive. Breaking changes should be tagged as a future minor release and recorded in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## How It Compares
 

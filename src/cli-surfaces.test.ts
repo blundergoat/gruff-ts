@@ -47,6 +47,59 @@ test("list-rules CLI prints text and deterministic json", () => {
   assert.equal(assertRuleListJsonOutput(), true);
 });
 
+test("list-rules <ruleId> prints labelled per-rule detail in text mode", () => {
+  // M08: positional argument switches to single-rule explain mode. The text section carries every
+  // populated descriptor field plus the config-key list so an operator can see knobs without
+  // grepping `src/config.ts`.
+  const output = execFileSync("./bin/gruff-ts", ["list-rules", "complexity.cognitive"], { encoding: "utf8" });
+  assert.match(output, /Rule:\s+complexity\.cognitive/);
+  assert.match(output, /Pillar:\s+complexity/);
+  assert.match(output, /Severity:\s+warning/);
+  assert.match(output, /Confidence:\s+high/);
+  assert.match(output, /Threshold:\s+15/);
+  assert.match(output, /Description: /);
+  assert.match(output, /Remediation: /);
+  assert.match(output, /rules\.complexity\.cognitive\.enabled/);
+  assert.match(output, /rules\.complexity\.cognitive\.threshold \(int, default: 15\)/);
+});
+
+test("list-rules <ruleId> renders JSON envelope with tool + rule + configKeys", () => {
+  // JSON variant for docs/integration consumers. Shape: `{ tool: {name, version}, rule: { …descriptor, configKeys: [...] } }`.
+  const text = execFileSync("./bin/gruff-ts", ["list-rules", "naming.generic-parameter", "--format=json"], { encoding: "utf8" });
+  const payload = JSON.parse(text);
+  assert.equal(payload.tool?.name, "gruff-ts");
+  assert.equal(payload.rule?.ruleId, "naming.generic-parameter");
+  assert.deepEqual(payload.rule?.optionKeys, ["minCyclomatic", "minLineCount", "minParameters"]);
+  assert.equal(Array.isArray(payload.rule?.configKeys), true);
+  const enabledKey = payload.rule.configKeys.find((entry: { key: string }) => entry.key === "rules.naming.generic-parameter.enabled");
+  assert.equal(enabledKey?.type, "bool");
+});
+
+test("list-rules unknown id exits 2 with the documented stderr message", () => {
+  // Commander's `program.error({ exitCode: 2 })` is the canonical "usage error" code in this CLI;
+  // hoisting it into a named constant keeps the assertion intent explicit.
+  const expectedUsageErrorExitCode = 2;
+  let exitCode = 0;
+  let stderr = "";
+  try {
+    execFileSync("./bin/gruff-ts", ["list-rules", "not-a-real-rule"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error: unknown) {
+    const failure = error as { status?: number; stderr?: string };
+    exitCode = failure.status ?? 0;
+    stderr = failure.stderr ?? "";
+  }
+  assert.equal(exitCode, expectedUsageErrorExitCode);
+  assert.match(stderr, /unknown rule "not-a-real-rule"/);
+});
+
+test("list-rules (no argument) output is byte-identical across runs", () => {
+  // Regression guard: the new positional must not change the no-arg behaviour. Two runs return
+  // identical bytes; the first run is what users have always seen.
+  const firstRun = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
+  const secondRun = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
+  assert.equal(firstRun, secondRun);
+});
+
 /** Spawns the rule catalogue command and verifies representative metadata. */
 function assertRuleListTextOutput(): boolean {
   const text = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
@@ -118,7 +171,8 @@ test("summary CLI prints compact scan digest without per-finding spam", () => {
   assert.match(output, new RegExp(`^gruff-ts ${VERSION_PATTERN} summary`));
   assert.equal(output.includes(`Path: ${join(process.cwd(), "fixtures/sample.ts")}\n`), true);
   assert.match(output, /^Duration: (?:\d+ms|\d+\.\d{2}s)$/m);
-  assert.match(output, /Per-pillar counts:/);
+  assert.match(output, /^Pillars$/m);
+  assert.match(output, /^ {2}\S+\s+[A-F]\s+\d+\.\d{2} findings=\d+/m);
   assert.match(output, /Top 10 rules:/);
   assert.match(output, /Top 10 file offenders:/);
   assert.equal(/^Baseline:/m.test(output), false);
@@ -131,15 +185,32 @@ test("summary CLI supports json format and top limit", () => {
     ["summary", "fixtures/sample.ts", "--format=json", "--top=1", "--fail-on=none", "--no-config", "--no-baseline"],
     { encoding: "utf8" },
   );
-  const payload = JSON.parse(output) as {
-    schemaVersion?: string;
-    topRules?: unknown[];
-    topOffenders?: unknown[];
-  };
-  assert.equal(payload.schemaVersion, "gruff.summary.v1");
-  assert.equal(payload.topRules?.length, 1);
-  assert.ok((payload.topOffenders?.length ?? 0) <= 1);
+  const payload = JSON.parse(output) as Record<string, unknown>;
+  assert.equal(payload.schemaVersion, "gruff.summary.v2");
+  assert.equal((payload.topRules as unknown[] | undefined)?.length, 1);
+  assert.ok(((payload.topOffenders as unknown[] | undefined)?.length ?? 0) <= 1);
+  const pillars = payload.pillars as unknown[] | undefined;
+  assert.ok(Array.isArray(pillars) && pillars.length > 0);
+  pillars.forEach(assertPillarRowShape);
 });
+
+/** Validates one pillar row from the `gruff.summary.v2` JSON output. Accepts the raw parsed
+ * value so the test does not need a typed interface mirroring the wire schema - the schema
+ * contract lives in `renderSummaryJson`, this helper just confirms the row carries the
+ * documented keys with the documented value types. */
+function assertPillarRowShape(rawRow: unknown): void {
+  assert.ok(rawRow && typeof rawRow === "object");
+  const row = rawRow as Record<string, unknown>;
+  assert.equal(typeof row.pillar, "string");
+  assert.match(String(row.grade), /^[A-F]$/);
+  assert.equal(typeof row.score, "number");
+  assert.equal(typeof row.penalty, "number");
+  assert.equal(row.applicable, true);
+  assert.equal(typeof row.findings, "number");
+  assert.equal(typeof row.advisory, "number");
+  assert.equal(typeof row.warning, "number");
+  assert.equal(typeof row.error, "number");
+}
 
 test("summary CLI reports generated and applied baseline metadata", () => {
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-summary-baseline-"));
@@ -177,14 +248,14 @@ test("json report uses schema version", () => {
     shouldSkipBaseline: true,
   });
   const rendered = renderReport(report, "json");
-  assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v1"/);
+  assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v2"/);
 });
 
 // Fixture for the SARIF render test. Hoisted out of the test body so the test reaches its first
 // assertion within the setup-bloat threshold; the fixture data itself is non-trivial because it
 // encodes the cross-pillar coverage SARIF must round-trip.
 const SARIF_FIXTURE_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v1",
+  schemaVersion: "gruff.analysis.v2",
   tool: { name: "gruff-ts", version: "0.1.0-test" },
   run: { projectRoot: "/tmp/project", format: "sarif", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 1, warning: 1, error: 1, total: 3 },
@@ -198,7 +269,7 @@ const SARIF_FIXTURE_REPORT: AnalysisReport = {
   score: {
     composite: 91,
     grade: "A",
-    pillars: [{ pillar: "security", score: 91, findings: 1 }],
+    pillars: [{ pillar: "security", score: 91, penalty: 9, findings: 1 }],
     topOffenders: [{ filePath: "src/bad.ts", score: 91, findings: 1 }],
   },
 };
@@ -273,12 +344,12 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(results[2].level, "note");
   assert.equal(results[2].locations[0].physicalLocation.artifactLocation.uri, "src/docs.ts");
   assert.equal(results[2].properties.severity, "advisory");
-  assert.equal(payload.runs[0].properties.gruffSchemaVersion, "gruff.analysis.v1");
+  assert.equal(payload.runs[0].properties.gruffSchemaVersion, "gruff.analysis.v2");
   assert.equal(payload.runs[0].properties.generatedAt, "2026-05-15T00:00:00.000Z");
   const expectedScore = 91;
   assert.equal(payload.runs[0].properties.score, expectedScore);
   assert.equal(payload.runs[0].properties.grade, "A");
-  assert.equal(JSON.parse(renderReport(report, "json")).schemaVersion, "gruff.analysis.v1");
+  assert.equal(JSON.parse(renderReport(report, "json")).schemaVersion, "gruff.analysis.v2");
   assert.equal(JSON.stringify(report), beforeSarif);
 });
 
@@ -368,7 +439,7 @@ test("sarif fail-on preserves error exit behavior", () => {
 // Fixture for the HTML render test. Hoisted out of the test body to keep setup-bloat under
 // threshold; the fixture intentionally embeds HTML metacharacters that the renderer must escape.
 const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v1",
+  schemaVersion: "gruff.analysis.v2",
   tool: { name: "gruff-ts", version: "0.1.0-test<script>" },
   run: { projectRoot: "/tmp/project", format: "html", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 0, warning: 1, error: 1, total: 2 },
@@ -381,7 +452,7 @@ const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
   score: {
     composite: 82.5,
     grade: "B",
-    pillars: [{ pillar: "documentation", score: 84, findings: 1 }],
+    pillars: [{ pillar: "documentation", score: 84, penalty: 16, findings: 1 }],
     topOffenders: [{ filePath: "src/<bad>.ts", score: 88, findings: 1 }],
   },
 };
@@ -402,6 +473,173 @@ test("html report uses dashboard parity anchors and escapes values", () => {
   assert.equal(rendered.includes("<script>alert(1)</script>"), false);
 });
 
+test("html report renders canonical 7-column Pillars table matching text/json shape", () => {
+  const rendered = renderReport(ESCAPING_FIXTURE_REPORT, "html");
+  const pillarsMatch = rendered.match(/<section class="pillars">[\s\S]*?<\/section>/);
+  assert.ok(pillarsMatch, "pillars section not found");
+  const section = pillarsMatch[0];
+
+  assert.match(section, /<h2 class="section-head">Pillars\s/);
+  assert.match(section, /<table class="pillar-table">/);
+  assertHtmlPillarHeaders(section);
+
+  const rows = parseHtmlPillarRows(section);
+  assert.ok(rows.length > 0, "no pillar rows rendered");
+  assertHtmlPillarRowsSorted(rows);
+  assertHtmlPillarScoresWellFormed(rows);
+});
+
+// Parsed shape of one row from the HTML pillar table. Cells may legitimately be undefined if the
+// renderer omits decoration spans, so the typed shape mirrors that uncertainty rather than coerce.
+interface ParsedHtmlPillarRow {
+  pillar: string | undefined;
+  grade: string | undefined;
+  score: string | undefined;
+  findings: number;
+  advisory: number;
+  warning: number;
+  error: number;
+}
+
+const pillarHeaderColumns = ["pillar", "grade", "score", "findings", "advisory", "warning", "error"] as const;
+
+/** Confirms every required column header is present with the expected `class="num"` decoration
+ * and that headers appear in the canonical cross-port order. */
+function assertHtmlPillarHeaders(section: string): void {
+  pillarHeaderColumns.forEach((header, index) => {
+    const numericColumnAttribute = index === 0 ? "" : ' class="num"';
+    assert.match(section, new RegExp(`<th scope="col"${numericColumnAttribute}>${header}</th>`));
+  });
+  const headerOrder = [...section.matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((entry) => entry[1]);
+  assert.deepEqual(headerOrder, [...pillarHeaderColumns]);
+}
+
+/** Extracts the body rows from the HTML pillar section into a typed shape so individual
+ * assertions only reference field names, never regex group indices. */
+function parseHtmlPillarRows(section: string): ParsedHtmlPillarRow[] {
+  const rowMatches = [...section.matchAll(/<tr>(?:(?!<\/?thead).)*?<\/tr>/g)].slice(1);
+  return rowMatches.map((entry) => {
+    const cells = [...entry[0].matchAll(/<td[^>]*>(?:<span[^>]*>)?([^<]+)(?:<\/span>)?<\/td>/g)].map((cell) => cell[1]);
+    return {
+      pillar: cells[0],
+      grade: cells[1],
+      score: cells[2],
+      findings: Number(cells[3]),
+      advisory: Number(cells[4]),
+      warning: Number(cells[5]),
+      error: Number(cells[6]),
+    };
+  });
+}
+
+/** Verifies the cross-port sort contract: findings DESC, then pillar ASC. Helper exists so the
+ * test body reads as a list of high-level assertions without inline loops. */
+function assertHtmlPillarRowsSorted(rows: ParsedHtmlPillarRow[]): void {
+  for (let i = 1; i < rows.length; i += 1) {
+    const previous = rows[i - 1];
+    const current = rows[i];
+    assert.ok(previous && current);
+    if (previous.findings === current.findings) {
+      assert.ok((previous.pillar ?? "") <= (current.pillar ?? ""), `pillar sort broken at ${current.pillar}`);
+    } else {
+      assert.ok(previous.findings > current.findings, `findings sort broken at ${current.pillar}`);
+    }
+  }
+}
+
+/** Score column is rendered with two decimal places everywhere. */
+function assertHtmlPillarScoresWellFormed(rows: ParsedHtmlPillarRow[]): void {
+  rows.forEach((row) => {
+    assert.match(row.score ?? "", /^\d+\.\d{2}$/);
+  });
+}
+
+test("markdown report renders canonical 7-column Pillars table matching cross-port shape", () => {
+  const rendered = renderReport(ESCAPING_FIXTURE_REPORT, "markdown");
+
+  assert.match(rendered, /^# gruff-ts report$/m);
+  assert.match(rendered, /^## Pillars$/m);
+  assert.match(rendered, /^\| Pillar \| Grade \| Score \| Findings \| Advisory \| Warning \| Error \|$/m);
+  assert.match(rendered, /^\| --- \| --- \| ---: \| ---: \| ---: \| ---: \| ---: \|$/m);
+
+  // Pillars block must appear before the per-finding bullet list so CI/PR previews see it first.
+  const pillarsHeadingIndex = rendered.indexOf("## Pillars");
+  const firstFindingIndex = rendered.indexOf("- `");
+  assert.ok(pillarsHeadingIndex > 0, "Pillars heading missing");
+  assert.ok(firstFindingIndex > 0, "no findings rendered");
+  assert.ok(pillarsHeadingIndex < firstFindingIndex, "Pillars block should precede the findings list");
+
+  const parsedRows = parseMarkdownPillarRows(rendered);
+  assert.ok(parsedRows.length > 0, "no pillar rows rendered");
+  parsedRows.forEach((row) => {
+    assert.match(row.score, /^\d+\.\d{2}$/, `score should be 2-decimal: ${row.score}`);
+    assert.match(row.grade, /^[A-F]$/, `grade should be a single letter: ${row.grade}`);
+  });
+  assertPillarSortOrder(parsedRows);
+
+  // Every applicable pillar surfaces, including those with zero findings (clean rows render A/100.00).
+  const cleanPillarRow = parsedRows.find((row) => row.pillar === "size");
+  assert.ok(cleanPillarRow, "clean pillar row missing");
+  assert.equal(cleanPillarRow.grade, "A");
+  assert.equal(cleanPillarRow.score, "100.00");
+  assert.equal(cleanPillarRow.findings, 0);
+});
+
+// Shape of one parsed row used by the markdown table test. Kept narrow because the test only
+// validates the cross-port column contract; the renderer is the source of truth for everything
+// else (e.g. whitespace, decoration).
+interface ParsedMarkdownPillarRow {
+  pillar: string;
+  grade: string;
+  score: string;
+  findings: number;
+  advisory: number;
+  warning: number;
+  error: number;
+}
+
+/* Extracts every data row between the separator and the next blank line into a typed shape so the
+ * markdown table test can focus on assertions instead of cell parsing. Why this lives outside the
+ * test body: the per-row cell destructuring otherwise pushes the test past the cyclomatic and
+ * cognitive thresholds, hiding the actual contract assertions inside parsing noise. */
+function parseMarkdownPillarRows(rendered: string): ParsedMarkdownPillarRow[] {
+  const tableMatch = rendered.match(/\| --- \| --- \| ---: \| ---: \| ---: \| ---: \| ---: \|\n([\s\S]*?)(?:\n\n|$)/);
+  assert.ok(tableMatch, "pillar data rows not found");
+  const dataRows = (tableMatch[1] ?? "").split("\n").filter((line) => line.startsWith("|"));
+  return dataRows.map(parseMarkdownPillarRow);
+}
+
+/* Splits a single `| cell | cell | … |` line into the typed row contract. Defaults are conservative
+ * empty/zero values because the upstream regex already verified the table has the right shape. */
+function parseMarkdownPillarRow(line: string): ParsedMarkdownPillarRow {
+  const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
+  const [pillar = "", gradeText = "", score = "", findings = "0", advisory = "0", warning = "0", error = "0"] = cells;
+  return {
+    pillar,
+    grade: gradeText,
+    score,
+    findings: Number(findings),
+    advisory: Number(advisory),
+    warning: Number(warning),
+    error: Number(error),
+  };
+}
+
+/** Validates the cross-port sort contract: findings DESC, then pillar ASC. Lifted out so the body
+ * of the markdown test reads as a list of high-level assertions. */
+function assertPillarSortOrder(rows: ParsedMarkdownPillarRow[]): void {
+  for (let i = 1; i < rows.length; i += 1) {
+    const previous = rows[i - 1];
+    const current = rows[i];
+    assert.ok(previous && current);
+    if (previous.findings === current.findings) {
+      assert.ok(previous.pillar <= current.pillar, `pillar sort broken at ${current.pillar}`);
+    } else {
+      assert.ok(previous.findings > current.findings, `findings sort broken at ${current.pillar}`);
+    }
+  }
+}
+
 test("html report rendering does not mutate json report output", () => {
   const report = analyseFixture(`export function process(value: string): string {
   return value;
@@ -412,7 +650,7 @@ test("html report rendering does not mutate json report output", () => {
   renderReport(report, "html");
 
   assert.equal(renderReport(report, "json"), before);
-  assert.match(before, /"schemaVersion": "gruff\.analysis\.v1"/);
+  assert.match(before, /"schemaVersion": "gruff\.analysis\.v2"/);
 });
 
 test("dashboard root uses parity shell and escapes controls", async () => {

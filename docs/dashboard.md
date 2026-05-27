@@ -22,6 +22,13 @@ The dashboard has no authentication and should stay bound to loopback unless the
 network is trusted. The `/scan` endpoint analyses filesystem paths from request
 parameters, so the bind address is the safety boundary.
 
+## Gating threshold (none)
+
+`dashboard` has no `--fail-on` flag and does not participate in the
+`minimumSeverity:` config block - setting `minimumSeverity.dashboard:` in
+`.gruff-ts.yaml` is rejected at config load. Whether the dashboard should gate
+is a deferred design question; raise it as an issue if your workflow needs it.
+
 ## Polyglot Repos
 
 `gruff-ts` defaults to port `8767`, `gruff-rs` defaults to `8766`, and Go, PHP,

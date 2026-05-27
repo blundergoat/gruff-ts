@@ -86,11 +86,16 @@ function rawCatchBody(rawSource: string, codeSource: string, match: RegExpMatchA
 
 // Comment-only catches are acceptable when the comment gives a rationale such as "already closed",
 // "cache write failure is non-fatal", or "composition continues"; placeholders still surface.
+// The bare-token alternatives (`ignore`, `ignored`, `cleanup`, `teardown`, `noop`, `no-op`) match
+// the most common idioms for documented teardown swallows. `silent` is deliberately NOT included -
+// real swallowed-error defects in goat-flow's dashboard-projects.ts use `/* silent */` and must
+// continue to fire. Deferred-work markers are also excluded - that flavour of placeholder is not
+// "intentional swallow."
 function hasIntentionalCatchRationale(body: string): boolean {
   return (
     /(?:\/\/|\/\*)/.test(body) &&
     (hasSuppressionRationale(body) ||
-      /\b(?:already (?:closed|dead|gone)|optional|best effort|missing|unreadable|not a directory|doesn't exist|not available|non-fatal|cache write failure|composition continues|try next location|server unavailable|must not affect|explicit launch|malformed messages|template missing|sets [A-Za-z_$][A-Za-z0-9_$]* = false|skip agents? that fail)\b/i.test(body))
+      /\b(?:already (?:closed|dead|gone)|optional|best effort|missing|unreadable|not a directory|doesn't exist|not available|non-fatal|cache write failure|composition continues|try next location|server unavailable|must not affect|explicit launch|malformed messages|template missing|sets [A-Za-z_$][A-Za-z0-9_$]* = false|skip agents? that fail|ignored?|cleanup|teardown|noop|no-op)\b/i.test(body))
   );
 }
 

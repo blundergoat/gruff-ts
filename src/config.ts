@@ -1,7 +1,13 @@
 // Config loading and YAML-subset parsing for the analyzer's zero-dependency rule defaults.
 import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, join } from "node:path";
-import type { AnalysisOptions, Config, Severity } from "./types.ts";
+import { ConfigLoadError } from "./config-load-error.ts";
+import type { AnalysisOptions, Config, FailThreshold, MinimumSeverityCommand, Severity } from "./types.ts";
+
+// Two common suggestion strings reused across the validators. Hoisted out so a future doc-link
+// or wording tweak lands in one place instead of N throw sites.
+const SUGGEST_INIT_FORCE = "Run `gruff-ts init --force` to regenerate the config from current defaults (preserves your `paths.ignore` and `minimumSeverity:` entries).";
+const SUGGEST_EDIT_CONFIG = "Edit `.gruff-ts.yaml` to use a valid value, or run `gruff-ts init --force` to regenerate from defaults.";
 
 type RuleOverride = Config["rules"] extends Map<string, infer RuleOverrideValue> ? RuleOverrideValue : never;
 
@@ -26,17 +32,20 @@ const UNMATCHED_YAML_SCALAR: ParsedYamlScalar = { isMatched: false, value: undef
 // Built-in defaults applied before any user config overlays. The string lists here (accepted
 // abbreviations, banned generic names, boolean prefixes, …) are the stable rule contract - they
 // shape what every gruff scan emits by default and changing them shifts the public rule surface.
+// schemaVersion is fixed at `gruff-ts.config.v0.1` as the schema invariant for this release.
 function defaultConfig(): Config {
   return {
+    schemaVersion: "gruff-ts.config.v0.1",
     ignoredPaths: [],
-    acceptedAbbreviations: new Set(["id", "db", "fs", "io", "ui", "tx", "rx"]),
+    acceptedAbbreviations: new Set(["age", "app", "cb", "db", "fn", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url"]),
     secretPreviews: new Set(),
     bannedGenericNames: new Set(["process", "handle", "doit", "run", "execute", "manage"]),
-    booleanPrefixes: new Set(["is", "has", "can", "should", "does", "did", "was", "will", "may", "in", "scan", "supports", "requires"]),
+    booleanPrefixes: new Set(["is", "has", "can", "should", "does", "did", "was", "will", "may", "in", "scan", "supports", "requires", "allow", "check", "enable", "exclude", "include", "omit", "skip", "with", "without"]),
     hungarianPrefixes: new Set(["str", "obj", "arr", "bool", "int", "num"]),
     placeholderNames: new Set(["foo", "bar", "baz", "tmp", "temp", "thing", "stuff", "data", "value", "item"]),
     negativeBooleanAllowed: new Set(["nostore", "nofollow", "noreferrer", "noscript", "noindex"]),
     knownAcronyms: new Set(["url", "http", "https", "id", "xml", "json", "html", "css", "api", "sql", "db", "io", "ui", "uuid", "ip", "tcp", "udp", "ast", "cli", "npm"]),
+    minimumSeverity: new Map(),
     rules: new Map(),
   };
 }
@@ -69,13 +78,85 @@ function selectedConfigPath(projectRoot: string, options: AnalysisOptions): stri
   return options.config ? absolutize(projectRoot, options.config) : defaultConfigPath(projectRoot);
 }
 
-// Three top-level sections of the config schema applied in a fixed order: paths → allowlists →
-// rules. Order does not affect correctness today but the stable application order keeps later
-// overrides predictable if interdependencies are added.
+// Top-level sections applied in a fixed order: schemaVersion → minimumSeverity → paths → allowlists
+// → rules. schemaVersion runs first because every later parse depends on the contract version it
+// declares, and minimumSeverity runs next so CLI consumers reading it during normalizeOptions see
+// a populated map. Order does not affect correctness today but the stable application order keeps
+// later overrides predictable if interdependencies are added.
 function applyConfigValues(config: Config, raw: Record<string, unknown>): void {
+  applySchemaVersionConfig(raw);
+  applyMinimumSeverityConfig(config, raw);
   applyPathConfig(config, raw);
   applyAllowlistConfig(config, raw);
   applyRuleConfig(config, raw);
+}
+
+/*
+ * Validates the required `schemaVersion` top-level field. Pre-1.0 break: configs missing the field
+ * or carrying any other version string are rejected (throws with a documented error listing the
+ * supported version) because there is no migration shim under the no-legacy-compat contract. The
+ * function does not mutate the loaded config because the only supported value matches
+ * `defaultConfig().schemaVersion` already; future versions would extend the union and require a
+ * write here. The schema invariant is fixed at `gruff-ts.config.v0.1`.
+ */
+function applySchemaVersionConfig(raw: Record<string, unknown>): void {
+  const schemaVersion = raw.schemaVersion;
+  if (schemaVersion === undefined) {
+    throw new ConfigLoadError('Config must include `schemaVersion: gruff-ts.config.v0.1` at the top.', SUGGEST_INIT_FORCE);
+  }
+  if (schemaVersion !== "gruff-ts.config.v0.1") {
+    throw new ConfigLoadError(`Unsupported schemaVersion: ${JSON.stringify(schemaVersion)}. Supported: "gruff-ts.config.v0.1".`, SUGGEST_INIT_FORCE);
+  }
+}
+
+// Parses the `minimumSeverity:` block into a Map keyed by command name. Validation throws on
+// `dashboard` specifically (no `--fail-on` flag exists for it), on unknown command keys, and on
+// every non-canonical value. Missing block is allowed - it just leaves the map empty so CLI
+// consumers fall through to the binary default.
+function applyMinimumSeverityConfig(config: Config, raw: Record<string, unknown>): void {
+  const block = objectValue(raw.minimumSeverity);
+  if (!block) {
+    return;
+  }
+  for (const [commandName, value] of Object.entries(block)) {
+    config.minimumSeverity.set(assertMinimumSeverityCommand(commandName), parseFailThresholdConfig(value));
+  }
+}
+
+/*
+ * Validates one `minimumSeverity:` map key. Throws on `dashboard` specifically because the
+ * dashboard subcommand has no `--fail-on` flag; accepting the key would silently no-op and
+ * operators would expect a gate that never fires. Throws on unknown commands so typos surface at
+ * load time instead of as silent CI footguns.
+ */
+function assertMinimumSeverityCommand(commandName: string): MinimumSeverityCommand {
+  if (commandName === "dashboard") {
+    throw new ConfigLoadError('Unknown command in minimumSeverity: "dashboard". The dashboard subcommand does not currently expose a --fail-on flag; configuring its threshold is not supported.', "Remove the `dashboard:` line from `minimumSeverity:` in `.gruff-ts.yaml`, or open an issue if dashboard should gate.");
+  }
+  if (commandName === "analyse" || commandName === "summary" || commandName === "report") {
+    return commandName;
+  }
+  throw new ConfigLoadError(`Unknown command in minimumSeverity: ${JSON.stringify(commandName)}. Valid keys: analyse, summary, report.`, SUGGEST_EDIT_CONFIG);
+}
+
+/*
+ * Validates one `FailThreshold` value coming from YAML. Throws on every non-canonical value with a
+ * clear error listing the four supported strings. `never` is rejected explicitly because earlier
+ * cross-port drafts considered it as the off-switch value before the family converged on `none`;
+ * guarding against drift back to `never` keeps the cross-port vocabulary aligned.
+ */
+function parseFailThresholdConfig(rawValue: unknown): FailThreshold {
+  if (rawValue === "none" || rawValue === "advisory" || rawValue === "warning" || rawValue === "error") {
+    return rawValue;
+  }
+  throw new ConfigLoadError(`FailThreshold must be one of: advisory, warning, error, none. Got: ${JSON.stringify(rawValue)}.`, SUGGEST_EDIT_CONFIG);
+}
+
+// Per-command lookup used by the CLI precedence chain (CLI flag > config > binary default).
+// Returns undefined when the user did not configure that command so the caller can fall through
+// to the binary default. Exported so the CLI consumers in `cli-program.ts` can consult it.
+function minimumSeverityFor(config: Config, command: MinimumSeverityCommand): FailThreshold | undefined {
+  return config.minimumSeverity.get(command);
 }
 
 // Replaces `ignoredPaths` with the user list. Non-string entries are silently dropped - invalid
@@ -139,18 +220,23 @@ function ruleConfigValue(rule: Record<string, unknown>): RuleOverride {
   return ruleOverride;
 }
 
-/** Validates the public threshold/severity pair contract and throws before malformed rule options are parsed. */
+/*
+ * Validates individual `threshold` and `severity` types. Either, neither, or both may be present:
+ * many rules have no `threshold` knob at all (security.eval-call, waste.any-type, etc.), so a
+ * "must be configured together" gate would block any severity-only override on those rules even
+ * though `gruff-ts list-rules <id>` advertises `rules.<id>.severity` as a public knob. Each field
+ * is independently optional and falls through to the descriptor default when absent.
+ *
+ * Throws ConfigLoadError when `threshold` is present but non-numeric, or when `severity` is
+ * present but not one of `advisory|warning|error`. Returns silently when both fields are absent
+ * (the common case for `enabled`-only or options-only overrides).
+ */
 function assertRuleThresholdConfig(rule: Record<string, unknown>): void {
-  const hasThreshold = "threshold" in rule;
-  const hasSeverity = "severity" in rule;
-  if (hasThreshold && typeof rule.threshold !== "number") {
-    throw new Error('Rule config key "threshold" must be numeric.');
+  if ("threshold" in rule && typeof rule.threshold !== "number") {
+    throw new ConfigLoadError('Rule config key "threshold" must be numeric.', SUGGEST_EDIT_CONFIG);
   }
-  if (hasSeverity && !isSeverity(rule.severity)) {
-    throw new Error('Rule config key "severity" must be "advisory", "warning", or "error".');
-  }
-  if (hasThreshold !== hasSeverity) {
-    throw new Error('Rule config keys "threshold" and "severity" must be configured together.');
+  if ("severity" in rule && !isSeverity(rule.severity)) {
+    throw new ConfigLoadError('Rule config key "severity" must be "advisory", "warning", or "error".', SUGGEST_EDIT_CONFIG);
   }
 }
 
@@ -204,18 +290,60 @@ function defaultConfigPath(projectRoot: string): string | undefined {
 }
 
 /*
- * Reads YAML or JSON config and rejects unknown extensions. Throws on malformed input so the user
- * sees a concrete error rather than a silently-empty config.
+ * Reads YAML or JSON config and rejects unknown extensions. Raw IO failures (e.g. `--config <path>`
+ * pointing at a missing file) and JSON parse failures are rewrapped as ConfigLoadError so the CLI
+ * surface stays uniform - a bare ENOENT or SyntaxError would otherwise bypass the formatted
+ * "gruff-ts: config error" stderr path in `runWithConfigErrorHandling`.
+ *
+ * Throws ConfigLoadError when: the file is missing (ENOENT), the contents are not valid JSON, the
+ * YAML subset rejects the file (see parseYamlConfig), or the top-level value is not a mapping.
  */
 function parseConfigFile(path: string): Record<string, unknown> {
-  const source = readFileSync(path, "utf8").replace(/^\uFEFF/, "");
+  const source = readConfigSource(path);
   const extension = extname(path).toLowerCase();
-  const parsed = extension === ".yaml" || extension === ".yml" ? parseYamlConfig(source) : extension === ".json" ? (JSON.parse(source) as unknown) : undefined;
+  const parsed = parseConfigSource(source, extension, path);
   const config = objectValue(parsed);
   if (!config) {
-    throw new Error(`Config file must contain an object with .yaml, .yml, or .json extension: ${path}`);
+    throw new ConfigLoadError(`Config file must contain an object with .yaml, .yml, or .json extension: ${path}`, SUGGEST_INIT_FORCE);
   }
   return config;
+}
+
+/*
+ * Reads the raw config bytes. Explicit `--config <path>` skips the `defaultConfigPath` existence
+ * check, so a typo here would otherwise dump a raw Node stack. Throws ConfigLoadError on ENOENT
+ * with a user-actionable suggestion; rethrows every other filesystem error unchanged so an
+ * unexpected IO failure still surfaces its native stack for debugging.
+ */
+function readConfigSource(path: string): string {
+  try {
+    return readFileSync(path, "utf8").replace(/^\uFEFF/, "");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+      throw new ConfigLoadError(`Config file not found: ${path}.`, "Pass --config with an existing path, or omit the flag to use the default lookup.");
+    }
+    throw error;
+  }
+}
+
+// Routes to the YAML subset parser or the native JSON parser. Wraps `JSON.parse`'s SyntaxError so
+// a malformed `.gruff.json` surfaces through the same ConfigLoadError channel as YAML failures
+// (parseYamlConfig already throws ConfigLoadError on its own malformed inputs).
+function parseConfigSource(source: string, extension: string, path: string): unknown {
+  if (extension === ".yaml" || extension === ".yml") {
+    return parseYamlConfig(source);
+  }
+  if (extension !== ".json") {
+    return undefined;
+  }
+  try {
+    return JSON.parse(source) as unknown;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new ConfigLoadError(`Config file is not valid JSON: ${error.message} (${path}).`, SUGGEST_EDIT_CONFIG);
+    }
+    throw error;
+  }
 }
 
 // One non-blank, comment-stripped YAML line. `indent` is the column count (spaces only - tabs are
@@ -242,7 +370,7 @@ function parseYamlConfig(source: string): Record<string, unknown> {
   const parsedDocument = parser.lines.length === 0 ? {} : parseYamlBlock(parser, parser.lines[0]?.indent ?? 0);
   const config = objectValue(parsedDocument);
   if (!config) {
-    throw new Error("Config YAML must contain a mapping object.");
+    throw new ConfigLoadError("Config YAML must contain a mapping object.", SUGGEST_INIT_FORCE);
   }
   return config;
 }
@@ -333,7 +461,7 @@ function parseNestedYamlValue(parser: YamlParser, indent: number, fallback: unkn
 function yamlKeyValuePair(content: string): [string, string] {
   const pair = splitYamlKeyValue(content);
   if (!pair) {
-    throw new Error(`Invalid YAML mapping line: "${content}".`);
+    throw new ConfigLoadError(`Invalid YAML mapping line: "${content}".`, SUGGEST_INIT_FORCE);
   }
   return pair;
 }
@@ -349,7 +477,7 @@ function isYamlArrayLine(line: YamlLine): boolean {
  */
 function assertYamlIndent(line: YamlLine, indent: number): void {
   if (line.indent > indent) {
-    throw new Error(`Invalid YAML indentation near "${line.content}".`);
+    throw new ConfigLoadError(`Invalid YAML indentation near "${line.content}".`, SUGGEST_INIT_FORCE);
   }
 }
 
@@ -367,7 +495,7 @@ function yamlLines(source: string): YamlLine[] {
     }
     const indentText = withoutComment.match(/^\s*/)?.[0] ?? "";
     if (indentText.includes("\t")) {
-      throw new Error("Tabs are not supported in gruff YAML config indentation.");
+      throw new ConfigLoadError("Tabs are not supported in gruff YAML config indentation.", SUGGEST_INIT_FORCE);
     }
     lines.push({ indent: indentText.length, content: withoutComment.trimStart() });
   }
@@ -617,4 +745,4 @@ function isSeverity(configValue: unknown): configValue is Severity {
   return configValue === "advisory" || configValue === "warning" || configValue === "error";
 }
 
-export { defaultConfigPath, isString, loadConfig, objectValue, optionNumber, ruleEnabled, ruleSeverity, threshold };
+export { defaultConfigPath, isString, loadConfig, minimumSeverityFor, objectValue, optionNumber, parseConfigFile, ruleEnabled, ruleSeverity, threshold };

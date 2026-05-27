@@ -25,9 +25,47 @@ Skip config for a run:
 gruff-ts analyse . --no-config
 ```
 
+## Required schema version
+
+Every `.gruff-ts.yaml` must declare `schemaVersion: gruff-ts.config.v0.1` at the
+top. Loading throws if the field is missing or carries a different value. The
+field is in a different namespace from the output schemas (`gruff.analysis.v2`,
+`gruff.summary.v2`, etc.) - the config-input version travels independently of
+the output-payload versions. See ADR-004.
+
+## minimumSeverity (per-command gating defaults)
+
+A top-level `minimumSeverity:` block sets the default `--fail-on` value per
+command. The precedence chain is **CLI flag > config > binary default**.
+
+```yaml
+schemaVersion: gruff-ts.config.v0.1
+minimumSeverity:
+  analyse: advisory
+  summary: advisory
+  report: none
+```
+
+Valid values: `advisory | warning | error | none`. The validator rejects any
+other value (including `never`, which was an early cross-port draft for the
+off-switch before the family converged on `none`).
+
+`dashboard` is intentionally **not** a valid key in this block. The dashboard
+subcommand has no `--fail-on` flag today; setting `minimumSeverity.dashboard:`
+would be a silent no-op CI footgun, so the validator rejects it with a clear
+error.
+
+Binary defaults are `analyse: advisory`, `summary: advisory`, `report: none`.
+
 ## Shape
 
 ```yaml
+schemaVersion: gruff-ts.config.v0.1
+minimumSeverity:
+  analyse: advisory
+  summary: advisory
+  report: none
+
 paths:
   ignore:
     - "generated/**"
@@ -105,7 +143,7 @@ allowlists:
 Prefer fixing false positives with a narrow config entry instead of disabling an
 entire sensitive-data rule.
 
-Naming allowlists tune the 0.1.0 naming pack without changing rule ids or
+Naming allowlists tune the 0.2.0 naming pack without changing rule ids or
 fingerprints:
 
 | Key | Used by | Default behavior |

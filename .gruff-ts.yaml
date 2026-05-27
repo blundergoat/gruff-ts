@@ -1,3 +1,18 @@
+schemaVersion: gruff-ts.config.v0.1
+
+# Per-command default for --fail-on. Precedence: CLI flag > minimumSeverity > binary default.
+# `dashboard` is intentionally NOT a valid key here - it has no --fail-on flag. See ADR-004.
+#
+# Values:
+#   error    - exit non-zero only when an error-severity finding fires (strictest gate).
+#   warning  - exit non-zero on warning or error findings (advisory findings pass).
+#   advisory - exit non-zero on any finding at all (advisory, warning, or error).
+#   none     - never exit non-zero from findings (use for raw reporting / baseline generation).
+minimumSeverity:
+  analyse: advisory
+  summary: advisory
+  report: none
+
 paths:
   # Recursive scans already respect .gitignore plus built-in default directories
   # such as .git, node_modules, dist, coverage, generated, tmp, and vendor.
@@ -108,11 +123,14 @@ rules:
   # documentation/advisory: Flags commented functions whose error behavior is not described.
   docs.missing-error-behavior-doc:
     enabled: true
+  # documentation/warning: Flags exported functions without a leading maintainer comment.
+  docs.missing-exported-function-doc:
+    enabled: true
   # documentation/advisory: Flags source files without a top-of-file purpose comment.
   docs.missing-file-overview:
     enabled: true
-  # documentation/advisory: Flags functions without a leading maintainer comment.
-  docs.missing-function-doc:
+  # documentation/advisory: Flags internal helper functions without a leading maintainer comment.
+  docs.missing-internal-function-doc:
     enabled: true
   # documentation/advisory: Flags interfaces without a leading maintainer comment.
   docs.missing-interface-doc:

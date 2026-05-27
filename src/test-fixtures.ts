@@ -105,9 +105,15 @@ export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions)
   });
 }
 
-// Serializes a test YAML config object from the root indentation level.
+/*
+ * Serializes a test YAML config object from the root indentation level. Every fixture YAML is
+ * stamped with the required `schemaVersion: gruff-ts.config.v0.1` field at the top (per ADR-004)
+ * because the config loader throws when it's missing. The schema invariant is preserved by
+ * spreading the input object AFTER schemaVersion so callers can't accidentally override it; tests
+ * that need to assert against a missing schemaVersion must write the YAML by hand instead.
+ */
 export function yamlConfigFixture(configObject: Record<string, unknown>): string {
-  return yamlConfigObject(configObject, 0);
+  return yamlConfigObject({ schemaVersion: "gruff-ts.config.v0.1", ...configObject }, 0);
 }
 
 // Serializes nested config objects using the fixture YAML subset.
@@ -458,7 +464,7 @@ export function process(flag: boolean, userInput: string, userId: string, userId
   try {
     riskyWork();
   } catch (error) {
-    // ignored
+    // FIXME
   }
   if (flag) {
     if (userId) {
@@ -588,8 +594,10 @@ ${"test"}("setup bloat and control flow", () => {
   const three = buildThree();
   if (one) {
     for (const setupEntry of [one, two, three]) {
-      sleep(setupEntry);
-      assert.ok(setupEntry);
+      if (setupEntry) {
+        sleep(setupEntry);
+        assert.ok(setupEntry);
+      }
     }
   }
   setTimeout(() => undefined, 1);

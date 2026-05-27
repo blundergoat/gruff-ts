@@ -1,6 +1,7 @@
 // Console command catalogue, shell completion scripts, and rule-list renderers for CLI surfaces.
 import { VERSION } from "./constants.ts";
 import { ruleDescriptors } from "./rules.ts";
+import type { RuleDescriptor } from "./types.ts";
 
 type RuleListFormat = "text" | "json";
 type CompletionShell = "bash" | "fish" | "zsh";
@@ -46,6 +47,68 @@ function renderRuleList(format: RuleListFormat): string {
     lines.push(`${descriptor.ruleId} | ${descriptor.pillar} | ${descriptor.severity} | ${descriptor.confidence} | ${descriptor.description}${threshold}${options}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+/*
+ * Returns a single rule descriptor by ID, or undefined when the ID is not registered. Surfaced so
+ * the explain-mode renderer can dispatch on "is this a real rule?" without iterating the full
+ * catalogue at each render site. Stable contract: lookup keys match the public rule ID strings
+ * exactly; partial / case-insensitive matches are intentionally out of scope.
+ */
+function getRuleDescriptor(ruleId: string): RuleDescriptor | undefined {
+  return ruleDescriptors().find((descriptor) => descriptor.ruleId === ruleId);
+}
+
+/*
+ * Single-rule detail renderer. Text format prints a labelled section with every populated field;
+ * JSON format wraps the descriptor in a tool envelope mirroring the multi-rule shape. Surfaces
+ * config keys (`rules.<ruleId>.{enabled,severity,threshold}`) and the option/allowlist hatches
+ * because operators looking up one rule shouldn't have to grep `src/config.ts` to find the
+ * override knobs they're about to tune.
+ */
+function renderRuleDetail(descriptor: RuleDescriptor, format: RuleListFormat): string {
+  if (format === "json") {
+    return `${JSON.stringify({ tool: { name: "gruff-ts", version: VERSION }, rule: { ...descriptor, configKeys: ruleConfigKeys(descriptor) } }, null, 2)}\n`;
+  }
+  const lines = [
+    `Rule:        ${descriptor.ruleId}`,
+    `Pillar:      ${descriptor.pillar}`,
+    `Severity:    ${descriptor.severity}`,
+    `Confidence:  ${descriptor.confidence}`,
+    ...(typeof descriptor.threshold === "number" ? [`Threshold:   ${descriptor.threshold}`] : []),
+    "",
+    `Description: ${descriptor.description}`,
+    "",
+    `Remediation: ${descriptor.remediation}`,
+    "",
+    ...ruleConfigKeyLines(descriptor),
+    ...(descriptor.optionKeys && descriptor.optionKeys.length > 0 ? ["", "Options:", ...descriptor.optionKeys.map((key) => `  rules.${descriptor.ruleId}.options.${key}`)] : []),
+    ...(descriptor.allowlistKeys && descriptor.allowlistKeys.length > 0 ? ["", "Allowlists:", ...descriptor.allowlistKeys.map((key) => `  allowlists.${key}`)] : []),
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+// Three baseline config-key entries shared by every rule: the enable toggle, the severity override,
+// and (when present) the threshold override. Optional knobs (options / allowlists) get their own
+// blocks in `renderRuleDetail` to keep this list focused on the always-applicable keys.
+function ruleConfigKeyLines(descriptor: RuleDescriptor): string[] {
+  return [
+    "Config keys:",
+    `  rules.${descriptor.ruleId}.enabled   (bool)`,
+    `  rules.${descriptor.ruleId}.severity  (advisory|warning|error)`,
+    ...(typeof descriptor.threshold === "number" ? [`  rules.${descriptor.ruleId}.threshold (int, default: ${descriptor.threshold})`] : []),
+  ];
+}
+
+// JSON representation of the same config-key list. Returned as a structured array so JSON consumers
+// don't have to re-derive the shape from the text layout. Each entry carries the key path, the
+// value's type vocabulary, and a default when one is known.
+function ruleConfigKeys(descriptor: RuleDescriptor): Array<{ key: string; type: string; values?: readonly string[]; default?: number | boolean | string }> {
+  return [
+    { key: `rules.${descriptor.ruleId}.enabled`, type: "bool", default: true },
+    { key: `rules.${descriptor.ruleId}.severity`, type: "enum", values: ["advisory", "warning", "error"] as const, default: descriptor.severity },
+    ...(typeof descriptor.threshold === "number" ? [{ key: `rules.${descriptor.ruleId}.threshold`, type: "int", default: descriptor.threshold }] : []),
+  ];
 }
 
 // The Symfony-style command catalogue shown for `gruff-ts`, `gruff-ts list`, and `gruff-ts help`.
@@ -177,4 +240,4 @@ function completionShell(shellName: unknown): CompletionShell {
 }
 
 export type { RuleListFormat, CompletionShell };
-export { renderRuleList, renderConsoleList, renderCompletionScript, completionShell };
+export { renderRuleList, renderRuleDetail, getRuleDescriptor, renderConsoleList, renderCompletionScript, completionShell };

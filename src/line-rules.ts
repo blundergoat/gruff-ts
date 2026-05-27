@@ -33,6 +33,10 @@ interface LineRuleContext {
   file: SourceFile;
   line: string;
   codeLine: string;
+  // Full masked source as one array per line, indexed 0-based. Exposed so per-line rules that need
+  // forward look-ahead (for-of body brace-balancing in `pushVariableNameFindings`) can scan beyond
+  // the current line without re-splitting the source.
+  codeLines: readonly string[];
   lineNumber: number;
   config: Config;
   findings: Finding[];
@@ -57,6 +61,7 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
     file,
     line: "",
     codeLine: "",
+    codeLines,
     lineNumber: 0,
     config,
     findings,
@@ -281,16 +286,63 @@ function isSuppressedByPathContext(ruleId: string, displayPath: string): boolean
 
 // Per-line variable-name pass that runs short/identifier-quality checks on both
 // regular `const`/`let` declarations and destructured names. Reports any findings produced.
+// Single-character for-of bindings whose body is ≤ 10 lines are idiomatic (e.g. `for (const f of
+// files) { write(f); }`) and skip the short-variable check; longer bodies still flag. The
+// exemption is gated on a real `of` token after the binding so C-style `for (let i = 0; …)` and
+// `for (const k in obj)` headers stay covered by the rule.
 function pushVariableNameFindings(context: LineRuleContext): void {
   for (const match of context.codeLine.matchAll(context.variables)) {
     const name = match[1] ?? "";
-    pushShortVariableFinding(context, name);
+    const matchText = match[0] ?? "";
+    const headerTail = context.codeLine.slice((match.index ?? 0) + matchText.length);
+    const isForOfHeader = matchText.startsWith("for") && /^\s+of\b/.test(headerTail);
+    const loopBodyLineCount = isForOfHeader ? forOfBodyLineSpan(context.codeLines, context.lineNumber - 1) : undefined;
+    pushShortVariableFinding(context, name, loopBodyLineCount);
     pushIdentifierQualityFinding(context, name);
   }
   for (const name of destructuredLocalNames(context.codeLine)) {
     pushShortVariableAt(context.file, context.lineNumber, name, context.config, context.findings, "destructure");
     pushIdentifierQualityAt(context.file, context.lineNumber, name, context.config, context.findings, "destructure");
   }
+}
+
+/*
+ * Counts the line span of a for-of body starting at the opener line index. Brace-less
+ * single-statement bodies return 1 because the body is trivially short. When the opener has `{`,
+ * brace-balance tracking finds the matching `}` and returns the line count from `{` to `}`
+ * inclusive. The walker uses the masked codeLines so braces inside string literals are blanked
+ * out; this avoids the false "balanced" claim a raw-source walker would make on template strings.
+ * A 50-line scan window guards against unterminated scans because malformed input must not stall
+ * the whole-file walker; an unbalanced result returns Infinity so a long-but-unclosed for-of
+ * still fires the rule rather than getting silently exempted.
+ */
+function forOfBodyLineSpan(codeLines: readonly string[], openerLineIndex: number): number {
+  const maxLines = 50;
+  const end = Math.min(codeLines.length, openerLineIndex + maxLines);
+  let state: ForOfBraceScanState = { depth: 0, bodyOpenerLine: -1 };
+  for (let i = openerLineIndex; i < end; i += 1) {
+    state = advanceForOfBraceScan(state, codeLines[i] ?? "", i);
+    if (state.bodyOpenerLine !== -1 && state.depth <= 0) {
+      return i - state.bodyOpenerLine + 1;
+    }
+  }
+  return state.bodyOpenerLine === -1 ? 1 : Infinity;
+}
+
+// Working state for the per-line brace scan. Returning a fresh value each line keeps the outer
+// loop's npath low and the transition rules explicit.
+interface ForOfBraceScanState {
+  depth: number;
+  bodyOpenerLine: number;
+}
+
+// Per-line brace-balance update. Records the first line that introduced a `{` so the caller can
+// compute the body span when the balancing `}` lands.
+function advanceForOfBraceScan(state: ForOfBraceScanState, line: string, lineIndex: number): ForOfBraceScanState {
+  const opens = (line.match(/\{/g) ?? []).length;
+  const closes = (line.match(/\}/g) ?? []).length;
+  const bodyOpenerLine = opens > 0 && state.bodyOpenerLine === -1 ? lineIndex : state.bodyOpenerLine;
+  return { depth: state.depth + opens - closes, bodyOpenerLine };
 }
 
 // Walks `const { foo, bar: alias } = ...` patterns. Aliased names (the part after `:`) become the
@@ -313,9 +365,11 @@ function destructuredLocalNames(codeLine: string): string[] {
 }
 
 // Thin wrapper that fills in `"declaration"` for the surface field. Same back-end as parameter
-// and destructure callers, which use their own surface labels.
-function pushShortVariableFinding(context: LineRuleContext, name: string): void {
-  pushShortVariableAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
+// and destructure callers, which use their own surface labels. `loopBodyLineCount` is forwarded so
+// the underlying rule can apply the for-of short-body exemption when the declaration came from a
+// `for (const X of …)` head.
+function pushShortVariableFinding(context: LineRuleContext, name: string, loopBodyLineCount?: number): void {
+  pushShortVariableAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration", loopBodyLineCount);
 }
 
 
