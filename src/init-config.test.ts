@@ -113,6 +113,26 @@ test("gruff-ts init --force preserves the existing paths.ignore entries", () => 
   }
 });
 
+test("gruff-ts init --force preserves paths.ignore from a pre-schemaVersion config", () => {
+  // Regression: 0.1.2 introduced a required `schemaVersion:` field. Routing the preservation
+  // read through the strict loader meant any older `.gruff-ts.yaml` (no schemaVersion) threw
+  // ConfigLoadError, silently dropping the user's curated `paths.ignore` on init --force.
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-init-preserve-legacy-"));
+  try {
+    const configPath = join(projectRoot, DEFAULT_CONFIG_FILE_NAME);
+    writeFileSync(configPath, "paths:\n  ignore:\n    - \"legacy/**\"\n    - \"vendored/**\"\n");
+
+    const overwritten = execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "init", "--force"], { cwd: projectRoot, encoding: "utf8" });
+    assert.match(overwritten, /^Overwrote /);
+
+    const newContent = readFileSync(configPath, "utf8");
+    assert.match(newContent, /schemaVersion: gruff-ts\.config\.v0\.1/);
+    assert.match(newContent, /  ignore:\n    - "legacy\/\*\*"\n    - "vendored\/\*\*"/);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
 test("gruff-ts init --force preserves paths.ignore from a non-canonical supported config", () => {
   // Regression: the preservation gate previously checked only `.gruff-ts.yaml`, so projects whose
   // incumbent was `.gruff.yaml`/`.yml`/`.json` lost their curated ignore entries on `init --force`.

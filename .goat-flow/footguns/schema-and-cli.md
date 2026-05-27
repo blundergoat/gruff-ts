@@ -1,9 +1,31 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-05-24
+last_reviewed: 2026-05-27
 ---
 
 # Schema + CLI surface footguns
+
+## Footgun: routing migration-path reads through the strict schema validator silently clobbers user state
+
+**Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED (PR #4 review, codex P1)
+
+`readExistingPreservedConfig` (`src/init-config.ts`, search: `function readExistingPreservedConfig`) originally called `loadConfig` to recover `paths.ignore` and `minimumSeverity` from the existing file before `init --force` regenerates it. `loadConfig` runs `applySchemaVersionConfig` (`src/config.ts`, search: `function applySchemaVersionConfig`), which throws `ConfigLoadError` on any config without `schemaVersion: gruff-ts.config.v0.1` - exactly the shape of every pre-0.1.2 config in the wild. The `try { ... } catch { return EMPTY }` swallowed the throw and the regenerated file lost the user's curated entries. The CHANGELOG simultaneously promised "init --force preserves … paths.ignore"; the implementation delivered the opposite for the migration cohort.
+
+The fix splits the readers: `src/config-preservation.ts` (search: `extractPreservedConfigFields`) reads the two preserved fields permissively (no schemaVersion gate, malformed entries dropped silently) for the migration handoff. The analyser load path still uses the strict validator so misconfigurations surface in context at the next run.
+
+When introducing a strict validator for a new required field, audit every code path that reads existing config for purposes OTHER than running the analyser - preservation, diff, dry-run, doc generation. Each one needs a permissive reader that bypasses the new gate, because "no migration shim" is a contract for the analyser load path, not for tools that translate the user's old config into a new shape. Tests: `init-config.test.ts`, search: `preserves paths.ignore from a pre-schemaVersion config`.
+
+## Footgun: catching only ConfigLoadError lets raw IO/parse errors escape the formatted error path
+
+**Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED (PR #4 review, codex P2)
+
+`runWithConfigErrorHandling` (`src/cli-program.ts`, search: `async function runWithConfigErrorHandling`) catches `ConfigLoadError` and rethrows everything else. The catch is correct as written; the gap was upstream. `parseConfigFile` (`src/config.ts`, search: `function parseConfigFile`) called `readFileSync` and `JSON.parse` directly: `--config <missing>` produced raw `ENOENT`, malformed `.gruff.json` produced raw `SyntaxError`, both bypassed the "gruff-ts: config error\n  ..." stderr template and the documented exit-2 contract by dumping a Node stack.
+
+The fix wraps both producers (`readConfigSource` search: `function readConfigSource`, and `parseConfigSource` search: `function parseConfigSource`) so the IO and parse errors are rewrapped as `ConfigLoadError` at the boundary. The catch site stays unchanged.
+
+Standing rule for any new CLI surface that wraps user input: rewrap raw producer errors as the public error type at the *boundary*, not at the *handler*. Widening the catch in `runWithConfigErrorHandling` to swallow `SyntaxError | NodeJS.ErrnoException` would have worked, but every future call site would inherit the broader catch and lose visibility into genuine bugs that happen to throw the same shapes. Keep the catch narrow; lift the producers to the public error type.
+
+## Footgun: schema version strings are public contract
 
 ## Footgun: schema version strings are public contract
 

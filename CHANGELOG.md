@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+Code-review sweep against PR #4 feedback (codex + coderabbit). Six targeted fixes across the build script, the CLI error path, and three rule-precision sites; no schema changes.
+
+### Fixed
+
+- `scripts/bump-version.sh` `read_changelog_latest_version` now requires a digit immediately after `[` in the `## [...]` heading, so a Keep-a-Changelog `## [Unreleased]` section above the latest release stops causing a false lockstep failure in the preflight version-consistency check.
+- `gruff-ts` CLI now emits the formatted "gruff-ts: config error" stderr path (exit 2) for `--config` pointing at a missing file and for malformed `.gruff.json` syntax errors. Raw `ENOENT` and `SyntaxError` previously bypassed `runWithConfigErrorHandling` and dumped Node stack traces. `parseConfigFile` and the new `readConfigSource` rewrap both at the producer boundary as `ConfigLoadError`.
+- `naming.short-variable` for-of body exemption (M02 §2.8b) no longer leaks to classic `for (let i = 0; ...)` and `for (const k in obj)` headers. The exemption gate now verifies an `of` token follows the binding in the header, not just that the match begins with `for`. New regression tests in `naming-rules.test.ts`.
+- `gruff-ts init --force` now preserves `paths.ignore` and `minimumSeverity` blocks from pre-0.1.2 configs (no `schemaVersion:` field). The previous strict-loader path threw on the missing field and silently dropped curated entries; a new `src/config-preservation.ts` module reads those two blocks permissively for the migration path while the analyser load path still uses the strict validator. New regression test in `init-config.test.ts`.
+- `docs.missing-exported-function-doc` (warning) now fires on locally-declared functions re-exported via `export { foo }` or `export default foo`. Line-local `^export` detection in `src/blocks.ts` previously classified these as internal and emitted only the advisory `docs.missing-internal-function-doc`. A file-level scan in `collectReExportedNames` is OR'd into the `isExported` decision. New regression tests in `false-positive-fixes.test.ts`.
+- Documentation: `CLAUDE.md` and `README.md` switched from "analyzer" to "analyser" to match `src/analyser.ts` and the rest of the project's British spelling (modernisation, sensitive-data).
+
+### Added
+
+- `src/config-preservation.ts` exports `extractPreservedConfigFields(configPath)` for the init-force migration path: best-effort extraction of `paths.ignore` and `minimumSeverity` without the schemaVersion gate. `src/config.ts` now exports `parseConfigFile` so the preservation module can reuse the YAML/JSON reader.
+
 ## [0.1.2] - 2026-05-27
 
 Pillars-table cross-format harmonisation, rule-precision tier, per-command gating threshold, and a CLI default flip. Multi-stage release: started 2026-05-25 with the renderer/schema-v2 work, picked up rule-precision improvements on 2026-05-26, and closed with the config-schema versioning and minimumSeverity block on 2026-05-27. See ADR-004 for the minimumSeverity design and `.goat-flow/tasks/0.1.2/` for the rule-precision milestones (M01-M08 + M10-M12; M09 was deleted as a no-signal milestone).

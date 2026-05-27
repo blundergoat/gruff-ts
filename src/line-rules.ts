@@ -287,12 +287,16 @@ function isSuppressedByPathContext(ruleId: string, displayPath: string): boolean
 // Per-line variable-name pass that runs short/identifier-quality checks on both
 // regular `const`/`let` declarations and destructured names. Reports any findings produced.
 // Single-character for-of bindings whose body is ≤ 10 lines are idiomatic (e.g. `for (const f of
-// files) { write(f); }`) and skip the short-variable check; longer bodies still flag.
+// files) { write(f); }`) and skip the short-variable check; longer bodies still flag. The
+// exemption is gated on a real `of` token after the binding so C-style `for (let i = 0; …)` and
+// `for (const k in obj)` headers stay covered by the rule.
 function pushVariableNameFindings(context: LineRuleContext): void {
   for (const match of context.codeLine.matchAll(context.variables)) {
     const name = match[1] ?? "";
     const matchText = match[0] ?? "";
-    const loopBodyLineCount = matchText.startsWith("for") ? forOfBodyLineSpan(context.codeLines, context.lineNumber - 1) : undefined;
+    const headerTail = context.codeLine.slice((match.index ?? 0) + matchText.length);
+    const isForOfHeader = matchText.startsWith("for") && /^\s+of\b/.test(headerTail);
+    const loopBodyLineCount = isForOfHeader ? forOfBodyLineSpan(context.codeLines, context.lineNumber - 1) : undefined;
     pushShortVariableFinding(context, name, loopBodyLineCount);
     pushIdentifierQualityFinding(context, name);
   }

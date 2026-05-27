@@ -361,3 +361,31 @@ test("naming generic-parameter ignores typed parameters in exported helpers belo
   const findings = report.findings.filter((finding) => finding.ruleId === "naming.generic-parameter");
   assert.deepEqual(findings, []);
 });
+
+test("naming short-variable still flags C-style for binding", () => {
+  // §2.8(b) exemption is scoped to `for (const X of Y)` heads; classic `for (let x = …)` stays covered.
+  const report = analyseFixture(`export function loop(): number {
+  let total = 0;
+  for (let x = 0; x < 3; x += 1) {
+    total += x;
+  }
+  return total;
+}
+`);
+  const findings = report.findings.filter((entry) => entry.ruleId === "naming.short-variable" && entry.symbol === "x");
+  assert.equal(findings.length, 1);
+});
+
+test("naming short-variable still flags for-in binding", () => {
+  // §2.8(b) scopes the exemption to `of` heads; `for ... in` over string keys stays covered.
+  const report = analyseFixture(`export function listKeys(obj: Record<string, number>): string[] {
+  const keys: string[] = [];
+  for (const x in obj) {
+    keys.push(x);
+  }
+  return keys;
+}
+`);
+  const findings = report.findings.filter((entry) => entry.ruleId === "naming.short-variable" && entry.symbol === "x");
+  assert.equal(findings.length, 1);
+});

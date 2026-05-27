@@ -34,11 +34,15 @@ export interface FunctionBlock {
 }
 
 // Working state for the function-block parser. Patterns are precompiled once per file so each
-// callable detection doesn't re-instantiate the same RegExp objects.
+// callable detection doesn't re-instantiate the same RegExp objects. `reExportedNames` carries
+// the file-level scan of `export { foo }` / `export default foo` so a declaration like
+// `function foo() {}` later re-exported via `export { foo }` is still classified as exported
+// (the line-local `^export` check alone would miss this common pattern).
 interface FunctionBlockScan {
   lines: string[];
   codeLines: string[];
   patterns: RegExp[];
+  reExportedNames: ReadonlySet<string>;
 }
 
 const FUNCTION_BLOCK_PATTERNS = functionBlockPatterns();
@@ -467,6 +471,7 @@ export function functionBlocks(source: string, codeSource = source): FunctionBlo
     lines: source.split(/\r?\n/),
     codeLines: codeSource.split(/\r?\n/),
     patterns: FUNCTION_BLOCK_PATTERNS,
+    reExportedNames: collectReExportedNames(codeSource),
   };
   const blocks: FunctionBlock[] = [];
   scan.codeLines.forEach((line, index) => {
@@ -477,6 +482,34 @@ export function functionBlocks(source: string, codeSource = source): FunctionBlo
     blocks.push(functionBlockFromMatch(scan, match, index));
   });
   return blocks;
+}
+
+/*
+ * File-level scan for re-exported local declarations. Matches `export { foo }`, `export { foo as
+ * bar }` (the local name `foo` is recorded, not the renamed `bar`), and `export default foo`
+ * (bare-identifier form only - `export default function ...` is already caught by the line-local
+ * `^export` check on the declaration itself). Re-exports of imported symbols are harmless: those
+ * names aren't declared in this file, so no FunctionBlock matches them.
+ *
+ * Operates on the masked codeSource so `export { foo }` inside a string literal or comment is
+ * skipped. Multi-line export blocks work because `[^}]+` spans newlines.
+ */
+function collectReExportedNames(codeSource: string): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const match of codeSource.matchAll(/export\s*\{([^}]+)\}/g)) {
+    for (const entry of (match[1] ?? "").split(",")) {
+      const local = entry.trim().split(/\s+as\s+/)[0]?.trim();
+      if (local && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(local)) {
+        names.add(local);
+      }
+    }
+  }
+  for (const match of codeSource.matchAll(/^\s*export\s+default\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$/gm)) {
+    if (match[1]) {
+      names.add(match[1]);
+    }
+  }
+  return names;
 }
 
 // Four callable shapes in the order `functionBlockMatch` tries them: `test()` / `it()` bodies,
@@ -537,7 +570,7 @@ function functionBlockFromMatch(scan: FunctionBlockScan, match: RegExpMatchArray
     body,
     codeBody,
     isPublic: /\bexport\b|\bpublic\b/.test(scan.codeLines.slice(start, index + 1).join("\n")),
-    isExported: /^\s*export\b/.test(scan.codeLines[index] ?? ""),
+    isExported: /^\s*export\b/.test(scan.codeLines[index] ?? "") || scan.reExportedNames.has(match[1] ?? ""),
     isTest: isTestInvocationLine(scan.codeLines[index] ?? ""),
     hasLeadingComment: hasLeadingCommentBeforeLines(scan.lines, index + 1),
     declarationLine: index + 1,

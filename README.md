@@ -1,6 +1,6 @@
 # gruff-ts
 
-`gruff-ts` is an opinionated static analyzer for TypeScript and JavaScript projects. The dependency-light Node.js CLI scans source, tests, package metadata, and common config files, then emits reports for terminals, CI annotations, SARIF consumers, static HTML, and a local dashboard. It is heuristic static analysis; run it beside `tsc`, ESLint, tests, dependency scanners, and code review, not instead of them.
+`gruff-ts` is an opinionated static analyser for TypeScript and JavaScript projects. The dependency-light Node.js CLI scans source, tests, package metadata, and common config files, then emits reports for terminals, CI annotations, SARIF consumers, static HTML, and a local dashboard. It is heuristic static analysis; run it beside `tsc`, ESLint, tests, dependency scanners, and code review, not instead of them.
 
 ## Status At A Glance
 
@@ -73,7 +73,7 @@ Open `http://127.0.0.1:8767/` for the dashboard.
 
 | Command | Purpose |
 | --- | --- |
-| `analyse [paths...]` | Run the analyzer and print findings. |
+| `analyse [paths...]` | Run the analyser and print findings. |
 | `summary [paths...]` | Print compact score, pillar, rule, and file summaries. |
 | `report [paths...]` | Render an HTML or JSON report to stdout or `--output`. |
 | `init` | Write the default `.gruff-ts.yaml` to the current directory (`--force` to overwrite). |

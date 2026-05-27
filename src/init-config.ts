@@ -3,7 +3,8 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { defaultConfigPath, loadConfig } from "./config.ts";
+import { defaultConfigPath } from "./config.ts";
+import { extractPreservedConfigFields } from "./config-preservation.ts";
 import { ruleDescriptors } from "./rules.ts";
 import type { FailThreshold, MinimumSeverityCommand, RuleDescriptor } from "./types.ts";
 
@@ -145,28 +146,23 @@ function writeDefaultConfig(projectRoot: string, shouldOverwrite: boolean): Init
   // `.gruff-ts.yaml` - otherwise `init --force` against a project with only
   // `.gruff.yaml`/`.yml`/`.json` would silently drop user-curated exclusions and command-specific
   // gating thresholds when generating the new canonical file.
-  const preserved = existingConfigPath !== undefined ? readExistingPreservedConfig(projectRoot) : EMPTY_PRESERVED_CONFIG;
+  const preserved = existingConfigPath !== undefined ? readExistingPreservedConfig(existingConfigPath) : EMPTY_PRESERVED_CONFIG;
   writeFileSync(targetPath, renderDefaultConfig(preserved.ignoredPaths, preserved.minimumSeverity));
   return { path: targetPath, status: targetExists ? "overwritten" : "written" };
 }
 
 /*
  * Recover the existing file's `paths.ignore` and `minimumSeverity` blocks before `init --force`
- * overwrites it. The try/catch swallows YAML-parse errors and the fallback returns empty values
- * so a malformed existing config does not block regeneration - the user is opting into clobbering,
- * but the documented contract is that curated entries survive when readable.
+ * overwrites it. Uses the permissive extractor (not the strict validator) so a pre-0.1.2 config
+ * without `schemaVersion` still hands its curated entries to the regenerated file - the strict
+ * gate would throw on the missing field and silently drop the user's `paths.ignore`. The
+ * try/catch swallows IO/parse errors and returns empty values so a malformed existing config
+ * does not block regeneration; the user is opting into clobbering, but the documented contract
+ * is that curated entries survive when readable.
  */
-function readExistingPreservedConfig(projectRoot: string): PreservedInitConfig {
+function readExistingPreservedConfig(existingConfigPath: string): PreservedInitConfig {
   try {
-    const config = loadConfig(projectRoot, {
-      paths: [],
-      shouldSkipConfig: false,
-      format: "text",
-      failOn: "none",
-      shouldIncludeIgnored: false,
-      shouldSkipBaseline: true,
-    });
-    return { ignoredPaths: config.ignoredPaths, minimumSeverity: config.minimumSeverity };
+    return extractPreservedConfigFields(existingConfigPath);
   } catch {
     return EMPTY_PRESERVED_CONFIG;
   }

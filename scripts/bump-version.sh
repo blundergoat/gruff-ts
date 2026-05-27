@@ -52,9 +52,10 @@ read_package_lock_package_version() {
 }
 
 read_changelog_latest_version() {
-  # POSIX awk: avoid gawk's 3-argument match() so this still parses under mawk/BSD awk
-  # (otherwise preflight's version-consistency check hard-fails on those hosts).
-  awk '/^##[[:space:]]+\[/ { sub(/^##[[:space:]]+\[/, ""); sub(/\].*$/, ""); print; exit }' CHANGELOG.md
+  # POSIX awk: avoid gawk's 3-argument match() so this still parses under mawk/BSD awk.
+  # The `[0-9]` lookahead after the opening bracket filters out non-version headings such as
+  # `## [Unreleased]`, which a vanilla Keep-a-Changelog file places above the latest release.
+  awk '/^##[[:space:]]+\[[0-9]/ { sub(/^##[[:space:]]+\[/, ""); sub(/\].*$/, ""); print; exit }' CHANGELOG.md
 }
 
 write_package_version() {

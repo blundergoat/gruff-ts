@@ -69,6 +69,26 @@ That breaks `docs.missing-invariant-doc` and `docs.missing-why-for-complex-code`
 
 When documenting a complex function or contract-bearing declaration, either (a) put the marker word on the LAST `//` line above the declaration, or (b) use a `/* ... */` block comment - block comments produce ONE CommentRecord whose `text` is the joined body (search: `function normalizedBlockCommentText`). Block form is preferred for any multi-sentence comment that explains a contract.
 
+## Footgun: header-shape exemptions that key off the regex match prefix leak to sibling loop forms
+
+**Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED (PR #4 review, codex P2)
+
+`VARIABLE_DECLARATIONS` (`src/line-rules.ts`, search: `const VARIABLE_DECLARATIONS`) captures the binding name out of `const`, `let`, `for ( const`, and `for ( let` headers in one regex. The M02 §2.8(b) for-of exemption originally gated on `matchText.startsWith("for")` to decide whether to compute the body span. Problem: that prefix is also present for classic `for (let i = 0; ...)` and `for (const k in obj)`. A one-char binding inside a short C-style or for-in body got silently exempted from `naming.short-variable`, against the documented scope.
+
+The fix (`pushVariableNameFindings`, search: `function pushVariableNameFindings`) verifies an `of` token follows the binding by slicing the codeLine from the end of the matched substring and matching `/^\s+of\b/`. The regex itself stays broad because the same VARIABLE_DECLARATIONS pattern feeds other rules; the exemption gate gets tightened where it matters.
+
+When adding an exemption that targets a specific control-flow header shape, do not key off the matched substring's prefix - that's just the part of the header the binding regex captured. Inspect the broader header (the slice of `codeLine` after the match) for the actual discriminator token (`of`, `in`, `;`, `=`). Tests: `naming-rules.test.ts`, search: `naming short-variable still flags C-style for binding`.
+
+## Footgun: line-local `^export` detection misses re-exported declarations
+
+**Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED (PR #4 review, codex P2)
+
+`functionBlockFromMatch` (`src/blocks.ts`, search: `function functionBlockFromMatch`) originally set `isExported: /^\s*export\b/.test(scan.codeLines[index])` - a line-local check on the declaration line only. Common module pattern is to declare locally and re-export at the bottom: `function foo() {}` followed by `export { foo };` (search: `^export \{` across `src/`). That declaration's `isExported` came back false, so `docs.missing-exported-function-doc` (warning) silently downgraded to `docs.missing-internal-function-doc` (advisory) - undercutting the public-API doc gate for a pervasive shape.
+
+The fix runs `collectReExportedNames` (`src/blocks.ts`, search: `function collectReExportedNames`) once per file, scanning the masked codeSource for `export { ... }` (multi-name, alias-aware) and `export default <Ident>`. `isExported` ORs the line-local check with the file-level set, so a function declared inline gets the export classification when its name is re-exported anywhere in the file.
+
+Two implications: (1) when adding a per-symbol classification rule that depends on "is this exported," do the file-level re-export scan once and thread the result; do not rely on per-line patterns alone. (2) `isPublic` (which considers `public` keyword too) was unaffected, but the moral is identical for any future "this declaration is part of the public surface" gate. Tests: `false-positive-fixes.test.ts`, search: `FP-#33b docs.missing-exported-function-doc fires on re-exported function`.
+
 ## Footgun: `naming.acronym-case` is file-wide, not per-symbol
 
 **Status:** active | **Created:** 2026-05-25 | **Evidence:** OBSERVED

@@ -574,6 +574,33 @@ test("FP-#33 docs.missing-exported-function-doc fires on export const fn = () =>
   assert.equal(findings[0]?.severity, "warning");
 });
 
+test("FP-#33b docs.missing-exported-function-doc fires on re-exported function", () => {
+  // Locally-declared functions re-exported via `export { foo }` are public surface and must fire
+  // the warning-tier variant, not the internal advisory one.
+  const report = analyseFixture(`function publicViaReExport(): string {
+  return "hi";
+}
+
+export { publicViaReExport };
+`);
+  const findings = report.findings.filter((entry) => entry.ruleId === "docs.missing-exported-function-doc" && entry.symbol === "publicViaReExport");
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.severity, "warning");
+});
+
+test("FP-#33c docs.missing-exported-function-doc fires on aliased re-export local name", () => {
+  // The local name in `export { foo as bar }` is the exported surface; the rule keys off the local.
+  const report = analyseFixture(`function localFn(): number {
+  return 1;
+}
+
+export { localFn as exposedFn };
+`);
+  const findings = report.findings.filter((entry) => entry.ruleId === "docs.missing-exported-function-doc" && entry.symbol === "localFn");
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.severity, "warning");
+});
+
 test("FP-#34 docs.missing-internal-function-doc fires on internal helper", () => {
   // Internal helpers fire the advisory variant. The body's lack of leading comment is the trigger;
   // a function with even a brief leading comment clears.
