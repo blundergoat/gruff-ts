@@ -1,22 +1,5 @@
 # Changelog
 
-## [Unreleased]
-
-Code-review sweep against PR #4 feedback (codex + coderabbit). Six targeted fixes across the build script, the CLI error path, and three rule-precision sites; no schema changes.
-
-### Fixed
-
-- `scripts/bump-version.sh` `read_changelog_latest_version` now requires a digit immediately after `[` in the `## [...]` heading, so a Keep-a-Changelog `## [Unreleased]` section above the latest release stops causing a false lockstep failure in the preflight version-consistency check.
-- `gruff-ts` CLI now emits the formatted "gruff-ts: config error" stderr path (exit 2) for `--config` pointing at a missing file and for malformed `.gruff.json` syntax errors. Raw `ENOENT` and `SyntaxError` previously bypassed `runWithConfigErrorHandling` and dumped Node stack traces. `parseConfigFile` and the new `readConfigSource` rewrap both at the producer boundary as `ConfigLoadError`.
-- `naming.short-variable` for-of body exemption (M02 §2.8b) no longer leaks to classic `for (let i = 0; ...)` and `for (const k in obj)` headers. The exemption gate now verifies an `of` token follows the binding in the header, not just that the match begins with `for`. New regression tests in `naming-rules.test.ts`.
-- `gruff-ts init --force` now preserves `paths.ignore` and `minimumSeverity` blocks from pre-0.1.2 configs (no `schemaVersion:` field). The previous strict-loader path threw on the missing field and silently dropped curated entries; a new `src/config-preservation.ts` module reads those two blocks permissively for the migration path while the analyser load path still uses the strict validator. New regression test in `init-config.test.ts`.
-- `docs.missing-exported-function-doc` (warning) now fires on locally-declared functions re-exported via `export { foo }` or `export default foo`. Line-local `^export` detection in `src/blocks.ts` previously classified these as internal and emitted only the advisory `docs.missing-internal-function-doc`. A file-level scan in `collectReExportedNames` is OR'd into the `isExported` decision. New regression tests in `false-positive-fixes.test.ts`.
-- Documentation: `CLAUDE.md` and `README.md` switched from "analyzer" to "analyser" to match `src/analyser.ts` and the rest of the project's British spelling (modernisation, sensitive-data).
-
-### Added
-
-- `src/config-preservation.ts` exports `extractPreservedConfigFields(configPath)` for the init-force migration path: best-effort extraction of `paths.ignore` and `minimumSeverity` without the schemaVersion gate. `src/config.ts` now exports `parseConfigFile` so the preservation module can reuse the YAML/JSON reader.
-
 ## [0.1.2] - 2026-05-27
 
 Pillars-table cross-format harmonisation, rule-precision tier, per-command gating threshold, and a CLI default flip. Multi-stage release: started 2026-05-25 with the renderer/schema-v2 work, picked up rule-precision improvements on 2026-05-26, and closed with the config-schema versioning and minimumSeverity block on 2026-05-27. See ADR-004 for the minimumSeverity design and `.goat-flow/tasks/0.1.2/` for the rule-precision milestones (M01-M08 + M10-M12; M09 was deleted as a no-signal milestone).
@@ -46,7 +29,8 @@ Pillars-table cross-format harmonisation, rule-precision tier, per-command gatin
 - `fn` and `cb` added to the default `acceptedAbbreviations` set (M02 §2.8a). Universal conventions for "function parameter" and "callback parameter" no longer trip `naming.short-variable`. The default set is now 18 entries.
 - `naming.short-variable` now exempts single-character bindings inside a `for (const X of Y) { ... }` body whose body span is `<= 10` lines (M02 §2.8b). Longer bodies still fire (the binding outlives the locally-obvious scope). Brace-less single-statement bodies return as short.
 - `scripts/bump-version.sh --check` verifies that `CHANGELOG.md`'s most-recent `## [version]` heading matches `package.json` / `package-lock.json` / `src/constants.ts`. The preflight gate's `Release version` step is renamed to `Version consistency` and only runs this consistency check - the prior `npm view` "already published" lookup was removed because it conflated "should we bump?" with "are the surfaces in sync?".
-- Graceful config-error handling for the `analyse` / `summary` / `report` commands. A malformed `.gruff-ts.yaml` (missing `schemaVersion`, unknown `minimumSeverity` value, `dashboard:` key, YAML parse failure, etc.) now produces a clean two-paragraph stderr message - the error itself plus a context-appropriate suggested fix (e.g. `Run \`gruff-ts init --force\``) - and exits with code 2. No raw Node stack trace. New `ConfigLoadError` class in `src/config-load-error.ts` carries the message + suggestion; CLI action handlers wrap their bodies in `runWithConfigErrorHandling` and rethrow every other exception so genuine bugs still surface their stack.
+- Graceful config-error handling for the `analyse` / `summary` / `report` commands. A malformed `.gruff-ts.yaml` (missing `schemaVersion`, unknown `minimumSeverity` value, `dashboard:` key, YAML parse failure, etc.) now produces a clean two-paragraph stderr message - the error itself plus a context-appropriate suggested fix (e.g. `Run \`gruff-ts init --force\``) - and exits with code 2. No raw Node stack trace. New `ConfigLoadError` class in `src/config-load-error.ts` carries the message + suggestion; CLI action handlers wrap their bodies in `runWithConfigErrorHandling` and rethrow every other exception so genuine bugs still surface their stack. `--config` pointing at a missing file and malformed `.gruff.json` syntax errors are rewrapped at the producer boundary in `parseConfigFile` / `readConfigSource` so they reach the same formatted exit-2 path instead of dumping raw `ENOENT` / `SyntaxError` stacks.
+- `src/config-preservation.ts` exports `extractPreservedConfigFields(configPath)` for the init-force migration path: best-effort extraction of `paths.ignore` and `minimumSeverity` without the schemaVersion gate, so pre-schemaVersion configs still hand their curated entries to the regenerated file. `src/config.ts` now exports `parseConfigFile` for reuse by the preservation module.
 
 ### Changed
 
@@ -58,10 +42,15 @@ Pillars-table cross-format harmonisation, rule-precision tier, per-command gatin
 ### Fixed
 
 - `waste.unreachable-code` no longer fires on the unconditional return that follows a braceless `if`/`while`/`for` with a multi-line predicate (M01 §1). The per-line walker now tracks open-paren balance across the predicate's lines so `if (\n  a &&\n  b\n)\n  return X;\nreturn Y;` correctly treats both returns as reachable. The single-line braceless guard (existing FP-#4) keeps working unchanged; genuine unreachable code (FP-#15) still fires.
+- `scripts/bump-version.sh` `read_changelog_latest_version` now requires a digit immediately after `[` in the `## [...]` heading, so a future Keep-a-Changelog `## [Unreleased]` section above the latest release stops causing a false lockstep failure in the preflight version-consistency check.
+- `naming.short-variable` for-of body exemption (M02 §2.8b) no longer leaks to classic `for (let i = 0; ...)` and `for (const k in obj)` headers. The exemption gate now verifies an `of` token follows the binding in the header rather than keying off the regex match prefix, so the documented for-of-only scope holds.
+- `gruff-ts init --force` preserves `paths.ignore` and `minimumSeverity` blocks from configs that pre-date the `schemaVersion:` requirement. The previous strict-loader path threw on the missing field and silently dropped curated entries; the new `src/config-preservation.ts` module reads the two blocks permissively for the migration handoff while the analyser load path still uses the strict validator.
+- `docs.missing-exported-function-doc` (warning) fires on locally-declared functions re-exported via `export { foo }` or `export default foo`. Line-local `^export` detection in `src/blocks.ts:functionBlockFromMatch` previously classified the re-export pattern as internal and emitted only the advisory variant; a new file-level `collectReExportedNames` scan is OR'd into the `isExported` decision so the public-API doc gate covers the pattern.
+- `CLAUDE.md` and `README.md` switched from "analyzer" to "analyser" to match `src/analyser.ts` and the rest of the project's British spelling (modernisation, sensitive-data).
 
 ### Lock-in tests
 
-FP-#12 through FP-#45 added to `src/false-positive-fixes.test.ts`, covering every rule-precision change above plus negative regression guards. M06 / M08 land their tests in `src/rule-catalogue.test.ts` and `src/cli-surfaces.test.ts` respectively. M10-M12 (minimumSeverity track) add parser-rejection tests in `src/project-config-rules.test.ts` and an init-preservation regression test in `src/init-config.test.ts`. M09 (informational tier) was deleted as a no-signal milestone.
+FP-#12 through FP-#45 added to `src/false-positive-fixes.test.ts`, covering every rule-precision change above plus negative regression guards. The PR #4 review sweep added FP-#33b / FP-#33c for re-export detection in the same file, the C-style for / for-in regression cases under `naming-rules.test.ts`, the pre-schemaVersion preservation regression in `src/init-config.test.ts`, and the dedicated `src/config-preservation.test.ts` suite. M06 / M08 land their tests in `src/rule-catalogue.test.ts` and `src/cli-surfaces.test.ts` respectively. M10-M12 (minimumSeverity track) add parser-rejection tests in `src/project-config-rules.test.ts` and an init-preservation regression test in `src/init-config.test.ts`. M09 (informational tier) was deleted as a no-signal milestone.
 
 ### Cross-port status
 
