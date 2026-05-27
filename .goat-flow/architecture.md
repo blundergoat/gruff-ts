@@ -2,7 +2,7 @@
 
 ## System Overview
 
-`gruff-ts` is a dependency-light Node.js/ESM CLI that statically analyses TypeScript/JavaScript projects and common config/text assets, then emits findings, reports, baselines, SARIF, and rule catalogue metadata. The 0.1.0 release exposes 121 rules across 11 public pillars. The runtime is split across focused modules under `src/`, with `src/cli.ts` (19 lines) as a thin shell that wires `analyse` from `src/analyser.ts` into the commander program built by `src/cli-program.ts`. The dependency surface stays minimal - `commander` + `tsx` only - and baselines stay deterministic byte-stable JSON.
+`gruff-ts` is a dependency-light Node.js/ESM CLI that statically analyses TypeScript/JavaScript projects and common config/text assets, then emits findings, reports, baselines, SARIF, and rule catalogue metadata. The 0.1.2 release exposes 120 rules across 11 public pillars. The runtime is split across focused modules under `src/`, with `src/cli.ts` (19 lines) as a thin shell that wires `analyse` from `src/analyser.ts` into the commander program built by `src/cli-program.ts`. The dependency surface stays minimal - `commander` + `tsx` only - and baselines stay deterministic byte-stable JSON.
 
 Seven primary command surfaces, registered in `src/cli-program.ts`:`buildProgram`:
 

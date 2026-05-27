@@ -143,7 +143,7 @@ allowlists:
 Prefer fixing false positives with a narrow config entry instead of disabling an
 entire sensitive-data rule.
 
-Naming allowlists tune the 0.1.0 naming pack without changing rule ids or
+Naming allowlists tune the 0.1.2 naming pack without changing rule ids or
 fingerprints:
 
 | Key | Used by | Default behavior |

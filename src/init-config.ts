@@ -91,7 +91,7 @@ function renderDefaultConfig(ignoredPaths: readonly string[] = [], preservedMini
 // is a pre-1.0 break - every existing config gains this line, no transitional shim.
 function renderSchemaVersionSection(): string {
   return [
-    "# Config-schema version. Required as of gruff-ts 0.1.4. See ADR-004 (decision log).",
+    "# Config-schema version. Required as of gruff-ts 0.1.2. See ADR-004 (decision log).",
     "schemaVersion: gruff-ts.config.v0.1",
   ].join("\n");
 }
