@@ -487,16 +487,19 @@ export function functionBlocks(source: string, codeSource = source): FunctionBlo
 /*
  * File-level scan for re-exported local declarations. Matches `export { foo }`, `export { foo as
  * bar }` (the local name `foo` is recorded, not the renamed `bar`), and `export default foo`
- * (bare-identifier form only - `export default function ...` is already caught by the line-local
- * `^export` check on the declaration itself). Re-exports of imported symbols are harmless: those
- * names aren't declared in this file, so no FunctionBlock matches them.
+ * (bare-identifier form - `export default function ...` is matched via pattern 2 in
+ * functionBlockPatterns instead, then classified exported because the line itself starts with
+ * `export`). Re-export-from clauses (`export { foo } from "./other"`) are intentionally skipped
+ * via the negative lookahead: those names are not local declarations of this file, so promoting
+ * a same-named local to "exported" would emit a false missing-public-doc finding.
  *
  * Operates on the masked codeSource so `export { foo }` inside a string literal or comment is
- * skipped. Multi-line export blocks work because `[^}]+` spans newlines.
+ * skipped. Multi-line export blocks work because `[^}]+` spans newlines, and the lookahead
+ * spans whitespace and blanked-comment runs that the masker collapses to spaces.
  */
 function collectReExportedNames(codeSource: string): ReadonlySet<string> {
   const names = new Set<string>();
-  for (const match of codeSource.matchAll(/export\s*\{([^}]+)\}/g)) {
+  for (const match of codeSource.matchAll(/export\s*\{([^}]+)\}(?!\s*from\b)/g)) {
     for (const entry of (match[1] ?? "").split(",")) {
       const local = entry.trim().split(/\s+as\s+/)[0]?.trim();
       if (local && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(local)) {
@@ -514,11 +517,14 @@ function collectReExportedNames(codeSource: string): ReadonlySet<string> {
 
 // Four callable shapes in the order `functionBlockMatch` tries them: `test()` / `it()` bodies,
 // `function` declarations, class methods, and arrow assignments. Pattern[0] is intentionally
-// first because test bodies must match before the generic arrow pattern claims them.
+// first because test bodies must match before the generic arrow pattern claims them. Pattern[1]
+// accepts an optional `default` after `export` so `export default function foo() {}` parses into
+// a FunctionBlock - the CHANGELOG's exported-doc-rule contract advertises that shape and the
+// missing `default` token previously made those declarations invisible to every block-level rule.
 function functionBlockPatterns(): RegExp[] {
   return [
     /^\s*(?:test|it)\s*\(\s*["'`]([^"'`]+)["'`]\s*,\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
-    /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)/,
+    /^\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)/,
     /^\s*(?:public|private|protected)?\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*[:{]/,
     /^\s*(?:export\s+)?(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
   ];

@@ -1,8 +1,8 @@
 # Changelog
 
-## [0.1.2] - 2026-05-27
+## [0.2.0] - 2026-05-27
 
-Pillars-table cross-format harmonisation, rule-precision tier, per-command gating threshold, and a CLI default flip. Multi-stage release: started 2026-05-25 with the renderer/schema-v2 work, picked up rule-precision improvements on 2026-05-26, and closed with the config-schema versioning and minimumSeverity block on 2026-05-27. See ADR-004 for the minimumSeverity design and `.goat-flow/tasks/0.1.2/` for the rule-precision milestones (M01-M08 + M10-M12; M09 was deleted as a no-signal milestone).
+Pillars-table cross-format harmonisation, rule-precision tier, per-command gating threshold, CLI default flip, and a code-review sweep against PR #4 feedback. Multi-stage release: started 2026-05-25 with the renderer/schema-v2 work, picked up rule-precision improvements on 2026-05-26, closed with the config-schema versioning and minimumSeverity block on 2026-05-27, and folded in the post-review fixes (default-export doc gate, re-export from-clause skip, severity-only rule overrides) the same day. See ADR-004 for the minimumSeverity design and `.goat-flow/tasks/0.2.0/` for the rule-precision milestones (M01-M08 + M10-M12; M09 was deleted as a no-signal milestone). Cut as 0.2.0 rather than 0.1.2 because the cumulative rule-emission changes (new exported-doc surface, tightened naming/test-quality exemptions, schema-version requirement) materially shift findings for downstream consumers - a minor bump signals the recalibration honestly.
 
 ### Breaking
 

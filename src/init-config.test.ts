@@ -114,7 +114,7 @@ test("gruff-ts init --force preserves the existing paths.ignore entries", () => 
 });
 
 test("gruff-ts init --force preserves paths.ignore from a pre-schemaVersion config", () => {
-  // Regression: 0.1.2 introduced a required `schemaVersion:` field. Routing the preservation
+  // Regression: 0.2.0 introduced a required `schemaVersion:` field. Routing the preservation
   // read through the strict loader meant any older `.gruff-ts.yaml` (no schemaVersion) threw
   // ConfigLoadError, silently dropping the user's curated `paths.ignore` on init --force.
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-init-preserve-legacy-"));

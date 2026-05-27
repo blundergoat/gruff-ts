@@ -14,7 +14,7 @@ interface PreservedConfigFields {
 }
 
 /*
- * Reads the existing config and returns its `paths.ignore` and `minimumSeverity` blocks. Pre-0.1.2
+ * Reads the existing config and returns its `paths.ignore` and `minimumSeverity` blocks. Pre-0.2.0
  * configs without `schemaVersion` succeed here (the strict gate is skipped) so the user's entries
  * survive `init --force`. Individual malformed entries inside the preserved blocks are dropped
  * rather than thrown - the strict validator runs at the next analyser load and surfaces errors

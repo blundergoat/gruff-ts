@@ -6,7 +6,7 @@
 
 | Field | Value |
 | --- | --- |
-| Release line | Published `0.1.2` package line |
+| Release line | Published `0.2.0` package line |
 | Runtime | Node.js `22+` |
 | Package | `@blundergoat/gruff-ts` |
 | Binary | `gruff-ts` |

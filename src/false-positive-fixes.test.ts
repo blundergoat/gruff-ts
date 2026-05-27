@@ -574,32 +574,38 @@ test("FP-#33 docs.missing-exported-function-doc fires on export const fn = () =>
   assert.equal(findings[0]?.severity, "warning");
 });
 
-test("FP-#33b docs.missing-exported-function-doc fires on re-exported function", () => {
-  // Locally-declared functions re-exported via `export { foo }` are public surface and must fire
-  // the warning-tier variant, not the internal advisory one.
-  const report = analyseFixture(`function publicViaReExport(): string {
-  return "hi";
-}
+test("FP-#33b docs.missing-exported-function-doc fires on plain and aliased re-exports", () => {
+  // Locally-declared functions re-exported via `export { foo }` or `export { foo as bar }` are
+  // public surface; the rule keys off the local declaration name in either form.
+  const plain = analyseFixture(`function publicViaReExport(): string { return "hi"; }\n\nexport { publicViaReExport };\n`);
+  const aliased = analyseFixture(`function localFn(): number { return 1; }\n\nexport { localFn as exposedFn };\n`);
+  assert.equal(plain.findings.find((entry) => entry.ruleId === "docs.missing-exported-function-doc" && entry.symbol === "publicViaReExport")?.severity, "warning");
+  assert.equal(aliased.findings.find((entry) => entry.ruleId === "docs.missing-exported-function-doc" && entry.symbol === "localFn")?.severity, "warning");
+});
 
-export { publicViaReExport };
+test("FP-#33e docs.missing-exported-function-doc fires on export default function", () => {
+  // Pattern 2 in functionBlockPatterns accepts the optional `default` token so the declaration parses.
+  const report = analyseFixture(`export default function defaultHelper(): number {
+  return 42;
+}
 `);
-  const findings = report.findings.filter((entry) => entry.ruleId === "docs.missing-exported-function-doc" && entry.symbol === "publicViaReExport");
+  const findings = report.findings.filter((entry) => entry.ruleId === "docs.missing-exported-function-doc" && entry.symbol === "defaultHelper");
   assert.equal(findings.length, 1);
   assert.equal(findings[0]?.severity, "warning");
 });
 
-test("FP-#33c docs.missing-exported-function-doc fires on aliased re-export local name", () => {
-  // The local name in `export { foo as bar }` is the exported surface; the rule keys off the local.
-  const report = analyseFixture(`function localFn(): number {
+test("FP-#33d local declaration stays internal when a same-named symbol is re-exported via `from`", () => {
+  // `export { foo } from "./x"` does not bind `foo` locally; the local helper must stay internal.
+  const report = analyseFixture(`function helper(): number {
   return 1;
 }
 
-export { localFn as exposedFn };
+export { helper } from "./other";
 `);
-  const findings = report.findings.filter((entry) => entry.ruleId === "docs.missing-exported-function-doc" && entry.symbol === "localFn");
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0]?.severity, "warning");
+  assert.equal(report.findings.some((entry) => entry.ruleId === "docs.missing-exported-function-doc" && entry.symbol === "helper"), false);
+  assert.equal(report.findings.filter((entry) => entry.ruleId === "docs.missing-internal-function-doc" && entry.symbol === "helper").length, 1);
 });
+
 
 test("FP-#34 docs.missing-internal-function-doc fires on internal helper", () => {
   // Internal helpers fire the advisory variant. The body's lack of leading comment is the trigger;

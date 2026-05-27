@@ -1,7 +1,7 @@
 # Releasing
 
 This checklist prepares public `@blundergoat/gruff-ts@0.1.x` patch releases.
-Current release line: `0.1.2`.
+Current release line: `0.2.0`.
 
 ## Bump The Version
 
@@ -102,5 +102,5 @@ prompts before publishing.
 - [ ] Run `gruff-ts summary . --fail-on=none`.
 - [ ] Run `gruff-ts list-rules`.
 - [ ] Verify `README.md` install instructions from a clean checkout.
-- [ ] Tag the release in git (`git tag v0.1.2 && git push --tags`) and create
+- [ ] Tag the release in git (`git tag v0.2.0 && git push --tags`) and create
       or update public release notes from `CHANGELOG.md`.

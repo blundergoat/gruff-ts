@@ -1,6 +1,6 @@
 // Covers the best-effort field extraction used by `gruff-ts init --force` to preserve curated
 // `paths.ignore` and `minimumSeverity` entries across a config regeneration, including the
-// pre-0.1.2 migration path where the source config lacks a `schemaVersion:` field.
+// pre-0.2.0 migration path where the source config lacks a `schemaVersion:` field.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

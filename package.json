@@ -1,6 +1,6 @@
 {
   "name": "@blundergoat/gruff-ts",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Static analyzer for TypeScript and JavaScript projects - 119 rules across 11 quality pillars, SARIF output, baselines, and a local dashboard.",
   "license": "MIT",
   "author": "Matthew Hansen (https://www.blundergoat.com/about)",

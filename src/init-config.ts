@@ -91,7 +91,7 @@ function renderDefaultConfig(ignoredPaths: readonly string[] = [], preservedMini
 // is a pre-1.0 break - every existing config gains this line, no transitional shim.
 function renderSchemaVersionSection(): string {
   return [
-    "# Config-schema version. Required as of gruff-ts 0.1.2. See ADR-004 (decision log).",
+    "# Config-schema version. Required as of gruff-ts 0.2.0. See ADR-004 (decision log).",
     "schemaVersion: gruff-ts.config.v0.1",
   ].join("\n");
 }
@@ -153,7 +153,7 @@ function writeDefaultConfig(projectRoot: string, shouldOverwrite: boolean): Init
 
 /*
  * Recover the existing file's `paths.ignore` and `minimumSeverity` blocks before `init --force`
- * overwrites it. Uses the permissive extractor (not the strict validator) so a pre-0.1.2 config
+ * overwrites it. Uses the permissive extractor (not the strict validator) so a pre-0.2.0 config
  * without `schemaVersion` still hands its curated entries to the regenerated file - the strict
  * gate would throw on the missing field and silently drop the user's `paths.ignore`. The
  * try/catch swallows IO/parse errors and returns empty values so a malformed existing config

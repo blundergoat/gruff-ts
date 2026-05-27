@@ -285,14 +285,31 @@ rules:
   assert.equal(report.findings.some((finding) => finding.ruleId === "complexity.npath"), true);
 });
 
-test("rule threshold config requires one value and one severity", () => {
+test("rule config accepts threshold-only and severity-only overrides", () => {
+  // The public list-rules surface advertises `rules.<id>.severity` as an independent knob, and many
+  // rules have no `threshold` at all (e.g. security.eval-call, waste.any-type). Each field is
+  // independently optional; the validator must not require them to appear together.
+  // Threshold-only: file-length threshold 5 on an 8-line fixture must load cleanly AND fire the
+  // rule with the descriptor's default severity (warning, untouched by this config).
+  const longFixture = `${"const v = 1;\n".repeat(7)}export {};\n`;
+  const thresholdOnly = analyseProject({ "long.ts": longFixture }, { config: { rules: { "size.file-length": { threshold: 5 } } } });
+  const thresholdFinding = thresholdOnly.findings.find((finding) => finding.ruleId === "size.file-length");
+  assert.equal(thresholdFinding?.severity, "warning", "threshold-only override leaves the default severity in place");
+  // Severity-only: change size.file-length to advisory without touching its threshold (750 default).
+  // The same 8-line fixture is below the default threshold so the rule does not fire; the config
+  // simply must load without the prior "configured together" rejection.
+  const severityOnly = analyseProject({ "long.ts": longFixture }, { config: { rules: { "size.file-length": { severity: "advisory" } } } });
+  assert.equal(severityOnly.findings.some((finding) => finding.ruleId === "size.file-length"), false, "fixture is below the default 750-line threshold");
+});
+
+test("rule config still rejects malformed threshold or severity types", () => {
   assert.throws(
-    () => analyseProject({ "bad.ts": "export const value = 1;\n" }, { config: { rules: { "size.file-length": { threshold: 3 } } } }),
-    /threshold" and "severity" must be configured together/,
+    () => analyseProject({ "bad.ts": "export const value = 1;\n" }, { config: { rules: { "size.file-length": { threshold: "huge" } } } }),
+    /"threshold" must be numeric/,
   );
   assert.throws(
-    () => analyseProject({ "bad.ts": "export const value = 1;\n" }, { config: { rules: { "size.file-length": { severity: "warning" } } } }),
-    /threshold" and "severity" must be configured together/,
+    () => analyseProject({ "bad.ts": "export const value = 1;\n" }, { config: { rules: { "size.file-length": { severity: "boom" } } } }),
+    /"severity" must be "advisory", "warning", or "error"/,
   );
 });
 

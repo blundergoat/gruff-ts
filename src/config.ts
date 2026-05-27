@@ -220,18 +220,23 @@ function ruleConfigValue(rule: Record<string, unknown>): RuleOverride {
   return ruleOverride;
 }
 
-/** Validates the public threshold/severity pair contract and throws before malformed rule options are parsed. */
+/*
+ * Validates individual `threshold` and `severity` types. Either, neither, or both may be present:
+ * many rules have no `threshold` knob at all (security.eval-call, waste.any-type, etc.), so a
+ * "must be configured together" gate would block any severity-only override on those rules even
+ * though `gruff-ts list-rules <id>` advertises `rules.<id>.severity` as a public knob. Each field
+ * is independently optional and falls through to the descriptor default when absent.
+ *
+ * Throws ConfigLoadError when `threshold` is present but non-numeric, or when `severity` is
+ * present but not one of `advisory|warning|error`. Returns silently when both fields are absent
+ * (the common case for `enabled`-only or options-only overrides).
+ */
 function assertRuleThresholdConfig(rule: Record<string, unknown>): void {
-  const hasThreshold = "threshold" in rule;
-  const hasSeverity = "severity" in rule;
-  if (hasThreshold && typeof rule.threshold !== "number") {
+  if ("threshold" in rule && typeof rule.threshold !== "number") {
     throw new ConfigLoadError('Rule config key "threshold" must be numeric.', SUGGEST_EDIT_CONFIG);
   }
-  if (hasSeverity && !isSeverity(rule.severity)) {
+  if ("severity" in rule && !isSeverity(rule.severity)) {
     throw new ConfigLoadError('Rule config key "severity" must be "advisory", "warning", or "error".', SUGGEST_EDIT_CONFIG);
-  }
-  if (hasThreshold !== hasSeverity) {
-    throw new ConfigLoadError('Rule config keys "threshold" and "severity" must be configured together.', SUGGEST_EDIT_CONFIG);
   }
 }
 
