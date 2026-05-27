@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0 - 2026-05-27
+## v0.2.0 - 2026-05-28
 
 Cross-format Pillars table, per-command gating defaults, JSON schema bumps (`v1` → `v2`), exported-doc rule split, a rule-precision sweep, config schema-versioning, and a code-review sweep against PR #4 feedback. Cut as a pre-1.0 minor bump because the cumulative rule-emission changes (new exported-doc surface, tightened naming/test-quality exemptions, schemaVersion requirement) materially shift findings for downstream consumers.
 
