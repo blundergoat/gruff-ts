@@ -5,11 +5,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { cwd } from "node:process";
 import { basename, join } from "node:path";
 import { applyBaseline, dedupeFindings, DEFAULT_BASELINE, recordHistory, writeBaseline } from "./baseline.ts";
+import { changedRegionScope, filterChangedFindings, filterChangedSources } from "./changed-regions.ts";
 import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { changedFiles, finding } from "./findings-helpers.ts";
+import { finding } from "./findings-helpers.ts";
 import { commentRecords } from "./comment-scanner.ts";
 import { analyseArchitectureRules, analyseTestAdequacyRules, buildProjectIndex, exportedSurface, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
 import { analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks, parameterNames } from "./blocks.ts";
@@ -38,7 +39,8 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
   const config = loadConfig(projectRoot, options);
   const diagnostics: RunDiagnostic[] = [];
   const discovery = discoverSources(projectRoot, options, config);
-  filterDiffSources(discovery, options);
+  const changedScope = changedRegionScope(options);
+  discovery.files = filterChangedSources(discovery.files, changedScope);
   pushMissingPathDiagnostics(discovery.missingPaths, diagnostics);
 
   const scanned = scanDiscoveredSources(discovery.files, config, diagnostics);
@@ -47,12 +49,13 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
     ...analyseProjectIndex(scanned.projectSources, config).filter((finding) => ruleEnabled(config, finding.ruleId)),
   ]);
   const baselineResult = applyBaselineOptions(projectRoot, options, allFindings);
+  const changedResult = filterChangedFindings(baselineResult.findings, changedScope, scanned.sources);
 
   if (options.historyFile) {
-    recordHistory(projectRoot, options.historyFile, baselineResult.findings, diagnostics);
+    recordHistory(projectRoot, options.historyFile, changedResult.findings, diagnostics);
   }
 
-  return buildAnalysisReport(projectRoot, options, discovery, diagnostics, baselineResult);
+  return buildAnalysisReport(projectRoot, options, discovery, diagnostics, { ...baselineResult, findings: changedResult.findings }, changedResult.suppressedCount);
 }
 
 function buildAnalysisReport(
@@ -61,6 +64,7 @@ function buildAnalysisReport(
   discovery: DiscoverySummary,
   diagnostics: RunDiagnostic[],
   baselineResult: BaselineApplication,
+  suppressedCount?: number,
 ): AnalysisReport {
   const findings = baselineResult.findings;
   return {
@@ -80,6 +84,7 @@ function buildAnalysisReport(
     },
     diagnostics,
     findings,
+    ...(suppressedCount === undefined ? {} : { suppressedCount }),
     score: scoreReport(findings),
     ...(baselineResult.baseline ? { baseline: baselineResult.baseline } : {}),
   };
@@ -98,6 +103,7 @@ interface DiscoverySummary {
 interface SourceScanResult {
   findings: Finding[];
   projectSources: ProjectSource[];
+  sources: Map<string, { file: SourceFile; source: string }>;
 }
 
 /*
@@ -115,16 +121,6 @@ interface BaselineApplication {
 interface BaselineSelection {
   path: string;
   source: string;
-}
-
-// Mutates `discovery.files` in place to retain only paths that changed against the diff base.
-// Required when `--diff` is set so the scan does not waste time on unchanged files; no-op otherwise.
-function filterDiffSources(discovery: DiscoverySummary, options: AnalysisOptions): void {
-  if (!options.diff) {
-    return;
-  }
-  const changed = changedFiles(options.diff);
-  discovery.files = discovery.files.filter((file) => changed.has(file.displayPath));
 }
 
 // Emits a `missing-path` diagnostic per path that the user requested but discovery could not
@@ -147,9 +143,11 @@ function pushMissingPathDiagnostics(missingPaths: string[], diagnostics: RunDiag
 function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics: RunDiagnostic[]): SourceScanResult {
   const findings: Finding[] = [];
   const projectSources: ProjectSource[] = [];
+  const sources = new Map<string, { file: SourceFile; source: string }>();
   for (const file of files) {
     try {
       const source = readFileSync(file.absolutePath, "utf8");
+      sources.set(file.displayPath, { file, source });
       if (shouldRetainProjectSource(file, source)) {
         projectSources.push(projectSource(file, source));
       }
@@ -164,7 +162,7 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
       });
     }
   }
-  return { findings, projectSources };
+  return { findings, projectSources, sources };
 }
 
 // Retains production files for exported-surface checks, tests for central-suite import coverage,

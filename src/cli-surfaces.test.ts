@@ -164,6 +164,9 @@ test("console globals suppress normal output and completion emits a script", () 
 
   const analyseHelp = execFileSync("./bin/gruff-ts", ["analyse", "--help"], { encoding: "utf8" });
   assert.match(analyseHelp, /sarif/);
+  assert.match(analyseHelp, /--changed-ranges <ranges>/);
+  assert.match(analyseHelp, /--since <ref>/);
+  assert.match(analyseHelp, /--changed-scope <scope>/);
 });
 
 test("summary CLI prints compact scan digest without per-finding spam", () => {
@@ -245,6 +248,7 @@ test("json report uses schema version", () => {
     format: "json",
     failOn: "none",
     shouldIncludeIgnored: false,
+    changedScope: "symbol",
     shouldSkipBaseline: true,
   });
   const rendered = renderReport(report, "json");
@@ -464,7 +468,7 @@ test("html report uses dashboard parity anchors and escapes values", () => {
     assert.match(rendered, new RegExp(`class="${anchor}`));
   });
   assert.match(rendered, /gruff-ts/);
-  assert.match(rendered, /ts\/js code quality/);
+  assert.match(rendered, /inspected for human sign-off/);
   assert.match(rendered, /src\/&lt;bad&gt;\.ts/);
   assert.match(rendered, /docs\.&lt;script&gt;/);
   assert.match(rendered, /Message with &lt;script&gt;alert\(1\)&lt;\/script&gt;/);

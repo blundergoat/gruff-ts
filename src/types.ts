@@ -24,6 +24,9 @@ export type OutputFormat = "text" | "json" | "html" | "markdown" | "github" | "h
 /** Minimum severity that causes a non-zero CLI exit. */
 export type FailThreshold = "none" | "advisory" | "warning" | "error";
 
+/** Changed-region filter precision for diff-aware analysis. */
+export type ChangedScopeMode = "symbol" | "hunk";
+
 /** Public options contract consumed by the analyzer core and CLI. */
 export interface AnalysisOptions {
   paths: string[];
@@ -33,6 +36,10 @@ export interface AnalysisOptions {
   failOn: FailThreshold;
   shouldIncludeIgnored: boolean;
   diff?: string;
+  since?: string;
+  changedRanges?: string;
+  changedScope: ChangedScopeMode;
+  diffPatch?: string;
   historyFile?: string;
   baseline?: string;
   generateBaseline?: string;
@@ -108,6 +115,7 @@ export interface AnalysisReport {
   paths: { analysedFiles: number; ignoredPaths: string[]; missingPaths: string[] };
   diagnostics: RunDiagnostic[];
   findings: Finding[];
+  suppressedCount?: number;
   score: {
     composite: number;
     grade: string;

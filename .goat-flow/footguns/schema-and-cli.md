@@ -1,9 +1,15 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-05-27
+last_reviewed: 2026-05-30
 ---
 
 # Schema + CLI surface footguns
+
+## Footgun: docs, milestone plans, and these footguns still point at the pre-split `src/cli.ts`
+
+**Status:** active | **Created:** 2026-05-30 | **Evidence:** OBSERVED (1.0.0 plan audit)
+
+`src/cli.ts` was split into focused modules and is now a ~22-line shell, but many durable docs were never refreshed: they still say "in `src/cli.ts`" for symbols that moved, and still cite `gruff.analysis.v1` (the v1->v2 analysis bump shipped in 0.2.0). Verified relocations: `exitFor` -> `src/scoring.ts` (search: `function exitFor`); `analyse` -> `src/analyser.ts`; `buildProgram` / `normalizeOptions` -> `src/cli-program.ts`; `changedFiles` -> `src/findings-helpers.ts`; `writeBaseline` / `applyBaseline` -> `src/baseline.ts`; `makeFinding` -> `src/findings.ts`; `RULE_DESCRIPTORS` / `ruleDescriptors` -> `src/rules.ts`; `isDefaultIgnoredDir` -> `src/discovery.ts`. Stale carriers include `.goat-flow/architecture.md` (it said `exitFor` was in `cli-program.ts`), every `.goat-flow/tasks/1.0.0/M0x`-`M2x` plan's "Read first" list and `rg ... src/cli.ts` gates, and the entries in this very file. Always grep the `search:` anchor against current source; treat any file path or schema version stated in a doc or plan as advisory until confirmed. A `rg ... src/cli.ts` static-check gate now matches nothing and silently "passes."
 
 ## Footgun: routing migration-path reads through the strict schema validator silently clobbers user state
 
@@ -27,11 +33,9 @@ Standing rule for any new CLI surface that wraps user input: rewrap raw producer
 
 ## Footgun: schema version strings are public contract
 
-## Footgun: schema version strings are public contract
+**Status:** active | **Created:** 2026-05-10 | **Updated:** 2026-05-30 | **Evidence:** OBSERVED
 
-**Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
-
-Three string literals in `src/cli.ts` are part of the public output contract: `gruff.analysis.v1` (set in `analyse`, search: `schemaVersion: "gruff.analysis.v1"`), `gruff.baseline.v1` (`writeBaseline` / `applyBaseline`), and `gruff.hotspot.v1` (`renderReport` hotspot branch). Downstream consumers (CI integrations, baseline files already on disk) match on these strings exactly. `applyBaseline` even throws `unsupported baseline schema` on mismatch - bumping the baseline version invalidates every existing `gruff-baseline.json` in users' repos. Bump only when the user explicitly asks AND a migration story is in place.
+Three string literals are part of the public output contract: `gruff.analysis.v2` (set in `src/analyser.ts`:`analyse`, search: `schemaVersion: "gruff.analysis.v2"`), `gruff.baseline.v1` (`src/baseline.ts`:`writeBaseline` / `applyBaseline`), and `gruff.hotspot.v1` (`src/report-renderers.ts`:`renderReport` hotspot branch). The `analysis` schema bumped v1->v2 in 0.2.0; `baseline` and `hotspot` remain v1. Downstream consumers (CI integrations, baseline files already on disk) match on these strings exactly. `applyBaseline` even throws `unsupported baseline schema` on mismatch - bumping the baseline version invalidates every existing `gruff-baseline.json` in users' repos. Bump only when the user explicitly asks AND a migration story is in place.
 
 ## Footgun: `exitFor` returns 2 on ANY diagnostic, regardless of `--fail-on`
 
@@ -55,7 +59,7 @@ Three string literals in `src/cli.ts` are part of the public output contract: `g
 
 **Status:** active | **Created:** 2026-05-24 | **Evidence:** OBSERVED
 
-`writeDefaultConfig` (`src/init-config.ts`, search: `function writeDefaultConfig`) overwrites `.gruff-ts.yaml` with the registry-derived default whenever `--force` is set. As of 2026-05-24 the function preserves the existing `paths.ignore` block (via `readExistingIgnoredPaths`, search: `function readExistingIgnoredPaths`) — reading it from whichever supported config exists (precedence-aware via `existingConfigPath`, search: `existingConfigPath !== undefined ? readExistingIgnoredPaths`) so non-canonical `.gruff.yaml`/`.yml`/`.json` incumbents also keep their entries — but **everything else is still clobbered**: `allowlists.acceptedAbbreviations` custom entries, any per-rule `threshold`/`severity`/`options` tuning, disabled rules, and so on revert to the rendered defaults. A real incident in 2026-05 dropped a project's curated `paths.ignore` (`.agents/**`, `.claude/**`, `.codex/**`, `.github/**`, `.goat-flow/**`, `fixtures/**`) when init was rerun without `--force` protections; the regression was only noticed after the commit had been pushed. When editing the init flow: NEVER add a new regenerated section without either (a) reading the existing value and preserving it, or (b) writing a loud stderr warning that lists what is about to be lost. When asked to regenerate the config in a real project: review the diff before committing - `git diff -- .gruff-ts.yaml` is the only thing standing between the user and a silent customisation loss.
+`writeDefaultConfig` (`src/init-config.ts`, search: `function writeDefaultConfig`) overwrites `.gruff-ts.yaml` with the registry-derived default whenever `--force` is set. As of 2026-05-24 the function preserves the existing `paths.ignore` block (via `readExistingIgnoredPaths`, search: `function readExistingIgnoredPaths`) - reading it from whichever supported config exists (precedence-aware via `existingConfigPath`, search: `existingConfigPath !== undefined ? readExistingIgnoredPaths`) so non-canonical `.gruff.yaml`/`.yml`/`.json` incumbents also keep their entries - but **everything else is still clobbered**: `allowlists.acceptedAbbreviations` custom entries, any per-rule `threshold`/`severity`/`options` tuning, disabled rules, and so on revert to the rendered defaults. A real incident in 2026-05 dropped a project's curated `paths.ignore` (`.agents/**`, `.claude/**`, `.codex/**`, `.github/**`, `.goat-flow/**`, `fixtures/**`) when init was rerun without `--force` protections; the regression was only noticed after the commit had been pushed. When editing the init flow: NEVER add a new regenerated section without either (a) reading the existing value and preserving it, or (b) writing a loud stderr warning that lists what is about to be lost. When asked to regenerate the config in a real project: review the diff before committing - `git diff -- .gruff-ts.yaml` is the only thing standing between the user and a silent customisation loss.
 
 ## Footgun: pre-existing `M <config>` in git status at session start may already represent a customisation loss
 

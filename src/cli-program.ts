@@ -1,6 +1,6 @@
 // Commander CLI shell wiring that keeps option normalization and stdout behavior outside the analyzer.
 import { Command, Help, InvalidArgumentError } from "commander";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { cwd } from "node:process";
@@ -173,7 +173,10 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--format <format>", "Output format: text, json, html, markdown, github, hotspot, or sarif.", "text")
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "advisory")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
-    .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
+    .option("--changed-ranges <ranges>", "Filter findings to changed regions, for example 3-3,8-10.")
+    .option("--since <ref>", "Filter findings to regions changed against a git base ref.")
+    .option("--diff [mode]", "Filter findings to changed regions. Use working-tree, staged, unstaged, a base ref, or - for unified diff on stdin.")
+    .option("--changed-scope <scope>", "Changed-region scope: symbol or hunk.", "symbol")
     .option("--history-file <path>", "Append score trend history to this JSON file.")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
@@ -397,13 +400,14 @@ function summaryPathLabel(paths: string[], projectRoot: string): string {
 function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, context: NormalizeContext): AnalysisOptions {
   const format = stringChoice(rawOptions.format, ["text", "json", "html", "markdown", "github", "hotspot", "sarif"], "text");
   const failOn = stringChoice(rawOptions.failOn, ["none", "advisory", "warning", "error"], "advisory");
+  const diffInput = diffOption(paths, rawOptions);
   const baselineValue = rawOptions.baseline;
   const shouldSkipBaseline =
     !context.shouldAllowBaselineFlag ||
     baselineValue === false ||
     rawOptions.noBaseline === true;
   return {
-    paths,
+    paths: diffInput.paths,
     ...configOption(rawOptions),
     shouldSkipConfig:
       rawOptions.config === false ||
@@ -411,7 +415,10 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
     format,
     failOn,
     shouldIncludeIgnored: rawOptions.includeIgnored === true,
-    ...diffOption(rawOptions),
+    changedScope: stringChoice(rawOptions.changedScope, ["symbol", "hunk"], "symbol"),
+    ...diffInput.options,
+    ...changedRangesOption(rawOptions),
+    ...sinceOption(rawOptions),
     ...historyFileOption(rawOptions),
     ...baselineOption(baselineValue, context),
     ...generateBaselineOption(rawOptions),
@@ -425,13 +432,26 @@ function configOption(rawOptions: Record<string, unknown>): Partial<Pick<Analysi
   return typeof rawOptions.config === "string" ? { config: rawOptions.config } : {};
 }
 
-// `--diff` without an argument means "working-tree". A boolean `true` arrives when Commander parsed
-// the flag standalone; an explicit string keeps whatever ref the user passed (e.g., `main`).
-function diffOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "diff">> {
+// `--diff` without an argument means "working-tree". `--diff -` is accepted even when Commander
+// treats `-` as a positional path, so stdin-diff callers can use the documented spacing form.
+function diffOption(paths: string[], rawOptions: Record<string, unknown>): { paths: string[]; options: Partial<Pick<AnalysisOptions, "diff" | "diffPatch">> } {
   if (typeof rawOptions.diff === "string") {
-    return { diff: rawOptions.diff };
+    return rawOptions.diff === "-"
+      ? { paths, options: { diff: "-", diffPatch: readFileSync(0, "utf8") } }
+      : { paths, options: { diff: rawOptions.diff } };
   }
-  return rawOptions.diff === true ? { diff: "working-tree" } : {};
+  if (rawOptions.diff === true && paths[0] === "-") {
+    return { paths: paths.slice(1), options: { diff: "-", diffPatch: readFileSync(0, "utf8") } };
+  }
+  return rawOptions.diff === true ? { paths, options: { diff: "working-tree" } } : { paths, options: {} };
+}
+
+function changedRangesOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "changedRanges">> {
+  return typeof rawOptions.changedRanges === "string" ? { changedRanges: rawOptions.changedRanges } : {};
+}
+
+function sinceOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "since">> {
+  return typeof rawOptions.since === "string" ? { since: rawOptions.since } : {};
 }
 
 // Conditional spread keeps `historyFile` absent rather than `undefined` under exactOptionalPropertyTypes.

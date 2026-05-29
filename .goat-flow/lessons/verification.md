@@ -1,9 +1,19 @@
 ---
 category: verification
-last_reviewed: 2026-05-24
+last_reviewed: 2026-05-30
 ---
 
 # Verification lessons
+
+## Lesson: grep source for symbol locations; docs lag the cli.ts split
+
+**Created:** 2026-05-30
+
+**What happened:** While auditing the 1.0.0 milestone plans, I claimed `exitFor` lives in `src/cli-program.ts`, copying `.goat-flow/architecture.md`. The user's "double check" forced a grep, which showed `exitFor` is actually in `src/scoring.ts` - and that architecture.md itself was stale. The `src/cli.ts` split moved most symbols into focused modules, but architecture.md, the milestone plans, and `footguns/schema-and-cli.md` still cited `src/cli.ts` and `gruff.analysis.v1`.
+
+**Evidence:** `src/scoring.ts` + `(search: "function exitFor")`; the wrong source was `.goat-flow/architecture.md` (search: "severity-to-exit mapping lives"), since corrected to `src/scoring.ts`. See `footguns/schema-and-cli.md`, "docs ... still point at the pre-split src/cli.ts".
+
+**Prevention:** Before asserting any `file:symbol` location, grep current source for the symbol. Never quote a file path from architecture.md, a milestone "Read first" list, or a footgun - they predate the cli.ts split. Quote the grep result, not the doc.
 
 ## Lesson: run a no-diff control when a zero-tolerance perf gate fails
 **Created:** 2026-05-22

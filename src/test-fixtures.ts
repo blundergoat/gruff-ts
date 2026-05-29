@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { analyse } from "./cli.ts";
-import type { AnalysisReport } from "./cli.ts";
+import type { AnalysisReport, ChangedScopeMode } from "./types.ts";
 
 export const REPO_ROOT = cwd();
 export const HIGH_ENTROPY_FIXTURE_VALUE = ["Zx7pQ9vLm3N8sT2r", "Y6wK1dF4gH5jC0bR2"].join("");
@@ -39,6 +39,10 @@ export interface AnalyseProjectOptions {
   shouldIncludeIgnored?: boolean;
   shouldSkipConfig?: boolean;
   paths?: string[];
+  diff?: string;
+  since?: string;
+  changedRanges?: string;
+  changedScope?: ChangedScopeMode;
 }
 
 // Adds a fixture filename override for single-source test scans.
@@ -101,6 +105,10 @@ export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions)
     format: "json",
     failOn: "none",
     shouldIncludeIgnored: options.shouldIncludeIgnored ?? false,
+    ...(options.diff ? { diff: options.diff } : {}),
+    ...(options.since ? { since: options.since } : {}),
+    ...(options.changedRanges ? { changedRanges: options.changedRanges } : {}),
+    changedScope: options.changedScope ?? "symbol",
     shouldSkipBaseline: true,
   });
 }

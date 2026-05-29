@@ -4,6 +4,14 @@
 public rule catalogue used by `gruff-ts list-rules`; severity, confidence,
 thresholds, and option names are the defaults before project config overrides.
 
+The pillars are organised around one goal: making AI-generated code something a
+human who did not write it can verify by reading, trust as secure, and rely on as
+honestly tested rather than padded with low-signal ceremony. Complexity, size,
+naming, and documentation serve verifiability; security and sensitive-data serve
+safety where review is weakest; test-quality guards against coverage theatre. See
+[Philosophy](philosophy.md) for the intent behind the catalogue, including why a
+doc comment is expected even on a private one-liner.
+
 Use the CLI when you need machine-readable metadata:
 
 ```bash

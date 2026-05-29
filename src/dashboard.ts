@@ -87,6 +87,7 @@ function renderDashboardScan(response: ServerResponse, input: DashboardRouteInpu
       format: "html",
       failOn: "none",
       shouldIncludeIgnored: false,
+      changedScope: "symbol",
       shouldSkipBaseline: false,
     });
     writeHtmlResponse(response, 200, renderHtml(report, { projectRoot: input.root, scanPath: input.scanPath }));

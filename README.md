@@ -1,6 +1,20 @@
 # gruff-ts
 
-`gruff-ts` is an opinionated static analyser for TypeScript and JavaScript projects. The dependency-light Node.js CLI scans source, tests, package metadata, and common config files, then emits reports for terminals, CI annotations, SARIF consumers, static HTML, and a local dashboard. It is heuristic static analysis; run it beside `tsc`, ESLint, tests, dependency scanners, and code review, not instead of them.
+`gruff-ts` governs AI-generated code. Wired in as a coding-agent hook, it forces the agent to produce changes a human who did not write them can actually sign off on: legible enough to verify by reading, secure where the human eye slips, and tested for real behaviour instead of padded with low-signal ceremony. Mechanically it is a dependency-light, opinionated static analyser for TypeScript and JavaScript - it scans source, tests, package metadata, and common config files, then emits reports for terminals, CI annotations, SARIF consumers, static HTML, and a local dashboard. It is heuristic static analysis; run it beside `tsc`, ESLint, tests, dependency scanners, and code review, not instead of them.
+
+## Why gruff-ts Exists
+
+The reviewer of AI-generated code is not its author. A coding agent holds the full context while it writes; the human who has to read, review, and trust the result does not. Conventional linters optimise for the author who already understands the code and just wants it tidy. gruff-ts optimises for that reviewer instead, which is the position every human signing off on an agent's output is in.
+
+That goal breaks into three:
+
+- **Verifiable.** A reviewer can read the change and confirm it does what was asked, rather than re-deriving what the agent was thinking. The complexity, size, naming, and documentation pillars push toward code whose intent is visible on its face.
+- **Secure where the eye slips.** Human review reliably scans past a known set of unsafe patterns - disabled TLS verification, `eval` and dynamic `Function` construction, injection-shaped string building, committed secrets. The security and sensitive-data pillars catch those mechanically so the reviewer does not have to.
+- **Honestly tested.** A suite should raise confidence, not just coverage. The test-quality pillar flags low-signal ceremony - mock-only, snapshot-only, assertion-free, and tautological tests - so an agent cannot satisfy a "write tests" instruction with padding.
+
+Documentation rules carry extra weight here, which is why a doc comment is expected even on a private one-liner. Coding agents routinely produce code that superficially works while misunderstanding the requirement. Forcing the agent to state intent, usage, contract, and failure behaviour in prose gives a reviewer something to check the implementation against - a mismatch between the doc comment and the code is itself a signal that the change needs a deeper look.
+
+Used as a hook on an agent's output, gruff-ts is a forcing function rather than advice: a finding is friction the agent must resolve before the change reaches a human, so what finally lands is already shaped for sign-off. See [Philosophy](docs/philosophy.md) for the longer form.
 
 ## Status At A Glance
 
@@ -201,6 +215,16 @@ npx gruff-ts analyse . --diff=staged --format=json --fail-on=none
 ```
 
 `--diff` accepts `working-tree`, `staged`, `unstaged`, or a base ref. `report` renders raw inspection output and does not accept `--baseline`; use `analyse` when baseline suppression matters.
+
+Changed-region scans keep only findings attributable to the changed hunk or its enclosing symbol:
+
+```bash
+npx gruff-ts analyse --format=json --changed-ranges "3-3,8-10" src/foo.ts
+npx gruff-ts analyse --format=json --since HEAD src/foo.ts
+git diff | npx gruff-ts analyse --format=json --diff -
+```
+
+JSON output keeps the normal `findings` array and adds `suppressedCount` when changed-region filtering is active.
 
 ## Dashboard
 

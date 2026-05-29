@@ -19,6 +19,7 @@ const BASE_OPTIONS: AnalysisOptions = {
   format: "json",
   failOn: "none",
   shouldIncludeIgnored: false,
+  changedScope: "symbol",
   shouldSkipBaseline: true,
 };
 
