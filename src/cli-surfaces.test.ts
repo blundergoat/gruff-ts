@@ -263,7 +263,7 @@ const SARIF_FIXTURE_REPORT: AnalysisReport = {
   tool: { name: "gruff-ts", version: "0.1.0-test" },
   run: { projectRoot: "/tmp/project", format: "sarif", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 1, warning: 1, error: 1, total: 3 },
-  paths: { analysedFiles: 1, ignoredPaths: [], missingPaths: [] },
+  paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
   findings: [
     { ruleId: "security.eval-call", message: "Avoid eval().", filePath: "./src\\bad.ts", line: 7, endLine: 10, column: 3, severity: "error", pillar: "security", secondaryPillars: ["sensitive-data"], tier: "v0.1", confidence: "high", symbol: "run", remediation: "Use a dispatch table.", metadata: { target: "eval" }, fingerprint: "abc123" },
@@ -447,7 +447,7 @@ const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
   tool: { name: "gruff-ts", version: "0.1.0-test<script>" },
   run: { projectRoot: "/tmp/project", format: "html", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 0, warning: 1, error: 1, total: 2 },
-  paths: { analysedFiles: 1, ignoredPaths: [], missingPaths: [] },
+  paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
   findings: [
     { ruleId: "docs.<script>", message: "Message with <script>alert(1)</script>", filePath: "src/<bad>.ts", line: 7, severity: "warning", pillar: "documentation", secondaryPillars: [], tier: "v0.1", confidence: "high", symbol: "badSymbol", metadata: {}, fingerprint: "abc123" },

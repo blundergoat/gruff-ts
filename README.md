@@ -20,18 +20,18 @@ Used as a hook on an agent's output, gruff-ts is a forcing function rather than 
 
 | Field | Value |
 | --- | --- |
-| Release line | Published `0.2.0` package line |
+| Release line | Published `1.0.0` package line |
 | Runtime | Node.js `22+` |
 | Package | `@blundergoat/gruff-ts` |
 | Binary | `gruff-ts` |
-| Rule catalogue | 119 rules across 11 pillars |
+| Rule catalogue | 120 rules across 11 pillars |
 | Primary config | `.gruff-ts.yaml`; `.gruff.json`, `.gruff.yaml`, and `.gruff.yml` are fallback files |
 | Analysis schema | `gruff.analysis.v2` |
 | Baseline schema | `gruff.baseline.v1` |
 | Severity gate | `--fail-on` with `none`, `advisory`, `warning`, `error` |
 | Dashboard | `127.0.0.1:8767` by default |
 
-Scanned file types include TypeScript, JavaScript, CSS, JSON, YAML, TOML, INI, XML, and `.env*`.
+Scanned file types include TypeScript, JavaScript, JSON, YAML, TOML, INI, XML, and `.env*`.
 
 ## Requirements
 
@@ -92,6 +92,7 @@ Open `http://127.0.0.1:8767/` for the dashboard.
 | `report [paths...]` | Render an HTML or JSON report to stdout or `--output`. |
 | `init` | Write the default `.gruff-ts.yaml` to the current directory (`--force` to overwrite). |
 | `list-rules` | Print rule metadata as text or JSON. |
+| `check-ignore <paths...>` | Report whether each path is ignored (config, gitignore, or default) with the matching source and pattern; runs no analysis. |
 | `dashboard` | Serve the local browser dashboard. |
 | `completion [shell]` | Print a shell completion script for `bash`, `zsh`, or `fish`. |
 | `list`, `help` | Show command lists and command-specific help. |
@@ -179,7 +180,7 @@ See [Configuration](docs/configuration.md) for the full config shape.
 
 ## Rules And Pillars
 
-The v0.1 catalogue contains 119 rules:
+The v0.1 catalogue contains 120 rules:
 
 | Pillar | Rules |
 | --- | ---: |
@@ -191,8 +192,8 @@ The v0.1 catalogue contains 119 rules:
 | `modernisation` | 14 |
 | `naming` | 10 |
 | `security` | 27 |
-| `sensitive-data` | 8 |
-| `size` | 4 |
+| `sensitive-data` | 10 |
+| `size` | 3 |
 | `test-quality` | 15 |
 
 Use `npx gruff-ts list-rules --format=json` for exact rule IDs, severities, confidence levels, remediation text, thresholds, and options.

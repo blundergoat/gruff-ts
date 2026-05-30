@@ -106,13 +106,34 @@ export interface RunDiagnostic {
   line?: number;
 }
 
-/** Stable gruff.analysis.v2 report schema returned by analyse and JSON report commands. */
+/**
+ * Source that excluded a path from analysis. `config` (`paths.ignore`) is authoritative in every
+ * invocation mode - explicit file operands and diff/changed-region runs included - and is never
+ * overridden by `--include-ignored`. `gitignore` and `default` are discovery-walk ignores: they are
+ * suppressed by `--include-ignored` and bypassed for an explicitly supplied file operand (ADR-003).
+ */
+export type IgnoreSource = "config" | "gitignore" | "default";
+
+/** One path excluded from analysis, with the ignore source and the exact pattern that matched. */
+export interface SkippedPath {
+  path: string;
+  source: IgnoreSource;
+  pattern: string;
+}
+
+/**
+ * Stable gruff.analysis.v2 report schema returned by analyse and JSON report commands.
+ *
+ * `paths.skipped` (added in 1.0.0, ADR-007) is an additive field: each entry carries the excluded
+ * `path`, the ignore `source`, and the matching `pattern`. `paths.ignoredPaths` is retained as the
+ * back-compatible `string[]` of the same paths, so existing v2 consumers keep working without change.
+ */
 export interface AnalysisReport {
   schemaVersion: "gruff.analysis.v2";
   tool: { name: "gruff-ts"; version: string };
   run: { projectRoot: string; format: OutputFormat; failOn: FailThreshold; generatedAt: string };
   summary: { advisory: number; warning: number; error: number; total: number };
-  paths: { analysedFiles: number; ignoredPaths: string[]; missingPaths: string[] };
+  paths: { analysedFiles: number; ignoredPaths: string[]; skipped: SkippedPath[]; missingPaths: string[] };
   diagnostics: RunDiagnostic[];
   findings: Finding[];
   suppressedCount?: number;

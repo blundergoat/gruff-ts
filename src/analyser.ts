@@ -26,7 +26,7 @@ import { analyseProjectConfigRules } from "./project-config-rules.ts";
 import { scoreReport, summarize } from "./scoring.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
 import { maskNonCode, maskTemplateLiteralBodies, parseDiagnostics } from "./source-text.ts";
-import type { AnalysisOptions, AnalysisReport, Config, Finding, RunDiagnostic } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport, Config, Finding, RunDiagnostic, SkippedPath } from "./types.ts";
 
 /**
  * Analyse the configured paths and return the stable gruff.analysis.v2 report contract.
@@ -80,6 +80,7 @@ function buildAnalysisReport(
     paths: {
       analysedFiles: discovery.files.length,
       ignoredPaths: discovery.ignoredPaths,
+      skipped: discovery.skipped,
       missingPaths: discovery.missingPaths,
     },
     diagnostics,
@@ -95,6 +96,7 @@ function buildAnalysisReport(
 interface DiscoverySummary {
   files: SourceFile[];
   ignoredPaths: string[];
+  skipped: SkippedPath[];
   missingPaths: string[];
 }
 
@@ -287,18 +289,13 @@ function analyseProjectIndex(projectSources: ProjectSource[], config: Config): F
 }
 
 /*
- * Per-file text-pillar rules run before script-only rules because config, workflow, CSS, and
+ * Per-file text-pillar rules run before script-only rules because config, workflow, and
  * secret surfaces are not TypeScript. The order is a stable baseline contract: reshuffling these
  * checks changes same-line finding order for machine reports.
  */
 function analyseTextRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
   const lines = lineCount(source);
-  if (isCssPath(file.displayPath)) {
-    const stylesheetThreshold = threshold(config, "size.stylesheet-length", 1500);
-    if (lines > stylesheetThreshold) {
-      findings.push(finding({ ruleId: "size.stylesheet-length", message: `Stylesheet has ${lines} lines, above the threshold of ${stylesheetThreshold}.`, file, line: 1, severity: ruleSeverity(config, "size.stylesheet-length", "warning"), pillar: "size" }));
-    }
-  } else if (!isGeneratedLockfile(file.displayPath)) {
+  if (!isGeneratedLockfile(file.displayPath)) {
     const fileLengthThreshold = threshold(config, "size.file-length", 750);
     if (lines > fileLengthThreshold) {
       findings.push(finding({ ruleId: "size.file-length", message: `File has ${lines} lines, above the threshold of ${fileLengthThreshold}.`, file, line: 1, severity: ruleSeverity(config, "size.file-length", "warning"), pillar: "size" }));
@@ -308,12 +305,6 @@ function analyseTextRules(file: SourceFile, source: string, config: Config, find
   analyseSensitiveData(file, source, config, findings);
   analyseGithubActionsRules(file, source, findings);
   analyseProjectConfigRules(file, source, findings);
-}
-
-// CSS paths use a dedicated size rule (`size.stylesheet-length`) so stylesheets can have a
-// different threshold and message from generic source files.
-function isCssPath(displayPath: string): boolean {
-  return displayPath.toLowerCase().endsWith(".css");
 }
 
 // Counts the same logical lines as `source.split(/\r?\n/)` without allocating the full line array.

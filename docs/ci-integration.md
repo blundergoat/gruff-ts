@@ -54,6 +54,22 @@ TypeScript supports working-tree, staged, unstaged, and base-ref diff scans:
 ./bin/gruff-ts analyse src --diff=origin/main --format=json --fail-on=none
 ```
 
+## Ignored Paths
+
+Config `paths.ignore` is authoritative in every invocation mode - a matching
+path is excluded and produces no findings whether it is reached by a directory
+walk, passed explicitly, or touched by a diff. Each excluded path is reported in
+`paths.skipped` with its `source` and `pattern`. `--include-ignored` affects
+git-ignored and default-ignored paths only; it never overrides `paths.ignore`.
+
+`check-ignore` answers "would gruff skip this path?" without running a scan,
+mirroring `git check-ignore` exit codes (0 = at least one ignored, 1 = none,
+2 = error) - useful in a pre-scan hook step to drop out-of-scope changed files:
+
+```sh
+./bin/gruff-ts check-ignore src/generated/client.ts src/app.ts --format json
+```
+
 ## Check
 
 Run the local TypeScript gate before release:

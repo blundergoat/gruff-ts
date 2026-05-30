@@ -14,6 +14,8 @@ The gate is the exit code:
 
 ## Scan the change, not the repo
 
+> **Goal:** govern only the code the agent changed, not the whole repo - so the agent resolves findings in its own diff and a clean change is never blocked by pre-existing findings elsewhere.
+
 Gate the agent on what it actually touched, so a clean diff is not blocked by pre-existing findings elsewhere:
 
 ```bash
@@ -34,6 +36,18 @@ git diff | npx gruff-ts analyse --diff - --fail-on=warning
 ```
 
 Changed-region scans keep only findings attributable to the changed hunk or its enclosing symbol, so the agent fixes its own work instead of inheriting the whole backlog.
+
+## Respect the project's ignore policy
+
+A hook passes the agent's changed files directly, so the project's `paths.ignore` must hold for those explicit paths too - otherwise the agent burns loops "fixing" generated or vendored code the project deliberately excludes. Config `paths.ignore` is authoritative in every invocation (explicit operand, diff, changed-region): a matching path produces no findings and is listed in the report's `paths.skipped` with its `source` and `pattern`. `--include-ignored` opts into git/default ignores only and never overrides `paths.ignore`.
+
+To pre-filter a changed-file list before scanning, ask gruff which paths it would skip - it shares the same engine as `analyse` and runs no analysis:
+
+```bash
+# Which of the agent's changed files would gruff skip?
+gruff-ts check-ignore $CHANGED_FILES --format json
+# exit 0 = at least one ignored, 1 = none, 2 = config error
+```
 
 ## Picking the gate level
 

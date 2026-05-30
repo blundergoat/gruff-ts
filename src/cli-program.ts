@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { cwd } from "node:process";
 import { DEFAULT_BASELINE } from "./baseline.ts";
+import { checkIgnore, checkIgnoreExitCode, renderCheckIgnore, type CheckIgnoreFormat } from "./check-ignore.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
 import { loadConfig, minimumSeverityFor } from "./config.ts";
 import { VERSION } from "./constants.ts";
@@ -101,6 +102,7 @@ export function buildProgram(runAnalyse: AnalyseRunner): Command {
   const program = new Command();
   configureRootProgram(program);
   registerAnalyseCommand(program, runAnalyse);
+  registerCheckIgnoreCommand(program);
   registerCompletionCommand(program);
   registerDashboardCommand(program, runAnalyse);
   registerInitCommand(program);
@@ -191,6 +193,45 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
         process.exitCode = exitFor(report, options.failOn);
       });
     });
+}
+
+// Reports whether gruff would exclude each path from analysis, with the matching ignore source and
+// pattern, using the exact engine `analyse` uses (no second glob implementation) and performing no
+// analysis. Built for coding-agent hooks: gate the changed-file list before scanning. Exit codes
+// mirror `git check-ignore` (0 = at least one ignored, 1 = none); a config error surfaces as 2 via
+// `runWithConfigErrorHandling`.
+function registerCheckIgnoreCommand(program: Command): void {
+  program
+    .command("check-ignore")
+    .description("Report whether gruff would ignore each path (config, gitignore, or default), with the matching source and pattern. Runs no analysis.")
+    .argument("<paths...>", "Paths to check against the ignore rules.")
+    .option("--config <path>", "Path to a gruff YAML config file.")
+    .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
+    .option("--format <format>", "Output format: text or json.", parseSummaryFormat, "text")
+    .action(async (paths: string[], rawOptions: Record<string, unknown>) => {
+      await runWithConfigErrorHandling(() => {
+        const results = checkIgnore(paths, checkIgnoreOptions(paths, rawOptions));
+        const format: CheckIgnoreFormat = rawOptions.format === "json" ? "json" : "text";
+        writeCommandOutput(program, renderCheckIgnore(results, format));
+        process.exitCode = checkIgnoreExitCode(results);
+      });
+    });
+}
+
+// Minimal AnalysisOptions for `check-ignore`: only the fields `loadConfig` and the ignore engine
+// read. `--config` / `--no-config` resolve identically to `analyse`; `shouldIncludeIgnored` is false
+// so default and gitignore matches are reported (config `paths.ignore` is reported regardless).
+function checkIgnoreOptions(paths: string[], rawOptions: Record<string, unknown>): AnalysisOptions {
+  return {
+    paths,
+    ...configOption(rawOptions),
+    shouldSkipConfig: rawOptions.config === false || rawOptions.noConfig === true,
+    format: "json",
+    failOn: "none",
+    shouldIncludeIgnored: false,
+    changedScope: "symbol",
+    shouldSkipBaseline: true,
+  };
 }
 
 // Emits the static completion script for the requested shell. Does not touch the filesystem or

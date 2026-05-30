@@ -1,5 +1,5 @@
 // Shared release constants that keep CLI, reports, and rule catalogue output in sync.
-const VERSION = "0.2.0";
+const VERSION = "1.0.0";
 
 /*
  * Threshold at which the `analyse` text renderer appends a one-line pointer to `gruff-ts summary`.

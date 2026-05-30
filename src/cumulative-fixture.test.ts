@@ -89,7 +89,6 @@ const expandedRuleIds = new Set([
   "test-quality.snapshot-only-test",
   "test-quality.trivial-assertion",
   "test-quality.unused-mock",
-  "size.stylesheet-length",
   "waste.commented-out-code",
   "waste.empty-function",
   "waste.exported-any",
@@ -104,7 +103,7 @@ const expandedRuleIds = new Set([
 ]);
 
 test("cumulative expanded fixture covers every new rule with unique fingerprints", () => {
-  const report = analyseProject(cumulativeExpandedFixtureFiles(), cumulativeExpandedFixtureOptions());
+  const report = analyseProject(cumulativeExpandedFixtureFiles());
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   expandedRuleIds.forEach((ruleId: string) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
@@ -184,7 +183,6 @@ jobs:
       - run: echo "\${{ secrets.DEPLOY_TOKEN }}"
 `,
     "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
-    "styles/expanded.css": ".a { color: red; }\n.b { color: blue; }\n.c { color: green; }\n.d { color: yellow; }\n",
     "tsconfig.json": JSON.stringify({
       compilerOptions: {
         strict: false,
@@ -444,13 +442,4 @@ test("setup bloat", () => {
   expect(one).toBeDefined();
 });
 `;
-}
-
-/*
- * Low stylesheet-length threshold lets a tiny CSS file stand in for a 1500+ line stylesheet,
- * intentional because inflating the cumulative fixture corpus would slow every test run without
- * adding behavioural coverage.
- */
-function cumulativeExpandedFixtureOptions(): Parameters<typeof analyseProject>[1] {
-  return { config: { rules: { "size.stylesheet-length": { threshold: 3, severity: "warning" } } } };
 }

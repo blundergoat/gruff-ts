@@ -22,6 +22,9 @@ export const DISCORD_WEBHOOK_FIXTURE_VALUE = [
 ].join("/");
 export const NPM_AUTH_TOKEN_FIXTURE_VALUE = ["npmAuthToken", "AbCdEfGhIjKlMnOp", "QrStUvWxYz123456"].join("");
 export const SSN_FIXTURE_VALUE = ["123", "45", "6789"].join("-");
+export const MBI_FIXTURE_VALUE = "1EG4TE5MK73";
+export const MRN_FIXTURE_VALUE = "00489912";
+export const GCP_PRIVATE_KEY_ID_FIXTURE_VALUE = ["a1b2c3d4e5f6a7b8c9d0", "e1f2a3b4c5d6e7f8a9b0"].join("");
 export const AWS_ACCESS_KEY_FIXTURE_VALUE = ["AKIAABCDEFGH", "IJKLMNOP"].join("");
 export const PRIVATE_KEY_HEADER_FIXTURE_VALUE = ["-----BEGIN ", "PRIVATE KEY-----"].join("");
 export const POSTGRES_URL_FIXTURE_VALUE = ["postgres://user:sec", "ret@example.test/db"].join("");
@@ -329,8 +332,10 @@ DATABASE_URL=${POSTGRES_URL_FIXTURE_VALUE}
 JWT_TOKEN=${JWT_FIXTURE_VALUE}
 OPENAI_API_KEY=${OPENAI_KEY_FIXTURE_VALUE}
 PATIENT_SSN=${SSN_FIXTURE_VALUE}
+PATIENT_MBI=${MBI_FIXTURE_VALUE}
 API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
 `,
+      "credentials/service-account.json": `{"type": "service_account", "private_key_id": "${GCP_PRIVATE_KEY_ID_FIXTURE_VALUE}", "private_key": "-----BEGIN PRIVATE KEY-----\\nMIIfake\\n-----END PRIVATE KEY-----\\n", "client_email": "svc@project.iam.gserviceaccount.com"}`,
       "package.json": JSON.stringify({
         scripts: {
           postinstall: "node scripts/setup.js",
@@ -347,7 +352,6 @@ API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
       }),
       ".github/workflows/risky.yml": githubActionsCoverageWorkflowSource(),
       "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
-      "styles/component.css": ".one { color: red; }\n.two { color: blue; }\n.three { color: green; }\n.four { color: yellow; }\n",
       "tsconfig.json": JSON.stringify({
         compilerOptions: {
           strict: false,
@@ -626,7 +630,6 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
           "size.file-length": { threshold: 8, severity: "warning" },
           "size.function-length": { threshold: 8, severity: "warning" },
           "size.parameter-count": { threshold: 3, severity: "warning" },
-          "size.stylesheet-length": { threshold: 3, severity: "warning" },
           "test-quality.setup-bloat": { threshold: 2, severity: "advisory" },
         },
       },

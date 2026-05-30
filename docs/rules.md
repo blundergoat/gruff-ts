@@ -1,6 +1,6 @@
 # Rules
 
-`gruff-ts` exposes 119 rules across 11 pillars. This list is generated from the
+`gruff-ts` exposes 120 rules across 11 pillars. This list is generated from the
 public rule catalogue used by `gruff-ts list-rules`; severity, confidence,
 thresholds, and option names are the defaults before project config overrides.
 
@@ -28,8 +28,8 @@ gruff-ts list-rules --format=json
 - modernisation: 14
 - naming: 10
 - security: 27
-- sensitive-data: 8
-- size: 4
+- sensitive-data: 10
+- size: 3
 - test-quality: 15
 
 ## Complexity
@@ -135,9 +135,11 @@ gruff-ts list-rules --format=json
 - `sensitive-data.api-key-pattern` (error; high confidence): Flags vendor API key patterns.
 - `sensitive-data.aws-access-key` (error; high confidence): Flags AWS access key looking values.
 - `sensitive-data.database-url-password` (error; high confidence): Flags database URLs that include passwords.
+- `sensitive-data.gcp-service-account-key` (error; high confidence): Flags GCP service-account key files (type service_account alongside a private key).
 - `sensitive-data.hardcoded-env-value` (error; medium confidence; threshold 16): Flags environment-style secret values committed in text.
 - `sensitive-data.high-entropy-string` (error; medium confidence; threshold 32): Flags high-entropy string literals that may be secrets.
 - `sensitive-data.jwt-token` (error; high confidence): Flags JWT-looking token literals.
+- `sensitive-data.phi-pattern` (error; high confidence): Flags PHI identifiers such as Medicare (MBI) and medical record numbers.
 - `sensitive-data.pii-pattern` (error; high confidence): Flags PII-like identifier patterns.
 - `sensitive-data.private-key` (error; high confidence): Flags private key block markers.
 
@@ -146,7 +148,6 @@ gruff-ts list-rules --format=json
 - `size.file-length` (warning; high confidence; threshold 750): Flags files longer than the configured threshold.
 - `size.function-length` (warning; high confidence; threshold 200): Flags functions longer than the configured threshold.
 - `size.parameter-count` (warning; high confidence; threshold 7): Flags functions with too many parameters.
-- `size.stylesheet-length` (warning; high confidence; threshold 1500): Flags stylesheets longer than the configured threshold.
 
 ## Test Quality
 

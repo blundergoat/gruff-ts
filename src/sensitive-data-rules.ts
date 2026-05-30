@@ -24,6 +24,7 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
       "API key pattern detected.",
     ],
     ["sensitive-data.pii-pattern", /\b\d{3}-\d{2}-\d{4}\b/g, "PII-like identifier pattern detected."],
+    ["sensitive-data.phi-pattern", /\b[1-9][ACDEFGHJKMNPQRTUVWXY][ACDEFGHJKMNPQRTUVWXY0-9]\d[ACDEFGHJKMNPQRTUVWXY][ACDEFGHJKMNPQRTUVWXY0-9]\d[ACDEFGHJKMNPQRTUVWXY][ACDEFGHJKMNPQRTUVWXY]\d\d\b/g, "Medicare Beneficiary Identifier (PHI) pattern detected."],
   ];
 
   for (const [ruleId, pattern, message] of patterns) {
@@ -36,6 +37,36 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
   analyseHardcodedEnvironmentValues(file, source, config, findings);
   analyseNpmAuthTokens(file, source, config, findings);
   analyseHighEntropyStrings(file, source, config, findings);
+  analysePhiLabelledIdentifiers(file, source, config, findings);
+  analyseGcpServiceAccountKeys(file, source, config, findings);
+}
+
+// PHI beyond the MBI shape: medical-record-number assignments. Context-gated on an `MRN` / `medical
+// record` label so it never fires on bare integers, keeping it as precise as the env-value detector.
+function analysePhiLabelledIdentifiers(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
+  const lines = source.split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
+    const match = line.match(/\b(?:MRN|medical[\s_-]?record(?:[\s_-]?number)?)\b\s*[:=#]?\s*([0-9]{6,12})\b/i);
+    const value = match?.[1];
+    if (!value) {
+      continue;
+    }
+    pushSensitiveFinding(config, findings, file, "sensitive-data.phi-pattern", "Medical record number (PHI) detected.", index + 1, value, "high");
+  }
+}
+
+// GCP service-account key files carry `"type": "service_account"` next to a private key. Flag the file
+// once, anchored on the type line, redacting the `private_key_id` (or `client_email`); the raw key body
+// is separately covered by sensitive-data.private-key.
+function analyseGcpServiceAccountKeys(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
+  const typeMatch = source.match(/"type"\s*:\s*"service_account"/);
+  if (!typeMatch || !/"private_key(?:_id)?"\s*:\s*"|BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY/.test(source)) {
+    return;
+  }
+  const identifier = source.match(/"private_key_id"\s*:\s*"([^"]+)"/)?.[1]
+    ?? source.match(/"client_email"\s*:\s*"([^"]+)"/)?.[1]
+    ?? "service_account";
+  pushSensitiveFinding(config, findings, file, "sensitive-data.gcp-service-account-key", "GCP service-account key file detected.", byteLine(source, typeMatch.index ?? 0), identifier, "high");
 }
 
 // Stable redaction contract: parses `_authToken=` config lines even when values lack an npm_ prefix.

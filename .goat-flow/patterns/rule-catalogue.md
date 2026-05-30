@@ -30,7 +30,7 @@ last_reviewed: 2026-05-24
 5. **`.gruff-ts.yaml`** — delete the rule block (search: `<rule-id>:`) and any allowlist-comment block for a removed config field.
 
 6. **Tests** — at minimum:
-   - Per-rule test file (e.g. `src/naming-rules.test.ts`, `src/css-and-todo-rules.test.ts`) — drop the dedicated tests and any references in shared canonical lists such as `NAMING_PILLAR_RULE_IDS`.
+   - Per-rule test file (e.g. `src/naming-rules.test.ts`) - drop the dedicated tests and any references in shared canonical lists such as `NAMING_PILLAR_RULE_IDS`.
    - `src/test-fixtures.ts` — drop the rule from `catalogueCoverageOptions` (`function catalogueCoverageOptions`).
    - `src/rule-catalogue.test.ts` — drop the rule from `riskyRuleIdsRequiringNoisyValidProof` and the `riskyRuleQualityDoctrine` array if present.
    - `src/cli.test.ts` — drop dedicated tests AND remove the rule id from any `noisyRules` Set in the scanner-guardrail tests (`test("scanner guardrail fixtures keep noisy-valid …")`).

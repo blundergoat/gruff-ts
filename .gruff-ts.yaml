@@ -329,6 +329,9 @@ rules:
   # sensitive-data/error: Flags database URLs that include passwords.
   sensitive-data.database-url-password:
     enabled: true
+  # sensitive-data/error: Flags GCP service-account key files (type service_account alongside a private key).
+  sensitive-data.gcp-service-account-key:
+    enabled: true
   # sensitive-data/error: Flags environment-style secret values committed in text.
   sensitive-data.hardcoded-env-value:
     enabled: true
@@ -341,6 +344,9 @@ rules:
     severity: error
   # sensitive-data/error: Flags JWT-looking token literals.
   sensitive-data.jwt-token:
+    enabled: true
+  # sensitive-data/error: Flags PHI identifiers such as Medicare (MBI) and medical record numbers.
+  sensitive-data.phi-pattern:
     enabled: true
   # sensitive-data/error: Flags PII-like identifier patterns.
   sensitive-data.pii-pattern:
@@ -362,11 +368,6 @@ rules:
   size.parameter-count:
     enabled: true
     threshold: 7
-    severity: warning
-  # size/warning: Flags stylesheets longer than the configured threshold.
-  size.stylesheet-length:
-    enabled: true
-    threshold: 1500
     severity: warning
   # test-quality/advisory: Flags tests with conditional logic.
   test-quality.conditional-logic:

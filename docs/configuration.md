@@ -116,7 +116,21 @@ generated, node_modules, target, tmp, vendor
 
 Use `--include-ignored` when you intentionally want to scan default ignored
 directories and Git-ignored paths. Configured `paths.ignore` entries still
-apply.
+apply - `--include-ignored` never overrides them.
+
+`paths.ignore` is authoritative in every invocation mode (ADR-007): a matching
+path is excluded and produces no findings whether it is reached by a directory
+walk, passed as an explicit file operand (`gruff-ts analyse src/generated-client.ts`),
+or touched by a diff/changed-region run. Excluded paths appear in the report's
+`paths.skipped` array with their `source` (`config` / `gitignore` / `default`) and
+the matching `pattern`. Query a path without scanning via `check-ignore`, which
+shares the same engine and mirrors `git check-ignore` exit codes (0 = at least
+one ignored, 1 = none, 2 = error):
+
+```sh
+gruff-ts check-ignore src/generated-client.ts --format json
+# [ { "path": "src/generated-client.ts", "ignored": true, "source": "config", "pattern": "src/generated-client.ts" } ]
+```
 
 ## Allowlists
 
