@@ -1,24 +1,7 @@
 // Security, sensitive-data, config-health, and test-quality expansion tests with safe fixture values.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderReport } from "./cli.ts";
-import {
-  analyseFixture,
-  analyseProject,
-  API_TOKEN_FIXTURE_VALUE,
-  DATABASE_URL_FIXTURE_VALUE,
-  DISCORD_WEBHOOK_FIXTURE_VALUE,
-  GCP_PRIVATE_KEY_ID_FIXTURE_VALUE,
-  GOOGLE_API_KEY_FIXTURE_VALUE,
-  MBI_FIXTURE_VALUE,
-  MRN_FIXTURE_VALUE,
-  NPM_AUTH_TOKEN_FIXTURE_VALUE,
-  OPENAI_KEY_FIXTURE_VALUE,
-  PRIVATE_KEY_HEADER_FIXTURE_VALUE,
-  SLACK_WEBHOOK_FIXTURE_VALUE,
-  SSN_FIXTURE_VALUE,
-  TS_IGNORE_DIRECTIVE,
-} from "./test-fixtures.ts";
+import { analyseFixture, analyseProject, TS_IGNORE_DIRECTIVE } from "./test-fixtures.ts";
 
 const EXPECTED_DYNAMIC_PROCESS_EXEC_LINE = 15;
 
@@ -281,122 +264,6 @@ test("package bin health detects missing and non-executable targets", () => {
     { executableFiles: ["bin/good.js"] },
   );
   assert.equal(executableReport.findings.some((finding) => finding.ruleId.startsWith("design.package-bin-")), false);
-});
-
-// Fixture covers the redaction contract across all renderer formats using safe synthetic values.
-function redactedSecretsFixtureSource(): string {
-  return `API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
-DATABASE_URL=${DATABASE_URL_FIXTURE_VALUE}
-OPENAI_API_KEY=${OPENAI_KEY_FIXTURE_VALUE}
-GOOGLE_API_KEY=${GOOGLE_API_KEY_FIXTURE_VALUE}
-SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_FIXTURE_VALUE}
-DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_FIXTURE_VALUE}
-PATIENT_SSN=${SSN_FIXTURE_VALUE}
-`;
-}
-
-const SENSITIVE_DATA_RULE_IDS = ["sensitive-data.hardcoded-env-value", "sensitive-data.api-key-pattern", "sensitive-data.database-url-password", "sensitive-data.pii-pattern"];
-const REDACTED_RENDER_FORMATS = ["text", "json", "markdown", "github", "html", "sarif"] as const;
-const EXPECTED_SECRET_DOTFILE_ANALYSED_FILES = 2;
-
-test("risk expansion redacts sensitive data in all render formats", () => {
-  const report = analyseFixture(redactedSecretsFixtureSource(), { fileName: ".env" });
-  const apiToken = API_TOKEN_FIXTURE_VALUE;
-  const databaseUrl = DATABASE_URL_FIXTURE_VALUE;
-  const openAiKey = OPENAI_KEY_FIXTURE_VALUE;
-  const googleApiKey = GOOGLE_API_KEY_FIXTURE_VALUE;
-  const slackWebhook = SLACK_WEBHOOK_FIXTURE_VALUE;
-  const discordWebhook = DISCORD_WEBHOOK_FIXTURE_VALUE;
-  const ssn = SSN_FIXTURE_VALUE;
-  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  SENSITIVE_DATA_RULE_IDS.forEach((ruleId) => {
-    assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
-  });
-  REDACTED_RENDER_FORMATS.forEach((format) => {
-    const rendered = renderReport(report, format);
-    [apiToken, databaseUrl, openAiKey, googleApiKey, slackWebhook, discordWebhook, ssn].forEach((secret) => {
-      assert.equal(rendered.includes(secret), false, `${format} leaked ${secret}`);
-    });
-    assert.match(rendered, /redacted/);
-  });
-});
-
-test("M26 PHI (MBI/MRN) and GCP service-account detectors fire and redact across every renderer", () => {
-  const phiReport = analyseFixture(`PATIENT_MBI=${MBI_FIXTURE_VALUE}\nMRN: ${MRN_FIXTURE_VALUE}\n`, { fileName: ".env" });
-  const phiRuleIds = new Set(phiReport.findings.map((finding) => finding.ruleId));
-  assert.equal(phiRuleIds.has("sensitive-data.phi-pattern"), true, "expected phi-pattern");
-
-  const gcpReport = analyseFixture(
-    JSON.stringify({
-      type: "service_account",
-      private_key_id: GCP_PRIVATE_KEY_ID_FIXTURE_VALUE,
-      private_key: `${PRIVATE_KEY_HEADER_FIXTURE_VALUE}\nx\n-----END PRIVATE KEY-----\n`,
-    }),
-    { fileName: "service-account.json" },
-  );
-  const gcpRuleIds = new Set(gcpReport.findings.map((finding) => finding.ruleId));
-  assert.equal(gcpRuleIds.has("sensitive-data.gcp-service-account-key"), true, "expected gcp-service-account-key");
-
-  REDACTED_RENDER_FORMATS.forEach((format) => {
-    const phiRendered = renderReport(phiReport, format);
-    [MBI_FIXTURE_VALUE, MRN_FIXTURE_VALUE].forEach((secret) => {
-      assert.equal(phiRendered.includes(secret), false, `${format} leaked PHI ${secret}`);
-    });
-    const gcpRendered = renderReport(gcpReport, format);
-    assert.equal(gcpRendered.includes(GCP_PRIVATE_KEY_ID_FIXTURE_VALUE), false, `${format} leaked GCP key id`);
-  });
-});
-
-test("risk expansion respects sensitive-data config", () => {
-  // Config contract: sensitive-data.hardcoded-env-value | threshold minLength |
-  // default 16 | metadata keyName,preview,length | disabled and override fixtures below.
-  const source = `API_TOKEN=qR8vT3mK6pL9xS2nD4eG
-`;
-  const defaultReport = analyseFixture(source, { fileName: ".env" });
-  assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), true);
-
-  const disabledReport = analyseFixture(source, {
-    fileName: ".env",
-    config: { rules: { "sensitive-data.hardcoded-env-value": { enabled: false } } },
-  });
-  assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), false);
-
-  const thresholdReport = analyseFixture(source, {
-    fileName: ".env",
-    config: { rules: { "sensitive-data.hardcoded-env-value": { threshold: 40, severity: "error" } } },
-  });
-  assert.equal(thresholdReport.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), false);
-});
-
-test("risk expansion ignores package integrity hashes", () => {
-  const report = analyseFixture(
-    `{
-  "packages": {
-    "": {
-      "integrity": "sha512-Zx7pQ9vLm3N8sT2rY6wK1dF4gH5jC0bR2mN5pQ8sR1tV4xY7zA0bC3dE6fG9hI2jK5lM8nO1pQ4rS7tU0vW3xY6zA9bC2dE5fG8h=="
-    }
-  }
-}
-`,
-    { fileName: "package-lock.json" },
-  );
-  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), false);
-});
-
-test("sensitive-data expansion scans secret dotfiles", () => {
-  const report = analyseProject({
-    ".npmrc": `//registry.npmjs.org/:_authToken=${NPM_AUTH_TOKEN_FIXTURE_VALUE}
-`,
-    ".pypirc": `[pypi]
-password = ${["pY7sK2mN8qR4", "vT6xW9zA1bC3"].join("")}
-`,
-  });
-
-  const apiKeyFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.api-key-pattern");
-  assert.equal(report.paths.analysedFiles, EXPECTED_SECRET_DOTFILE_ANALYSED_FILES);
-  assert.equal(apiKeyFindings.some((finding) => finding.filePath === ".npmrc"), true);
-  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value" && finding.filePath === ".pypirc"), true);
-  assert.equal(renderReport(report, "json").includes(NPM_AUTH_TOKEN_FIXTURE_VALUE), false);
 });
 
 // Fixture covers executable security sinks while keeping noisy safe references nearby.

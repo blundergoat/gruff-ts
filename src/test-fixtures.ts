@@ -13,6 +13,7 @@ export const REPO_ROOT = cwd();
 export const HIGH_ENTROPY_FIXTURE_VALUE = ["Zx7pQ9vLm3N8sT2r", "Y6wK1dF4gH5jC0bR2"].join("");
 export const API_TOKEN_FIXTURE_VALUE = ["rN7pQ4sV9xY2zA5b", "C8dG9hK2mN5pQ8sR1"].join("");
 export const DATABASE_URL_FIXTURE_VALUE = ["postgres://app:superSecret", "Password@db.internal/app"].join("");
+export const URL_CREDENTIAL_FIXTURE_VALUE = ["https://agent:", "clientSecret42", "@example.test/api"].join("");
 export const OPENAI_KEY_FIXTURE_VALUE = ["sk-proj-AbCdEfGhIjKl", "MnOpQrStUvWxYz1234567890"].join("");
 export const GOOGLE_API_KEY_FIXTURE_VALUE = ["AIzaSyD3moKeyValue", "1234567890AbCdEf"].join("");
 export const SLACK_WEBHOOK_FIXTURE_VALUE = ["https://hooks.slack.com/services/T00000000", "B00000000", "abcdefghijklmnopqrstuvwx"].join("/");
@@ -22,6 +23,8 @@ export const DISCORD_WEBHOOK_FIXTURE_VALUE = [
 ].join("/");
 export const NPM_AUTH_TOKEN_FIXTURE_VALUE = ["npmAuthToken", "AbCdEfGhIjKlMnOp", "QrStUvWxYz123456"].join("");
 export const SSN_FIXTURE_VALUE = ["123", "45", "6789"].join("-");
+export const CREDIT_CARD_FIXTURE_VALUE = ["4111", "1111", "1111", "1111"].join(" ");
+export const INVALID_CREDIT_CARD_FIXTURE_VALUE = ["4111", "1111", "1111", "1112"].join(" ");
 export const MBI_FIXTURE_VALUE = ["1EG4", "TE5", "MK73"].join("");
 export const MRN_FIXTURE_VALUE = "00489912";
 export const GCP_PRIVATE_KEY_ID_FIXTURE_VALUE = ["a1b2c3d4e5f6a7b8c9d0", "e1f2a3b4c5d6e7f8a9b0"].join("");

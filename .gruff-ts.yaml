@@ -320,13 +320,13 @@ rules:
   # security/warning: Flags weak crypto primitives such as md5, sha1, or createCipher.
   security.weak-crypto:
     enabled: true
-  # sensitive-data/error: Flags vendor API key patterns.
+  # sensitive-data/error: Flags vendor API key patterns including GitHub, GitLab, npm, Google API, Slack, Discord, and Stripe/OpenAI-style keys.
   sensitive-data.api-key-pattern:
     enabled: true
   # sensitive-data/error: Flags AWS access key looking values.
   sensitive-data.aws-access-key:
     enabled: true
-  # sensitive-data/error: Flags database URLs that include passwords.
+  # sensitive-data/error: Flags database and HTTP(S) URLs that include passwords or embedded credentials.
   sensitive-data.database-url-password:
     enabled: true
   # sensitive-data/error: Flags GCP service-account key files (type service_account alongside a private key).
@@ -348,7 +348,7 @@ rules:
   # sensitive-data/error: Flags PHI identifiers such as Medicare (MBI) and medical record numbers.
   sensitive-data.phi-pattern:
     enabled: true
-  # sensitive-data/error: Flags PII-like identifier patterns.
+  # sensitive-data/error: Flags PII-like identifier patterns including SSN-shaped values and Luhn-valid payment cards.
   sensitive-data.pii-pattern:
     enabled: true
   # sensitive-data/error: Flags private key block markers.

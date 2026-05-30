@@ -132,15 +132,15 @@ gruff-ts list-rules --format=json
 
 ## Sensitive Data
 
-- `sensitive-data.api-key-pattern` (error; high confidence): Flags vendor API key patterns.
+- `sensitive-data.api-key-pattern` (error; high confidence): Flags vendor API key patterns including GitHub, GitLab, npm, Google API, Slack, Discord, and Stripe/OpenAI-style keys.
 - `sensitive-data.aws-access-key` (error; high confidence): Flags AWS access key looking values.
-- `sensitive-data.database-url-password` (error; high confidence): Flags database URLs that include passwords.
+- `sensitive-data.database-url-password` (error; high confidence): Flags database and HTTP(S) URLs that include passwords or embedded credentials.
 - `sensitive-data.gcp-service-account-key` (error; high confidence): Flags GCP service-account key files (type service_account alongside a private key).
 - `sensitive-data.hardcoded-env-value` (error; medium confidence; threshold 16): Flags environment-style secret values committed in text.
 - `sensitive-data.high-entropy-string` (error; medium confidence; threshold 32): Flags high-entropy string literals that may be secrets.
 - `sensitive-data.jwt-token` (error; high confidence): Flags JWT-looking token literals.
 - `sensitive-data.phi-pattern` (error; high confidence): Flags PHI identifiers such as Medicare (MBI) and medical record numbers.
-- `sensitive-data.pii-pattern` (error; high confidence): Flags PII-like identifier patterns.
+- `sensitive-data.pii-pattern` (error; high confidence): Flags PII-like identifier patterns including SSN-shaped values and Luhn-valid payment cards.
 - `sensitive-data.private-key` (error; high confidence): Flags private key block markers.
 
 ## Size
