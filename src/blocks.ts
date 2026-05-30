@@ -1,4 +1,4 @@
-// Function-block parsing + per-block rule pass (size, complexity, NPath, god-function, doc,
+// Function-block parsing + per-block rule pass (size, complexity, god-function, doc,
 // empty-function, unused-parameter, redundant-variable, useless-return) and the block-anchored
 // finding factories. Pulls the parser and the rules that operate on parsed blocks out of cli.ts.
 import { ruleSeverity, threshold } from "./config.ts";
@@ -8,8 +8,6 @@ import { makeFinding } from "./findings.ts";
 import { escapeRegex, isGenericName, lineOffset } from "./findings-helpers.ts";
 import { countMatches } from "./text-scans.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
-
-const NPATH_CAP = 1_000_000;
 
 // Parsed callable body shared by every block-level rule (size, complexity, naming, docs). The
 // `body` / `codeBody` split (raw text vs. comment-masked) lets rules choose between literal
@@ -65,13 +63,6 @@ export interface BlockRuleContext {
   functionBody: string;
 }
 
-// NPath approximation result. `isCapped: true` signals the value hit `NPATH_CAP` and is a lower
-// bound - the finding message uses this to mark capped values rather than implying precision.
-export interface NpathResult {
-  value: number;
-  isCapped: boolean;
-}
-
 // Input bundle for `blockFinding()`. The block reference replaces the explicit line: the builder
 // reads `block.startLine` and `block.name` so the stable finding anchor and symbol metadata stay
 // in sync with the parsed callable across every block-level rule.
@@ -100,7 +91,7 @@ export function blockFinding(args: BlockFindingArgs): Finding {
 }
 
 // Block-anchored variant that ships rule-specific metadata. Confidence defaults to "medium"
-// because metadata-carrying rules (size, complexity, NPath) report measurements rather than
+// because metadata-carrying rules (e.g. test-quality magic-number) report measurements rather than
 // definitive defects; the metadata payload is part of each rule's stable fingerprint contract.
 export function blockFindingWithMetadata(args: BlockFindingWithMetadataArgs): Finding {
   return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.block.startLine, severity: args.severity, pillar: args.pillar, confidence: "medium", symbol: args.block.name, metadata: args.metadata });
@@ -130,7 +121,6 @@ export function analyseBlockRules(context: BlockRuleContext): void {
   pushParameterCountFinding(context);
   pushCyclomaticFinding(context);
   pushCognitiveFinding(context);
-  pushNpathFinding(context);
   pushGodFunctionFinding(context);
   pushGenericFunctionFinding(context);
   pushMissingFunctionDocFinding(context);
@@ -173,33 +163,6 @@ function pushCognitiveFinding(context: BlockRuleContext): void {
   if (cognitive > threshold(context.config, "complexity.cognitive", 15)) {
     context.findings.push(blockFinding({ ruleId: "complexity.cognitive", message: `Function \`${context.block.name}\` has cognitive complexity ${cognitive}.`, file: context.file, block: context.block, severity: ruleSeverity(context.config, "complexity.cognitive", "warning"), pillar: "complexity" }));
   }
-}
-
-// Default threshold 200. NPath is the number of possible execution paths; the message marks
-// `capped` when the calculation hit `NPATH_CAP` so reviewers know it's a lower bound. Reports `complexity.npath`.
-function pushNpathFinding(context: BlockRuleContext): void {
-  const npath = approximateNpath(context.functionBody);
-  const npathThreshold = threshold(context.config, "complexity.npath", 200);
-  if (npath.value > npathThreshold) {
-    context.findings.push(npathFinding(context, npath, npathThreshold, ruleSeverity(context.config, "complexity.npath", "warning")));
-  }
-}
-
-/*
- * Stable `complexity.npath` finding factory. `capped` and `cap` are surfaced in metadata so
- * downstream tooling can distinguish "5000" from "≥ NPATH_CAP" - both would render as the same
- * value otherwise.
- */
-function npathFinding(context: BlockRuleContext, npath: NpathResult, thresholdValue: number, severity: Severity): Finding {
-  return blockFindingWithMetadata({
-    ruleId: "complexity.npath",
-    message: `Function \`${context.block.name}\` has approximate NPath complexity ${npath.value} above the threshold of ${thresholdValue} (capped at ${NPATH_CAP}).`,
-    file: context.file,
-    block: context.block,
-    severity,
-    pillar: "complexity",
-    metadata: { npath: npath.value, capped: npath.isCapped, cap: NPATH_CAP, threshold: thresholdValue },
-  });
 }
 
 // Combined-shape rule: long (>45 lines) AND complex (cyclomatic >10). Thresholds are hard-coded
@@ -352,25 +315,6 @@ function pushUselessReturnFindings(context: BlockRuleContext): void {
       }),
     );
   }
-}
-
-// Approximation: each decision keyword (`if`, `case`, `catch`, loops) and short-circuit operator
-// doubles the count. Optional chaining is stripped first so `a?.b` and `??` don't inflate the
-// signal. Capped at `NPATH_CAP` - the `capped` flag tells callers to report the value as ≥, not =.
-export function approximateNpath(source: string): NpathResult {
-  let pathCount = 1;
-  let isCapped = false;
-  const normalized = source.replace(/\?\./g, "").replace(/\?\?/g, "");
-  const decisionCount = countMatches(normalized, /\b(if|else if|case|catch|for|while)\b|\?|&&|\|\|/g);
-  for (let index = 0; index < decisionCount; index += 1) {
-    pathCount *= 2;
-    if (pathCount >= NPATH_CAP) {
-      pathCount = NPATH_CAP;
-      isCapped = true;
-      break;
-    }
-  }
-  return { value: pathCount, isCapped };
 }
 
 // Strips line and block comments before measuring - a body containing only documentation is still

@@ -181,7 +181,7 @@ export function updateName(name: string): string {
 });
 
 test("documentation context detector matrix covers why side-effect error-behavior invariant magic-threshold", () => {
-  const routingBranches = branchFixtureLines(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"]);
+  const routingBranches = branchFixtureLines(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p"]);
   // Fixture covers context-doc rules for why, side effects, errors, invariants, and thresholds.
   const report = analyseFixture(`/**
  * Exercises maintainer-context documentation rules.

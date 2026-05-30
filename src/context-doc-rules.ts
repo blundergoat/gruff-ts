@@ -1,7 +1,7 @@
 // Context-doc rules: emit findings when a function or interface comment exists but does not
 // describe the WHY (complex control flow), side effects, error behavior, or public-contract
 // invariants the implementation carries. Each rule reports a stable, deterministic finding.
-import { approximateNpath, functionBodyContent, type FunctionBlock, maxNestingDepth } from "./blocks.ts";
+import { type FunctionBlock, maxNestingDepth } from "./blocks.ts";
 import { type CommentRecord } from "./comment-scanner.ts";
 import { threshold } from "./config.ts";
 import { type SourceFile } from "./discovery.ts";
@@ -147,17 +147,15 @@ function contextDocFinding(input: ContextDocFindingInput): Finding {
   });
 }
 
-// Composite gate: any one of size, cyclomatic, cognitive, NPath, or nesting depth crossing the
+// Composite gate: any one of size, cyclomatic, cognitive, or nesting depth crossing the
 // configured stable threshold qualifies a callable as "complex enough to need WHY context".
 function isComplexContextCandidate(block: FunctionBlock, config: Config): boolean {
   const cyclomatic = countMatches(block.codeBody, /\b(if|else if|switch|case|for|while|catch)\b|\?|&&|\|\|/g) + 1;
   const cognitive = cyclomatic + maxNestingDepth(block.codeBody);
-  const npath = approximateNpath(functionBodyContent(block.codeBody));
   return (
     block.lineCount > threshold(config, "size.function-length", 200) ||
     cyclomatic > threshold(config, "complexity.cyclomatic", 15) ||
     cognitive > threshold(config, "complexity.cognitive", 15) ||
-    npath.value > threshold(config, "complexity.npath", 200) ||
     maxNestingDepth(block.codeBody) > 3
   );
 }

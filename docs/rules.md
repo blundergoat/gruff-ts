@@ -20,7 +20,7 @@ gruff-ts list-rules --format=json
 
 ## Pillar Counts
 
-- complexity: 3
+- complexity: 2
 - dead-code: 1
 - design: 6
 - documentation: 17
@@ -36,7 +36,6 @@ gruff-ts list-rules --format=json
 
 - `complexity.cognitive` (warning; high confidence; threshold 15): Flags functions with high combined branch and nesting complexity.
 - `complexity.cyclomatic` (warning; high confidence; threshold 15): Flags functions with many independent branch paths.
-- `complexity.npath` (warning; medium confidence; threshold 200): Flags functions with high approximate NPath complexity.
 
 ## Dead Code
 

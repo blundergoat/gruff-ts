@@ -14,7 +14,6 @@ import {
 } from "./test-fixtures.ts";
 
 const expandedRuleIds = new Set([
-  "complexity.npath",
   "docs.fixture-purpose-missing",
   "docs.magic-threshold-without-rationale",
   "docs.missing-error-behavior-doc",
@@ -256,6 +255,17 @@ function routeOrder(state: string, unusedFlag: boolean): string {
   if (state === "paid") return "paid";
   if (state === "sent") return "sent";
   if (state === "closed") return "closed";
+  if (state === "held") return "held";
+  if (state === "void") return "void";
+  if (state === "refunded") return "refunded";
+  if (state === "partial") return "partial";
+  if (state === "pending") return "pending";
+  if (state === "failed") return "failed";
+  if (state === "queued") return "queued";
+  if (state === "shipped") return "shipped";
+  if (state === "returned") return "returned";
+  if (state === "expired") return "expired";
+  if (state === "draft") return "draft";
   if (loadedText.length > 0) return loadedText;
   return "unknown";
 }
@@ -437,11 +447,10 @@ test("setup bloat", () => {
 }
 
 /*
- * Custom NPath threshold because the runtime fixture deliberately exercises wide branch fanout
- * that would not trip the production default; the low stylesheet-length threshold lets a tiny CSS
- * file stand in for a 1500+ line stylesheet, intentional because inflating the cumulative fixture
- * corpus would slow every test run without adding behavioural coverage.
+ * Low stylesheet-length threshold lets a tiny CSS file stand in for a 1500+ line stylesheet,
+ * intentional because inflating the cumulative fixture corpus would slow every test run without
+ * adding behavioural coverage.
  */
 function cumulativeExpandedFixtureOptions(): Parameters<typeof analyseProject>[1] {
-  return { config: { rules: { "complexity.npath": { threshold: 20, severity: "warning" }, "size.stylesheet-length": { threshold: 3, severity: "warning" } } } };
+  return { config: { rules: { "size.stylesheet-length": { threshold: 3, severity: "warning" } } } };
 }

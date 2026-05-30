@@ -183,7 +183,7 @@ The v0.1 catalogue contains 119 rules:
 
 | Pillar | Rules |
 | --- | ---: |
-| `complexity` | 3 |
+| `complexity` | 2 |
 | `dead-code` | 1 |
 | `design` | 6 |
 | `documentation` | 17 |

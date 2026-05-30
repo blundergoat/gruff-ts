@@ -81,11 +81,6 @@ rules:
     enabled: true
     threshold: 15
     severity: warning
-  # complexity/warning: Flags functions with high approximate NPath complexity.
-  complexity.npath:
-    enabled: true
-    threshold: 200
-    severity: warning
   # dead-code/advisory: Flags private methods without an apparent same-file call site.
   dead-code.unused-private-method:
     enabled: true

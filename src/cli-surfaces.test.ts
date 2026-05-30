@@ -105,7 +105,7 @@ function assertRuleListTextOutput(): boolean {
   const text = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
   assert.match(text, new RegExp(`gruff-ts ${VERSION_PATTERN} rules \\(\\d+\\)`));
   assert.match(text, /security\.eval-call \| security \| error \| high \|/);
-  assert.match(text, /complexity\.npath \| complexity \| warning \| medium \| .*threshold: 20/);
+  assert.match(text, /complexity\.cyclomatic \| complexity \| warning \| high \| .*threshold: 15/);
   return true;
 }
 

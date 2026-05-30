@@ -145,7 +145,7 @@ const riskyRuleQualityDoctrine = [
   },
   {
     ruleId: "docs.missing-why-for-complex-code",
-    signalSource: "commented function metrics reused from existing size, cyclomatic, cognitive, NPath, and nesting thresholds",
+    signalSource: "commented function metrics reused from existing size, cyclomatic, cognitive, and nesting thresholds",
     expectedPillar: "documentation",
     expectedSeverity: "advisory",
     expectedConfidence: "medium",

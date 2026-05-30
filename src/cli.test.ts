@@ -163,7 +163,6 @@ function normalizeStatus(status: string): string {
 `;
 
 const M02_EXPANSION_RULE_IDS = new Set([
-  "complexity.npath",
   "waste.commented-out-code",
   "waste.empty-function",
   "waste.redundant-variable",
@@ -221,42 +220,12 @@ function redundantResult(): string {
 }
 `;
 
-test("core expansion finds complexity and waste rules", () => {
-  const report = analyseFixture(COMPLEXITY_WASTE_FIXTURE, { config: { rules: { "complexity.npath": { threshold: 20, severity: "warning" } } } });
+test("core expansion finds waste rules", () => {
+  const report = analyseFixture(COMPLEXITY_WASTE_FIXTURE);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  ["complexity.npath", "waste.commented-out-code", "waste.empty-function", "waste.redundant-variable", "waste.unused-import", "waste.unused-parameter"].forEach((ruleId) => {
+  ["waste.commented-out-code", "waste.empty-function", "waste.redundant-variable", "waste.unused-import", "waste.unused-parameter"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
-  const npathFinding = report.findings.find((finding) => finding.ruleId === "complexity.npath");
-  assert.match(npathFinding?.message ?? "", /capped at/);
-  assert.equal(typeof npathFinding?.metadata.npath, "number");
-});
-
-test("core expansion respects npath config", () => {
-  // Config contract: complexity.npath | threshold/severity | defaults 200/warning |
-  // metadata npath,capped,cap | disabled and override fixtures below.
-  const source = `function branchLightly(input: string): string {
-  if (input === "a") {
-    return "a";
-  }
-  if (input === "b") {
-    return "b";
-  }
-  return "c";
-}
-`;
-  const defaultReport = analyseFixture(source);
-  assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "complexity.npath"), false);
-
-  const tightReport = analyseFixture(source, {
-    config: { rules: { "complexity.npath": { threshold: 3, severity: "error" } } },
-  });
-  assert.equal(tightReport.findings.some((finding) => finding.ruleId === "complexity.npath" && finding.severity === "error"), true);
-
-  const disabledReport = analyseFixture(source, {
-    config: { rules: { "complexity.npath": { enabled: false, threshold: 1, severity: "warning" } } },
-  });
-  assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "complexity.npath"), false);
 });
 
 test("loads default gruff-ts yaml config", () => {
@@ -275,14 +244,14 @@ test("loads default gruff-ts yaml config", () => {
       ".gruff-ts.yaml": `
 schemaVersion: gruff-ts.config.v0.1
 rules:
-  "complexity.npath":
-    threshold: 3
+  "complexity.cyclomatic":
+    threshold: 2
     severity: warning
 `,
     },
     { shouldSkipConfig: false },
   );
-  assert.equal(report.findings.some((finding) => finding.ruleId === "complexity.npath"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "complexity.cyclomatic"), true);
 });
 
 test("rule config accepts threshold-only and severity-only overrides", () => {

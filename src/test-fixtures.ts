@@ -622,7 +622,6 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
         rules: {
           "complexity.cognitive": { threshold: 3, severity: "warning" },
           "complexity.cyclomatic": { threshold: 2, severity: "warning" },
-          "complexity.npath": { threshold: 2, severity: "warning" },
           "design.large-module-concentration": { threshold: 35, severity: "advisory", options: { minFiles: 4, minLines: 8 } },
           "size.file-length": { threshold: 8, severity: "warning" },
           "size.function-length": { threshold: 8, severity: "warning" },

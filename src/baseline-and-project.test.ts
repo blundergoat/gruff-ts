@@ -662,10 +662,10 @@ function branchLightly(input: string): string {
     config: {
       rules: {
         "sensitive-data.hardcoded-env-value": { enabled: false },
-        "complexity.npath": { threshold: 3, severity: "warning" },
+        "complexity.cyclomatic": { threshold: 2, severity: "warning" },
       },
     },
   });
   assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), false);
-  assert.equal(report.findings.some((finding) => finding.ruleId === "complexity.npath"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "complexity.cyclomatic"), true);
 });
