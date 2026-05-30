@@ -270,6 +270,24 @@ function undocumentedSideEffect(path: string): void {
   });
 });
 
+test("missing-why no longer fires on a flat switch that only tripped via npath", () => {
+  const switchCases = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
+    .map((value) => `    case "${value}": return "${value}";`)
+    .join("\n");
+  const report = analyseFixture(`/** Routes a status code to its label. */
+function routeStatus(code: string): string {
+  switch (code) {
+${switchCases}
+    default: return "unknown";
+  }
+}
+`);
+  // A 10-case flat switch scored old-npath 2**10 = 1024 (well over the retired 200 default, so it
+  // tripped the missing-why complexity gate), but its cyclomatic (12), cognitive (13), and nesting
+  // all stay under threshold. With npath gone the gate must not demand a "why" on legible flat dispatch.
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-why-for-complex-code"), false);
+});
+
 /** Generates repeated branch lines without making the outer test look complex. */
 function branchFixtureLines(values: string[]): string {
   return values.map((value) => `  if (value === "${value}") return "${value}";`).join("\n");
