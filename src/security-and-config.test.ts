@@ -14,6 +14,7 @@ import {
   MRN_FIXTURE_VALUE,
   NPM_AUTH_TOKEN_FIXTURE_VALUE,
   OPENAI_KEY_FIXTURE_VALUE,
+  PRIVATE_KEY_HEADER_FIXTURE_VALUE,
   SLACK_WEBHOOK_FIXTURE_VALUE,
   SSN_FIXTURE_VALUE,
   TS_IGNORE_DIRECTIVE,
@@ -326,7 +327,11 @@ test("M26 PHI (MBI/MRN) and GCP service-account detectors fire and redact across
   assert.equal(phiRuleIds.has("sensitive-data.phi-pattern"), true, "expected phi-pattern");
 
   const gcpReport = analyseFixture(
-    `{"type": "service_account", "private_key_id": "${GCP_PRIVATE_KEY_ID_FIXTURE_VALUE}", "private_key": "-----BEGIN PRIVATE KEY-----\\nx\\n-----END PRIVATE KEY-----\\n"}`,
+    JSON.stringify({
+      type: "service_account",
+      private_key_id: GCP_PRIVATE_KEY_ID_FIXTURE_VALUE,
+      private_key: `${PRIVATE_KEY_HEADER_FIXTURE_VALUE}\nx\n-----END PRIVATE KEY-----\n`,
+    }),
     { fileName: "service-account.json" },
   );
   const gcpRuleIds = new Set(gcpReport.findings.map((finding) => finding.ruleId));

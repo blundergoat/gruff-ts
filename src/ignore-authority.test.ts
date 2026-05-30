@@ -9,11 +9,21 @@ import { chdir, cwd } from "node:process";
 import test from "node:test";
 import { checkIgnore, checkIgnoreExitCode, renderCheckIgnore } from "./check-ignore.ts";
 import { analyseProject, yamlConfigFixture } from "./test-fixtures.ts";
+import type { AnalysisOptions } from "./types.ts";
 
 // A source that would emit findings (`eval` -> security) if it were ever scanned, so "no findings"
 // proves the file was excluded rather than merely clean.
 const FLAGGABLE_SOURCE = "export function run(input: string): unknown {\n  return eval(input);\n}\n";
 const IGNORE_FIXTURES_CONFIG = { paths: { ignore: ["fixtures/**"] } } as const;
+const CHECK_IGNORE_OPTIONS: AnalysisOptions = {
+  paths: ["fixtures/sample.ts", "app.ts"],
+  shouldSkipConfig: false,
+  format: "json",
+  failOn: "none",
+  shouldIncludeIgnored: false,
+  changedScope: "symbol",
+  shouldSkipBaseline: true,
+};
 
 test("analyse excludes an explicitly supplied config-ignored file and reports it with source + pattern", () => {
   const report = analyseProject(
@@ -58,19 +68,10 @@ test("check-ignore shares the engine: config-ignored path -> verdict + pattern, 
     writeFileSync(join(dir, "app.ts"), "export const x = 1;\n");
     writeFileSync(join(dir, ".gruff-ts.yaml"), yamlConfigFixture(IGNORE_FIXTURES_CONFIG));
     chdir(dir);
-    const options = {
-      paths: ["fixtures/sample.ts", "app.ts"],
-      shouldSkipConfig: false,
-      format: "json" as const,
-      failOn: "none" as const,
-      shouldIncludeIgnored: false,
-      changedScope: "symbol" as const,
-      shouldSkipBaseline: true,
-    };
-    const results = checkIgnore(["fixtures/sample.ts", "app.ts"], options);
+    const results = checkIgnore(["fixtures/sample.ts", "app.ts"], CHECK_IGNORE_OPTIONS);
     assert.deepEqual(results, [
-      { path: "fixtures/sample.ts", ignored: true, source: "config", pattern: "fixtures/**" },
-      { path: "app.ts", ignored: false },
+      { path: "fixtures/sample.ts", isIgnored: true, source: "config", pattern: "fixtures/**" },
+      { path: "app.ts", isIgnored: false },
     ]);
     assert.equal(checkIgnoreExitCode(results), 0);
     const parsed = JSON.parse(renderCheckIgnore(results, "json"));

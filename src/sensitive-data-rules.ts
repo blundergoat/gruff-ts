@@ -42,22 +42,21 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
 }
 
 // PHI beyond the MBI shape: medical-record-number assignments. Context-gated on an `MRN` / `medical
-// record` label so it never fires on bare integers, keeping it as precise as the env-value detector.
+// record` label so bare integers stay clean; stable contract is one redacted finding per label.
 function analysePhiLabelledIdentifiers(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const lines = source.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
     const match = line.match(/\b(?:MRN|medical[\s_-]?record(?:[\s_-]?number)?)\b\s*[:=#]?\s*([0-9]{6,12})\b/i);
-    const value = match?.[1];
-    if (!value) {
+    const medicalRecordNumber = match?.[1];
+    if (!medicalRecordNumber) {
       continue;
     }
-    pushSensitiveFinding(config, findings, file, "sensitive-data.phi-pattern", "Medical record number (PHI) detected.", index + 1, value, "high");
+    pushSensitiveFinding(config, findings, file, "sensitive-data.phi-pattern", "Medical record number (PHI) detected.", index + 1, medicalRecordNumber, "high");
   }
 }
 
 // GCP service-account key files carry `"type": "service_account"` next to a private key. Flag the file
-// once, anchored on the type line, redacting the `private_key_id` (or `client_email`); the raw key body
-// is separately covered by sensitive-data.private-key.
+// once, anchored on the type line; stable contract keeps raw key bodies covered by private-key.
 function analyseGcpServiceAccountKeys(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const typeMatch = source.match(/"type"\s*:\s*"service_account"/);
   if (!typeMatch || !/"private_key(?:_id)?"\s*:\s*"|BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY/.test(source)) {

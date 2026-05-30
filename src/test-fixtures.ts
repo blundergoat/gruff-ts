@@ -22,7 +22,7 @@ export const DISCORD_WEBHOOK_FIXTURE_VALUE = [
 ].join("/");
 export const NPM_AUTH_TOKEN_FIXTURE_VALUE = ["npmAuthToken", "AbCdEfGhIjKlMnOp", "QrStUvWxYz123456"].join("");
 export const SSN_FIXTURE_VALUE = ["123", "45", "6789"].join("-");
-export const MBI_FIXTURE_VALUE = "1EG4TE5MK73";
+export const MBI_FIXTURE_VALUE = ["1EG4", "TE5", "MK73"].join("");
 export const MRN_FIXTURE_VALUE = "00489912";
 export const GCP_PRIVATE_KEY_ID_FIXTURE_VALUE = ["a1b2c3d4e5f6a7b8c9d0", "e1f2a3b4c5d6e7f8a9b0"].join("");
 export const AWS_ACCESS_KEY_FIXTURE_VALUE = ["AKIAABCDEFGH", "IJKLMNOP"].join("");
@@ -65,7 +65,8 @@ export function analyseFixture(source: string, options: AnalyseFixtureOptions = 
   );
 }
 
-// Creates a temporary project, runs analysis inside it, and removes the fixture tree. Performs the required filesystem or process side effect.
+// Creates a temporary project, runs analysis inside it, and removes the fixture tree. It mutates the
+// filesystem and process cwd; explicit options preserve absent-vs-undefined typing.
 export function analyseProject(files: Record<string, string>, options: AnalyseProjectOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-"));
   const previous = cwd();
@@ -97,23 +98,33 @@ export function setupAnalyseProjectDirectory(dir: string, files: Record<string, 
 
 /**
  * Runs analyse after the fixture helper has switched into the temp project root, returning a stable report.
+ * The explicit option assembly preserves exact optional property types because absent and undefined differ.
  * @param options Normalized fixture scan options.
  * @returns The analysis report produced from the current temporary project.
  */
 export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions): AnalysisReport {
-  return analyse({
+  const analysisOptions: Parameters<typeof analyse>[0] = {
     paths: options.paths ?? ["."],
-    ...(typeof options.configPath === "string" ? { config: options.configPath } : {}),
     shouldSkipConfig: options.shouldSkipConfig ?? !(options.config || options.configPath),
     format: "json",
     failOn: "none",
     shouldIncludeIgnored: options.shouldIncludeIgnored ?? false,
-    ...(options.diff ? { diff: options.diff } : {}),
-    ...(options.since ? { since: options.since } : {}),
-    ...(options.changedRanges ? { changedRanges: options.changedRanges } : {}),
     changedScope: options.changedScope ?? "symbol",
     shouldSkipBaseline: true,
-  });
+  };
+  if (typeof options.configPath === "string") {
+    analysisOptions.config = options.configPath;
+  }
+  if (options.diff) {
+    analysisOptions.diff = options.diff;
+  }
+  if (options.since) {
+    analysisOptions.since = options.since;
+  }
+  if (options.changedRanges) {
+    analysisOptions.changedRanges = options.changedRanges;
+  }
+  return analyse(analysisOptions);
 }
 
 /*
@@ -335,7 +346,12 @@ PATIENT_SSN=${SSN_FIXTURE_VALUE}
 PATIENT_MBI=${MBI_FIXTURE_VALUE}
 API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
 `,
-      "credentials/service-account.json": `{"type": "service_account", "private_key_id": "${GCP_PRIVATE_KEY_ID_FIXTURE_VALUE}", "private_key": "-----BEGIN PRIVATE KEY-----\\nMIIfake\\n-----END PRIVATE KEY-----\\n", "client_email": "svc@project.iam.gserviceaccount.com"}`,
+      "credentials/service-account.json": JSON.stringify({
+        type: "service_account",
+        private_key_id: GCP_PRIVATE_KEY_ID_FIXTURE_VALUE,
+        private_key: `${PRIVATE_KEY_HEADER_FIXTURE_VALUE}\nMIIfake\n-----END PRIVATE KEY-----\n`,
+        client_email: "svc@project.iam.gserviceaccount.com",
+      }),
       "package.json": JSON.stringify({
         scripts: {
           postinstall: "node scripts/setup.js",

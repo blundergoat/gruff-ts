@@ -206,6 +206,7 @@ const WORKING_TREE_DIFF_RISKY_FIXTURE = {
 `,
 };
 
+// Stable contract: extracts line anchors for eval findings so hunk-filtering tests stay deterministic.
 function evalFindingLines(report: AnalysisReport): number[] {
   return report.findings
     .filter((finding) => finding.ruleId === "security.eval-call")

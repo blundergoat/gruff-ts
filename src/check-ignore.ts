@@ -8,6 +8,7 @@ import { loadConfig } from "./config.ts";
 import { classifyPathIgnore, type PathIgnoreClassification } from "./discovery.ts";
 import type { AnalysisOptions } from "./types.ts";
 
+/** Output encodings supported by the `check-ignore` command. */
 export type CheckIgnoreFormat = "text" | "json";
 
 // Resolves config exactly as `analyse` does (`--config` / `--no-config`), then classifies each input
@@ -22,7 +23,7 @@ export function checkIgnore(inputs: string[], options: AnalysisOptions): PathIgn
 // Mirrors `git check-ignore`: exit 0 when at least one path is ignored, 1 when none are. Exit 2 is
 // reserved for config/usage errors and is set by the CLI layer via `runWithConfigErrorHandling`.
 export function checkIgnoreExitCode(results: PathIgnoreClassification[]): number {
-  return results.some((result) => result.ignored) ? 0 : 1;
+  return results.some((result) => result.isIgnored) ? 0 : 1;
 }
 
 // JSON is the agent-facing contract: every input path as `{ path, ignored, source, pattern }`, with
@@ -33,7 +34,7 @@ export function renderCheckIgnore(results: PathIgnoreClassification[], format: C
     return JSON.stringify(
       results.map((result) => ({
         path: result.path,
-        ignored: result.ignored,
+        ignored: result.isIgnored,
         source: result.source ?? null,
         pattern: result.pattern ?? null,
       })),
@@ -42,7 +43,7 @@ export function renderCheckIgnore(results: PathIgnoreClassification[], format: C
     );
   }
   return results
-    .filter((result) => result.ignored)
+    .filter((result) => result.isIgnored)
     .map((result) => `${result.path}\t${result.source}:${result.pattern}`)
     .join("\n");
 }

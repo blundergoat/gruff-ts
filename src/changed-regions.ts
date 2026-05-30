@@ -6,11 +6,13 @@ import type { SourceFile } from "./discovery.ts";
 import { maskNonCode } from "./source-text.ts";
 import type { AnalysisOptions, ChangedScopeMode, Finding } from "./types.ts";
 
+// Inclusive line range from a changed hunk or explicit `--changed-ranges` input.
 export interface ChangedRange {
   start: number;
   end: number;
 }
 
+// Complete changed-region filter state used after the full report is generated.
 export interface ChangedRegionScope {
   mode: ChangedScopeMode;
   rangesByFile: Map<string, ChangedRange[]>;
@@ -18,22 +20,26 @@ export interface ChangedRegionScope {
   explicitRanges?: ChangedRange[];
 }
 
+// Source text paired with discovery metadata so findings can be expanded to symbols.
 interface SourceSnapshot {
   file: SourceFile;
   source: string;
 }
 
+// Named source span used to keep symbol-scope findings when their declaration overlaps a hunk.
 interface DeclarationRegion {
   name: string;
   start: number;
   end: number;
 }
 
+// Mutable state for the current file while walking a unified diff line by line.
 interface DiffParseState {
   currentFile: string | undefined;
   isNewFile: boolean;
 }
 
+// Builds the changed-region scope requested by CLI options, reading git diff output when needed.
 export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope | undefined {
   if (options.changedRanges) {
     return { mode: options.changedScope, rangesByFile: new Map(), wholeFiles: new Set(), explicitRanges: parseChangedRanges(options.changedRanges) };
@@ -50,6 +56,7 @@ export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope
   return undefined;
 }
 
+// Drops unchanged source files before analysis when the diff already identifies whole-file scope.
 export function filterChangedSources(files: SourceFile[], scope: ChangedRegionScope | undefined): SourceFile[] {
   if (!scope || scope.explicitRanges) {
     return files;
@@ -57,6 +64,7 @@ export function filterChangedSources(files: SourceFile[], scope: ChangedRegionSc
   return files.filter((file) => scope.wholeFiles.has(file.displayPath) || scope.rangesByFile.has(file.displayPath));
 }
 
+// Applies changed-region filtering to findings and reports how many pre-existing findings dropped.
 export function filterChangedFindings(
   findings: Finding[],
   scope: ChangedRegionScope | undefined,
@@ -78,6 +86,7 @@ export function filterChangedFindings(
   return { findings: kept, suppressedCount };
 }
 
+// Keeps a finding when its own line or enclosing declaration intersects the changed scope.
 function isFindingInChangedScope(
   finding: Finding,
   scope: ChangedRegionScope,
@@ -102,10 +111,12 @@ function isFindingInChangedScope(
   return declaration !== undefined && overlapsAny(declaration, changedRanges);
 }
 
+// Looks up explicit line ranges first because `--changed-ranges` applies to every selected file.
 function rangesForFindingFile(scope: ChangedRegionScope, filePath: string): ChangedRange[] {
   return scope.explicitRanges ?? scope.rangesByFile.get(filePath) ?? [];
 }
 
+// Resolves the narrowest declaration around a finding so symbol-scope mode can keep whole callables.
 function enclosingDeclaration(
   finding: Finding,
   sources: Map<string, SourceSnapshot>,
@@ -128,6 +139,7 @@ function enclosingDeclaration(
   return candidates.sort((left, right) => (left.end - left.start) - (right.end - right.start))[0];
 }
 
+// Combines function and class/interface spans into one declaration inventory per source file.
 function declarationRegions(source: string): DeclarationRegion[] {
   const codeSource = maskNonCode(source);
   return [
@@ -140,6 +152,7 @@ function declarationRegions(source: string): DeclarationRegion[] {
   ];
 }
 
+// Finds class and interface spans that the function-block lexer intentionally does not emit.
 function classLikeRegions(codeSource: string): DeclarationRegion[] {
   const lines = codeSource.split(/\r?\n/);
   const regions: DeclarationRegion[] = [];
@@ -153,6 +166,7 @@ function classLikeRegions(codeSource: string): DeclarationRegion[] {
   return regions;
 }
 
+// Walks brace depth from a class/interface declaration to estimate its closing line.
 function bracedRegionEnd(lines: string[], startIndex: number): number {
   let depth = 0;
   let hasSeenOpen = false;
@@ -172,14 +186,17 @@ function bracedRegionEnd(lines: string[], startIndex: number): number {
   return startIndex + 1;
 }
 
+// Checks whether a finding or declaration span intersects any changed hunk.
 function overlapsAny(range: ChangedRange, changedRanges: ChangedRange[]): boolean {
   return changedRanges.some((changedRange) => rangesOverlap(range, changedRange));
 }
 
+// Inclusive range overlap test for one-based source line numbers.
 function rangesOverlap(left: ChangedRange, right: ChangedRange): boolean {
   return left.start <= right.end && right.start <= left.end;
 }
 
+// Parses the comma-separated CLI range syntax and throws validation errors for malformed ranges.
 function parseChangedRanges(rawRanges: string): ChangedRange[] {
   const ranges = rawRanges
     .split(",")
@@ -192,6 +209,7 @@ function parseChangedRanges(rawRanges: string): ChangedRange[] {
   return mergeRanges(ranges);
 }
 
+// Parses one `N` or `N-M` range and throws the CLI-facing validation error for invalid input.
 function parseChangedRange(rawRange: string): ChangedRange {
   const match = rawRange.match(/^(\d+)(?:-(\d+))?$/);
   if (!match?.[1]) {
@@ -205,6 +223,7 @@ function parseChangedRange(rawRange: string): ChangedRange {
   return { start, end };
 }
 
+// Produces a changed-region scope from a named git diff mode or arbitrary git ref.
 function gitDiffScope(mode: string, changedScope: ChangedScopeMode): ChangedRegionScope {
   if (mode === "staged") {
     return parseUnifiedDiff(gitOutput(["diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff"]), changedScope);
@@ -225,6 +244,7 @@ function gitDiffScope(mode: string, changedScope: ChangedScopeMode): ChangedRegi
   return mergeScopes([parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", mode]), changedScope), untrackedFileScope(changedScope)], changedScope);
 }
 
+// Parses a unified diff into file-level and hunk-level scope.
 function parseUnifiedDiff(diffText: string, changedScope: ChangedScopeMode): ChangedRegionScope {
   const scope: ChangedRegionScope = { mode: changedScope, rangesByFile: new Map(), wholeFiles: new Set() };
   const state: DiffParseState = { currentFile: undefined, isNewFile: false };
@@ -234,6 +254,7 @@ function parseUnifiedDiff(diffText: string, changedScope: ChangedScopeMode): Cha
   return scope;
 }
 
+// Dispatches one unified-diff line to the smallest applicable state transition.
 function applyDiffLine(scope: ChangedRegionScope, state: DiffParseState, line: string): void {
   if (line.startsWith("diff --git ")) {
     state.currentFile = undefined;
@@ -244,14 +265,27 @@ function applyDiffLine(scope: ChangedRegionScope, state: DiffParseState, line: s
     state.isNewFile = true;
     return;
   }
+  if (applyTargetFileLine(scope, state, line)) {
+    return;
+  }
+  applyHunkLine(scope, state, line);
+}
+
+// Handles `+++` target-file headers, including new files that should keep all findings.
+function applyTargetFileLine(scope: ChangedRegionScope, state: DiffParseState, line: string): boolean {
   if (line.startsWith("+++ ")) {
     const path = diffPath(line.slice(4));
     state.currentFile = path === "/dev/null" ? undefined : path;
     if (state.currentFile && state.isNewFile) {
       scope.wholeFiles.add(state.currentFile);
     }
-    return;
+    return true;
   }
+  return false;
+}
+
+// Adds the changed target-side hunk range for the current diff file.
+function applyHunkLine(scope: ChangedRegionScope, state: DiffParseState, line: string): void {
   const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
   if (!hunk?.[1] || !state.currentFile || scope.wholeFiles.has(state.currentFile)) {
     return;
@@ -262,6 +296,7 @@ function applyDiffLine(scope: ChangedRegionScope, state: DiffParseState, line: s
   addRange(scope.rangesByFile, state.currentFile, { start, end });
 }
 
+// Normalizes the `+++ b/path` header path into the same display path discovery uses.
 function diffPath(rawPath: string): string {
   const trimmed = rawPath.trim();
   if (trimmed === "/dev/null") {
@@ -270,6 +305,7 @@ function diffPath(rawPath: string): string {
   return trimmed.replace(/^"?(?:a|b)\//, "").replace(/"$/, "").replaceAll("\\", "/");
 }
 
+// Treats untracked files as whole-file changed because git has no hunks for them yet.
 function untrackedFileScope(changedScope: ChangedScopeMode): ChangedRegionScope {
   return {
     mode: changedScope,
@@ -278,6 +314,7 @@ function untrackedFileScope(changedScope: ChangedScopeMode): ChangedRegionScope 
   };
 }
 
+// Unions staged, unstaged, and untracked scopes while whole-file changes dominate hunk ranges.
 function mergeScopes(scopes: ChangedRegionScope[], changedScope: ChangedScopeMode): ChangedRegionScope {
   const merged: ChangedRegionScope = { mode: changedScope, rangesByFile: new Map(), wholeFiles: new Set() };
   for (const scope of scopes) {
@@ -297,10 +334,12 @@ function mergeScopes(scopes: ChangedRegionScope[], changedScope: ChangedScopeMod
   return merged;
 }
 
+// Inserts a range for one file and immediately coalesces adjacent hunks.
 function addRange(rangesByFile: Map<string, ChangedRange[]>, filePath: string, range: ChangedRange): void {
   rangesByFile.set(filePath, mergeRanges([...(rangesByFile.get(filePath) ?? []), range]));
 }
 
+// Sorts and merges overlapping or adjacent line ranges so downstream checks stay deterministic.
 function mergeRanges(ranges: ChangedRange[]): ChangedRange[] {
   const sorted = [...ranges].sort((left, right) => left.start - right.start || left.end - right.end);
   const merged: ChangedRange[] = [];
@@ -315,6 +354,7 @@ function mergeRanges(ranges: ChangedRange[]): ChangedRange[] {
   return merged;
 }
 
+// Spawns `git` through a fixed argv vector; callers construct argv arrays without interpolation.
 function gitOutput(args: string[]): string {
   return execFileSync("git", args, { encoding: "utf8" });
 }

@@ -487,10 +487,12 @@ function diffOption(paths: string[], rawOptions: Record<string, unknown>): { pat
   return rawOptions.diff === true ? { paths, options: { diff: "working-tree" } } : { paths, options: {} };
 }
 
+// Preserves absence for `changedRanges`; setting it to undefined would change exact optional typing.
 function changedRangesOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "changedRanges">> {
   return typeof rawOptions.changedRanges === "string" ? { changedRanges: rawOptions.changedRanges } : {};
 }
 
+// Preserves absence for `since` so direct callers can distinguish no ref from an explicit ref.
 function sinceOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "since">> {
   return typeof rawOptions.since === "string" ? { since: rawOptions.since } : {};
 }

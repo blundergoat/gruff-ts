@@ -1,9 +1,19 @@
 ---
 category: verification
-last_reviewed: 2026-05-30
+last_reviewed: 2026-05-31
 ---
 
 # Verification lessons
+
+## Lesson: self-scan comment fixes need context-marker words
+
+**Created:** 2026-05-31
+
+**What happened:** A first self-scan cleanup added leading comments and removed most findings, but the follow-up scan still reported context-doc gaps because the comments did not include the rule's expected contract, throws, or side-effect vocabulary.
+
+**Evidence:** `src/changed-regions.ts` + `(search: "function parseChangedRanges")` and `(search: "function gitOutput")`; `src/test-fixtures.ts` + `(search: "function analyseProject")`; `src/baseline-and-project.test.ts` + `(search: "function evalFindingLines")`.
+
+**Prevention:** When adding comments to clear self-scan documentation findings, include the relevant marker word in the declaration's leading comment (`contract`/`stable`, `throws`, `spawns`, `filesystem`, etc.) and rerun the full self-scan before close-out.
 
 ## Lesson: grep source for symbol locations; docs lag the cli.ts split
 

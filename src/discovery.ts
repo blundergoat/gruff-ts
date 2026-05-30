@@ -170,11 +170,12 @@ function classifyIgnore(display: string, isDirectory: boolean, options: Analysis
 // default/gitignore matches but never config `paths.ignore`.
 export interface PathIgnoreClassification {
   path: string;
-  ignored: boolean;
+  isIgnored: boolean;
   source?: IgnoreSource;
   pattern?: string;
 }
 
+// Classifies one caller-supplied path without analysing it, preserving the shared ignore contract.
 export function classifyPathIgnore(projectRoot: string, input: string, options: AnalysisOptions, config: Config): PathIgnoreClassification {
   const absolute = absolutize(projectRoot, input);
   const display = displayPath(projectRoot, absolute);
@@ -182,7 +183,7 @@ export function classifyPathIgnore(projectRoot: string, input: string, options: 
   const ruleDirectory = isDirectory ? absolute : dirname(absolute);
   const gitIgnoreRules = options.shouldIncludeIgnored ? [] : gitIgnoreRulesForDirectory(projectRoot, ruleDirectory);
   const match = classifyIgnore(display, isDirectory, options, config, gitIgnoreRules);
-  return match ? { path: display, ignored: true, source: match.source, pattern: match.pattern } : { path: display, ignored: false };
+  return match ? { path: display, isIgnored: true, source: match.source, pattern: match.pattern } : { path: display, isIgnored: false };
 }
 
 // Walks .gitignore files top-down from project root to the target directory so child rules can
