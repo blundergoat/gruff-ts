@@ -9,30 +9,30 @@ import { createRequire } from "node:module";
 // no type checker, program, language service, or emit. Loaded via createRequire
 // because typescript ships as CommonJS; usage stays bounded to syntax walking.
 const require = createRequire(import.meta.url);
-const ts = require("typescript") as typeof import("typescript");
+const typescriptSyntax = require("typescript") as typeof import("typescript");
 
 type TsSourceFile = import("typescript").SourceFile;
 type TsNode = import("typescript").Node;
 type TsCallLikeExpression = import("typescript").CallExpression | import("typescript").NewExpression;
 
 // Parse a discovered script to a syntax-only AST; null on non-parseable input so
-// callers fall back to the same-line scan. analyseSecurityFlow is the only caller
-// and runs once per file, so there is no cache to go stale.
+// callers use the same-line scan. Parser exceptions recover to null as fallback.
 function getSourceFile(file: SourceFile, source: string): TsSourceFile | null {
   try {
-    return ts.createSourceFile(file.displayPath, source, ts.ScriptTarget.Latest, true, scriptKindFor(file.displayPath));
+    return typescriptSyntax.createSourceFile(file.displayPath, source, typescriptSyntax.ScriptTarget.Latest, true, scriptKindFor(file.displayPath));
   } catch {
     return null;
   }
 }
 
+// Maps file extensions to TypeScript parser script kind so JSX files parse with JSX grammar.
 function scriptKindFor(path: string) {
-  if (path.endsWith(".tsx")) return ts.ScriptKind.TSX;
-  if (path.endsWith(".jsx")) return ts.ScriptKind.JSX;
+  if (path.endsWith(".tsx")) return typescriptSyntax.ScriptKind.TSX;
+  if (path.endsWith(".jsx")) return typescriptSyntax.ScriptKind.JSX;
   if (path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs")) {
-    return ts.ScriptKind.JS;
+    return typescriptSyntax.ScriptKind.JS;
   }
-  return ts.ScriptKind.TS;
+  return typescriptSyntax.ScriptKind.TS;
 }
 
 // Depth-first walk; return false from visit to skip a node's children.
@@ -40,7 +40,7 @@ function walk(node: TsNode, visit: (node: TsNode) => boolean | void): void {
   if (visit(node) === false) {
     return;
   }
-  ts.forEachChild(node, (child) => {
+  typescriptSyntax.forEachChild(node, (child) => {
     walk(child, visit);
   });
 }
@@ -310,11 +310,11 @@ function analyseFlowScope(parsedSource: TsSourceFile, scopeOwner: TsNode, file: 
 // MAX_ALIAS_DEPTH. Function-valued initialisers are skipped so a source token
 // inside a callback body never taints the function variable itself.
 function recordTaint(parsedSource: TsSourceFile, node: TsNode, tainted: Map<string, TaintRecord>): void {
-  if (ts.isVariableDeclaration(node)) {
+  if (typescriptSyntax.isVariableDeclaration(node)) {
     recordVariableTaint(parsedSource, node, tainted);
     return;
   }
-  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left)) {
+  if (typescriptSyntax.isBinaryExpression(node) && node.operatorToken.kind === typescriptSyntax.SyntaxKind.EqualsToken && typescriptSyntax.isIdentifier(node.left)) {
     const nextRecord = taintRecordFromExpression(parsedSource, node.right, tainted);
     if (nextRecord) {
       tainted.set(node.left.text, nextRecord);
@@ -334,7 +334,7 @@ function recordVariableTaint(parsedSource: TsSourceFile, node: import("typescrip
   if (!record) {
     return;
   }
-  if (ts.isIdentifier(node.name)) {
+  if (typescriptSyntax.isIdentifier(node.name)) {
     tainted.set(node.name.text, record);
     return;
   }
@@ -350,7 +350,7 @@ function taintRecordFromExpression(parsedSource: TsSourceFile, expression: TsNod
   if (kind !== undefined) {
     return { line: lineIndexOf(parsedSource, expression), kind, depth: 1 };
   }
-  if (!ts.isIdentifier(expression)) {
+  if (!typescriptSyntax.isIdentifier(expression)) {
     return undefined;
   }
   const upstream = tainted.get(expression.text);
@@ -362,12 +362,12 @@ function taintRecordFromExpression(parsedSource: TsSourceFile, expression: TsNod
 
 // Applies one proven source record to each simple identifier in a destructuring pattern.
 function taintBindingNames(name: import("typescript").BindingName, record: TaintRecord, tainted: Map<string, TaintRecord>): void {
-  if (ts.isIdentifier(name)) {
+  if (typescriptSyntax.isIdentifier(name)) {
     tainted.set(name.text, record);
     return;
   }
   for (const element of name.elements) {
-    if (ts.isOmittedExpression(element)) {
+    if (typescriptSyntax.isOmittedExpression(element)) {
       continue;
     }
     taintBindingNames(element.name, record, tainted);
@@ -377,7 +377,7 @@ function taintBindingNames(name: import("typescript").BindingName, record: Taint
 // Records locals that hold an XML parser configured to expand entities. Later `parser.parse(xml)`
 // calls are XXE sinks only for these explicitly unsafe parser instances.
 function recordUnsafeXmlParser(parsedSource: TsSourceFile, node: TsNode, unsafeXmlParsers: Set<string>): void {
-  if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name) || !node.initializer) {
+  if (!typescriptSyntax.isVariableDeclaration(node) || !typescriptSyntax.isIdentifier(node.name) || !node.initializer) {
     return;
   }
   if (isUnsafeXmlParserConstruction(parsedSource, node.initializer)) {
@@ -418,7 +418,7 @@ function reportSink(
 // Normalises calls and constructors because `RegExp(value)` and `new RegExp(value)`
 // are equivalent dynamic-regexp sinks for this syntax-only pass.
 function callLikeExpression(node: TsNode): TsCallLikeExpression | undefined {
-  return ts.isCallExpression(node) || ts.isNewExpression(node) ? node : undefined;
+  return typescriptSyntax.isCallExpression(node) || typescriptSyntax.isNewExpression(node) ? node : undefined;
 }
 
 // Finds the first tainted identifier or direct external-input expression in sink arguments.
@@ -433,7 +433,7 @@ function taintedInput(call: TsCallLikeExpression, parsedSource: TsSourceFile, ta
       if (isSafeWrapperExpression(parsedSource, node)) {
         return false;
       }
-      if (ts.isIdentifier(node)) {
+      if (typescriptSyntax.isIdentifier(node)) {
         const record = tainted.get(node.text);
         if (record) {
           found = record;
@@ -511,7 +511,7 @@ function isInlineUnsafeXmlParserCall(callee: string): boolean {
 
 // Parser constructors are considered unsafe only when entity expansion is visibly enabled nearby.
 function isUnsafeXmlParserConstruction(parsedSource: TsSourceFile, expr: TsNode): boolean {
-  if (!ts.isNewExpression(expr)) {
+  if (!typescriptSyntax.isNewExpression(expr)) {
     return false;
   }
   const callee = expr.expression.getText(parsedSource);
@@ -540,7 +540,7 @@ function sourceKindOf(parsedSource: TsSourceFile, expr: TsNode): string | undefi
 // Regex escaping helpers are sanitizer evidence for dynamic-regexp flow; walking their arguments
 // would otherwise re-taint an already-escaped pattern value.
 function isSafeWrapperExpression(parsedSource: TsSourceFile, expr: TsNode): boolean {
-  if (!ts.isCallExpression(expr)) {
+  if (!typescriptSyntax.isCallExpression(expr)) {
     return false;
   }
   const callee = expr.expression.getText(parsedSource);
@@ -550,13 +550,13 @@ function isSafeWrapperExpression(parsedSource: TsSourceFile, expr: TsNode): bool
 // Identifies scope boundaries that must not inherit taint from enclosing functions.
 function isFunctionLike(node: TsNode): boolean {
   return (
-    ts.isFunctionDeclaration(node) ||
-    ts.isFunctionExpression(node) ||
-    ts.isArrowFunction(node) ||
-    ts.isMethodDeclaration(node) ||
-    ts.isConstructorDeclaration(node) ||
-    ts.isGetAccessorDeclaration(node) ||
-    ts.isSetAccessorDeclaration(node)
+    typescriptSyntax.isFunctionDeclaration(node) ||
+    typescriptSyntax.isFunctionExpression(node) ||
+    typescriptSyntax.isArrowFunction(node) ||
+    typescriptSyntax.isMethodDeclaration(node) ||
+    typescriptSyntax.isConstructorDeclaration(node) ||
+    typescriptSyntax.isGetAccessorDeclaration(node) ||
+    typescriptSyntax.isSetAccessorDeclaration(node)
   );
 }
 
