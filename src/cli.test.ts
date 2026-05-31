@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { cwd } from "node:process";
 import test from "node:test";
 import { renderReport } from "./cli.ts";
+import { resolveProfile } from "./config.ts";
 import type { AnalysisReport } from "./cli.ts";
 import {
   analyseFixture,
@@ -677,4 +678,48 @@ function unusedParam(value: string): void {
   );
   assert.equal(report.findings.some((finding) => finding.ruleId === "waste.empty-function" && finding.symbol === "emptyWork"), true);
   assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unused-parameter" && finding.symbol === "unusedParam"), true);
+});
+
+// The strict file-length threshold the determinism test asserts on; named so the assertion compares
+// against an explained value, not a bare literal. The wider profile matrix lives in profiles.test.ts.
+const STRICT_FILE_LENGTH_THRESHOLD = 400;
+
+test("profile resolution determinism", () => {
+  const root = cwd();
+  // recommended is a no-op delta: it flattens to an empty rule map, which is what makes
+  // `--profile recommended` byte-identical to a zero-config scan (the parity contract).
+  assert.equal(resolveProfile("gruff.recommended", root).rules.size, 0, "recommended must flatten to an empty delta");
+  // Resolving the same spec twice yields identical flattened output - no run-to-run churn.
+  const firstStrict = resolveProfile("gruff.strict", root);
+  assert.deepEqual(firstStrict, resolveProfile("gruff.strict", root));
+  // strict tightens thresholds without disabling anything: no `enabled: false` entries.
+  assert.equal([...firstStrict.rules.values()].some((setting) => setting.enabled === false), false, "strict disables nothing");
+  assert.equal(firstStrict.rules.get("size.file-length")?.threshold, STRICT_FILE_LENGTH_THRESHOLD);
+  // Child-wins is deterministic for a key set at two inheritance levels: the child override wins and
+  // sibling thresholds inherited from the base are preserved.
+  const overlaid = resolveProfile({ extends: "gruff.strict", rules: { "size.file-length": { threshold: STRICT_FILE_LENGTH_THRESHOLD + 1 } } }, root);
+  assert.equal(overlaid.rules.get("size.file-length")?.threshold, STRICT_FILE_LENGTH_THRESHOLD + 1, "child override wins over the strict base");
+  assert.equal(overlaid.rules.get("size.function-length")?.threshold, firstStrict.rules.get("size.function-length")?.threshold, "uninvolved strict thresholds are inherited");
+});
+
+test("profile cycle detection", () => {
+  // Two files that extend each other; resolving either end must throw before recursing forever.
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ts-profile-cycle-"));
+  try {
+    writeFixtureFiles(dir, { "a.yaml": "extends: ./b.yaml\n", "b.yaml": "extends: ./a.yaml\n" });
+    assert.throws(
+      () => resolveProfile("./a.yaml", dir),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        assert.match(message, /cycle detected/i);
+        const firstA = message.indexOf("a.yaml");
+        const firstB = message.indexOf("b.yaml");
+        assert.ok(firstA >= 0 && firstB > firstA, "names a.yaml before b.yaml in visit order");
+        assert.ok(message.lastIndexOf("a.yaml") > firstB, "cycle closes back on a.yaml");
+        return true;
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

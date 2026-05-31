@@ -12,7 +12,7 @@ import { VERSION } from "./constants.ts";
 import { startDashboard } from "./dashboard.ts";
 import { promptYesNo, shouldPromptForInit, writeDefaultConfig } from "./init-config.ts";
 import { renderReport, renderSummary, renderSummaryJson } from "./report-renderers.ts";
-import { completionShell, getRuleDescriptor, renderCompletionScript, renderConsoleList, renderRuleDetail, renderRuleList, type RuleListFormat } from "./rule-list.ts";
+import { completionShell, getRuleDescriptor, renderCompletionScript, renderConsoleList, renderProfileList, renderRuleDetail, renderRuleList, type RuleListFormat } from "./rule-list.ts";
 import { exitFor } from "./scoring.ts";
 import type { AnalysisOptions, AnalysisReport, MinimumSeverityCommand } from "./types.ts";
 
@@ -23,6 +23,10 @@ type AnalyseRunner = (options: AnalysisOptions) => AnalysisReport;
 interface NormalizeContext {
   shouldAllowBaselineFlag: boolean;
 }
+
+// Shared `--profile` flag help for analyse/report/summary/dashboard. The value is a built-in profile
+// name or a profile file path; it overrides any config-file `profile:` block (CLI wins, per ADR-010).
+const PROFILE_OPTION_DESCRIPTION = "Apply a built-in profile (gruff.minimal, gruff.recommended, gruff.strict) or a profile file path. Overrides a config-file profile:.";
 
 // Honours `--silent`/`--quiet` before writing to stdout. Always appends a trailing newline so piped
 // callers (e.g., `gruff-ts analyse | jq`) see a complete line even when a renderer forgot one.
@@ -107,6 +111,7 @@ export function buildProgram(runAnalyse: AnalyseRunner): Command {
   registerDashboardCommand(program, runAnalyse);
   registerInitCommand(program);
   registerListCommand(program);
+  registerListProfilesCommand(program);
   registerListRulesCommand(program);
   registerReportCommand(program, runAnalyse);
   registerSummaryCommand(program, runAnalyse);
@@ -172,6 +177,7 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .argument("[paths...]", "Files or directories to analyse.")
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
+    .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
     .option("--format <format>", "Output format: text, json, html, markdown, github, hotspot, or sarif.", "text")
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "advisory")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
@@ -255,10 +261,12 @@ function registerDashboardCommand(program: Command, runAnalyse: AnalyseRunner): 
     .option("--host <host>", "Host to bind.", "127.0.0.1")
     .option("--port <port>", "Port to bind.", "8767")
     .option("--project-root <path>", "Default project root.", ".")
+    .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
     .action(async (rawOptions: Record<string, unknown>) => {
       const projectRoot = resolve(String(rawOptions.projectRoot ?? "."));
       await maybePromptInitConfig(program, projectRoot, { shouldSkipConfig: false, hasExplicitConfig: false });
-      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), projectRoot, runAnalyse, !outputSuppressed(program));
+      const profile = typeof rawOptions.profile === "string" ? rawOptions.profile : undefined;
+      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), projectRoot, runAnalyse, !outputSuppressed(program), profile);
     });
 }
 
@@ -305,6 +313,20 @@ function registerListCommand(program: Command): void {
     });
 }
 
+// Read-only profile catalogue dump mirroring `list-rules`: text for humans, JSON for docs and audits.
+// `--format` is validated by `parseSummaryFormat`, so an unsupported value fails fast as a usage error
+// instead of silently coercing - the half-and-half coercion trap documented in footguns/schema-and-cli.md.
+function registerListProfilesCommand(program: Command): void {
+  program
+    .command("list-profiles")
+    .description("List the built-in gruff profiles with their rule-count summary.")
+    .option("--format <format>", "Output format: text or json.", parseSummaryFormat, "text")
+    .action((rawOptions: Record<string, unknown>) => {
+      const format: RuleListFormat = rawOptions.format === "json" ? "json" : "text";
+      writeCommandOutput(program, renderProfileList(format));
+    });
+}
+
 // Read-only catalogue dump. JSON is the canonical form consumed by docs builds; text is for humans.
 // `--format` is validated by `parseSummaryFormat`; unsupported values fail fast as a usage error.
 // Optional `<ruleId>` positional switches to single-rule detail mode (M08): no-arg behaviour stays
@@ -342,6 +364,7 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     .option("--output <path>", "Write report to a file.")
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
+    .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
     .option("--fail-on <severity>", "Finding severity that fails the run.", "none")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
@@ -373,6 +396,7 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .argument("[paths...]", "Files or directories to analyse.")
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
+    .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
     .option("--format <format>", "Output format: text or json.", parseSummaryFormat, "text")
     .option("--top <n>", "How many top rules and file offenders to list.", parseNonNegativeInteger, 10)
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "advisory")
@@ -450,6 +474,7 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
   return {
     paths: diffInput.paths,
     ...configOption(rawOptions),
+    ...profileOption(rawOptions),
     shouldSkipConfig:
       rawOptions.config === false ||
       rawOptions.noConfig === true,
@@ -471,6 +496,12 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
 // `exactOptionalPropertyTypes` - the absent and `undefined` cases are not interchangeable.
 function configOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "config">> {
   return typeof rawOptions.config === "string" ? { config: rawOptions.config } : {};
+}
+
+// Same conditional-spread discipline for `--profile`: an absent flag must stay absent (not undefined)
+// so `loadConfig` falls back to the config-file `profile:` block rather than seeing an explicit CLI value.
+function profileOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "profile">> {
+  return typeof rawOptions.profile === "string" ? { profile: rawOptions.profile } : {};
 }
 
 // `--diff` without an argument means "working-tree". `--diff -` is accepted even when Commander

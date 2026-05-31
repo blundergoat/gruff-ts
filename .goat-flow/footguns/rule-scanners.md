@@ -1,9 +1,17 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-05-26
+last_reviewed: 2026-05-31
 ---
 
 # Rule scanner footguns
+
+## Footgun: context-doc rules read ONLY the last `//` line above a declaration
+
+**Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED (named-profiles self-scan)
+
+The context-doc rules - `docs.missing-error-behavior-doc`, `docs.missing-why-for-complex-code`, `docs.missing-side-effect-doc`, `docs.missing-invariant-doc` (`src/context-doc-rules.ts`, search: `function functionContextDocFindings`) - test their marker vocabulary (`hasErrorBehaviorMarker`, search: `function hasErrorBehaviorMarker`; `hasComplexWhyMarker`, etc.) against `comment.text` from `leadingCommentForLine` (`src/comment-rules.ts`, search: `function leadingCommentForLine`). `commentRecords` (`src/comment-scanner.ts`, search: `emits one CommentRecord per`) emits ONE record per `//` line and does NOT merge a run of consecutive `//` lines, so `leadingCommentForLine` returns only the SINGLE comment line directly above the declaration. A `/* ... */` block, by contrast, is one record whose whole body is checked.
+
+Consequence: for a function documented with stacked `//` lines, the marker word (`throws`/`reports`/`exits` for error-behavior; `because`/`why`/`avoid`/`preserve` for complex-why) MUST appear on the FINAL `//` line, the one immediately above the signature. Putting "Throws ConfigLoadError" on line 2 of a 3-line `//` comment does NOT clear `docs.missing-error-behavior-doc` - the rule never sees line 2. During the profiles work, four `//`-commented throwing helpers and one complex renderer kept firing until each marker was moved to the last line (or the comment was made a single line ending in the marker). When clearing a context-doc finding on a `//`-commented declaration, put the marker on the last line or convert the comment to a `/* */` block.
 
 ## Footgun: per-line walkers miss multi-line conditional context
 

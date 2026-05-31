@@ -92,6 +92,7 @@ Open `http://127.0.0.1:8767/` for the dashboard.
 | `report [paths...]` | Render an HTML or JSON report to stdout or `--output`. |
 | `init` | Write the default `.gruff-ts.yaml` to the current directory (`--force` to overwrite). |
 | `list-rules` | Print rule metadata as text or JSON. |
+| `list-profiles` | Print the built-in profiles (`gruff.minimal`, `gruff.recommended`, `gruff.strict`) with their rule-count summary, as text or JSON. |
 | `check-ignore <paths...>` | Report whether each path is ignored (config, gitignore, or default) with the matching source and pattern; runs no analysis. |
 | `dashboard` | Serve the local browser dashboard. |
 | `completion [shell]` | Print a shell completion script for `bash`, `zsh`, or `fish`. |
@@ -180,6 +181,45 @@ rules:
 ```
 
 See [Configuration](docs/configuration.md) for the full config shape.
+
+## Profiles
+
+A `profile:` selects a named bundle of rules instead of enumerating every rule by hand. Three profiles ship with the binary:
+
+| Profile | Intent |
+| --- | --- |
+| `gruff.minimal` | Security and sensitive-data rules only - the smallest sanity gate for incremental adoption. |
+| `gruff.recommended` | Every pillar at its default threshold and severity - identical to gruff's zero-config behaviour. |
+| `gruff.strict` | Every pillar enabled with tightened size, complexity, and secret thresholds for high-bar repositories. |
+
+`gruff-ts list-profiles` prints them with their enabled-rule counts. Select one in config or on the CLI:
+
+```yaml
+# Shorthand: the whole profile in one line.
+profile: recommended
+```
+
+```yaml
+# Compose: extend a built-in, then override a few rules or add ignored paths.
+profile:
+  extends: gruff.recommended      # a built-in name OR a relative path like ./team-profile.yaml
+  rules:
+    complexity.cyclomatic:
+      threshold: 12
+    docs.missing-public-doc:
+      enabled: false
+  ignoredPaths:
+    - "examples/**"
+```
+
+`--profile <name-or-path>` applies a profile for one run (on `analyse`, `report`, `summary`, and `dashboard`) and overrides a config-file `profile:`. The value is a built-in name (the bare `minimal` / `recommended` / `strict` short forms are accepted too) or a path to a `.yaml`/`.yml`/`.json` profile file.
+
+Semantics:
+
+- **Precedence (highest first):** `--profile` flag, config `profile:` block, the `extends:` base chain, the built-in default `gruff.recommended`. A top-level `rules:` entry still overrides the profile for that rule.
+- **`extends:`** accepts a built-in name or a relative file path - never a remote URL, never shell. A shared profile file's top level is itself a profile spec (`extends` / `rules` / `ignoredPaths`).
+- **Last-wins, deterministic:** a child profile's per-rule fields override the parent's same-rule fields, and a child `ignoredPaths` array replaces (does not concatenate) the parent's.
+- **Validated at load time:** an unknown built-in name resolved as a missing file, a missing `extends:` file, an `extends:` cycle, and a rule id outside the catalogue all fail with a clear error before any scan runs.
 
 ## Rules And Pillars
 

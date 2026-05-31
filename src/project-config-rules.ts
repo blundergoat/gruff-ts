@@ -2,7 +2,7 @@
 import { existsSync, statSync } from "node:fs";
 import { basename, dirname as dirnamePath, isAbsolute, join } from "node:path";
 import { platform } from "node:process";
-import { isString, objectValue } from "./config.ts";
+import { isString, objectValue } from "./config-parse.ts";
 import { makeFinding } from "./findings.ts";
 import { firstLine } from "./text-scans.ts";
 import type { Finding } from "./types.ts";

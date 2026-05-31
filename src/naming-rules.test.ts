@@ -1,8 +1,9 @@
 // Naming-rule tests for blacklist config, boolean names, acronym casing, and overlap boundaries.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { cwd } from "node:process";
 import test from "node:test";
 import { ruleDescriptors } from "./cli.ts";
+import { loadConfig, ruleEnabled } from "./config.ts";
 import { analyseFixture, analyseProject } from "./test-fixtures.ts";
 
 test("naming blacklists default to current behavior", () => {
@@ -403,9 +404,11 @@ const NAMING_PILLAR_RULE_IDS = [
 test("naming rule pack catalogue coverage", () => {
   const descriptors = ruleDescriptors().map((descriptor) => descriptor.ruleId).filter((ruleId) => ruleId.startsWith("naming."));
   assert.deepEqual(descriptors, NAMING_PILLAR_RULE_IDS);
-  const yamlSource = readFileSync(".gruff-ts.yaml", "utf8");
+  // The repo ships `profile: recommended`, which enables every pillar; assert the loaded config keeps
+  // each naming rule enabled rather than grepping for a per-rule entry the profile no longer needs.
+  const config = loadConfig(cwd(), { paths: ["."], shouldSkipConfig: false, format: "json", failOn: "none", shouldIncludeIgnored: false, changedScope: "symbol", shouldSkipBaseline: true });
   NAMING_PILLAR_RULE_IDS.forEach((ruleId) => {
-    assert.match(yamlSource, new RegExp(`\\b${ruleId.replace(".", "\\.")}\\b`), `missing yaml entry for ${ruleId}`);
+    assert.equal(ruleEnabled(config, ruleId), true, `repo config does not enable ${ruleId}`);
   });
 });
 

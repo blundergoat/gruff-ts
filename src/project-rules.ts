@@ -3,7 +3,8 @@
 // every rule pass shares. Pulls the project-index types and the rules that consume them out of cli.ts
 // so the orchestrator stays lean.
 import { basename, dirname as dirnamePath, extname, join } from "node:path";
-import { isString, optionNumber, ruleSeverity, threshold } from "./config.ts";
+import { isString } from "./config-parse.ts";
+import { optionNumber, ruleSeverity, threshold } from "./config.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { fileBaseName } from "./findings-helpers.ts";

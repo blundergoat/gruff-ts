@@ -2,9 +2,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { cwd } from "node:process";
 import { ruleDescriptors } from "./cli.ts";
+import { loadConfig, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { SECURITY_EXPANSION_RISKY_RULE_IDS, SECURITY_EXPANSION_RULE_QUALITY_DOCTRINE } from "./fixtures/rule-catalogue-security-doctrine.ts";
 import { ruleCatalogueCoverageRuleIds } from "./test-fixtures.ts";
+import type { AnalysisOptions } from "./types.ts";
 
 const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "missing-invalid"] as const;
 
@@ -28,11 +31,11 @@ function assertDescriptorCoverageOrExemption(descriptor: { ruleId: string; fixtu
 type RuleQualityCategory = (typeof RULE_QUALITY_FIXTURE_CATEGORIES)[number];
 type RuleQualityDescriptor = ReturnType<typeof ruleDescriptors>[number];
 
-// Tracks the rule/options section while scanning the YAML config fixture.
-interface YamlRuleOptionsState {
-  isInRules: boolean;
-  currentRule: string;
-  isInOptions: boolean;
+// Minimal analyse options for loading the repo's shipped `.gruff-ts.yaml` (which selects a profile)
+// from the test working directory. Coverage is checked against the effective loaded config rather than
+// yaml text, so the assertions hold whether the config enumerates rules or names a profile.
+function repoScanOptions(): AnalysisOptions {
+  return { paths: ["."], shouldSkipConfig: false, format: "json", failOn: "none", shouldIncludeIgnored: false, changedScope: "symbol", shouldSkipBaseline: true };
 }
 
 // Pairs valid, invalid, and noisy fixtures for one rule-doctrine assertion.
@@ -378,14 +381,14 @@ const riskyRuleQualityExceptions = [
 test("documentation catalogue covers comment rule pack", () => {
   const descriptors = ruleDescriptors();
   const descriptorByRuleId = new Map(descriptors.map((descriptor) => [descriptor.ruleId, descriptor]));
-  const configSource = readFileSync(".gruff-ts.yaml", "utf8");
+  const config = loadConfig(cwd(), repoScanOptions());
   const coverageIds = ruleCatalogueCoverageRuleIds();
   const doctrineIds: Set<string> = new Set(riskyRuleQualityDoctrine.filter((entry) => entry.expectedPillar === "documentation").map((entry) => entry.ruleId));
   const documentationRuleIds = descriptors.filter((descriptor) => descriptor.pillar === "documentation").map((descriptor) => descriptor.ruleId);
 
   documentationRuleIds.forEach((ruleId) => {
     assert.notEqual(descriptorByRuleId.get(ruleId), undefined, `missing descriptor for ${ruleId}`);
-    assert.equal(configSource.includes(`  ${ruleId}:`), true, `missing config entry for ${ruleId}`);
+    assert.equal(ruleEnabled(config, ruleId), true, `repo config does not enable ${ruleId}`);
     assert.equal(coverageIds.has(ruleId), true, `missing cumulative fixture coverage for ${ruleId}`);
   });
   riskyRuleIdsRequiringNoisyValidProof.filter((ruleId) => ruleId.startsWith("docs.")).forEach((ruleId) => {
@@ -498,9 +501,6 @@ test("rule descriptor thresholds and options match implementation and config def
   const descriptorThresholds = new Map(
     descriptors.filter((descriptor) => typeof descriptor.threshold === "number").map((descriptor) => [descriptor.ruleId, descriptor.threshold ?? 0]),
   );
-  const descriptorSeverities = new Map(
-    descriptors.filter((descriptor) => typeof descriptor.threshold === "number").map((descriptor) => [descriptor.ruleId, descriptor.severity]),
-  );
   const descriptorOptions = new Map(
     descriptors.filter((descriptor) => (descriptor.optionKeys ?? []).length > 0).map((descriptor) => [descriptor.ruleId, [...(descriptor.optionKeys ?? [])].sort()]),
   );
@@ -509,11 +509,17 @@ test("rule descriptor thresholds and options match implementation and config def
   assert.deepEqual(descriptorThresholds, implementationThresholds);
   assert.deepEqual(descriptorOptions, optionUsages(implementationSources));
 
-  const configSource = readFileSync(".gruff-ts.yaml", "utf8");
-  const configThresholds = yamlThresholdDefaults(configSource);
-  assert.deepEqual(configThresholds, descriptorThresholds);
-  assert.deepEqual(yamlSeverityDefaults(configSource), descriptorSeverities);
-  assert.deepEqual(yamlOptionDefaults(configSource), descriptorOptions);
+  // The shipped `.gruff-ts.yaml` selects `profile: recommended`, so it carries no explicit per-rule
+  // thresholds that could drift from the descriptor. Assert the loaded config enables every
+  // threshold-owning rule and leaves its threshold and severity at the descriptor default - a real
+  // override in the repo config would surface here. recommended == descriptor defaults is itself
+  // proven by the parity test in profiles.test.ts.
+  const config = loadConfig(cwd(), repoScanOptions());
+  descriptors.filter((entry) => typeof entry.threshold === "number").forEach((descriptor) => {
+    assert.equal(ruleEnabled(config, descriptor.ruleId), true, `repo config disables ${descriptor.ruleId}`);
+    assert.equal(threshold(config, descriptor.ruleId, descriptor.threshold ?? 0), descriptor.threshold ?? 0, `repo config overrides ${descriptor.ruleId} threshold`);
+    assert.equal(ruleSeverity(config, descriptor.ruleId, descriptor.severity), descriptor.severity, `repo config overrides ${descriptor.ruleId} severity`);
+  });
 });
 
 // Preserves the descriptor/default invariant by extracting threshold(config, ruleId, default) calls.
@@ -537,133 +543,4 @@ function optionUsages(source: string): Map<string, string[]> {
     usages.get(ruleId)?.add(key);
   }
   return new Map([...usages.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([ruleId, keys]) => [ruleId, [...keys].sort()]));
-}
-
-// Preserves the config/descriptor invariant by reading threshold defaults from .gruff-ts.yaml.
-function yamlThresholdDefaults(source: string): Map<string, number> {
-  const result = new Map<string, number>();
-  let isInRules = false;
-  let currentRule = "";
-  for (const line of source.split(/\r?\n/)) {
-    if (line.trim() === "rules:") {
-      isInRules = true;
-      continue;
-    }
-    if (!isInRules) {
-      continue;
-    }
-    const ruleMatch = line.match(/^  ([a-z-]+\.[a-z0-9-]+):\s*$/);
-    if (ruleMatch?.[1]) {
-      currentRule = ruleMatch[1];
-      continue;
-    }
-    const thresholdMatch = line.match(/^    threshold:\s*(-?\d+(?:\.\d+)?)\s*$/);
-    if (currentRule && thresholdMatch?.[1]) {
-      result.set(currentRule, Number(thresholdMatch[1]));
-    }
-  }
-  return new Map([...result.entries()].sort(([left], [right]) => left.localeCompare(right)));
-}
-
-// Reads severities only for threshold-owning YAML rules so the pair contract stays in sync.
-function yamlSeverityDefaults(source: string): Map<string, string> {
-  const thresholdRules = new Set(yamlThresholdDefaults(source).keys());
-  const result = new Map<string, string>();
-  let isInRules = false;
-  let currentRule = "";
-  for (const line of source.split(/\r?\n/)) {
-    if (line.trim() === "rules:") {
-      isInRules = true;
-      continue;
-    }
-    if (!isInRules) {
-      continue;
-    }
-    const ruleMatch = line.match(/^  ([a-z-]+\.[a-z0-9-]+):\s*$/);
-    if (ruleMatch?.[1]) {
-      currentRule = ruleMatch[1];
-      continue;
-    }
-    const severityMatch = line.match(/^    severity:\s*(advisory|warning|error)\s*$/);
-    if (currentRule && thresholdRules.has(currentRule) && severityMatch?.[1]) {
-      result.set(currentRule, severityMatch[1]);
-    }
-  }
-  return new Map([...result.entries()].sort(([left], [right]) => left.localeCompare(right)));
-}
-
-// Preserves the YAML option-key invariant with a state machine for per-rule option blocks.
-function yamlOptionDefaults(source: string): Map<string, string[]> {
-  const result = new Map<string, string[]>();
-  const state: YamlRuleOptionsState = { isInRules: false, currentRule: "", isInOptions: false };
-  for (const line of source.split(/\r?\n/)) {
-    updateYamlOptionDefaults(line, state, result);
-  }
-  return new Map([...result.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([ruleId, keys]) => [ruleId, keys.sort()]));
-}
-
-// Advances the tiny YAML state machine for one config line.
-function updateYamlOptionDefaults(line: string, state: YamlRuleOptionsState, result: Map<string, string[]>): void {
-  if (line.trim() === "rules:") {
-    state.isInRules = true;
-    return;
-  }
-  if (!state.isInRules) {
-    return;
-  }
-  if (recordYamlOptionRule(line, state)) {
-    return;
-  }
-  if (recordYamlOptionsStart(line, state, result)) {
-    return;
-  }
-  recordYamlOptionKey(line, state, result);
-}
-
-// Records a rule heading and resets option collection until an options block appears.
-function recordYamlOptionRule(line: string, state: YamlRuleOptionsState): boolean {
-  const ruleId = yamlRuleId(line);
-  if (!ruleId) {
-    return false;
-  }
-  state.currentRule = ruleId;
-  state.isInOptions = false;
-  return true;
-}
-
-// Starts collecting option keys for the current rule when the config block declares options.
-function recordYamlOptionsStart(line: string, state: YamlRuleOptionsState, result: Map<string, string[]>): boolean {
-  if (state.currentRule === "") {
-    return false;
-  }
-  if (!/^    options:\s*$/.test(line)) {
-    return false;
-  }
-  state.isInOptions = true;
-  result.set(state.currentRule, []);
-  return true;
-}
-
-// Appends an option key inside the current rule's options block.
-function recordYamlOptionKey(line: string, state: YamlRuleOptionsState, result: Map<string, string[]>): void {
-  if (state.currentRule === "") {
-    return;
-  }
-  if (!state.isInOptions) {
-    return;
-  }
-  const key = yamlOptionKey(line);
-  if (key) {
-    result.get(state.currentRule)?.push(key);
-  }
-}
-
-// Extracts a rule id from a two-space-indented YAML heading.
-function yamlRuleId(line: string): string | undefined {
-  return line.match(/^  ([a-z-]+\.[a-z0-9-]+):\s*$/)?.[1];
-}
-
-// Extracts an option key from a six-space-indented YAML property.
-function yamlOptionKey(line: string): string | undefined {
-  return line.match(/^      ([A-Za-z0-9_-]+):/)?.[1];
 }

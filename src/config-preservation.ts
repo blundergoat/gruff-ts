@@ -3,7 +3,7 @@
 // migration path needs to lift `paths.ignore` and `minimumSeverity` off whatever the user has on
 // disk so regeneration does not silently clobber curated entries. This module exists because the
 // strict validator is the wrong tool for that handoff - the next analyser load will run it.
-import { objectValue, parseConfigFile } from "./config.ts";
+import { objectValue, parseConfigFile } from "./config-parse.ts";
 import type { FailThreshold, MinimumSeverityCommand } from "./types.ts";
 
 // Carry-over bundle returned to `gruff-ts init --force`. Both fields are best-effort: empty

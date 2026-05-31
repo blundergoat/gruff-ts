@@ -31,6 +31,12 @@ export type ChangedScopeMode = "symbol" | "hunk";
 export interface AnalysisOptions {
   paths: string[];
   config?: string;
+  /**
+   * Named built-in profile (`gruff.minimal` / `gruff.recommended` / `gruff.strict`) or a path to a
+   * profile file, from the `--profile` CLI flag. Wins over a config-file `profile:` block. Absent
+   * means "fall back to the config-file profile, else the default `recommended` (a no-op delta)".
+   */
+  profile?: string;
   shouldSkipConfig: boolean;
   format: OutputFormat;
   failOn: FailThreshold;
@@ -78,6 +84,46 @@ export interface Config {
    */
   minimumSeverity: Map<MinimumSeverityCommand, FailThreshold>;
   rules: Map<string, { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> }>;
+}
+
+/**
+ * One rule's settings inside a profile. Mirrors the per-rule knobs of the config `rules:` block
+ * (`enabled` defaults to true when omitted). `options` is optional here - built-in presets never set
+ * options - whereas the loaded `Config.rules` value always carries an (often empty) options map.
+ */
+export interface ProfileRuleSetting {
+  enabled?: boolean;
+  threshold?: number;
+  severity?: Severity;
+  options?: Map<string, number>;
+}
+
+/**
+ * What a user writes for `profile:` (or passes to `--profile`): a built-in name / file path string,
+ * or an inline object that extends a base profile and layers per-rule and path overrides on top.
+ */
+export type ProfileSpec = string | InlineProfileSpec;
+
+/**
+ * The inline `profile:` object form. `extends` names the base (a built-in name or a relative file
+ * path; defaults to `gruff.recommended` when omitted); `rules` and `ignoredPaths` override the base
+ * with child-wins semantics - per-rule fields merge, and the `ignoredPaths` array replaces.
+ */
+export interface InlineProfileSpec {
+  extends?: string;
+  rules?: Record<string, ProfileRuleSetting>;
+  ignoredPaths?: string[];
+}
+
+/**
+ * A fully resolved and flattened profile: the effective rule settings and ignored paths after the
+ * whole `extends:` chain has collapsed into one delta from the descriptor defaults. Enabled-at-default
+ * rules are omitted from `rules`, so `gruff.recommended` flattens to an empty map (the parity contract).
+ */
+export interface ProfileDefinition {
+  name: string;
+  rules: Map<string, ProfileRuleSetting>;
+  ignoredPaths: string[];
 }
 
 /** Stable analysis finding emitted by a rule. */

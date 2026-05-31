@@ -5,6 +5,36 @@ last_reviewed: 2026-05-31
 
 # Verification lessons
 
+## Lesson: converting the dogfood config to a profile breaks rule-enumeration contract tests
+
+**Created:** 2026-05-31
+
+**What happened:** After replacing the repo `.gruff-ts.yaml`'s flat 120-rule block with `profile: recommended` (the named-profiles dogfood step), `npm run check` went from 274/274 to 3 failures. Three contract tests grepped the yaml TEXT for a per-rule entry: `naming-rules.test.ts` (search: `naming rule pack catalogue coverage`), and `rule-catalogue.test.ts` (search: `documentation catalogue covers comment rule pack` and `thresholds and options match implementation`). They encoded the exact manual enumeration that profiles are designed to eliminate.
+
+**Evidence:** the failing assertions were `missing yaml entry for naming.class-file-mismatch`, `missing config entry for docs.fixture-purpose-missing`, and a `Map(0)` vs `Map(10)` threshold mismatch from `yamlThresholdDefaults`. The fix retargeted all three to load the effective config (`loadConfig(cwd(), ...)` then `ruleEnabled`/`threshold`/`ruleSeverity`) instead of grepping yaml text, which is robust whether the config enumerates rules or names a profile, and deleted the now-dead `yamlThresholdDefaults`/`yamlSeverityDefaults`/`yamlOptionDefaults` helpers.
+
+**Prevention:** Before converting a project's shipped config to a profile, grep the test suite for tests that read `.gruff-ts.yaml` as TEXT (`readFileSync(".gruff-ts.yaml"`, `configSource.includes`, yaml-threshold parsers). Retarget them to assert against the loaded `Config` (style-agnostic) in the same change. The sibling gruff ports (go/rs/py/php) will hit the identical break when they add profiles.
+
+## Lesson: a near-budget file plus "add subsystem X here" forces an extraction
+
+**Created:** 2026-05-31
+
+**What happened:** The milestone said to add `resolveProfile` and the profile machinery to `src/config.ts`. `config.ts` was 749 lines - one under the `size.file-length` 750 default - so the ~180-line resolver pushed it to ~960 and `analyse src --no-config` flagged `size.file-length` on `config.ts` itself (the self-scan is normally 0). Moving the resolver out would have created a `config.ts` <-> resolver cycle because the resolver needs `parseConfigFile`.
+
+**Evidence:** the clean baseline was `./bin/gruff-ts analyse src --no-config` = 0 findings against pristine HEAD; after the additions it reported `config.ts:1 size.file-length`. The fix extracted the zero-dependency YAML parser + `parseConfigFile` + narrowing helpers to a new `src/config-parse.ts` (search: `Config parsing layer`) that imports nothing from `config.ts`, breaking the cycle and dropping `config.ts` to ~505 lines; `resolveProfile` stayed in `config.ts` per the plan.
+
+**Prevention:** When a task says "put new code in file Y", check Y's line count against the `size.file-length` threshold first (`wc -l`). If adding the feature crosses it, plan the supporting extraction up front and pick a split that does not import back into Y. Establish the pristine self-scan baseline (scan HEAD in a throwaway worktree, or before editing) so you can tell which findings you introduced.
+
+## Lesson: run git status before recommending commit, push, or PR steps
+
+**Created:** 2026-05-31
+
+**What happened:** After finishing M06 verification, I answered "next best step: commit this verified work" from stale context instead of checking the current repository state. The user challenged it, and `git status --short --untracked-files=all` returned no output, proving the working tree was already clean and there was nothing to commit.
+
+**Evidence:** `git status --short --untracked-files=all` run in `/home/devgoat/projects/gruff-workspace/gruff-ts` returned no output immediately after the bad recommendation. The stale recommendation contradicted the actual repository state.
+
+**Prevention:** Before recommending `git add`, `git commit`, `git push`, PR creation, or saying "nothing left but commit", run `git status --short --untracked-files=all` in the target repo in the same turn. Base the next step on that output, not on remembered dirty state from earlier work.
+
 ## Lesson: self-scan freshly added regression tests before closing
 
 **Created:** 2026-05-31

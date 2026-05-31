@@ -307,6 +307,7 @@ function knownCliFlags(): Set<string> {
     "--no-interaction",
     "--output",
     "--port",
+    "--profile",
     "--project-root",
     "--quiet",
     "--silent",

@@ -12,6 +12,7 @@ interface DashboardContext {
   host: string;
   port: number;
   projectRoot: string;
+  profile?: string;
 }
 
 // Per-request projectRoot + scanPath. Sourced from `?projectRoot` and `?path` query parameters and
@@ -25,9 +26,9 @@ interface DashboardRouteInput {
 // Starts a loopback HTTP server. `analyse` is injected (not imported) to avoid a circular import
 // back into `cli.ts`; see `.goat-flow/lessons/verification.md` on the dashboard import cycle.
 // Side effect: opens a listening socket and writes the URL to stdout unless `shouldWriteOutput` is false.
-function startDashboard(host: string, port: number, projectRoot: string, analyse: DashboardAnalyse, shouldWriteOutput = true): void {
+function startDashboard(host: string, port: number, projectRoot: string, analyse: DashboardAnalyse, shouldWriteOutput = true, profile?: string): void {
   assertLoopbackHost(host);
-  const context: DashboardContext = { host, port, projectRoot };
+  const context: DashboardContext = { host, port, projectRoot, ...(profile !== undefined ? { profile } : {}) };
   const server = createServer((request, response) => handleDashboardRequest(context, analyse, request, response));
   server.listen(port, host, () => {
     if (shouldWriteOutput) {
@@ -54,7 +55,7 @@ function handleDashboardRequest(context: DashboardContext, analyse: DashboardAna
     return;
   }
   if (url.pathname === "/scan") {
-    renderDashboardScan(response, dashboardRouteInput(url, context.projectRoot), analyse);
+    renderDashboardScan(response, dashboardRouteInput(url, context.projectRoot), analyse, context.profile);
     return;
   }
   if (url.pathname !== "/") {
@@ -77,13 +78,14 @@ function dashboardRouteInput(url: URL, projectRoot: string): DashboardRouteInput
 // chdirs into the caller-requested project root, runs `analyse`, and always restores the previous
 // cwd in `finally` - leaking the chdir would corrupt subsequent requests. The loopback server must
 // keep serving on analyser failure, so the catch reports the error as a rendered fallback page.
-function renderDashboardScan(response: ServerResponse, input: DashboardRouteInput, analyse: DashboardAnalyse): void {
+function renderDashboardScan(response: ServerResponse, input: DashboardRouteInput, analyse: DashboardAnalyse, profile?: string): void {
   const previous = cwd();
   try {
     chdir(input.root);
     const report = analyse({
       paths: [input.scanPath],
       shouldSkipConfig: false,
+      ...(profile !== undefined ? { profile } : {}),
       format: "html",
       failOn: "none",
       shouldIncludeIgnored: false,

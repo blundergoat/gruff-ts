@@ -41,6 +41,7 @@ export const COMMENTED_OUT_LEGACY_CALL = ["const", " disabledLegacy = runLegacyP
 export interface AnalyseProjectOptions {
   config?: Record<string, unknown>;
   configPath?: string;
+  profile?: string;
   executableFiles?: string[];
   shouldIncludeIgnored?: boolean;
   shouldSkipConfig?: boolean;
@@ -106,7 +107,7 @@ export function setupAnalyseProjectDirectory(dir: string, files: Record<string, 
  * @returns The analysis report produced from the current temporary project.
  */
 export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions): AnalysisReport {
-  const analysisOptions: Parameters<typeof analyse>[0] = {
+  return analyse({
     paths: options.paths ?? ["."],
     shouldSkipConfig: options.shouldSkipConfig ?? !(options.config || options.configPath),
     format: "json",
@@ -114,20 +115,20 @@ export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions)
     shouldIncludeIgnored: options.shouldIncludeIgnored ?? false,
     changedScope: options.changedScope ?? "symbol",
     shouldSkipBaseline: true,
+    ...optionalFixtureScanFields(options),
+  });
+}
+
+// Assembles the optional scan fields with conditional spreads so each stays omitted (not undefined)
+// under exactOptionalPropertyTypes, keeping analyseProjectInCurrentDirectory a flat literal.
+function optionalFixtureScanFields(options: AnalyseProjectOptions): Partial<Pick<Parameters<typeof analyse>[0], "config" | "profile" | "diff" | "since" | "changedRanges">> {
+  return {
+    ...(typeof options.configPath === "string" ? { config: options.configPath } : {}),
+    ...(typeof options.profile === "string" ? { profile: options.profile } : {}),
+    ...(options.diff ? { diff: options.diff } : {}),
+    ...(options.since ? { since: options.since } : {}),
+    ...(options.changedRanges ? { changedRanges: options.changedRanges } : {}),
   };
-  if (typeof options.configPath === "string") {
-    analysisOptions.config = options.configPath;
-  }
-  if (options.diff) {
-    analysisOptions.diff = options.diff;
-  }
-  if (options.since) {
-    analysisOptions.since = options.since;
-  }
-  if (options.changedRanges) {
-    analysisOptions.changedRanges = options.changedRanges;
-  }
-  return analyse(analysisOptions);
 }
 
 /*
