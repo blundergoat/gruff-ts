@@ -104,3 +104,19 @@ Two implications: (1) when adding a per-symbol classification rule that depends 
 `naming.acronym-case` (`src/class-rules.ts`, search: `ruleId: "naming.acronym-case"`) fires when the same known acronym appears in more than one casing anywhere in a single source file. Identifier casings like `Html` (titled), `HTML` (all-caps), and `html` (all-lower) are all counted independently; a single file that uses `parseHtmlPillarRows` AND a constant named `HTML_PILLAR_HEADERS` will get a finding even though both names are internally consistent on their own.
 
 When extracting helpers in a file that already uses the titled form (`Html`, `Css`, `Sql`, `Url`, etc.), match the existing casing for new identifiers - including SCREAMING_SNAKE_CASE constants. Either rename the constant to `pillarHeaderColumns` (camelCase, no acronym) or accept that the codebase convention is title-cased acronyms even in constants. The rule has no per-symbol override; only file-wide consistency clears it.
+
+## Footgun: `CORRELATED_COMPLEXITY_RULE_IDS` is defined twice and must be edited in lockstep
+
+**Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED (design.god-function removal, ADR-011)
+
+The complexity-cluster rule-id set lives in TWO files with identical literals: `src/scoring.ts` (search: `const CORRELATED_COMPLEXITY_RULE_IDS`) drives penalty clustering, and `src/report-renderers.ts` (search: `const CORRELATED_COMPLEXITY_RULE_IDS`) drives the "Correlated complexity clusters" text/markdown output. Neither imports the other and no test asserts they match, so editing only one leaves scoring and reporting silently disagreeing about which findings cluster.
+
+When you add or remove a rule from the complexity cluster (e.g. retiring `design.god-function` per ADR-011, or the inverse), change BOTH literals in the same pass, then grep `CORRELATED_COMPLEXITY_RULE_IDS` to confirm exactly two hits with the same contents. The P5 cluster contract (ADR-009) depends on the two staying in sync.
+
+## Footgun: a removed rule id left in a comment trips `docs.stale-comment` unless the SAME line carries a historical marker
+
+**Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED (design.god-function removal self-scan)
+
+After removing a rule from the catalogue, any committed comment that still names the dotted id (`pillar.name`) becomes an "unknown rule id" to `pushStaleRuleReferenceFindings` (`src/comment-rules.ts`, search: `function pushStaleRuleReferenceFindings`), which checks each id against `DESCRIPTOR_IDS`. The escape hatch is `hasHistoricalContext` (`src/comment-rules.ts`, search: `function hasHistoricalContext`): it matches `previously|legacy|compat|migration|ADR` and is checked PER comment line, because the scanner emits one record per `//` line. So the historical marker MUST sit on the SAME `//` line as the removed id - "retired"/"removed" are NOT in the vocabulary, and an `ADR-NNN` reference on the next line does not count.
+
+When a comment explains a retired rule (e.g. an ADR cross-reference about `design.god-function`), keep the id and an `ADR-NNN` (or `legacy`/`migration`) token on one line: `// ... the retired design.god-function (ADR-011) composite ...`. This compounds with the context-doc footgun above (the invariant/why marker must be on the LAST `//` line above the declaration), so one explanatory comment near a contract-owning declaration must satisfy both per-line constraints at once.

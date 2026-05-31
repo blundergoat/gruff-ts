@@ -26,9 +26,9 @@ Use `json` for automation. JSON reports use `gruff.analysis.v2`.
 The field is additive, so existing `gruff.analysis.v2` consumers are unaffected.
 
 Score math clusters correlated `complexity.cognitive`,
-`complexity.cyclomatic`, `design.god-function`, and `size.function-length`
-findings once per function symbol. The detailed `findings` array still lists
-each rule finding; only pillar penalties and offender scores are de-duplicated.
+`complexity.cyclomatic`, and `size.function-length` findings once per function
+symbol. The detailed `findings` array still lists each rule finding; only pillar
+penalties and offender scores are de-duplicated.
 
 ## HTML
 

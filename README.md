@@ -24,7 +24,7 @@ Used as a hook on an agent's output, gruff-ts is a forcing function rather than 
 | Runtime | Node.js `22+` |
 | Package | `@blundergoat/gruff-ts` |
 | Binary | `gruff-ts` |
-| Rule catalogue | 120 rules across 11 pillars |
+| Rule catalogue | 119 rules across 11 pillars |
 | Primary config | `.gruff-ts.yaml`; `.gruff.json`, `.gruff.yaml`, and `.gruff.yml` are fallback files |
 | Analysis schema | `gruff.analysis.v2` |
 | Baseline schema | `gruff.baseline.v1` |
@@ -223,14 +223,14 @@ Semantics:
 
 ## Rules And Pillars
 
-The v0.1 catalogue contains 120 rules:
+The v0.1 catalogue contains 119 rules:
 
 | Pillar | Rules |
 | --- | ---: |
 | `complexity` | 2 |
 | `dead-code` | 1 |
-| `design` | 6 |
-| `documentation` | 17 |
+| `design` | 5 |
+| `documentation` | 18 |
 | `maintainability` | 14 |
 | `modernisation` | 14 |
 | `naming` | 10 |

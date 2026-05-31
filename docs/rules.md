@@ -1,6 +1,6 @@
 # Rules
 
-`gruff-ts` exposes 120 rules across 11 pillars. This list is generated from the
+`gruff-ts` exposes 119 rules across 11 pillars. This list is generated from the
 public rule catalogue used by `gruff-ts list-rules`; severity, confidence,
 thresholds, and option names are the defaults before project config overrides.
 
@@ -22,8 +22,8 @@ gruff-ts list-rules --format=json
 
 - complexity: 2
 - dead-code: 1
-- design: 6
-- documentation: 17
+- design: 5
+- documentation: 18
 - maintainability: 14
 - modernisation: 14
 - naming: 10
@@ -45,7 +45,6 @@ gruff-ts list-rules --format=json
 
 - `design.circular-import` (warning; medium confidence): Flags simple relative import cycles inside the discovered source set.
 - `design.deep-relative-import` (advisory; medium confidence; threshold 2): Flags relative imports that climb too many parent directories.
-- `design.god-function` (warning; high confidence): Flags functions that are both long and complex.
 - `design.large-module-concentration` (advisory; medium confidence; threshold 55; options: minFiles, minLines): Flags a production module that dominates project source lines.
 - `design.package-bin-missing` (warning; high confidence): Flags package bin entries that point at missing files.
 - `design.package-bin-not-executable` (warning; high confidence): Flags package bin targets that are not executable.

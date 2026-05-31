@@ -53,7 +53,7 @@ gruff-ts/
 │   ├── text-scans.ts (196)           = todoMarkerSummary, byteLine, and generic text scans
 │   ├── baseline.ts (90)              = applyBaseline, dedupeFindings, writeBaseline, recordHistory, DEFAULT_BASELINE
 │   ├── scoring.ts (74)               = scoreReport, summarize, exitFor
-│   ├── rules.ts (135)                = RULE_DESCRIPTORS catalogue: 121 rule descriptors across 11 pillars
+│   ├── rules.ts (135)                = RULE_DESCRIPTORS catalogue: 119 rule descriptors across 11 pillars
 │   ├── rule-list.ts (179)            = list-rules command renderer + shell-completion script generator
 │   ├── dashboard.ts (105)            = local HTTP dashboard server (127.0.0.1:8767); iframe shell + /scan endpoint
 │   ├── report-renderers.ts (659)     = text/json/html/markdown/github/hotspot/SARIF renderers plus summary output

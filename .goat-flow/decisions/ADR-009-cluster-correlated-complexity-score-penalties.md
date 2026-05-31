@@ -6,10 +6,13 @@
 ## Decision
 
 Score math counts correlated `complexity.cognitive`,
-`complexity.cyclomatic`, `design.god-function`, and `size.function-length`
-findings once per function symbol. Detailed reports still emit every individual
-finding; only pillar penalties, composite score, and file-offender score use the
-clustered penalty.
+`complexity.cyclomatic`, and `size.function-length` findings once per function
+symbol. Detailed reports still emit every individual finding; only pillar
+penalties, composite score, and file-offender score use the clustered penalty.
+
+The cluster originally also held the `design.god-function` composite; ADR-011
+retired that rule, so clustering now rests on the real `size.*` + `complexity.*`
+findings the composite only ever re-described.
 
 ## Context
 

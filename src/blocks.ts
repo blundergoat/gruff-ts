@@ -1,4 +1,4 @@
-// Function-block parsing + per-block rule pass (size, complexity, god-function, doc,
+// Function-block parsing + per-block rule pass (size, complexity, doc,
 // empty-function, unused-parameter, redundant-variable, useless-return) and the block-anchored
 // finding factories. Pulls the parser and the rules that operate on parsed blocks out of cli.ts.
 import { ruleSeverity, threshold } from "./config.ts";
@@ -121,7 +121,6 @@ export function analyseBlockRules(context: BlockRuleContext): void {
   pushParameterCountFinding(context);
   pushCyclomaticFinding(context);
   pushCognitiveFinding(context);
-  pushGodFunctionFinding(context);
   pushGenericFunctionFinding(context);
   pushMissingFunctionDocFinding(context);
   pushEmptyFunctionFinding(context);
@@ -162,14 +161,6 @@ function pushCognitiveFinding(context: BlockRuleContext): void {
   const cognitive = context.cyclomatic + maxNestingDepth(context.block.codeBody);
   if (cognitive > threshold(context.config, "complexity.cognitive", 15)) {
     context.findings.push(blockFinding({ ruleId: "complexity.cognitive", message: `Function \`${context.block.name}\` has cognitive complexity ${cognitive}.`, file: context.file, block: context.block, severity: ruleSeverity(context.config, "complexity.cognitive", "warning"), pillar: "complexity" }));
-  }
-}
-
-// Combined-shape rule: long (>45 lines) AND complex (cyclomatic >10). Thresholds are hard-coded
-// because "god function" is a design heuristic, not a per-rule tunable. Reports `design.god-function`.
-function pushGodFunctionFinding(context: BlockRuleContext): void {
-  if (context.block.lineCount > 45 && context.cyclomatic > 10) {
-    context.findings.push(blockFinding({ ruleId: "design.god-function", message: `Function \`${context.block.name}\` is both long and complex.`, file: context.file, block: context.block, severity: "warning", pillar: "design" }));
   }
 }
 

@@ -72,7 +72,7 @@ function severityPenalty(severity: Severity): number {
   return severity === "error" ? 8 : severity === "warning" ? 4 : 1.5;
 }
 
-const CORRELATED_COMPLEXITY_RULE_IDS = new Set(["complexity.cognitive", "complexity.cyclomatic", "design.god-function", "size.function-length"]);
+const CORRELATED_COMPLEXITY_RULE_IDS = new Set(["complexity.cognitive", "complexity.cyclomatic", "size.function-length"]);
 
 // Correlated complexity findings describe one hard-to-review function.
 // Invariant: detailed reports keep every rule finding while grade math splits one max-severity penalty.

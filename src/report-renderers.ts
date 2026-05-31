@@ -470,7 +470,7 @@ interface ComplexityCluster {
   ruleIds: string[];
 }
 
-const CORRELATED_COMPLEXITY_RULE_IDS = new Set(["complexity.cognitive", "complexity.cyclomatic", "design.god-function", "size.function-length"]);
+const CORRELATED_COMPLEXITY_RULE_IDS = new Set(["complexity.cognitive", "complexity.cyclomatic", "size.function-length"]);
 
 // Invariant: text output surfaces linked complexity clusters without changing JSON report shape.
 function renderComplexityClusterLines(findings: Finding[], limit = 10): string[] {
