@@ -8,7 +8,7 @@ import test from "node:test";
 import { analyse, renderReport, ruleDescriptors } from "./cli.ts";
 import { VERSION } from "./constants.ts";
 import type { AnalysisReport } from "./cli.ts";
-import { analyseFixture, fetchText, REPO_ROOT, withDashboard } from "./test-fixtures.ts";
+import { analyseFixture, fetchText, REPO_ROOT, URL_CREDENTIAL_FIXTURE_VALUE, withDashboard } from "./test-fixtures.ts";
 
 const VERSION_PATTERN = VERSION.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -696,6 +696,22 @@ test("dashboard scan returns report shell with escaped dashboard context", async
       assert.match(scanHtml, /sample\.ts/);
       assert.match(scanHtml, /&lt;bad&gt;/);
       assert.equal(scanHtml.includes("<bad>"), false);
+    });
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("dashboard scan redacts sensitive findings without leaking raw secrets", async () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-dashboard-secret-"));
+  try {
+    writeFileSync(join(projectRoot, ".env"), `REMOTE_CONTROL_URL=${URL_CREDENTIAL_FIXTURE_VALUE}\n`);
+    await withDashboard(projectRoot, async (baseUrl) => {
+      const scanHtml = await fetchText(`${baseUrl}/scan?projectRoot=${encodeURIComponent(projectRoot)}&path=.env`);
+      assert.match(scanHtml, /sensitive-data\.database-url-password/);
+      assert.match(scanHtml, /redacted/);
+      assert.equal(scanHtml.includes(URL_CREDENTIAL_FIXTURE_VALUE), false);
+      assert.equal(scanHtml.includes("clientSecret42"), false);
     });
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });

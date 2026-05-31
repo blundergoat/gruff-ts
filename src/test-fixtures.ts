@@ -468,6 +468,10 @@ export function process(flag: boolean, userInput: string, userId: string, userId
   fetch(req.body.url);
   res.redirect(req.query.next);
   new RegExp(process.argv[2]);
+  const serializedPayload = req.body.serialized;
+  nodeSerialize.unserialize(serializedPayload);
+  const xmlPayload = req.body.xml;
+  libxmljs.parseXml(xmlPayload, { noent: true });
   Math.random();
   document.write(userInput);
   element.innerHTML = userInput;

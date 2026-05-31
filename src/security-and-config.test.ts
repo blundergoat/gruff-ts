@@ -151,6 +151,7 @@ const RISKY_PACKAGE_JSON_FIXTURE = {
       "remote-tool": "git+https://github.com/example/remote-tool.git",
       "ssh-tool": "git@github.com:example/ssh-tool.git",
       "shortcut-tool": "example/shortcut-tool#v1",
+      "local-tool": "file:../local-tool",
     },
     devDependencies: {
       "dev-only": "latest",
@@ -182,6 +183,9 @@ test("dependency and package config health detects risky package settings", () =
   RISKY_PACKAGE_RULE_IDS.forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
+  const localDependencyFinding = report.findings.find((finding) => finding.ruleId === "security.url-dependency" && finding.symbol === "local-tool");
+  assert.equal(localDependencyFinding?.metadata.section, "dependencies");
+
   const cleanReport = analyseProject(CLEAN_PACKAGE_JSON_FIXTURE);
   RISKY_PACKAGE_RULE_IDS.forEach((ruleId) => {
     assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);

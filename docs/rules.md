@@ -1,6 +1,6 @@
 # Rules
 
-`gruff-ts` exposes 119 rules across 11 pillars. This list is generated from the
+`gruff-ts` exposes 121 rules across 11 pillars. This list is generated from the
 public rule catalogue used by `gruff-ts list-rules`; severity, confidence,
 thresholds, and option names are the defaults before project config overrides.
 
@@ -27,7 +27,7 @@ gruff-ts list-rules --format=json
 - maintainability: 14
 - modernisation: 14
 - naming: 10
-- security: 27
+- security: 29
 - sensitive-data: 10
 - size: 3
 - test-quality: 15
@@ -126,8 +126,10 @@ gruff-ts list-rules --format=json
 - `security.ssrf-candidate` (warning; medium confidence): Flags external input sent to network request sinks.
 - `security.string-timer` (warning; high confidence): Flags string callbacks passed to timers.
 - `security.throw-non-error` (warning; medium confidence): Flags thrown non-Error values.
-- `security.url-dependency` (warning; medium confidence): Flags dependencies installed from URL or git specs.
+- `security.unsafe-deserialization` (warning; medium confidence): Flags external input reaching unsafe deserialization or dynamic code-loading sinks.
+- `security.url-dependency` (warning; medium confidence): Flags dependencies installed from URL, git, or local file specs.
 - `security.weak-crypto` (warning; high confidence): Flags weak crypto primitives such as md5, sha1, or createCipher.
+- `security.xxe-candidate` (warning; medium confidence): Flags external XML reaching parsers configured to expand entities.
 
 ## Sensitive Data
 

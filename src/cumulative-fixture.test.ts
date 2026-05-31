@@ -73,8 +73,10 @@ const expandedRuleIds = new Set([
   "security.ssrf-candidate",
   "security.string-timer",
   "security.throw-non-error",
+  "security.unsafe-deserialization",
   "security.url-dependency",
   "security.weak-crypto",
+  "security.xxe-candidate",
   "sensitive-data.api-key-pattern",
   "sensitive-data.hardcoded-env-value",
   "sensitive-data.high-entropy-string",
@@ -309,6 +311,10 @@ async function unsafe(userInput: string, userId: string, userIds: string[], req:
   fetch(req.body.url);
   res.redirect(req.query.next);
   new RegExp(process.argv[2]);
+  const serializedPayload = req.body.serialized;
+  nodeSerialize.unserialize(serializedPayload);
+  const xmlPayload = req.body.xml;
+  libxmljs.parseXml(xmlPayload, { noent: true });
   Math.random();
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
   const insecureAgent = { rejectUnauthorized: false, minVersion: "TLSv1" };

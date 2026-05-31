@@ -166,7 +166,7 @@ function pushUrlDependencyFinding(
   findings.push(
     makeFinding({
       ruleId: "security.url-dependency",
-      message: `Dependency \`${packageName}\` in \`${section}\` installs from a URL or git spec.`,
+      message: `Dependency \`${packageName}\` in \`${section}\` installs from a URL, git, or local file spec.`,
       filePath: file.displayPath,
       line: jsonKeyLine(source, packageName),
       severity: "warning",
@@ -405,10 +405,10 @@ function isLifecycleScript(scriptName: string): boolean {
   return ["preinstall", "install", "postinstall", "prepare", "prepublish", "prepublishOnly"].includes(scriptName);
 }
 
-// Recognises non-registry installs: full URLs, git+ssh, and the github:/gitlab:/bitbucket: shortcuts
-// npm supports. These specs cannot be reproducibly locked the way registry versions can.
+// Recognises non-registry installs: full URLs, git+ssh, file:, and npm-hosting shortcuts.
+// These specs cannot be reproducibly locked the way registry versions can.
 function isUrlDependency(versionSpec: string): boolean {
-  return /^(?:https?:\/\/|git(?:\+https?|\+ssh)?:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:|git@[^:]+:[^/]+\/|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#.+)?$)/i.test(versionSpec);
+  return /^(?:https?:\/\/|git(?:\+https?|\+ssh)?:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:|file:|git@[^:]+:[^/]+\/|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#.+)?$)/i.test(versionSpec);
 }
 
 // Catches `*`, `x`, `latest`, unbounded `>=` ranges, and OR-joined ranges. All let dependency

@@ -13,6 +13,7 @@ const ts = require("typescript") as typeof import("typescript");
 
 type TsSourceFile = import("typescript").SourceFile;
 type TsNode = import("typescript").Node;
+type TsCallLikeExpression = import("typescript").CallExpression | import("typescript").NewExpression;
 
 // Parse a discovered script to a syntax-only AST; null on non-parseable input so
 // callers fall back to the same-line scan. analyseSecurityFlow is the only caller
@@ -45,8 +46,8 @@ function walk(node: TsNode, visit: (node: TsNode) => boolean | void): void {
 }
 
 // Zero-based start line of a node, for aligning with 1-based finding lines.
-function lineIndexOf(sf: TsSourceFile, node: TsNode): number {
-  return sf.getLineAndCharacterOfPosition(node.getStart(sf)).line;
+function lineIndexOf(parsedSource: TsSourceFile, node: TsNode): number {
+  return parsedSource.getLineAndCharacterOfPosition(node.getStart(parsedSource)).line;
 }
 
 // External input token that can be visibly matched on one source line.
@@ -171,14 +172,32 @@ interface TaintRecord {
   depth: number;
 }
 
-// AST sink matchers for the two flow rules upgraded in this slice. `callee` is
-// the source text of the call's callee expression (e.g. "fs.readFile",
+// Bundles the syntax context each sink matcher needs so all text extraction remains anchored
+// to the parsed source file instead of raw substrings.
+interface AstSinkInput {
+  callee: string;
+  call: TsCallLikeExpression;
+  sourceFile: TsSourceFile;
+  unsafeXmlParsers: ReadonlySet<string>;
+}
+
+// Describes one AST sink candidate. Some AST-only rules report same-line direct-source
+// evidence because no legacy line scanner owns those rule ids.
+interface AstFlowSink {
+  ruleId: string;
+  sinkKind: string;
+  shouldReportSameLine?: boolean;
+  isSink: (input: AstSinkInput) => boolean;
+}
+
+// AST sink matchers for the flow-upgraded rules. `callee` is the source text of
+// the call/new expression's callee (e.g. "fs.readFile", "RegExp",
 // "axios.get"); the patterns mirror the same-line callPattern sinks above.
-const AST_FLOW_SINKS: ReadonlyArray<{ ruleId: string; sinkKind: string; isSink: (callee: string) => boolean }> = [
+const AST_FLOW_SINKS: readonly AstFlowSink[] = [
   {
     ruleId: "security.path-traversal-candidate",
     sinkKind: "filesystem-path",
-    isSink: (callee) =>
+    isSink: ({ callee }) =>
       /(?:^|\.)(?:readFile|readFileSync|writeFile|writeFileSync|appendFile|appendFileSync|createReadStream|createWriteStream|stat|statSync|readdir|readdirSync|unlink|unlinkSync|rm|rmSync|mkdir|mkdirSync)$/.test(
         callee,
       ),
@@ -186,10 +205,35 @@ const AST_FLOW_SINKS: ReadonlyArray<{ ruleId: string; sinkKind: string; isSink: 
   {
     ruleId: "security.ssrf-candidate",
     sinkKind: "network-request",
-    isSink: (callee) =>
+    isSink: ({ callee }) =>
       /(?:^|\.)fetch$/.test(callee) ||
       /^axios\.(?:get|post|put|patch|delete|request)$/.test(callee) ||
       /^https?\.(?:request|get)$/.test(callee),
+  },
+  {
+    ruleId: "security.open-redirect-candidate",
+    sinkKind: "redirect",
+    isSink: ({ callee }) =>
+      /^(?:res|reply|response)\.redirect$/.test(callee) ||
+      /^redirect$/.test(callee) ||
+      /^(?:location|window\.location)\.(?:assign|replace)$/.test(callee),
+  },
+  {
+    ruleId: "security.dynamic-regexp",
+    sinkKind: "regular-expression",
+    isSink: ({ callee }) => /^RegExp$/.test(callee),
+  },
+  {
+    ruleId: "security.unsafe-deserialization",
+    sinkKind: "deserialization",
+    shouldReportSameLine: true,
+    isSink: ({ callee, call, sourceFile }) => isUnsafeDeserializationSink(callee, call, sourceFile),
+  },
+  {
+    ruleId: "security.xxe-candidate",
+    sinkKind: "xml-entity-expansion",
+    shouldReportSameLine: true,
+    isSink: ({ callee, call, unsafeXmlParsers }) => isXxeSink(callee, call, unsafeXmlParsers),
   },
 ];
 
@@ -200,10 +244,15 @@ const MAX_SCOPE_NODES = 4000;
  * Per-file AST pass. Parses the file once (syntax-only) and reports cross-line
  * source-to-sink flows for the existing security-flow rule ids. Does nothing
  * when the file cannot be parsed, so the same-line scan remains the fallback.
+ * Invariant: this pass never uses TypeScript type-checking, emit, or schema changes.
+ *
+ * @param file - discovered script file whose display path anchors emitted fingerprints
+ * @param source - full source text to parse with syntax-only TypeScript APIs
+ * @param findings - accumulator that receives additional AST flow findings
  */
 export function analyseSecurityFlow(file: SourceFile, source: string, findings: Finding[]): void {
-  const sf = getSourceFile(file, source);
-  if (!sf) {
+  const parsedSource = getSourceFile(file, source);
+  if (!parsedSource) {
     return;
   }
   // Collect into a local buffer so an error-recovery tree (where node.getText or
@@ -211,14 +260,14 @@ export function analyseSecurityFlow(file: SourceFile, source: string, findings: 
   // partial result. The same-line scan remains the fallback for such files.
   const flowFindings: Finding[] = [];
   try {
-    const scopes: TsNode[] = [sf];
-    walk(sf, (node) => {
+    const scopes: TsNode[] = [parsedSource];
+    walk(parsedSource, (node) => {
       if (isFunctionLike(node)) {
         scopes.push(node);
       }
     });
     for (const scope of scopes) {
-      analyseFlowScope(sf, scope, file, flowFindings);
+      analyseFlowScope(parsedSource, scope, file, flowFindings);
     }
   } catch {
     return;
@@ -228,11 +277,18 @@ export function analyseSecurityFlow(file: SourceFile, source: string, findings: 
   }
 }
 
-// Walks one function (or the module top level), pruning nested functions so taint
-// stays intra-procedural. Records tainted locals in source order, then flags
-// sinks that consume them on a later line.
-function analyseFlowScope(sf: TsSourceFile, scopeOwner: TsNode, file: SourceFile, findings: Finding[]): void {
+/**
+ * Walk one function or the module top level and record bounded local taint evidence.
+ * Invariant: nested functions are pruned so captured variables never imply inter-procedural flow.
+ *
+ * @param parsedSource - syntax tree that owns positions and text extraction
+ * @param scopeOwner - top-level source file or function-like node to scan
+ * @param file - discovered file used for stable finding locations
+ * @param findings - accumulator that receives sink findings for this scope
+ */
+function analyseFlowScope(parsedSource: TsSourceFile, scopeOwner: TsNode, file: SourceFile, findings: Finding[]): void {
   const tainted = new Map<string, TaintRecord>();
+  const unsafeXmlParsers = new Set<string>();
   let budget = MAX_SCOPE_NODES;
   walk(scopeOwner, (node) => {
     if (budget <= 0) {
@@ -242,8 +298,9 @@ function analyseFlowScope(sf: TsSourceFile, scopeOwner: TsNode, file: SourceFile
     if (isFunctionLike(node) && node !== scopeOwner) {
       return false;
     }
-    recordTaint(sf, node, tainted);
-    reportSink(sf, node, tainted, file, findings);
+    recordUnsafeXmlParser(parsedSource, node, unsafeXmlParsers);
+    recordTaint(parsedSource, node, tainted);
+    reportSink(parsedSource, node, tainted, unsafeXmlParsers, file, findings);
     return;
   });
 }
@@ -252,55 +309,128 @@ function analyseFlowScope(sf: TsSourceFile, scopeOwner: TsNode, file: SourceFile
 // or one hop from another tainted local (`const alias = tainted`), bounded by
 // MAX_ALIAS_DEPTH. Function-valued initialisers are skipped so a source token
 // inside a callback body never taints the function variable itself.
-function recordTaint(sf: TsSourceFile, node: TsNode, tainted: Map<string, TaintRecord>): void {
-  if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name) || !node.initializer) {
+function recordTaint(parsedSource: TsSourceFile, node: TsNode, tainted: Map<string, TaintRecord>): void {
+  if (ts.isVariableDeclaration(node)) {
+    recordVariableTaint(parsedSource, node, tainted);
     return;
   }
-  const initializer = node.initializer;
-  if (isFunctionLike(initializer)) {
-    return;
-  }
-  const kind = sourceKindOf(sf, initializer);
-  if (kind !== undefined) {
-    tainted.set(node.name.text, { line: lineIndexOf(sf, node), kind, depth: 1 });
-    return;
-  }
-  if (ts.isIdentifier(initializer)) {
-    const upstream = tainted.get(initializer.text);
-    if (upstream && upstream.depth < MAX_ALIAS_DEPTH) {
-      tainted.set(node.name.text, { line: upstream.line, kind: upstream.kind, depth: upstream.depth + 1 });
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left)) {
+    const nextRecord = taintRecordFromExpression(parsedSource, node.right, tainted);
+    if (nextRecord) {
+      tainted.set(node.left.text, nextRecord);
+    } else {
+      tainted.delete(node.left.text);
     }
   }
 }
 
-// Emits a finding when a sink call consumes a tainted local on a different line
-// than its source. Same-line flows are left to analyseSecurityFlowLine.
-function reportSink(sf: TsSourceFile, node: TsNode, tainted: Map<string, TaintRecord>, file: SourceFile, findings: Finding[]): void {
-  if (!ts.isCallExpression(node)) {
+// Records taint introduced by declarations, including simple object/array destructuring from
+// external-input expressions. Non-identifier binding details are intentionally skipped.
+function recordVariableTaint(parsedSource: TsSourceFile, node: import("typescript").VariableDeclaration, tainted: Map<string, TaintRecord>): void {
+  if (!node.initializer) {
     return;
   }
-  const callee = node.expression.getText(sf);
-  const sink = AST_FLOW_SINKS.find((candidate) => candidate.isSink(callee));
+  const record = taintRecordFromExpression(parsedSource, node.initializer, tainted);
+  if (!record) {
+    return;
+  }
+  if (ts.isIdentifier(node.name)) {
+    tainted.set(node.name.text, record);
+    return;
+  }
+  taintBindingNames(node.name, record, tainted);
+}
+
+// Derives the bounded taint record for one expression and keeps alias depth deterministic.
+function taintRecordFromExpression(parsedSource: TsSourceFile, expression: TsNode, tainted: Map<string, TaintRecord>): TaintRecord | undefined {
+  if (isFunctionLike(expression)) {
+    return undefined;
+  }
+  const kind = sourceKindOf(parsedSource, expression);
+  if (kind !== undefined) {
+    return { line: lineIndexOf(parsedSource, expression), kind, depth: 1 };
+  }
+  if (!ts.isIdentifier(expression)) {
+    return undefined;
+  }
+  const upstream = tainted.get(expression.text);
+  if (upstream?.depth !== undefined && upstream.depth < MAX_ALIAS_DEPTH) {
+    return { line: upstream.line, kind: upstream.kind, depth: upstream.depth + 1 };
+  }
+  return undefined;
+}
+
+// Applies one proven source record to each simple identifier in a destructuring pattern.
+function taintBindingNames(name: import("typescript").BindingName, record: TaintRecord, tainted: Map<string, TaintRecord>): void {
+  if (ts.isIdentifier(name)) {
+    tainted.set(name.text, record);
+    return;
+  }
+  for (const element of name.elements) {
+    if (ts.isOmittedExpression(element)) {
+      continue;
+    }
+    taintBindingNames(element.name, record, tainted);
+  }
+}
+
+// Records locals that hold an XML parser configured to expand entities. Later `parser.parse(xml)`
+// calls are XXE sinks only for these explicitly unsafe parser instances.
+function recordUnsafeXmlParser(parsedSource: TsSourceFile, node: TsNode, unsafeXmlParsers: Set<string>): void {
+  if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name) || !node.initializer) {
+    return;
+  }
+  if (isUnsafeXmlParserConstruction(parsedSource, node.initializer)) {
+    unsafeXmlParsers.add(node.name.text);
+  }
+}
+
+// Emits a finding when a sink call consumes a tainted local. Because legacy same-line
+// scanners own existing rule ids, same-line AST reports are limited to AST-only rules.
+function reportSink(
+  parsedSource: TsSourceFile,
+  node: TsNode,
+  tainted: Map<string, TaintRecord>,
+  unsafeXmlParsers: ReadonlySet<string>,
+  file: SourceFile,
+  findings: Finding[],
+): void {
+  const call = callLikeExpression(node);
+  if (!call) {
+    return;
+  }
+  const callee = call.expression.getText(parsedSource);
+  const sink = AST_FLOW_SINKS.find((candidate) => candidate.isSink({ callee, call, sourceFile: parsedSource, unsafeXmlParsers }));
   if (!sink) {
     return;
   }
-  const hit = taintedArgument(node, tainted);
+  const hit = taintedInput(call, parsedSource, tainted);
   if (!hit) {
     return;
   }
-  const sinkLine = lineIndexOf(sf, node);
-  if (sinkLine === hit.line) {
+  const sinkLine = lineIndexOf(parsedSource, call);
+  if (sinkLine === hit.line && sink.shouldReportSameLine !== true) {
     return;
   }
   findings.push(flowFinding(file, sinkLine, sink.ruleId, sink.sinkKind, hit.kind, hit.depth));
 }
 
-// First tainted identifier appearing anywhere in the call's arguments.
-function taintedArgument(call: import("typescript").CallExpression, tainted: Map<string, TaintRecord>): TaintRecord | undefined {
+// Normalises calls and constructors because `RegExp(value)` and `new RegExp(value)`
+// are equivalent dynamic-regexp sinks for this syntax-only pass.
+function callLikeExpression(node: TsNode): TsCallLikeExpression | undefined {
+  return ts.isCallExpression(node) || ts.isNewExpression(node) ? node : undefined;
+}
+
+// Finds the first tainted identifier or direct external-input expression in sink arguments.
+// Because sanitizer wrappers deliberately consume user input, their subtrees are pruned.
+function taintedInput(call: TsCallLikeExpression, parsedSource: TsSourceFile, tainted: Map<string, TaintRecord>): TaintRecord | undefined {
   let found: TaintRecord | undefined;
-  for (const argument of call.arguments) {
+  for (const argument of call.arguments ?? []) {
     walk(argument, (node) => {
       if (found) {
+        return false;
+      }
+      if (isSafeWrapperExpression(parsedSource, node)) {
         return false;
       }
       if (ts.isIdentifier(node)) {
@@ -309,6 +439,11 @@ function taintedArgument(call: import("typescript").CallExpression, tainted: Map
           found = record;
           return false;
         }
+      }
+      const kind = sourceKindOf(parsedSource, node);
+      if (kind !== undefined) {
+        found = { line: lineIndexOf(parsedSource, node), kind, depth: 0 };
+        return false;
       }
       return;
     });
@@ -319,10 +454,81 @@ function taintedArgument(call: import("typescript").CallExpression, tainted: Map
   return undefined;
 }
 
+// Unsafe-deserialization sinks execute or inflate attacker-controlled serialized/code content.
+function isUnsafeDeserializationSink(callee: string, call: TsCallLikeExpression, parsedSource: TsSourceFile): boolean {
+  return (
+    /^eval$/.test(callee) ||
+    /^Function$/.test(callee) ||
+    /(?:^|\.)unserialize$/.test(callee) ||
+    isUnsafeYamlLoad(callee, call, parsedSource) ||
+    /^vm\.(?:runInNewContext|runInThisContext|runInContext)$/.test(callee) ||
+    /^(?:vm\.)?Script$/.test(callee)
+  );
+}
+
+// js-yaml load is treated as unsafe unless the caller pins a safe schema in the options object.
+function isUnsafeYamlLoad(callee: string, call: TsCallLikeExpression, parsedSource: TsSourceFile): boolean {
+  if (!/^(?:yaml|YAML|jsYaml|jsyaml)\.load$/.test(callee)) {
+    return false;
+  }
+  return !hasSafeYamlSchema(call, parsedSource);
+}
+
+// Safe YAML schema evidence must be local to the load options so the finding is deterministic.
+function hasSafeYamlSchema(call: TsCallLikeExpression, parsedSource: TsSourceFile): boolean {
+  const options = call.arguments?.[1];
+  return options !== undefined && /\bschema\s*:\s*(?:[A-Za-z_$][A-Za-z0-9_$]*\.)?(?:FAILSAFE_SCHEMA|JSON_SCHEMA|CORE_SCHEMA)\b/.test(options.getText(parsedSource));
+}
+
+// XXE sinks are XML parser calls whose local syntax explicitly enables entity expansion.
+function isXxeSink(callee: string, call: TsCallLikeExpression, unsafeXmlParsers: ReadonlySet<string>): boolean {
+  const parserMethod = callee.match(/^([A-Za-z_$][A-Za-z0-9_$]*)\.(?:parse|parseFromString)$/);
+  return (
+    (isLibxmlEntityExpandingCall(callee) && hasUnsafeXmlParserOption(call)) ||
+    (parserMethod !== null && unsafeXmlParsers.has(parserMethod[1] ?? "")) ||
+    isInlineUnsafeXmlParserCall(callee)
+  );
+}
+
+// libxmljs-style APIs expose entity expansion through call options such as `noent: true`.
+function isLibxmlEntityExpandingCall(callee: string): boolean {
+  return /^(?:libxmljs\.)?(?:parseXml|parseXmlString)$/.test(callee);
+}
+
+// Looks for parser options that opt into entity expansion or external DTD loading.
+function hasUnsafeXmlParserOption(call: TsCallLikeExpression): boolean {
+  return (call.arguments ?? []).some((argument) => /\b(?:noent|dtdload|processEntities)\s*:\s*true\b|\bresolveEntity\s*:/.test(argument.getText()));
+}
+
+// Inline `new XMLParser(...).parse(...)` and `new DOMParser(...).parseFromString(...)` keep options
+// in the callee expression, so the callee text carries the entity-expansion evidence.
+function isInlineUnsafeXmlParserCall(callee: string): boolean {
+  return (
+    /\bnew\s+XMLParser\s*\([^)]*\bprocessEntities\s*:\s*true[^)]*\)\.parse$/.test(callee) ||
+    /\bnew\s+DOMParser\s*\([^)]*\bresolveEntity\s*:[^)]*\)\.parseFromString$/.test(callee)
+  );
+}
+
+// Parser constructors are considered unsafe only when entity expansion is visibly enabled nearby.
+function isUnsafeXmlParserConstruction(parsedSource: TsSourceFile, expr: TsNode): boolean {
+  if (!ts.isNewExpression(expr)) {
+    return false;
+  }
+  const callee = expr.expression.getText(parsedSource);
+  const text = expr.getText(parsedSource);
+  return (
+    (/^(?:XMLParser|fastXmlParser\.XMLParser)$/.test(callee) && /\bprocessEntities\s*:\s*true\b/.test(text)) ||
+    (/^(?:DOMParser|xmldom\.DOMParser)$/.test(callee) && /\bresolveEntity\s*:/.test(text))
+  );
+}
+
 // Classifies an initialiser expression as an external-input source. Mirrors the
 // same-line SOURCE_TOKENS patterns, applied to the expression's source text.
-function sourceKindOf(sf: TsSourceFile, expr: TsNode): string | undefined {
-  const text = expr.getText(sf);
+function sourceKindOf(parsedSource: TsSourceFile, expr: TsNode): string | undefined {
+  if (isSafeWrapperExpression(parsedSource, expr)) {
+    return undefined;
+  }
+  const text = expr.getText(parsedSource);
   for (const token of SOURCE_TOKENS) {
     if (token.pattern.test(text)) {
       return token.kind;
@@ -331,6 +537,17 @@ function sourceKindOf(sf: TsSourceFile, expr: TsNode): string | undefined {
   return undefined;
 }
 
+// Regex escaping helpers are sanitizer evidence for dynamic-regexp flow; walking their arguments
+// would otherwise re-taint an already-escaped pattern value.
+function isSafeWrapperExpression(parsedSource: TsSourceFile, expr: TsNode): boolean {
+  if (!ts.isCallExpression(expr)) {
+    return false;
+  }
+  const callee = expr.expression.getText(parsedSource);
+  return /^(?:escapeRegExp|escapeStringRegexp|regexpEscape|RegExp\.escape)$/.test(callee);
+}
+
+// Identifies scope boundaries that must not inherit taint from enclosing functions.
 function isFunctionLike(node: TsNode): boolean {
   return (
     ts.isFunctionDeclaration(node) ||
@@ -343,10 +560,19 @@ function isFunctionLike(node: TsNode): boolean {
   );
 }
 
-// Cross-line flow finding. Reuses the same-line rule's message and remediation so
-// both detection paths read identically; metadata adds the bounded flowDepth.
+/**
+ * Build an AST-flow finding with the same stable location and metadata contract as line rules.
+ * Invariant: fingerprints continue to derive only from rule id, file path, line, and symbol.
+ *
+ * @param file - discovered file that owns the finding path
+ * @param lineIndex - zero-based sink line from the parsed source file
+ * @param ruleId - security rule id to emit
+ * @param sinkKind - sink category for machine-readable metadata
+ * @param sourceKind - external input category for machine-readable metadata
+ * @param flowDepth - bounded alias distance between source and sink
+ */
 function flowFinding(file: SourceFile, lineIndex: number, ruleId: string, sinkKind: string, sourceKind: string, flowDepth: number): Finding {
-  const base = SECURITY_FLOW_RULES.find((rule) => rule.ruleId === ruleId);
+  const base = securityRuleDetails(ruleId);
   return makeFinding({
     ruleId,
     message: base ? base.message : "External input reaches a risky sink across lines.",
@@ -358,4 +584,21 @@ function flowFinding(file: SourceFile, lineIndex: number, ruleId: string, sinkKi
     remediation: base ? base.remediation : "Validate external input before it reaches the sink.",
     metadata: { sourceKind, sinkKind, flowDepth },
   });
+}
+
+// Supplies messages/remediation for both same-line rule ids and AST-only security candidates.
+function securityRuleDetails(ruleId: string): Pick<SecurityFlowRule, "message" | "remediation"> | undefined {
+  return (
+    SECURITY_FLOW_RULES.find((rule) => rule.ruleId === ruleId) ??
+    ({
+      "security.unsafe-deserialization": {
+        message: "External input reaches an unsafe deserialization or dynamic code-loading sink.",
+        remediation: "Use a schema-bound parser or validate and decode data without executing code.",
+      },
+      "security.xxe-candidate": {
+        message: "External XML input reaches an XML parser configured to expand entities.",
+        remediation: "Disable external entity expansion and use hardened XML parser options.",
+      },
+    } as const)[ruleId]
+  );
 }
