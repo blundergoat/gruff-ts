@@ -365,3 +365,13 @@ Workflow-security fixture smoke tests can trip the same hook if the shell comman
 **Evidence:** `src/baseline.ts` + `(search: "function applyBaseline")`; `src/analyser.ts` + `(search: "function selectedBaseline")` - baseline matching includes `(fingerprint, ruleId, filePath)`, and default baseline discovery is rooted at the current project root.
 
 **Prevention:** Generate and apply baseline smoke artifacts from the same project root. If testing absolute path operands, assert that changed display paths intentionally do not match the baseline.
+
+## Lesson: ground-truth a throwaway when a test result looks impossible (or the harness drops its output)
+
+**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED (M25 AST-flow slice)
+
+During the M25 AST-flow slice, `npm test` reported five failing security-flow tests whose failures were logically impossible from reading the code (a negative case with no sink "firing" a filesystem finding). Two compounding causes: (1) a real bug - an AST cache keyed by `SourceFile` identity returned the first test's parse for every later test that reused the shared `fileStub` (see the footgun "caching a parsed AST by SourceFile identity ..."); (2) the tool channel was intermittently dropping or lagging command output, so TAP summaries arrived stale or not at all.
+
+What worked: a tiny throwaway script under `/tmp` that imported the rule function and printed the actual findings per input. Its byte-identical output across six different inputs pinpointed the stale-cache bug at once - something the laggy TAP stream never made clear.
+
+Takeaways: (1) when a test result contradicts a careful read of the code, get ground truth by printing actual values from a minimal harness before "fixing" the rule - the cause is often shared or aliased state, not the logic. (2) Do not thrash re-issuing the same command when the output channel is dropping results; one clean ground-truth probe beats ten dropped re-runs. (3) The root cause was an unrequested cache abstraction - prefer the simplest thing that works (CLAUDE.md: "No new abstractions ... beyond what was asked").

@@ -3,7 +3,51 @@
 import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import type { Finding } from "./types.ts";
-import { getSourceFile, lineIndexOf, ts, walk, type TsNode, type TsSourceFile } from "./ts-ast.ts";
+import { createRequire } from "node:module";
+
+// Syntax-only TypeScript/JavaScript parser (ADR-012): ts.createSourceFile only -
+// no type checker, program, language service, or emit. Loaded via createRequire
+// because typescript ships as CommonJS; usage stays bounded to syntax walking.
+const require = createRequire(import.meta.url);
+const ts = require("typescript") as typeof import("typescript");
+
+type TsSourceFile = import("typescript").SourceFile;
+type TsNode = import("typescript").Node;
+
+// Parse a discovered script to a syntax-only AST; null on non-parseable input so
+// callers fall back to the same-line scan. analyseSecurityFlow is the only caller
+// and runs once per file, so there is no cache to go stale.
+function getSourceFile(file: SourceFile, source: string): TsSourceFile | null {
+  try {
+    return ts.createSourceFile(file.displayPath, source, ts.ScriptTarget.Latest, true, scriptKindFor(file.displayPath));
+  } catch {
+    return null;
+  }
+}
+
+function scriptKindFor(path: string) {
+  if (path.endsWith(".tsx")) return ts.ScriptKind.TSX;
+  if (path.endsWith(".jsx")) return ts.ScriptKind.JSX;
+  if (path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs")) {
+    return ts.ScriptKind.JS;
+  }
+  return ts.ScriptKind.TS;
+}
+
+// Depth-first walk; return false from visit to skip a node's children.
+function walk(node: TsNode, visit: (node: TsNode) => boolean | void): void {
+  if (visit(node) === false) {
+    return;
+  }
+  ts.forEachChild(node, (child) => {
+    walk(child, visit);
+  });
+}
+
+// Zero-based start line of a node, for aligning with 1-based finding lines.
+function lineIndexOf(sf: TsSourceFile, node: TsNode): number {
+  return sf.getLineAndCharacterOfPosition(node.getStart(sf)).line;
+}
 
 // External input token that can be visibly matched on one source line.
 interface SourceToken {
@@ -112,7 +156,7 @@ function securityFlowFinding(file: SourceFile, line: number, rule: SecurityFlowR
   });
 }
 
-// --- Bounded intra-function AST flow (ADR-012, M25) -------------------------
+// --- Bounded intra-function AST flow (ADR-012) -------------------------
 // Augments the same-line checks above: detects an external-input value assigned
 // to a local variable and later passed (across lines, within one function) to a
 // known sink. The same-line pass above is untouched, so its findings and
