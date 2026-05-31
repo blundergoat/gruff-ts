@@ -50,10 +50,13 @@ allowlists:
   # default when present; an empty list disables that rule's blacklist branch.
   # Default: [process, handle, doit, run, execute, manage]
   # bannedGenericNames: [process, handle, doit, run, execute, manage]
+  # Exact public/CLI/DTO boolean names accepted by naming.boolean-prefix.
+  # Default: [all, apply, check, dev, enabled, force, fresh, harness, json, ok, verbose, yes]
+  # acceptedBooleanNames: [all, apply, check, dev, enabled, force, fresh, harness, json, ok, verbose, yes]
   # Accepted prefixes for boolean identifiers. Names without one of these
   # prefixes trigger naming.boolean-prefix.
-  # Default: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires]
-  # booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires]
+  # Default: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires, allow, check, enable, exclude, include, omit, skip, with, without]
+  # booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires, allow, check, enable, exclude, include, omit, skip, with, without]
   # Hungarian type-style prefixes flagged by naming.hungarian-notation.
   # Default: [str, obj, arr, bool, int, num]
   # hungarianPrefixes: [str, obj, arr, bool, int, num]

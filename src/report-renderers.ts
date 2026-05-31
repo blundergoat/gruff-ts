@@ -191,6 +191,7 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
     `  Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `  Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
     `  Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
+    ...renderComplexityClusterLines(report.findings, top),
     `Findings: ${report.summary.total} total, ${report.summary.error} error, ${report.summary.warning} warning, ${report.summary.advisory} advisory`,
     `Analysed files: ${report.paths.analysedFiles}`,
     ...(report.baseline ? [summaryBaselineLine(report.baseline)] : []),
@@ -386,6 +387,7 @@ function renderText(report: AnalysisReport): string {
     `  Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `  Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
     `  Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
+    ...renderComplexityClusterLines(report.findings),
     `Analysed files: ${report.paths.analysedFiles}`,
   ];
   if (report.diagnostics.length > 0) {
@@ -417,6 +419,7 @@ function renderMarkdown(report: AnalysisReport): string {
     `- Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `- Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
     `- Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
+    ...renderMarkdownComplexityClusterLines(report.findings),
     "",
     `Findings: ${report.summary.advisory} advisory, ${report.summary.warning} warning, ${report.summary.error} error.`,
     "",
@@ -458,6 +461,61 @@ function renderMarkdownPillarsTable(rows: PillarRow[]): string[] {
 // inside a single-line `lines.push` interpolation - so this single replacement is sufficient.
 function escapeMarkdownCell(cell: string): string {
   return cell.replaceAll("|", "\\|");
+}
+
+// Render-only summary of overlapping complexity findings for one function symbol.
+interface ComplexityCluster {
+  filePath: string;
+  symbol: string;
+  ruleIds: string[];
+}
+
+const CORRELATED_COMPLEXITY_RULE_IDS = new Set(["complexity.cognitive", "complexity.cyclomatic", "design.god-function", "size.function-length"]);
+
+// Invariant: text output surfaces linked complexity clusters without changing JSON report shape.
+function renderComplexityClusterLines(findings: Finding[], limit = 10): string[] {
+  const clusters = complexityClusters(findings).slice(0, limit);
+  if (clusters.length === 0) {
+    return [];
+  }
+  return [
+    "Correlated complexity clusters:",
+    ...clusters.map((cluster) => `- ${cluster.filePath}#${cluster.symbol}: ${cluster.ruleIds.length} linked findings (${cluster.ruleIds.join(", ")})`),
+  ];
+}
+
+// Invariant: markdown mirrors text complexity clusters without adding JSON fields.
+function renderMarkdownComplexityClusterLines(findings: Finding[]): string[] {
+  const clusters = complexityClusters(findings);
+  if (clusters.length === 0) {
+    return [];
+  }
+  return [
+    "",
+    "## Correlated Complexity Clusters",
+    "",
+    ...clusters.map((cluster) => `- \`${cluster.filePath}#${cluster.symbol}\`: ${cluster.ruleIds.length} linked findings (${cluster.ruleIds.map((ruleId) => `\`${ruleId}\``).join(", ")})`),
+  ];
+}
+
+// Groups correlated complexity findings by file and symbol so renderers can explain score overlap.
+function complexityClusters(findings: Finding[]): ComplexityCluster[] {
+  const bySymbol = new Map<string, ComplexityCluster>();
+  for (const finding of findings) {
+    if (!finding.symbol || !CORRELATED_COMPLEXITY_RULE_IDS.has(finding.ruleId)) {
+      continue;
+    }
+    const key = `${finding.filePath}\0${finding.symbol}`;
+    const cluster = bySymbol.get(key) ?? { filePath: finding.filePath, symbol: finding.symbol, ruleIds: [] };
+    if (!cluster.ruleIds.includes(finding.ruleId)) {
+      cluster.ruleIds.push(finding.ruleId);
+    }
+    bySymbol.set(key, cluster);
+  }
+  return [...bySymbol.values()]
+    .filter((cluster) => cluster.ruleIds.length >= 2)
+    .map((cluster) => ({ ...cluster, ruleIds: cluster.ruleIds.sort() }))
+    .sort((left, right) => right.ruleIds.length - left.ruleIds.length || left.filePath.localeCompare(right.filePath) || left.symbol.localeCompare(right.symbol));
 }
 
 // GitHub Actions `::workflow command` syntax. Public contract invariant: file/title properties

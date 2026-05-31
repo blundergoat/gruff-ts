@@ -65,6 +65,7 @@ export interface Config {
   acceptedAbbreviations: Set<string>;
   secretPreviews: Set<string>;
   bannedGenericNames: Set<string>;
+  acceptedBooleanNames: Set<string>;
   booleanPrefixes: Set<string>;
   hungarianPrefixes: Set<string>;
   placeholderNames: Set<string>;
@@ -124,7 +125,7 @@ export interface SkippedPath {
 /**
  * Stable gruff.analysis.v2 report schema returned by analyse and JSON report commands.
  *
- * `paths.skipped` (added in 1.0.0, ADR-007) is an additive field: each entry carries the excluded
+ * `paths.skipped` (added in 0.3.0, ADR-007) is an additive field: each entry carries the excluded
  * `path`, the ignore `source`, and the matching `pattern`. `paths.ignoredPaths` is retained as the
  * back-compatible `string[]` of the same paths, so existing v2 consumers keep working without change.
  */

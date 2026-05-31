@@ -79,19 +79,54 @@ export function lineOffset(source: string, index: number): number {
   return source.slice(0, Math.max(0, index)).split("\n").length - 1;
 }
 
-// Two-stage detector for `waste.commented-out-code`: first checks for a leading code keyword
-// (`const`, `function`, `if`, etc.), then falls back to a `foo()` / `foo.bar()` call shape.
-// The keyword list is intentionally conservative to avoid flagging prose that starts with `if`.
+// Detector for `waste.commented-out-code`: require a parseable disabled-code shape rather than a
+// bare keyword so prose such as "import cycle" or section headings don't look executable.
 export function isCommentedOutCode(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed.startsWith("//")) {
     return false;
   }
   const uncommented = trimmed.replace(/^\/\/+\s?/, "");
-  if (/^(const|let|var|function|class|interface|type|enum|import|export|if|for|while|switch|return|throw|await)\b/.test(uncommented)) {
-    return true;
+  if (isCommentSeparatorOrAnchor(uncommented)) {
+    return false;
   }
-  return /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?\s*\([^)]*\);?$/.test(uncommented);
+  return isDisabledDeclaration(uncommented) || isDisabledControlFlow(uncommented) || isDisabledCall(uncommented);
+}
+
+// Skips prose examples, labels, search anchors, and section dividers that often begin with code words.
+function isCommentSeparatorOrAnchor(uncommented: string): boolean {
+  const text = uncommented.trim();
+  return (
+    text === "" ||
+    /^[-=*_#]{3,}$/.test(text) ||
+    /^[A-Za-z_$][A-Za-z0-9_$]*\s*:\s*['"`[{]/.test(text) ||
+    /\b(?:search|grep|anchor|example|for example|e\.g\.)\s*:/.test(text) ||
+    /^[A-Z][A-Za-z0-9_$]*(?:\s|\s*\([^)]*\)$)/.test(text)
+  );
+}
+
+// Declarations must carry their syntactic partner (`=`, `{`, `from`, etc.) to count as disabled code.
+function isDisabledDeclaration(uncommented: string): boolean {
+  return (
+    /^(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=/.test(uncommented) ||
+    /^(?:async\s+)?function\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\(/.test(uncommented) ||
+    /^class\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s+extends\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\{?/.test(uncommented) ||
+    /^interface\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\{?/.test(uncommented) ||
+    /^type\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=/.test(uncommented) ||
+    /^enum\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\{?/.test(uncommented) ||
+    /^import\s+(?:["'][^"']+["']|.+\s+from\s+["'][^"']+["'])/.test(uncommented) ||
+    /^export\s+(?:\{|\*|(?:default\s+)?(?:const|let|var|function|class|interface|type|enum)\b)/.test(uncommented)
+  );
+}
+
+// Control-flow comments need real syntax such as parentheses or an expression after `return`/`throw`.
+function isDisabledControlFlow(uncommented: string): boolean {
+  return /^(?:if|for|while|switch)\s*\(/.test(uncommented) || /^(?:return|throw|await)\s+\S/.test(uncommented);
+}
+
+// Keep single-line disabled calls, but require a semicolon so headings like `Rules (...)` do not fire.
+function isDisabledCall(uncommented: string): boolean {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?\s*\([^)]*\);$/.test(uncommented);
 }
 
 // Lowercase membership test against the configured banned-names set. Drives the

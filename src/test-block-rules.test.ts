@@ -38,7 +38,15 @@ const HTTP_STATUS_ASSERTION_CALLBACK = `
   const res = await fetch(baseUrl);
   assert.equal(res.status, 200);
   expect(response.statusCode).toBe(404);
-  assert.equal(retryCount, 3);
+  assert.equal(retryBudgetMs, 125);
+`;
+
+const CARDINAL_ASSERTION_CALLBACK = `
+  expect(items).toHaveLength(4);
+  expect(groups).toHaveCount(5);
+  assert.equal(results.length, 2);
+  expect(total).toBe(3);
+  assert.equal(retryBudgetMs, 125);
 `;
 
 const SETUP_BLOAT_CALLBACK = `
@@ -81,6 +89,36 @@ const STRUCTURAL_SETUP_ONLY_CALLBACK = `
   assert.equal(collected.length, 1);
 `;
 
+const CONST_BOUND_FIXTURE_LOOP_CALLBACK = `
+  const cases = [
+    { name: "alpha", value: 1 },
+    { name: "beta", value: 2 },
+  ];
+  for (const entry of cases) {
+    assert.ok(entry.value);
+  }
+`;
+
+const CONST_BOUND_FIXTURE_DISCOVERY_CALLBACK = `
+  const files = globSync("fixtures/*.json");
+  for (const file of files) {
+    expect(file).toMatch(/json$/);
+  }
+`;
+
+const CONST_BOUND_FIXTURE_GUARD_CALLBACK = `
+  const cases = [
+    { name: "alpha", value: 1, skip: false },
+    { name: "beta", value: 2, skip: true },
+  ];
+  for (const entry of cases) {
+    if (entry.skip) {
+      continue;
+    }
+    assert.ok(entry.value);
+  }
+`;
+
 test("analyseTestBlock reports assertion and mock quality findings", () => {
   const findings = analyseTestCallback(ASSERTION_AND_MOCK_CALLBACK);
   const magicFinding = findings.find((finding) => finding.ruleId === "test-quality.magic-number-assertion");
@@ -99,8 +137,30 @@ test("analyseTestBlock ignores HTTP status magic numbers but keeps other numeric
 
   assert.deepEqual(
     findings.filter((finding) => finding.ruleId === "test-quality.magic-number-assertion").map((finding) => finding.metadata),
-    [{ value: 3 }],
+    [{ value: 125 }],
   );
+});
+
+test("analyseTestBlock ignores cardinal and length/count assertions", () => {
+  const findings = analyseTestCallback(CARDINAL_ASSERTION_CALLBACK);
+
+  assert.deepEqual(
+    findings.filter((finding) => finding.ruleId === "test-quality.magic-number-assertion").map((finding) => finding.metadata),
+    [{ value: 125 }],
+  );
+});
+
+test("analyseTestBlock ignores numeric assertions in named constant-contract tests", () => {
+  const findings = analyseTestCallback(
+    `
+  assert.equal(DEFAULT_RETRY_BUDGET_MS, 125);
+  expect(config.maxAttempts).toBe(7);
+`,
+    SOURCE_FILE.displayPath,
+    "documents default threshold contract",
+  );
+
+  assert.deepEqual(findings.filter((finding) => finding.ruleId === "test-quality.magic-number-assertion"), []);
 });
 
 test("analyseTestBlock reports setup bloat metadata from default config", () => {
@@ -133,18 +193,36 @@ test("analyseTestBlock ignores setup-only loops and conditionals", () => {
   assert.deepEqual(ruleIds(findings), []);
 });
 
+test("analyseTestBlock accepts const-bound fixture loops", () => {
+  const findings = analyseTestCallback(CONST_BOUND_FIXTURE_LOOP_CALLBACK);
+
+  assert.deepEqual(ruleIds(findings), []);
+});
+
+test("analyseTestBlock accepts const-bound fixture discovery loops", () => {
+  const findings = analyseTestCallback(CONST_BOUND_FIXTURE_DISCOVERY_CALLBACK);
+
+  assert.deepEqual(ruleIds(findings), []);
+});
+
+test("analyseTestBlock accepts const-bound fixture loop guard clauses", () => {
+  const findings = analyseTestCallback(CONST_BOUND_FIXTURE_GUARD_CALLBACK);
+
+  assert.deepEqual(ruleIds(findings), []);
+});
+
 // Runs one callback-shaped fixture through the test-block rule pass. Invariant: default rule config is used.
-function analyseTestCallback(callbackBody: string, displayPath = SOURCE_FILE.displayPath): Finding[] {
+function analyseTestCallback(callbackBody: string, displayPath = SOURCE_FILE.displayPath, testName = "fixture"): Finding[] {
   const findings: Finding[] = [];
-  analyseTestBlock({ ...SOURCE_FILE, displayPath }, testBlockFixture(callbackBody), defaultTestConfig(), findings);
+  analyseTestBlock({ ...SOURCE_FILE, displayPath }, testBlockFixture(callbackBody, testName), defaultTestConfig(), findings);
   return findings;
 }
 
 // Builds the minimal FunctionBlock contract that analyseTestBlock consumes.
-function testBlockFixture(callbackBody: string): FunctionBlock {
-  const body = 'test("fixture", () => {' + callbackBody + "});";
+function testBlockFixture(callbackBody: string, testName: string): FunctionBlock {
+  const body = `test("${testName}", () => {` + callbackBody + "});";
   return {
-    name: "fixture",
+    name: testName,
     params: "",
     startLine: TEST_START_LINE,
     lineCount: body.split(/\r?\n/).length,

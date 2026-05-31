@@ -90,7 +90,7 @@ gruff-ts list-rules --format=json
 ## Naming
 
 - `naming.acronym-case` (advisory; medium confidence): Flags mixed casings of a known acronym in one file.
-- `naming.boolean-prefix` (advisory; medium confidence): Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields.
+- `naming.boolean-prefix` (advisory; medium confidence; allowlists: booleanPrefixes, acceptedBooleanNames): Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields.
 - `naming.class-file-mismatch` (advisory; medium confidence): Flags exported classes whose name differs from the file name.
 - `naming.generic-function` (advisory; high confidence): Flags generic function names that hide intent.
 - `naming.generic-parameter` (advisory; medium confidence; options: minCyclomatic, minLineCount, minParameters): Flags placeholder parameter names in multi-parameter, long, exported, or complex functions.

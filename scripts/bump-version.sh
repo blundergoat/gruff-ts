@@ -12,7 +12,7 @@ Usage:
   scripts/bump-version.sh --check
 
 Arguments:
-  <new-version>   Target semver, e.g. 0.1.1, 0.2.0, 1.0.0-rc.1.
+  <new-version>   Target semver, e.g. 0.1.1, 0.2.0, 0.3.0-rc.1.
 
 Options:
   --check         Verify package.json, package-lock.json, src/constants.ts, and CHANGELOG.md

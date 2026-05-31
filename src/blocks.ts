@@ -204,8 +204,26 @@ function pushEmptyFunctionFinding(context: BlockRuleContext): void {
     return;
   }
   if (isEmptyFunctionBody(context.block.codeBody)) {
+    if (isDocumentedEmptyTestDouble(context)) {
+      return;
+    }
     context.findings.push(blockFinding({ ruleId: "waste.empty-function", message: `Function \`${context.block.name}\` has no executable body.`, file: context.file, block: context.block, severity: "advisory", pillar: "maintainability" }));
   }
+}
+
+// Empty test doubles can be required by external interfaces when the body carries a rationale.
+function isDocumentedEmptyTestDouble(context: BlockRuleContext): boolean {
+  return isTestOrFixturePath(context.file.displayPath) && hasEmptyTestDoubleRationale(context.block.body);
+}
+
+// Test and fixture paths are the only places where empty protocol stubs are normal.
+function isTestOrFixturePath(path: string): boolean {
+  return /(?:^|\/)(?:__tests__|tests?|spec|__fixtures__|fixtures?|testdata)\//.test(path) || /\.(?:test|spec)\.[cm]?[tj]sx?$/.test(path);
+}
+
+// Requires an explicit no-op/stub/fake rationale so real empty implementations still surface.
+function hasEmptyTestDoubleRationale(source: string): boolean {
+  return /(?:\/\/|\/\*)/.test(source) && /\b(?:intentional no-op|test double|stub|fake|interface contract)\b/i.test(source);
 }
 
 // `_`-prefixed parameters are exempted (the standard "intentionally unused" convention).

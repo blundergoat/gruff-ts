@@ -76,7 +76,8 @@ allowlists:
     - cli
   secretPreviews: []
   bannedGenericNames: [process, handle, doit, run, execute, manage]
-  booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires]
+  acceptedBooleanNames: [all, apply, check, dev, enabled, force, fresh, harness, json, ok, verbose, yes]
+  booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires, allow, check, enable, exclude, include, omit, skip, with, without]
   hungarianPrefixes: [str, obj, arr, bool, int, num]
   placeholderNames: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]
   negativeBooleanAllowed: [nostore, nofollow, noreferrer, noscript, noindex]
@@ -163,6 +164,7 @@ fingerprints:
 | Key | Used by | Default behavior |
 | --- | --- | --- |
 | `acceptedAbbreviations` | `naming.short-variable` | Adds short names that should not be flagged. |
+| `acceptedBooleanNames` | `naming.boolean-prefix` | Replaces exact public/CLI/DTO boolean names such as `verbose`, `enabled`, `ok`, and `force`. |
 | `bannedGenericNames` | `naming.generic-function` | Replaces the built-in generic function-name denylist. |
 | `booleanPrefixes` | `naming.boolean-prefix` | Replaces the accepted boolean-name prefixes such as `is`, `has`, `should`, `may`, `supports`, and `requires`. |
 | `hungarianPrefixes` | `naming.hungarian-notation` | Replaces type-style prefixes to flag. |
@@ -231,6 +233,9 @@ allowlists:
     - cli
     - env
     - id
+  acceptedBooleanNames:
+    - verbose
+    - enabled
   secretPreviews: []
 
 rules:

@@ -373,7 +373,9 @@ function pushParameterNamingFindings(context: BlockRuleContext): void {
   const line = context.block.declarationLine;
   const params = parameterNames(context.block.params);
   for (const parameter of params) {
-    pushShortVariableAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
+    if (!isComparatorShortParameter(context, params, parameter.name)) {
+      pushShortVariableAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
+    }
     pushIdentifierQualityAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
     if (isBooleanParameter(parameter.raw)) {
       pushBooleanPrefixAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
@@ -383,6 +385,27 @@ function pushParameterNamingFindings(context: BlockRuleContext): void {
       pushGenericParameterAt(context.file, line, parameter.name, context.findings);
     }
   }
+}
+
+// `(a, b)` is a conventional comparator pair when the callable is explicitly shaped like sorting.
+// Keep the exemption narrow so arbitrary two-parameter helpers still need domain names.
+function isComparatorShortParameter(context: BlockRuleContext, params: Array<{ name: string; raw: string }>, name: string): boolean {
+  const names = params.map((parameter) => parameter.name);
+  if (names.length !== 2 || names[0] !== "a" || names[1] !== "b" || (name !== "a" && name !== "b")) {
+    return false;
+  }
+  return isComparatorCallable(context.block.name, context.block.codeBody);
+}
+
+// Comparator-shaped callables are either named for ordering (`compare*`, `*Comparator`, `byName`) or
+// their body performs the standard locale/numeric ordering expression over both parameters.
+function isComparatorCallable(name: string, codeBody: string): boolean {
+  return (
+    /^(?:compare[A-Z0-9_]?|.*Comparator$|by[A-Z])/.test(name) ||
+    /\.localeCompare\s*\(/.test(codeBody) ||
+    /\breturn\s+a\b[\s\S]*?(?:-\s*b\b|[<>]=?\s*b\b)/.test(codeBody) ||
+    /\breturn\s+b\b[\s\S]*?(?:-\s*a\b|[<>]=?\s*a\b)/.test(codeBody)
+  );
 }
 
 // Generic-parameter rule is context-gated: only fires when the surrounding function is itself

@@ -12,7 +12,7 @@ import type { Finding } from "./types.ts";
 export function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: string, lineNumber: number, findings: Finding[]): void {
   pushTsDirectiveFinding(file, line, lineNumber, findings);
   pushNonNullAssertionFindings(file, codeLine, lineNumber, findings);
-  pushDoubleCastFindings(file, codeLine, lineNumber, findings);
+  pushDoubleCastFindings(file, line, codeLine, lineNumber, findings);
   pushExportedAnyFinding(file, codeLine, lineNumber, findings);
 }
 
@@ -146,26 +146,36 @@ function pushNonNullAssertionFindings(file: SourceFile, codeLine: string, lineNu
   }
 }
 
-// `as unknown as Foo` and `as any as Foo` double-cast patterns. Both source and target types are
-// captured in stable metadata so reviewers can see what's being coerced. Reports `modernisation.double-cast`.
-function pushDoubleCastFindings(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
+// `as unknown as Foo` and `as any as Foo` double-cast patterns. Why: the rationale branch keeps
+// boundary casts visible without scoring a documented TS2352/validator hop like an unexplained
+// bypass because typed parser migrations often land later; invariant: never throws and emits stable metadata.
+function pushDoubleCastFindings(file: SourceFile, rawLine: string, codeLine: string, lineNumber: number, findings: Finding[]): void {
   for (const match of codeLine.matchAll(/\bas\s+(unknown|any)\s+as\s+([^;,\n]+)/g)) {
     const sourceType = match[1] ?? "";
     const targetType = (match[2] ?? "").trim().replace(/[.)]+$/, "");
+    const hasRationale = hasDoubleCastTrustBoundaryRationale(rawLine);
     findings.push(
       makeFinding({
         ruleId: "modernisation.double-cast",
         message: `Double cast through \`${sourceType}\` bypasses structural type checks.`,
         filePath: file.displayPath,
         line: lineNumber,
-        severity: "warning",
+        severity: hasRationale ? "advisory" : "warning",
         pillar: "modernisation",
         confidence: "medium",
         remediation: "Prefer a typed parser, type guard, or narrower assertion at the trust boundary.",
-        metadata: { sourceType, targetType },
+        metadata: { sourceType, targetType, ...(hasRationale ? { rationale: "trust-boundary" } : {}) },
       }),
     );
   }
+}
+
+// Accepts only inline comments that name the trust boundary or validation reason for the cast.
+function hasDoubleCastTrustBoundaryRationale(rawLine: string): boolean {
+  return (
+    /(?:\/\/|\/\*)/.test(rawLine) &&
+    /\b(?:trust boundary|external input|wire format|parser boundary|TS2352|unknown hop|validated|narrowed|type guard|schema)\b/i.test(rawLine)
+  );
 }
 
 /*

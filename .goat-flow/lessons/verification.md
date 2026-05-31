@@ -5,6 +5,26 @@ last_reviewed: 2026-05-31
 
 # Verification lessons
 
+## Lesson: self-scan freshly added regression tests before closing
+
+**Created:** 2026-05-31
+
+**What happened:** The normal `npm run check` gate passed after the rubric-calibration tests were added, but the follow-up gruff self-scan found a `test-quality.magic-number-assertion` in the new regression test itself. The test was behaviorally correct, but still taught future agents a noisy pattern until the expected score was named as a contract constant.
+
+**Evidence:** `src/m06-rubric-refinements.test.ts` + `(search: "EXPECTED_CLUSTER_COMPOSITE_SCORE")`; the fresh scan command `./bin/gruff-ts analyse . --format=json --fail-on=none` later reported `total=0` from `/tmp/gruff_ts_double_check_1304802.json`.
+
+**Prevention:** After adding or moving regression tests for analyzer rules, run the analyzer over the repo as well as `npm run check`. Treat findings in new test files as part of the change, not as harmless test-only noise; use named constants or fixture comments when the numeric or structural value is the documented contract.
+
+## Lesson: re-read changed files and contract wording after checks in an active workspace
+
+**Created:** 2026-05-31
+
+**What happened:** During the M06 rubric calibration pass, other agent work was active in the same checkout. The scoring implementation was briefly reverted by concurrent edits after tests had already exercised the intended clustered-penalty behaviour, and a stale source comment still claimed composite score values stayed byte-stable after the code intentionally clustered correlated penalties. A normal "tests passed" check was not enough to prove the final tree and its contract wording still matched the intended code.
+
+**Evidence:** `src/scoring.ts` + `(search: "function scoringPenaltyMap")` and `(search: "correlated complexity clustering must not add")`; `src/m06-rubric-refinements.test.ts` + `(search: "clusters correlated complexity penalties by symbol")`; `.goat-flow/decisions/ADR-009-cluster-correlated-complexity-score-penalties.md` + `(search: "score field names and detailed finding array stay unchanged")`; `scripts/preflight-checks.sh` + `(search: "Gruff full-project scan")`.
+
+**Prevention:** In a dirty or multi-agent workspace, finish verification by re-reading the specific edited files and grepping for old contract phrases after the final test run. Pair the normal check command with a final `git status --short` / `git diff -- <files>` review so overwritten code, stale comments, changelog drift, or interleaved changes are caught before close-out.
+
 ## Lesson: self-scan comment fixes need context-marker words
 
 **Created:** 2026-05-31
@@ -19,7 +39,7 @@ last_reviewed: 2026-05-31
 
 **Created:** 2026-05-30
 
-**What happened:** While auditing the 1.0.0 milestone plans, I claimed `exitFor` lives in `src/cli-program.ts`, copying `.goat-flow/architecture.md`. The user's "double check" forced a grep, which showed `exitFor` is actually in `src/scoring.ts` - and that architecture.md itself was stale. The `src/cli.ts` split moved most symbols into focused modules, but architecture.md, the milestone plans, and `footguns/schema-and-cli.md` still cited `src/cli.ts` and `gruff.analysis.v1`.
+**What happened:** While auditing the 0.3.0 milestone plans, I claimed `exitFor` lives in `src/cli-program.ts`, copying `.goat-flow/architecture.md`. The user's "double check" forced a grep, which showed `exitFor` is actually in `src/scoring.ts` - and that architecture.md itself was stale. The `src/cli.ts` split moved most symbols into focused modules, but architecture.md, the milestone plans, and `footguns/schema-and-cli.md` still cited `src/cli.ts` and `gruff.analysis.v1`.
 
 **Evidence:** `src/scoring.ts` + `(search: "function exitFor")`; the wrong source was `.goat-flow/architecture.md` (search: "severity-to-exit mapping lives"), since corrected to `src/scoring.ts`. See `footguns/schema-and-cli.md`, "docs ... still point at the pre-split src/cli.ts".
 

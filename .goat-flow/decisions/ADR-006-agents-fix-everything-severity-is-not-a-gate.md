@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-05-30
 **Author(s):** user, Claude
-**Ticket/Context:** User directive during the 1.0.0 plan audit (2026-05-30). Builds on ADR-002 (one threshold + one severity per rubric) and ADR-005 (govern AI-generated code for human sign-off).
+**Ticket/Context:** User directive during the 0.3.0 plan audit (2026-05-30). Builds on ADR-002 (one threshold + one severity per rubric) and ADR-005 (govern AI-generated code for human sign-off).
 
 ## Decision
 
@@ -16,7 +16,7 @@ In gruff's governing use case (a coding-agent hook, per ADR-005), the agent is e
 
 ADR-002 already removed warning/error threshold ranges, justified by user correction and gruff-php parity. This ADR records the deeper WHY from the agent-governance model and extends the principle from per-rule config to CI gating. User framing (2026-05-30): "coding agents should fix everything - including advisory and warning - so having both warning and error is pointless; one severity type and value per rubric is simpler."
 
-Concrete drift this closes, found in the 1.0.0 plans:
+Concrete drift this closes, found in the 0.3.0 plans:
 - The M04 profile example showed `complexity.cyclomatic: { thresholds: { high: 15 } }` - a thresholds map ADR-002 forbids. Corrected to `threshold: 15`.
 - M02 (count-based quality gates) and M03's `severityThresholds` blocks encode "tolerate N per severity," which has no agent-governance justification under this decision.
 
@@ -31,7 +31,7 @@ Concrete drift this closes, found in the 1.0.0 plans:
 ## Consequences
 
 - Rule descriptors keep one `severity` + one `threshold` (already true in `src/rules.ts`). New rules must not add severity bands or `thresholds:` maps.
-- 1.0.0 roadmap impact: M02 (count-based gates) loses its agent justification (recommend dropping); M03 (baseline-aware fail-on-new) collapses to a simple "fail on any new finding," not a per-severity count framework.
+- 0.3.0 roadmap impact: M02 (count-based gates) loses its agent justification (recommend dropping); M03 (baseline-aware fail-on-new) collapses to a simple "fail on any new finding," not a per-severity count framework.
 - The advisory/warning/error ENUM is unchanged - it still orders findings and drives `--fail-on` and scoring. This ADR scopes the meaning of severity; it does not collapse the tiers.
 - No change to `Finding`, schema versions, or `--fail-on` semantics by this ADR alone.
 

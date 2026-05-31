@@ -46,7 +46,7 @@ export function pushNegativeBooleanAt(file: SourceFile, line: number, name: stri
  * `naming.boolean-prefix` finding.
  */
 export function pushBooleanPrefixAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
-  if (hasBooleanPrefix(name, config.booleanPrefixes) || isAcceptedBooleanStateName(name)) {
+  if (hasBooleanPrefix(name, config.booleanPrefixes) || isAcceptedBooleanStateName(name) || isAcceptedContractBooleanName(name, config, surface)) {
     return;
   }
   findings.push(
@@ -67,11 +67,17 @@ export function pushBooleanPrefixAt(file: SourceFile, line: number, name: string
 
 const ACCEPTED_BOOLEAN_STATE_NAMES = new Set(["acknowledged", "exists", "validated", "detected", "resolved", "selected", "installed"]);
 const ACCEPTED_BOOLEAN_STATE_SUFFIXES = ["Available", "Required", "Validated", "Detected", "Resolved", "Selected", "Installed"];
-
 // Some booleans are state adjectives rather than predicate phrases. Keep this list deliberately
-// narrow so vague names such as `ready` or `enabled` still get the maintainability prompt.
+// narrow so vague local names such as `ready` or `enabled` still get the maintainability prompt.
 function isAcceptedBooleanStateName(name: string): boolean {
   return ACCEPTED_BOOLEAN_STATE_NAMES.has(name.toLowerCase()) || ACCEPTED_BOOLEAN_STATE_SUFFIXES.some((suffix) => name.endsWith(suffix));
+}
+
+// CLI option bags, DTOs, and schema fields often must expose exact external key names such as
+// `verbose` or `ok`. Limit the exact-name exemption to contract fields so ordinary locals still
+// need predicate-style names.
+function isAcceptedContractBooleanName(name: string, config: Config, surface: NamingSurface): boolean {
+  return surface === "interface-field" && config.acceptedBooleanNames.has(name.toLowerCase());
 }
 
 /*
@@ -131,17 +137,40 @@ export function pushIdentifierQualityAt(file: SourceFile, line: number, name: st
 }
 
 // Returns `"generic"` for low-information names from the configured set, `"numbered"` for
-// `foo1` / `bar2` style trailing-digit identifiers, or undefined when the name is acceptable.
-// The variant string lands in finding metadata so consumers can split the two failure modes.
+// numbered placeholder stems such as `foo1` / `mock2`, or undefined when the name is acceptable.
+// Domain tokens with meaningful digits (`adr020`, `step0`, `V110`) are not placeholder names.
 function identifierQualityVariant(name: string, placeholderNames: Set<string>): string | undefined {
   if (placeholderNames.has(name.toLowerCase())) {
     return "generic";
   }
-  if (/^[A-Za-z_$]+[0-9]+$/.test(name)) {
+  const numbered = name.match(/^([A-Za-z_$]+)[0-9]+$/);
+  const numberedStem = numbered?.[1]?.toLowerCase() ?? "";
+  if (numberedStem && (placeholderNames.has(numberedStem) || NUMBERED_PLACEHOLDER_STEMS.has(numberedStem))) {
     return "numbered";
   }
   return undefined;
 }
+
+const NUMBERED_PLACEHOLDER_STEMS = new Set([
+  "arg",
+  "bar",
+  "baz",
+  "data",
+  "fixture",
+  "foo",
+  "item",
+  "mock",
+  "obj",
+  "object",
+  "param",
+  "stub",
+  "temp",
+  "test",
+  "thing",
+  "tmp",
+  "value",
+  "var",
+]);
 
 const BOOLEAN_PREFIX_REGEX_CACHE = new WeakMap<Set<string>, RegExp | null>();
 

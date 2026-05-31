@@ -8,7 +8,6 @@ import type { AnalysisOptions, Config, FailThreshold, MinimumSeverityCommand, Se
 // or wording tweak lands in one place instead of N throw sites.
 const SUGGEST_INIT_FORCE = "Run `gruff-ts init --force` to regenerate the config from current defaults (preserves your `paths.ignore` and `minimumSeverity:` entries).";
 const SUGGEST_EDIT_CONFIG = "Edit `.gruff-ts.yaml` to use a valid value, or run `gruff-ts init --force` to regenerate from defaults.";
-
 type RuleOverride = Config["rules"] extends Map<string, infer RuleOverrideValue> ? RuleOverrideValue : never;
 
 const DEFAULT_CONFIG_FILES = [".gruff-ts.yaml", ".gruff.json", ".gruff.yaml", ".gruff.yml"] as const;
@@ -40,6 +39,7 @@ function defaultConfig(): Config {
     acceptedAbbreviations: new Set(["age", "app", "cb", "db", "fn", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url"]),
     secretPreviews: new Set(),
     bannedGenericNames: new Set(["process", "handle", "doit", "run", "execute", "manage"]),
+    acceptedBooleanNames: new Set(["all", "apply", "check", "dev", "enabled", "force", "fresh", "harness", "json", "ok", "verbose", "yes"]),
     booleanPrefixes: new Set(["is", "has", "can", "should", "does", "did", "was", "will", "may", "in", "scan", "supports", "requires", "allow", "check", "enable", "exclude", "include", "omit", "skip", "with", "without"]),
     hungarianPrefixes: new Set(["str", "obj", "arr", "bool", "int", "num"]),
     placeholderNames: new Set(["foo", "bar", "baz", "tmp", "temp", "thing", "stuff", "data", "value", "item"]),
@@ -177,6 +177,7 @@ function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): voi
   }
   config.secretPreviews = new Set(arrayValue(allowlists?.secretPreviews).filter(isString));
   applyNamingAllowlist(config, allowlists, "bannedGenericNames");
+  applyNamingAllowlist(config, allowlists, "acceptedBooleanNames");
   applyNamingAllowlist(config, allowlists, "booleanPrefixes");
   applyNamingAllowlist(config, allowlists, "hungarianPrefixes");
   applyNamingAllowlist(config, allowlists, "placeholderNames");
@@ -186,7 +187,7 @@ function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): voi
 
 // Replaces the entire list when the user provides that key - there is no merge with defaults.
 // The "set the whole list" semantic is intentional so users can deliberately empty a list.
-function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "bannedGenericNames" | "booleanPrefixes" | "hungarianPrefixes" | "placeholderNames" | "negativeBooleanAllowed" | "knownAcronyms"): void {
+function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "bannedGenericNames" | "acceptedBooleanNames" | "booleanPrefixes" | "hungarianPrefixes" | "placeholderNames" | "negativeBooleanAllowed" | "knownAcronyms"): void {
   if (!allowlists || !(key in allowlists)) {
     return;
   }
