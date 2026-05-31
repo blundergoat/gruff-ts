@@ -56,6 +56,13 @@ test("flags external input reaching an open redirect sink across lines", () => {
   assert.ok(findings.some((finding) => finding.ruleId === "security.open-redirect-candidate"));
 });
 
+test("flags external input assigned to location.href across lines", () => {
+  const findings = analyseSecurityFixture(
+    "function login(req) {\n  const next = req.query.next;\n  window.location.href = next;\n}\n",
+  );
+  assert.ok(findings.some((finding) => finding.ruleId === "security.open-redirect-candidate"));
+});
+
 test("flags external input reaching a dynamic regular expression sink across lines", () => {
   const findings = analyseSecurityFixture(
     "function filter(req) {\n  const pattern = req.query.pattern;\n  return new RegExp(pattern);\n}\n",
@@ -167,6 +174,13 @@ test("does not flag a literal path routed through a variable", () => {
   assert.equal(findings.length, 0);
 });
 
+test("does not taint string literals that only mention source tokens", () => {
+  const findings = analyseSecurityFixture(
+    'function handler() {\n  const target = "req.query.path";\n  return fs.readFile(target);\n}\n',
+  );
+  assert.equal(findings.length, 0);
+});
+
 test("leaves same-line flows to the line scanner", () => {
   const findings = analyseSecurityFixture("function handler(req) {\n  return fs.readFile(req.query.path);\n}\n");
   assert.equal(findings.length, 0);
@@ -180,6 +194,13 @@ test("leaves same-line constructor flows to the line scanner", () => {
 test("does not flag a tainted value that never reaches a sink", () => {
   const findings = analyseSecurityFixture(
     "function handler(req) {\n  const target = req.query.path;\n  console.log(target);\n  return target;\n}\n",
+  );
+  assert.equal(findings.length, 0);
+});
+
+test("does not treat callback-only taint references as sink arguments", () => {
+  const findings = analyseSecurityFixture(
+    "function handler(req) {\n  const target = req.query.path;\n  return fs.readFile('./config.json', () => console.log(target));\n}\n",
   );
   assert.equal(findings.length, 0);
 });

@@ -84,3 +84,33 @@ test("check-ignore shares the engine: config-ignored path -> verdict + pattern, 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("check-ignore does not apply gitignore rules to explicit file operands", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ci-gitignore-"));
+  const previous = cwd();
+  try {
+    writeFileSync(join(dir, ".gitignore"), "ignored.ts\n");
+    writeFileSync(join(dir, "ignored.ts"), FLAGGABLE_SOURCE);
+    chdir(dir);
+    const results = checkIgnore(["ignored.ts"], { ...CHECK_IGNORE_OPTIONS, paths: ["ignored.ts"], shouldSkipConfig: true });
+    assert.deepEqual(results, [{ path: "ignored.ts", isIgnored: false }]);
+  } finally {
+    chdir(previous);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("check-ignore reports files under default-ignored parent directories", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ci-default-ignore-"));
+  const previous = cwd();
+  try {
+    mkdirSync(join(dir, "dist"));
+    writeFileSync(join(dir, "dist/generated.ts"), FLAGGABLE_SOURCE);
+    chdir(dir);
+    const results = checkIgnore(["dist/generated.ts"], { ...CHECK_IGNORE_OPTIONS, paths: ["dist/generated.ts"], shouldSkipConfig: true });
+    assert.deepEqual(results, [{ path: "dist/generated.ts", isIgnored: true, source: "default", pattern: "dist/" }]);
+  } finally {
+    chdir(previous);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

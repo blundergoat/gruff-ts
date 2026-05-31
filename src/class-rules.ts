@@ -97,11 +97,12 @@ function declaredIdentifierGroups(inventory: DeclaredIdentifier[]): Map<string, 
 // Invariant: returns the exact variant pair to report after boundary-aware suppression has run.
 function inconsistentCasingCandidate(entries: DeclaredIdentifier[]): { first: DeclaredIdentifier; second: DeclaredIdentifier; surfaces: string[] } | undefined {
   const reportableEntries = casingReportableEntries(entries);
-  const surfaces = [...new Set(reportableEntries.map((entry) => entry.name))].sort();
-  if (surfaces.length < 2 || hasContractCasingBoundary(reportableEntries) || hasConstantCasingBoundary(reportableEntries)) {
+  const sameSurfaceEntries = sameCasingSurfaceEntries(reportableEntries);
+  const surfaces = [...new Set(sameSurfaceEntries.map((entry) => entry.name))].sort();
+  if (surfaces.length < 2) {
     return undefined;
   }
-  const sorted = [...reportableEntries].sort((a, b) => a.line - b.line);
+  const sorted = [...sameSurfaceEntries].sort((a, b) => a.line - b.line);
   const first = sorted[0];
   const second = sorted.find((entry, index) => index > 0 && entry.name !== first?.name);
   return first && second ? { first, second, surfaces } : undefined;
@@ -129,16 +130,16 @@ function casingReportableEntries(entries: DeclaredIdentifier[]): DeclaredIdentif
   return entries.filter((entry) => !entry.name.startsWith("_"));
 }
 
-// Interface/type fields are often serialized DTO or schema keys. Seeing `event_kind` on that
-// surface beside a local `eventKind` is adaptation, not same-scope naming drift.
-function hasContractCasingBoundary(entries: DeclaredIdentifier[]): boolean {
-  return entries.some((entry) => entry.surface === "interface-field") && entries.some((entry) => entry.surface !== "interface-field");
-}
-
-// SCREAMING_SNAKE constants and camelCase locals name different surfaces: constant identity versus
-// derived/current value. `naming.acronym-case` still covers real acronym drift separately.
-function hasConstantCasingBoundary(entries: DeclaredIdentifier[]): boolean {
-  return entries.some((entry) => isScreamingConstant(entry.name)) && entries.some((entry) => !isScreamingConstant(entry.name));
+// Contract fields and SCREAMING_SNAKE constants are boundary surfaces; remove only those entries so
+// they do not mask real local drift elsewhere in the same canonical group.
+function sameCasingSurfaceEntries(entries: DeclaredIdentifier[]): DeclaredIdentifier[] {
+  const hasLocalSurface = entries.some((entry) => entry.surface !== "interface-field" && !isScreamingConstant(entry.name));
+  return entries.filter((entry) => {
+    if (hasLocalSurface && entry.surface === "interface-field") {
+      return false;
+    }
+    return !(hasLocalSurface && isScreamingConstant(entry.name));
+  });
 }
 
 // Recognises constant-style identifiers without stripping digits, so `V110` remains one token.

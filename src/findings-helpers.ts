@@ -101,6 +101,7 @@ function isCommentSeparatorOrAnchor(uncommented: string): boolean {
     /^[-=*_#]{3,}$/.test(text) ||
     /^[A-Za-z_$][A-Za-z0-9_$]*\s*:\s*['"`[{]/.test(text) ||
     /\b(?:search|grep|anchor|example|for example|e\.g\.)\s*:/.test(text) ||
+    /^(?!(?:if|for|while|switch)\b)[A-Za-z_$][A-Za-z0-9_$]*\s+\([^;{}]*[A-Za-z][^;{}]*\)$/.test(text) ||
     /^[A-Z][A-Za-z0-9_$]*(?:\s|\s*\([^)]*\)$)/.test(text)
   );
 }
@@ -124,9 +125,9 @@ function isDisabledControlFlow(uncommented: string): boolean {
   return /^(?:if|for|while|switch)\s*\(/.test(uncommented) || /^(?:return|throw|await)\s+\S/.test(uncommented);
 }
 
-// Keep single-line disabled calls, but require a semicolon so headings like `Rules (...)` do not fire.
+// Keep single-line disabled calls; heading/prose guards above filter labels such as `Rules (...)`.
 function isDisabledCall(uncommented: string): boolean {
-  return /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?\s*\([^)]*\);$/.test(uncommented);
+  return /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?\s*\([^)]*\);?$/.test(uncommented);
 }
 
 // Lowercase membership test against the configured banned-names set. Drives the

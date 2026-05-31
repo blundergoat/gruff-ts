@@ -47,6 +47,7 @@ export interface AnalyseProjectOptions {
   shouldSkipConfig?: boolean;
   paths?: string[];
   diff?: string;
+  diffPatch?: string;
   since?: string;
   changedRanges?: string;
   changedScope?: ChangedScopeMode;
@@ -121,13 +122,14 @@ export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions)
 
 // Assembles the optional scan fields with conditional spreads so each stays omitted (not undefined)
 // under exactOptionalPropertyTypes, keeping analyseProjectInCurrentDirectory a flat literal.
-function optionalFixtureScanFields(options: AnalyseProjectOptions): Partial<Pick<Parameters<typeof analyse>[0], "config" | "profile" | "diff" | "since" | "changedRanges">> {
+function optionalFixtureScanFields(options: AnalyseProjectOptions): Partial<Pick<Parameters<typeof analyse>[0], "config" | "profile" | "diff" | "diffPatch" | "since" | "changedRanges">> {
   return {
     ...(typeof options.configPath === "string" ? { config: options.configPath } : {}),
     ...(typeof options.profile === "string" ? { profile: options.profile } : {}),
-    ...(options.diff ? { diff: options.diff } : {}),
-    ...(options.since ? { since: options.since } : {}),
-    ...(options.changedRanges ? { changedRanges: options.changedRanges } : {}),
+    ...(typeof options.diff === "string" ? { diff: options.diff } : {}),
+    ...(typeof options.diffPatch === "string" ? { diffPatch: options.diffPatch } : {}),
+    ...(typeof options.since === "string" ? { since: options.since } : {}),
+    ...(typeof options.changedRanges === "string" ? { changedRanges: options.changedRanges } : {}),
   };
 }
 

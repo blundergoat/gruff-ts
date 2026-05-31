@@ -145,6 +145,38 @@ const editedValue = 1;
   assert.equal(report.suppressedCount !== undefined && report.suppressedCount > 0, true);
 });
 
+test("diff-scoped analysis keeps central test context for project rules", () => {
+  const report = analyseProject(CENTRAL_TEST_PROJECT, { diff: "-", diffPatch: CENTRAL_TEST_DIFF_PATCH });
+
+  assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.missing-nearby-test"), false);
+});
+
+test("changed-region filtering keeps file-wide findings for any touched hunk in the file", () => {
+  const report = analyseProject(FILE_WIDE_PROJECT, {
+    config: { rules: { "size.file-length": { threshold: 3 } } },
+    diff: "-",
+    diffPatch: FILE_WIDE_DIFF_PATCH,
+  });
+
+  assert.equal(report.findings.some((finding) => finding.ruleId === "size.file-length"), true);
+});
+
+test("changed-region symbol scope includes export default class bodies", () => {
+  const report = analyseProject(
+    {
+      "src/service.ts": `export default class Service {
+  run(): string {
+    return "ok";
+  }
+}
+`,
+    },
+    { paths: ["src/service.ts"], changedRanges: "3-3" },
+  );
+
+  assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.missing-nearby-test" && finding.symbol === "Service"), true);
+});
+
 test("working-tree diff treats untracked files as whole-file changed", () => {
   if (!gitAvailable()) {
     return;
@@ -162,7 +194,28 @@ test("working-tree diff treats untracked files as whole-file changed", () => {
 
       const report = analyse({ ...baselineRoundTripOptions(), diff: "working-tree" });
       assert.deepEqual([...evalFindingFiles(report)], ["untracked.ts"]);
-      assert.equal(report.suppressedCount, 0);
+      assert.equal(report.suppressedCount !== undefined && report.suppressedCount > 0, true);
+    },
+  );
+});
+
+test("base-ref diff does not include unrelated untracked files", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  withCommittedGitFixture(
+    "gruff-ts-base-ref-untracked-",
+    WORKING_TREE_DIFF_BASE_FIXTURE,
+    (projectDir) => {
+      writeFixtureFiles(projectDir, {
+        "untracked.ts": `function untracked(userInput: string): unknown {
+  return eval(userInput);
+}
+`,
+      });
+
+      const report = analyse({ ...baselineRoundTripOptions(), diff: "HEAD" });
+      assert.deepEqual([...evalFindingFiles(report)], []);
     },
   );
 });
@@ -205,6 +258,14 @@ const WORKING_TREE_DIFF_RISKY_FIXTURE = {
 }
 `,
 };
+
+const CENTRAL_TEST_PROJECT = {
+  "src/cli/audit/check-agent-setup.ts": 'export function checkAgentSetup(): string {\n  return "ok";\n}\n',
+  "test/unit/audit-command.test.ts": 'import assert from "node:assert/strict";\nimport { checkAgentSetup } from "../../src/cli/audit/check-agent-setup";\n\ntest("checks agent setup", () => {\n  assert.equal(checkAgentSetup(), "ok");\n});\n',
+};
+const CENTRAL_TEST_DIFF_PATCH = 'diff --git a/src/cli/audit/check-agent-setup.ts b/src/cli/audit/check-agent-setup.ts\n--- a/src/cli/audit/check-agent-setup.ts\n+++ b/src/cli/audit/check-agent-setup.ts\n@@ -1,3 +1,3 @@\n export function checkAgentSetup(): string {\n-  return "old";\n+  return "ok";\n }\n';
+const FILE_WIDE_PROJECT = { "src/long.ts": `${"const value = 1;\n".repeat(6)}export {};\n` };
+const FILE_WIDE_DIFF_PATCH = "diff --git a/src/long.ts b/src/long.ts\n--- a/src/long.ts\n+++ b/src/long.ts\n@@ -5,2 +5,2 @@\n const value = 1;\n-const previous = 1;\n+const next = 1;\n";
 
 // Stable contract: extracts line anchors for eval findings so hunk-filtering tests stay deterministic.
 function evalFindingLines(report: AnalysisReport): number[] {

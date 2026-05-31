@@ -8,6 +8,7 @@ test("commented-out-code accepts parseable disabled source", () => {
   assert.equal(isCommentedOutCode("// const disabledLegacy = runLegacyPath();"), true);
   assert.equal(isCommentedOutCode("// if (ready) { return run(); }"), true);
   assert.equal(isCommentedOutCode("// runLegacyPath();"), true);
+  assert.equal(isCommentedOutCode("// service.reset()"), true);
 });
 
 test("commented-out-code ignores prose anchors and section labels", () => {

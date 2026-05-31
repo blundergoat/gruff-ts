@@ -187,6 +187,17 @@ test("analyseTestBlock reports structural test smells once per block", () => {
   ]);
 });
 
+test("analyseTestBlock reports conditional assertions inside type guards", () => {
+  const findings = analyseTestCallback(`
+  const result: unknown = getResult();
+  if (typeof result === "string") {
+    assert.equal(result, "ok");
+  }
+`);
+
+  assert.equal(findings.some((finding) => finding.ruleId === "test-quality.conditional-logic"), true);
+});
+
 test("analyseTestBlock ignores setup-only loops and conditionals", () => {
   const findings = analyseTestCallback(STRUCTURAL_SETUP_ONLY_CALLBACK);
 
@@ -220,7 +231,7 @@ function analyseTestCallback(callbackBody: string, displayPath = SOURCE_FILE.dis
 
 // Builds the minimal FunctionBlock contract that analyseTestBlock consumes.
 function testBlockFixture(callbackBody: string, testName: string): FunctionBlock {
-  const body = `test("${testName}", () => {` + callbackBody + "});";
+  const body = `test(${JSON.stringify(testName)}, () => {` + callbackBody + "});";
   return {
     name: testName,
     params: "",

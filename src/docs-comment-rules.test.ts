@@ -69,12 +69,14 @@ interface DocumentedShape {
 });
 
 test("comment quality stale-comment flags stale references", () => {
+  // Fixture purpose: pairs stale path/rule/flag references with valid changed-region flag names.
   const report = analyseFixture(`/**
  * Exercises stale comment references.
  */
 // See \`src/missing-file.ts\` before changing this helper.
 // Unknown scanner rule docs.removed-rule should be deleted.
 // Run gruff-ts with --removed-flag when debugging.
+// Run gruff-ts analyse --changed-ranges 2-3 --changed-scope hunk --since main for changed code.
 // legacy migration note mentions \`src/old-file.ts\` intentionally.
 function currentFeature(): void {}
 
@@ -85,6 +87,9 @@ function newFeature(): void {}
   assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "path" && finding.message.includes("src/missing-file.ts")), true);
   assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "ruleId" && finding.message.includes("docs.removed-rule")), true);
   assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "cliFlag" && finding.message.includes("--removed-flag")), true);
+  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "cliFlag" && finding.message.includes("--changed-ranges")), false);
+  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "cliFlag" && finding.message.includes("--changed-scope")), false);
+  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "cliFlag" && finding.message.includes("--since")), false);
   assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "function" && finding.symbol === "newFeature"), true);
   assert.equal(staleFindings.some((finding) => finding.message.includes("src/old-file.ts")), false);
 });

@@ -149,8 +149,9 @@ interface IgnoreMatch {
 // authoritative source: it is checked regardless of `--include-ignored` and applies to explicit file
 // operands (which pass empty gitignore rules so default/gitignore cannot match them, per ADR-003).
 function classifyIgnore(display: string, isDirectory: boolean, options: AnalysisOptions, config: Config, gitIgnoreRules: GitIgnoreRule[]): IgnoreMatch | undefined {
-  if (!options.shouldIncludeIgnored && isDirectory && isDefaultIgnoredDir(display)) {
-    return { source: "default", pattern: `${display.split("/")[0] ?? display}/` };
+  const defaultMatch = defaultIgnoreMatch(display, isDirectory, options, false);
+  if (defaultMatch) {
+    return defaultMatch;
   }
   if (!options.shouldIncludeIgnored) {
     const rule = matchedGitIgnoreRule(gitIgnoreRules, display, isDirectory);
@@ -180,10 +181,24 @@ export function classifyPathIgnore(projectRoot: string, input: string, options: 
   const absolute = absolutize(projectRoot, input);
   const display = displayPath(projectRoot, absolute);
   const isDirectory = existsSync(absolute) && statSync(absolute).isDirectory();
+  const defaultMatch = defaultIgnoreMatch(display, isDirectory, options, true);
+  if (defaultMatch) {
+    return { path: display, isIgnored: true, source: defaultMatch.source, pattern: defaultMatch.pattern };
+  }
   const ruleDirectory = isDirectory ? absolute : dirname(absolute);
-  const gitIgnoreRules = options.shouldIncludeIgnored ? [] : gitIgnoreRulesForDirectory(projectRoot, ruleDirectory);
+  const gitIgnoreRules = options.shouldIncludeIgnored || !isDirectory ? [] : gitIgnoreRulesForDirectory(projectRoot, ruleDirectory);
   const match = classifyIgnore(display, isDirectory, options, config, gitIgnoreRules);
   return match ? { path: display, isIgnored: true, source: match.source, pattern: match.pattern } : { path: display, isIgnored: false };
+}
+
+// Default ignores are directory-walk policy; `check-ignore` also needs parent-dir answers for
+// changed-file prefilters so generated paths under `dist/` agree with what `analyse .` would scan.
+function defaultIgnoreMatch(display: string, isDirectory: boolean, options: AnalysisOptions, includeParentDir: boolean): IgnoreMatch | undefined {
+  if (options.shouldIncludeIgnored) {
+    return undefined;
+  }
+  const defaultIgnored = includeParentDir ? isDefaultIgnoredDir(display) : isDirectory && isDefaultIgnoredDir(display);
+  return defaultIgnored ? { source: "default", pattern: `${display.split("/")[0] ?? display}/` } : undefined;
 }
 
 // Walks .gitignore files top-down from project root to the target directory so child rules can

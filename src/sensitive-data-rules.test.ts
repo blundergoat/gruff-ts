@@ -139,10 +139,23 @@ test("M26 PHI (MBI/MRN) and GCP service-account detectors fire and redact across
   });
 });
 
+test("GCP service-account metadata without private_key stays quiet", () => {
+  const report = analyseFixture(
+    JSON.stringify({
+      type: "service_account",
+      private_key_id: GCP_PRIVATE_KEY_ID_FIXTURE_VALUE,
+      client_email: "fixture@example.test",
+    }),
+    { fileName: "service-account.json" },
+  );
+
+  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.gcp-service-account-key"), false);
+});
+
 test("risk expansion respects sensitive-data config", () => {
   // Config contract: sensitive-data.hardcoded-env-value | threshold minLength |
   // default 16 | metadata keyName,preview,length | disabled and override fixtures below.
-  const source = `API_TOKEN=qR8vT3mK6pL9xS2nD4eG
+  const source = `API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
 `;
   const defaultReport = analyseFixture(source, { fileName: ".env" });
   assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), true);

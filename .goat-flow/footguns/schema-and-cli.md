@@ -79,6 +79,24 @@ Removing `size.stylesheet-length` (the CSS-scan removal) required hand-editing t
 
 `discoverSourceInput` (`src/discovery.ts`) handles an explicit file operand by short-circuiting to `pushSourceFile` and returning BEFORE the directory `walk`. Any ignore/scoping policy enforced inside the walk (`classifyIgnore`, formerly `isIgnoredDiscoveryPath`) does NOT apply to explicitly-supplied files unless the `stats.isFile()` branch calls it too. This is exactly how config `paths.ignore` leaked: authoritative in the walk but bypassed for `analyse <file>` and for the changed-file paths a coding-agent hook passes - so the hook flagged deliberately-excluded files (ADR-007 fixed it by calling `classifyIgnore` with empty gitignore rules in the isFile branch: config-only, preserving ADR-003's "explicit files bypass git/default"). When adding any discovery-scope rule, wire it into BOTH the walk and the explicit-file branch, and add an `analyse <single-file>` regression, not just a directory-scan one.
 
+## Footgun: changed-region diff scope is not the same as project context
+
+**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED (review feedback + focused regression tests)
+
+`analyse` (`src/analyser.ts`, search: `function analyse`) originally filtered `discovery.files` before scanning whenever `--diff` / `--since` produced a file/range scope. That made per-file work cheaper, but it also built `ProjectIndex` from a partial project. Cross-file rules then lied: a changed exported source covered only by an unchanged central test could get `test-quality.missing-nearby-test`, and graph rules could miss unchanged nodes that complete a cycle. The correct split is "scan with whole-project context, then filter emitted findings"; `suppressedCount` becomes the count of full-scan findings dropped by region filtering, so tests must not expect zero simply because only one changed file remains visible.
+
+The same surface has a second trap: hunk headers are ranges in the target file, not proof that every target line in the range changed. Piped diffs usually include context, so trusting `@@ -10,5 +10,5 @@` keeps nearby untouched findings. Parse hunk bodies: `+` lines add target ranges, space-prefixed lines only advance the target cursor, `-` lines do not, and target length `0` means deletion-only with no target range. Base-ref modes should mirror `git diff <ref>`: pass the ref after `--end-of-options` and do not union untracked files except for the explicit `working-tree` mode.
+
+Tests: `src/changed-regions.test.ts` (search: `parses added target lines`, `skips deletion-only hunks`) and `src/baseline-and-project.test.ts` (search: `keeps central test context`, `base-ref diff does not include unrelated untracked files`).
+
+## Footgun: `check-ignore` answers both explicit-file and changed-file prefilter questions
+
+**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED (review feedback + ignore-authority tests)
+
+`check-ignore` (`src/check-ignore.ts`, search: `function checkIgnore`) calls `classifyPathIgnore` (`src/discovery.ts`) without knowing whether the caller is asking "would `analyse this-file.ts` scan it?" or "would `analyse . --diff ...` later skip this changed path during the walk?" Those are not identical for default/git ignores: explicit file operands bypass `.gitignore` by design, while a directory walk stops at built-in ignored parent dirs like `dist/` and `node_modules/`.
+
+The compromise is deliberate: file inputs to `check-ignore` do NOT apply `.gitignore`, matching explicit-file analysis, but paths under default-ignored parent dirs DO report a default ignore so agent changed-file prefilters do not feed generated outputs into later hook stages. Config `paths.ignore` remains authoritative in every shape. Whenever `check-ignore` changes, add one explicit-file `.gitignore` regression and one default-parent file regression; testing only config ignores misses the fork.
+
 ## Footgun: pre-existing `M <config>` in git status at session start may already represent a customisation loss
 
 **Status:** active | **Created:** 2026-05-24 | **Evidence:** OBSERVED

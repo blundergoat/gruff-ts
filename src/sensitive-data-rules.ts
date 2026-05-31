@@ -60,7 +60,7 @@ function analysePhiLabelledIdentifiers(file: SensitiveSourceFile, source: string
 // once, anchored on the type line; stable contract keeps raw key bodies covered by private-key.
 function analyseGcpServiceAccountKeys(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const typeMatch = source.match(/"type"\s*:\s*"service_account"/);
-  if (!typeMatch || !/"private_key(?:_id)?"\s*:\s*"|BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY/.test(source)) {
+  if (!typeMatch || !/"private_key"\s*:\s*"|BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY/.test(source)) {
     return;
   }
   const identifier = source.match(/"private_key_id"\s*:\s*"([^"]+)"/)?.[1]
@@ -151,7 +151,7 @@ function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: st
 // stable across runs and prevent noisy regressions in node_modules-heavy projects.
 function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const minLength = threshold(config, "sensitive-data.high-entropy-string", 32);
-  for (const match of source.matchAll(/(["'`])([A-Za-z0-9_+=./-]{32,})\1/g)) {
+  for (const match of source.matchAll(/(["'`])([A-Za-z0-9_+=./-]{24,})\1/g)) {
     const raw = match[2] ?? "";
     if (!isHighEntropySecretCandidate(raw, minLength)) {
       continue;

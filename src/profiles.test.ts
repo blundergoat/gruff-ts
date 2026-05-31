@@ -69,6 +69,23 @@ test("profile extends chain depth 3 applies all overrides", () => {
   }
 });
 
+test("nested profile files resolve extends relative to the profile file", () => {
+  const relativeProfileFileLength = 9;
+  const relativeBaseFunctionLength = 7;
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ts-profile-relative-"));
+  try {
+    writeFixtureFiles(dir, {
+      "profiles/team.yaml": `extends: ./base.yaml\nrules:\n  size.file-length:\n    threshold: ${relativeProfileFileLength}\n`,
+      "profiles/base.yaml": `extends: gruff.recommended\nrules:\n  size.function-length:\n    threshold: ${relativeBaseFunctionLength}\n`,
+    });
+    const definition = resolveProfile("./profiles/team.yaml", dir);
+    assert.equal(definition.rules.get("size.file-length")?.threshold, relativeProfileFileLength);
+    assert.equal(definition.rules.get("size.function-length")?.threshold, relativeBaseFunctionLength);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("profile missing extends file errors clearly", () => {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-profile-missing-"));
   try {
@@ -83,6 +100,14 @@ test("profile with an unknown rule id errors clearly", () => {
     () => resolveProfile({ extends: "gruff.recommended", rules: { "made.up-rule": { enabled: false } } }, cwd()),
     /Unknown rule id in profile: "made\.up-rule"/,
   );
+});
+
+test("profile strict makes its high-entropy threshold reachable", () => {
+  const shortSecret = "aB3dE5fG7hJ9kLmN2pQ4rS6t";
+  const source = { "secret.ts": `const token = "${shortSecret}";\nconsole.log(token);\n` };
+
+  assert.equal(analyseProject(source, { profile: "gruff.recommended" }).findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), false);
+  assert.equal(analyseProject(source, { profile: "gruff.strict" }).findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), true);
 });
 
 test("CLI profile strict overrides a config profile minimal", () => {

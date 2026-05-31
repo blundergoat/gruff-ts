@@ -1,7 +1,7 @@
 // Config loading, defaults, validation, merging, and profile resolution. The zero-dependency
 // YAML-subset parser, the file reader, and the value-narrowing helpers live in `config-parse.ts`.
 import { existsSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { arrayValue, isString, objectValue, parseConfigFile, SUGGEST_EDIT_CONFIG, SUGGEST_INIT_FORCE } from "./config-parse.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
 import { BUILT_IN_PROFILES, builtInProfileNames, DEFAULT_PROFILE_NAME, isKnownRuleId } from "./profiles.ts";
@@ -142,7 +142,7 @@ function resolveProfileFile(ref: string, projectRoot: string, chain: string[]): 
       `Point \`extends:\` (or --profile) at an existing .yaml/.yml/.json profile file, or use a built-in name: ${builtInProfileNames().join(", ")}.`,
     );
   }
-  return resolveInlineProfile(inlineSpecFromObject(parseConfigFile(path)), projectRoot, [...chain, path]);
+  return resolveInlineProfile(inlineSpecFromObject(parseConfigFile(path)), dirname(path), [...chain, path]);
 }
 
 // Resolves the base (the `extends:` target, defaulting to gruff.recommended) and overlays this spec's

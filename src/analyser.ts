@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { cwd } from "node:process";
 import { basename, join } from "node:path";
 import { applyBaseline, dedupeFindings, DEFAULT_BASELINE, recordHistory, writeBaseline } from "./baseline.ts";
-import { changedRegionScope, filterChangedFindings, filterChangedSources } from "./changed-regions.ts";
+import { changedRegionScope, filterChangedFindings } from "./changed-regions.ts";
 import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
@@ -41,7 +41,6 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
   const diagnostics: RunDiagnostic[] = [];
   const discovery = discoverSources(projectRoot, options, config);
   const changedScope = changedRegionScope(options);
-  discovery.files = filterChangedSources(discovery.files, changedScope);
   pushMissingPathDiagnostics(discovery.missingPaths, diagnostics);
 
   const scanned = scanDiscoveredSources(discovery.files, config, diagnostics);

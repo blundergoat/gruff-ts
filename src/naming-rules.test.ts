@@ -292,6 +292,22 @@ function adapt(input: EnvelopeInput, _event: string): string {
   assert.deepEqual(findings, []);
 });
 
+test("naming inconsistent-casing keeps local drift visible beside contract fields", () => {
+  const report = analyseFixture(`interface UserRow {
+  user_id: string;
+}
+
+function adapt(row: UserRow): string {
+  const userID = row.user_id;
+  const userId = userID.toLowerCase();
+  return userId;
+}
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
+  assert.equal(findings.length, 1);
+  assert.deepEqual(findings[0]?.metadata?.variants, ["userID", "userId"]);
+});
+
 test("naming acronym-case flags URL next to Url in identifiers", () => {
   const report = analyseFixture(`const databaseUrl = "/a";
 const SERVICE_URL = "/b";

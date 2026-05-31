@@ -269,12 +269,7 @@ function controlFlowContainsAssertion(source: string, pattern: RegExp): boolean 
 // Accepts guard conditionals whose assertion proves a shared invariant rather than branch policy.
 function isInvariantAssertionConditional(source: string, start: number, segment: string): boolean {
   const condition = segment.slice(0, Math.max(0, segment.indexOf("{"))).trim();
-  return isTypeNarrowingGuard(condition) || isFixtureMembershipGuard(source.slice(0, start), condition);
-}
-
-// Type guards narrow fixture variants before a common assertion and do not hide expected behavior.
-function isTypeNarrowingGuard(condition: string): boolean {
-  return /\b(?:typeof|instanceof|Array\.isArray)\b/.test(condition) || /\.(?:type|kind|subtype)\s*===/.test(condition);
+  return isFixtureMembershipGuard(source.slice(0, start), condition);
 }
 
 // Membership guards over const-bound fixtures keep invariant sweeps readable.

@@ -37,9 +37,12 @@ interface DeclarationRegion {
 interface DiffParseState {
   currentFile: string | undefined;
   isNewFile: boolean;
+  targetLine: number | undefined;
 }
 
-// Builds the changed-region scope requested by CLI options, reading git diff output when needed.
+const FILE_WIDE_RULE_IDS = new Set(["design.large-module-concentration", "docs.missing-file-overview", "size.file-length"]);
+
+// Builds the changed-region scope requested by CLI options. Throws on stdin diffs missing patch text.
 export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope | undefined {
   if (options.changedRanges) {
     return { mode: options.changedScope, rangesByFile: new Map(), wholeFiles: new Set(), explicitRanges: parseChangedRanges(options.changedRanges) };
@@ -51,17 +54,12 @@ export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope
     return gitDiffScope(options.since, options.changedScope);
   }
   if (options.diff) {
-    return options.diff === "-" ? parseUnifiedDiff("", options.changedScope) : gitDiffScope(options.diff, options.changedScope);
+    if (options.diff === "-") {
+      throw new Error("--diff - requires diffPatch input; the CLI reads stdin before analysis.");
+    }
+    return gitDiffScope(options.diff, options.changedScope);
   }
   return undefined;
-}
-
-// Drops unchanged source files before analysis when the diff already identifies whole-file scope.
-export function filterChangedSources(files: SourceFile[], scope: ChangedRegionScope | undefined): SourceFile[] {
-  if (!scope || scope.explicitRanges) {
-    return files;
-  }
-  return files.filter((file) => scope.wholeFiles.has(file.displayPath) || scope.rangesByFile.has(file.displayPath));
 }
 
 // Applies changed-region filtering to findings and reports how many pre-existing findings dropped.
@@ -100,6 +98,9 @@ function isFindingInChangedScope(
   if (changedRanges.length === 0) {
     return false;
   }
+  if (isFileWideFinding(finding) && (scope.rangesByFile.has(finding.filePath) || scope.explicitRanges)) {
+    return true;
+  }
   const findingRange = { start: finding.line ?? 1, end: finding.endLine ?? finding.line ?? 1 };
   if (overlapsAny(findingRange, changedRanges)) {
     return true;
@@ -109,6 +110,11 @@ function isFindingInChangedScope(
   }
   const declaration = enclosingDeclaration(finding, sources, declarationsByFile);
   return declaration !== undefined && overlapsAny(declaration, changedRanges);
+}
+
+// Invariant: file-wide findings are line-1 anchors kept when any hunk changes the file.
+function isFileWideFinding(finding: Finding): boolean {
+  return FILE_WIDE_RULE_IDS.has(finding.ruleId) && finding.line === 1 && finding.symbol === undefined;
 }
 
 // Looks up explicit line ranges first because `--changed-ranges` applies to every selected file.
@@ -157,7 +163,7 @@ function classLikeRegions(codeSource: string): DeclarationRegion[] {
   const lines = codeSource.split(/\r?\n/);
   const regions: DeclarationRegion[] = [];
   lines.forEach((line, index) => {
-    const match = line.match(/^\s*(?:export\s+)?(?:abstract\s+)?(?:class|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/);
+    const match = line.match(/^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?(?:class|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/);
     if (!match?.[1]) {
       return;
     }
@@ -241,13 +247,13 @@ function gitDiffScope(mode: string, changedScope: ChangedScopeMode): ChangedRegi
       changedScope,
     );
   }
-  return mergeScopes([parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", mode]), changedScope), untrackedFileScope(changedScope)], changedScope);
+  return parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", "--end-of-options", mode]), changedScope);
 }
 
 // Parses a unified diff into file-level and hunk-level scope.
 function parseUnifiedDiff(diffText: string, changedScope: ChangedScopeMode): ChangedRegionScope {
   const scope: ChangedRegionScope = { mode: changedScope, rangesByFile: new Map(), wholeFiles: new Set() };
-  const state: DiffParseState = { currentFile: undefined, isNewFile: false };
+  const state: DiffParseState = { currentFile: undefined, isNewFile: false, targetLine: undefined };
   for (const line of diffText.split(/\r?\n/)) {
     applyDiffLine(scope, state, line);
   }
@@ -259,6 +265,7 @@ function applyDiffLine(scope: ChangedRegionScope, state: DiffParseState, line: s
   if (line.startsWith("diff --git ")) {
     state.currentFile = undefined;
     state.isNewFile = false;
+    state.targetLine = undefined;
     return;
   }
   if (line.startsWith("new file mode ") || line === "--- /dev/null") {
@@ -268,7 +275,10 @@ function applyDiffLine(scope: ChangedRegionScope, state: DiffParseState, line: s
   if (applyTargetFileLine(scope, state, line)) {
     return;
   }
-  applyHunkLine(scope, state, line);
+  if (applyHunkHeader(scope, state, line)) {
+    return;
+  }
+  applyHunkBodyLine(scope, state, line);
 }
 
 // Handles `+++` target-file headers, including new files that should keep all findings.
@@ -276,6 +286,7 @@ function applyTargetFileLine(scope: ChangedRegionScope, state: DiffParseState, l
   if (line.startsWith("+++ ")) {
     const path = diffPath(line.slice(4));
     state.currentFile = path === "/dev/null" ? undefined : path;
+    state.targetLine = undefined;
     if (state.currentFile && state.isNewFile) {
       scope.wholeFiles.add(state.currentFile);
     }
@@ -284,16 +295,35 @@ function applyTargetFileLine(scope: ChangedRegionScope, state: DiffParseState, l
   return false;
 }
 
-// Adds the changed target-side hunk range for the current diff file.
-function applyHunkLine(scope: ChangedRegionScope, state: DiffParseState, line: string): void {
+// Starts tracking target-side line numbers for the current hunk.
+function applyHunkHeader(scope: ChangedRegionScope, state: DiffParseState, line: string): boolean {
   const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
-  if (!hunk?.[1] || !state.currentFile || scope.wholeFiles.has(state.currentFile)) {
-    return;
+  if (!hunk) {
+    return false;
+  }
+  if (!hunk[1] || !state.currentFile || scope.wholeFiles.has(state.currentFile)) {
+    state.targetLine = undefined;
+    return true;
   }
   const start = Math.max(1, Number(hunk[1]));
   const length = hunk[2] === undefined ? 1 : Number(hunk[2]);
-  const end = length === 0 ? start : start + length - 1;
-  addRange(scope.rangesByFile, state.currentFile, { start, end });
+  state.targetLine = length === 0 ? undefined : start;
+  return true;
+}
+
+// Adds only real target-side additions from the hunk body; context lines just advance the cursor.
+function applyHunkBodyLine(scope: ChangedRegionScope, state: DiffParseState, line: string): void {
+  if (!state.currentFile || state.targetLine === undefined || scope.wholeFiles.has(state.currentFile)) {
+    return;
+  }
+  if (line.startsWith("+")) {
+    addRange(scope.rangesByFile, state.currentFile, { start: state.targetLine, end: state.targetLine });
+    state.targetLine += 1;
+    return;
+  }
+  if (line.startsWith(" ")) {
+    state.targetLine += 1;
+  }
 }
 
 // Normalizes the `+++ b/path` header path into the same display path discovery uses.

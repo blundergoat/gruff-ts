@@ -395,6 +395,7 @@ function reportSink(
   file: SourceFile,
   findings: Finding[],
 ): void {
+  reportRedirectAssignmentSink(parsedSource, node, tainted, file, findings);
   const call = callLikeExpression(node);
   if (!call) {
     return;
@@ -415,6 +416,26 @@ function reportSink(
   findings.push(flowFinding(file, sinkLine, sink.ruleId, sink.sinkKind, hit.kind, hit.depth));
 }
 
+// Reports redirect assignment flows; invariant: same-line cases stay with the legacy scanner.
+function reportRedirectAssignmentSink(parsedSource: TsSourceFile, node: TsNode, tainted: Map<string, TaintRecord>, file: SourceFile, findings: Finding[]): void {
+  if (!typescriptSyntax.isBinaryExpression(node) || node.operatorToken.kind !== typescriptSyntax.SyntaxKind.EqualsToken) {
+    return;
+  }
+  const left = node.left.getText(parsedSource);
+  if (!/^(?:location|window\.location)\.href$/.test(left)) {
+    return;
+  }
+  const hit = taintedExpression(node.right, parsedSource, tainted);
+  if (!hit) {
+    return;
+  }
+  const sinkLine = lineIndexOf(parsedSource, node);
+  if (sinkLine === hit.line) {
+    return;
+  }
+  findings.push(flowFinding(file, sinkLine, "security.open-redirect-candidate", "redirect", hit.kind, hit.depth));
+}
+
 // Normalises calls and constructors because `RegExp(value)` and `new RegExp(value)`
 // are equivalent dynamic-regexp sinks for this syntax-only pass.
 function callLikeExpression(node: TsNode): TsCallLikeExpression | undefined {
@@ -424,34 +445,46 @@ function callLikeExpression(node: TsNode): TsCallLikeExpression | undefined {
 // Finds the first tainted identifier or direct external-input expression in sink arguments.
 // Because sanitizer wrappers deliberately consume user input, their subtrees are pruned.
 function taintedInput(call: TsCallLikeExpression, parsedSource: TsSourceFile, tainted: Map<string, TaintRecord>): TaintRecord | undefined {
-  let found: TaintRecord | undefined;
   for (const argument of call.arguments ?? []) {
-    walk(argument, (node) => {
-      if (found) {
-        return false;
-      }
-      if (isSafeWrapperExpression(parsedSource, node)) {
-        return false;
-      }
-      if (typescriptSyntax.isIdentifier(node)) {
-        const record = tainted.get(node.text);
-        if (record) {
-          found = record;
-          return false;
-        }
-      }
-      const kind = sourceKindOf(parsedSource, node);
-      if (kind !== undefined) {
-        found = { line: lineIndexOf(parsedSource, node), kind, depth: 0 };
-        return false;
-      }
-      return;
-    });
+    const found = taintedExpression(argument, parsedSource, tainted);
     if (found) {
       return found;
     }
   }
   return undefined;
+}
+
+// Finds taint inside one sink-relevant expression while pruning callbacks passed as ancillary args.
+function taintedExpression(expression: TsNode, parsedSource: TsSourceFile, tainted: Map<string, TaintRecord>): TaintRecord | undefined {
+  let found: TaintRecord | undefined;
+  if (isFunctionLike(expression)) {
+    return undefined;
+  }
+  walk(expression, (node) => {
+    if (found) {
+      return false;
+    }
+    if (node !== expression && isFunctionLike(node)) {
+      return false;
+    }
+    if (isSafeWrapperExpression(parsedSource, node)) {
+      return false;
+    }
+    if (typescriptSyntax.isIdentifier(node)) {
+      const record = tainted.get(node.text);
+      if (record) {
+        found = record;
+        return false;
+      }
+    }
+    const kind = sourceKindOf(parsedSource, node);
+    if (kind !== undefined) {
+      found = { line: lineIndexOf(parsedSource, node), kind, depth: 0 };
+      return false;
+    }
+    return;
+  });
+  return found;
 }
 
 // Unsafe-deserialization sinks execute or inflate attacker-controlled serialized/code content.
@@ -528,6 +561,9 @@ function sourceKindOf(parsedSource: TsSourceFile, expr: TsNode): string | undefi
   if (isSafeWrapperExpression(parsedSource, expr)) {
     return undefined;
   }
+  if (isSourceTextLiteral(expr)) {
+    return undefined;
+  }
   const text = expr.getText(parsedSource);
   for (const token of SOURCE_TOKENS) {
     if (token.pattern.test(text)) {
@@ -535,6 +571,11 @@ function sourceKindOf(parsedSource: TsSourceFile, expr: TsNode): string | undefi
     }
   }
   return undefined;
+}
+
+// Literal text can mention `req.query.path` in docs or fixtures without being external input.
+function isSourceTextLiteral(expr: TsNode): boolean {
+  return typescriptSyntax.isStringLiteral(expr) || typescriptSyntax.isNoSubstitutionTemplateLiteral(expr);
 }
 
 // Regex escaping helpers are sanitizer evidence for dynamic-regexp flow; walking their arguments

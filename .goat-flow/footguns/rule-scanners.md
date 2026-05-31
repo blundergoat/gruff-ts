@@ -1,6 +1,6 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-05-31
+last_reviewed: 2026-06-01
 ---
 
 # Rule scanner footguns
@@ -66,6 +66,14 @@ Skipping the rule for descriptor files is NOT an option - the file-level granula
 `processExecCandidate` (`src/cli.ts`, search: `function processExecCandidate`) matches bare `exec(`, `spawn(`, or `execFile(` in masked code. That intentionally catches child-process helpers, but it also catches ordinary `RegExp.exec(...)` calls because the current regex does not require a child-process receiver or import context.
 
 When adding hot-path regex loops, avoid writing `.exec(` in scanner source unless you also refine the rule. This performance pass used bracket dispatch (`src/text-scans.ts`, search: `globalPattern["exec"]`) to keep the source self-scan from adding `security.process-exec` noise.
+
+## Footgun: widening commented-out-code calls needs a prose-shape guard
+
+**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED (review feedback + focused tests)
+
+`isCommentedOutCode` (`src/findings-helpers.ts`, search: `function isDisabledCall`) used to require a semicolon for disabled calls, so `// cleanup()` and `// service.reset()` were false negatives in semicolonless projects. Dropping the semicolon requirement fixed that, but immediately made prose headings like `// scanSectionAgainstSnapshot (claim patterns)` look like disabled calls. The existing uppercase-heading guard did not cover lower-camel helper names used as section labels.
+
+When widening a disabled-code detector from "strict syntax" to "common style", add a paired prose/heading regression in the same patch. For call-shaped comments, the guard must distinguish `identifier()` / `object.method()` from label text with a space before the parenthetical, while preserving real control-flow comments such as `// if (ready)`. Tests: `src/findings-helpers.test.ts`, search: `service.reset()` and `scanSectionAgainstSnapshot`.
 
 ## Footgun: context-doc rules only see the LAST `//` line as the leading comment
 
@@ -136,3 +144,11 @@ Before implementing any rule a plan calls "new", `grep -oE '"<pillar>\\.[a-z-]+"
 The syntax-only parser adapter `getSourceFile` (`src/security-flow-rules.ts`, search: `function getSourceFile`) was first written to memoise `ts.createSourceFile` output in a `WeakMap` keyed by the discovery `SourceFile` object. That is safe in a real run - each discovered file has its own `SourceFile` instance and is parsed once - but the tests (`src/security-flow-rules.test.ts`) reuse a single `fileStub` across cases with DIFFERENT source strings. The object-keyed cache returned the FIRST case's AST for every later case, so each test produced a byte-identical finding regardless of input: the SSRF positive misfired as `security.path-traversal-candidate`, and every "expect zero" negative fired. `tsc` was clean; the failure surfaced only in `npm test`.
 
 Three takeaways: (1) `analyseSecurityFlow` is the only caller and runs once per file, so the cache bought nothing - it was an unrequested abstraction that only introduced a bug (CLAUDE.md: "No new abstractions ... beyond what was asked"). The fix was to delete the cache and parse per call. (2) If a per-run AST cache is ever actually needed, key it on the source text (or a content hash), never on the file-descriptor object, because tests and any future reuse of a `SourceFile` across sources will alias. (3) When rule output is byte-identical across genuinely different inputs, suspect shared or aliased state - a cache, a module-level mutable, or a global regex's `lastIndex` - before the rule logic.
+
+## Footgun: AST sink argument walkers descend into non-sink callback bodies
+
+**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED (review feedback + security-flow tests)
+
+`taintedInput` (`src/security-flow-rules.ts`, search: `function taintedInput`) originally walked every node under every sink argument. That is too broad for callback-style APIs: `fs.readFile("./safe.json", () => log(target))` mentions a tainted local inside the callback, but the tainted value is not the filesystem path argument. The same text-walk mistake also applies to literal text such as `"req.query.path"`; raw `getText()` matching turns documentation-shaped strings into fake sources.
+
+For syntax-only source-to-sink rules, inspect only sink-relevant expression trees. Prune nested function-like nodes while walking arguments, and treat string/no-substitution-template literals as literal text, not source evidence. Add a negative test any time a scanner starts using `node.getText()` over a subtree: one callback-only taint reference and one literal that names the source token. Tests: `src/security-flow-rules.test.ts`, search: `callback-only taint` and `string literals that only mention source tokens`.

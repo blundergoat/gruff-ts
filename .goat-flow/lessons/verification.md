@@ -65,6 +65,16 @@ last_reviewed: 2026-05-31
 
 **Prevention:** When adding comments to clear self-scan documentation findings, include the relevant marker word in the declaration's leading comment (`contract`/`stable`, `throws`, `spawns`, `filesystem`, etc.) and rerun the full self-scan before close-out.
 
+## Lesson: broadening scope can invalidate old suppression-count assertions
+
+**Created:** 2026-06-01
+
+**What happened:** A review fix changed diff-scoped analysis from "scan changed files only" to "scan the full project, then filter emitted findings" so project-level rules keep central-test and import-graph context. The first focused regression run passed the new behavior tests but failed an older working-tree diff assertion that expected `suppressedCount` to stay `0`. With full context, unchanged findings are now produced and then suppressed, so a positive suppression count is the correct signal.
+
+**Evidence:** `src/analyser.ts` + `(search: "const changedScope = changedRegionScope")`; `src/baseline-and-project.test.ts` + `(search: "working-tree diff treats untracked files as whole-file changed")`; focused command `node --import tsx --test ...` reported `# fail 2` before the assertion was updated.
+
+**Prevention:** When a correctness fix moves filtering later in the pipeline, audit tests that assert counts or skipped totals, not only visible findings. A later filter can preserve user-visible findings while legitimately changing `suppressedCount`, analysed-file totals, or diagnostic counts.
+
 ## Lesson: grep source for symbol locations; docs lag the cli.ts split
 
 **Created:** 2026-05-30
