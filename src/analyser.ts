@@ -19,6 +19,7 @@ import { analyseDeadCode, analyseUnreachable, analyseUnusedImports } from "./dea
 import { analyseCommentQualityRules } from "./comment-rules.ts";
 import { analyseDocRules, analyseFileOverviewDoc, analyseInterfaceDocs } from "./doc-rules.ts";
 import { analyseLineRules } from "./line-rules.ts";
+import { analyseSecurityFlow } from "./security-flow-rules.ts";
 import { pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { analyseTestBlock } from "./test-block-rules.ts";
 import { analyseGithubActionsRules } from "./github-actions-rules.ts";
@@ -337,6 +338,7 @@ function analyseTypeScriptRules(file: SourceFile, source: string, config: Config
   analyseBlocks(file, blocks, config, findings);
   analyseUnusedImports(file, codeSource, source, findings);
   analyseLineRules(file, source, codeSource, config, findings);
+  analyseSecurityFlow(file, source, findings);
   analyseUnreachable(file, codeSource, findings);
   analyseDocRules(file, source, codeSource, findings);
   analyseInterfaceDocs(file, source, codeSource, findings);

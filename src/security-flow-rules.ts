@@ -3,6 +3,7 @@
 import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import type { Finding } from "./types.ts";
+import { getSourceFile, lineIndexOf, ts, walk, type TsNode, type TsSourceFile } from "./ts-ast.ts";
 
 // External input token that can be visibly matched on one source line.
 interface SourceToken {
@@ -108,5 +109,209 @@ function securityFlowFinding(file: SourceFile, line: number, rule: SecurityFlowR
     confidence: "medium",
     remediation: rule.remediation,
     metadata: { sourceKind, sinkKind: rule.sinkKind },
+  });
+}
+
+// --- Bounded intra-function AST flow (ADR-012, M25) -------------------------
+// Augments the same-line checks above: detects an external-input value assigned
+// to a local variable and later passed (across lines, within one function) to a
+// known sink. The same-line pass above is untouched, so its findings and
+// fingerprints are unchanged; this pass only adds genuinely cross-line cases and
+// skips any flow whose source and sink share a line.
+
+// One tainted local: the 0-based line of the originating external source, the
+// source kind for metadata, and how many alias hops removed it is (cap below).
+interface TaintRecord {
+  line: number;
+  kind: string;
+  depth: number;
+}
+
+// AST sink matchers for the two flow rules upgraded in this slice. `callee` is
+// the source text of the call's callee expression (e.g. "fs.readFile",
+// "axios.get"); the patterns mirror the same-line callPattern sinks above.
+const AST_FLOW_SINKS: ReadonlyArray<{ ruleId: string; sinkKind: string; isSink: (callee: string) => boolean }> = [
+  {
+    ruleId: "security.path-traversal-candidate",
+    sinkKind: "filesystem-path",
+    isSink: (callee) =>
+      /(?:^|\.)(?:readFile|readFileSync|writeFile|writeFileSync|appendFile|appendFileSync|createReadStream|createWriteStream|stat|statSync|readdir|readdirSync|unlink|unlinkSync|rm|rmSync|mkdir|mkdirSync)$/.test(
+        callee,
+      ),
+  },
+  {
+    ruleId: "security.ssrf-candidate",
+    sinkKind: "network-request",
+    isSink: (callee) =>
+      /(?:^|\.)fetch$/.test(callee) ||
+      /^axios\.(?:get|post|put|patch|delete|request)$/.test(callee) ||
+      /^https?\.(?:request|get)$/.test(callee),
+  },
+];
+
+const MAX_ALIAS_DEPTH = 2;
+const MAX_SCOPE_NODES = 4000;
+
+/**
+ * Per-file AST pass. Parses the file once (syntax-only) and reports cross-line
+ * source-to-sink flows for the existing security-flow rule ids. Does nothing
+ * when the file cannot be parsed, so the same-line scan remains the fallback.
+ */
+export function analyseSecurityFlow(file: SourceFile, source: string, findings: Finding[]): void {
+  const sf = getSourceFile(file, source);
+  if (!sf) {
+    return;
+  }
+  // Collect into a local buffer so an error-recovery tree (where node.getText or
+  // node.getStart can throw) degrades to "no AST findings" without leaking a
+  // partial result. The same-line scan remains the fallback for such files.
+  const flowFindings: Finding[] = [];
+  try {
+    const scopes: TsNode[] = [sf];
+    walk(sf, (node) => {
+      if (isFunctionLike(node)) {
+        scopes.push(node);
+      }
+    });
+    for (const scope of scopes) {
+      analyseFlowScope(sf, scope, file, flowFindings);
+    }
+  } catch {
+    return;
+  }
+  for (const flow of flowFindings) {
+    findings.push(flow);
+  }
+}
+
+// Walks one function (or the module top level), pruning nested functions so taint
+// stays intra-procedural. Records tainted locals in source order, then flags
+// sinks that consume them on a later line.
+function analyseFlowScope(sf: TsSourceFile, scopeOwner: TsNode, file: SourceFile, findings: Finding[]): void {
+  const tainted = new Map<string, TaintRecord>();
+  let budget = MAX_SCOPE_NODES;
+  walk(scopeOwner, (node) => {
+    if (budget <= 0) {
+      return false;
+    }
+    budget -= 1;
+    if (isFunctionLike(node) && node !== scopeOwner) {
+      return false;
+    }
+    recordTaint(sf, node, tainted);
+    reportSink(sf, node, tainted, file, findings);
+    return;
+  });
+}
+
+// Marks a local tainted when it is initialised directly from an external source,
+// or one hop from another tainted local (`const alias = tainted`), bounded by
+// MAX_ALIAS_DEPTH. Function-valued initialisers are skipped so a source token
+// inside a callback body never taints the function variable itself.
+function recordTaint(sf: TsSourceFile, node: TsNode, tainted: Map<string, TaintRecord>): void {
+  if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name) || !node.initializer) {
+    return;
+  }
+  const initializer = node.initializer;
+  if (isFunctionLike(initializer)) {
+    return;
+  }
+  const kind = sourceKindOf(sf, initializer);
+  if (kind !== undefined) {
+    tainted.set(node.name.text, { line: lineIndexOf(sf, node), kind, depth: 1 });
+    return;
+  }
+  if (ts.isIdentifier(initializer)) {
+    const upstream = tainted.get(initializer.text);
+    if (upstream && upstream.depth < MAX_ALIAS_DEPTH) {
+      tainted.set(node.name.text, { line: upstream.line, kind: upstream.kind, depth: upstream.depth + 1 });
+    }
+  }
+}
+
+// Emits a finding when a sink call consumes a tainted local on a different line
+// than its source. Same-line flows are left to analyseSecurityFlowLine.
+function reportSink(sf: TsSourceFile, node: TsNode, tainted: Map<string, TaintRecord>, file: SourceFile, findings: Finding[]): void {
+  if (!ts.isCallExpression(node)) {
+    return;
+  }
+  const callee = node.expression.getText(sf);
+  const sink = AST_FLOW_SINKS.find((candidate) => candidate.isSink(callee));
+  if (!sink) {
+    return;
+  }
+  const hit = taintedArgument(node, tainted);
+  if (!hit) {
+    return;
+  }
+  const sinkLine = lineIndexOf(sf, node);
+  if (sinkLine === hit.line) {
+    return;
+  }
+  findings.push(flowFinding(file, sinkLine, sink.ruleId, sink.sinkKind, hit.kind, hit.depth));
+}
+
+// First tainted identifier appearing anywhere in the call's arguments.
+function taintedArgument(call: import("typescript").CallExpression, tainted: Map<string, TaintRecord>): TaintRecord | undefined {
+  let found: TaintRecord | undefined;
+  for (const argument of call.arguments) {
+    walk(argument, (node) => {
+      if (found) {
+        return false;
+      }
+      if (ts.isIdentifier(node)) {
+        const record = tainted.get(node.text);
+        if (record) {
+          found = record;
+          return false;
+        }
+      }
+      return;
+    });
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+// Classifies an initialiser expression as an external-input source. Mirrors the
+// same-line SOURCE_TOKENS patterns, applied to the expression's source text.
+function sourceKindOf(sf: TsSourceFile, expr: TsNode): string | undefined {
+  const text = expr.getText(sf);
+  for (const token of SOURCE_TOKENS) {
+    if (token.pattern.test(text)) {
+      return token.kind;
+    }
+  }
+  return undefined;
+}
+
+function isFunctionLike(node: TsNode): boolean {
+  return (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node)
+  );
+}
+
+// Cross-line flow finding. Reuses the same-line rule's message and remediation so
+// both detection paths read identically; metadata adds the bounded flowDepth.
+function flowFinding(file: SourceFile, lineIndex: number, ruleId: string, sinkKind: string, sourceKind: string, flowDepth: number): Finding {
+  const base = SECURITY_FLOW_RULES.find((rule) => rule.ruleId === ruleId);
+  return makeFinding({
+    ruleId,
+    message: base ? base.message : "External input reaches a risky sink across lines.",
+    filePath: file.displayPath,
+    line: lineIndex + 1,
+    severity: "warning",
+    pillar: "security",
+    confidence: "medium",
+    remediation: base ? base.remediation : "Validate external input before it reaches the sink.",
+    metadata: { sourceKind, sinkKind, flowDepth },
   });
 }
