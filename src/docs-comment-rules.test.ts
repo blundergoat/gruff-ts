@@ -69,12 +69,14 @@ interface DocumentedShape {
 });
 
 test("comment quality stale-comment flags stale references", () => {
+  // Fixture purpose: pairs stale path/rule/flag references with valid changed-region flag names.
   const report = analyseFixture(`/**
  * Exercises stale comment references.
  */
 // See \`src/missing-file.ts\` before changing this helper.
 // Unknown scanner rule docs.removed-rule should be deleted.
 // Run gruff-ts with --removed-flag when debugging.
+// Run gruff-ts analyse --changed-ranges 2-3 --changed-scope hunk --since main for changed code.
 // legacy migration note mentions \`src/old-file.ts\` intentionally.
 function currentFeature(): void {}
 
@@ -85,6 +87,9 @@ function newFeature(): void {}
   assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "path" && finding.message.includes("src/missing-file.ts")), true);
   assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "ruleId" && finding.message.includes("docs.removed-rule")), true);
   assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "cliFlag" && finding.message.includes("--removed-flag")), true);
+  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "cliFlag" && finding.message.includes("--changed-ranges")), false);
+  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "cliFlag" && finding.message.includes("--changed-scope")), false);
+  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "cliFlag" && finding.message.includes("--since")), false);
   assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "function" && finding.symbol === "newFeature"), true);
   assert.equal(staleFindings.some((finding) => finding.message.includes("src/old-file.ts")), false);
 });
@@ -181,7 +186,7 @@ export function updateName(name: string): string {
 });
 
 test("documentation context detector matrix covers why side-effect error-behavior invariant magic-threshold", () => {
-  const routingBranches = branchFixtureLines(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"]);
+  const routingBranches = branchFixtureLines(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p"]);
   // Fixture covers context-doc rules for why, side effects, errors, invariants, and thresholds.
   const report = analyseFixture(`/**
  * Exercises maintainer-context documentation rules.
@@ -268,6 +273,24 @@ function undocumentedSideEffect(path: string): void {
   documentationContextExpectations().forEach(([ruleId, symbol, expected]) => {
     assert.equal(findingsByRule.get(ruleId)?.has(symbol), expected, `${ruleId} ${symbol}`);
   });
+});
+
+test("missing-why no longer fires on a flat switch that only tripped via npath", () => {
+  const switchCases = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
+    .map((value) => `    case "${value}": return "${value}";`)
+    .join("\n");
+  const report = analyseFixture(`/** Routes a status code to its label. */
+function routeStatus(code: string): string {
+  switch (code) {
+${switchCases}
+    default: return "unknown";
+  }
+}
+`);
+  // A 10-case flat switch scored old-npath 2**10 = 1024 (well over the retired 200 default, so it
+  // tripped the missing-why complexity gate), but its cyclomatic (12), cognitive (13), and nesting
+  // all stay under threshold. With npath gone the gate must not demand a "why" on legible flat dispatch.
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-why-for-complex-code"), false);
 });
 
 /** Generates repeated branch lines without making the outer test look complex. */

@@ -9,19 +9,20 @@ import type { AnalysisReport, FailThreshold, Finding, Pillar, Severity } from ".
 function scoreReport(findings: Finding[]): AnalysisReport["score"] {
   const byPillar = new Map<Pillar, Finding[]>();
   const byFile = new Map<string, Finding[]>();
+  const penalties = scoringPenaltyMap(findings);
   for (const finding of findings) {
     byPillar.set(finding.pillar, [...(byPillar.get(finding.pillar) ?? []), finding]);
     byFile.set(finding.filePath, [...(byFile.get(finding.filePath) ?? []), finding]);
   }
   const pillars = [...byPillar.entries()].map(([pillar, pillarFindings]) => {
-    const penalty = pillarFindings.reduce((sum, finding) => sum + severityPenalty(finding.severity), 0);
+    const penalty = pillarFindings.reduce((sum, finding) => sum + findingPenalty(penalties, finding), 0);
     return { pillar, score: Math.max(0, 100 - penalty), penalty, findings: pillarFindings.length };
   });
   const composite = pillars.length === 0 ? 100 : pillars.reduce((sum, pillar) => sum + pillar.score, 0) / pillars.length;
   const topOffenders = [...byFile.entries()]
     .map(([filePath, fileFindings]) => ({
       filePath,
-      score: Math.max(0, 100 - fileFindings.reduce((sum, finding) => sum + severityPenalty(finding.severity), 0)),
+      score: Math.max(0, 100 - fileFindings.reduce((sum, finding) => sum + findingPenalty(penalties, finding), 0)),
       findings: fileFindings.length,
     }))
     .sort((left, right) => left.score - right.score);
@@ -71,13 +72,50 @@ function severityPenalty(severity: Severity): number {
   return severity === "error" ? 8 : severity === "warning" ? 4 : 1.5;
 }
 
+const CORRELATED_COMPLEXITY_RULE_IDS = new Set(["complexity.cognitive", "complexity.cyclomatic", "size.function-length"]);
+
+// Correlated complexity findings describe one hard-to-review function.
+// Invariant: detailed reports keep every rule finding while grade math splits one max-severity penalty.
+function scoringPenaltyMap(findings: Finding[]): Map<Finding, number> {
+  const penalties = new Map<Finding, number>();
+  const clusters = new Map<string, Finding[]>();
+  for (const finding of findings) {
+    penalties.set(finding, severityPenalty(finding.severity));
+    const key = complexityClusterKey(finding);
+    if (key) {
+      clusters.set(key, [...(clusters.get(key) ?? []), finding]);
+    }
+  }
+  for (const cluster of clusters.values()) {
+    if (cluster.length < 2) {
+      continue;
+    }
+    const sharedPenalty = Math.max(...cluster.map((finding) => severityPenalty(finding.severity))) / cluster.length;
+    cluster.forEach((finding) => penalties.set(finding, sharedPenalty));
+  }
+  return penalties;
+}
+
+// Invariant: line+symbol grouping prevents unrelated functions in the same file from sharing score relief.
+function complexityClusterKey(finding: Finding): string | undefined {
+  if (!finding.symbol || !finding.line || !CORRELATED_COMPLEXITY_RULE_IDS.has(finding.ruleId)) {
+    return undefined;
+  }
+  return `${finding.filePath}\0${finding.symbol}\0${finding.line}`;
+}
+
+// Invariant: one finding uses one precomputed score penalty or the normal severity weight fallback.
+function findingPenalty(penalties: ReadonlyMap<Finding, number>, finding: Finding): number {
+  return penalties.get(finding) ?? severityPenalty(finding.severity);
+}
+
 /*
  * Per-severity grade breakdown for the human summary block. The composite headline alone hides the
  * fact that an F can be driven entirely by advisories (goat-flow scan: F at 12.9 with 0 errors / 276
  * warnings / 1367 advisories). Mirrors the existing pillar formula `100 - count * severityPenalty`
- * so the math stays consistent with how a single-rule pillar would score. The schema invariant
- * matters: the composite score and `gruff.analysis.v2` JSON shape stay byte-stable - only the
- * human renderers surface this breakdown.
+ * so the math stays consistent with how a single-rule pillar would score. The report-shape
+ * invariant matters: severity breakdowns and correlated complexity clustering must not add
+ * `gruff.analysis.v2` JSON fields, even when score values change.
  */
 function severityGradeBreakdown(findings: Finding[]): {
   error: { grade: string; score: number; count: number };

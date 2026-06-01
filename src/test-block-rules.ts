@@ -21,6 +21,7 @@ interface TestBlockCheck {
 interface MagicNumberAssertionPattern {
   pattern: RegExp;
   expressionIndex: number;
+  matcherIndex?: number;
   valueIndex: number;
 }
 
@@ -64,6 +65,9 @@ function assertionQualityChecks(block: FunctionBlock, body: string): TestBlockCh
  * `test-quality.magic-number-assertion` with stable literal metadata for downstream review tools.
  */
 function pushMagicNumberAssertionFindings(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
+  if (isConstantContractTestName(block.name)) {
+    return;
+  }
   for (const assertion of magicNumberAssertions(body)) {
     findings.push(
       blockFindingWithMetadata({
@@ -154,7 +158,7 @@ function controlFlowContainsNonFixtureLoop(source: string): boolean {
     if (!hasAssertion(segment)) {
       continue;
     }
-    if (isFixtureLoop(segment)) {
+    if (isFixtureLoop(source, start, segment)) {
       continue;
     }
     return true;
@@ -162,27 +166,79 @@ function controlFlowContainsNonFixtureLoop(source: string): boolean {
   return false;
 }
 
-// A "fixture loop" is the table-test pattern: iterable is a literal array OR Object.entries/keys/
-// values of a literal, AND every path through the body terminates in an assertion call. Neither
-// applies to `while` loops or C-style `for (;;)`. Conservative on conditional bodies - the presence
-// of any `if`/`switch`/`case`/`default` inside the body opts out so a branch that doesn't assert
-// is not silently classified as a fixture loop.
-function isFixtureLoop(segment: string): boolean {
+// A "fixture loop" is the table-test pattern: iterable is an inline fixture OR a local const-bound
+// fixture table, AND every path through the body terminates in an assertion call. Guard branches
+// without assertions are allowed, but assertion-bearing branches still opt out.
+function isFixtureLoop(source: string, start: number, segment: string): boolean {
   const braceIndex = segment.indexOf("{");
   const header = braceIndex === -1 ? segment : segment.slice(0, braceIndex);
-  if (!/\bof\s*\[/.test(header) && !/\bof\s+Object\.(?:entries|keys|values)\s*\(/.test(header)) {
+  if (!hasFixtureIterable(source, start, header)) {
     return false;
   }
   if (braceIndex === -1) {
     return false;
   }
   const body = segment.slice(braceIndex + 1, segment.length - 1);
-  if (/\b(?:if|switch)\s*\(|\bcase\s|\bdefault\s*:/.test(body)) {
+  if (hasUnsafeFixtureLoopBranch(source.slice(0, start + braceIndex + 1), body)) {
     return false;
   }
   const statements = body.split(/[;\n]/).map((statement) => statement.trim()).filter((statement) => statement.length > 0 && statement !== "}" && !/^(?:break|continue)\b/.test(statement));
   const lastStatement = statements[statements.length - 1] ?? "";
   return /^(?:assert\.[a-z]+\s*\(|expect\s*\(|[a-z][A-Za-z0-9_]*\.should(?:Be|Equal)?\s*\()/i.test(lastStatement);
+}
+
+// Fixture sweeps may carry invariant guards such as `if (expectedIds.has(case.id))`; other branches
+// still opt out because they can hide case-specific expectations inside the loop.
+function hasUnsafeFixtureLoopBranch(sourceBeforeLoopBody: string, body: string): boolean {
+  if (/\bswitch\s*\(|\bcase\s|\bdefault\s*:/.test(body)) {
+    return true;
+  }
+  for (const match of body.matchAll(/\bif\b/g)) {
+    const start = match.index ?? 0;
+    const segment = controlFlowSegment(body, start);
+    const sourceBeforeCondition = `${sourceBeforeLoopBody}${body.slice(0, start)}`;
+    if (hasAssertion(segment) && !isInvariantAssertionConditional(sourceBeforeCondition, sourceBeforeCondition.length, segment)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Inline fixture tables cover `for (... of [...])` and `Object.entries({ ... })`. Const-bound
+// tables cover the common contract-test shape where the named case table is declared immediately
+// before the sweep for readability.
+function hasFixtureIterable(source: string, start: number, header: string): boolean {
+  if (/\bof\s*\[/.test(header) || /\bof\s+Object\.(?:entries|keys|values)\s*\(/.test(header)) {
+    return true;
+  }
+  const iterableName = header.match(/\bof\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/)?.[1] ?? "";
+  return iterableName !== "" && (isFixtureConstantIterableName(iterableName) || hasConstBoundFixtureIterable(source.slice(0, start), iterableName));
+}
+
+// Accepts const-bound fixture loops only when the iterable name and initializer both look like a
+// deterministic case table or discovered fixture set.
+function hasConstBoundFixtureIterable(sourceBeforeLoop: string, iterableName: string): boolean {
+  if (!isFixtureIterableName(iterableName)) {
+    return false;
+  }
+  const assignment = sourceBeforeLoop.match(new RegExp(`\\bconst\\s+${escapeRegex(iterableName)}\\s*=\\s*([\\s\\S]*?);\\s*$`));
+  const initializer = assignment?.[1]?.trim() ?? "";
+  return initializer.startsWith("[") || /^Object\.(?:entries|keys|values)\s*\(/.test(initializer) || isFixtureDiscoveryCall(initializer);
+}
+
+// Limits const-bound loop suppression to table/sweep vocabulary rather than arbitrary arrays.
+function isFixtureIterableName(name: string): boolean {
+  return /(?:agents|cases|checks|entries|examples|fixtures|files|ids|paths|records|scenarios|scores|snapshots)$/i.test(name);
+}
+
+// UPPER_CASE fixture constants such as HARNESS_CHECKS are named case tables even when imported.
+function isFixtureConstantIterableName(name: string): boolean {
+  return /^[A-Z0-9_]+$/.test(name) && isFixtureIterableName(name);
+}
+
+// Recognises local fixture discovery calls used by contract sweeps without accepting unknown calls.
+function isFixtureDiscoveryCall(initializer: string): boolean {
+  return /\b(?:glob|globSync|readdir|readdirSync|discover[A-Za-z0-9_$]*|find[A-Za-z0-9_$]*|list[A-Za-z0-9_$]*)\s*\(/.test(initializer);
 }
 
 // Integration, contract, smoke, and performance tests naturally need more environment setup than
@@ -203,11 +259,26 @@ function controlFlowContainsAssertion(source: string, pattern: RegExp): boolean 
   for (const match of source.matchAll(pattern)) {
     const start = match.index ?? 0;
     const segment = controlFlowSegment(source, start);
-    if (hasAssertion(segment)) {
+    if (hasAssertion(segment) && !isInvariantAssertionConditional(source, start, segment)) {
       return true;
     }
   }
   return false;
+}
+
+// Accepts guard conditionals whose assertion proves a shared invariant rather than branch policy.
+function isInvariantAssertionConditional(source: string, start: number, segment: string): boolean {
+  const condition = segment.slice(0, Math.max(0, segment.indexOf("{"))).trim();
+  return isFixtureMembershipGuard(source.slice(0, start), condition);
+}
+
+// Membership guards over const-bound fixtures keep invariant sweeps readable.
+function isFixtureMembershipGuard(sourceBeforeCondition: string, condition: string): boolean {
+  const guardTarget = condition.match(/\b([A-Za-z_$][A-Za-z0-9_$]*)\.(?:has|includes)\s*\(/)?.[1] ?? "";
+  if (!guardTarget) {
+    return false;
+  }
+  return new RegExp(`\\bconst\\s+${escapeRegex(guardTarget)}\\s*=\\s*(?:new\\s+Set\\s*\\(|\\[)`).test(sourceBeforeCondition);
 }
 
 // Captures the smallest control-flow segment so assertion detection does not scan the whole test.
@@ -313,29 +384,49 @@ function isNoThrowOnlyTest(source: string): boolean {
 }
 
 // Pulls every numeric expected value out of `expect(...).toBe(n)` and `assert.equal(actual, n)`
-// shapes. `-1`, `0`, `1` are excluded because they're universally idiomatic - the intent is to
-// avoid noise on neutral values and surface only literals whose meaning a maintainer must look up.
+// shapes. Small cardinalities and length/count matchers are excluded because the literal often is
+// the test contract; larger opaque values still surface for naming or rationale.
 function magicNumberAssertions(source: string): Array<{ value: number }> {
   return MAGIC_NUMBER_ASSERTION_PATTERNS.flatMap((candidate) => magicNumberAssertionMatches(source, candidate));
 }
 
 const MAGIC_NUMBER_ASSERTION_PATTERNS: MagicNumberAssertionPattern[] = [
-  { pattern: /\bexpect\s*\(\s*([^)]+?)\s*\)\s*\.\s*to(?:Be|Equal|HaveLength|HaveCount)\s*\(\s*(-?\d+(?:\.\d+)?)\s*\)/g, expressionIndex: 1, valueIndex: 2 },
+  { pattern: /\bexpect\s*\(\s*([^)]+?)\s*\)\s*\.\s*(to(?:Be|Equal|HaveLength|HaveCount))\s*\(\s*(-?\d+(?:\.\d+)?)\s*\)/g, expressionIndex: 1, matcherIndex: 2, valueIndex: 3 },
   { pattern: /\bassert\.(?:equal|strictEqual|deepEqual)\s*\(\s*([^,\n]+?)\s*,\s*(-?\d+(?:\.\d+)?)(?:\s*,|\s*\))/g, expressionIndex: 1, valueIndex: 2 },
 ];
 
 // Extracts reportable numeric literals for one assertion grammar while keeping HTTP statuses quiet.
 function magicNumberAssertionMatches(source: string, candidate: MagicNumberAssertionPattern): Array<{ value: number }> {
-  const ignored = new Set([-1, 0, 1]);
   const results: Array<{ value: number }> = [];
   for (const match of source.matchAll(candidate.pattern)) {
     const expression = match[candidate.expressionIndex] ?? "";
+    const matcher = candidate.matcherIndex === undefined ? "" : match[candidate.matcherIndex] ?? "";
     const expectedNumber = Number(match[candidate.valueIndex] ?? "0");
-    if (!ignored.has(expectedNumber) && !isHttpStatusAssertion(expression, expectedNumber)) {
+    if (!isIgnoredMagicNumberAssertion(expression, matcher, expectedNumber)) {
       results.push({ value: expectedNumber });
     }
   }
   return results;
+}
+
+// Centralises the rule's non-findings so cardinal, count, and HTTP-status exemptions stay aligned.
+function isIgnoredMagicNumberAssertion(expression: string, matcher: string, expectedNumber: number): boolean {
+  return isSmallCardinal(expectedNumber) || isLengthOrCountMatcher(matcher) || isHttpStatusAssertion(expression, expectedNumber);
+}
+
+// Small integer cardinals usually express the expected case count directly.
+function isSmallCardinal(cardinal: number): boolean {
+  return Number.isInteger(cardinal) && cardinal >= -1 && cardinal <= 3;
+}
+
+// Length/count matchers already name the measurement, so the numeric literal is the assertion.
+function isLengthOrCountMatcher(matcher: string): boolean {
+  return matcher === "toHaveLength" || matcher === "toHaveCount";
+}
+
+// Contract-named tests may assert the documented number directly; the name supplies the rationale.
+function isConstantContractTestName(name: string): boolean {
+  return /\b(?:constant|threshold|limit|budget|default|contract)\b/i.test(name);
 }
 
 // HTTP response status codes are intentionally numeric at assertion sites; naming every 200/404

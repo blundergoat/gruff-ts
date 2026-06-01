@@ -1,8 +1,12 @@
 # Architecture
 
+## Intent
+
+gruff-ts governs AI-generated code. Its reason for existing is the coding-agent hook: when an agent writes a change, gruff forces output a human who did not write it can sign off on - legible enough to verify by reading, secure where the reviewer's eye slips, and tested for real behaviour rather than padded with low-signal ceremony. The 11 pillars are means to that end: complexity, size, naming, and documentation serve verifiability; security and sensitive-data serve safety where review is weakest; test-quality serves honest tests over coverage theatre. Everything below - modules, schemas, determinism - is the machinery that makes those findings stable enough to gate an agent on. The hook is diff-scoped by design: an agent runs gruff on only the code it changed (`--diff` / `--since <ref>` / `--changed-ranges`, with `--changed-scope symbol|hunk`), so it fixes findings in its own change and a clean diff is never blocked by pre-existing findings elsewhere (see `docs/agent-hook.md`). See `docs/philosophy.md` for the product-level framing.
+
 ## System Overview
 
-`gruff-ts` is a dependency-light Node.js/ESM CLI that statically analyses TypeScript/JavaScript projects and common config/text assets, then emits findings, reports, baselines, SARIF, and rule catalogue metadata. The 0.2.0 release exposes 120 rules across 11 public pillars. The runtime is split across focused modules under `src/`, with `src/cli.ts` (19 lines) as a thin shell that wires `analyse` from `src/analyser.ts` into the commander program built by `src/cli-program.ts`. The dependency surface stays minimal - `commander` + `tsx` only - and baselines stay deterministic byte-stable JSON.
+`gruff-ts` is a dependency-light Node.js/ESM CLI that statically analyses TypeScript/JavaScript projects and common config/text assets, then emits findings, reports, baselines, SARIF, and rule catalogue metadata. The 0.3.0 release exposes 119 rules across 11 public pillars. The runtime is split across focused modules under `src/`, with `src/cli.ts` (19 lines) as a thin shell that wires `analyse` from `src/analyser.ts` into the commander program built by `src/cli-program.ts`. The dependency surface stays minimal - `commander` + `tsx` only - and baselines stay deterministic byte-stable JSON.
 
 Seven primary command surfaces, registered in `src/cli-program.ts`:`buildProgram`:
 
@@ -24,7 +28,7 @@ Seven primary command surfaces, registered in `src/cli-program.ts`:`buildProgram
 4. `src/project-rules.ts`:`buildProjectIndex` plus `analyseArchitectureRules` and `analyseTestAdequacyRules` build a deterministic index from already-read discovered files for cross-file rules: relative import depth, simple cycles, large-module concentration, missing-nearby-tests.
 5. `src/blocks.ts`:`functionBlocks` is a regex-based lexer over four function-shape patterns; `src/analyser.ts`:`analyseBlocks` applies size/complexity/naming/doc rules per block via `src/blocks.ts`:`analyseBlockRules`, with parameter-naming fanout in `src/analyser.ts`:`pushParameterNamingFindings` (delegates to `src/naming-pushers.ts`).
 6. **Per-file declared-identifier inventory (M37):** `src/class-rules.ts`:`collectDeclaredIdentifiers` builds one inventory per file from declarations + `FunctionBlock.params` + interface fields; `analyseInconsistentCasing` and `analyseAcronymCase` consume the same inventory (no second pass).
-7. `src/report-renderers.ts`:`renderReport` switches on `OutputFormat`; severity-to-exit mapping lives in `src/cli-program.ts`:`exitFor` (2 if any diagnostic, 1 if `--fail-on` tripped, else 0).
+7. `src/report-renderers.ts`:`renderReport` switches on `OutputFormat`; severity-to-exit mapping lives in `src/scoring.ts`:`exitFor` (2 if any diagnostic, 1 if `--fail-on` tripped, else 0).
 
 ## Trust Boundaries
 

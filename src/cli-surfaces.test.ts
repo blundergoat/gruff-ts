@@ -8,7 +8,7 @@ import test from "node:test";
 import { analyse, renderReport, ruleDescriptors } from "./cli.ts";
 import { VERSION } from "./constants.ts";
 import type { AnalysisReport } from "./cli.ts";
-import { analyseFixture, fetchText, REPO_ROOT, withDashboard } from "./test-fixtures.ts";
+import { analyseFixture, fetchText, REPO_ROOT, URL_CREDENTIAL_FIXTURE_VALUE, withDashboard } from "./test-fixtures.ts";
 
 const VERSION_PATTERN = VERSION.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -105,7 +105,7 @@ function assertRuleListTextOutput(): boolean {
   const text = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
   assert.match(text, new RegExp(`gruff-ts ${VERSION_PATTERN} rules \\(\\d+\\)`));
   assert.match(text, /security\.eval-call \| security \| error \| high \|/);
-  assert.match(text, /complexity\.npath \| complexity \| warning \| medium \| .*threshold: 20/);
+  assert.match(text, /complexity\.cyclomatic \| complexity \| warning \| high \| .*threshold: 15/);
   return true;
 }
 
@@ -159,11 +159,15 @@ test("console globals suppress normal output and completion emits a script", () 
 
   const completion = execFileSync("./bin/gruff-ts", ["completion"], { encoding: "utf8" });
   assert.match(completion, /complete -F _gruff_ts_completion gruff-ts/);
-  assert.match(completion, /commands="analyse completion dashboard init list list-rules report summary"/);
+  assert.match(completion, /commands="analyse completion dashboard init list list-profiles list-rules report summary"/);
   assert.match(completion, /text json html markdown github hotspot sarif/);
 
   const analyseHelp = execFileSync("./bin/gruff-ts", ["analyse", "--help"], { encoding: "utf8" });
   assert.match(analyseHelp, /sarif/);
+  assert.match(analyseHelp, /--changed-ranges <ranges>/);
+  assert.match(analyseHelp, /--since <ref>/);
+  assert.match(analyseHelp, /--changed-scope <scope>/);
+  assert.match(analyseHelp, /--profile <spec>/);
 });
 
 test("summary CLI prints compact scan digest without per-finding spam", () => {
@@ -245,6 +249,7 @@ test("json report uses schema version", () => {
     format: "json",
     failOn: "none",
     shouldIncludeIgnored: false,
+    changedScope: "symbol",
     shouldSkipBaseline: true,
   });
   const rendered = renderReport(report, "json");
@@ -259,7 +264,7 @@ const SARIF_FIXTURE_REPORT: AnalysisReport = {
   tool: { name: "gruff-ts", version: "0.1.0-test" },
   run: { projectRoot: "/tmp/project", format: "sarif", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 1, warning: 1, error: 1, total: 3 },
-  paths: { analysedFiles: 1, ignoredPaths: [], missingPaths: [] },
+  paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
   findings: [
     { ruleId: "security.eval-call", message: "Avoid eval().", filePath: "./src\\bad.ts", line: 7, endLine: 10, column: 3, severity: "error", pillar: "security", secondaryPillars: ["sensitive-data"], tier: "v0.1", confidence: "high", symbol: "run", remediation: "Use a dispatch table.", metadata: { target: "eval" }, fingerprint: "abc123" },
@@ -443,7 +448,7 @@ const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
   tool: { name: "gruff-ts", version: "0.1.0-test<script>" },
   run: { projectRoot: "/tmp/project", format: "html", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 0, warning: 1, error: 1, total: 2 },
-  paths: { analysedFiles: 1, ignoredPaths: [], missingPaths: [] },
+  paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
   findings: [
     { ruleId: "docs.<script>", message: "Message with <script>alert(1)</script>", filePath: "src/<bad>.ts", line: 7, severity: "warning", pillar: "documentation", secondaryPillars: [], tier: "v0.1", confidence: "high", symbol: "badSymbol", metadata: {}, fingerprint: "abc123" },
@@ -464,7 +469,7 @@ test("html report uses dashboard parity anchors and escapes values", () => {
     assert.match(rendered, new RegExp(`class="${anchor}`));
   });
   assert.match(rendered, /gruff-ts/);
-  assert.match(rendered, /ts\/js code quality/);
+  assert.match(rendered, /inspected for human sign-off/);
   assert.match(rendered, /src\/&lt;bad&gt;\.ts/);
   assert.match(rendered, /docs\.&lt;script&gt;/);
   assert.match(rendered, /Message with &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
@@ -691,6 +696,22 @@ test("dashboard scan returns report shell with escaped dashboard context", async
       assert.match(scanHtml, /sample\.ts/);
       assert.match(scanHtml, /&lt;bad&gt;/);
       assert.equal(scanHtml.includes("<bad>"), false);
+    });
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("dashboard scan redacts sensitive findings without leaking raw secrets", async () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-dashboard-secret-"));
+  try {
+    writeFileSync(join(projectRoot, ".env"), `REMOTE_CONTROL_URL=${URL_CREDENTIAL_FIXTURE_VALUE}\n`);
+    await withDashboard(projectRoot, async (baseUrl) => {
+      const scanHtml = await fetchText(`${baseUrl}/scan?projectRoot=${encodeURIComponent(projectRoot)}&path=.env`);
+      assert.match(scanHtml, /sensitive-data\.database-url-password/);
+      assert.match(scanHtml, /redacted/);
+      assert.equal(scanHtml.includes(URL_CREDENTIAL_FIXTURE_VALUE), false);
+      assert.equal(scanHtml.includes("clientSecret42"), false);
     });
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });

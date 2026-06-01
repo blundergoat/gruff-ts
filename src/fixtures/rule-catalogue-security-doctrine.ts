@@ -9,6 +9,8 @@ export const SECURITY_EXPANSION_RISKY_RULE_IDS = [
   "security.open-redirect-candidate",
   "security.path-traversal-candidate",
   "security.ssrf-candidate",
+  "security.unsafe-deserialization",
+  "security.xxe-candidate",
 ] as const;
 
 export const SECURITY_EXPANSION_RULE_QUALITY_DOCTRINE = [
@@ -128,5 +130,31 @@ export const SECURITY_EXPANSION_RULE_QUALITY_DOCTRINE = [
     missingInvalidFixture: "external network destination remains reported when fixed URL requests are nearby",
     falsePositiveEscapeHatch: "require an external-input token inside the same network request call segment",
     fingerprintStability: "anchor to the request call line with source and sink kinds only in metadata",
+  },
+  {
+    ruleId: "security.unsafe-deserialization",
+    signalSource: "syntax-only AST flow scan for external input reaching unsafe deserialization and dynamic code-loading sinks",
+    expectedPillar: "security",
+    expectedSeverity: "warning",
+    expectedConfidence: "medium",
+    fixtureCategories: ["valid", "invalid", "noisy-valid", "missing-invalid"],
+    invalidFixture: "request body, argv, or environment input passed to unserialize, yaml.load, vm execution, eval, or Function",
+    noisyValidFixture: "safe schema-bound YAML loads, fixed literals, and prose strings with deserialization examples",
+    missingInvalidFixture: "external serialized data remains reported when safe YAML and fixed literal loads are nearby",
+    falsePositiveEscapeHatch: "require local external-input flow and accept explicit safe YAML schema evidence",
+    fingerprintStability: "anchor to the unsafe sink line with source and sink kinds only in metadata",
+  },
+  {
+    ruleId: "security.xxe-candidate",
+    signalSource: "syntax-only AST flow scan for external XML reaching parsers with entity expansion enabled",
+    expectedPillar: "security",
+    expectedSeverity: "warning",
+    expectedConfidence: "medium",
+    fixtureCategories: ["valid", "invalid", "noisy-valid", "missing-invalid"],
+    invalidFixture: "request XML passed to libxmljs or fast-xml-parser calls with entity expansion enabled",
+    noisyValidFixture: "XML parser calls with entity expansion disabled and prose strings with XML examples",
+    missingInvalidFixture: "entity-expanding XML parse remains reported when non-expanding parser calls are nearby",
+    falsePositiveEscapeHatch: "require both external XML flow and local parser options that enable entity expansion",
+    fingerprintStability: "anchor to the XML parse line with source and sink kinds only in metadata",
   },
 ] as const;

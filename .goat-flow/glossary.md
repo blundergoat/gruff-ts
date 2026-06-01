@@ -102,7 +102,7 @@ Default scans are local source inspections. `gruff-ts` parses supported files an
 
 ### Supported File Type
 
-`gruff-ts` scans TypeScript, JavaScript, CSS, JSON, YAML, TOML, INI, XML, and `.env*` files when they are discoverable and not ignored.
+`gruff-ts` scans TypeScript, JavaScript, JSON, YAML, TOML, INI, XML, and `.env*` files when they are discoverable and not ignored.
 
 ### Function Block
 

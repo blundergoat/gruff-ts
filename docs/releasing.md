@@ -1,7 +1,7 @@
 # Releasing
 
-This checklist prepares public `@blundergoat/gruff-ts@0.1.x` patch releases.
-Current release line: `0.2.0`.
+This checklist prepares public `@blundergoat/gruff-ts@0.3.x` patch releases.
+Current release line: `0.3.0`.
 
 ## Bump The Version
 
@@ -14,7 +14,7 @@ release version changes.
 
 ```bash
 scripts/bump-version.sh --check
-scripts/bump-version.sh 0.1.3
+scripts/bump-version.sh 0.3.1
 scripts/bump-version.sh --check
 ```
 
@@ -27,7 +27,7 @@ update `CHANGELOG.md` and run `npm run check`.
 - [ ] `CHANGELOG.md` has an entry for the new version with today's date.
 - [ ] `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, and docs under `docs/`
       reflect any user-visible changes.
-- [ ] `.goat-flow/tasks/0.1/` has no unresolved release blockers beyond
+- [ ] `.goat-flow/tasks/0.3.0/` has no unresolved release blockers beyond
       explicitly accepted `human-verification-pending` milestones.
 - [ ] `LICENSE` is present and `package.json` `license` field matches.
 - [ ] `npm run check` passes.
@@ -102,5 +102,5 @@ prompts before publishing.
 - [ ] Run `gruff-ts summary . --fail-on=none`.
 - [ ] Run `gruff-ts list-rules`.
 - [ ] Verify `README.md` install instructions from a clean checkout.
-- [ ] Tag the release in git (`git tag v0.2.0 && git push --tags`) and create
+- [ ] Tag the release in git (`git tag v0.3.0 && git push --tags`) and create
       or update public release notes from `CHANGELOG.md`.

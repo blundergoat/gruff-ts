@@ -7,7 +7,7 @@ import { type ExportedDeclaration, exportedDeclarations, pushMissingPublicDocFin
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { fileBaseName, finding, normalizedIdentifier } from "./findings-helpers.ts";
-import { pushBooleanPrefixAt, pushNegativeBooleanAt } from "./naming-pushers.ts";
+import { pushBooleanPrefixAt, pushNegativeBooleanAt, type NamingSurface } from "./naming-pushers.ts";
 import { byteLine } from "./text-scans.ts";
 import type { Config, Finding } from "./types.ts";
 
@@ -16,6 +16,7 @@ import type { Config, Finding } from "./types.ts";
 interface DeclaredIdentifier {
   name: string;
   line: number;
+  surface: NamingSurface;
 }
 
 // Aggregates `const`/`let`/`var` declarations, callable parameters, and interface fields into a
@@ -23,24 +24,24 @@ interface DeclaredIdentifier {
 export function collectDeclaredIdentifiers(source: string, codeSource: string, blocks: FunctionBlock[]): DeclaredIdentifier[] {
   const inventory: DeclaredIdentifier[] = [];
   const seen = new Set<string>();
-  const push = (name: string, line: number): void => {
+  const push = (name: string, line: number, surface: NamingSurface): void => {
     if (!name) return;
-    const key = `${name}@${line}`;
+    const key = `${name}@${line}@${surface}`;
     if (seen.has(key)) return;
     seen.add(key);
-    inventory.push({ name, line });
+    inventory.push({ name, line, surface });
   };
 
   for (const match of codeSource.matchAll(/\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
-    push(match[1] ?? "", byteLine(source, match.index ?? 0));
+    push(match[1] ?? "", byteLine(source, match.index ?? 0), "declaration");
   }
   for (const block of blocks) {
     for (const parameter of parameterNames(block.params)) {
-      push(parameter.name, block.declarationLine);
+      push(parameter.name, block.declarationLine, "parameter");
     }
   }
   for (const fieldMatch of collectInterfaceFieldDeclarations(source, codeSource)) {
-    push(fieldMatch.name, fieldMatch.line);
+    push(fieldMatch.name, fieldMatch.line, "interface-field");
   }
   return inventory;
 }
@@ -52,23 +53,36 @@ function collectInterfaceFieldDeclarations(source: string, codeSource: string): 
   const out: DeclaredIdentifier[] = [];
   for (const { lineIndex, sourceLine } of walkInterfaceBodyLines(source, codeSource)) {
     const name = sourceLine.match(fieldRegex)?.[1] ?? "";
-    if (name) out.push({ name, line: lineIndex + 1 });
+    if (name) out.push({ name, line: lineIndex + 1, surface: "interface-field" });
   }
   return out;
 }
 
-// Strips separators and digits so `userId`, `user_id`, and `userID` all collapse to `userid`.
+// Strips separators only so `userId`, `user_id`, and `userID` collapse, while `adr013` and
+// `adr020` remain distinct domain tokens instead of fake casing variants.
 // Two names sharing this key but differing in original form are the casing-drift signal.
 function casingCanonicalKey(name: string): string {
-  return name.toLowerCase().replace(/[_\-0-9]/g, "");
+  return name.toLowerCase().replace(/[_\-]/g, "");
 }
 
 /*
- * Groups identifiers by their canonical key and reports the second-seen variant whenever two or
- * more spellings exist. The "second variant" anchor keeps the stable fingerprint on the diverging
- * identifier rather than the original - useful when the original form is the project convention.
+ * Groups identifiers by canonical key, then filters out boundary surfaces before reporting. The
+ * split helper flow is intentional: the rule must preserve same-scope drift signal while refusing
+ * to command rewrites of constants, DTO fields, or intentionally-unused `_` names. Error behavior:
+ * never throws; it reports drift by appending findings only.
  */
 export function analyseInconsistentCasing(file: SourceFile, inventory: DeclaredIdentifier[], findings: Finding[]): void {
+  for (const entries of declaredIdentifierGroups(inventory).values()) {
+    const candidate = inconsistentCasingCandidate(entries);
+    if (!candidate) {
+      continue;
+    }
+    findings.push(inconsistentCasingFinding(file, candidate));
+  }
+}
+
+// Builds canonical-key groups once so the reporting pass can stay focused on rule semantics.
+function declaredIdentifierGroups(inventory: DeclaredIdentifier[]): Map<string, DeclaredIdentifier[]> {
   const groups = new Map<string, DeclaredIdentifier[]>();
   for (const entry of inventory) {
     const key = casingCanonicalKey(entry.name);
@@ -77,27 +91,60 @@ export function analyseInconsistentCasing(file: SourceFile, inventory: DeclaredI
     list.push(entry);
     groups.set(key, list);
   }
-  for (const [, entries] of groups) {
-    const surfaces = new Set(entries.map((entry) => entry.name));
-    if (surfaces.size < 2) continue;
-    const sorted = [...entries].sort((a, b) => a.line - b.line);
-    const second = sorted.find((entry, index) => index > 0 && entry.name !== sorted[0]?.name);
-    if (!second) continue;
-    findings.push(
-      makeFinding({
-        ruleId: "naming.inconsistent-casing",
-        message: `Identifier \`${second.name}\` shares a canonical key with \`${sorted[0]?.name}\` in the same file.`,
-        filePath: file.displayPath,
-        line: second.line,
-        severity: "advisory",
-        pillar: "naming",
-        confidence: "medium",
-        symbol: second.name,
-        remediation: "Choose one form and use it consistently within the file.",
-        metadata: { variants: [...surfaces].sort() },
-      }),
-    );
+  return groups;
+}
+
+// Invariant: returns the exact variant pair to report after boundary-aware suppression has run.
+function inconsistentCasingCandidate(entries: DeclaredIdentifier[]): { first: DeclaredIdentifier; second: DeclaredIdentifier; surfaces: string[] } | undefined {
+  const reportableEntries = casingReportableEntries(entries);
+  const sameSurfaceEntries = sameCasingSurfaceEntries(reportableEntries);
+  const surfaces = [...new Set(sameSurfaceEntries.map((entry) => entry.name))].sort();
+  if (surfaces.length < 2) {
+    return undefined;
   }
+  const sorted = [...sameSurfaceEntries].sort((a, b) => a.line - b.line);
+  const first = sorted[0];
+  const second = sorted.find((entry, index) => index > 0 && entry.name !== first?.name);
+  return first && second ? { first, second, surfaces } : undefined;
+}
+
+// Builds the stable finding after candidate selection so fingerprint shape stays in one place.
+function inconsistentCasingFinding(file: SourceFile, candidate: { first: DeclaredIdentifier; second: DeclaredIdentifier; surfaces: string[] }): Finding {
+  return makeFinding({
+    ruleId: "naming.inconsistent-casing",
+    message: `Identifier \`${candidate.second.name}\` shares a canonical key with \`${candidate.first.name}\` in the same file.`,
+    filePath: file.displayPath,
+    line: candidate.second.line,
+    severity: "advisory",
+    pillar: "naming",
+    confidence: "medium",
+    symbol: candidate.second.name,
+    remediation: "Choose one form and use it consistently within the file.",
+    metadata: { variants: candidate.surfaces },
+  });
+}
+
+// `_event` is the standard intentionally-unused spelling; comparing it with `event` would tell an
+// agent to remove useful boundary information rather than fix casing drift.
+function casingReportableEntries(entries: DeclaredIdentifier[]): DeclaredIdentifier[] {
+  return entries.filter((entry) => !entry.name.startsWith("_"));
+}
+
+// Contract fields and SCREAMING_SNAKE constants are boundary surfaces; remove only those entries so
+// they do not mask real local drift elsewhere in the same canonical group.
+function sameCasingSurfaceEntries(entries: DeclaredIdentifier[]): DeclaredIdentifier[] {
+  const hasLocalSurface = entries.some((entry) => entry.surface !== "interface-field" && !isScreamingConstant(entry.name));
+  return entries.filter((entry) => {
+    if (hasLocalSurface && entry.surface === "interface-field") {
+      return false;
+    }
+    return !(hasLocalSurface && isScreamingConstant(entry.name));
+  });
+}
+
+// Recognises constant-style identifiers without stripping digits, so `V110` remains one token.
+function isScreamingConstant(name: string): boolean {
+  return /^[A-Z][A-Z0-9_]*$/.test(name) && /[A-Z]/.test(name);
 }
 
 // Splits camelCase, PascalCase, snake_case, and kebab-case into tokens. The regex preserves

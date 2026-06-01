@@ -20,6 +20,16 @@ Use `json` for automation. JSON reports use `gruff.analysis.v2`.
 ./bin/gruff-ts analyse src --format=json --fail-on=none > gruff-ts.json
 ```
 
+`paths.skipped` (added in 0.3.0) lists every excluded path with its ignore
+`source` (`config` / `gitignore` / `default`) and the matching `pattern`;
+`paths.ignoredPaths` remains as the back-compatible `string[]` of the same paths.
+The field is additive, so existing `gruff.analysis.v2` consumers are unaffected.
+
+Score math clusters correlated `complexity.cognitive`,
+`complexity.cyclomatic`, and `size.function-length` findings once per function
+symbol. The detailed `findings` array still lists each rule finding; only pillar
+penalties and offender scores are de-duplicated.
+
 ## HTML
 
 Use `html` for archived human review or dashboard scan output:

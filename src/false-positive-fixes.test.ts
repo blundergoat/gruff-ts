@@ -715,6 +715,7 @@ test("FP-#29 test-quality.loop-in-test still flags conditional inside literal-ar
 `);
   const findings = report.findings.filter((entry) => entry.ruleId === "test-quality.loop-in-test");
   assert.equal(findings.length, 1);
+  assert.equal(report.findings.some((entry) => entry.ruleId === "test-quality.conditional-logic"), true);
 });
 
 test("FP-#20 waste.swallowed-catch still flags /* silent */ and empty catch", () => {

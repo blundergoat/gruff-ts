@@ -11,8 +11,10 @@ import type { AnalysisReport } from "./cli.ts";
 import {
   analyseFixture,
   analyseProject,
+  evalFindingFiles,
   gitAvailable,
   HIGH_ENTROPY_FIXTURE_VALUE,
+  REPO_ROOT,
   TS_IGNORE_DIRECTIVE,
   writeFixtureFiles,
 } from "./test-fixtures.ts";
@@ -73,6 +75,168 @@ test("working-tree diff scans staged and untracked files", () => {
   );
 });
 
+test("changed ranges keep findings from a newly edited method only", () => {
+  const report = analyseProject(
+    {
+      "src/example.ts": `function stale(userInput: string): unknown {
+  return eval(userInput);
+}
+
+function changed(userInput: string): unknown {
+  return eval(userInput);
+}
+`,
+    },
+    { paths: ["src/example.ts"], changedRanges: "6-6" },
+  );
+
+  assert.deepEqual(evalFindingLines(report), [6]);
+  assert.equal(report.suppressedCount !== undefined && report.suppressedCount > 0, true);
+});
+
+test("changed ranges include signature findings when the method body changed", () => {
+  const report = analyseProject(
+    {
+      "src/example.ts": `function stable(userInput: string): unknown {
+  return eval(userInput);
+}
+
+function changed(unusedValue: string): void {
+  return;
+}
+`,
+    },
+    { paths: ["src/example.ts"], changedRanges: "6-6" },
+  );
+
+  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unused-parameter" && finding.symbol === "changed"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.line === 2), false);
+});
+
+test("hunk changed scope excludes unchanged signature findings", () => {
+  const report = analyseProject(
+    {
+      "src/example.ts": `function changed(unusedValue: string): void {
+  return;
+}
+`,
+    },
+    { paths: ["src/example.ts"], changedRanges: "2-2", changedScope: "hunk" },
+  );
+
+  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unused-parameter"), false);
+  assert.equal(report.suppressedCount !== undefined && report.suppressedCount > 0, true);
+});
+
+test("changed ranges suppress pre-existing findings outside the changed region", () => {
+  const report = analyseProject(
+    {
+      "src/example.ts": `function stale(userInput: string): unknown {
+  return eval(userInput);
+}
+
+const editedValue = 1;
+`,
+    },
+    { paths: ["src/example.ts"], changedRanges: "5-5" },
+  );
+
+  assert.deepEqual(report.findings.filter((finding) => finding.ruleId === "security.eval-call"), []);
+  assert.equal(report.suppressedCount !== undefined && report.suppressedCount > 0, true);
+});
+
+test("diff-scoped analysis keeps central test context for project rules", () => {
+  const report = analyseProject(CENTRAL_TEST_PROJECT, { diff: "-", diffPatch: CENTRAL_TEST_DIFF_PATCH });
+
+  assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.missing-nearby-test"), false);
+});
+
+test("changed-region filtering keeps file-wide findings for any touched hunk in the file", () => {
+  const report = analyseProject(FILE_WIDE_PROJECT, {
+    config: { rules: { "size.file-length": { threshold: 3 } } },
+    diff: "-",
+    diffPatch: FILE_WIDE_DIFF_PATCH,
+  });
+
+  assert.equal(report.findings.some((finding) => finding.ruleId === "size.file-length"), true);
+});
+
+test("changed-region symbol scope includes export default class bodies", () => {
+  const report = analyseProject(
+    {
+      "src/service.ts": `export default class Service {
+  run(): string {
+    return "ok";
+  }
+}
+`,
+    },
+    { paths: ["src/service.ts"], changedRanges: "3-3" },
+  );
+
+  assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.missing-nearby-test" && finding.symbol === "Service"), true);
+});
+
+test("working-tree diff treats untracked files as whole-file changed", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  withCommittedGitFixture(
+    "gruff-ts-untracked-region-",
+    WORKING_TREE_DIFF_BASE_FIXTURE,
+    (projectDir) => {
+      writeFixtureFiles(projectDir, {
+        "untracked.ts": `function untracked(userInput: string): unknown {
+  return eval(userInput);
+}
+`,
+      });
+
+      const report = analyse({ ...baselineRoundTripOptions(), diff: "working-tree" });
+      assert.deepEqual([...evalFindingFiles(report)], ["untracked.ts"]);
+      assert.equal(report.suppressedCount !== undefined && report.suppressedCount > 0, true);
+    },
+  );
+});
+
+test("base-ref diff does not include unrelated untracked files", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  withCommittedGitFixture(
+    "gruff-ts-base-ref-untracked-",
+    WORKING_TREE_DIFF_BASE_FIXTURE,
+    (projectDir) => {
+      writeFixtureFiles(projectDir, {
+        "untracked.ts": `function untracked(userInput: string): unknown {
+  return eval(userInput);
+}
+`,
+      });
+
+      const report = analyse({ ...baselineRoundTripOptions(), diff: "HEAD" });
+      assert.deepEqual([...evalFindingFiles(report)], []);
+    },
+  );
+});
+
+test("CLI changed-region analysis exits zero with fail-on none", () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "gruff-ts-changed-cli-"));
+  try {
+    writeFixtureFiles(projectDir, {
+      "bad.ts": `function changed(userInput: string): unknown {
+  return eval(userInput);
+}
+`,
+    });
+    const output = execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "analyse", "--format=json", "--fail-on=none", "--no-config", "--no-baseline", "--changed-ranges", "2-2", "bad.ts"], { cwd: projectDir, encoding: "utf8" });
+    const payload = JSON.parse(output) as AnalysisReport;
+    assert.equal(payload.findings.some((finding) => finding.ruleId === "security.eval-call"), true);
+  } finally {
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
 // Fixture purpose: committed baseline file proves `--diff=working-tree` does not report unchanged
 // content once the temp git repository has an initial commit.
 const WORKING_TREE_DIFF_BASE_FIXTURE = {
@@ -94,6 +258,22 @@ const WORKING_TREE_DIFF_RISKY_FIXTURE = {
 }
 `,
 };
+
+const CENTRAL_TEST_PROJECT = {
+  "src/cli/audit/check-agent-setup.ts": 'export function checkAgentSetup(): string {\n  return "ok";\n}\n',
+  "test/unit/audit-command.test.ts": 'import assert from "node:assert/strict";\nimport { checkAgentSetup } from "../../src/cli/audit/check-agent-setup";\n\ntest("checks agent setup", () => {\n  assert.equal(checkAgentSetup(), "ok");\n});\n',
+};
+const CENTRAL_TEST_DIFF_PATCH = 'diff --git a/src/cli/audit/check-agent-setup.ts b/src/cli/audit/check-agent-setup.ts\n--- a/src/cli/audit/check-agent-setup.ts\n+++ b/src/cli/audit/check-agent-setup.ts\n@@ -1,3 +1,3 @@\n export function checkAgentSetup(): string {\n-  return "old";\n+  return "ok";\n }\n';
+const FILE_WIDE_PROJECT = { "src/long.ts": `${"const value = 1;\n".repeat(6)}export {};\n` };
+const FILE_WIDE_DIFF_PATCH = "diff --git a/src/long.ts b/src/long.ts\n--- a/src/long.ts\n+++ b/src/long.ts\n@@ -5,2 +5,2 @@\n const value = 1;\n-const previous = 1;\n+const next = 1;\n";
+
+// Stable contract: extracts line anchors for eval findings so hunk-filtering tests stay deterministic.
+function evalFindingLines(report: AnalysisReport): number[] {
+  return report.findings
+    .filter((finding) => finding.ruleId === "security.eval-call")
+    .map((finding) => finding.line ?? 0)
+    .sort((left, right) => left - right);
+}
 
 // Writes a temporary git repository, commits the initial files, and restores cwd afterwards.
 // Spawns only fixed `git` argv calls so the diff-mode regression can observe real index state.
@@ -210,6 +390,7 @@ function baselineRoundTripOptions() {
     format: "json" as const,
     failOn: "none" as const,
     shouldIncludeIgnored: false,
+    changedScope: "symbol" as const,
     shouldSkipBaseline: true,
   };
 }
@@ -543,10 +724,10 @@ function branchLightly(input: string): string {
     config: {
       rules: {
         "sensitive-data.hardcoded-env-value": { enabled: false },
-        "complexity.npath": { threshold: 3, severity: "warning" },
+        "complexity.cyclomatic": { threshold: 2, severity: "warning" },
       },
     },
   });
   assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), false);
-  assert.equal(report.findings.some((finding) => finding.ruleId === "complexity.npath"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "complexity.cyclomatic"), true);
 });

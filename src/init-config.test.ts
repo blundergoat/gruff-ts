@@ -197,7 +197,7 @@ test("gruff-ts analyse --no-interaction skips the init prompt in a config-less p
 
 // Returns the projectRoot-anchored AnalysisOptions needed to drive loadConfig in tests.
 function baseOptions(): AnalysisOptions {
-  return { paths: ["."], shouldSkipConfig: false, format: "text", failOn: "none", shouldIncludeIgnored: false, shouldSkipBaseline: true };
+  return { paths: ["."], shouldSkipConfig: false, format: "text", failOn: "none", shouldIncludeIgnored: false, changedScope: "symbol", shouldSkipBaseline: true };
 }
 
 // Baseline context used by the prompt-predicate tests; individual cases override one field at a time.

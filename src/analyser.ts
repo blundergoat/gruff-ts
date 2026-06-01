@@ -5,11 +5,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { cwd } from "node:process";
 import { basename, join } from "node:path";
 import { applyBaseline, dedupeFindings, DEFAULT_BASELINE, recordHistory, writeBaseline } from "./baseline.ts";
+import { changedRegionScope, filterChangedFindings } from "./changed-regions.ts";
 import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { changedFiles, finding } from "./findings-helpers.ts";
+import { finding } from "./findings-helpers.ts";
 import { commentRecords } from "./comment-scanner.ts";
 import { analyseArchitectureRules, analyseTestAdequacyRules, buildProjectIndex, exportedSurface, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
 import { analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks, parameterNames } from "./blocks.ts";
@@ -18,6 +19,7 @@ import { analyseDeadCode, analyseUnreachable, analyseUnusedImports } from "./dea
 import { analyseCommentQualityRules } from "./comment-rules.ts";
 import { analyseDocRules, analyseFileOverviewDoc, analyseInterfaceDocs } from "./doc-rules.ts";
 import { analyseLineRules } from "./line-rules.ts";
+import { analyseSecurityFlow } from "./security-flow-rules.ts";
 import { pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { analyseTestBlock } from "./test-block-rules.ts";
 import { analyseGithubActionsRules } from "./github-actions-rules.ts";
@@ -25,7 +27,7 @@ import { analyseProjectConfigRules } from "./project-config-rules.ts";
 import { scoreReport, summarize } from "./scoring.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
 import { maskNonCode, maskTemplateLiteralBodies, parseDiagnostics } from "./source-text.ts";
-import type { AnalysisOptions, AnalysisReport, Config, Finding, RunDiagnostic } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport, Config, Finding, RunDiagnostic, SkippedPath } from "./types.ts";
 
 /**
  * Analyse the configured paths and return the stable gruff.analysis.v2 report contract.
@@ -38,7 +40,7 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
   const config = loadConfig(projectRoot, options);
   const diagnostics: RunDiagnostic[] = [];
   const discovery = discoverSources(projectRoot, options, config);
-  filterDiffSources(discovery, options);
+  const changedScope = changedRegionScope(options);
   pushMissingPathDiagnostics(discovery.missingPaths, diagnostics);
 
   const scanned = scanDiscoveredSources(discovery.files, config, diagnostics);
@@ -47,12 +49,13 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
     ...analyseProjectIndex(scanned.projectSources, config).filter((finding) => ruleEnabled(config, finding.ruleId)),
   ]);
   const baselineResult = applyBaselineOptions(projectRoot, options, allFindings);
+  const changedResult = filterChangedFindings(baselineResult.findings, changedScope, scanned.sources);
 
   if (options.historyFile) {
-    recordHistory(projectRoot, options.historyFile, baselineResult.findings, diagnostics);
+    recordHistory(projectRoot, options.historyFile, changedResult.findings, diagnostics);
   }
 
-  return buildAnalysisReport(projectRoot, options, discovery, diagnostics, baselineResult);
+  return buildAnalysisReport(projectRoot, options, discovery, diagnostics, { ...baselineResult, findings: changedResult.findings }, changedResult.suppressedCount);
 }
 
 function buildAnalysisReport(
@@ -61,6 +64,7 @@ function buildAnalysisReport(
   discovery: DiscoverySummary,
   diagnostics: RunDiagnostic[],
   baselineResult: BaselineApplication,
+  suppressedCount?: number,
 ): AnalysisReport {
   const findings = baselineResult.findings;
   return {
@@ -76,10 +80,12 @@ function buildAnalysisReport(
     paths: {
       analysedFiles: discovery.files.length,
       ignoredPaths: discovery.ignoredPaths,
+      skipped: discovery.skipped,
       missingPaths: discovery.missingPaths,
     },
     diagnostics,
     findings,
+    ...(suppressedCount === undefined ? {} : { suppressedCount }),
     score: scoreReport(findings),
     ...(baselineResult.baseline ? { baseline: baselineResult.baseline } : {}),
   };
@@ -90,6 +96,7 @@ function buildAnalysisReport(
 interface DiscoverySummary {
   files: SourceFile[];
   ignoredPaths: string[];
+  skipped: SkippedPath[];
   missingPaths: string[];
 }
 
@@ -98,6 +105,7 @@ interface DiscoverySummary {
 interface SourceScanResult {
   findings: Finding[];
   projectSources: ProjectSource[];
+  sources: Map<string, { file: SourceFile; source: string }>;
 }
 
 /*
@@ -115,16 +123,6 @@ interface BaselineApplication {
 interface BaselineSelection {
   path: string;
   source: string;
-}
-
-// Mutates `discovery.files` in place to retain only paths that changed against the diff base.
-// Required when `--diff` is set so the scan does not waste time on unchanged files; no-op otherwise.
-function filterDiffSources(discovery: DiscoverySummary, options: AnalysisOptions): void {
-  if (!options.diff) {
-    return;
-  }
-  const changed = changedFiles(options.diff);
-  discovery.files = discovery.files.filter((file) => changed.has(file.displayPath));
 }
 
 // Emits a `missing-path` diagnostic per path that the user requested but discovery could not
@@ -147,9 +145,11 @@ function pushMissingPathDiagnostics(missingPaths: string[], diagnostics: RunDiag
 function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics: RunDiagnostic[]): SourceScanResult {
   const findings: Finding[] = [];
   const projectSources: ProjectSource[] = [];
+  const sources = new Map<string, { file: SourceFile; source: string }>();
   for (const file of files) {
     try {
       const source = readFileSync(file.absolutePath, "utf8");
+      sources.set(file.displayPath, { file, source });
       if (shouldRetainProjectSource(file, source)) {
         projectSources.push(projectSource(file, source));
       }
@@ -164,7 +164,7 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
       });
     }
   }
-  return { findings, projectSources };
+  return { findings, projectSources, sources };
 }
 
 // Retains production files for exported-surface checks, tests for central-suite import coverage,
@@ -289,18 +289,13 @@ function analyseProjectIndex(projectSources: ProjectSource[], config: Config): F
 }
 
 /*
- * Per-file text-pillar rules run before script-only rules because config, workflow, CSS, and
+ * Per-file text-pillar rules run before script-only rules because config, workflow, and
  * secret surfaces are not TypeScript. The order is a stable baseline contract: reshuffling these
  * checks changes same-line finding order for machine reports.
  */
 function analyseTextRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
   const lines = lineCount(source);
-  if (isCssPath(file.displayPath)) {
-    const stylesheetThreshold = threshold(config, "size.stylesheet-length", 1500);
-    if (lines > stylesheetThreshold) {
-      findings.push(finding({ ruleId: "size.stylesheet-length", message: `Stylesheet has ${lines} lines, above the threshold of ${stylesheetThreshold}.`, file, line: 1, severity: ruleSeverity(config, "size.stylesheet-length", "warning"), pillar: "size" }));
-    }
-  } else if (!isGeneratedLockfile(file.displayPath)) {
+  if (!isGeneratedLockfile(file.displayPath)) {
     const fileLengthThreshold = threshold(config, "size.file-length", 750);
     if (lines > fileLengthThreshold) {
       findings.push(finding({ ruleId: "size.file-length", message: `File has ${lines} lines, above the threshold of ${fileLengthThreshold}.`, file, line: 1, severity: ruleSeverity(config, "size.file-length", "warning"), pillar: "size" }));
@@ -310,12 +305,6 @@ function analyseTextRules(file: SourceFile, source: string, config: Config, find
   analyseSensitiveData(file, source, config, findings);
   analyseGithubActionsRules(file, source, findings);
   analyseProjectConfigRules(file, source, findings);
-}
-
-// CSS paths use a dedicated size rule (`size.stylesheet-length`) so stylesheets can have a
-// different threshold and message from generic source files.
-function isCssPath(displayPath: string): boolean {
-  return displayPath.toLowerCase().endsWith(".css");
 }
 
 // Counts the same logical lines as `source.split(/\r?\n/)` without allocating the full line array.
@@ -348,6 +337,7 @@ function analyseTypeScriptRules(file: SourceFile, source: string, config: Config
   analyseBlocks(file, blocks, config, findings);
   analyseUnusedImports(file, codeSource, source, findings);
   analyseLineRules(file, source, codeSource, config, findings);
+  analyseSecurityFlow(file, source, findings);
   analyseUnreachable(file, codeSource, findings);
   analyseDocRules(file, source, codeSource, findings);
   analyseInterfaceDocs(file, source, codeSource, findings);
@@ -384,7 +374,9 @@ function pushParameterNamingFindings(context: BlockRuleContext): void {
   const line = context.block.declarationLine;
   const params = parameterNames(context.block.params);
   for (const parameter of params) {
-    pushShortVariableAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
+    if (!isComparatorShortParameter(context, params, parameter.name)) {
+      pushShortVariableAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
+    }
     pushIdentifierQualityAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
     if (isBooleanParameter(parameter.raw)) {
       pushBooleanPrefixAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
@@ -394,6 +386,27 @@ function pushParameterNamingFindings(context: BlockRuleContext): void {
       pushGenericParameterAt(context.file, line, parameter.name, context.findings);
     }
   }
+}
+
+// `(a, b)` is a conventional comparator pair when the callable is explicitly shaped like sorting.
+// Keep the exemption narrow so arbitrary two-parameter helpers still need domain names.
+function isComparatorShortParameter(context: BlockRuleContext, params: Array<{ name: string; raw: string }>, name: string): boolean {
+  const names = params.map((parameter) => parameter.name);
+  if (names.length !== 2 || names[0] !== "a" || names[1] !== "b" || (name !== "a" && name !== "b")) {
+    return false;
+  }
+  return isComparatorCallable(context.block.name, context.block.codeBody);
+}
+
+// Comparator-shaped callables are either named for ordering (`compare*`, `*Comparator`, `byName`) or
+// their body performs the standard locale/numeric ordering expression over both parameters.
+function isComparatorCallable(name: string, codeBody: string): boolean {
+  return (
+    /^(?:compare[A-Z0-9_]?|.*Comparator$|by[A-Z])/.test(name) ||
+    /\.localeCompare\s*\(/.test(codeBody) ||
+    /\breturn\s+a\b[\s\S]*?(?:-\s*b\b|[<>]=?\s*b\b)/.test(codeBody) ||
+    /\breturn\s+b\b[\s\S]*?(?:-\s*a\b|[<>]=?\s*a\b)/.test(codeBody)
+  );
 }
 
 // Generic-parameter rule is context-gated: only fires when the surrounding function is itself

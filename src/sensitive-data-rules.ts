@@ -17,13 +17,14 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
     ["sensitive-data.aws-access-key", /AKIA[0-9A-Z]{16}/g, "AWS access key pattern detected."],
     ["sensitive-data.private-key", /BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY/g, "Private key block detected."],
     ["sensitive-data.jwt-token", /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "JWT-looking token detected."],
-    ["sensitive-data.database-url-password", /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|amqp|amqps|mssql):\/\/[^\/\s:@]+:[^\/\s@]+@/g, "Database URL appears to include a password."],
+    ["sensitive-data.database-url-password", /\b(?:https?|postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|amqp|amqps|mssql):\/\/[^\/\s:@]+:[^\/\s@]+@/g, "URL appears to include embedded credentials."],
     [
       "sensitive-data.api-key-pattern",
       /\b(?:sk_live_[A-Za-z0-9_-]{12,}|sk_test_[A-Za-z0-9_-]{12,}|sk-proj-[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gh[ousr]_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+|https:\/\/discord(?:app)?\.com\/api\/webhooks\/[0-9]+\/[A-Za-z0-9_-]+)\b/g,
       "API key pattern detected.",
     ],
     ["sensitive-data.pii-pattern", /\b\d{3}-\d{2}-\d{4}\b/g, "PII-like identifier pattern detected."],
+    ["sensitive-data.phi-pattern", /\b[1-9][ACDEFGHJKMNPQRTUVWXY][ACDEFGHJKMNPQRTUVWXY0-9]\d[ACDEFGHJKMNPQRTUVWXY][ACDEFGHJKMNPQRTUVWXY0-9]\d[ACDEFGHJKMNPQRTUVWXY][ACDEFGHJKMNPQRTUVWXY]\d\d\b/g, "Medicare Beneficiary Identifier (PHI) pattern detected."],
   ];
 
   for (const [ruleId, pattern, message] of patterns) {
@@ -36,6 +37,59 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
   analyseHardcodedEnvironmentValues(file, source, config, findings);
   analyseNpmAuthTokens(file, source, config, findings);
   analyseHighEntropyStrings(file, source, config, findings);
+  analysePhiLabelledIdentifiers(file, source, config, findings);
+  analysePaymentCardNumbers(file, source, config, findings);
+  analyseGcpServiceAccountKeys(file, source, config, findings);
+}
+
+// PHI beyond the MBI shape: medical-record-number assignments. Context-gated on an `MRN` / `medical
+// record` label so bare integers stay clean; stable contract is one redacted finding per label.
+function analysePhiLabelledIdentifiers(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
+  const lines = source.split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
+    const match = line.match(/\b(?:MRN|medical[\s_-]?record(?:[\s_-]?number)?)\b\s*[:=#]?\s*([0-9]{6,12})\b/i);
+    const medicalRecordNumber = match?.[1];
+    if (!medicalRecordNumber) {
+      continue;
+    }
+    pushSensitiveFinding(config, findings, file, "sensitive-data.phi-pattern", "Medical record number (PHI) detected.", index + 1, medicalRecordNumber, "high");
+  }
+}
+
+// GCP service-account key files carry `"type": "service_account"` next to a private key. Flag the file
+// once, anchored on the type line; stable contract keeps raw key bodies covered by private-key.
+function analyseGcpServiceAccountKeys(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
+  const typeMatch = source.match(/"type"\s*:\s*"service_account"/);
+  if (!typeMatch || !/"private_key"\s*:\s*"|BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY/.test(source)) {
+    return;
+  }
+  const identifier = source.match(/"private_key_id"\s*:\s*"([^"]+)"/)?.[1]
+    ?? source.match(/"client_email"\s*:\s*"([^"]+)"/)?.[1]
+    ?? "service_account";
+  pushSensitiveFinding(config, findings, file, "sensitive-data.gcp-service-account-key", "GCP service-account key file detected.", byteLine(source, typeMatch.index ?? 0), identifier, "high");
+}
+
+// Payment-card PII detection is structural: candidate shape, known issuer prefix, length, and Luhn
+// check must all pass before a stable redacted finding is emitted.
+function analysePaymentCardNumbers(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
+  for (const match of source.matchAll(/\b(?:\d[ -]?){12,18}\d\b/g)) {
+    const rawCandidate = match[0] ?? "";
+    const cardNumber = normalizedPaymentCardNumber(rawCandidate);
+    if (!isPaymentCardNumber(cardNumber)) {
+      continue;
+    }
+    pushSensitiveFinding(
+      config,
+      findings,
+      file,
+      "sensitive-data.pii-pattern",
+      "Credit card number (PII) pattern detected.",
+      byteLine(source, match.index ?? 0),
+      rawCandidate,
+      "high",
+      { piiKind: "credit-card", digits: cardNumber.length },
+    );
+  }
 }
 
 // Stable redaction contract: parses `_authToken=` config lines even when values lack an npm_ prefix.
@@ -97,7 +151,7 @@ function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: st
 // stable across runs and prevent noisy regressions in node_modules-heavy projects.
 function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const minLength = threshold(config, "sensitive-data.high-entropy-string", 32);
-  for (const match of source.matchAll(/(["'`])([A-Za-z0-9_+=./-]{32,})\1/g)) {
+  for (const match of source.matchAll(/(["'`])([A-Za-z0-9_+=./-]{24,})\1/g)) {
     const raw = match[2] ?? "";
     if (!isHighEntropySecretCandidate(raw, minLength)) {
       continue;
@@ -238,6 +292,88 @@ function isRepoPathLikeFilename(candidateText: string): boolean {
 // Requiring a known repository segment keeps slash-containing tokens from being over-suppressed.
 function hasKnownRepoPathSegment(candidateText: string): boolean {
   return /(?:^|\/)(?:\.goat-flow|src|test|tests|fixtures?|docs|scripts|bin|workflow|package(?:-lock)?\.json)(?:\/|$)/.test(candidateText);
+}
+
+// Removes separators allowed in human-entered payment-card numbers before issuer and checksum checks.
+function normalizedPaymentCardNumber(candidateText: string): string {
+  return candidateText.replace(/[ -]/g, "");
+}
+
+// Stable contract: only card-network-shaped values with a valid Luhn checksum are PII findings.
+function isPaymentCardNumber(cardNumber: string): boolean {
+  return /^[0-9]+$/.test(cardNumber) && cardNumber.length >= 13 && cardNumber.length <= 19 && hasKnownPaymentCardPrefix(cardNumber) && passesLuhnCheck(cardNumber);
+}
+
+// Recognises common issuer prefixes by delegating per network because each one has different
+// length and IIN-range rules; keeping those branches separate makes false-positive tuning safer.
+function hasKnownPaymentCardPrefix(cardNumber: string): boolean {
+  return isVisaPaymentCard(cardNumber)
+    || isMastercardPaymentCard(cardNumber)
+    || isAmericanExpressPaymentCard(cardNumber)
+    || isDiscoverPaymentCard(cardNumber)
+    || isDinersPaymentCard(cardNumber)
+    || isJcbPaymentCard(cardNumber);
+}
+
+// Visa cards start with 4 and commonly use 13, 16, or 19 digits.
+function isVisaPaymentCard(cardNumber: string): boolean {
+  return cardNumber.startsWith("4") && isPaymentCardLength(cardNumber, [13, 16, 19]);
+}
+
+// Mastercard cards use 51-55 and 2221-2720 IIN ranges with 16 digits.
+function isMastercardPaymentCard(cardNumber: string): boolean {
+  const firstTwoDigits = Number(cardNumber.slice(0, 2));
+  const firstFourDigits = Number(cardNumber.slice(0, 4));
+  return (isInRange(firstTwoDigits, 51, 55) || isInRange(firstFourDigits, 2221, 2720)) && isPaymentCardLength(cardNumber, [16]);
+}
+
+// American Express cards use 34/37 prefixes with 15 digits.
+function isAmericanExpressPaymentCard(cardNumber: string): boolean {
+  return (cardNumber.startsWith("34") || cardNumber.startsWith("37")) && isPaymentCardLength(cardNumber, [15]);
+}
+
+// Discover cards use 6011, 65, or 644-649 prefixes with 16 or 19 digits.
+function isDiscoverPaymentCard(cardNumber: string): boolean {
+  const firstThreeDigits = Number(cardNumber.slice(0, 3));
+  return (cardNumber.startsWith("6011") || cardNumber.startsWith("65") || isInRange(firstThreeDigits, 644, 649)) && isPaymentCardLength(cardNumber, [16, 19]);
+}
+
+// Diners Club cards use 300-305, 36, 38, or 39 prefixes with 14 digits.
+function isDinersPaymentCard(cardNumber: string): boolean {
+  const firstThreeDigits = Number(cardNumber.slice(0, 3));
+  return (isInRange(firstThreeDigits, 300, 305) || cardNumber.startsWith("36") || cardNumber.startsWith("38") || cardNumber.startsWith("39")) && isPaymentCardLength(cardNumber, [14]);
+}
+
+// JCB cards use 3528-3589 prefixes with 16-19 digits.
+function isJcbPaymentCard(cardNumber: string): boolean {
+  const firstFourDigits = Number(cardNumber.slice(0, 4));
+  return isInRange(firstFourDigits, 3528, 3589) && isPaymentCardLength(cardNumber, [16, 17, 18, 19]);
+}
+
+// Network-specific length guard kept separate so the prefix table reads as data, not arithmetic.
+function isPaymentCardLength(cardNumber: string, allowedLengths: number[]): boolean {
+  return allowedLengths.includes(cardNumber.length);
+}
+
+// Inclusive numeric range helper for issuer identification number ranges.
+function isInRange(candidateNumber: number, minimum: number, maximum: number): boolean {
+  return candidateNumber >= minimum && candidateNumber <= maximum;
+}
+
+// Standard Luhn checksum over normalized digits; invalid checksum keeps long numeric identifiers quiet.
+function passesLuhnCheck(cardNumber: string): boolean {
+  const digits = [...cardNumber].reverse().map((digit) => Number(digit));
+  const sum = digits.reduce((total, digit, index) => total + luhnDigitContribution(digit, index), 0);
+  return sum % 10 === 0;
+}
+
+// Doubles every second digit from the right and folds two-digit products per the Luhn algorithm.
+function luhnDigitContribution(digit: number, indexFromRight: number): number {
+  if (indexFromRight % 2 === 0) {
+    return digit;
+  }
+  const doubled = digit * 2;
+  return doubled > 9 ? doubled - 9 : doubled;
 }
 
 // All-hex strings - typical for SHA digests, content hashes, and tooling identifiers.

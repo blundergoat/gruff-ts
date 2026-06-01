@@ -7,12 +7,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { analyse } from "./cli.ts";
-import type { AnalysisReport } from "./cli.ts";
+import type { AnalysisReport, ChangedScopeMode } from "./types.ts";
 
 export const REPO_ROOT = cwd();
 export const HIGH_ENTROPY_FIXTURE_VALUE = ["Zx7pQ9vLm3N8sT2r", "Y6wK1dF4gH5jC0bR2"].join("");
 export const API_TOKEN_FIXTURE_VALUE = ["rN7pQ4sV9xY2zA5b", "C8dG9hK2mN5pQ8sR1"].join("");
 export const DATABASE_URL_FIXTURE_VALUE = ["postgres://app:superSecret", "Password@db.internal/app"].join("");
+export const URL_CREDENTIAL_FIXTURE_VALUE = ["https://agent:", "clientSecret42", "@example.test/api"].join("");
 export const OPENAI_KEY_FIXTURE_VALUE = ["sk-proj-AbCdEfGhIjKl", "MnOpQrStUvWxYz1234567890"].join("");
 export const GOOGLE_API_KEY_FIXTURE_VALUE = ["AIzaSyD3moKeyValue", "1234567890AbCdEf"].join("");
 export const SLACK_WEBHOOK_FIXTURE_VALUE = ["https://hooks.slack.com/services/T00000000", "B00000000", "abcdefghijklmnopqrstuvwx"].join("/");
@@ -22,6 +23,11 @@ export const DISCORD_WEBHOOK_FIXTURE_VALUE = [
 ].join("/");
 export const NPM_AUTH_TOKEN_FIXTURE_VALUE = ["npmAuthToken", "AbCdEfGhIjKlMnOp", "QrStUvWxYz123456"].join("");
 export const SSN_FIXTURE_VALUE = ["123", "45", "6789"].join("-");
+export const CREDIT_CARD_FIXTURE_VALUE = ["4111", "1111", "1111", "1111"].join(" ");
+export const INVALID_CREDIT_CARD_FIXTURE_VALUE = ["4111", "1111", "1111", "1112"].join(" ");
+export const MBI_FIXTURE_VALUE = ["1EG4", "TE5", "MK73"].join("");
+export const MRN_FIXTURE_VALUE = "00489912";
+export const GCP_PRIVATE_KEY_ID_FIXTURE_VALUE = ["a1b2c3d4e5f6a7b8c9d0", "e1f2a3b4c5d6e7f8a9b0"].join("");
 export const AWS_ACCESS_KEY_FIXTURE_VALUE = ["AKIAABCDEFGH", "IJKLMNOP"].join("");
 export const PRIVATE_KEY_HEADER_FIXTURE_VALUE = ["-----BEGIN ", "PRIVATE KEY-----"].join("");
 export const POSTGRES_URL_FIXTURE_VALUE = ["postgres://user:sec", "ret@example.test/db"].join("");
@@ -35,10 +41,16 @@ export const COMMENTED_OUT_LEGACY_CALL = ["const", " disabledLegacy = runLegacyP
 export interface AnalyseProjectOptions {
   config?: Record<string, unknown>;
   configPath?: string;
+  profile?: string;
   executableFiles?: string[];
   shouldIncludeIgnored?: boolean;
   shouldSkipConfig?: boolean;
   paths?: string[];
+  diff?: string;
+  diffPatch?: string;
+  since?: string;
+  changedRanges?: string;
+  changedScope?: ChangedScopeMode;
 }
 
 // Adds a fixture filename override for single-source test scans.
@@ -58,7 +70,8 @@ export function analyseFixture(source: string, options: AnalyseFixtureOptions = 
   );
 }
 
-// Creates a temporary project, runs analysis inside it, and removes the fixture tree. Performs the required filesystem or process side effect.
+// Creates a temporary project, runs analysis inside it, and removes the fixture tree. It mutates the
+// filesystem and process cwd; explicit options preserve absent-vs-undefined typing.
 export function analyseProject(files: Record<string, string>, options: AnalyseProjectOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-"));
   const previous = cwd();
@@ -90,19 +103,34 @@ export function setupAnalyseProjectDirectory(dir: string, files: Record<string, 
 
 /**
  * Runs analyse after the fixture helper has switched into the temp project root, returning a stable report.
+ * The explicit option assembly preserves exact optional property types because absent and undefined differ.
  * @param options Normalized fixture scan options.
  * @returns The analysis report produced from the current temporary project.
  */
 export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions): AnalysisReport {
   return analyse({
     paths: options.paths ?? ["."],
-    ...(typeof options.configPath === "string" ? { config: options.configPath } : {}),
     shouldSkipConfig: options.shouldSkipConfig ?? !(options.config || options.configPath),
     format: "json",
     failOn: "none",
     shouldIncludeIgnored: options.shouldIncludeIgnored ?? false,
+    changedScope: options.changedScope ?? "symbol",
     shouldSkipBaseline: true,
+    ...optionalFixtureScanFields(options),
   });
+}
+
+// Assembles the optional scan fields with conditional spreads so each stays omitted (not undefined)
+// under exactOptionalPropertyTypes, keeping analyseProjectInCurrentDirectory a flat literal.
+function optionalFixtureScanFields(options: AnalyseProjectOptions): Partial<Pick<Parameters<typeof analyse>[0], "config" | "profile" | "diff" | "diffPatch" | "since" | "changedRanges">> {
+  return {
+    ...(typeof options.configPath === "string" ? { config: options.configPath } : {}),
+    ...(typeof options.profile === "string" ? { profile: options.profile } : {}),
+    ...(typeof options.diff === "string" ? { diff: options.diff } : {}),
+    ...(typeof options.diffPatch === "string" ? { diffPatch: options.diffPatch } : {}),
+    ...(typeof options.since === "string" ? { since: options.since } : {}),
+    ...(typeof options.changedRanges === "string" ? { changedRanges: options.changedRanges } : {}),
+  };
 }
 
 /*
@@ -321,8 +349,15 @@ DATABASE_URL=${POSTGRES_URL_FIXTURE_VALUE}
 JWT_TOKEN=${JWT_FIXTURE_VALUE}
 OPENAI_API_KEY=${OPENAI_KEY_FIXTURE_VALUE}
 PATIENT_SSN=${SSN_FIXTURE_VALUE}
+PATIENT_MBI=${MBI_FIXTURE_VALUE}
 API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
 `,
+      "credentials/service-account.json": JSON.stringify({
+        type: "service_account",
+        private_key_id: GCP_PRIVATE_KEY_ID_FIXTURE_VALUE,
+        private_key: `${PRIVATE_KEY_HEADER_FIXTURE_VALUE}\nMIIfake\n-----END PRIVATE KEY-----\n`,
+        client_email: "svc@project.iam.gserviceaccount.com",
+      }),
       "package.json": JSON.stringify({
         scripts: {
           postinstall: "node scripts/setup.js",
@@ -339,7 +374,6 @@ API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
       }),
       ".github/workflows/risky.yml": githubActionsCoverageWorkflowSource(),
       "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
-      "styles/component.css": ".one { color: red; }\n.two { color: blue; }\n.three { color: green; }\n.four { color: yellow; }\n",
       "tsconfig.json": JSON.stringify({
         compilerOptions: {
           strict: false,
@@ -383,8 +417,10 @@ const active = true;
 const xx = 1;
 const ctx = { request: 1 };
 const disableCache = true;
-const URL_PATH = "/health";
-const urlPath = "/healthz";
+const DATABASE_URL = "/health";
+const databaseUrl = "/healthz";
+const project_path = "src";
+const projectPath = "src/index.ts";
 const unsafeAny: any = {};
 const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";
 const maxRetryLimit = 12;
@@ -434,6 +470,10 @@ export function process(flag: boolean, userInput: string, userId: string, userId
   fetch(req.body.url);
   res.redirect(req.query.next);
   new RegExp(process.argv[2]);
+  const serializedPayload = req.body.serialized;
+  nodeSerialize.unserialize(serializedPayload);
+  const xmlPayload = req.body.xml;
+  libxmljs.parseXml(xmlPayload, { noent: true });
   Math.random();
   document.write(userInput);
   element.innerHTML = userInput;
@@ -614,12 +654,10 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
         rules: {
           "complexity.cognitive": { threshold: 3, severity: "warning" },
           "complexity.cyclomatic": { threshold: 2, severity: "warning" },
-          "complexity.npath": { threshold: 2, severity: "warning" },
           "design.large-module-concentration": { threshold: 35, severity: "advisory", options: { minFiles: 4, minLines: 8 } },
           "size.file-length": { threshold: 8, severity: "warning" },
           "size.function-length": { threshold: 8, severity: "warning" },
           "size.parameter-count": { threshold: 3, severity: "warning" },
-          "size.stylesheet-length": { threshold: 3, severity: "warning" },
           "test-quality.setup-bloat": { threshold: 2, severity: "advisory" },
         },
       },

@@ -1,8 +1,9 @@
 // Naming-rule tests for blacklist config, boolean names, acronym casing, and overlap boundaries.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { cwd } from "node:process";
 import test from "node:test";
 import { ruleDescriptors } from "./cli.ts";
+import { loadConfig, ruleEnabled } from "./config.ts";
 import { analyseFixture, analyseProject } from "./test-fixtures.ts";
 
 test("naming blacklists default to current behavior", () => {
@@ -98,6 +99,29 @@ console.log(loadConfig(fs));
 `);
   const shorts = report.findings.filter((finding) => finding.ruleId === "naming.short-variable");
   assert.deepEqual(shorts.map((finding) => finding.symbol), []);
+});
+
+test("naming short-variable accepts conventional comparator parameters", () => {
+  const callback = analyseFixture(`interface Item {
+  name: string;
+}
+
+const byName = (a: Item, b: Item) => a.name.localeCompare(b.name);
+console.log(byName);
+`);
+  assert.deepEqual(callback.findings.filter((finding) => finding.ruleId === "naming.short-variable"), []);
+
+  const comparator = analyseFixture(`function compareNames(a: string, b: string): number {
+  return a.localeCompare(b);
+}
+`);
+  assert.deepEqual(comparator.findings.filter((finding) => finding.ruleId === "naming.short-variable"), []);
+
+  const ordinary = analyseFixture(`function combine(a: string, b: string): string {
+  return a + b;
+}
+`);
+  assert.deepEqual(ordinary.findings.filter((finding) => finding.ruleId === "naming.short-variable").map((finding) => finding.symbol), ["a", "b"]);
 });
 
 test("naming identifier-quality flags placeholder parameter", () => {
@@ -212,14 +236,14 @@ test("naming generic-parameter fires only in multi-param functions above thresho
   assert.deepEqual(noneFlagged, []);
 });
 
-test("naming inconsistent-casing flags URL_PATH next to urlPath in one file", () => {
-  const report = analyseFixture(`const URL_PATH = "/a";
+test("naming inconsistent-casing flags snake_case local next to camelCase local in one file", () => {
+  const report = analyseFixture(`const url_path = "/a";
 const urlPath = "/b";
-console.log(URL_PATH, urlPath);
+console.log(url_path, urlPath);
 `);
   const findings = report.findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
   assert.equal(findings.length, 1);
-  assert.deepEqual(findings[0]?.metadata?.variants, ["URL_PATH", "urlPath"]);
+  assert.deepEqual(findings[0]?.metadata?.variants, ["urlPath", "url_path"]);
 });
 
 test("naming inconsistent-casing ignores distinct concepts across files", () => {
@@ -237,6 +261,51 @@ console.log(Status.Ok, Status.Error);
 `);
   const findings = report.findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
   assert.deepEqual(findings, []);
+});
+
+test("naming inconsistent-casing preserves semantic digits", () => {
+  const report = analyseFixture(`const adr013 = "accepted";
+const adr020 = "superseded";
+console.log(adr013, adr020);
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
+  assert.deepEqual(findings, []);
+});
+
+test("naming inconsistent-casing ignores constant and contract boundaries", () => {
+  // Purpose: one boundary fixture proves the casing rule ignores constants, DTO field adaptation,
+  // and intentionally-unused `_` parameters in the same fixture.
+  const report = analyseFixture(`const NODE_FRAMEWORKS = ["next"];
+const nodeFrameworks = new Set(NODE_FRAMEWORKS);
+
+interface EnvelopeInput {
+  event_kind: string;
+}
+
+function adapt(input: EnvelopeInput, _event: string): string {
+  const eventKind = input.event_kind;
+  const event = eventKind.toUpperCase();
+  return nodeFrameworks.has(event) ? event : _event;
+}
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
+  assert.deepEqual(findings, []);
+});
+
+test("naming inconsistent-casing keeps local drift visible beside contract fields", () => {
+  const report = analyseFixture(`interface UserRow {
+  user_id: string;
+}
+
+function adapt(row: UserRow): string {
+  const userID = row.user_id;
+  const userId = userID.toLowerCase();
+  return userId;
+}
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
+  assert.equal(findings.length, 1);
+  assert.deepEqual(findings[0]?.metadata?.variants, ["userID", "userId"]);
 });
 
 test("naming acronym-case flags URL next to Url in identifiers", () => {
@@ -289,6 +358,50 @@ console.log(apiToken, googleApiKey);
   assert.deepEqual(findings, []);
 });
 
+test("naming boolean-prefix accepts exact contract field names", () => {
+  const report = analyseFixture(`interface CliOptions {
+  all: boolean;
+  check: boolean;
+  enabled: boolean;
+  force: boolean;
+  fresh: boolean;
+  harness: boolean;
+  ok: boolean;
+  verbose: boolean;
+  ready: boolean;
+}
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.boolean-prefix" && finding.metadata?.surface === "interface-field");
+  assert.deepEqual(findings.map((finding) => finding.symbol), ["ready"]);
+});
+
+test("naming boolean-prefix scopes acceptedBooleanNames to contract fields", () => {
+  const report = analyseFixture(
+    `interface CliOptions {
+  ready: boolean;
+}
+
+const ready = true;
+console.log(ready);
+`,
+    { config: { allowlists: { acceptedBooleanNames: ["ready"] } } },
+  );
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.boolean-prefix");
+  assert.deepEqual(findings.map((finding) => `${finding.metadata?.surface}:${finding.symbol}`), ["declaration:ready"]);
+});
+
+test("naming identifier-quality accepts domain-numbered identifiers", () => {
+  const report = analyseFixture(`const step0 = "bootstrap";
+const installedStep0 = true;
+const adr020 = "accepted";
+const V110 = "version";
+const foo1 = "placeholder";
+console.log(step0, installedStep0, adr020, V110, foo1);
+`);
+  const findings = report.findings.filter((finding) => finding.ruleId === "naming.identifier-quality");
+  assert.deepEqual(findings.map((finding) => finding.symbol), ["foo1"]);
+});
+
 // Canonical list of naming-pillar rule ids. Ordering matters: the catalogue test asserts the
 // descriptor output matches this list exactly.
 const NAMING_PILLAR_RULE_IDS = [
@@ -307,18 +420,20 @@ const NAMING_PILLAR_RULE_IDS = [
 test("naming rule pack catalogue coverage", () => {
   const descriptors = ruleDescriptors().map((descriptor) => descriptor.ruleId).filter((ruleId) => ruleId.startsWith("naming."));
   assert.deepEqual(descriptors, NAMING_PILLAR_RULE_IDS);
-  const yamlSource = readFileSync(".gruff-ts.yaml", "utf8");
+  // The repo ships `profile: recommended`, which enables every pillar; assert the loaded config keeps
+  // each naming rule enabled rather than grepping for a per-rule entry the profile no longer needs.
+  const config = loadConfig(cwd(), { paths: ["."], shouldSkipConfig: false, format: "json", failOn: "none", shouldIncludeIgnored: false, changedScope: "symbol", shouldSkipBaseline: true });
   NAMING_PILLAR_RULE_IDS.forEach((ruleId) => {
-    assert.match(yamlSource, new RegExp(`\\b${ruleId.replace(".", "\\.")}\\b`), `missing yaml entry for ${ruleId}`);
+    assert.equal(ruleEnabled(config, ruleId), true, `repo config does not enable ${ruleId}`);
   });
 });
 
 test("naming rule pack config disable independence", () => {
-  const source = `const URL_PATH = "/a";
+  const source = `const url_path = "/a";
 const urlPath = "/b";
 const databaseUrl = "/c";
 const DATABASE_URL = "/d";
-console.log(URL_PATH, urlPath, databaseUrl, DATABASE_URL);
+console.log(url_path, urlPath, databaseUrl, DATABASE_URL);
 `;
   const both = analyseFixture(source);
   assert.equal(both.findings.some((finding) => finding.ruleId === "naming.inconsistent-casing"), true);

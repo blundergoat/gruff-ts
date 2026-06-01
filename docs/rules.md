@@ -1,8 +1,16 @@
 # Rules
 
-`gruff-ts` exposes 119 rules across 11 pillars. This list is generated from the
+`gruff-ts` exposes 121 rules across 11 pillars. This list is generated from the
 public rule catalogue used by `gruff-ts list-rules`; severity, confidence,
 thresholds, and option names are the defaults before project config overrides.
+
+The pillars are organised around one goal: making AI-generated code something a
+human who did not write it can verify by reading, trust as secure, and rely on as
+honestly tested rather than padded with low-signal ceremony. Complexity, size,
+naming, and documentation serve verifiability; security and sensitive-data serve
+safety where review is weakest; test-quality guards against coverage theatre. See
+[Philosophy](philosophy.md) for the intent behind the catalogue, including why a
+doc comment is expected even on a private one-liner.
 
 Use the CLI when you need machine-readable metadata:
 
@@ -12,23 +20,22 @@ gruff-ts list-rules --format=json
 
 ## Pillar Counts
 
-- complexity: 3
+- complexity: 2
 - dead-code: 1
-- design: 6
-- documentation: 17
+- design: 5
+- documentation: 18
 - maintainability: 14
 - modernisation: 14
 - naming: 10
-- security: 27
-- sensitive-data: 8
-- size: 4
+- security: 29
+- sensitive-data: 10
+- size: 3
 - test-quality: 15
 
 ## Complexity
 
 - `complexity.cognitive` (warning; high confidence; threshold 15): Flags functions with high combined branch and nesting complexity.
 - `complexity.cyclomatic` (warning; high confidence; threshold 15): Flags functions with many independent branch paths.
-- `complexity.npath` (warning; medium confidence; threshold 200): Flags functions with high approximate NPath complexity.
 
 ## Dead Code
 
@@ -38,7 +45,6 @@ gruff-ts list-rules --format=json
 
 - `design.circular-import` (warning; medium confidence): Flags simple relative import cycles inside the discovered source set.
 - `design.deep-relative-import` (advisory; medium confidence; threshold 2): Flags relative imports that climb too many parent directories.
-- `design.god-function` (warning; high confidence): Flags functions that are both long and complex.
 - `design.large-module-concentration` (advisory; medium confidence; threshold 55; options: minFiles, minLines): Flags a production module that dominates project source lines.
 - `design.package-bin-missing` (warning; high confidence): Flags package bin entries that point at missing files.
 - `design.package-bin-not-executable` (warning; high confidence): Flags package bin targets that are not executable.
@@ -83,7 +89,7 @@ gruff-ts list-rules --format=json
 ## Naming
 
 - `naming.acronym-case` (advisory; medium confidence): Flags mixed casings of a known acronym in one file.
-- `naming.boolean-prefix` (advisory; medium confidence): Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields.
+- `naming.boolean-prefix` (advisory; medium confidence; allowlists: booleanPrefixes, acceptedBooleanNames): Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields.
 - `naming.class-file-mismatch` (advisory; medium confidence): Flags exported classes whose name differs from the file name.
 - `naming.generic-function` (advisory; high confidence): Flags generic function names that hide intent.
 - `naming.generic-parameter` (advisory; medium confidence; options: minCyclomatic, minLineCount, minParameters): Flags placeholder parameter names in multi-parameter, long, exported, or complex functions.
@@ -120,18 +126,22 @@ gruff-ts list-rules --format=json
 - `security.ssrf-candidate` (warning; medium confidence): Flags external input sent to network request sinks.
 - `security.string-timer` (warning; high confidence): Flags string callbacks passed to timers.
 - `security.throw-non-error` (warning; medium confidence): Flags thrown non-Error values.
-- `security.url-dependency` (warning; medium confidence): Flags dependencies installed from URL or git specs.
+- `security.unsafe-deserialization` (warning; medium confidence): Flags external input reaching unsafe deserialization or dynamic code-loading sinks.
+- `security.url-dependency` (warning; medium confidence): Flags dependencies installed from URL, git, or local file specs.
 - `security.weak-crypto` (warning; high confidence): Flags weak crypto primitives such as md5, sha1, or createCipher.
+- `security.xxe-candidate` (warning; medium confidence): Flags external XML reaching parsers configured to expand entities.
 
 ## Sensitive Data
 
-- `sensitive-data.api-key-pattern` (error; high confidence): Flags vendor API key patterns.
+- `sensitive-data.api-key-pattern` (error; high confidence): Flags vendor API key patterns including GitHub, GitLab, npm, Google API, Slack, Discord, and Stripe/OpenAI-style keys.
 - `sensitive-data.aws-access-key` (error; high confidence): Flags AWS access key looking values.
-- `sensitive-data.database-url-password` (error; high confidence): Flags database URLs that include passwords.
+- `sensitive-data.database-url-password` (error; high confidence): Flags database and HTTP(S) URLs that include passwords or embedded credentials.
+- `sensitive-data.gcp-service-account-key` (error; high confidence): Flags GCP service-account key files (type service_account alongside a private key).
 - `sensitive-data.hardcoded-env-value` (error; medium confidence; threshold 16): Flags environment-style secret values committed in text.
 - `sensitive-data.high-entropy-string` (error; medium confidence; threshold 32): Flags high-entropy string literals that may be secrets.
 - `sensitive-data.jwt-token` (error; high confidence): Flags JWT-looking token literals.
-- `sensitive-data.pii-pattern` (error; high confidence): Flags PII-like identifier patterns.
+- `sensitive-data.phi-pattern` (error; high confidence): Flags PHI identifiers such as Medicare (MBI) and medical record numbers.
+- `sensitive-data.pii-pattern` (error; high confidence): Flags PII-like identifier patterns including SSN-shaped values and Luhn-valid payment cards.
 - `sensitive-data.private-key` (error; high confidence): Flags private key block markers.
 
 ## Size
@@ -139,7 +149,6 @@ gruff-ts list-rules --format=json
 - `size.file-length` (warning; high confidence; threshold 750): Flags files longer than the configured threshold.
 - `size.function-length` (warning; high confidence; threshold 200): Flags functions longer than the configured threshold.
 - `size.parameter-count` (warning; high confidence; threshold 7): Flags functions with too many parameters.
-- `size.stylesheet-length` (warning; high confidence; threshold 1500): Flags stylesheets longer than the configured threshold.
 
 ## Test Quality
 

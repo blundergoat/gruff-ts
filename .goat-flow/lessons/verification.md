@@ -1,9 +1,89 @@
 ---
 category: verification
-last_reviewed: 2026-05-24
+last_reviewed: 2026-05-31
 ---
 
 # Verification lessons
+
+## Lesson: converting the dogfood config to a profile breaks rule-enumeration contract tests
+
+**Created:** 2026-05-31
+
+**What happened:** After replacing the repo `.gruff-ts.yaml`'s flat 120-rule block with `profile: recommended` (the named-profiles dogfood step), `npm run check` went from 274/274 to 3 failures. Three contract tests grepped the yaml TEXT for a per-rule entry: `naming-rules.test.ts` (search: `naming rule pack catalogue coverage`), and `rule-catalogue.test.ts` (search: `documentation catalogue covers comment rule pack` and `thresholds and options match implementation`). They encoded the exact manual enumeration that profiles are designed to eliminate.
+
+**Evidence:** the failing assertions were `missing yaml entry for naming.class-file-mismatch`, `missing config entry for docs.fixture-purpose-missing`, and a `Map(0)` vs `Map(10)` threshold mismatch from `yamlThresholdDefaults`. The fix retargeted all three to load the effective config (`loadConfig(cwd(), ...)` then `ruleEnabled`/`threshold`/`ruleSeverity`) instead of grepping yaml text, which is robust whether the config enumerates rules or names a profile, and deleted the now-dead `yamlThresholdDefaults`/`yamlSeverityDefaults`/`yamlOptionDefaults` helpers.
+
+**Prevention:** Before converting a project's shipped config to a profile, grep the test suite for tests that read `.gruff-ts.yaml` as TEXT (`readFileSync(".gruff-ts.yaml"`, `configSource.includes`, yaml-threshold parsers). Retarget them to assert against the loaded `Config` (style-agnostic) in the same change. The sibling gruff ports (go/rs/py/php) will hit the identical break when they add profiles.
+
+## Lesson: a near-budget file plus "add subsystem X here" forces an extraction
+
+**Created:** 2026-05-31
+
+**What happened:** The milestone said to add `resolveProfile` and the profile machinery to `src/config.ts`. `config.ts` was 749 lines - one under the `size.file-length` 750 default - so the ~180-line resolver pushed it to ~960 and `analyse src --no-config` flagged `size.file-length` on `config.ts` itself (the self-scan is normally 0). Moving the resolver out would have created a `config.ts` <-> resolver cycle because the resolver needs `parseConfigFile`.
+
+**Evidence:** the clean baseline was `./bin/gruff-ts analyse src --no-config` = 0 findings against pristine HEAD; after the additions it reported `config.ts:1 size.file-length`. The fix extracted the zero-dependency YAML parser + `parseConfigFile` + narrowing helpers to a new `src/config-parse.ts` (search: `Config parsing layer`) that imports nothing from `config.ts`, breaking the cycle and dropping `config.ts` to ~505 lines; `resolveProfile` stayed in `config.ts` per the plan.
+
+**Prevention:** When a task says "put new code in file Y", check Y's line count against the `size.file-length` threshold first (`wc -l`). If adding the feature crosses it, plan the supporting extraction up front and pick a split that does not import back into Y. Establish the pristine self-scan baseline (scan HEAD in a throwaway worktree, or before editing) so you can tell which findings you introduced.
+
+## Lesson: run git status before recommending commit, push, or PR steps
+
+**Created:** 2026-05-31
+
+**What happened:** After finishing M06 verification, I answered "next best step: commit this verified work" from stale context instead of checking the current repository state. The user challenged it, and `git status --short --untracked-files=all` returned no output, proving the working tree was already clean and there was nothing to commit.
+
+**Evidence:** `git status --short --untracked-files=all` run in `/home/devgoat/projects/gruff-workspace/gruff-ts` returned no output immediately after the bad recommendation. The stale recommendation contradicted the actual repository state.
+
+**Prevention:** Before recommending `git add`, `git commit`, `git push`, PR creation, or saying "nothing left but commit", run `git status --short --untracked-files=all` in the target repo in the same turn. Base the next step on that output, not on remembered dirty state from earlier work.
+
+## Lesson: self-scan freshly added regression tests before closing
+
+**Created:** 2026-05-31
+
+**What happened:** The normal `npm run check` gate passed after the rubric-calibration tests were added, but the follow-up gruff self-scan found a `test-quality.magic-number-assertion` in the new regression test itself. The test was behaviorally correct, but still taught future agents a noisy pattern until the expected score was named as a contract constant.
+
+**Evidence:** `src/m06-rubric-refinements.test.ts` + `(search: "EXPECTED_CLUSTER_COMPOSITE_SCORE")`; the fresh scan command `./bin/gruff-ts analyse . --format=json --fail-on=none` later reported `total=0` from `/tmp/gruff_ts_double_check_1304802.json`.
+
+**Prevention:** After adding or moving regression tests for analyzer rules, run the analyzer over the repo as well as `npm run check`. Treat findings in new test files as part of the change, not as harmless test-only noise; use named constants or fixture comments when the numeric or structural value is the documented contract.
+
+## Lesson: re-read changed files and contract wording after checks in an active workspace
+
+**Created:** 2026-05-31
+
+**What happened:** During the M06 rubric calibration pass, other agent work was active in the same checkout. The scoring implementation was briefly reverted by concurrent edits after tests had already exercised the intended clustered-penalty behaviour, and a stale source comment still claimed composite score values stayed byte-stable after the code intentionally clustered correlated penalties. A normal "tests passed" check was not enough to prove the final tree and its contract wording still matched the intended code.
+
+**Evidence:** `src/scoring.ts` + `(search: "function scoringPenaltyMap")` and `(search: "correlated complexity clustering must not add")`; `src/m06-rubric-refinements.test.ts` + `(search: "clusters correlated complexity penalties by symbol")`; `.goat-flow/decisions/ADR-009-cluster-correlated-complexity-score-penalties.md` + `(search: "score field names and detailed finding array stay unchanged")`; `scripts/preflight-checks.sh` + `(search: "Gruff full-project scan")`.
+
+**Prevention:** In a dirty or multi-agent workspace, finish verification by re-reading the specific edited files and grepping for old contract phrases after the final test run. Pair the normal check command with a final `git status --short` / `git diff -- <files>` review so overwritten code, stale comments, changelog drift, or interleaved changes are caught before close-out.
+
+## Lesson: self-scan comment fixes need context-marker words
+
+**Created:** 2026-05-31
+
+**What happened:** A first self-scan cleanup added leading comments and removed most findings, but the follow-up scan still reported context-doc gaps because the comments did not include the rule's expected contract, throws, or side-effect vocabulary.
+
+**Evidence:** `src/changed-regions.ts` + `(search: "function parseChangedRanges")` and `(search: "function gitOutput")`; `src/test-fixtures.ts` + `(search: "function analyseProject")`; `src/baseline-and-project.test.ts` + `(search: "function evalFindingLines")`.
+
+**Prevention:** When adding comments to clear self-scan documentation findings, include the relevant marker word in the declaration's leading comment (`contract`/`stable`, `throws`, `spawns`, `filesystem`, etc.) and rerun the full self-scan before close-out.
+
+## Lesson: broadening scope can invalidate old suppression-count assertions
+
+**Created:** 2026-06-01
+
+**What happened:** A review fix changed diff-scoped analysis from "scan changed files only" to "scan the full project, then filter emitted findings" so project-level rules keep central-test and import-graph context. The first focused regression run passed the new behavior tests but failed an older working-tree diff assertion that expected `suppressedCount` to stay `0`. With full context, unchanged findings are now produced and then suppressed, so a positive suppression count is the correct signal.
+
+**Evidence:** `src/analyser.ts` + `(search: "const changedScope = changedRegionScope")`; `src/baseline-and-project.test.ts` + `(search: "working-tree diff treats untracked files as whole-file changed")`; focused command `node --import tsx --test ...` reported `# fail 2` before the assertion was updated.
+
+**Prevention:** When a correctness fix moves filtering later in the pipeline, audit tests that assert counts or skipped totals, not only visible findings. A later filter can preserve user-visible findings while legitimately changing `suppressedCount`, analysed-file totals, or diagnostic counts.
+
+## Lesson: grep source for symbol locations; docs lag the cli.ts split
+
+**Created:** 2026-05-30
+
+**What happened:** While auditing the 0.3.0 milestone plans, I claimed `exitFor` lives in `src/cli-program.ts`, copying `.goat-flow/architecture.md`. The user's "double check" forced a grep, which showed `exitFor` is actually in `src/scoring.ts` - and that architecture.md itself was stale. The `src/cli.ts` split moved most symbols into focused modules, but architecture.md, the milestone plans, and `footguns/schema-and-cli.md` still cited `src/cli.ts` and `gruff.analysis.v1`.
+
+**Evidence:** `src/scoring.ts` + `(search: "function exitFor")`; the wrong source was `.goat-flow/architecture.md` (search: "severity-to-exit mapping lives"), since corrected to `src/scoring.ts`. See `footguns/schema-and-cli.md`, "docs ... still point at the pre-split src/cli.ts".
+
+**Prevention:** Before asserting any `file:symbol` location, grep current source for the symbol. Never quote a file path from architecture.md, a milestone "Read first" list, or a footgun - they predate the cli.ts split. Quote the grep result, not the doc.
 
 ## Lesson: run a no-diff control when a zero-tolerance perf gate fails
 **Created:** 2026-05-22
@@ -295,3 +375,13 @@ Workflow-security fixture smoke tests can trip the same hook if the shell comman
 **Evidence:** `src/baseline.ts` + `(search: "function applyBaseline")`; `src/analyser.ts` + `(search: "function selectedBaseline")` - baseline matching includes `(fingerprint, ruleId, filePath)`, and default baseline discovery is rooted at the current project root.
 
 **Prevention:** Generate and apply baseline smoke artifacts from the same project root. If testing absolute path operands, assert that changed display paths intentionally do not match the baseline.
+
+## Lesson: ground-truth a throwaway when a test result looks impossible (or the harness drops its output)
+
+**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED (M25 AST-flow slice)
+
+During the M25 AST-flow slice, `npm test` reported five failing security-flow tests whose failures were logically impossible from reading the code (a negative case with no sink "firing" a filesystem finding). Two compounding causes: (1) a real bug - an AST cache keyed by `SourceFile` identity returned the first test's parse for every later test that reused the shared `fileStub` (see the footgun "caching a parsed AST by SourceFile identity ..."); (2) the tool channel was intermittently dropping or lagging command output, so TAP summaries arrived stale or not at all.
+
+What worked: a tiny throwaway script under `/tmp` that imported the rule function and printed the actual findings per input. Its byte-identical output across six different inputs pinpointed the stale-cache bug at once - something the laggy TAP stream never made clear.
+
+Takeaways: (1) when a test result contradicts a careful read of the code, get ground truth by printing actual values from a minimal harness before "fixing" the rule - the cause is often shared or aliased state, not the logic. (2) Do not thrash re-issuing the same command when the output channel is dropping results; one clean ground-truth probe beats ten dropped re-runs. (3) The root cause was an unrequested cache abstraction - prefer the simplest thing that works (CLAUDE.md: "No new abstractions ... beyond what was asked").

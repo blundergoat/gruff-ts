@@ -1,5 +1,6 @@
 // Console command catalogue, shell completion scripts, and rule-list renderers for CLI surfaces.
 import { VERSION } from "./constants.ts";
+import { profileSummaries, type ProfileSummary } from "./profiles.ts";
 import { ruleDescriptors } from "./rules.ts";
 import type { RuleDescriptor } from "./types.ts";
 
@@ -24,6 +25,7 @@ const CONSOLE_COMMANDS = [
   { name: "help", description: "Display help for a command" },
   { name: "init", description: "Write the default .gruff-ts.yaml to the current directory." },
   { name: "list", description: "List commands" },
+  { name: "list-profiles", description: "List the built-in gruff profiles." },
   { name: "list-rules", description: "List gruff rule metadata." },
   { name: "report", description: "Render a gruff report to stdout or a file." },
   {
@@ -47,6 +49,25 @@ function renderRuleList(format: RuleListFormat): string {
     lines.push(`${descriptor.ruleId} | ${descriptor.pillar} | ${descriptor.severity} | ${descriptor.confidence} | ${descriptor.description}${threshold}${options}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+// Profile catalogue renderer. Mirrors renderRuleList: JSON is the integration surface for docs and
+// audits, and row formatting lives in profileListRow. The text form is kept deliberately plain
+// because it is only for terminal inspection and should not become a second schema.
+function renderProfileList(format: RuleListFormat): string {
+  const summaries = profileSummaries();
+  if (format === "json") {
+    return `${JSON.stringify({ tool: { name: "gruff-ts", version: VERSION }, profiles: summaries }, null, 2)}\n`;
+  }
+  const header = ["gruff-ts " + VERSION + ` profiles (${summaries.length})`, ""];
+  return `${[...header, ...summaries.map(profileListRow)].join("\n")}\n`;
+}
+
+// One text row per profile: name, enabled/total rule count, pillar count, an optional tightened-threshold
+// count, and the description. The tightened-threshold segment only appears for presets that set one.
+function profileListRow(summary: ProfileSummary): string {
+  const tightened = summary.tightenedThresholdCount > 0 ? ` | tightened thresholds: ${summary.tightenedThresholdCount}` : "";
+  return `${summary.name} | ${summary.enabledRuleCount}/${summary.totalRuleCount} rules | ${summary.enabledPillars.length} pillars${tightened} | ${summary.description}`;
 }
 
 /*
@@ -240,4 +261,4 @@ function completionShell(shellName: unknown): CompletionShell {
 }
 
 export type { RuleListFormat, CompletionShell };
-export { renderRuleList, renderRuleDetail, getRuleDescriptor, renderConsoleList, renderCompletionScript, completionShell };
+export { renderRuleList, renderProfileList, renderRuleDetail, getRuleDescriptor, renderConsoleList, renderCompletionScript, completionShell };

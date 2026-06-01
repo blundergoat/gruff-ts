@@ -4,6 +4,8 @@ Use these docs with the top-level README for the stable user-facing surface.
 
 ## Core Docs
 
+- [Philosophy](philosophy.md) - what gruff-ts optimises for and why it governs AI-generated code for human sign-off.
+- [Coding-agent hook](agent-hook.md) - wiring gruff-ts as a forcing function on agent output: changed-region scans, gate levels, and CI.
 - [Configuration](configuration.md) - config discovery, schema, allowlists, and rule overrides.
 - [Rules](rules.md) - rule IDs, severities, thresholds, and remediation guidance.
 - [Output Formats](output-formats.md) - text, JSON, HTML, Markdown, GitHub annotations, hotspot, and SARIF.

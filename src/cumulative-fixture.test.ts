@@ -14,7 +14,6 @@ import {
 } from "./test-fixtures.ts";
 
 const expandedRuleIds = new Set([
-  "complexity.npath",
   "docs.fixture-purpose-missing",
   "docs.magic-threshold-without-rationale",
   "docs.missing-error-behavior-doc",
@@ -74,8 +73,10 @@ const expandedRuleIds = new Set([
   "security.ssrf-candidate",
   "security.string-timer",
   "security.throw-non-error",
+  "security.unsafe-deserialization",
   "security.url-dependency",
   "security.weak-crypto",
+  "security.xxe-candidate",
   "sensitive-data.api-key-pattern",
   "sensitive-data.hardcoded-env-value",
   "sensitive-data.high-entropy-string",
@@ -90,7 +91,6 @@ const expandedRuleIds = new Set([
   "test-quality.snapshot-only-test",
   "test-quality.trivial-assertion",
   "test-quality.unused-mock",
-  "size.stylesheet-length",
   "waste.commented-out-code",
   "waste.empty-function",
   "waste.exported-any",
@@ -105,7 +105,7 @@ const expandedRuleIds = new Set([
 ]);
 
 test("cumulative expanded fixture covers every new rule with unique fingerprints", () => {
-  const report = analyseProject(cumulativeExpandedFixtureFiles(), cumulativeExpandedFixtureOptions());
+  const report = analyseProject(cumulativeExpandedFixtureFiles());
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   expandedRuleIds.forEach((ruleId: string) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
@@ -185,7 +185,6 @@ jobs:
       - run: echo "\${{ secrets.DEPLOY_TOKEN }}"
 `,
     "bin/bad.js": "#!/usr/bin/env node\nconsole.log('ok');\n",
-    "styles/expanded.css": ".a { color: red; }\n.b { color: blue; }\n.c { color: green; }\n.d { color: yellow; }\n",
     "tsconfig.json": JSON.stringify({
       compilerOptions: {
         strict: false,
@@ -256,6 +255,17 @@ function routeOrder(state: string, unusedFlag: boolean): string {
   if (state === "paid") return "paid";
   if (state === "sent") return "sent";
   if (state === "closed") return "closed";
+  if (state === "held") return "held";
+  if (state === "void") return "void";
+  if (state === "refunded") return "refunded";
+  if (state === "partial") return "partial";
+  if (state === "pending") return "pending";
+  if (state === "failed") return "failed";
+  if (state === "queued") return "queued";
+  if (state === "shipped") return "shipped";
+  if (state === "returned") return "returned";
+  if (state === "expired") return "expired";
+  if (state === "draft") return "draft";
   if (loadedText.length > 0) return loadedText;
   return "unknown";
 }
@@ -301,6 +311,10 @@ async function unsafe(userInput: string, userId: string, userIds: string[], req:
   fetch(req.body.url);
   res.redirect(req.query.next);
   new RegExp(process.argv[2]);
+  const serializedPayload = req.body.serialized;
+  nodeSerialize.unserialize(serializedPayload);
+  const xmlPayload = req.body.xml;
+  libxmljs.parseXml(xmlPayload, { noent: true });
   Math.random();
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
   const insecureAgent = { rejectUnauthorized: false, minVersion: "TLSv1" };
@@ -434,14 +448,4 @@ test("setup bloat", () => {
   expect(one).toBeDefined();
 });
 `;
-}
-
-/*
- * Custom NPath threshold because the runtime fixture deliberately exercises wide branch fanout
- * that would not trip the production default; the low stylesheet-length threshold lets a tiny CSS
- * file stand in for a 1500+ line stylesheet, intentional because inflating the cumulative fixture
- * corpus would slow every test run without adding behavioural coverage.
- */
-function cumulativeExpandedFixtureOptions(): Parameters<typeof analyseProject>[1] {
-  return { config: { rules: { "complexity.npath": { threshold: 20, severity: "warning" }, "size.stylesheet-length": { threshold: 3, severity: "warning" } } } };
 }
