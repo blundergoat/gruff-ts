@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - **JSON finding path alias and stable identity** - `analyse --format=json` and `report --format=json` now emit canonical `findings[].file` alongside the existing `findings[].filePath`; `filePath` is deprecated and will be removed in the next release. JSON findings also add `stableIdentity`, a line-insensitive 16-hex identity for external diff tooling. Existing `fingerprint` values, baselines, SARIF fingerprints, dashboard data, and in-memory `filePath` consumers are unchanged.
+- **Per-rule `severity:` overrides now apply to the descriptor-driven line rules** - the `security.*`, `modernisation.*`, and `waste.*` regex line checks (for example `security.new-function`, `security.eval-call`) emitted findings with a hardcoded severity, so a project's `rules.<id>.severity` override in `.gruff-ts.yaml` was silently ignored. `pushPatternCheckFindings` now resolves severity through `ruleSeverity`, like every other pillar; the descriptor severity stays the default. A project running a legitimate `new Function`/eval shape (such as a transpile-then-execute test loader) can set `security.new-function: { severity: warning }` to keep the finding visible without failing an `--fail-on error` gate. No default severity, schema, or `Finding` shape change. (`src/line-rules.ts`, `src/security-and-config.test.ts`)
 
 ## v0.3.0 - 2026-05-30
 

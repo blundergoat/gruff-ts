@@ -5,6 +5,14 @@ last_reviewed: 2026-06-03
 
 # Rule scanner footguns
 
+## Footgun: line-rule emitters hardcode severity, so config `severity:` overrides are silently dropped
+
+**Status:** active | **Created:** 2026-06-03 | **Evidence:** MEASURED (security.new-function CONFIGURE gap)
+
+There is no central pass that re-applies config severity to findings - each rule must consult config itself via `ruleSeverity(config, ruleId, default)` (`src/config.ts`, search: `function ruleSeverity`). So any emitter that passes a literal `severity:` makes a project's `rules.<id>.severity` override in `.gruff-ts.yaml` a silent no-op (no error, no warning). The pillar rules wired correctly are the model (`src/analyser.ts`, search: `"size.file-length"`; `src/blocks.ts`, search: `"size.function-length"`).
+
+`pushPatternCheckFindings` (`src/line-rules.ts`, search: `function pushPatternCheckFindings`) was fixed to route severity through `ruleSeverity`, so the `security.*`/`modernisation.*`/`waste.*` regex checks (e.g. `security.new-function`) now honor overrides - this is what lets a project running a legitimate `new Function`/eval shape set `severity: warning` instead of failing an `--fail-on error` gate, rather than the analyzer deciding that for every consumer. But sibling emitters in the same module still hardcode (`src/line-rules.ts`, search: `function pushCommentedOutCodeFinding`; search: `function pushLooseEqualityFinding`), as do the naming/type-safety/reliability passes. When adding or debugging a line rule, route severity through `ruleSeverity` or a `rules.<id>.severity` override is ignored. Regression proof: `src/security-and-config.test.ts` (search: `security line-rule severity honours config overrides`).
+
 ## Footgun: `typeof x === "function"` is often runtime behavior, not code shape
 
 **Status:** active | **Created:** 2026-06-03 | **Evidence:** OBSERVED (static-analysis-redundant-test QA)

@@ -139,6 +139,22 @@ test("extended type-safety config can disable new rules", () => {
   assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "modernisation.non-null-assertion"), false);
 });
 
+test("security line-rule severity honours config overrides", () => {
+  const source = `function loadHelper(transpiled: string): unknown {
+  return new Function(transpiled)();
+}
+`;
+  const defaultReport = analyseFixture(source);
+  const defaultFinding = defaultReport.findings.find((finding) => finding.ruleId === "security.new-function");
+  assert.equal(defaultFinding?.severity, "error");
+
+  const tunedReport = analyseFixture(source, {
+    config: { rules: { "security.new-function": { severity: "warning" } } },
+  });
+  const tunedFinding = tunedReport.findings.find((finding) => finding.ruleId === "security.new-function");
+  assert.equal(tunedFinding?.severity, "warning");
+});
+
 // Fixtures for the dependency/package-config health test: risky package settings vs a clean baseline.
 const RISKY_PACKAGE_JSON_FIXTURE = {
   "package.json": JSON.stringify({

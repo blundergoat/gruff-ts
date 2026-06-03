@@ -4,6 +4,7 @@
 // detection and the block-rule parameter pass. Dead-code rules (unused imports, unreachable) are
 // invoked by the cli orchestrator before/after this module so the stable per-line emission order
 // stays a single contract.
+import { ruleSeverity } from "./config.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts";
@@ -256,13 +257,14 @@ function pushStringTimerFinding(context: LineRuleContext): void {
   }
 }
 
-// Runs the descriptor-driven line checks split into code-shape vs literal-aware. Literal checks
-// use `rawPatternStartsInCode` to confirm the match starts in real code, not inside a comment.
-// Reports each matching rule's stable line-anchored finding.
+// Runs the descriptor-driven line checks split into code-shape vs literal-aware. Literal checks use
+// `rawPatternStartsInCode` to confirm a match starts in real code, not inside a comment. Each finding's
+// severity is resolved through `ruleSeverity`, so a project's per-rule `severity:` override applies.
+// Reports each matching rule's stable, line-anchored finding; the descriptor severity is the default.
 function pushPatternCheckFindings(context: LineRuleContext): void {
   for (const check of context.codeChecks) {
     if (check.pattern.test(context.codeLine)) {
-      context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: check.severity, pillar: check.pillar }));
+      context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: ruleSeverity(context.config, check.ruleId, check.severity), pillar: check.pillar }));
     }
   }
   for (const check of context.literalChecks) {
@@ -270,7 +272,7 @@ function pushPatternCheckFindings(context: LineRuleContext): void {
       continue;
     }
     if (rawPatternStartsInCode(context.line, context.codeLine, check.globalPattern ?? check.pattern)) {
-      context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: check.severity, pillar: check.pillar }));
+      context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: ruleSeverity(context.config, check.ruleId, check.severity), pillar: check.pillar }));
     }
   }
 }
