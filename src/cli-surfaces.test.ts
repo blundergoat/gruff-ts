@@ -16,14 +16,16 @@ test("root CLI exposes gruff console command and option parity", () => {
   const list = execFileSync("./bin/gruff-ts", [], { encoding: "utf8" });
   const help = execFileSync("./bin/gruff-ts", ["--help"], { encoding: "utf8" });
   const explicitList = execFileSync("./bin/gruff-ts", ["list"], { encoding: "utf8" });
+  const version = execFileSync("./bin/gruff-ts", ["--version"], { encoding: "utf8" });
 
   assert.equal(help, list);
   assert.equal(explicitList, list);
+  assert.equal(version, `gruff-ts ${VERSION}\n`);
   assert.match(list, new RegExp(`^gruff-ts ${VERSION_PATTERN}\\n\\nUsage:\\n  command \\[options\\] \\[arguments\\]`));
   ["-h, --help", "--silent", "-q, --quiet", "-V, --version", "--ansi|--no-ansi", "-n, --no-interaction", "-v|vv|vvv, --verbose"].forEach((option) => {
     assert.match(list, new RegExp(option.replace(/[|]/g, "\\|")));
   });
-  ["analyse", "completion", "dashboard", "help", "init", "list", "list-rules", "report", "summary"].forEach((command) => {
+  ["analyse", "completion", "dashboard", "help", "init", "list", "list-profiles", "list-rules", "report", "summary"].forEach((command) => {
     assert.match(list, new RegExp(`^  ${command}\\s+`, "m"));
   });
 });
@@ -236,7 +238,7 @@ test("summary CLI reports generated and applied baseline metadata", () => {
       { encoding: "utf8" },
     );
     assert.match(applied, /^Baseline: explicit .*gruff-baseline\.json; suppressed [1-9]\d* findings$/m);
-    assert.match(applied, /^Findings: 0 total, 0 error, 0 warning, 0 advisory$/m);
+    assert.match(applied, /^Findings: 0 total · 0 error · 0 warning · 0 advisory$/m);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
   }
@@ -256,6 +258,29 @@ test("json report uses schema version", () => {
   assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v2"/);
 });
 
+test("json report emits canonical file alias without mutating findings", () => {
+  const report = analyseFixture(`function run(value: string): void {
+  eval(value);
+}
+`);
+  const before = JSON.stringify(report);
+  const payload = JSON.parse(renderReport(report, "json")) as {
+    findings: Array<{ file: string; filePath: string; stableIdentity: string }>;
+    score: { topOffenders: Array<{ file: string; filePath: string }> };
+  };
+  const [finding] = payload.findings;
+  const [offender] = payload.score.topOffenders;
+  const [nativeFinding] = report.findings;
+  assert.ok(finding);
+  assert.equal(finding.file, finding.filePath);
+  assert.match(finding.stableIdentity, /^[0-9a-f]{16}$/);
+  assert.ok(offender);
+  assert.equal(offender.file, offender.filePath);
+  assert.ok(nativeFinding);
+  assert.equal(JSON.stringify(report), before);
+  assert.equal("file" in nativeFinding, false);
+});
+
 // Fixture for the SARIF render test. Hoisted out of the test body so the test reaches its first
 // assertion within the setup-bloat threshold; the fixture data itself is non-trivial because it
 // encodes the cross-pillar coverage SARIF must round-trip.
@@ -267,9 +292,9 @@ const SARIF_FIXTURE_REPORT: AnalysisReport = {
   paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
   findings: [
-    { ruleId: "security.eval-call", message: "Avoid eval().", filePath: "./src\\bad.ts", line: 7, endLine: 10, column: 3, severity: "error", pillar: "security", secondaryPillars: ["sensitive-data"], tier: "v0.1", confidence: "high", symbol: "run", remediation: "Use a dispatch table.", metadata: { target: "eval" }, fingerprint: "abc123" },
-    { ruleId: "waste.console-log", message: "Avoid console logging.", filePath: "src\\warn.ts", line: 8, severity: "warning", pillar: "maintainability", secondaryPillars: [], tier: "v0.1", confidence: "high", metadata: {}, fingerprint: "def456" },
-    { ruleId: "docs.missing-public-doc", message: "Document public exports.", filePath: "./src/docs.ts", line: 9, severity: "advisory", pillar: "documentation", secondaryPillars: [], tier: "v0.1", confidence: "medium", metadata: { exported: true }, fingerprint: "ghi789" },
+    { ruleId: "security.eval-call", message: "Avoid eval().", filePath: "./src\\bad.ts", line: 7, endLine: 10, column: 3, severity: "error", pillar: "security", secondaryPillars: ["sensitive-data"], tier: "v0.1", confidence: "high", symbol: "run", remediation: "Use a dispatch table.", metadata: { target: "eval" }, fingerprint: "abc123", stableIdentity: "stable-abc123" },
+    { ruleId: "waste.console-log", message: "Avoid console logging.", filePath: "src\\warn.ts", line: 8, severity: "warning", pillar: "maintainability", secondaryPillars: [], tier: "v0.1", confidence: "high", metadata: {}, fingerprint: "def456", stableIdentity: "stable-def456" },
+    { ruleId: "docs.missing-public-doc", message: "Document public exports.", filePath: "./src/docs.ts", line: 9, severity: "advisory", pillar: "documentation", secondaryPillars: [], tier: "v0.1", confidence: "medium", metadata: { exported: true }, fingerprint: "ghi789", stableIdentity: "stable-ghi789" },
   ],
   score: {
     composite: 91,
@@ -451,8 +476,8 @@ const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
   paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
   findings: [
-    { ruleId: "docs.<script>", message: "Message with <script>alert(1)</script>", filePath: "src/<bad>.ts", line: 7, severity: "warning", pillar: "documentation", secondaryPillars: [], tier: "v0.1", confidence: "high", symbol: "badSymbol", metadata: {}, fingerprint: "abc123" },
-    { ruleId: "complexity.cyclomatic", message: "Function has cyclomatic complexity 12.", filePath: "src/Complex.ts", line: 11, severity: "error", pillar: "complexity", secondaryPillars: [], tier: "v0.1", confidence: "high", symbol: "run", metadata: {}, fingerprint: "def456" },
+    { ruleId: "docs.<script>", message: "Message with <script>alert(1)</script>", filePath: "src/<bad>.ts", line: 7, severity: "warning", pillar: "documentation", secondaryPillars: [], tier: "v0.1", confidence: "high", symbol: "badSymbol", metadata: {}, fingerprint: "abc123", stableIdentity: "stable-abc123" },
+    { ruleId: "complexity.cyclomatic", message: "Function has cyclomatic complexity 12.", filePath: "src/Complex.ts", line: 11, severity: "error", pillar: "complexity", secondaryPillars: [], tier: "v0.1", confidence: "high", symbol: "run", metadata: {}, fingerprint: "def456", stableIdentity: "stable-def456" },
   ],
   score: {
     composite: 82.5,

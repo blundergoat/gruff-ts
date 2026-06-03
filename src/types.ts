@@ -143,6 +143,7 @@ export interface Finding {
   remediation?: string;
   metadata: Record<string, unknown>;
   fingerprint: string;
+  stableIdentity: string;
 }
 
 /** Non-finding runtime diagnostic emitted while preparing or reading inputs. */

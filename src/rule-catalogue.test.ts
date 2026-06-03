@@ -77,6 +77,7 @@ const riskyRuleIdsRequiringNoisyValidProof = [
   "sensitive-data.api-key-pattern",
   "sensitive-data.high-entropy-string",
   "test-quality.only-skip",
+  "test-quality.static-analysis-redundant-test",
   "waste.commented-out-code",
 ] as const;
 
@@ -354,6 +355,19 @@ const riskyRuleQualityDoctrine = [
     missingInvalidFixture: "focused or skipped test remains reported when noisy fixtures are present",
     falsePositiveEscapeHatch: "run against masked test block source only",
     fingerprintStability: "anchor to the test block start line",
+  },
+  {
+    ruleId: "test-quality.static-analysis-redundant-test",
+    signalSource: "test block assertion scan for direct typeof-function, self-instance, and visible non-null return assertions",
+    expectedPillar: "test-quality",
+    expectedSeverity: "advisory",
+    expectedConfidence: "high",
+    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
+    invalidFixture: "unit test assertion that checks a statically named function, self-construction instance relationship, or visible non-null return declaration",
+    noisyValidFixture: "runtime payload shape assertions, behavioral value assertions, parser/error/process checks, and integration-contract tests",
+    missingInvalidFixture: "shape-only assertion remains reported when behavioral assertions are present in the same test",
+    falsePositiveEscapeHatch: "match only direct code-shape assertions and require visible local declarations for non-null return candidates",
+    fingerprintStability: "anchor to the flagged assertion line and test block symbol so multiple candidates in one test stay distinct",
   },
   {
     ruleId: "waste.commented-out-code",

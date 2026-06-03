@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- **JSON finding path alias and stable identity** - `analyse --format=json` and `report --format=json` now emit canonical `findings[].file` alongside the existing `findings[].filePath`; `filePath` is deprecated and will be removed in the next release. JSON findings also add `stableIdentity`, a line-insensitive 16-hex identity for external diff tooling. Existing `fingerprint` values, baselines, SARIF fingerprints, dashboard data, and in-memory `filePath` consumers are unchanged.
+
 ## v0.3.0 - 2026-05-30
 
 0.3.0 release. Changes since 0.2.0: three breaking rule removals (`complexity.npath`; `size.stylesheet-length` with CSS dropped from scanned file types; and the `design.god-function` composite), region-scoped incremental analysis, authoritative `paths.ignore` with a new `check-ignore` command, sensitive-data PHI/GCP detection, named config profiles with `extends:` inheritance, and a documentation reframe around gruff's purpose - governing AI-generated code so a human who did not write it can sign off on it.

@@ -1,9 +1,8 @@
-// Coverage for security-flow-rules: the same-line module surface plus the
-// bounded intra-function AST flow pass. Broader same-line behavioural
-// cases also live in security-and-config.test.ts.
+// Coverage for security-flow-rules: the bounded intra-function AST flow pass.
+// Broader same-line behavioural cases also live in security-and-config.test.ts.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyseSecurityFlow, analyseSecurityFlowLine } from "./security-flow-rules.ts";
+import { analyseSecurityFlow } from "./security-flow-rules.ts";
 import type { SourceFile } from "./discovery.ts";
 import type { Finding } from "./types.ts";
 
@@ -29,11 +28,6 @@ function analyseSecurityFixture(source: string): Finding[] {
   analyseSecurityFlow(fileStub, source, findings);
   return findings;
 }
-
-test("security-flow-rules module loads its public surface", () => {
-  assert.equal(typeof analyseSecurityFlowLine, "function");
-  assert.equal(typeof analyseSecurityFlow, "function");
-});
 
 test("flags external input reaching a filesystem sink across lines", () => {
   const findings = analyseSecurityFixture(

@@ -70,6 +70,25 @@ test("sleeps without assertion", async () => {
   assert.equal(fingerprints.get("modernisation.public-property"), "c80058bf4fd46024");
 });
 
+test("stable identity survives line shifts while fingerprint remains line-sensitive", () => {
+  const first = analyseFixture(`function run(value: string): void {
+  eval(value);
+}
+`);
+  const shifted = analyseFixture(`
+function run(value: string): void {
+  eval(value);
+}
+`);
+  const firstEval = first.findings.find((finding) => finding.ruleId === "security.eval-call");
+  const shiftedEval = shifted.findings.find((finding) => finding.ruleId === "security.eval-call");
+  assert.ok(firstEval);
+  assert.ok(shiftedEval);
+  assert.notEqual(firstEval.fingerprint, shiftedEval.fingerprint);
+  assert.equal(firstEval.stableIdentity, shiftedEval.stableIdentity);
+  assert.match(firstEval.stableIdentity, /^[0-9a-f]{16}$/);
+});
+
 const FIRST_SLICE_RULE_IDS = new Set([
   "waste.commented-out-code",
   "naming.identifier-quality",

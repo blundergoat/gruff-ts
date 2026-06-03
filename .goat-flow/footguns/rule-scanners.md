@@ -1,9 +1,27 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-06-01
+last_reviewed: 2026-06-03
 ---
 
 # Rule scanner footguns
+
+## Footgun: `typeof x === "function"` is often runtime behavior, not code shape
+
+**Status:** active | **Created:** 2026-06-03 | **Evidence:** OBSERVED (static-analysis-redundant-test QA)
+
+`test-quality.static-analysis-redundant-test` (`src/test-block-rules.ts`, search: `function typeofFunctionAssertions`) must not treat every `typeof <identifier-or-member> === "function"` assertion as a static-analysis-redundant candidate. The same syntax is a legitimate runtime contract when the operand comes from a factory, plugin loader, parsed module, dependency injection container, callback registry, or any other call result:
+
+```ts
+const handler = createMiddleware(options);
+assert.equal(typeof handler, "function");
+
+const plugin = loadPlugin("formatter");
+assert.equal(typeof plugin.activate, "function");
+```
+
+Directly referencing `handler` or `plugin.activate` does not prove a statically named function exists; TypeScript can only validate the variable/member's declared type if the scanner has actual static evidence for that operand. A message claiming "TypeScript type checking or module loading can validate" unresolved locals is factually false and pushes reviewers to delete useful behavior tests.
+
+When implementing or extending this rule, require static evidence before emitting a high-confidence `typeof ... "function"` finding: a visible function declaration, function-valued const, named import, namespace import member, or another source-backed fact with a source proof. Suppress or downgrade unresolved locals and members bound from calls. Add paired fixtures: one shape-only hit and one runtime-callable non-hit using the same assertion syntax (`src/test-block-rules.test.ts`, search: `keeps runtime callable typeof assertions quiet`).
 
 ## Footgun: context-doc rules read ONLY the last `//` line above a declaration
 

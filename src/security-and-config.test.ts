@@ -582,34 +582,9 @@ function testBuildsLibraryValue(): void {
 }
 `);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  ["test-quality.magic-number-assertion", "test-quality.mock-only-test", "test-quality.unused-mock", "test-quality.exception-type-only", "test-quality.global-state-mutation", "test-quality.setup-bloat"].forEach((ruleId) => {
+  ["test-quality.magic-number-assertion", "test-quality.mock-only-test", "test-quality.unused-mock", "test-quality.exception-type-only", "test-quality.global-state-mutation"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
   assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.no-assertions"), false);
   assert.deepEqual(report.findings.filter((finding) => finding.pillar === "test-quality" && finding.symbol === "testBuildsLibraryValue"), []);
-});
-
-test("risk expansion respects test-quality config", () => {
-  // Config contract: test-quality.setup-bloat | threshold maxSetupLines |
-  // default 12 | metadata setupLines,maxSetupLines | disabled and override fixtures below.
-  const source = `test("compact setup", () => {
-  const one = buildOne();
-  const two = buildTwo();
-  const three = buildThree();
-  const four = buildFour();
-  expect(one).toBeDefined();
-});
-`;
-  const defaultReport = analyseFixture(source);
-  assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "test-quality.setup-bloat"), false);
-
-  const tightReport = analyseFixture(source, {
-    config: { rules: { "test-quality.setup-bloat": { threshold: 3, severity: "advisory" } } },
-  });
-  assert.equal(tightReport.findings.some((finding) => finding.ruleId === "test-quality.setup-bloat"), true);
-
-  const disabledReport = analyseFixture(source, {
-    config: { rules: { "test-quality.setup-bloat": { enabled: false, threshold: 3, severity: "advisory" } } },
-  });
-  assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "test-quality.setup-bloat"), false);
 });

@@ -13,6 +13,9 @@ profile:
       options:
         minFiles: 4
         minLines: 80
+    # Keep shape-only unit-test assertions visible as advisory findings.
+    test-quality.static-analysis-redundant-test:
+      severity: advisory
 
 # Per-command default for --fail-on. Precedence: CLI flag > minimumSeverity > binary default.
 # `dashboard` is intentionally NOT a valid key here - it has no --fail-on flag. See ADR-004.

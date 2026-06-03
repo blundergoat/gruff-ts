@@ -59,7 +59,7 @@ export function analyseCommentQualityRules(input: CommentQualityRuleInput): void
   analyseCommentedDeclarationQuality(file, lines, comments, declarations, findings);
   analyseFunctionContextCommentQuality({ file, lines, comments, blocks, config, findings });
   pushMagicThresholdFindings(file, lines, codeSource, comments, findings);
-  pushFixturePurposeFindings({ file, source, codeSource, lines, comments, blocks, config, findings });
+  pushFixturePurposeFindings({ file, source, codeSource, lines, comments, blocks, findings });
 }
 
 /*
