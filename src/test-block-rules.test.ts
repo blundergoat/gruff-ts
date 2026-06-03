@@ -25,6 +25,7 @@ const BASE_OPTIONS: AnalysisOptions = {
 
 const TEST_START_LINE = 3;
 const EXPECTED_MAGIC_VALUE = 42;
+const STATIC_REDUNDANT_RULE_ID = "test-quality.static-analysis-redundant-test";
 
 const ASSERTION_AND_MOCK_CALLBACK = `
   const unusedMock = jest.fn();
@@ -119,6 +120,63 @@ const CONST_BOUND_FIXTURE_GUARD_CALLBACK = `
   }
 `;
 
+const STATIC_ANALYSIS_REDUNDANT_CALLBACK = `
+  function renderCatalogue(): string {
+    return "catalogue";
+  }
+  const analyseSecurityFlow = () => undefined;
+  assert.equal(typeof renderCatalogue, "function");
+  assert.strictEqual(typeof analyseSecurityFlow, "function", "public export");
+  assert.ok(new FindingReport() instanceof FindingReport);
+  expect(new Result()).toBeInstanceOf(Result);
+`;
+
+const IMPORTED_STATIC_ANALYSIS_REDUNDANT_CALLBACK = `
+  assert.equal(typeof rules.ruleDescriptors, "function");
+  assert.strictEqual(typeof analyseSecurityFlow, "function", "public export");
+`;
+
+const IMPORTED_STATIC_CONTEXT_PREFIX = `
+import * as rules from "./rules.ts";
+import { analyseSecurityFlow } from "./security-flow-rules.ts";
+`;
+
+const NON_NULLABLE_RETURN_CALLBACK = `
+  interface Result {
+    value: string;
+  }
+  function getResult(): Result {
+    return { value: "ok" };
+  }
+  const buildResult = (): Promise<Result> => Promise.resolve({ value: "ok" });
+  assert.notEqual(getResult(), null);
+  expect(buildResult()).toBeDefined();
+  assert.notEqual(service.getResult(), null);
+`;
+
+const RUNTIME_PAYLOAD_TYPE_CALLBACK = `
+  const rawRow = JSON.parse(payload);
+  assert.ok(rawRow && typeof rawRow === "object");
+  assert.equal(typeof row.pillar, "string");
+  assert.equal(typeof row.score, "number");
+  assert.equal(typeof row.findings, "number");
+`;
+
+const RUNTIME_CALLABLE_TYPEOF_CALLBACK = `
+  const handler = createMiddleware({ timeout: 100 });
+  assert.equal(typeof handler, "function");
+  const plugin = loadPlugin("formatter");
+  assert.equal(typeof plugin.activate, "function");
+`;
+
+const MIXED_STATIC_AND_BEHAVIOR_CALLBACK = `
+  function renderReport(): string[] {
+    return [];
+  }
+  assert.equal(typeof renderReport, "function");
+  assert.deepEqual(renderer.renderReport(input), ["finding.md"]);
+`;
+
 test("analyseTestBlock reports assertion and mock quality findings", () => {
   const findings = analyseTestCallback(ASSERTION_AND_MOCK_CALLBACK);
   const magicFinding = findings.find((finding) => finding.ruleId === "test-quality.magic-number-assertion");
@@ -161,19 +219,6 @@ test("analyseTestBlock ignores numeric assertions in named constant-contract tes
   );
 
   assert.deepEqual(findings.filter((finding) => finding.ruleId === "test-quality.magic-number-assertion"), []);
-});
-
-test("analyseTestBlock reports setup bloat metadata from default config", () => {
-  const findings = analyseTestCallback(SETUP_BLOAT_CALLBACK);
-
-  assert.deepEqual(ruleIds(findings), ["test-quality.setup-bloat"]);
-  assert.deepEqual(findings[0]?.metadata, { setupLines: 13, maxSetupLines: 12 });
-});
-
-test("analyseTestBlock gives broad-flow tests a larger setup budget", () => {
-  const findings = analyseTestCallback(SETUP_BLOAT_CALLBACK, "test/integration/dashboard-server.test.ts");
-
-  assert.deepEqual(ruleIds(findings), []);
 });
 
 test("analyseTestBlock reports structural test smells once per block", () => {
@@ -222,10 +267,76 @@ test("analyseTestBlock accepts const-bound fixture loop guard clauses", () => {
   assert.deepEqual(ruleIds(findings), []);
 });
 
+test("analyseTestBlock reports static-analysis-redundant shape assertions", () => {
+  const findings = analyseTestCallback(STATIC_ANALYSIS_REDUNDANT_CALLBACK, SOURCE_FILE.displayPath, "asserts static shape");
+  const staticFindings = findings.filter((finding) => finding.ruleId === STATIC_REDUNDANT_RULE_ID);
+
+  assert.equal(staticFindings.length, 4);
+  assert.equal(staticFindings.every((finding) => finding.confidence === "high"), true);
+  assert.match(staticFindings[0]?.message ?? "", /Static-analysis-redundant candidate: high confidence/);
+  assert.equal(staticFindings[0]?.metadata.testFile, SOURCE_FILE.displayPath);
+  assert.equal(staticFindings[0]?.metadata.testMethod, "asserts static shape");
+  assert.match(String(staticFindings[0]?.metadata.assertion), /typeof renderCatalogue/);
+  assert.match(String(staticFindings[0]?.metadata.staticFact), /declared as a function/);
+  assert.match(String(staticFindings[0]?.metadata.sourceProof), /src\/test-block-rules\.test\.ts:4/);
+  assert.match(String(staticFindings[0]?.metadata.recommendation), /observable behavior/);
+});
+
+test("analyseTestBlock reports imported static-analysis-redundant shape assertions only with import evidence", () => {
+  const findings = analyseTestCallback(IMPORTED_STATIC_ANALYSIS_REDUNDANT_CALLBACK, SOURCE_FILE.displayPath, "asserts imported static shape", IMPORTED_STATIC_CONTEXT_PREFIX);
+  const staticFindings = findings.filter((finding) => finding.ruleId === STATIC_REDUNDANT_RULE_ID);
+
+  assert.equal(staticFindings.length, 2);
+  assert.deepEqual(staticFindings.map((finding) => finding.metadata.sourceProof), [
+    "src/test-block-rules.test.ts:2",
+    "src/test-block-rules.test.ts:3",
+  ]);
+  assert.match(String(staticFindings[0]?.metadata.staticFact), /namespace import/);
+  assert.match(String(staticFindings[1]?.metadata.staticFact), /named import/);
+});
+
+test("analyseTestBlock reports non-null assertions only for visible non-nullable return declarations", () => {
+  const findings = analyseTestCallback(NON_NULLABLE_RETURN_CALLBACK, SOURCE_FILE.displayPath, "asserts non-null declared returns");
+  const staticFindings = findings.filter((finding) => finding.ruleId === STATIC_REDUNDANT_RULE_ID);
+
+  assert.equal(staticFindings.length, 2);
+  assert.deepEqual(staticFindings.map((finding) => finding.metadata.staticFact), [
+    "`getResult()` declares a non-nullable `Result` return type.",
+    "`buildResult()` declares a non-nullable `Promise<Result>` return type.",
+  ]);
+});
+
+test("analyseTestBlock keeps runtime payload type assertions quiet", () => {
+  const findings = analyseTestCallback(RUNTIME_PAYLOAD_TYPE_CALLBACK);
+
+  assert.deepEqual(findings.filter((finding) => finding.ruleId === STATIC_REDUNDANT_RULE_ID), []);
+});
+
+test("analyseTestBlock keeps runtime callable typeof assertions quiet", () => {
+  const findings = analyseTestCallback(RUNTIME_CALLABLE_TYPEOF_CALLBACK);
+
+  assert.deepEqual(findings.filter((finding) => finding.ruleId === STATIC_REDUNDANT_RULE_ID), []);
+});
+
+test("analyseTestBlock reports only the redundant assertion in mixed behavior tests", () => {
+  const findings = analyseTestCallback(MIXED_STATIC_AND_BEHAVIOR_CALLBACK);
+
+  assert.deepEqual(
+    findings.filter((finding) => finding.ruleId === STATIC_REDUNDANT_RULE_ID).map((finding) => finding.metadata.assertion),
+    ['assert.equal(typeof renderReport, "function")'],
+  );
+});
+
 // Runs one callback-shaped fixture through the test-block rule pass. Invariant: default rule config is used.
-function analyseTestCallback(callbackBody: string, displayPath = SOURCE_FILE.displayPath, testName = "fixture"): Finding[] {
+function analyseTestCallback(callbackBody: string, displayPath = SOURCE_FILE.displayPath, testName = "fixture", staticSourcePrefix = ""): Finding[] {
   const findings: Finding[] = [];
-  analyseTestBlock({ ...SOURCE_FILE, displayPath }, testBlockFixture(callbackBody, testName), defaultTestConfig(), findings);
+  const block = testBlockFixture(callbackBody, testName);
+  const staticSource = `${staticSourcePrefix}${block.body}`;
+  analyseTestBlock({ ...SOURCE_FILE, displayPath }, block, findings, {
+    source: staticSource,
+    codeSource: staticSource,
+    startLine: staticSourcePrefix === "" ? TEST_START_LINE : 1,
+  });
   return findings;
 }
 

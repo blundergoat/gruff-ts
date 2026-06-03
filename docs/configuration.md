@@ -254,7 +254,4 @@ rules:
   size.function-length:
     threshold: 30
     severity: warning
-  test-quality.setup-bloat:
-    threshold: 12
-    severity: advisory
 ```

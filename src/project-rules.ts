@@ -1,22 +1,13 @@
-// Cross-file architecture rules (deep imports, cycles, large-module concentration), test-adequacy
-// (missing-nearby-test), and the path-classification helpers (isTestPath, isFixtureLikePath, etc.)
-// every rule pass shares. Pulls the project-index types and the rules that consume them out of cli.ts
-// so the orchestrator stays lean.
-import { basename, dirname as dirnamePath, extname, join } from "node:path";
+// Cross-file architecture rules (deep imports, cycles, large-module concentration) and the
+// path-classification helpers (isTestPath, isFixtureLikePath, etc.) every rule pass shares. Pulls the
+// project-index types and the rules that consume them out of cli.ts so the orchestrator stays lean.
+import { dirname as dirnamePath, extname, join } from "node:path";
 import { isString } from "./config-parse.ts";
 import { optionNumber, ruleSeverity, threshold } from "./config.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { fileBaseName } from "./findings-helpers.ts";
-import { byteLine } from "./text-scans.ts";
 import type { Config, Finding, Severity } from "./types.ts";
-
-// First exported callable/value in a production file. Missing-nearby-test only needs this compact
-// surface, so the project index does not retain full source bodies after per-file analysis.
-export interface ProjectExportedSurface {
-  symbol: string;
-  line: number;
-}
 
 // Read-once snapshot of a discovered file. Lines are cached because cross-file project rules
 // scan each source repeatedly - splitting once amortises the cost across rule passes.
@@ -27,7 +18,6 @@ export interface ProjectSource {
   file: SourceFile;
   lines: string[];
   templateMaskedLines: string[];
-  exportedSurface?: ProjectExportedSurface;
 }
 
 // Project-wide aggregate built once per scan and reused by every architecture rule (cycle detection,
@@ -105,12 +95,6 @@ export function analyseArchitectureRules(index: ProjectIndex, config: Config, fi
   analyseDeepRelativeImports(index, config, findings);
   analyseCircularImports(index, findings);
   analyseLargeModuleConcentration(index, config, findings);
-}
-
-// Container for test-adequacy rules. Just one rule today; existing as a stable shape so additions
-// inherit the same project-index contract without each touching the entry point.
-export function analyseTestAdequacyRules(index: ProjectIndex, findings: Finding[]): void {
-  analyseMissingNearbyTests(index, findings);
 }
 
 /*
@@ -424,102 +408,6 @@ function visitImportCycle(
 // purpose - adding a path category here changes the rule surface of every production-only rule.
 export function isProductionSourcePath(path: string): boolean {
   return !isTestPath(path) && !isDeclarationPath(path) && !isFixtureLikePath(path) && !path.split("/").includes("generated");
-}
-
-/*
- * Reports exported callables whose file has no neighbouring `.test.ts` / `.spec.ts`. The stable
- * neighbour rules (`hasNearbyTest`) define what counts - false positives are likelier than missed
- * cases, so the rule is intentionally conservative.
- */
-function analyseMissingNearbyTests(index: ProjectIndex, findings: Finding[]): void {
-  const testSources = index.scriptSources.filter((source) => isTestPath(source.file.displayPath));
-  const testPaths = new Set(testSources.map((source) => source.file.displayPath));
-  for (const source of index.scriptSources.filter((candidate) => isProductionSourcePath(candidate.file.displayPath))) {
-    const exported = source.exportedSurface;
-    if (!exported || hasNearbyTest(source.file.displayPath, testPaths) || hasCentralTestImport(source.file.displayPath, testSources, index.importsByFile)) {
-      continue;
-    }
-    findings.push(
-      makeFinding({
-        ruleId: "test-quality.missing-nearby-test",
-        message: `Exported source file \`${source.file.displayPath}\` has no nearby test file.`,
-        filePath: source.file.displayPath,
-        line: exported.line,
-        severity: "advisory",
-        pillar: "test-quality",
-        confidence: "medium",
-        symbol: exported.symbol,
-        remediation: "Add a focused test beside the source file or under a nearby __tests__/tests directory.",
-        metadata: { expectedTestBase: fileBaseName(source.file.displayPath) },
-      }),
-    );
-  }
-}
-
-// Centralized `test/unit` or `test/integration` suites often import the source directly instead
-// of matching filenames. Treat that import edge as nearby enough to avoid layout false positives.
-function hasCentralTestImport(sourcePath: string, testSources: ProjectSource[], importsByFile: Map<string, ImportEdge[]>): boolean {
-  return testSources.some((testSource) => (importsByFile.get(testSource.file.displayPath) ?? []).some((edge) => edge.targetPath === sourcePath));
-}
-
-// Returns the first exported callable/value seen - one finding per file is sufficient because
-// the rule's signal is "this file ships an API surface", not "every export is untested".
-export function exportedSurface(source: string): ProjectExportedSurface | undefined {
-  const match = source.match(/\bexport\s+(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
-  if (!match?.[1]) {
-    return undefined;
-  }
-  return { symbol: match[1], line: byteLine(source, match.index ?? 0) };
-}
-
-// True when a same-name test file exists alongside the source, in a sibling `__tests__`/`tests`
-// directory, or anywhere under a top-level `test`/`tests` tree. Mirrors common project layouts;
-// expanding this list widens what counts as "tested".
-function hasNearbyTest(sourcePath: string, testPaths: Set<string>): boolean {
-  const sourceBase = stripSourceExtension(sourcePath);
-  const sourceName = basename(sourceBase);
-  const sourceDir = displayDir(sourcePath);
-  const nearbyDirs = new Set([sourceDir, joinDisplay(sourceDir, "__tests__"), joinDisplay(sourceDir, "tests"), "test", "tests"]);
-  for (const testPath of testPaths) {
-    const testBase = stripTestMarker(stripSourceExtension(testPath));
-    if (basename(testBase) !== sourceName) {
-      continue;
-    }
-    if (testBase === sourceBase || nearbyDirs.has(displayDir(testPath)) || isTopLevelTestPath(testPath)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Top-level `test/` and `tests/` trees are common central suite layouts. This helper is separate
-// from `isTestPath` because nearby-test matching still requires basename agreement.
-function isTopLevelTestPath(path: string): boolean {
-  return path.startsWith("test/") || path.startsWith("tests/");
-}
-
-// Drops the trailing `.ts`/`.tsx`/`.js`/`.jsx`/`.mts`/`.cjs`/`.mjs` extension so source-and-test
-// filename comparison is extension-agnostic. Used together with `stripTestMarker`.
-function stripSourceExtension(path: string): string {
-  return path.replace(/\.[cm]?[tj]sx?$/, "");
-}
-
-// Drops the conventional `.test` / `.spec` suffix before comparing a test path to a source path.
-function stripTestMarker(path: string): string {
-  return path.replace(/\.(?:test|spec)$/, "");
-}
-
-// Collapses a path's directory portion to the empty string at the project root so
-// `hasNearbyTest`'s nearbyDirs lookup uses one canonical key for root-level files.
-function displayDir(path: string): string {
-  const dir = normalizeDisplayPath(dirnamePath(path));
-  return dir === "." ? "" : dir;
-}
-
-// POSIX-style join that handles the empty-prefix case so `joinDisplay("", "x")` returns `"x"`,
-// not `"/x"` - needed for paths that live directly at the project root.
-function joinDisplay(left: string, right: string): string {
-  return left ? `${left}/${right}` : right;
 }
 
 // `__tests__/` and `tests/` directories, plus `.test.ts` / `.spec.ts` filename suffix. The same

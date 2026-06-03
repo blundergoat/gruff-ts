@@ -90,7 +90,6 @@ const BUILT_IN_PROFILE_SPECS: readonly BuiltInProfile[] = [
       "size.parameter-count": 4,
       "sensitive-data.hardcoded-env-value": 12,
       "sensitive-data.high-entropy-string": 24,
-      "test-quality.setup-bloat": 8,
     },
     severities: {},
   },

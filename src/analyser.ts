@@ -12,7 +12,7 @@ import { absolutize, discoverSources, displayPath, type SourceFile } from "./dis
 import { makeFinding } from "./findings.ts";
 import { finding } from "./findings-helpers.ts";
 import { commentRecords } from "./comment-scanner.ts";
-import { analyseArchitectureRules, analyseTestAdequacyRules, buildProjectIndex, exportedSurface, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
+import { analyseArchitectureRules, buildProjectIndex, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
 import { analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks, parameterNames } from "./blocks.ts";
 import { analyseClassRules, analyseAcronymCase, analyseInconsistentCasing, analyseInterfaceFields, collectDeclaredIdentifiers } from "./class-rules.ts";
 import { analyseDeadCode, analyseUnreachable, analyseUnusedImports } from "./dead-code-rules.ts";
@@ -178,8 +178,7 @@ function shouldRetainProjectSource(file: SourceFile, source: string): boolean {
 function projectSource(file: SourceFile, source: string): ProjectSource {
   const lines = source.split(/\r?\n/);
   const templateMaskedLines = hasImportSyntaxCandidate(source) ? maskTemplateLiteralBodies(source).split(/\r?\n/) : lines;
-  const surface = isProductionSourcePath(file.displayPath) ? exportedSurface(source) : undefined;
-  return { file, lines, templateMaskedLines, ...(surface ? { exportedSurface: surface } : {}) };
+  return { file, lines, templateMaskedLines };
 }
 
 // Cheap prefilter for files that might contain real import/export edges or fixture strings that
@@ -284,7 +283,6 @@ function analyseProjectIndex(projectSources: ProjectSource[], config: Config): F
   const index = buildProjectIndex(projectSources);
   const findings: Finding[] = [];
   analyseArchitectureRules(index, config, findings);
-  analyseTestAdequacyRules(index, findings);
   return findings;
 }
 
@@ -334,7 +332,7 @@ function analyseTypeScriptRules(file: SourceFile, source: string, config: Config
   const blocks = functionBlocks(source, codeSource);
   const comments = commentRecords(source);
   analyseFileOverviewDoc(file, source, findings);
-  analyseBlocks(file, blocks, config, findings);
+  analyseBlocks(file, source, codeSource, blocks, config, findings);
   analyseUnusedImports(file, codeSource, source, findings);
   analyseLineRules(file, source, codeSource, config, findings);
   analyseSecurityFlow(file, source, findings);
@@ -355,13 +353,13 @@ function analyseTypeScriptRules(file: SourceFile, source: string, config: Config
 // separately so blocks.ts can stay independent of the naming-pusher and test-block-rule modules;
 // the per-rule emission order from `analyseBlockRules` is the stable fingerprint contract every
 // Finding depends on for deterministic baseline matching.
-function analyseBlocks(file: SourceFile, blocks: FunctionBlock[], config: Config, findings: Finding[]): void {
+function analyseBlocks(file: SourceFile, source: string, codeSource: string, blocks: FunctionBlock[], config: Config, findings: Finding[]): void {
   for (const block of blocks) {
     const context = blockRuleContext(file, block, config, findings);
     analyseBlockRules(context);
     pushParameterNamingFindings(context);
     if (block.isTest) {
-      analyseTestBlock(file, block, config, findings);
+      analyseTestBlock(file, block, findings, { source, codeSource, startLine: 1 });
     }
   }
 }

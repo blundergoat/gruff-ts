@@ -16,14 +16,16 @@ test("root CLI exposes gruff console command and option parity", () => {
   const list = execFileSync("./bin/gruff-ts", [], { encoding: "utf8" });
   const help = execFileSync("./bin/gruff-ts", ["--help"], { encoding: "utf8" });
   const explicitList = execFileSync("./bin/gruff-ts", ["list"], { encoding: "utf8" });
+  const version = execFileSync("./bin/gruff-ts", ["--version"], { encoding: "utf8" });
 
   assert.equal(help, list);
   assert.equal(explicitList, list);
+  assert.equal(version, `gruff-ts ${VERSION}\n`);
   assert.match(list, new RegExp(`^gruff-ts ${VERSION_PATTERN}\\n\\nUsage:\\n  command \\[options\\] \\[arguments\\]`));
   ["-h, --help", "--silent", "-q, --quiet", "-V, --version", "--ansi|--no-ansi", "-n, --no-interaction", "-v|vv|vvv, --verbose"].forEach((option) => {
     assert.match(list, new RegExp(option.replace(/[|]/g, "\\|")));
   });
-  ["analyse", "completion", "dashboard", "help", "init", "list", "list-rules", "report", "summary"].forEach((command) => {
+  ["analyse", "completion", "dashboard", "help", "init", "list", "list-profiles", "list-rules", "report", "summary"].forEach((command) => {
     assert.match(list, new RegExp(`^  ${command}\\s+`, "m"));
   });
 });
@@ -236,7 +238,7 @@ test("summary CLI reports generated and applied baseline metadata", () => {
       { encoding: "utf8" },
     );
     assert.match(applied, /^Baseline: explicit .*gruff-baseline\.json; suppressed [1-9]\d* findings$/m);
-    assert.match(applied, /^Findings: 0 total, 0 error, 0 warning, 0 advisory$/m);
+    assert.match(applied, /^Findings: 0 total · 0 error · 0 warning · 0 advisory$/m);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
   }

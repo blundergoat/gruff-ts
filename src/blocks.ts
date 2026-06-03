@@ -669,9 +669,9 @@ export function hasAssertion(source: string): boolean {
   return false;
 }
 
-// Setup-bloat metric: counts non-ignorable lines preceding the first assertion in the body. Stops
-// as soon as an assertion appears, so the value never overshoots the actual prologue length used
-// by `test-quality.setup-bloat`.
+// Counts non-ignorable lines preceding the first assertion in a test body. Stops as soon as an
+// assertion appears, so the value never overshoots the actual prologue length. Used by
+// `docs.fixture-purpose-missing` to size test-setup fixtures.
 export function setupLineCount(source: string): number {
   let count = 0;
   for (const line of functionBodyContent(source).split(/\r?\n/)) {

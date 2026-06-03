@@ -126,7 +126,7 @@ function configureRootProgram(program: Command): void {
     .name("gruff-ts")
     .usage("command [options] [arguments]")
     .helpOption("-h, --help", "Display help for the given command. When no command is given display help for the list command")
-    .version(VERSION, "-V, --version", "Display this application version")
+    .version(`gruff-ts ${VERSION}`, "-V, --version", "Display this application version")
     .option("--silent", "Do not output any message")
     .option("-q, --quiet", "Only errors are displayed. All other output is suppressed")
     .option("--ansi", "Force ANSI output")

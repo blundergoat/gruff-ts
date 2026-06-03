@@ -84,11 +84,10 @@ const expandedRuleIds = new Set([
   "test-quality.exception-type-only",
   "test-quality.global-state-mutation",
   "test-quality.magic-number-assertion",
-  "test-quality.missing-nearby-test",
   "test-quality.mock-only-test",
   "test-quality.no-throw-only-test",
-  "test-quality.setup-bloat",
   "test-quality.snapshot-only-test",
+  "test-quality.static-analysis-redundant-test",
   "test-quality.trivial-assertion",
   "test-quality.unused-mock",
   "waste.commented-out-code",
@@ -118,7 +117,6 @@ test("cumulative expanded fixture covers every new rule with unique fingerprints
 
   const sampleMessages = new Map(report.findings.filter((finding) => expandedRuleIds.has(finding.ruleId)).map((finding) => [finding.ruleId, finding.message]));
   assert.match(sampleMessages.get("security.new-function") ?? "", /dynamic code/);
-  assert.match(sampleMessages.get("test-quality.setup-bloat") ?? "", /setup lines/);
   assert.match(sampleMessages.get("sensitive-data.hardcoded-env-value") ?? "", /Redacted preview/);
 });
 
@@ -401,6 +399,10 @@ test("trivial assertion", () => {
 test("magic assertion", () => {
   const total = routeOrder("new", false).length;
   expect(total).toBe(42);
+});
+
+test("static shape assertion", () => {
+  assert.equal(typeof routeOrder, "function");
 });
 
 test("mock only", () => {

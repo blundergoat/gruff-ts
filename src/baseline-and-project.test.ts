@@ -164,7 +164,7 @@ test("changed-region filtering keeps file-wide findings for any touched hunk in 
 test("changed-region symbol scope includes export default class bodies", () => {
   const report = analyseProject(
     {
-      "src/service.ts": `export default class Service {
+      "src/service.ts": `export default class Widget {
   run(): string {
     return "ok";
   }
@@ -174,7 +174,7 @@ test("changed-region symbol scope includes export default class bodies", () => {
     { paths: ["src/service.ts"], changedRanges: "3-3" },
   );
 
-  assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.missing-nearby-test" && finding.symbol === "Service"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-internal-function-doc" && finding.symbol === "run"), true);
 });
 
 test("working-tree diff treats untracked files as whole-file changed", () => {
@@ -632,13 +632,9 @@ test("no throw only", () => {
 test("project test adequacy checks nearby coverage and shallow tests", () => {
   const report = analyseProject(TEST_ADEQUACY_FIXTURE);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  assert.equal(ruleIds.has("test-quality.missing-nearby-test"), true);
   assert.equal(ruleIds.has("test-quality.snapshot-only-test"), true);
   assert.equal(ruleIds.has("test-quality.no-throw-only-test"), true);
   assert.equal(ruleIds.has("test-quality.no-assertions"), false);
-
-  const missingTestPaths = report.findings.filter((finding) => finding.ruleId === "test-quality.missing-nearby-test").map((finding) => finding.filePath);
-  assert.deepEqual(missingTestPaths, ["src/payments.ts"]);
 });
 
 test("project test adequacy accepts central tests that import the source", () => {

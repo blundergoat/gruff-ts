@@ -3,11 +3,10 @@
 // reports `docs.fixture-purpose-missing` for each candidate without a nearby explanation comment.
 import { type FunctionBlock, setupLineCount } from "./blocks.ts";
 import { type CommentRecord } from "./comment-scanner.ts";
-import { threshold } from "./config.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { isFixtureLikePath, isTestPath } from "./project-rules.ts";
-import type { Config, Finding } from "./types.ts";
+import type { Finding } from "./types.ts";
 
 // Below 12 lines, a fixture is short enough to read at a glance - requiring a purpose header
 // would just be noise; above this threshold, the next reader needs the intent spelled out.
@@ -34,18 +33,17 @@ export interface FixturePurposeInput {
   lines: string[];
   comments: CommentRecord[];
   blocks: FunctionBlock[];
-  config: Config;
   findings: Finding[];
 }
 
 // Test/fixture paths only - gated up front so production source never reports fixture-purpose
 // findings. Reports the stable `docs.fixture-purpose-missing` finding for each candidate.
 export function pushFixturePurposeFindings(input: FixturePurposeInput): void {
-  const { file, source, codeSource, lines, comments, blocks, config, findings } = input;
+  const { file, source, codeSource, lines, comments, blocks, findings } = input;
   if (!isTestPath(file.displayPath) && !isFixtureLikePath(file.displayPath)) {
     return;
   }
-  for (const candidate of fixturePurposeCandidates(source, codeSource, blocks, config)) {
+  for (const candidate of fixturePurposeCandidates(source, codeSource, blocks)) {
     if (hasFixturePurposeComment(lines, comments, candidate.line)) {
       continue;
     }
@@ -71,7 +69,7 @@ export function pushFixturePurposeFindings(input: FixturePurposeInput): void {
 
 // Three candidate kinds collected in one pass: template-literal fixtures, generated array fixtures,
 // and test setup blocks. `occupiedLines` tracks the first two so the third doesn't double-report.
-function fixturePurposeCandidates(source: string, codeSource: string, blocks: FunctionBlock[], config: Config): FixturePurposeCandidate[] {
+function fixturePurposeCandidates(source: string, codeSource: string, blocks: FunctionBlock[]): FixturePurposeCandidate[] {
   if (!hasFixturePurposeCandidateSignal(codeSource, blocks)) {
     return [];
   }
@@ -96,7 +94,7 @@ function fixturePurposeCandidates(source: string, codeSource: string, blocks: Fu
     }
   });
 
-  for (const candidate of fixtureTestBlockCandidates(blocks, config, occupiedLines)) {
+  for (const candidate of fixtureTestBlockCandidates(blocks, occupiedLines)) {
     pushUniqueFixturePurposeCandidate(candidates, seen, candidate);
   }
 
@@ -178,14 +176,14 @@ function generatedFixtureCandidate(rawLine: string, codeLine: string, lineNumber
 
 // Test blocks with high setup-line counts AND a fixture-shape signal. Excludes blocks whose setup
 // already produced a template-literal or generated-array candidate at the same line.
-function fixtureTestBlockCandidates(blocks: FunctionBlock[], config: Config, occupiedLines: Set<number>): FixturePurposeCandidate[] {
+function fixtureTestBlockCandidates(blocks: FunctionBlock[], occupiedLines: Set<number>): FixturePurposeCandidate[] {
   const candidates: FixturePurposeCandidate[] = [];
   for (const block of blocks) {
     if (!block.isTest || fixtureLineInsideBlock(block, occupiedLines)) {
       continue;
     }
     const setupLines = setupLineCount(block.codeBody);
-    if (setupLines <= threshold(config, "test-quality.setup-bloat", 12) || !hasFixtureSetupSignal(block.codeBody)) {
+    if (setupLines <= FIXTURE_PURPOSE_MIN_LINES || !hasFixtureSetupSignal(block.codeBody)) {
       continue;
     }
     candidates.push({

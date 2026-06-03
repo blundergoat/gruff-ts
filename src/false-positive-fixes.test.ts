@@ -506,13 +506,13 @@ test("FP-#38 summary renderers include per-severity grade breakdown lines", () =
 function helperTwo(): void { eval("noop"); }
 `);
   const textOutput = renderReport(report, "text");
-  assert.match(textOutput, /Composite: [A-F] \(\d+\.\d\)/);
+  assert.match(textOutput, /Composite: [A-F] \(\d+\.\d{2} \/ 100\)/);
   assert.match(textOutput, /Errors:\s+[A-F] \(\d+\)/);
   assert.match(textOutput, /Warnings:\s+[A-F] \(\d+\)/);
   assert.match(textOutput, /Advisory:\s+[A-F] \(\d+\)/);
 
   const markdownOutput = renderReport(report, "markdown");
-  assert.match(markdownOutput, /Composite: \*\*[A-F] \(\d+\.\d\)\*\*/);
+  assert.match(markdownOutput, /Composite: \*\*[A-F] \(\d+\.\d{2} \/ 100\)\*\*/);
   assert.match(markdownOutput, /- Errors:\s+[A-F] \(\d+\)/);
   assert.match(markdownOutput, /- Warnings:\s+[A-F] \(\d+\)/);
   assert.match(markdownOutput, /- Advisory:\s+[A-F] \(\d+\)/);

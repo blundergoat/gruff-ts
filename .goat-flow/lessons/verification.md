@@ -1,9 +1,19 @@
 ---
 category: verification
-last_reviewed: 2026-05-31
+last_reviewed: 2026-06-03
 ---
 
 # Verification lessons
+
+## Lesson: positive scanner fixtures and repo self-scan do not prove false-positive safety
+
+**Created:** 2026-06-03
+
+**What happened:** The first close-out for `test-quality.static-analysis-redundant-test` had `npm run check` green and a repo self-scan with zero hits, but an independent QA pass built a minimal runtime-callable repro and found high-confidence false positives on `assert.equal(typeof handler, "function")` where `handler` came from a factory, and `plugin.activate` came from a loaded plugin. The implementation's positive fixtures proved the rule fired on shape-only assertions, but they did not prove the rule stayed quiet on the highest-traffic behavioral form of the same assertion syntax.
+
+**Evidence:** `src/test-block-rules.ts` (search: `function typeofFunctionAssertions`) accepted any identifier/member operand as static evidence; `src/test-block-rules.test.ts` (search: `keeps runtime callable typeof assertions quiet`) is the regression shape that should have existed before close-out; the failing throwaway scan reported two `test-quality.static-analysis-redundant-test` findings for factory/plugin callable assertions before the guard was added.
+
+**Prevention:** For every new scanner rule, add at least one adversarial false-positive fixture that uses the same syntax as the intended hit but with behavior-bearing data flow. A repo self-scan returning zero findings is not enough when the repo no longer contains the risky syntax class; build a throwaway repro for the candidate class the rule is meant to police.
 
 ## Lesson: converting the dogfood config to a profile breaks rule-enumeration contract tests
 

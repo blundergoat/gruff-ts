@@ -1,13 +1,13 @@
 // Per-test-block rule pass: assertion quality (no-assertions, trivial, snapshot-only,
 // no-throw-only, exception-type-only, magic-number), mock quality (unused-mock, mock-only-test),
-// setup bloat + global-state-mutation, and structural checks (sleep/loop/conditional/only-skip).
+// global-state-mutation, and structural checks (sleep/loop/conditional/only-skip).
 // Invoked from the analyseBlocks orchestrator when `block.isTest` is true.
-import { blockFinding, blockFindingWithMetadata, type FunctionBlock, hasAssertion, setupLineCount } from "./blocks.ts";
-import { ruleSeverity, threshold } from "./config.ts";
+import { blockFinding, blockFindingWithMetadata, type FunctionBlock, hasAssertion } from "./blocks.ts";
 import { type SourceFile } from "./discovery.ts";
-import { escapeRegex } from "./findings-helpers.ts";
+import { makeFinding } from "./findings.ts";
+import { escapeRegex, lineOffset } from "./findings-helpers.ts";
 import { countMatches } from "./text-scans.ts";
-import type { Config, Finding, Severity } from "./types.ts";
+import type { Confidence, Finding, Severity } from "./types.ts";
 
 // Provisional rule output gathered during a test-block walk. Built before the surrounding context
 // (file, line) is known, then promoted into a real Finding by the caller.
@@ -25,25 +25,58 @@ interface MagicNumberAssertionPattern {
   valueIndex: number;
 }
 
+interface StaticAnalysisRedundantAssertion {
+  assertion: string;
+  staticFact: string;
+  sourceProof?: string;
+  confidence: Confidence;
+  recommendation: string;
+  index: number;
+}
+
+interface NonNullableReturnDeclaration {
+  name: string;
+  returnType: string;
+  lineOffset: number;
+}
+
+interface StaticAnalysisSourceContext {
+  source: string;
+  codeSource: string;
+  startLine: number;
+}
+
+interface StaticFunctionFact {
+  staticFact: string;
+  sourceProof: string;
+}
+
+interface StaticFunctionFacts {
+  identifiers: Map<string, StaticFunctionFact>;
+  namespaceImports: Map<string, StaticFunctionFact>;
+}
+
 /*
  * Reached when `block.isTest` is true. Four sub-passes in a stable, deterministic order: assertion
- * quality, mock quality, setup bloat, structural rules.
+ * quality, mock quality, global-state-mutation, structural rules.
  */
-export function analyseTestBlock(file: SourceFile, block: FunctionBlock, config: Config, findings: Finding[]): void {
+export function analyseTestBlock(file: SourceFile, block: FunctionBlock, findings: Finding[], staticContext?: StaticAnalysisSourceContext): void {
   const body = block.codeBody;
-  analyseAssertionQuality(file, block, body, findings);
+  const sourceContext = staticContext ?? { source: block.body, codeSource: block.codeBody, startLine: block.startLine };
+  analyseAssertionQuality(file, block, body, sourceContext, findings);
   analyseMockQuality(file, block, body, findings);
-  analyseSetupBloat(file, block, body, config, findings);
+  analyseGlobalStateMutation(file, block, body, findings);
   analyseTestStructureChecks(file, block, body, findings);
 }
 
 // Five assertion-shape checks (no-assertions, trivial, snapshot-only, no-throw-only, exception-type-only)
 // plus the magic-number sub-pass. Reports findings with stable test-block metadata.
-function analyseAssertionQuality(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
+function analyseAssertionQuality(file: SourceFile, block: FunctionBlock, body: string, staticContext: StaticAnalysisSourceContext, findings: Finding[]): void {
   for (const check of assertionQualityChecks(block, body)) {
     findings.push(blockFinding({ ruleId: check.ruleId, message: check.message, file, block, severity: check.severity, pillar: "test-quality" }));
   }
   pushMagicNumberAssertionFindings(file, block, body, findings);
+  pushStaticAnalysisRedundantTestFindings(file, block, block.body, body, staticContext, findings);
 }
 
 // Lazy evaluation: only checks whose `active` predicate fired are returned. The five rule IDs are
@@ -83,6 +116,300 @@ function pushMagicNumberAssertionFindings(file: SourceFile, block: FunctionBlock
   }
 }
 
+function pushStaticAnalysisRedundantTestFindings(file: SourceFile, block: FunctionBlock, rawBody: string, codeBody: string, staticContext: StaticAnalysisSourceContext, findings: Finding[]): void {
+  for (const candidate of staticAnalysisRedundantAssertions(file, block, rawBody, codeBody, staticContext)) {
+    const line = block.startLine + lineOffset(rawBody, candidate.index);
+    findings.push(
+      makeFinding({
+        ruleId: "test-quality.static-analysis-redundant-test",
+        message: `Static-analysis-redundant candidate: ${candidate.confidence} confidence. Test \`${block.name}\` asserts code shape rather than behaviour: ${candidate.assertion}.`,
+        filePath: file.displayPath,
+        line,
+        severity: "advisory",
+        pillar: "test-quality",
+        confidence: candidate.confidence,
+        symbol: block.name,
+        remediation: candidate.recommendation,
+        metadata: {
+          testFile: file.displayPath,
+          testMethod: block.name,
+          assertion: candidate.assertion,
+          staticFact: candidate.staticFact,
+          sourceProof: candidate.sourceProof ?? `${file.displayPath}:${line}`,
+          confidence: candidate.confidence,
+          recommendation: candidate.recommendation,
+        },
+      }),
+    );
+  }
+}
+
+function staticAnalysisRedundantAssertions(file: SourceFile, block: FunctionBlock, rawSource: string, codeSource: string, staticContext: StaticAnalysisSourceContext): StaticAnalysisRedundantAssertion[] {
+  return [
+    ...typeofFunctionAssertions(file, rawSource, codeSource, staticContext),
+    ...directConstructionInstanceAssertions(file, rawSource, codeSource),
+    ...nonNullableReturnAssertions(file, block, rawSource, codeSource),
+  ].sort((left, right) => left.index - right.index);
+}
+
+function typeofFunctionAssertions(file: SourceFile, rawSource: string, codeSource: string, staticContext: StaticAnalysisSourceContext): StaticAnalysisRedundantAssertion[] {
+  const candidates: StaticAnalysisRedundantAssertion[] = [];
+  const functionFacts = staticFunctionFacts(file, staticContext);
+  const patterns = [
+    /\bassert\.(?:equal|strictEqual)\s*\(\s*typeof\s+([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*,\s*["']function["']\s*(?:,[^)]*)?\)/g,
+    /\bassert\.(?:equal|strictEqual)\s*\(\s*["']function["']\s*,\s*typeof\s+([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*(?:,[^)]*)?\)/g,
+    /\bexpect\s*\(\s*typeof\s+([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*\)\s*\.\s*to(?:Be|Equal|StrictEqual)\s*\(\s*["']function["']\s*\)/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of rawSource.matchAll(pattern)) {
+      if (!isExecutableAssertionAt(codeSource, match.index ?? 0)) {
+        continue;
+      }
+      const expression = match[1] ?? "";
+      const fact = staticFunctionFactForExpression(expression, functionFacts);
+      if (!fact) {
+        continue;
+      }
+      candidates.push(staticRedundantCandidate({
+        file,
+        source: rawSource,
+        index: match.index ?? 0,
+        assertion: normalizedAssertionText(match[0] ?? ""),
+        staticFact: fact.staticFact,
+        sourceProof: fact.sourceProof,
+      }));
+    }
+  }
+  return candidates;
+}
+
+function staticFunctionFacts(file: SourceFile, context: StaticAnalysisSourceContext): StaticFunctionFacts {
+  const facts: StaticFunctionFacts = { identifiers: new Map(), namespaceImports: new Map() };
+  pushFunctionDeclarationFacts(file, context, facts.identifiers);
+  pushConstFunctionFacts(file, context, facts.identifiers);
+  pushImportFunctionFacts(file, context, facts);
+  return facts;
+}
+
+function pushFunctionDeclarationFacts(file: SourceFile, context: StaticAnalysisSourceContext, facts: Map<string, StaticFunctionFact>): void {
+  for (const match of context.source.matchAll(/\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g)) {
+    const index = match.index ?? 0;
+    if (!isExecutableFunctionDeclarationAt(context.codeSource, index)) {
+      continue;
+    }
+    const name = match[1] ?? "";
+    if (name) {
+      facts.set(name, {
+        staticFact: `\`${name}\` is declared as a function in this file.`,
+        sourceProof: sourceProof(file, context, index),
+      });
+    }
+  }
+}
+
+function pushConstFunctionFacts(file: SourceFile, context: StaticAnalysisSourceContext, facts: Map<string, StaticFunctionFact>): void {
+  const pattern = /\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:function\b|(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*(?::\s*[^=;]+?)?=>)/g;
+  for (const match of context.source.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (!isExecutableFunctionDeclarationAt(context.codeSource, index)) {
+      continue;
+    }
+    const name = match[1] ?? "";
+    if (name) {
+      facts.set(name, {
+        staticFact: `\`${name}\` is declared as a function-valued const in this file.`,
+        sourceProof: sourceProof(file, context, index),
+      });
+    }
+  }
+}
+
+function pushImportFunctionFacts(file: SourceFile, context: StaticAnalysisSourceContext, facts: StaticFunctionFacts): void {
+  for (const match of context.source.matchAll(/\bimport\s+(?!type\b)\{([^}]+)\}\s*from\b/g)) {
+    const index = match.index ?? 0;
+    if (!isExecutableImportAt(context.codeSource, index)) {
+      continue;
+    }
+    const proof = sourceProof(file, context, index);
+    for (const importedName of namedImportLocals(match[1] ?? "")) {
+      facts.identifiers.set(importedName, {
+        staticFact: `\`${importedName}\` is a static ES module named import, so TypeScript can validate the imported binding's declared function type without executing this test assertion.`,
+        sourceProof: proof,
+      });
+    }
+  }
+  for (const match of context.source.matchAll(/\bimport\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\b/g)) {
+    const index = match.index ?? 0;
+    if (!isExecutableImportAt(context.codeSource, index)) {
+      continue;
+    }
+    const namespaceName = match[1] ?? "";
+    if (namespaceName) {
+      facts.namespaceImports.set(namespaceName, {
+        staticFact: `\`${namespaceName}\` is a static ES module namespace import.`,
+        sourceProof: sourceProof(file, context, index),
+      });
+    }
+  }
+}
+
+function namedImportLocals(importClause: string): string[] {
+  return importClause
+    .split(",")
+    .map((specifier) => namedImportLocal(specifier))
+    .filter((value): value is string => value !== undefined);
+}
+
+function namedImportLocal(specifier: string): string | undefined {
+  const trimmed = specifier.trim();
+  if (trimmed === "" || /^type\b/.test(trimmed)) {
+    return undefined;
+  }
+  const aliased = trimmed.match(/\bas\s+([A-Za-z_$][A-Za-z0-9_$]*)$/);
+  if (aliased) {
+    return aliased[1];
+  }
+  const direct = trimmed.match(/^([A-Za-z_$][A-Za-z0-9_$]*)$/);
+  return direct?.[1];
+}
+
+function staticFunctionFactForExpression(expression: string, facts: StaticFunctionFacts): StaticFunctionFact | undefined {
+  const direct = facts.identifiers.get(expression);
+  if (direct) {
+    return direct;
+  }
+  const namespaceMember = expression.match(/^([A-Za-z_$][A-Za-z0-9_$]*)\.([A-Za-z_$][A-Za-z0-9_$]*)$/);
+  if (!namespaceMember) {
+    return undefined;
+  }
+  const namespaceName = namespaceMember[1] ?? "";
+  const memberName = namespaceMember[2] ?? "";
+  const namespaceFact = facts.namespaceImports.get(namespaceName);
+  if (!namespaceFact || !memberName) {
+    return undefined;
+  }
+  return {
+    staticFact: `\`${expression}\` is a statically named member of the \`${namespaceName}\` namespace import, so TypeScript can validate that member's declared function type without executing this test assertion.`,
+    sourceProof: namespaceFact.sourceProof,
+  };
+}
+
+function sourceProof(file: SourceFile, context: StaticAnalysisSourceContext, index: number): string {
+  return `${file.displayPath}:${context.startLine + lineOffset(context.source, index)}`;
+}
+
+function directConstructionInstanceAssertions(file: SourceFile, rawSource: string, codeSource: string): StaticAnalysisRedundantAssertion[] {
+  const candidates: StaticAnalysisRedundantAssertion[] = [];
+  const patterns = [
+    /\bassert\.ok\s*\(\s*new\s+([A-Z][A-Za-z0-9_$]*)\s*\([^)]*\)\s+instanceof\s+\1\s*(?:,[^)]*)?\)/g,
+    /\bassert\.(?:equal|strictEqual)\s*\(\s*new\s+([A-Z][A-Za-z0-9_$]*)\s*\([^)]*\)\s+instanceof\s+\1\s*,\s*true\s*(?:,[^)]*)?\)/g,
+    /\bexpect\s*\(\s*new\s+([A-Z][A-Za-z0-9_$]*)\s*\([^)]*\)\s*\)\s*\.\s*toBeInstanceOf\s*\(\s*\1\s*\)/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of rawSource.matchAll(pattern)) {
+      if (!isExecutableAssertionAt(codeSource, match.index ?? 0)) {
+        continue;
+      }
+      const className = match[1] ?? "";
+      candidates.push(staticRedundantCandidate({
+        file,
+        source: rawSource,
+        index: match.index ?? 0,
+        assertion: normalizedAssertionText(match[0] ?? ""),
+        staticFact: `\`new ${className}()\` constructs \`${className}\`, so the self-instance relationship is established by the expression shape.`,
+      }));
+    }
+  }
+  return candidates;
+}
+
+function nonNullableReturnAssertions(file: SourceFile, block: FunctionBlock, rawSource: string, codeSource: string): StaticAnalysisRedundantAssertion[] {
+  const declarations = nonNullableReturnDeclarations(rawSource, codeSource);
+  const candidates: StaticAnalysisRedundantAssertion[] = [];
+  const patterns = [
+    /\bassert\.not(?:Equal|StrictEqual)\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*,\s*(?:null|undefined)\s*(?:,[^)]*)?\)/g,
+    /\bexpect\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*\)\s*\.\s*toBeDefined\s*\(\s*\)/g,
+    /\bexpect\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*\)\s*\.\s*not\s*\.\s*toBeNull\s*\(\s*\)/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of rawSource.matchAll(pattern)) {
+      if (!isExecutableAssertionAt(codeSource, match.index ?? 0)) {
+        continue;
+      }
+      const declaration = declarations.get(match[1] ?? "");
+      if (!declaration) {
+        continue;
+      }
+      candidates.push(staticRedundantCandidate({
+        file,
+        source: rawSource,
+        index: match.index ?? 0,
+        assertion: normalizedAssertionText(match[0] ?? ""),
+        staticFact: `\`${declaration.name}()\` declares a non-nullable \`${declaration.returnType}\` return type.`,
+        sourceProof: `${file.displayPath}:${block.startLine + declaration.lineOffset}`,
+      }));
+    }
+  }
+  return candidates;
+}
+
+function staticRedundantCandidate(args: Omit<StaticAnalysisRedundantAssertion, "confidence" | "recommendation"> & { file: SourceFile; source: string }): StaticAnalysisRedundantAssertion {
+  const { file: _file, source: _source, ...candidate } = args;
+  return {
+    ...candidate,
+    confidence: "high",
+    recommendation: "Remove this assertion if it is the only behavior being tested, or replace it with an assertion about the returned value or observable behavior.",
+  };
+}
+
+function normalizedAssertionText(assertion: string): string {
+  return assertion.replace(/\s+/g, " ").trim();
+}
+
+function isExecutableAssertionAt(codeSource: string, index: number): boolean {
+  return /\b(?:assert|expect)\b/.test(codeSource.slice(index, index + 12));
+}
+
+function nonNullableReturnDeclarations(source: string, codeSource: string): Map<string, NonNullableReturnDeclaration> {
+  const declarations = new Map<string, NonNullableReturnDeclaration>();
+  for (const match of source.matchAll(/\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*:\s*([A-Za-z_$][A-Za-z0-9_$<>,\s.[\]]*)\s*\{/g)) {
+    if (!isExecutableFunctionDeclarationAt(codeSource, match.index ?? 0)) {
+      continue;
+    }
+    pushNonNullableReturnDeclaration(declarations, source, match.index ?? 0, match[1] ?? "", match[2] ?? "");
+  }
+  for (const match of source.matchAll(/\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*:\s*([A-Za-z_$][A-Za-z0-9_$<>,\s.[\]]*)\s*=>/g)) {
+    if (!isExecutableFunctionDeclarationAt(codeSource, match.index ?? 0)) {
+      continue;
+    }
+    pushNonNullableReturnDeclaration(declarations, source, match.index ?? 0, match[1] ?? "", match[2] ?? "");
+  }
+  return declarations;
+}
+
+function isExecutableFunctionDeclarationAt(codeSource: string, index: number): boolean {
+  return /\b(?:function|const)\b/.test(codeSource.slice(index, index + 12));
+}
+
+function isExecutableImportAt(codeSource: string, index: number): boolean {
+  return /\bimport\b/.test(codeSource.slice(index, index + 12));
+}
+
+function pushNonNullableReturnDeclaration(declarations: Map<string, NonNullableReturnDeclaration>, source: string, index: number, name: string, returnType: string): void {
+  const normalizedReturnType = returnType.replace(/\s+/g, " ").trim();
+  if (!name || !isNonNullableReturnType(normalizedReturnType)) {
+    return;
+  }
+  declarations.set(name, { name, returnType: normalizedReturnType, lineOffset: lineOffset(source, index) });
+}
+
+function isNonNullableReturnType(returnType: string): boolean {
+  if (returnType === "" || /^(?:any|unknown|void|null|undefined|never)$/.test(returnType)) {
+    return false;
+  }
+  return !/\b(?:null|undefined)\b/.test(returnType);
+}
+
 // Two distinct findings emitted from one walk: per-unused-mock and a single mock-only flag.
 // Reports `test-quality.unused-mock` / `test-quality.mock-only-test` with stable test-block metadata.
 function analyseMockQuality(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
@@ -105,29 +432,10 @@ function analyseMockQuality(file: SourceFile, block: FunctionBlock, body: string
   }
 }
 
-/*
- * Two rules off one pass: `test-quality.global-state-mutation` for tests that touch process state,
- * and `test-quality.setup-bloat` (threshold 12) for excessive arrange before the first assertion.
- * Reports both with stable metadata so downstream tooling can track the setup-line counts.
- */
-function analyseSetupBloat(file: SourceFile, block: FunctionBlock, body: string, config: Config, findings: Finding[]): void {
+// `test-quality.global-state-mutation`: flags tests that mutate process or global runtime state.
+function analyseGlobalStateMutation(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
   if (hasGlobalStateMutation(body)) {
     findings.push(blockFinding({ ruleId: "test-quality.global-state-mutation", message: `Test \`${block.name}\` mutates global process or runtime state.`, file, block, severity: "warning", pillar: "test-quality" }));
-  }
-  const setupLines = setupLineCount(body);
-  const maxSetupLines = setupBloatThreshold(file, config);
-  if (setupLines > maxSetupLines) {
-    findings.push(
-      blockFindingWithMetadata({
-        ruleId: "test-quality.setup-bloat",
-        message: `Test \`${block.name}\` has ${setupLines} setup lines before its first assertion.`,
-        file,
-        block,
-        severity: ruleSeverity(config, "test-quality.setup-bloat", "advisory"),
-        pillar: "test-quality",
-        metadata: { setupLines, maxSetupLines },
-      }),
-    );
   }
 }
 
@@ -239,18 +547,6 @@ function isFixtureConstantIterableName(name: string): boolean {
 // Recognises local fixture discovery calls used by contract sweeps without accepting unknown calls.
 function isFixtureDiscoveryCall(initializer: string): boolean {
   return /\b(?:glob|globSync|readdir|readdirSync|discover[A-Za-z0-9_$]*|find[A-Za-z0-9_$]*|list[A-Za-z0-9_$]*)\s*\(/.test(initializer);
-}
-
-// Integration, contract, smoke, and performance tests naturally need more environment setup than
-// focused unit tests; keep the default strict for unit tests and double it for broad-flow suites.
-function setupBloatThreshold(file: SourceFile, config: Config): number {
-  const baseThreshold = threshold(config, "test-quality.setup-bloat", 12);
-  return isBroadFlowTestPath(file.displayPath) ? baseThreshold * 2 : baseThreshold;
-}
-
-// Broad-flow tests exercise systems rather than one unit, so longer setup stays below the bloat line.
-function isBroadFlowTestPath(path: string): boolean {
-  return /(?:^|\/)test\/(?:integration|contract|smoke|performance)\//.test(path);
 }
 
 // Structural loop/branch findings now require the control flow to wrap an assertion; setup-only

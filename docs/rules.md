@@ -1,6 +1,6 @@
 # Rules
 
-`gruff-ts` exposes 121 rules across 11 pillars. This list is generated from the
+`gruff-ts` exposes 122 rules across 11 pillars. This list is generated from the
 public rule catalogue used by `gruff-ts list-rules`; severity, confidence,
 thresholds, and option names are the defaults before project config overrides.
 
@@ -30,7 +30,7 @@ gruff-ts list-rules --format=json
 - security: 29
 - sensitive-data: 10
 - size: 3
-- test-quality: 15
+- test-quality: 16
 
 ## Complexity
 
@@ -157,14 +157,13 @@ gruff-ts list-rules --format=json
 - `test-quality.global-state-mutation` (warning; high confidence): Flags tests mutating process or global runtime state.
 - `test-quality.loop-in-test` (advisory; high confidence): Flags loops inside test bodies.
 - `test-quality.magic-number-assertion` (advisory; medium confidence): Flags assertions against unexplained numeric literals.
-- `test-quality.missing-nearby-test` (advisory; medium confidence): Flags exported production files without nearby tests.
 - `test-quality.mock-only-test` (advisory; high confidence): Flags tests that only verify mock interaction.
 - `test-quality.no-assertions` (warning; high confidence): Flags tests without apparent assertions.
 - `test-quality.no-throw-only-test` (advisory; high confidence): Flags tests that only assert code does not throw.
 - `test-quality.only-skip` (advisory; high confidence): Flags focused or skipped test markers.
-- `test-quality.setup-bloat` (advisory; medium confidence; threshold 12): Flags tests with too much setup before the first assertion.
 - `test-quality.sleep-in-test` (advisory; high confidence): Flags sleeps in tests.
 - `test-quality.snapshot-only-test` (advisory; high confidence): Flags tests that rely only on snapshots.
+- `test-quality.static-analysis-redundant-test` (advisory; high confidence): Flags tests that primarily assert code shape rather than behavior.
 - `test-quality.trivial-assertion` (warning; high confidence): Flags tautological assertions.
 - `test-quality.unused-mock` (advisory; medium confidence): Flags mocks created but not used.
 

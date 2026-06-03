@@ -187,12 +187,12 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
     `gruff-ts ${report.tool.version} summary`,
     `Path: ${pathLabel ?? report.run.projectRoot}`,
     ...(typeof elapsedMs === "number" ? [`Duration: ${formatSummaryDuration(elapsedMs)}`] : []),
-    `Composite: ${report.score.grade} (${report.score.composite.toFixed(1)})`,
+    `Composite: ${report.score.grade} (${report.score.composite.toFixed(2)} / 100)`,
+    `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     `  Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `  Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
     `  Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
     ...renderComplexityClusterLines(report.findings, top),
-    `Findings: ${report.summary.total} total, ${report.summary.error} error, ${report.summary.warning} warning, ${report.summary.advisory} advisory`,
     `Analysed files: ${report.paths.analysedFiles}`,
     ...(report.baseline ? [summaryBaselineLine(report.baseline)] : []),
   ];
@@ -382,8 +382,9 @@ function renderRankedCountRows<T extends string>(counts: Map<T, number>, limit?:
 function renderText(report: AnalysisReport): string {
   const breakdown = severityGradeBreakdown(report.findings);
   const lines = [
-    `gruff-ts ${report.tool.version}`,
-    `Composite: ${report.score.grade} (${report.score.composite.toFixed(1)}) | Findings: ${report.summary.advisory} advisory, ${report.summary.warning} warning, ${report.summary.error} error`,
+    `gruff-ts ${report.tool.version} analyse`,
+    `Composite: ${report.score.grade} (${report.score.composite.toFixed(2)} / 100)`,
+    `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     `  Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `  Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
     `  Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
@@ -415,13 +416,13 @@ function renderMarkdown(report: AnalysisReport): string {
   return [
     "# gruff-ts report",
     "",
-    `Composite: **${report.score.grade} (${report.score.composite.toFixed(1)})**`,
+    `Composite: **${report.score.grade} (${report.score.composite.toFixed(2)} / 100)**`,
     `- Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `- Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
     `- Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
     ...renderMarkdownComplexityClusterLines(report.findings),
     "",
-    `Findings: ${report.summary.advisory} advisory, ${report.summary.warning} warning, ${report.summary.error} error.`,
+    `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     "",
     ...renderMarkdownPillarsTable(buildPillarRows(report)),
     "",

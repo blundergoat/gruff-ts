@@ -608,6 +608,10 @@ ${"test"}("magic assertion", () => {
   expect(total).toBe(42);
 });
 
+${"test"}("static shape assertion", () => {
+  assert.equal(typeof renderCatalogue, "function");
+});
+
 ${"test"}("unused mock", () => {
   const unusedMock = jest.fn();
   assert.ok(true);
@@ -658,7 +662,6 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
           "size.file-length": { threshold: 8, severity: "warning" },
           "size.function-length": { threshold: 8, severity: "warning" },
           "size.parameter-count": { threshold: 3, severity: "warning" },
-          "test-quality.setup-bloat": { threshold: 2, severity: "advisory" },
         },
       },
     };

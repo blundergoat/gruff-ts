@@ -152,7 +152,7 @@ function renderConsoleList(shouldUseAnsi = false): string {
     formatConsoleRow("-v|vv|vvv, --verbose", "Increase the verbosity of messages: 1 for normal output, 2 for more verbose output and 3 for debug", 22, shouldUseAnsi),
     "",
     ansiWrap("Available commands:", ANSI_YELLOW, shouldUseAnsi),
-    ...CONSOLE_COMMANDS.map((command) => formatConsoleRow(command.name, command.description, 12, shouldUseAnsi)),
+    ...CONSOLE_COMMANDS.map((command) => formatConsoleRow(command.name, command.description, 15, shouldUseAnsi)),
   ].join("\n") + "\n";
 }
 
