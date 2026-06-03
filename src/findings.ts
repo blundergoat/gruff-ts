@@ -39,7 +39,17 @@ function makeFinding(input: FindingInput): Finding {
     ...(input.remediation ? { remediation: input.remediation } : {}),
     metadata: input.metadata ?? {},
     fingerprint,
+    stableIdentity: stableIdentityFor(input),
   };
+}
+
+// Stable, line-insensitive identity for external diff tooling; fingerprint remains line-sensitive.
+function stableIdentityFor(input: FindingInput): string {
+  const symbolOrMessage = input.symbol && input.symbol.length > 0 ? input.symbol : input.message;
+  return createHash("sha256")
+    .update([input.ruleId, input.filePath, symbolOrMessage].join("\0"))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 export { makeFinding };

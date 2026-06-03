@@ -138,5 +138,6 @@ function clusterFinding(ruleId: string, pillar: Finding["pillar"] = "complexity"
     symbol,
     metadata: {},
     fingerprint: `${ruleId}:bad:${symbol}`,
+    stableIdentity: `${ruleId}:bad:${symbol}:stable`,
   };
 }

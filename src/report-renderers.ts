@@ -18,7 +18,7 @@ import { severityGradeBreakdown } from "./scoring.ts";
 function renderReport(report: AnalysisReport, format: OutputFormat): string {
   switch (format) {
     case "json":
-      return JSON.stringify(report, null, 2);
+      return JSON.stringify(toJsonReport(report), null, 2);
     case "html":
       return renderHtml(report);
     case "markdown":
@@ -32,6 +32,35 @@ function renderReport(report: AnalysisReport, format: OutputFormat): string {
     case "text":
       return renderText(report);
   }
+}
+
+type JsonFinding = Finding & { file: string };
+type JsonTopOffender = AnalysisReport["score"]["topOffenders"][number] & { file: string };
+type JsonAnalysisReport = Omit<AnalysisReport, "findings" | "score"> & {
+  findings: JsonFinding[];
+  score: Omit<AnalysisReport["score"], "topOffenders"> & { topOffenders: JsonTopOffender[] };
+};
+
+// JSON boundary adapter: canonical `file` is emitted while legacy `filePath` stays for one release.
+function toJsonReport(report: AnalysisReport): JsonAnalysisReport {
+  return {
+    ...report,
+    findings: report.findings.map(jsonFinding),
+    score: {
+      ...report.score,
+      topOffenders: report.score.topOffenders.map(jsonTopOffender),
+    },
+  };
+}
+
+function jsonFinding(finding: Finding): JsonFinding {
+  const { ruleId, message, filePath, ...rest } = finding;
+  return { ruleId, message, file: filePath, filePath, ...rest };
+}
+
+function jsonTopOffender(offender: AnalysisReport["score"]["topOffenders"][number]): JsonTopOffender {
+  const { filePath, ...rest } = offender;
+  return { file: filePath, filePath, ...rest };
 }
 
 /*
