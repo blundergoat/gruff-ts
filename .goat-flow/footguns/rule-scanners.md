@@ -1,6 +1,6 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-06-03
+last_reviewed: 2026-06-04
 ---
 
 # Rule scanner footguns
@@ -38,6 +38,8 @@ When implementing or extending this rule, require static evidence before emittin
 The context-doc rules - `docs.missing-error-behavior-doc`, `docs.missing-why-for-complex-code`, `docs.missing-side-effect-doc`, `docs.missing-invariant-doc` (`src/context-doc-rules.ts`, search: `function functionContextDocFindings`) - test their marker vocabulary (`hasErrorBehaviorMarker`, search: `function hasErrorBehaviorMarker`; `hasComplexWhyMarker`, etc.) against `comment.text` from `leadingCommentForLine` (`src/comment-rules.ts`, search: `function leadingCommentForLine`). `commentRecords` (`src/comment-scanner.ts`, search: `emits one CommentRecord per`) emits ONE record per `//` line and does NOT merge a run of consecutive `//` lines, so `leadingCommentForLine` returns only the SINGLE comment line directly above the declaration. A `/* ... */` block, by contrast, is one record whose whole body is checked.
 
 Consequence: for a function documented with stacked `//` lines, the marker word (`throws`/`reports`/`exits` for error-behavior; `because`/`why`/`avoid`/`preserve` for complex-why) MUST appear on the FINAL `//` line, the one immediately above the signature. Putting "Throws ConfigLoadError" on line 2 of a 3-line `//` comment does NOT clear `docs.missing-error-behavior-doc` - the rule never sees line 2. During the profiles work, four `//`-commented throwing helpers and one complex renderer kept firing until each marker was moved to the last line (or the comment was made a single line ending in the marker). When clearing a context-doc finding on a `//`-commented declaration, put the marker on the last line or convert the comment to a `/* */` block.
+
+Same root cause, different rule: `docs.fixture-purpose-missing` (`src/fixture-purpose-rules.ts`, search: `function hasFixturePurposeComment`; search: `function leadingFixturePurposeComment`) checks its marker vocabulary (`hasFixturePurposeMarker`, search: `function hasFixturePurposeMarker` - `fixture`/`covers`/`regression`/`baseline`/`fingerprint`/`because`/...) against ONLY the single `//` line directly above a large `const *FIXTURE = \`...\`` template literal. A marker on an earlier line of a stacked `//` header does not clear it. Two extra notes: the rule fires only when the trigger is a template literal ON the const line (an object-literal fixture `const X = { "a.ts": \`...\` }` is not a candidate - `templateLiteralAtLine` finds no `\`` on the `const X = {` line), and it only engages above `FIXTURE_PURPOSE_MIN_LINES` (12) of fixture source. Observed 2026-06-04 adding `src/changed-region-contract.test.ts` (search: `const REGION_FIXTURE`): a 5-line `//` header with "Fixture purpose:" on its FIRST line kept firing until "This fixture covers ..." was moved to the final line; the smaller `DUAL_EVAL_FIXTURE` never tripped it because it is under the line threshold.
 
 ## Footgun: per-line walkers miss multi-line conditional context
 
