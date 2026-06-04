@@ -42,6 +42,7 @@ type JsonAnalysisReport = Omit<AnalysisReport, "findings" | "score"> & {
 };
 
 // JSON boundary adapter: canonical `file` is emitted while legacy `filePath` stays for one release.
+// Stable `gruff.analysis.v2` contract line kept adjacent to the function for the doc-context rule.
 function toJsonReport(report: AnalysisReport): JsonAnalysisReport {
   return {
     ...report,
@@ -53,11 +54,13 @@ function toJsonReport(report: AnalysisReport): JsonAnalysisReport {
   };
 }
 
+// Maps one Finding into the JSON contract without mutating the native in-memory finding object.
 function jsonFinding(finding: Finding): JsonFinding {
   const { ruleId, message, filePath, ...rest } = finding;
   return { ruleId, message, file: filePath, filePath, ...rest };
 }
 
+// Maps one top offender into the JSON contract while preserving the legacy filePath alias.
 function jsonTopOffender(offender: AnalysisReport["score"]["topOffenders"][number]): JsonTopOffender {
   const { filePath, ...rest } = offender;
   return { file: filePath, filePath, ...rest };

@@ -18,7 +18,7 @@ leading the test declaration.
 
 **Evidence:** `src/security-and-config.test.ts` (search: `CLI severity override keeps new Function below fail-on error`);
 `src/fixture-purpose-rules.ts` (search: `function hasFixturePurposeComment`); `src/line-rules.ts`
-(search: `function isFixedProcessCall`).
+(search: `function isFixedArgvProcessCallSegment`).
 
 **Prevention:** Before closing a new CLI regression, run a changed-range gruff scan on the touched
 test file. Put fixture-purpose comments directly above the `test(...)` declaration, prefer block
