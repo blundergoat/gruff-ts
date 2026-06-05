@@ -36,6 +36,21 @@
     "node": ">=22"
   },
   "type": "module",
+  "files": [
+    "bin/",
+    "src/",
+    "!src/**/*.test.ts",
+    "!src/fixtures/",
+    "docs/",
+    "!docs/releasing.md",
+    "!docs/coding-standards/",
+    "tsconfig.json",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md"
+  ],
   "bin": {
     "gruff-ts": "bin/gruff-ts"
   },

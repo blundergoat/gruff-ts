@@ -47,7 +47,7 @@ Same root cause, different rule: `docs.fixture-purpose-missing` (`src/fixture-pu
 
 `analyseUnreachable` (`src/dead-code-rules.ts`, search: `function analyseUnreachable`) walks lines one at a time and originally tracked "previous line was a braceless conditional opener" as a single boolean. That works for `if (x)\n  return;\nnext` (single-line predicate), but for the multi-line variant - `if (\n  a &&\n  b\n)\n  return;\nnext` - the boolean only set true on line 1 and was already false by the time the walker reached `return;`, so the next line got falsely flagged as unreachable.
 
-The fix at `src/dead-code-rules.ts:37` tracks open-paren depth across lines plus a `isConsequentPending` flag for the one-line consequent that follows the closing `)`. Both states must be active for `isInConditionalBranch` to be true.
+The fix in `src/dead-code-rules.ts` (search: `isConsequentPending`) tracks open-paren depth across lines plus a `isConsequentPending` flag for the one-line consequent that follows the closing `)`. Both states must be active for `isInConditionalBranch` to be true.
 
 When writing or extending a per-line walker that depends on the prior line being part of a control-flow construct, account for the construct spanning multiple lines. Single-line opener-detection booleans WILL miss multi-line predicates. Use paren-depth or brace-depth tracking, scoped to the construct, and remember the masked `codeSource` already blanks parens inside string literals so the count is reliable.
 
@@ -60,10 +60,10 @@ Every rule's suppression heuristic - whether a rationale-comment regex (M01), a 
 1. **Coverage fixtures**: `src/test-fixtures.ts:ruleCatalogueCoverageRuleIds` (and similar broad-coverage scans) prove rule descriptors are emitted by running a synthetic project. If the synthetic fixture USED the rule's now-suppressed case as proof of coverage, the descriptor drops from the emitted set and `rule descriptors cover emitted rules` fails. Example: the cumulative fixture's `for (const setupEntry of [one, two, three]) { sleep(...); assert.ok(...); }` was a literal-array fixture loop after M03 widened `test-quality.loop-in-test`. Fix: add a confounder inside the body (`if (setupEntry) { ... }`) so the suppression heuristic exits.
 
 2. **Placeholder fixtures**: per-rule fixtures (in `false-positive-fixes.test.ts`, `cumulative-fixture.test.ts`, etc.) use specific tokens or shapes as "this fixture deliberately fires the rule." Widening makes those tokens no longer fire. Example: M01 widened `hasIntentionalCatchRationale` to accept `ignore|ignored|cleanup|teardown|noop|no-op`; FOUR fixtures using `// ignored` as a placeholder swallow had to migrate to `// FIXME`:
-   - `src/baseline-and-project.test.ts:140`
-   - `src/test-fixtures.ts:461` (shared fixture; cascades to multiple tests)
-   - `src/cumulative-fixture.test.ts:331`
-   - `src/security-and-config.test.ts:59`
+   - `src/baseline-and-project.test.ts` (search: `// FIXME`)
+   - `src/test-fixtures.ts` (search: `// FIXME`) (shared fixture; cascades to multiple tests)
+   - `src/cumulative-fixture.test.ts` (search: `// FIXME`)
+   - `src/security-and-config.test.ts` (search: `// FIXME`)
 
 The failure mode is silent at type-check time and only surfaces in `npm test`. Before widening any rule's suppression criteria:
 

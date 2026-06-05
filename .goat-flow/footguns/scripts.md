@@ -11,7 +11,7 @@ last_reviewed: 2026-05-24
 
 Pattern that looks safe but isn't: a shell function shells out to `node -e "...console.log(Object.keys(x).join('\n'))"` and the caller reads the result with `mapfile -t arr < <(...)`. When the JS-side array is empty, `[].join('\n')` is `""`, `console.log("")` emits a single newline, and `mapfile -t` then reads **one element** whose value is the empty string (`arr=("")` with `${#arr[@]} == 1`), not the zero-length array (`${#arr[@]} == 0`) the author expected. Any downstream `[[ ${#arr[@]} -gt 0 ]]` guard passes, the loop runs once with `dependency=""`, and `npm install --save-prod "${dependency}@latest"` becomes `npm install --save-prod @latest` — installing or attempting to install a bogus package.
 
-Hit in `scripts/dependency-update.sh` (search: `function read_direct_dependencies`) on 2026-05-24 — fixed by emitting one `console.log(key)` per element instead of joining first:
+Hit in `scripts/dependency-update.sh` (search: `read_direct_dependencies()`) on 2026-05-24 — fixed by emitting one `console.log(key)` per element instead of joining first:
 
 ```bash
 # Bad: empty section → `[""]`, length 1

@@ -86,6 +86,8 @@ MUST run `npm run check` after touching `src/**/*.ts`. MUST run `shellcheck` on 
 3. **Fix verification.** Run the original repro before claiming a bug is fixed.
 4. **Hedged claims.** "Should work", "probably fine", "looks good" are not verification.
 
+Before reporting done, reject the rationalisations catalogued in `.goat-flow/skill-reference/skill-preamble.md` (Rationalisations to reject): an excuse that trades a quoted result for hope is not verification.
+
 Stop-the-line on broken tests, failed `tsc`, or behaviour regression. Two corrections on the same approach = rewind.
 
 If VERIFY caught a failure or you corrected course, log behavioural mistakes in `.goat-flow/lessons/`, cross-doc traps in `.goat-flow/footguns/` (`Status:` / `Created:` / `Evidence:`), and significant decisions in `.goat-flow/decisions/`.

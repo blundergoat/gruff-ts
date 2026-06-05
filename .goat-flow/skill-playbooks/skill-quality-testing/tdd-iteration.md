@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.7.0"
+goat-flow-reference-version: "1.9.1"
 ---
 # Skill TDD Iteration
 
@@ -302,7 +302,7 @@ Meta-test answer: [response]
 ## Bulletproof assessment
 Consecutive passing iterations: [N]
 Threshold met (3+): [yes / no]
-Decision debt (if no): [path to .goat-flow/decisions/ entry]
+Decision debt (if no): [durable decision record, issue, or team-owned backlog entry]
 ```
 
 ## Worked example - TDD-on-TDD
@@ -339,7 +339,7 @@ The `description:` frontmatter field decides when an agent loads the skill. It m
 
 **Empirical observation:** workflow-summary descriptions cause the loading agent to follow the description instead of reading the body. "Code review between tasks" can cause one review when the body shows two stages. Trimming to triggering conditions restores correct skill-body following.
 
-This is a measurable failure mode, not a style preference. The deterministic scorer's `descriptionSummarizesWorkflow` check (see `src/cli/quality/skill-quality.ts`) is the in-repo signal, alongside the BAD/GOOD examples below.
+This failure mode is measurable. Portable checks can flag process verbs or sequencing language after the trigger phrase; use the BAD/GOOD examples below as the rule.
 
 ```yaml
 # BAD - workflow summary in description; agent will follow this instead of the body
@@ -355,7 +355,7 @@ description: "Use when executing implementation plans with independent tasks in 
 description: "Use when starting a non-trivial implementation that needs structured task breakdown with progress tracking."
 ```
 
-The deterministic scorer surfaces a yellow advisory tip when the description (after stripping `Use when …`) contains procedural verbs (`dispatches`, `implements`, `executes`, `generates`, `runs`, `produces`, `creates`, `builds`, `writes`, `refactors`) or process connectives (`then`, `between`). The tip is advisory only - it doesn't deduct, so the author can judge whether the verb is genuine trigger context or workflow narration. Scorer source: `src/cli/quality/skill-quality.ts` (search: `descriptionSummarizesWorkflow`).
+A deterministic scorer can surface an advisory tip when the description (after stripping `Use when …`) contains procedural verbs (`dispatches`, `implements`, `executes`, `generates`, `runs`, `produces`, `creates`, `builds`, `writes`, `refactors`) or process connectives (`then`, `between`). Keep it advisory so authors can judge trigger context versus workflow narration.
 
 ## Research citations
 

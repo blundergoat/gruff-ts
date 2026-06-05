@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.7.0"
+goat-flow-reference-version: "1.9.1"
 ---
 # Skill Playbooks
 
@@ -22,6 +22,11 @@ For shared meta-references composed into every skill (preamble, conventions), se
 | [`browser-use.md`](./browser-use.md) | One-off browser observation: load a URL, screenshot, click, inspect DOM, capture state mid-investigation | `browser-use` CLI, typically at `~/.local/bin/browser-use` |
 | [`page-capture.md`](./page-capture.md) | Batch capture: visit N known pages, screenshot each, emit one MD record per page, for documentation, before/after evidence, or audit snapshots | Playwright (MCP / Node / Python tier), or `browser-use` CLI as a downgrade |
 | [`skill-quality-testing.md`](./skill-quality-testing.md) | Authoring or hardening a goat-flow skill (TDD-on-skills methodology). Load first when creating/editing a skill; routes into `skill-quality-testing/` topical files for the relevant phase | n/a (skill-authoring methodology) |
+| [`observability.md`](./observability.md) | Instrumenting code with logs, metrics, span events, or trace context: severity, structured fields, naming, cardinality budget, sensitive-data rules, and the log-vs-metric decision | n/a (instrumentation discipline) |
+| [`code-comments.md`](./code-comments.md) | Writing or editing source code: which inline comments earn their place, the mandatory doc-comment contract on every function/class/file, TODO/FIXME/HACK marker rules, and whether existing comments should be kept, rewritten, or deleted | n/a (commenting discipline) |
+| [`gruff-code-quality.md`](./gruff-code-quality.md) | Running `gruff-go`, `gruff-rs`, `gruff-ts`, `gruff-php`, or `gruff-py`; triaging findings and verifying analyzer-driven cleanup without low-value comments or suppressions | gruff CLI family |
+| [`changelog.md`](./changelog.md) | Writing or editing `CHANGELOG.md`: Keep a Changelog categories, SemVer alignment, breaking-change markers and migration paths, write-at-commit vs write-at-release cadence, version-surface sync | n/a (changelog discipline) |
+| [`release-notes.md`](./release-notes.md) | Writing a per-release narrative for end users (GitHub release body, blog post, email, in-app banner, social): theme identification, user-impact lens, inverted-pyramid structure, multi-surface consistency. Derives from `changelog.md` | n/a (release-notes discipline) |
 
 ## Adding a new playbook
 

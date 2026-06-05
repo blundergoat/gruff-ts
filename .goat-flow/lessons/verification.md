@@ -32,7 +32,7 @@ itself dynamic.
 
 **What happened:** The first close-out for `test-quality.static-analysis-redundant-test` had `npm run check` green and a repo self-scan with zero hits, but an independent QA pass built a minimal runtime-callable repro and found high-confidence false positives on `assert.equal(typeof handler, "function")` where `handler` came from a factory, and `plugin.activate` came from a loaded plugin. The implementation's positive fixtures proved the rule fired on shape-only assertions, but they did not prove the rule stayed quiet on the highest-traffic behavioral form of the same assertion syntax.
 
-**Evidence:** `src/test-block-rules.ts` (search: `function typeofFunctionAssertions`) accepted any identifier/member operand as static evidence; `src/test-block-rules.test.ts` (search: `keeps runtime callable typeof assertions quiet`) is the regression shape that should have existed before close-out; the failing throwaway scan reported two `test-quality.static-analysis-redundant-test` findings for factory/plugin callable assertions before the guard was added.
+**Evidence:** `src/static-analysis-redundant-rules.ts` (search: `function typeofFunctionAssertions`) accepted any identifier/member operand as static evidence; `src/test-block-rules.test.ts` (search: `keeps runtime callable typeof assertions quiet`) is the regression shape that should have existed before close-out; the failing throwaway scan reported two `test-quality.static-analysis-redundant-test` findings for factory/plugin callable assertions before the guard was added.
 
 **Prevention:** For every new scanner rule, add at least one adversarial false-positive fixture that uses the same syntax as the intended hit but with behavior-bearing data flow. A repo self-scan returning zero findings is not enough when the repo no longer contains the risky syntax class; build a throwaway repro for the candidate class the rule is meant to police.
 
@@ -121,7 +121,7 @@ itself dynamic.
 
 **What happened:** During analyser performance work, two small hot-path patches were reverted after `scripts/test-performance.sh --matrix --baseline ... --fail-on-regression 0` reported regressions. A clean-tree control run with no source diff then failed the same zero-tolerance gate, proving the original comparison was not reproducible in the current machine state.
 
-**Evidence:** `scripts/test-performance.sh` + `(search: "check_regressions")`; no-diff command `scripts/test-performance.sh --matrix --baseline /tmp/perf-baseline.json --fail-on-regression 0 --report /tmp/perf-report-control.md --out /tmp/perf-control.json --runs 7` reported wall/RSS regressions despite `git diff -- src` being empty.
+**Evidence:** `scripts/test-performance.sh` (search: `check_regressions`); the no-diff control command (test-performance.sh --matrix --baseline /tmp/perf-baseline.json --fail-on-regression 0 --report /tmp/perf-report-control.md --out /tmp/perf-control.json --runs 7) reported wall/RSS regressions despite `git diff -- src` being empty.
 
 **Prevention:** Before attributing a zero-tolerance perf regression to a patch, run one clean-tree control against the same baseline. If the control fails, re-establish a current baseline or remove environmental noise before evaluating code changes.
 

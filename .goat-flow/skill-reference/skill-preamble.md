@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.7.0"
+goat-flow-reference-version: "1.9.1"
 ---
 # Skill Preamble
 
@@ -94,8 +94,8 @@ Adapt ceremony to complexity. This is **pre-invocation routing guidance** for ch
 
 ## Depth Choice
 
-- **Quick:** compressed workflow, minimal ceremony, direct output
-- **Full:** all phases, multi-perspective critique if planning, full output format
+- **Quick:** compressed workflow, direct output
+- **Full:** selected skill protocol; critique on request
 - If arriving from the dispatcher with depth already chosen, skip the depth question
 
 ## Routing Boundary
