@@ -25,6 +25,7 @@ const BASE_OPTIONS: AnalysisOptions = {
 
 const TEST_START_LINE = 3;
 const EXPECTED_MAGIC_VALUE = 42;
+const EXPECTED_STATIC_REDUNDANT_FINDINGS = 4;
 const STATIC_REDUNDANT_RULE_ID = "test-quality.static-analysis-redundant-test";
 
 const ASSERTION_AND_MOCK_CALLBACK = `
@@ -271,7 +272,7 @@ test("analyseTestBlock reports static-analysis-redundant shape assertions", () =
   const findings = analyseTestCallback(STATIC_ANALYSIS_REDUNDANT_CALLBACK, SOURCE_FILE.displayPath, "asserts static shape");
   const staticFindings = findings.filter((finding) => finding.ruleId === STATIC_REDUNDANT_RULE_ID);
 
-  assert.equal(staticFindings.length, 4);
+  assert.equal(staticFindings.length, EXPECTED_STATIC_REDUNDANT_FINDINGS);
   assert.equal(staticFindings.every((finding) => finding.confidence === "high"), true);
   assert.match(staticFindings[0]?.message ?? "", /Static-analysis-redundant candidate: high confidence/);
   assert.equal(staticFindings[0]?.metadata.testFile, SOURCE_FILE.displayPath);

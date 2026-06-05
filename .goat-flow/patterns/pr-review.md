@@ -1,6 +1,6 @@
 ---
 category: pr-review
-last_reviewed: 2026-05-24
+last_reviewed: 2026-06-04
 ---
 
 # PR review patterns
@@ -19,3 +19,5 @@ last_reviewed: 2026-05-24
 4. Bucket findings into `OBSERVED` (your own repro confirmed it), `THEORETICAL` (the bot's reasoning is correct but the threat model does not apply - e.g. TOCTOU on a single-user CLI write), `STALE` (already addressed in a later commit), `DISAGREE` (two bots contradict; resolve by reading code). Report the bucket and the reason explicitly. Lazy "agree with all" inflates noise; lazy "disagree with all" misses real bugs.
 
 The repros for PR #3 took ~10 minutes total and produced concrete evidence to attach to each verdict, which is what the operator can actually act on.
+
+**Reinforced (PR #6, 2026-06-04):** Two refinements held up on a second multi-bot review. (1) Check the *premise*, not just the *mechanism*. Copilot claimed a `.gruff-ts.yaml` test fixture had "an extra leading space before `rules:`" that would make the parser throw on unexpected indent. The mechanism is real - `config-parse.ts` (search: `function assertYamlIndent`) does throw on over-indent - but the premise was false: no leading space existed. Reading the raw bytes plus a full `node --test` run (22/22 on the two touched files) refuted it. A correct-sounding mechanism wrapped around a hallucinated premise is the common bot failure mode; verify the fact the claim rests on, not just its logic. (2) A real *signal* can ship with a wrong *fix*. CodeRabbit's MD038 flag on a footgun line was a genuine defect (escaped backticks were mangling the render), but its suggested edit tightened an already-correct nearby anchor instead of the escaped-backtick source. Confirm the defect, then fix the actual cause - do not apply a bot's literal patch on trust. See `.goat-flow/footguns/docs-authoring.md` (search: `escaped backticks`).

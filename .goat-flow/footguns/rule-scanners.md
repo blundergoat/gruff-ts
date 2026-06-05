@@ -1,9 +1,17 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-06-03
+last_reviewed: 2026-06-04
 ---
 
 # Rule scanner footguns
+
+## Footgun: line-rule emitters hardcode severity, so config `severity:` overrides are silently dropped
+
+**Status:** active | **Created:** 2026-06-03 | **Evidence:** MEASURED (security.new-function CONFIGURE gap)
+
+There is no central pass that re-applies config severity to findings - each rule must consult config itself via `ruleSeverity(config, ruleId, default)` (`src/config.ts`, search: `function ruleSeverity`). So any emitter that passes a literal `severity:` makes a project's `rules.<id>.severity` override in `.gruff-ts.yaml` a silent no-op (no error, no warning). The pillar rules wired correctly are the model (`src/analyser.ts`, search: `"size.file-length"`; `src/blocks.ts`, search: `"size.function-length"`).
+
+`pushPatternCheckFindings` (`src/line-rules.ts`, search: `function pushPatternCheckFindings`) was fixed to route severity through `ruleSeverity`, so the `security.*`/`modernisation.*`/`waste.*` regex checks (e.g. `security.new-function`) now honor overrides - this is what lets a project running a legitimate `new Function`/eval shape set `severity: warning` instead of failing an `--fail-on error` gate, rather than the analyzer deciding that for every consumer. But sibling emitters in the same module still hardcode (`src/line-rules.ts`, search: `function pushCommentedOutCodeFinding`; search: `function pushLooseEqualityFinding`), as do the naming/type-safety/reliability passes. When adding or debugging a line rule, route severity through `ruleSeverity` or a `rules.<id>.severity` override is ignored. Regression proof: `src/security-and-config.test.ts` (search: `security line-rule severity honours config overrides`).
 
 ## Footgun: `typeof x === "function"` is often runtime behavior, not code shape
 
@@ -30,6 +38,8 @@ When implementing or extending this rule, require static evidence before emittin
 The context-doc rules - `docs.missing-error-behavior-doc`, `docs.missing-why-for-complex-code`, `docs.missing-side-effect-doc`, `docs.missing-invariant-doc` (`src/context-doc-rules.ts`, search: `function functionContextDocFindings`) - test their marker vocabulary (`hasErrorBehaviorMarker`, search: `function hasErrorBehaviorMarker`; `hasComplexWhyMarker`, etc.) against `comment.text` from `leadingCommentForLine` (`src/comment-rules.ts`, search: `function leadingCommentForLine`). `commentRecords` (`src/comment-scanner.ts`, search: `emits one CommentRecord per`) emits ONE record per `//` line and does NOT merge a run of consecutive `//` lines, so `leadingCommentForLine` returns only the SINGLE comment line directly above the declaration. A `/* ... */` block, by contrast, is one record whose whole body is checked.
 
 Consequence: for a function documented with stacked `//` lines, the marker word (`throws`/`reports`/`exits` for error-behavior; `because`/`why`/`avoid`/`preserve` for complex-why) MUST appear on the FINAL `//` line, the one immediately above the signature. Putting "Throws ConfigLoadError" on line 2 of a 3-line `//` comment does NOT clear `docs.missing-error-behavior-doc` - the rule never sees line 2. During the profiles work, four `//`-commented throwing helpers and one complex renderer kept firing until each marker was moved to the last line (or the comment was made a single line ending in the marker). When clearing a context-doc finding on a `//`-commented declaration, put the marker on the last line or convert the comment to a `/* */` block.
+
+Same root cause, different rule: `docs.fixture-purpose-missing` (`src/fixture-purpose-rules.ts`, search: `function hasFixturePurposeComment`; search: `function leadingFixturePurposeComment`) checks its marker vocabulary (`hasFixturePurposeMarker`, search: `function hasFixturePurposeMarker` - `fixture`/`covers`/`regression`/`baseline`/`fingerprint`/`because`/...) against ONLY the single `//` line directly above a large ``const *FIXTURE = `...` `` template literal. A marker on an earlier line of a stacked `//` header does not clear it. Two extra notes: the rule fires only when the trigger is a template literal ON the const line (an object-literal fixture ``const X = { "a.ts": `...` }`` is not a candidate - `templateLiteralAtLine` finds no backtick on the `const X = {` line), and it only engages above `FIXTURE_PURPOSE_MIN_LINES` (12) of fixture source. Observed 2026-06-04 adding `src/changed-region-contract.test.ts` (search: `const REGION_FIXTURE`): a 5-line `//` header with "Fixture purpose:" on its FIRST line kept firing until "This fixture covers ..." was moved to the final line; the smaller `DUAL_EVAL_FIXTURE` never tripped it because it is under the line threshold.
 
 ## Footgun: per-line walkers miss multi-line conditional context
 

@@ -5,6 +5,27 @@ last_reviewed: 2026-06-03
 
 # Verification lessons
 
+## Lesson: self-scan new CLI fixtures before settling their test file
+
+**Created:** 2026-06-03
+
+**What happened:** During the `security.new-function` config regression, the first CLI test landed in
+`src/cli.test.ts`, pushing that already-near-threshold file over `size.file-length`. Moving it to
+`src/security-and-config.test.ts` cleared file length, but the changed-range self-scan then exposed
+`security.process-exec` from a dynamic `execFileSync(join(REPO_ROOT, "bin/gruff-ts"), ...)` command
+and `docs.fixture-purpose-missing` because the purpose comment was inside the test body instead of
+leading the test declaration.
+
+**Evidence:** `src/security-and-config.test.ts` (search: `CLI severity override keeps new Function below fail-on error`);
+`src/fixture-purpose-rules.ts` (search: `function hasFixturePurposeComment`); `src/line-rules.ts`
+(search: `function isFixedArgvProcessCallSegment`).
+
+**Prevention:** Before closing a new CLI regression, run a changed-range gruff scan on the touched
+test file. Put fixture-purpose comments directly above the `test(...)` declaration, prefer block
+comments when multiple marker words matter, and use fixed literal command vectors such as
+`execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), ...])` instead of making the executable path
+itself dynamic.
+
 ## Lesson: positive scanner fixtures and repo self-scan do not prove false-positive safety
 
 **Created:** 2026-06-03

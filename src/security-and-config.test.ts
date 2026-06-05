@@ -1,7 +1,12 @@
 // Security, sensitive-data, config-health, and test-quality expansion tests with safe fixture values.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { analyseFixture, analyseProject, TS_IGNORE_DIRECTIVE } from "./test-fixtures.ts";
+import type { AnalysisReport } from "./cli.ts";
+import { analyseFixture, analyseProject, REPO_ROOT, TS_IGNORE_DIRECTIVE, writeFixtureFiles } from "./test-fixtures.ts";
 
 const EXPECTED_DYNAMIC_PROCESS_EXEC_LINE = 15;
 
@@ -137,6 +142,65 @@ test("extended type-safety config can disable new rules", () => {
     config: { rules: { "modernisation.non-null-assertion": { enabled: false } } },
   });
   assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "modernisation.non-null-assertion"), false);
+});
+
+test("security line-rule severity honours config overrides", () => {
+  const source = `function loadHelper(transpiled: string): unknown {
+  return new Function(transpiled)();
+}
+`;
+  const defaultReport = analyseFixture(source);
+  const defaultFinding = defaultReport.findings.find((finding) => finding.ruleId === "security.new-function");
+  assert.equal(defaultFinding?.severity, "error");
+
+  const tunedReport = analyseFixture(source, {
+    config: { rules: { "security.new-function": { severity: "warning" } } },
+  });
+  const tunedFinding = tunedReport.findings.find((finding) => finding.ruleId === "security.new-function");
+  assert.equal(tunedFinding?.severity, "warning");
+});
+
+/*
+ * Regression fixture covers the config contract, temp-project filesystem writes, and a fixed CLI
+ * process. It proves configured `security.new-function` severity controls `--fail-on=error`.
+ */
+test("CLI severity override keeps new Function below fail-on error", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ts-new-function-config-"));
+  try {
+    writeFixtureFiles(dir, {
+      ".gruff-ts.yaml": `schemaVersion: gruff-ts.config.v0.1
+rules:
+  security.new-function:
+    severity: warning
+`,
+      "loader.test.cjs": `const typescriptCompiler = require("typescript");
+
+function loadHelper(source) {
+  const transpiled = typescriptCompiler.transpileModule(source, {
+    compilerOptions: { module: typescriptCompiler.ModuleKind.CommonJS },
+  }).outputText;
+
+  return new Function("exports", transpiled)({});
+}
+
+module.exports = { loadHelper };
+`,
+    });
+
+    const output = execFileSync(
+      "bash",
+      [join(REPO_ROOT, "bin/gruff-ts"), "analyse", ".", "--format=json", "--fail-on=error"],
+      { cwd: dir, encoding: "utf8" },
+    );
+    const report = JSON.parse(output) as AnalysisReport;
+    const dynamicExecutionFinding = report.findings.find((finding) => finding.ruleId === "security.new-function");
+
+    assert.equal(report.run.failOn, "error");
+    assert.equal(report.summary.error, 0);
+    assert.equal(dynamicExecutionFinding?.severity, "warning");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // Fixtures for the dependency/package-config health test: risky package settings vs a clean baseline.
