@@ -272,18 +272,24 @@ check_repository_segment() {
     fi
   done
 
+  # Iterate pipe parts like the push/gh checks above: a non-leading pipeline
+  # stage (e.g. `echo msg | git commit -F -`) must still be caught, so scanning
+  # only CMD_NORMALIZED (the first stage) would miss it.
   local git_rest=""
   local git_subcommand=""
-  if __goat_git_strip_globals "$CMD_NORMALIZED"; then
-    git_rest="$__goat_git_rest"
-    git_subcommand="${git_rest%%[[:space:]]*}"
-    if [[ "$git_subcommand" == "commit" ]]; then
-      block "git commit is not allowed. Ask the user to commit manually." || return $?
+  local cmd_for_git=""
+  for pipe_part in "${pipe_parts[@]}"; do
+    cmd_for_git=$(normalize_git_push_candidate "$pipe_part")
+    if __goat_git_strip_globals "$cmd_for_git"; then
+      git_rest="$__goat_git_rest"
+      git_subcommand="${git_rest%%[[:space:]]*}"
+      if [[ "$git_subcommand" == "commit" ]]; then
+        block "git commit is not allowed. Ask the user to commit manually." || return $?
+      fi
     fi
-  fi
-
-  if is_git_destructive "$CMD_NORMALIZED"; then
-    block "Destructive git operation (--no-verify / reset --hard / clean -f). Remove the flag, stash first, or run manually." || return $?
-  fi
+    if is_git_destructive "$cmd_for_git"; then
+      block "Destructive git operation (--no-verify / reset --hard / clean -f). Remove the flag, stash first, or run manually." || return $?
+    fi
+  done
 }
 

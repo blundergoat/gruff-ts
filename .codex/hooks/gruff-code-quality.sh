@@ -591,13 +591,15 @@ changed_findings_report() {
     def sev_rank($s):
       # error > warning > everything else (advisory, or an unknown/missing severity)
       # so an unrecognised severity still clears the default advisory floor and stays visible.
-      if $s == "error" then 3 elif $s == "warning" then 2 else 1 end;
+      # Case-insensitive so "ERROR"/"Warning" rank correctly instead of as advisory.
+      ($s | tostring | ascii_downcase) as $n
+      | if $n == "error" then 3 elif $n == "warning" then 2 else 1 end;
 
     [ (.findings // [])[]
       | . as $finding
       | ($finding | line_or_null) as $line
       | select(($finding | same_file) and $line != null and ($native == 1 or in_changed_ranges($line)))
-      | { sev: (.severity // "unknown"),
+      | { sev: ((.severity // "unknown") | tostring | ascii_downcase),
           rank: sev_rank(.severity // ""),
           line: $line,
           file: ($finding | finding_path),
@@ -606,9 +608,9 @@ changed_findings_report() {
     | ($all | sort_by([ (3 - .rank), .file, .line, .ruleId ])) as $sorted
     | [ $sorted[] | select(.rank >= $floor_rank) ] as $surfaced
     | { total: ($all | length),
-        e: ([ $all[] | select(.sev == "error") ] | length),
-        w: ([ $all[] | select(.sev == "warning") ] | length),
-        a: ([ $all[] | select(.sev == "advisory") ] | length),
+        e: ([ $all[] | select(.rank == 3) ] | length),
+        w: ([ $all[] | select(.rank == 2) ] | length),
+        a: ([ $all[] | select(.rank == 1) ] | length),
         surfaced: ($surfaced | length),
         floored: (($all | length) - ($surfaced | length)),
         more: (if ($surfaced | length) > $max then ($surfaced | length) - $max else 0 end),

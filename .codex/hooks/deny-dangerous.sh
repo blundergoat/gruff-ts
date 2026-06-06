@@ -57,7 +57,11 @@ resolve_goat_flow_root() {
       printf '%s\n' "$root"
       ;;
     /*)
-      dirname "$gcd"
+      # Absolute git-common-dir means a linked worktree (submodules are handled
+      # above): dirname here would resolve to the primary checkout and read a
+      # stale or absent .goat-flow/hook-lib. Use this worktree's own toplevel.
+      root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+      printf '%s\n' "$root"
       ;;
     *)
       root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
@@ -304,6 +308,9 @@ json_escape() {
   local s="$1"
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
   printf '%s' "$s"
 }
 

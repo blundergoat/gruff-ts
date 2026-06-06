@@ -2,7 +2,7 @@
 
 `gruff-ts` governs AI-generated code: wired in as a coding-agent hook, it forces an agent to produce changes a human who did not write them can sign off on - legible enough to verify, secure where the reviewer's eye slips, and tested for real behavior rather than low-signal ceremony. Mechanically it is a TypeScript project quality analyzer: a dependency-light Node.js/ESM CLI with a thin `src/cli.ts` bootstrap and focused runtime modules under `src/`. It scans TypeScript, JavaScript, CSS, and common config/text files (json, yaml, toml, env, ini, xml, npmrc-style secret files) and emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v1`) and report snapshots (`gruff.analysis.v2`) round-trip without churn.
 
-goat-flow version: 1.7.0
+goat-flow version: 1.9.1
 
 ## Workspace Boundary
 
@@ -46,7 +46,7 @@ npm run check        # tsc --noEmit && npm test
 npm test             # node --import tsx --test src/**/*.test.ts
 npm run start-dev    # tsx src/cli.ts dashboard (binds 127.0.0.1:8767)
 ./bin/gruff-ts analyse .   # local CLI invocation
-bash .codex/hooks/deny-dangerous.self-test.sh   # verify deny hook
+bash .codex/hooks/deny-dangerous.sh --self-test   # verify deny hook
 ```
 
 ## Execution Loop: READ → SCOPE → ACT → VERIFY
