@@ -47,7 +47,7 @@ The runtime lives under `src/`:
   packs, fixtures, reports, and CLI surfaces.
 
 Keep changes small and local. Do not add runtime dependencies beyond
-`commander` and `tsx` unless that direction is explicitly accepted first.
+`commander`, `tsx`, and `typescript` unless that direction is explicitly accepted first.
 
 ## Rules For Rule Changes
 
