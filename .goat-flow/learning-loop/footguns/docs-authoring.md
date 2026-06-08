@@ -1,6 +1,6 @@
 ---
 category: docs-authoring
-last_reviewed: 2026-06-04
+last_reviewed: 2026-06-09
 ---
 
 # Docs-authoring footguns
@@ -25,3 +25,13 @@ Defences:
 3. Verify by rendering the line (markdown-it `renderInline`), not by eyeballing the source - the corruption is invisible in a plain editor.
 
 Instance: `.goat-flow/learning-loop/footguns/rule-scanners.md` (search: `docs.fixture-purpose-missing`) carried three such spans on one line until 2026-06-04; a markdown-it render of that line emitted 24 inline code spans, five of them prose fragments (for example "on the" and "is not a candidate -") rather than code. Fixed by switching to double-backtick delimiters and rewording the lone backtick.
+
+## Footgun: moving a `.goat-flow/` doc strands source comments that cite its old path
+
+**Status:** active | **Created:** 2026-06-09 | **Evidence:** OBSERVED (preflight gruff scan flagged two `docs.stale-comment` findings)
+
+Source comments cite learning-loop docs by relative path. A reorg that relocates a doc does not update those comments, so they go stale, and gruff's `docs.stale-comment` rule resolves the cited path and fails the run. Only the full-project scan in `scripts/preflight-checks.sh` covers a commenting file the agent did not just edit, so the straggler surfaces at preflight, not at edit time - the PostToolUse changed-lines hook only scans the edited file, never the one whose comment went stale.
+
+Defence: when moving any doc under `.goat-flow/`, grep all source for the old relative path before committing the move (for example `grep -rn "goat-flow/lessons/" --include='*.ts' src`) and update every hit in the same change.
+
+Instance: the learning-loop reorg in commit `cddf7f9` left `src/cli-program.ts` (search: `buildProgram`) and `src/dashboard.ts` (search: `startDashboard`) citing `.goat-flow/lessons/verification.md` after it moved under `.goat-flow/learning-loop/lessons/`; both tripped `docs.stale-comment` until repointed.

@@ -151,6 +151,33 @@ test("hook stableIdentity distinguishes multiple same-rule line findings in one 
   });
 });
 
+test("hook stableIdentity distinguishes circular-import cycles sharing an anchor file", () => {
+  // Two 2-cycles (a<->b and a<->c) both sort to anchor `a.ts`, so they share file + project scope.
+  // The cycle symbol is the only discriminator; without it both findings collapse to one identity
+  // and baselining either suppresses the other - a newly introduced cycle would silently vanish.
+  const cycleProject = {
+    "src/cycle/a.ts": ['import { fromB } from "./b";', 'import { fromC } from "./c";', "export function fromA(): string {", "  return fromB() + fromC();", "}", ""].join("\n"),
+    "src/cycle/b.ts": ['import { fromA } from "./a";', "export function fromB(): string {", "  return fromA();", "}", ""].join("\n"),
+    "src/cycle/c.ts": ['import { fromA } from "./a";', "export function fromC(): string {", "  return fromA();", "}", ""].join("\n"),
+  };
+  const cyclePaths = ["src/cycle/a.ts", "src/cycle/b.ts", "src/cycle/c.ts"];
+  withProject(cycleProject, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", ...cyclePaths]);
+    const cycles = payload.findings.filter((finding) => finding.ruleId === "design.circular-import");
+    assert.equal(cycles.length, 2);
+    assert.equal(cycles[0]?.scope, "project");
+    assert.notEqual(cycles[0]?.stableIdentity, cycles[1]?.stableIdentity);
+
+    // Baseline only the first cycle; the second is a distinct cycle and must survive new-only
+    // filtering rather than collapsing onto the first cycle's project-scope identity.
+    writeBaseline(dir, cycles.slice(0, 1));
+    const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", ...cyclePaths]);
+    const remaining = filtered.findings.filter((finding) => finding.ruleId === "design.circular-import");
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0]?.stableIdentity, cycles[1]?.stableIdentity);
+  });
+});
+
 test("hook reports operational failures as in-band JSON with exit 2", () => {
   withProject({ "long.ts": longSource(760, 500) }, (dir) => {
     const result = spawnSync("bash", [BIN, "hook", "--format", "json", "--no-config", "--baseline", "missing-baseline.json", "long.ts"], { cwd: dir, encoding: "utf8" });

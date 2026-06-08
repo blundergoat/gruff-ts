@@ -24,7 +24,7 @@ interface DashboardRouteInput {
 }
 
 // Starts a loopback HTTP server. `analyse` is injected (not imported) to avoid a circular import
-// back into `cli.ts`; see `.goat-flow/lessons/verification.md` on the dashboard import cycle.
+// back into `cli.ts`; see `.goat-flow/learning-loop/lessons/verification.md` on the dashboard import cycle.
 // Side effect: opens a listening socket and writes the URL to stdout unless `shouldWriteOutput` is false.
 function startDashboard(host: string, port: number, projectRoot: string, analyse: DashboardAnalyse, shouldWriteOutput = true, profile?: string): void {
   assertLoopbackHost(host);

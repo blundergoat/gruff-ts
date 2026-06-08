@@ -1,7 +1,7 @@
 # Releasing
 
 This checklist prepares public `@blundergoat/gruff-ts@0.3.x` patch releases.
-Current release line: `0.3.1`.
+Current release line: `0.3.2`.
 
 ## Bump The Version
 

@@ -250,8 +250,17 @@ function hookStableIdentity(finding: Finding, scope: HookScope): string {
 
 // Derives the per-occurrence component of the stable hook identity: scope token, symbol, or message.
 function stableIdentityComponent(finding: { message: string; ruleId: string; symbol?: string }, scope: HookScope): string {
-  if (scope === "file" || scope === "project") {
+  if (scope === "file") {
     return scope;
+  }
+  if (scope === "project") {
+    // Project rules are value-insensitive on their measurement, but one file can anchor several
+    // distinct project findings: design.circular-import emits one finding per cycle and sorts each
+    // cycle to its alphabetically-first member, so `a -> b` and `a -> c` both anchor `a.ts`. The
+    // cycle path (carried in `symbol`) is the only discriminator; folding it in keeps distinct
+    // cycles distinct so baselining one never suppresses a genuinely new one. A project finding with
+    // no symbol falls back to the bare scope token, preserving its value-insensitive identity.
+    return finding.symbol && finding.symbol.length > 0 ? `project:${finding.symbol}` : scope;
   }
   if (finding.symbol && finding.symbol.length > 0) {
     return `symbol:${finding.symbol}`;
@@ -260,7 +269,8 @@ function stableIdentityComponent(finding: { message: string; ruleId: string; sym
   // findings in one file get distinct identities. A value-insensitive `metric:${scope}` token
   // collapsed them all, letting one baselined finding suppress later new ones in the same file. The
   // message carries the per-occurrence discriminator (redacted preview) and no line number, so it
-  // stays stable across surrounding edits. file/project scope above remains value-insensitive.
+  // stays stable across surrounding edits. file scope above stays fully value-insensitive; project
+  // scope folds in the cycle symbol when one is present.
   return `message:${finding.message}`;
 }
 

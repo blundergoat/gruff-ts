@@ -102,7 +102,7 @@ function ansiEnabled(program: Command): boolean {
 }
 
 // `runAnalyse` is injected rather than imported to keep `cli-program.ts` off the analyser's
-// dependency graph; see `.goat-flow/lessons/verification.md` on the original cli.ts ↔ cli-program.ts cycle.
+// dependency graph; see `.goat-flow/learning-loop/lessons/verification.md` on the original cli.ts ↔ cli-program.ts cycle.
 export function buildProgram(runAnalyse: AnalyseRunner): Command {
   const program = new Command();
   configureRootProgram(program);

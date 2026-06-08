@@ -20,7 +20,7 @@ Used as a hook on an agent's output, gruff-ts is a forcing function rather than 
 
 | Field | Value |
 | --- | --- |
-| Release line | Published `0.3.1` package line |
+| Release line | Published `0.3.2` package line |
 | Runtime | Node.js `22+` |
 | Package | `@blundergoat/gruff-ts` |
 | Binary | `gruff-ts` |
