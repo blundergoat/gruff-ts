@@ -17,6 +17,9 @@ export interface ChangedRegionScope {
   mode: ChangedScopeMode;
   rangesByFile: Map<string, ChangedRange[]>;
   wholeFiles: Set<string>;
+  // Every file that appears in the diff, including deletion-only files that contribute no target-side
+  // ranges. `file` scope keeps all findings in any changed file, so it consults this set, not ranges.
+  changedFiles: Set<string>;
   explicitRanges?: ChangedRange[];
 }
 
@@ -45,7 +48,7 @@ const FILE_WIDE_RULE_IDS = new Set(["design.large-module-concentration", "docs.m
 // Builds the changed-region scope requested by CLI options. Throws on stdin diffs missing patch text.
 export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope | undefined {
   if (options.changedRanges) {
-    return { mode: options.changedScope, rangesByFile: new Map(), wholeFiles: new Set(), explicitRanges: parseChangedRanges(options.changedRanges) };
+    return { mode: options.changedScope, rangesByFile: new Map(), wholeFiles: new Set(), changedFiles: new Set(), explicitRanges: parseChangedRanges(options.changedRanges) };
   }
   if (options.diffPatch !== undefined) {
     return parseUnifiedDiff(options.diffPatch, options.changedScope);
@@ -94,12 +97,14 @@ function isFindingInChangedScope(
   if (scope.wholeFiles.has(finding.filePath)) {
     return true;
   }
+  // `file` scope keeps every finding in a changed file, so it must answer before the range check:
+  // a deletion-only edit produces no target-side ranges but still counts as touching the file.
+  if (scope.mode === "file") {
+    return scope.explicitRanges !== undefined || scope.changedFiles.has(finding.filePath);
+  }
   const changedRanges = rangesForFindingFile(scope, finding.filePath);
   if (changedRanges.length === 0) {
     return false;
-  }
-  if (scope.mode === "file") {
-    return true;
   }
   const findingRange = { start: finding.line ?? 1, end: finding.endLine ?? finding.line ?? 1 };
   if (overlapsAny(findingRange, changedRanges)) {
@@ -252,7 +257,7 @@ function gitDiffScope(mode: string, changedScope: ChangedScopeMode): ChangedRegi
 
 // Parses a unified diff into file-level and hunk-level scope.
 function parseUnifiedDiff(diffText: string, changedScope: ChangedScopeMode): ChangedRegionScope {
-  const scope: ChangedRegionScope = { mode: changedScope, rangesByFile: new Map(), wholeFiles: new Set() };
+  const scope: ChangedRegionScope = { mode: changedScope, rangesByFile: new Map(), wholeFiles: new Set(), changedFiles: new Set() };
   const state: DiffParseState = { currentFile: undefined, isNewFile: false, targetLine: undefined };
   for (const line of diffText.split(/\r?\n/)) {
     applyDiffLine(scope, state, line);
@@ -287,8 +292,11 @@ function applyTargetFileLine(scope: ChangedRegionScope, state: DiffParseState, l
     const path = diffPath(line.slice(4));
     state.currentFile = path === "/dev/null" ? undefined : path;
     state.targetLine = undefined;
-    if (state.currentFile && state.isNewFile) {
-      scope.wholeFiles.add(state.currentFile);
+    if (state.currentFile) {
+      scope.changedFiles.add(state.currentFile);
+      if (state.isNewFile) {
+        scope.wholeFiles.add(state.currentFile);
+      }
     }
     return true;
   }
@@ -337,17 +345,17 @@ function diffPath(rawPath: string): string {
 
 // Treats untracked files as whole-file changed because git has no hunks for them yet.
 function untrackedFileScope(changedScope: ChangedScopeMode): ChangedRegionScope {
-  return {
-    mode: changedScope,
-    rangesByFile: new Map(),
-    wholeFiles: new Set(gitOutput(["ls-files", "--others", "--exclude-standard"]).split(/\r?\n/).filter(Boolean).map((path) => path.replaceAll("\\", "/"))),
-  };
+  const untracked = new Set(gitOutput(["ls-files", "--others", "--exclude-standard"]).split(/\r?\n/).filter(Boolean).map((path) => path.replaceAll("\\", "/")));
+  return { mode: changedScope, rangesByFile: new Map(), wholeFiles: untracked, changedFiles: new Set(untracked) };
 }
 
 // Unions staged, unstaged, and untracked scopes while whole-file changes dominate hunk ranges.
 function mergeScopes(scopes: ChangedRegionScope[], changedScope: ChangedScopeMode): ChangedRegionScope {
-  const merged: ChangedRegionScope = { mode: changedScope, rangesByFile: new Map(), wholeFiles: new Set() };
+  const merged: ChangedRegionScope = { mode: changedScope, rangesByFile: new Map(), wholeFiles: new Set(), changedFiles: new Set() };
   for (const scope of scopes) {
+    for (const file of scope.changedFiles) {
+      merged.changedFiles.add(file);
+    }
     for (const file of scope.wholeFiles) {
       merged.wholeFiles.add(file);
       merged.rangesByFile.delete(file);

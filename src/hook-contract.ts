@@ -96,7 +96,7 @@ export function renderHookReport(runAnalyse: HookAnalysisRunner, input: HookRepo
   const scopedReport = input.hasChangedRegion ? runAnalyse(input.scopedOptions) : currentReport;
   const baseIdentities = hookBaseIdentities(runAnalyse, input, currentReport);
   const findings = hookFindings(currentReport, scopedReport, input.hasChangedRegion, baseIdentities);
-  const suppressedCount = hookSuppressedCount(scopedReport, input.hasChangedRegion);
+  const suppressedCount = hookSuppressedCount(scopedReport, findings, input.hasChangedRegion);
   return JSON.stringify(hookReport(scopedReport, findings, suppressedCount, true, null), null, 2) + "\n";
 }
 
@@ -149,15 +149,16 @@ function newFileAndProjectFindings(currentReport: AnalysisReport, scopedFindings
     .filter((finding) => (finding.scope === "file" || finding.scope === "project") && !baseIdentities.has(finding.stableIdentity) && !alreadyIncluded.has(finding.fingerprint));
 }
 
-// Counts the file/project findings the hook drops under changed-region attribution, keeping the
-// stable suppressed.count contract accurate.
-function hookSuppressedCount(scopedReport: AnalysisReport, hasChangedRegion: boolean): number {
+// Counts the file/project findings the hook drops under changed-region attribution, excluding any
+// re-emitted as new, so the stable suppressed.count contract is never double-counted.
+function hookSuppressedCount(scopedReport: AnalysisReport, emittedFindings: HookFinding[], hasChangedRegion: boolean): number {
   if (!hasChangedRegion) {
     return 0;
   }
+  const emittedFingerprints = new Set(emittedFindings.map((finding) => finding.fingerprint));
   const fileOrProjectAnchorResiduals = scopedReport.findings.filter((finding) => {
     const scope = scopeForFinding(finding);
-    return scope === "file" || scope === "project";
+    return (scope === "file" || scope === "project") && !emittedFingerprints.has(finding.fingerprint);
   }).length;
   return (scopedReport.suppressedCount ?? 0) + fileOrProjectAnchorResiduals;
 }
@@ -333,7 +334,7 @@ function stableIdentitiesFromDiffBase(
   currentReport: AnalysisReport,
 ): Set<string> {
   const ref = diffBaseRef(diffBase);
-  if (!ref) {
+  if (ref === undefined) {
     return new Set();
   }
   const files = [...new Set(currentReport.findings.map((finding) => finding.filePath))];
@@ -356,11 +357,15 @@ function stableIdentitiesFromDiffBase(
   }
 }
 
-// Resolves a diff-base selector to a git ref, or undefined for modes (unstaged, stdin) that have no
-// committed base.
+// Resolves a diff-base selector to the git rev whose blobs are the new-only base. "unstaged" diffs
+// the worktree against the index, so its base is the index ("" rev -> `git show :path`); "-" (stdin
+// patch) has no materializable base. Returns undefined only when no base can be replayed.
 function diffBaseRef(diffBase: string): string | undefined {
-  if (diffBase === "-" || diffBase === "unstaged") {
+  if (diffBase === "-") {
     return undefined;
+  }
+  if (diffBase === "unstaged") {
+    return "";
   }
   return diffBase === "working-tree" || diffBase === "staged" ? "HEAD" : diffBase;
 }

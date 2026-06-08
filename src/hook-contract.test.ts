@@ -203,6 +203,37 @@ test("hook diff new-only uses stableIdentity for file-scope findings", () => {
   });
 });
 
+test("hook unstaged new-only compares against the index", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+    initGitAdd(dir);
+    writeProjectFile(dir, "long.ts", longSource(820, 0));
+
+    const grown = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "unstaged", "long.ts"]);
+    assert.equal(grown.findings.some((finding) => finding.ruleId === "size.file-length"), false);
+  });
+
+  withProject({ "long.ts": longSource(740, 0) }, (dir) => {
+    initGitAdd(dir);
+    writeProjectFile(dir, "long.ts", longSource(760, 0));
+
+    const crossed = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "unstaged", "long.ts"]);
+    assert.equal(crossed.findings.some((finding) => finding.ruleId === "size.file-length"), true);
+  });
+});
+
+test("hook does not double-count a re-emitted file finding as suppressed", () => {
+  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+    writeBaseline(dir, []);
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "--changed-ranges", "1-1", "long.ts"]);
+
+    assert.equal(payload.findings.some((finding) => finding.ruleId === "size.file-length"), true);
+    assert.equal(payload.suppressed.count, 0);
+  });
+});
+
 test("hook flags parse before and after paths", () => {
   withProject({ "long.ts": longSource(760, 500) }, (dir) => {
     const before = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "500-500", "long.ts"]);
@@ -292,6 +323,14 @@ function writeBaseline(root: string, findings: HookFinding[]): void {
       message: finding.ruleId,
     })),
   }));
+}
+
+// Initialises a git repo and stages the fixtures without committing; spawns git via execFileSync.
+function initGitAdd(root: string): void {
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Fixture"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
 }
 
 // Initialises a git repo in the temp project and commits the fixtures; spawns git via execFileSync.

@@ -58,6 +58,17 @@ test("file changed-region scope keeps file-wide findings for any touched hunk in
   assert.equal(report.findings.some((finding) => finding.ruleId === "size.file-length"), true);
 });
 
+test("file changed-region scope keeps findings for deletion-only diffs", () => {
+  const report = analyseProject(FILE_WIDE_PROJECT, {
+    config: { rules: { "size.file-length": { threshold: 3 } } },
+    diff: "-",
+    diffPatch: "diff --git a/src/long.ts b/src/long.ts\n--- a/src/long.ts\n+++ b/src/long.ts\n@@ -5,2 +4,0 @@\n-const value = 1;\n-const value = 1;\n",
+    changedScope: "file",
+  });
+
+  assert.equal(report.findings.some((finding) => finding.ruleId === "size.file-length"), true);
+});
+
 test("full scans still report file-wide findings", () => {
   const report = analyseProject(FILE_WIDE_PROJECT, {
     config: { rules: { "size.file-length": { threshold: 3 } } },
