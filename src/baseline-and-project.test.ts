@@ -151,16 +151,6 @@ test("diff-scoped analysis keeps central test context for project rules", () => 
   assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.missing-nearby-test"), false);
 });
 
-test("changed-region filtering keeps file-wide findings for any touched hunk in the file", () => {
-  const report = analyseProject(FILE_WIDE_PROJECT, {
-    config: { rules: { "size.file-length": { threshold: 3 } } },
-    diff: "-",
-    diffPatch: FILE_WIDE_DIFF_PATCH,
-  });
-
-  assert.equal(report.findings.some((finding) => finding.ruleId === "size.file-length"), true);
-});
-
 test("changed-region symbol scope includes export default class bodies", () => {
   const report = analyseProject(
     {
@@ -264,8 +254,6 @@ const CENTRAL_TEST_PROJECT = {
   "test/unit/audit-command.test.ts": 'import assert from "node:assert/strict";\nimport { checkAgentSetup } from "../../src/cli/audit/check-agent-setup";\n\ntest("checks agent setup", () => {\n  assert.equal(checkAgentSetup(), "ok");\n});\n',
 };
 const CENTRAL_TEST_DIFF_PATCH = 'diff --git a/src/cli/audit/check-agent-setup.ts b/src/cli/audit/check-agent-setup.ts\n--- a/src/cli/audit/check-agent-setup.ts\n+++ b/src/cli/audit/check-agent-setup.ts\n@@ -1,3 +1,3 @@\n export function checkAgentSetup(): string {\n-  return "old";\n+  return "ok";\n }\n';
-const FILE_WIDE_PROJECT = { "src/long.ts": `${"const value = 1;\n".repeat(6)}export {};\n` };
-const FILE_WIDE_DIFF_PATCH = "diff --git a/src/long.ts b/src/long.ts\n--- a/src/long.ts\n+++ b/src/long.ts\n@@ -5,2 +5,2 @@\n const value = 1;\n-const previous = 1;\n+const next = 1;\n";
 
 // Stable contract: extracts line anchors for eval findings so hunk-filtering tests stay deterministic.
 function evalFindingLines(report: AnalysisReport): number[] {

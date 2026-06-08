@@ -20,11 +20,11 @@ Used as a hook on an agent's output, gruff-ts is a forcing function rather than 
 
 | Field | Value |
 | --- | --- |
-| Release line | Published `0.3.0` package line |
+| Release line | Published `0.3.2` package line |
 | Runtime | Node.js `22+` |
 | Package | `@blundergoat/gruff-ts` |
 | Binary | `gruff-ts` |
-| Rule catalogue | 122 rules across 11 pillars |
+| Rule catalogue | 120 rules across 11 pillars |
 | Primary config | `.gruff-ts.yaml`; `.gruff.json`, `.gruff.yaml`, and `.gruff.yml` are fallback files |
 | Analysis schema | `gruff.analysis.v2` |
 | Baseline schema | `gruff.baseline.v1` |
@@ -223,7 +223,7 @@ Semantics:
 
 ## Rules And Pillars
 
-The current catalogue contains 122 rules:
+The current catalogue contains 120 rules:
 
 | Pillar | Rules |
 | --- | ---: |
@@ -237,11 +237,23 @@ The current catalogue contains 122 rules:
 | `security` | 29 |
 | `sensitive-data` | 10 |
 | `size` | 3 |
-| `test-quality` | 16 |
+| `test-quality` | 14 |
 
 Use `npx gruff-ts list-rules --format=json` for exact rule IDs, severities, confidence levels, remediation text, thresholds, and options.
 
 ## Baselines And Changed-Code Scans
+
+For editor and coding-agent feedback, prefer the analyzer-owned hook contract:
+
+```bash
+npx gruff-ts hook --format=json --changed-ranges "3-3,8-10" src/foo.ts
+npx gruff-ts hook --capabilities --format=json
+```
+
+`hook` emits `gruff.hook.v1` JSON with normalized `file`, `scope`, `suppressed.count`,
+`ignored.paths`, non-null `remediation`, stable identities, and threshold metadata. Hook mode is
+advisory: findings exit `0`; operational failures such as invalid config exit `2` and are reported
+in `config.error`.
 
 Baselines suppress reviewed findings by stable fingerprint:
 
@@ -267,6 +279,10 @@ npx gruff-ts analyse --format=json --changed-ranges "3-3,8-10" src/foo.ts
 npx gruff-ts analyse --format=json --since HEAD src/foo.ts
 git diff | npx gruff-ts analyse --format=json --diff -
 ```
+
+Use `--changed-scope file` when a CI workflow intentionally wants every finding from touched
+files, including file-wide metrics such as `size.file-length`. The default `symbol` scope keeps
+the coding-agent feedback focused on the changed line or enclosing declaration.
 
 JSON output keeps the normal `findings` array and adds `suppressedCount` when changed-region filtering is active.
 
@@ -316,7 +332,6 @@ Source lives under `src/`: `src/cli.ts` is the bootstrap, `src/cli-program.ts` o
 - [Configuration](docs/configuration.md)
 - [Rules catalogue](docs/rules.md)
 - [Reports and CI](docs/reports-and-ci.md)
-- [Release checklist](docs/releasing.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security](SECURITY.md)
 

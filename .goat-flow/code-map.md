@@ -90,19 +90,20 @@ gruff-ts/
 │       └── goat-qa/               = QA/test skill
 │
 ├── .agents/                       = shared Codex skill surface (goat, goat-plan/debug/review/critique/security/qa)
-├── .codex/                        = Codex config and deny-dangerous hooks
+├── .codex/                        = Codex config and permission profile (deny hook shared in .goat-flow/hooks/)
 │
 ├── .goat-flow/                    = shared learning loop + skill packs (see .goat-flow/README files inline)
-│   ├── config.yaml                = goat-flow version (1.7.0) and skill install policy
+│   ├── config.yaml                = goat-flow version (1.10.1) and skill install policy
 │   ├── architecture.md            = system overview (this companion file)
 │   ├── code-map.md                = this file
 │   ├── glossary.md                = domain term definitions
 │   ├── security-policy.md         = scoped security review policy
-│   ├── footguns/, lessons/, patterns/, decisions/    = learning loop dirs (READMEs inside)
-│   ├── tasks/, scratchpad/        = ephemeral work (gitignored contents)
+│   ├── hooks/                     = shared deny-dangerous + gruff-code-quality hooks
+│   ├── learning-loop/{footguns,lessons,patterns,decisions}/ = learning loop dirs (READMEs inside)
+│   ├── plans/, scratchpad/        = milestone plans + ephemeral work (gitignored contents)
 │   ├── logs/sessions/, logs/quality/, logs/critiques/, logs/security/    = local continuity + skill output
-│   ├── skill-reference/           = meta references (skill-preamble, skill-conventions, README)
-│   └── skill-playbooks/           = tool availability checks (browser-use, page-capture, skill-quality-testing)
+│   ├── skill-docs/                = meta references (skill-preamble, skill-conventions, README)
+│   └── skill-docs/playbooks/      = tool availability checks (browser-use, page-capture, skill-quality-testing)
 │
 ├── node_modules/                  = npm dependencies (vendored, do not edit)
 └── .idea/                         = JetBrains IDE config (gitignored, do not edit)

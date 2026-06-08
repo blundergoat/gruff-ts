@@ -6,11 +6,23 @@ gruff-ts is built to govern AI-generated code (see [Philosophy](philosophy.md) f
 
 A coding agent will rewrite code until the checks pass. gruff-ts turns that into leverage: run it on the agent's change and gate on the result, so the agent has to resolve findings - add the missing doc comment, cut the unverifiable branching, drop the unsafe call, replace the mock-only test - before the change reaches you. What lands is already shaped for sign-off.
 
-The gate is the exit code:
+For CI-style gates, `analyse` owns the exit code:
 
 - `0` - no finding met the `--fail-on` level; the change passes.
 - `1` - at least one finding met `--fail-on`; the agent must fix and re-run.
 - `2` - fatal (bad input, parse or config error); stop and surface it.
+
+For editor or PostToolUse feedback, use the analyzer-owned hook contract instead:
+
+```bash
+gruff-ts hook --format json --changed-ranges "12-40,88-90" src/foo.ts
+gruff-ts hook --capabilities --format json
+```
+
+`hook` emits `gruff.hook.v1` JSON with normalized `file`, `scope`, `suppressed.count`,
+`ignored.paths`, non-null `remediation`, stable identities, and machine-readable threshold
+metadata. Hook mode is advisory: findings exit `0`; config failures are returned in
+`config.error` and exit `2`.
 
 ## Scan the change, not the repo
 
@@ -35,7 +47,7 @@ npx gruff-ts analyse --changed-ranges "12-40,88-90" src/foo.ts --fail-on=warning
 git diff | npx gruff-ts analyse --diff - --fail-on=warning
 ```
 
-Changed-region scans keep only findings attributable to the changed hunk or its enclosing symbol, so the agent fixes its own work instead of inheriting the whole backlog.
+Changed-region scans keep only findings attributable to the changed hunk or its enclosing symbol, so the agent fixes its own work instead of inheriting the whole backlog. In `hook` mode, whole-file metrics such as `size.file-length` are omitted under changed-region attribution and counted in `suppressed.count`; they return only in full-scan hook output or when `--baseline` / `--diff` shows their stable identity is new. In `analyse`, use `--changed-scope file` for CI jobs that intentionally want every finding from a touched file.
 
 ## Respect the project's ignore policy
 

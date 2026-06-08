@@ -1,6 +1,6 @@
 # Rules
 
-`gruff-ts` exposes 122 rules across 11 pillars. This list is generated from the
+`gruff-ts` exposes 120 rules across 11 pillars. This list is generated from the
 public rule catalogue used by `gruff-ts list-rules`; severity, confidence,
 thresholds, and option names are the defaults before project config overrides.
 
@@ -30,7 +30,7 @@ gruff-ts list-rules --format=json
 - security: 29
 - sensitive-data: 10
 - size: 3
-- test-quality: 16
+- test-quality: 14
 
 ## Complexity
 
@@ -54,9 +54,10 @@ gruff-ts list-rules --format=json
 - `docs.fixture-purpose-missing` (advisory; medium confidence): Flags large or scanner-relevant fixtures without a nearby purpose comment.
 - `docs.magic-threshold-without-rationale` (advisory; medium confidence): Flags threshold-like numeric values without a nearby rationale comment.
 - `docs.missing-error-behavior-doc` (advisory; medium confidence): Flags commented functions whose error behavior is not described.
+- `docs.missing-exported-function-doc` (warning; medium confidence): Flags exported functions without a leading maintainer comment.
 - `docs.missing-file-overview` (advisory; medium confidence): Flags source files without a top-of-file purpose comment.
-- `docs.missing-function-doc` (advisory; medium confidence): Flags functions without a leading maintainer comment.
 - `docs.missing-interface-doc` (advisory; medium confidence): Flags interfaces without a leading maintainer comment.
+- `docs.missing-internal-function-doc` (advisory; medium confidence): Flags internal helper functions without a leading maintainer comment.
 - `docs.missing-invariant-doc` (advisory; medium confidence): Flags commented declarations that own schema, fingerprint, baseline, or determinism contracts without saying so.
 - `docs.missing-param-tag` (advisory; medium confidence): Flags documented exports with parameters missing @param tags.
 - `docs.missing-public-doc` (advisory; medium confidence): Flags exported class, type, and enum APIs without a nearby doc comment.

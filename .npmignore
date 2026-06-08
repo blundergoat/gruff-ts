@@ -1,3 +1,8 @@
+# Defense-in-depth fallback. The published package is governed by the
+# package.json "files" allowlist (which uses "!" negations to drop tests,
+# fixtures, and maintainer docs). npm bypasses this root .npmignore inside
+# any directory "files" lists, so these rules only take effect if the
+# "files" field is ever removed - then they exclude the same dev material.
 .idea/
 .agents/
 .claude/
@@ -5,7 +10,18 @@
 .github/
 .goat-flow/
 node_modules/
+
+# Tests and test fixtures - not runtime/user-facing
 src/**/*.test.ts
+/src/fixtures/
+/fixtures/
+
+# Maintainer/release shell tooling - not runtime/user-facing
+/scripts/
+
+# Maintainer/contributor docs - not user-facing
+/docs/releasing.md
+/docs/coding-standards/
 
 AGENTS.md
 CLAUDE.md

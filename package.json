@@ -1,7 +1,7 @@
 {
   "name": "@blundergoat/gruff-ts",
-  "version": "0.3.1",
-  "description": "Governs AI-generated code so a human can verify it: a TypeScript/JavaScript static analyzer - 119 rules across 11 quality pillars, SARIF output, baselines, and a local dashboard.",
+  "version": "0.3.2",
+  "description": "Governs AI-generated code so a human can verify it: a TypeScript/JavaScript static analyzer - 120 rules across 11 quality pillars, SARIF output, baselines, and a local dashboard.",
   "license": "MIT",
   "author": "Matthew Hansen (https://www.blundergoat.com/about)",
   "homepage": "https://github.com/blundergoat/gruff-ts#readme",
@@ -36,6 +36,21 @@
     "node": ">=22"
   },
   "type": "module",
+  "files": [
+    "bin/",
+    "src/",
+    "!src/**/*.test.ts",
+    "!src/fixtures/",
+    "docs/",
+    "!docs/releasing.md",
+    "!docs/coding-standards/",
+    "tsconfig.json",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md"
+  ],
   "bin": {
     "gruff-ts": "bin/gruff-ts"
   },

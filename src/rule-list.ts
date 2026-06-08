@@ -23,6 +23,7 @@ const CONSOLE_COMMANDS = [
   { name: "completion", description: "Dump the shell completion script" },
   { name: "dashboard", description: "Serve the local gruff dashboard." },
   { name: "help", description: "Display help for a command" },
+  { name: "hook", description: "Run the gruff agent-hook contract." },
   { name: "init", description: "Write the default .gruff-ts.yaml to the current directory." },
   { name: "list", description: "List commands" },
   { name: "list-profiles", description: "List the built-in gruff profiles." },

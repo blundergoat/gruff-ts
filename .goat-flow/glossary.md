@@ -28,7 +28,7 @@ The certainty tier attached to a finding: `low`, `medium`, or `high`. It helps c
 
 ### Dashboard
 
-The local browser UI served by `gruff-ts dashboard`. It binds to `127.0.0.1:8767` by default and has no authentication; use `--port` when another gruff dashboard is already using the port.
+The local browser UI served by `gruff-ts dashboard`. It binds to `http://127.0.0.1:8767` by default and has no authentication; use `--port` when another gruff dashboard is already using the port.
 
 ### Diagnostic
 
@@ -140,4 +140,4 @@ Files one agent setup owns without widening scope. Claude owns `CLAUDE.md` and `
 
 ### Learning Loop
 
-Durable shared project-memory directories under `.goat-flow/footguns/`, `.goat-flow/lessons/`, `.goat-flow/patterns/`, and `.goat-flow/decisions/`.
+Durable shared project-memory directories under `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, and `.goat-flow/learning-loop/decisions/`.

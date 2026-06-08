@@ -2,7 +2,7 @@
 
 `gruff-ts` - TypeScript project quality analyser. Modular Node.js/ESM CLI: a thin `src/cli.ts` shell (~20 lines) delegates to `src/analyser.ts` and ~30 sibling rule modules under `src/` (`blocks.ts`, `line-rules.ts`, `project-rules.ts`, `class-rules.ts`, `dead-code-rules.ts`, `safety-rules.ts`, `naming-pushers.ts`, `comment-rules.ts`, `doc-rules.ts`, `report-renderers.ts`, etc.). It scans TypeScript, JavaScript, CSS, and common config (json, yaml, toml, env) files and emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v1`) and report snapshots (`gruff.analysis.v2`) round-trip without churn.
 
-goat-flow version: 1.7.0
+goat-flow version: 1.10.1
 
 ## Workspace Boundary
 
@@ -33,10 +33,14 @@ This repo is the **selected target project**. The controlling goat-flow workspac
 - No new abstractions or error handling beyond what was asked.
 - Ambiguous requirements: present interpretations, do not pick silently.
 
+## Commit Messages
+
+Conventional commits (`type(scope): subject`); observed types: feat, refactor, chore, docs, fix, perf, test. Name the concrete behavior, file family, or command that changed - no bare weak verbs (`update`, `change`, `tweak`) as the whole subject. Full reference: `docs/coding-standards/git-commit.md`.
+
 ## Key Resources
 
-- **Learning loop** (grep before every change): `.goat-flow/footguns/`, `.goat-flow/lessons/`, `.goat-flow/patterns/`, `.goat-flow/decisions/`.
-- **Tool playbooks**: `.goat-flow/skill-playbooks/browser-use.md`, `.goat-flow/skill-playbooks/page-capture.md` - read BEFORE declaring a tool unavailable.
+- **Learning loop** (grep before every change): `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, `.goat-flow/learning-loop/decisions/`.
+- **Tool playbooks**: `.goat-flow/skill-docs/playbooks/README.md` is the full index (e.g. `.goat-flow/skill-docs/playbooks/browser-use.md`, `.goat-flow/skill-docs/playbooks/page-capture.md`) - read BEFORE declaring a tool unavailable.
 - Orientation: `.goat-flow/code-map.md`, `.goat-flow/architecture.md`, `.goat-flow/glossary.md`.
 
 ## Essential Commands
@@ -53,7 +57,7 @@ npm run start-dev    # tsx src/cli.ts dashboard (binds 127.0.0.1:8767)
 When a `goat-*` skill is active, its Step 0 replaces READ and selects the skill's mode/depth. SCOPE still applies before writes: a skill may write when its selected mode permits writes or the user explicitly approves them. `/goat-plan` File-Write may create gitignored milestone files without a separate approval gate; `/goat-debug` D3 still requires approval before fixes. Resume at ACT after Step 0 output or when a blocking gate releases.
 
 ### READ
-MUST read relevant files before changes. Never fabricate codebase facts (rule counts, pillar names, schema strings - read `src/cli.ts` first). For URL, local HTML, localhost, screenshot, rendered UI, or browser-visible behaviour (the `dashboard` subcommand on `127.0.0.1:8767`), check browser evidence first. Use grep-first retrieval across `.goat-flow/footguns/`, `.goat-flow/lessons/`, and `.goat-flow/patterns/`; include `.goat-flow/decisions/` for architecture, schema, or setup work. Before declaring any tool or capability unavailable, read the matching playbook in `.goat-flow/skill-playbooks/` (e.g. `browser-use.md`, `page-capture.md`) and run that doc's "Availability Check" section verbatim - project-local CLI tools at `~/.local/bin/` are valid; do not conflate "no harness/MCP tool" with "no tool".
+MUST read relevant files before changes. Never fabricate codebase facts (rule counts, pillar names, schema strings - read `src/cli.ts` first). For URL, local HTML, localhost, screenshot, rendered UI, or browser-visible behaviour (the `dashboard` subcommand on `127.0.0.1:8767`), check browser evidence first. Use grep-first retrieval across `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, and `.goat-flow/learning-loop/patterns/`; include `.goat-flow/learning-loop/decisions/` for architecture, schema, or setup work. Before declaring any tool or capability unavailable, read the matching playbook in `.goat-flow/skill-docs/playbooks/` (e.g. `browser-use.md`, `page-capture.md`) and run that doc's "Availability Check" section verbatim - project-local CLI tools at `~/.local/bin/` are valid; do not conflate "no harness/MCP tool" with "no tool".
 
 ### SCOPE
 Three signals before acting: (1) Intent - question vs directive. (2) Complexity tier + budget. (3) Mode - Plan / Implement / Explain / Debug / Review. MUST declare files allowed to change, non-goals, max blast radius. Expanding beyond scope = stop and re-scope.
@@ -85,9 +89,11 @@ MUST run `npm run check` after touching `src/**/*.ts`. MUST run `shellcheck` on 
 3. **Fix verification.** Run the original repro before claiming a bug is fixed.
 4. **Hedged claims.** "Should work", "probably fine", "looks good" are not verification.
 
+Before reporting done, reject the rationalisations catalogued in `.goat-flow/skill-docs/skill-preamble.md` (Rationalisations to reject): an excuse that trades a quoted result for hope is not verification.
+
 Stop-the-line on broken tests, failed `tsc`, or behaviour regression. Two corrections on the same approach = rewind.
 
-If VERIFY caught a failure or you corrected course, log behavioural mistakes in `.goat-flow/lessons/`, cross-doc traps in `.goat-flow/footguns/` (`Status:` / `Created:` / `Evidence:`), and significant decisions in `.goat-flow/decisions/`.
+If VERIFY caught a failure or you corrected course, log behavioural mistakes in `.goat-flow/learning-loop/lessons/`, cross-doc traps in `.goat-flow/learning-loop/footguns/` (`Status:` / `Created:` / `Evidence:`), and significant decisions in `.goat-flow/learning-loop/decisions/`.
 
 ## Definition of Done
 
@@ -99,10 +105,10 @@ If VERIFY caught a failure or you corrected course, log behavioural mistakes in 
 
 ## Artifact Routing
 
-- "Add a footgun" → `.goat-flow/footguns/<category>.md` (read its README first).
-- "Add a lesson" → `.goat-flow/lessons/<category>.md`.
-- "Add a decision/ADR" → `.goat-flow/decisions/`.
-- "Add a pattern" → `.goat-flow/patterns/`.
+- "Add a footgun" → `.goat-flow/learning-loop/footguns/<category>.md` (read its README first).
+- "Add a lesson" → `.goat-flow/learning-loop/lessons/<category>.md`.
+- "Add a decision/ADR" → `.goat-flow/learning-loop/decisions/`.
+- "Add a pattern" → `.goat-flow/learning-loop/patterns/`.
 
 Runtime code, hooks, and agent config are out of scope unless the user explicitly asks.
 
@@ -113,12 +119,12 @@ Runtime code, hooks, and agent config are out of scope unless the user explicitl
 | Instruction file | `CLAUDE.md` |
 | Architecture | `.goat-flow/architecture.md` |
 | Code map / glossary | `.goat-flow/code-map.md`, `.goat-flow/glossary.md` |
-| Learning loop | `.goat-flow/footguns/`, `.goat-flow/lessons/`, `.goat-flow/patterns/`, `.goat-flow/decisions/` |
-| Skill reference (meta) | `.goat-flow/skill-reference/` |
-| Tool playbooks (CLI/MCP availability checks: browser-use, page-capture, skill-quality-testing) | `.goat-flow/skill-playbooks/` - read BEFORE declaring a tool unavailable |
-| Claude skills/config | `.claude/skills/`, `.claude/settings.json`, `.claude/hooks/deny-dangerous.sh` |
+| Learning loop | `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, `.goat-flow/learning-loop/decisions/` |
+| Skill reference (meta) | `.goat-flow/skill-docs/` |
+| Tool playbooks (CLI/MCP availability checks: browser-use, page-capture, skill-quality-testing) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |
+| Claude skills/config | `.claude/skills/`, `.claude/settings.json`, `.goat-flow/hooks/` (shared deny-dangerous + gruff-code-quality) |
 | Source | `src/cli.ts`, `src/cli.test.ts` |
 | Entry point / scripts | `bin/gruff-ts`, `scripts/check.sh`, `scripts/start-dev.sh` |
 | Fixtures | `fixtures/sample.ts` |
 | Build / config | `package.json`, `tsconfig.json` |
-| Workspace notes | `.goat-flow/logs/sessions/`, `.goat-flow/tasks/`, `.goat-flow/scratchpad/` |
+| Workspace notes | `.goat-flow/logs/sessions/`, `.goat-flow/plans/`, `.goat-flow/scratchpad/` |

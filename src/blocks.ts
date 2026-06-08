@@ -87,14 +87,26 @@ export interface BlockFindingWithMetadataArgs extends BlockFindingArgs {
 // needing metadata or lower confidence go through `blockFindingWithMetadata` to keep the
 // per-rule fingerprint shape stable.
 export function blockFinding(args: BlockFindingArgs): Finding {
-  return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.block.startLine, severity: args.severity, pillar: args.pillar, confidence: "high", symbol: args.block.name });
+  const endLine = args.block.startLine + args.block.lineCount - 1;
+  return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.block.startLine, endLine, severity: args.severity, pillar: args.pillar, confidence: "high", symbol: args.block.name });
 }
 
 // Block-anchored variant that ships rule-specific metadata. Confidence defaults to "medium"
 // because metadata-carrying rules (e.g. test-quality magic-number) report measurements rather than
 // definitive defects; the metadata payload is part of each rule's stable fingerprint contract.
 export function blockFindingWithMetadata(args: BlockFindingWithMetadataArgs): Finding {
-  return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.block.startLine, severity: args.severity, pillar: args.pillar, confidence: "medium", symbol: args.block.name, metadata: args.metadata });
+  return makeFinding({
+    ruleId: args.ruleId,
+    message: args.message,
+    filePath: args.file.displayPath,
+    line: args.block.startLine,
+    endLine: args.block.startLine + args.block.lineCount - 1,
+    severity: args.severity,
+    pillar: args.pillar,
+    confidence: "medium",
+    symbol: args.block.name,
+    metadata: args.metadata,
+  });
 }
 
 // Computes cyclomatic and function-body once and threads them through the per-block rule pipeline.
@@ -134,7 +146,15 @@ export function analyseBlockRules(context: BlockRuleContext): void {
 function pushFunctionLengthFinding(context: BlockRuleContext): void {
   const functionLengthThreshold = threshold(context.config, "size.function-length", 200);
   if (context.block.lineCount > functionLengthThreshold) {
-    context.findings.push(blockFinding({ ruleId: "size.function-length", message: `Function \`${context.block.name}\` has ${context.block.lineCount} lines, above the threshold of ${functionLengthThreshold}.`, file: context.file, block: context.block, severity: ruleSeverity(context.config, "size.function-length", "warning"), pillar: "size" }));
+    context.findings.push(blockFindingWithMetadata({
+      ruleId: "size.function-length",
+      message: `Function \`${context.block.name}\` has ${context.block.lineCount} lines, above the threshold of ${functionLengthThreshold}.`,
+      file: context.file,
+      block: context.block,
+      severity: ruleSeverity(context.config, "size.function-length", "warning"),
+      pillar: "size",
+      metadata: { lines: context.block.lineCount, threshold: functionLengthThreshold },
+    }));
   }
 }
 
@@ -142,16 +162,34 @@ function pushFunctionLengthFinding(context: BlockRuleContext): void {
 // already validated the signature shape upstream. Reports `size.parameter-count` when exceeded.
 function pushParameterCountFinding(context: BlockRuleContext): void {
   const params = context.block.params.split(",").map((value) => value.trim()).filter(Boolean).length;
-  if (params > threshold(context.config, "size.parameter-count", 7)) {
-    context.findings.push(blockFinding({ ruleId: "size.parameter-count", message: `Function \`${context.block.name}\` declares ${params} parameters.`, file: context.file, block: context.block, severity: ruleSeverity(context.config, "size.parameter-count", "warning"), pillar: "size" }));
+  const parameterCountThreshold = threshold(context.config, "size.parameter-count", 7);
+  if (params > parameterCountThreshold) {
+    context.findings.push(blockFindingWithMetadata({
+      ruleId: "size.parameter-count",
+      message: `Function \`${context.block.name}\` declares ${params} parameters.`,
+      file: context.file,
+      block: context.block,
+      severity: ruleSeverity(context.config, "size.parameter-count", "warning"),
+      pillar: "size",
+      metadata: { parameters: params, threshold: parameterCountThreshold },
+    }));
   }
 }
 
 // Default threshold 15. Counts conditional keywords + boolean operators in the code body - see
 // `blockRuleContext` for the pre-computed value. Reports `complexity.cyclomatic` when exceeded.
 function pushCyclomaticFinding(context: BlockRuleContext): void {
-  if (context.cyclomatic > threshold(context.config, "complexity.cyclomatic", 15)) {
-    context.findings.push(blockFinding({ ruleId: "complexity.cyclomatic", message: `Function \`${context.block.name}\` has cyclomatic complexity ${context.cyclomatic}.`, file: context.file, block: context.block, severity: ruleSeverity(context.config, "complexity.cyclomatic", "warning"), pillar: "complexity" }));
+  const cyclomaticThreshold = threshold(context.config, "complexity.cyclomatic", 15);
+  if (context.cyclomatic > cyclomaticThreshold) {
+    context.findings.push(blockFindingWithMetadata({
+      ruleId: "complexity.cyclomatic",
+      message: `Function \`${context.block.name}\` has cyclomatic complexity ${context.cyclomatic}.`,
+      file: context.file,
+      block: context.block,
+      severity: ruleSeverity(context.config, "complexity.cyclomatic", "warning"),
+      pillar: "complexity",
+      metadata: { complexity: context.cyclomatic, threshold: cyclomaticThreshold },
+    }));
   }
 }
 
@@ -159,8 +197,17 @@ function pushCyclomaticFinding(context: BlockRuleContext): void {
 // "deeply nested" intuition pure cyclomatic misses. Reports `complexity.cognitive` when exceeded.
 function pushCognitiveFinding(context: BlockRuleContext): void {
   const cognitive = context.cyclomatic + maxNestingDepth(context.block.codeBody);
-  if (cognitive > threshold(context.config, "complexity.cognitive", 15)) {
-    context.findings.push(blockFinding({ ruleId: "complexity.cognitive", message: `Function \`${context.block.name}\` has cognitive complexity ${cognitive}.`, file: context.file, block: context.block, severity: ruleSeverity(context.config, "complexity.cognitive", "warning"), pillar: "complexity" }));
+  const cognitiveThreshold = threshold(context.config, "complexity.cognitive", 15);
+  if (cognitive > cognitiveThreshold) {
+    context.findings.push(blockFindingWithMetadata({
+      ruleId: "complexity.cognitive",
+      message: `Function \`${context.block.name}\` has cognitive complexity ${cognitive}.`,
+      file: context.file,
+      block: context.block,
+      severity: ruleSeverity(context.config, "complexity.cognitive", "warning"),
+      pillar: "complexity",
+      metadata: { complexity: cognitive, threshold: cognitiveThreshold },
+    }));
   }
 }
 

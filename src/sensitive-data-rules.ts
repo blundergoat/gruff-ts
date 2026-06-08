@@ -140,7 +140,7 @@ function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: st
       index + 1,
       envValue.value,
       "medium",
-      { keyName: envValue.keyName, length: envValue.value.length },
+      { keyName: envValue.keyName, length: envValue.value.length, threshold: minLength },
       ruleSeverity(config, "sensitive-data.hardcoded-env-value", "error"),
     );
   }
@@ -165,7 +165,7 @@ function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, co
       byteLine(source, match.index ?? 0),
       raw,
       "medium",
-      { length: raw.length, detector: "high-entropy-string" },
+      { length: raw.length, detector: "high-entropy-string", threshold: minLength },
       ruleSeverity(config, "sensitive-data.high-entropy-string", "error"),
     );
   }

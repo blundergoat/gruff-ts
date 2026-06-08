@@ -9,6 +9,7 @@ interface FindingInput {
   message: string;
   filePath: string;
   line?: number;
+  endLine?: number;
   severity: Severity;
   pillar: Pillar;
   confidence: Confidence;
@@ -30,6 +31,7 @@ function makeFinding(input: FindingInput): Finding {
     message: input.message,
     filePath: input.filePath,
     ...(input.line ? { line: input.line } : {}),
+    ...(input.endLine ? { endLine: input.endLine } : {}),
     severity: input.severity,
     pillar: input.pillar,
     secondaryPillars: [],
