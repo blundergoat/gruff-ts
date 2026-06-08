@@ -25,7 +25,7 @@ test("root CLI exposes gruff console command and option parity", () => {
   ["-h, --help", "--silent", "-q, --quiet", "-V, --version", "--ansi|--no-ansi", "-n, --no-interaction", "-v|vv|vvv, --verbose"].forEach((option) => {
     assert.match(list, new RegExp(option.replace(/[|]/g, "\\|")));
   });
-  ["analyse", "completion", "dashboard", "help", "init", "list", "list-profiles", "list-rules", "report", "summary"].forEach((command) => {
+  ["analyse", "completion", "dashboard", "help", "hook", "init", "list", "list-profiles", "list-rules", "report", "summary"].forEach((command) => {
     assert.match(list, new RegExp(`^  ${command}\\s+`, "m"));
   });
 });
@@ -161,7 +161,7 @@ test("console globals suppress normal output and completion emits a script", () 
 
   const completion = execFileSync("./bin/gruff-ts", ["completion"], { encoding: "utf8" });
   assert.match(completion, /complete -F _gruff_ts_completion gruff-ts/);
-  assert.match(completion, /commands="analyse completion dashboard init list list-profiles list-rules report summary"/);
+  assert.match(completion, /commands="analyse completion dashboard hook init list list-profiles list-rules report summary"/);
   assert.match(completion, /text json html markdown github hotspot sarif/);
 
   const analyseHelp = execFileSync("./bin/gruff-ts", ["analyse", "--help"], { encoding: "utf8" });

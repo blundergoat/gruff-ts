@@ -10,6 +10,7 @@ import { ConfigLoadError } from "./config-load-error.ts";
 import { loadConfig, minimumSeverityFor } from "./config.ts";
 import { VERSION } from "./constants.ts";
 import { startDashboard } from "./dashboard.ts";
+import { renderHookCapabilities, renderHookConfigError, renderHookReport } from "./hook-contract.ts";
 import { promptYesNo, shouldPromptForInit, writeDefaultConfig } from "./init-config.ts";
 import { renderReport, renderSummary, renderSummaryJson } from "./report-renderers.ts";
 import { completionShell, getRuleDescriptor, renderCompletionScript, renderConsoleList, renderProfileList, renderRuleDetail, renderRuleList, type RuleListFormat } from "./rule-list.ts";
@@ -109,6 +110,7 @@ export function buildProgram(runAnalyse: AnalyseRunner): Command {
   registerCheckIgnoreCommand(program);
   registerCompletionCommand(program);
   registerDashboardCommand(program, runAnalyse);
+  registerHookCommand(program, runAnalyse);
   registerInitCommand(program);
   registerListCommand(program);
   registerListProfilesCommand(program);
@@ -184,7 +186,7 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--changed-ranges <ranges>", "Filter findings to changed regions, for example 3-3,8-10.")
     .option("--since <ref>", "Filter findings to regions changed against a git base ref.")
     .option("--diff [mode]", "Filter findings to changed regions. Use working-tree, staged, unstaged, a base ref, or - for unified diff on stdin.")
-    .option("--changed-scope <scope>", "Changed-region scope: symbol or hunk.", "symbol")
+    .option("--changed-scope <scope>", "Changed-region scope: hunk, symbol, or file.", "symbol")
     .option("--history-file <path>", "Append score trend history to this JSON file.")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
@@ -221,6 +223,59 @@ function registerCheckIgnoreCommand(program: Command): void {
         writeCommandOutput(program, renderCheckIgnore(results, format));
         process.exitCode = checkIgnoreExitCode(results);
       });
+    });
+}
+
+// Dedicated agent-hook surface for gruff.hook.v1. It owns hook defaults (JSON, advisory exit,
+// symbol attribution, no analysis baseline) so consumers do not assemble analyzer-specific flags.
+function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void {
+  program
+    .command("hook")
+    .description("Run the gruff agent-hook contract and emit gruff.hook.v1 JSON.")
+    .argument("[paths...]", "Files or directories to analyse.")
+    .option("--format <format>", "Output format: json.", parseHookFormat, "json")
+    .option("--capabilities", "Print gruff.hook.v1 capability metadata and exit.")
+    .option("--config <path>", "Path to a gruff YAML config file.")
+    .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
+    .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
+    .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
+    .option("--changed-ranges <ranges>", "Filter hook findings to changed regions, for example 3-3,8-10.")
+    .option("--since <ref>", "Filter hook findings to regions changed against a git base ref and compare against that ref.")
+    .option("--diff [mode]", "Filter hook findings to changed regions. Use working-tree, staged, unstaged, a base ref, or - for unified diff on stdin.")
+    .option("--baseline <path>", "Compare hook findings against a gruff baseline JSON file using stableIdentity.")
+    .action((paths: string[], rawOptions: Record<string, unknown>) => {
+      if (rawOptions.capabilities === true) {
+        writeCommandOutput(program, renderHookCapabilities());
+        process.exitCode = 0;
+        return;
+      }
+      try {
+        const scopedOptions = hookScopedOptions(paths, rawOptions);
+        const currentOptions = hookCurrentOptions(scopedOptions);
+        writeCommandOutput(program, renderHookReport(runAnalyse, {
+          currentOptions,
+          scopedOptions,
+          ...hookBaselinePath(rawOptions),
+          ...hookDiffBase(scopedOptions),
+          hasChangedRegion: hasHookChangedRegion(scopedOptions),
+        }));
+        process.exitCode = 0;
+      } catch (error) {
+        if (error instanceof ConfigLoadError) {
+          writeCommandOutput(program, renderHookConfigError(error.message, error.suggestion));
+          process.exitCode = 2;
+          return;
+        }
+        if (error instanceof Error) {
+          // Keep gruff.hook.v1 machine-readable: baseline IO/parse/schema failures and git errors
+          // (--diff/--since outside a repo) report in-band as config.error with exit 2 instead of
+          // crashing with a raw stack and empty stdout, which would break the always-JSON contract.
+          writeCommandOutput(program, renderHookConfigError(error.message, "Check the --baseline path and schema, and run --diff/--since inside a git repository."));
+          process.exitCode = 2;
+          return;
+        }
+        throw error;
+      }
     });
 }
 
@@ -438,6 +493,15 @@ function parseSummaryFormat(rawFormat: string): "text" | "json" {
   throw new InvalidArgumentError("must be text or json");
 }
 
+// Hook mode is a JSON-only contract. Keep the parser explicit so typoed formats fail as usage
+// errors before analysis starts.
+function parseHookFormat(rawFormat: string): "json" {
+  if (rawFormat === "json") {
+    return rawFormat;
+  }
+  throw new InvalidArgumentError("must be json");
+}
+
 /*
  * Commander argParser for `--top`-style numeric flags. Throws `InvalidArgumentError` on non-integer
  * or negative input so commander reports a usage error and exits non-zero before the command runs.
@@ -481,7 +545,7 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
     format,
     failOn,
     shouldIncludeIgnored: rawOptions.includeIgnored === true,
-    changedScope: stringChoice(rawOptions.changedScope, ["symbol", "hunk"], "symbol"),
+    changedScope: stringChoice(rawOptions.changedScope, ["symbol", "hunk", "file"], "symbol"),
     ...diffInput.options,
     ...changedRangesOption(rawOptions),
     ...sinceOption(rawOptions),
@@ -490,6 +554,31 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
     ...generateBaselineOption(rawOptions),
     shouldSkipBaseline,
   };
+}
+
+function hookScopedOptions(paths: string[], rawOptions: Record<string, unknown>): AnalysisOptions {
+  return normalizeOptions(
+    paths,
+    { ...rawOptions, format: "json", failOn: "none", changedScope: "symbol", noBaseline: true },
+    { shouldAllowBaselineFlag: false },
+  );
+}
+
+function hookCurrentOptions(options: AnalysisOptions): AnalysisOptions {
+  const { changedRanges: _changedRanges, diff: _diff, diffPatch: _diffPatch, since: _since, ...rest } = options;
+  return { ...rest, shouldSkipBaseline: true };
+}
+
+function hasHookChangedRegion(options: AnalysisOptions): boolean {
+  return Boolean(options.changedRanges || options.diff || options.since || options.diffPatch);
+}
+
+function hookBaselinePath(rawOptions: Record<string, unknown>): Partial<{ baselinePath: string }> {
+  return typeof rawOptions.baseline === "string" ? { baselinePath: rawOptions.baseline } : {};
+}
+
+function hookDiffBase(options: AnalysisOptions): Partial<{ diffBase: string }> {
+  return options.diff ? { diffBase: options.diff } : options.since ? { diffBase: options.since } : {};
 }
 
 // Conditional spreads (not `config: undefined`) because `AnalysisOptions` runs under

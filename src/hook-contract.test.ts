@@ -1,0 +1,315 @@
+// Conformance tests for the gruff.hook.v1 agent-hook contract.
+import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import test from "node:test";
+import { gitAvailable, REPO_ROOT } from "./test-fixtures.ts";
+
+const BIN = join(REPO_ROOT, "bin/gruff-ts");
+const SEVERITIES = new Set(["advisory", "warning", "error"]);
+const SCOPES = new Set(["line", "symbol", "file", "project"]);
+const THRESHOLD_RULE_IDS = new Set([
+  "complexity.cognitive",
+  "complexity.cyclomatic",
+  "design.deep-relative-import",
+  "design.large-module-concentration",
+  "sensitive-data.hardcoded-env-value",
+  "sensitive-data.high-entropy-string",
+  "size.file-length",
+  "size.function-length",
+  "size.parameter-count",
+]);
+
+interface HookPayload {
+  contractVersion: string;
+  analyzer: { name: string; version: string };
+  supports?: Record<string, boolean>;
+  flags?: Record<string, string>;
+  flagOrder?: string;
+  findings: HookFinding[];
+  suppressed: { count: number };
+  ignored: { paths: Array<{ path: string; source: string; pattern: string }> };
+  config: { schemaOk: boolean; error: string | null };
+}
+
+interface HookFinding {
+  ruleId: string;
+  severity: string;
+  scope: string;
+  file: string;
+  line?: number;
+  symbol: string | null;
+  remediation: string;
+  metadata: Record<string, unknown>;
+  stableIdentity: string;
+  fingerprint: string;
+}
+
+test("hook capabilities advertises gruff.hook.v1", () => {
+  const capabilities = runHook(REPO_ROOT, ["hook", "--capabilities", "--format", "json"]);
+
+  assert.equal(capabilities.contractVersion, "gruff.hook.v1");
+  assert.deepEqual(capabilities.analyzer.name, "gruff-ts");
+  assert.equal(capabilities.supports?.changedRanges, true);
+  assert.equal(capabilities.supports?.diff, true);
+  assert.equal(capabilities.supports?.baseline, true);
+  assert.equal(capabilities.supports?.scopeField, true);
+  assert.equal(capabilities.supports?.metadata, true);
+  assert.equal(capabilities.supports?.stableIdentity, true);
+  assert.equal(capabilities.supports?.ignoreReport, true);
+  assert.equal(capabilities.supports?.newOnly, true);
+  assert.deepEqual(capabilities.flags, { changedRanges: "--changed-ranges", diff: "--diff", baseline: "--baseline" });
+  assert.equal(capabilities.flagOrder, "any");
+});
+
+test("hook changed-region scope omits inherited file findings but keeps changed line findings", () => {
+  withProject({ "long.ts": longSource(760, 500) }, (dir) => {
+    const full = runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]);
+    const fullFileLength = requiredFinding(full, "size.file-length");
+    const fullEval = requiredFinding(full, "security.eval-call");
+
+    assert.equal(fullFileLength.scope, "file");
+    assert.equal(fullFileLength.metadata.measured, 760);
+    assert.equal(fullFileLength.metadata.threshold, 750);
+    assert.equal(fullEval.scope, "line");
+
+    const changed = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "500-500", "long.ts"]);
+    assert.equal(changed.findings.some((finding) => finding.ruleId === "size.file-length"), false);
+    assert.equal(changed.findings.some((finding) => finding.ruleId === "security.eval-call"), true);
+    assert.equal(changed.suppressed.count > 0, true);
+
+    const anchorChanged = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "1-1", "long.ts"]);
+    assert.equal(anchorChanged.findings.some((finding) => finding.ruleId === "size.file-length"), false);
+  });
+});
+
+test("hook findings carry remediation, enum values, and threshold metadata", () => {
+  withProject({ "long.ts": longSource(760, 500) }, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]);
+
+    assert.equal(payload.findings.length > 0, true);
+    for (const finding of payload.findings) {
+      assert.equal(SEVERITIES.has(finding.severity), true);
+      assert.equal(SCOPES.has(finding.scope), true);
+      assert.equal(typeof finding.remediation, "string");
+      assert.equal(finding.remediation.length > 0, true);
+      assert.match(finding.stableIdentity, /^[0-9a-f]{16}$/);
+      if (THRESHOLD_RULE_IDS.has(finding.ruleId)) {
+        assert.equal(typeof finding.metadata.measured, "number");
+        assert.equal(typeof finding.metadata.threshold, "number");
+      }
+    }
+  });
+});
+
+test("hook stableIdentity survives line shifts and measured-value changes", () => {
+  withProject({ "shift.ts": evalSource(3) }, (dir) => {
+    const first = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "shift.ts"]), "security.eval-call");
+    writeProjectFile(dir, "shift.ts", evalSource(4));
+    const shifted = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "shift.ts"]), "security.eval-call");
+
+    assert.equal(first.stableIdentity, shifted.stableIdentity);
+    assert.notEqual(first.fingerprint, shifted.fingerprint);
+  });
+
+  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+    const first = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]), "size.file-length");
+    writeProjectFile(dir, "long.ts", longSource(820, 0));
+    const grown = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]), "size.file-length");
+
+    assert.equal(first.stableIdentity, grown.stableIdentity);
+  });
+});
+
+test("hook stableIdentity distinguishes multiple same-rule line findings in one file", () => {
+  const twoSecrets = [
+    "// File overview: hook contract fixture.",
+    'export const firstSecret = "aB3xY7kLmN9pQ2rS5tU8vW1zC4dE6fG0hJ2kQ8w";',
+    'export const secondSecret = "zX9wV3uT6sR1qP8oN5mL2kJ4iH7gF0eD3cB6aZ1y";',
+  ].join("\n");
+  withProject({ "secrets.ts": twoSecrets }, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "secrets.ts"]);
+    const secrets = payload.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+    assert.equal(secrets.length, 2);
+    assert.notEqual(secrets[0]?.stableIdentity, secrets[1]?.stableIdentity);
+    assert.equal(typeof secrets[0]?.metadata.measured, "number");
+    assert.equal(typeof secrets[0]?.metadata.threshold, "number");
+
+    // Baseline only the first secret; the second is new and must survive new-only filtering rather
+    // than collapsing onto the first secret's identity.
+    writeBaseline(dir, secrets.slice(0, 1));
+    const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "secrets.ts"]);
+    const remaining = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0]?.stableIdentity, secrets[1]?.stableIdentity);
+  });
+});
+
+test("hook reports operational failures as in-band JSON with exit 2", () => {
+  withProject({ "long.ts": longSource(760, 500) }, (dir) => {
+    const result = spawnSync(BIN, ["hook", "--format", "json", "--no-config", "--baseline", "missing-baseline.json", "long.ts"], { cwd: dir, encoding: "utf8" });
+    const payload = JSON.parse(result.stdout) as HookPayload;
+
+    assert.equal(result.status, 2);
+    assert.equal(payload.config.schemaOk, false);
+    assert.equal(payload.findings.length, 0);
+    assert.match(String(payload.config.error), /baseline|ENOENT|no such file/i);
+  });
+});
+
+test("hook baseline new-only uses stableIdentity for file-scope findings", () => {
+  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+    const first = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]), "size.file-length");
+    writeBaseline(dir, [first]);
+    writeProjectFile(dir, "long.ts", longSource(820, 0));
+
+    const grown = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "long.ts"]);
+    assert.equal(grown.findings.some((finding) => finding.ruleId === "size.file-length"), false);
+  });
+
+  withProject({ "long.ts": longSource(740, 0) }, (dir) => {
+    writeBaseline(dir, []);
+    writeProjectFile(dir, "long.ts", longSource(760, 0));
+
+    const crossed = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "long.ts"]);
+    assert.equal(crossed.findings.some((finding) => finding.ruleId === "size.file-length"), true);
+  });
+});
+
+test("hook diff new-only uses stableIdentity for file-scope findings", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+    initGitCommit(dir);
+    writeProjectFile(dir, "long.ts", longSource(820, 0));
+
+    const grown = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "working-tree", "long.ts"]);
+    assert.equal(grown.findings.some((finding) => finding.ruleId === "size.file-length"), false);
+  });
+
+  withProject({ "long.ts": longSource(740, 0) }, (dir) => {
+    initGitCommit(dir);
+    writeProjectFile(dir, "long.ts", longSource(760, 0));
+
+    const crossed = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "working-tree", "long.ts"]);
+    assert.equal(crossed.findings.some((finding) => finding.ruleId === "size.file-length"), true);
+  });
+});
+
+test("hook flags parse before and after paths", () => {
+  withProject({ "long.ts": longSource(760, 500) }, (dir) => {
+    const before = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "500-500", "long.ts"]);
+    const after = runHook(dir, ["hook", "long.ts", "--format", "json", "--no-config", "--changed-ranges", "500-500"]);
+
+    assert.deepEqual(hookFindingKeys(after), hookFindingKeys(before));
+    assert.equal(after.suppressed.count, before.suppressed.count);
+  });
+});
+
+test("hook exits zero with findings", () => {
+  withProject({ "long.ts": longSource(760, 500) }, (dir) => {
+    const result = spawnSync(BIN, ["hook", "--format", "json", "--no-config", "long.ts"], { cwd: dir, encoding: "utf8" });
+    const payload = JSON.parse(result.stdout) as HookPayload;
+
+    assert.equal(result.status, 0);
+    assert.equal(payload.findings.length > 0, true);
+  });
+});
+
+test("hook reports ignored paths and config errors in-band", () => {
+  withProject({
+    ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\npaths:\n  ignore:\n    - ignored.ts\n",
+    "ignored.ts": "eval('ignored');\n",
+  }, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "ignored.ts"]);
+
+    assert.equal(payload.findings.length, 0);
+    assert.deepEqual(payload.ignored.paths, [{ path: "ignored.ts", source: "config", pattern: "ignored.ts" }]);
+  });
+
+  withProject({
+    ".gruff-ts.yaml": "paths:\n  ignore: []\n",
+    "bad.ts": "eval('bad');\n",
+  }, (dir) => {
+    const result = spawnSync(BIN, ["hook", "--format", "json", "bad.ts"], { cwd: dir, encoding: "utf8" });
+    const payload = JSON.parse(result.stdout) as HookPayload;
+
+    assert.equal(result.status, 2);
+    assert.equal(payload.config.schemaOk, false);
+    assert.match(String(payload.config.error), /schemaVersion/);
+    assert.match(String(payload.config.error), /gruff-ts init/);
+  });
+});
+
+function runHook(cwdPath: string, args: string[]): HookPayload {
+  return JSON.parse(execFileSync(BIN, args, { cwd: cwdPath, encoding: "utf8" })) as HookPayload;
+}
+
+function withProject(files: Record<string, string>, run: (dir: string) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ts-hook-"));
+  try {
+    for (const [file, source] of Object.entries(files)) {
+      writeProjectFile(dir, file, source);
+    }
+    run(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function writeProjectFile(root: string, file: string, source: string): void {
+  const path = join(root, file);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, source);
+}
+
+function requiredFinding(payload: HookPayload, ruleId: string): HookFinding {
+  const finding = payload.findings.find((entry) => entry.ruleId === ruleId);
+  assert.ok(finding, `expected ${ruleId}`);
+  return finding;
+}
+
+function writeBaseline(root: string, findings: HookFinding[]): void {
+  writeProjectFile(root, "gruff-baseline.json", JSON.stringify({
+    schemaVersion: "gruff.baseline.v1",
+    entries: findings.map((finding) => ({
+      stableIdentity: finding.stableIdentity,
+      ruleId: finding.ruleId,
+      filePath: finding.file,
+      line: finding.line,
+      message: finding.ruleId,
+    })),
+  }));
+}
+
+function initGitCommit(root: string): void {
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Fixture"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "initial"], { cwd: root, stdio: "ignore" });
+}
+
+function hookFindingKeys(payload: HookPayload): string[] {
+  return payload.findings.map((finding) => `${finding.ruleId}:${finding.scope}:${finding.file}:${finding.line ?? 0}:${finding.stableIdentity}`).sort();
+}
+
+function evalSource(evalLine: number): string {
+  return Array.from({ length: Math.max(1, evalLine) }, (_, index) => (index + 1 === evalLine ? "eval('shifted');" : `const filler${index} = ${index};`)).join("\n");
+}
+
+function longSource(lines: number, evalLine: number): string {
+  return Array.from({ length: lines }, (_, index) => {
+    const line = index + 1;
+    if (line === 1) {
+      return "// File overview: hook contract fixture.";
+    }
+    if (line === evalLine) {
+      return "eval('hook');";
+    }
+    return `const filler${line} = ${line};`;
+  }).join("\n");
+}

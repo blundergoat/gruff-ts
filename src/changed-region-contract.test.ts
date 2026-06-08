@@ -128,10 +128,18 @@ test("hunk scope does not widen an interior edit to its enclosing declaration", 
   const full = fullRegion();
   const scoped = scopeRegion("2-2", "hunk");
 
-  // Hunk scope keeps only findings on the changed lines (plus file-wide anchors); the interface's
-  // declaration-anchored finding is not widened in.
+  // Hunk scope keeps only findings on the changed lines; the interface's declaration-anchored
+  // finding is not widened in.
   assert.equal(scoped.findings.some((finding) => finding.ruleId === "docs.missing-interface-doc"), false);
   assertExhaustivePartition(scoped, full);
+});
+
+test("file scope keeps every finding from a touched file", () => {
+  const full = fullRegion();
+  const scoped = scopeRegion("7-7", "file");
+
+  assert.deepEqual(scoped.findings.map((finding) => finding.fingerprint).sort(), full.findings.map((finding) => finding.fingerprint).sort());
+  assert.equal(scoped.suppressedCount, 0);
 });
 
 test("suppressedCount accounts for every full-scan finding across symbol selections", () => {

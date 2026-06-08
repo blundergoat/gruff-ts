@@ -84,7 +84,7 @@ export function filterChangedFindings(
   return { findings: kept, suppressedCount };
 }
 
-// Keeps a finding when its own line or enclosing declaration intersects the changed scope.
+// Keeps a finding when its own line, enclosing declaration, or changed-file scope intersects the change.
 function isFindingInChangedScope(
   finding: Finding,
   scope: ChangedRegionScope,
@@ -98,23 +98,23 @@ function isFindingInChangedScope(
   if (changedRanges.length === 0) {
     return false;
   }
-  if (isFileWideFinding(finding) && (scope.rangesByFile.has(finding.filePath) || scope.explicitRanges)) {
+  if (scope.mode === "file") {
     return true;
   }
   const findingRange = { start: finding.line ?? 1, end: finding.endLine ?? finding.line ?? 1 };
   if (overlapsAny(findingRange, changedRanges)) {
     return true;
   }
-  if (scope.mode === "hunk") {
+  if (scope.mode !== "symbol" || isFileWideFinding(finding)) {
     return false;
   }
   const declaration = enclosingDeclaration(finding, sources, declarationsByFile);
   return declaration !== undefined && overlapsAny(declaration, changedRanges);
 }
 
-// Invariant: file-wide findings are line-1 anchors kept when any hunk changes the file.
+// Invariant: file-wide findings are line-1 anchors with no declaration to widen through.
 function isFileWideFinding(finding: Finding): boolean {
-  return FILE_WIDE_RULE_IDS.has(finding.ruleId) && finding.line === 1 && finding.symbol === undefined;
+  return FILE_WIDE_RULE_IDS.has(finding.ruleId) && finding.line === 1;
 }
 
 // Looks up explicit line ranges first because `--changed-ranges` applies to every selected file.

@@ -296,7 +296,19 @@ function analyseTextRules(file: SourceFile, source: string, config: Config, find
   if (!isGeneratedLockfile(file.displayPath)) {
     const fileLengthThreshold = threshold(config, "size.file-length", 750);
     if (lines > fileLengthThreshold) {
-      findings.push(finding({ ruleId: "size.file-length", message: `File has ${lines} lines, above the threshold of ${fileLengthThreshold}.`, file, line: 1, severity: ruleSeverity(config, "size.file-length", "warning"), pillar: "size" }));
+      findings.push(
+        makeFinding({
+          ruleId: "size.file-length",
+          message: `File has ${lines} lines, above the threshold of ${fileLengthThreshold}.`,
+          filePath: file.displayPath,
+          line: 1,
+          severity: ruleSeverity(config, "size.file-length", "warning"),
+          pillar: "size",
+          confidence: "high",
+          remediation: "Split unrelated responsibilities into smaller files. Or raise rules.size.file-length.threshold in .gruff-ts.yaml if the bound is wrong for this project.",
+          metadata: { lines, threshold: fileLengthThreshold },
+        }),
+      );
     }
   }
 

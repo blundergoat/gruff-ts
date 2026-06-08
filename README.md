@@ -243,6 +243,18 @@ Use `npx gruff-ts list-rules --format=json` for exact rule IDs, severities, conf
 
 ## Baselines And Changed-Code Scans
 
+For editor and coding-agent feedback, prefer the analyzer-owned hook contract:
+
+```bash
+npx gruff-ts hook --format=json --changed-ranges "3-3,8-10" src/foo.ts
+npx gruff-ts hook --capabilities --format=json
+```
+
+`hook` emits `gruff.hook.v1` JSON with normalized `file`, `scope`, `suppressed.count`,
+`ignored.paths`, non-null `remediation`, stable identities, and threshold metadata. Hook mode is
+advisory: findings exit `0`; operational failures such as invalid config exit `2` and are reported
+in `config.error`.
+
 Baselines suppress reviewed findings by stable fingerprint:
 
 ```bash
@@ -267,6 +279,10 @@ npx gruff-ts analyse --format=json --changed-ranges "3-3,8-10" src/foo.ts
 npx gruff-ts analyse --format=json --since HEAD src/foo.ts
 git diff | npx gruff-ts analyse --format=json --diff -
 ```
+
+Use `--changed-scope file` when a CI workflow intentionally wants every finding from touched
+files, including file-wide metrics such as `size.file-length`. The default `symbol` scope keeps
+the coding-agent feedback focused on the changed line or enclosing declaration.
 
 JSON output keeps the normal `findings` array and adds `suppressedCount` when changed-region filtering is active.
 

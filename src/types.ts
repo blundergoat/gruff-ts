@@ -25,7 +25,7 @@ export type OutputFormat = "text" | "json" | "html" | "markdown" | "github" | "h
 export type FailThreshold = "none" | "advisory" | "warning" | "error";
 
 /** Changed-region filter precision for diff-aware analysis. */
-export type ChangedScopeMode = "symbol" | "hunk";
+export type ChangedScopeMode = "symbol" | "hunk" | "file";
 
 /** Public options contract consumed by the analyzer core and CLI. */
 export interface AnalysisOptions {
