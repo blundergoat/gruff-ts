@@ -14,6 +14,8 @@ type HookScope = "line" | "symbol" | "file" | "project";
 type FlagOrder = "any" | "flags-before-path";
 type HookAnalysisRunner = (options: AnalysisOptions) => AnalysisReport;
 
+// Inputs for one hook render: full-scan options, changed-region options, and optional baseline/diff
+// bases used for new-only filtering.
 interface HookReportInput {
   currentOptions: AnalysisOptions;
   scopedOptions: AnalysisOptions;
@@ -22,6 +24,7 @@ interface HookReportInput {
   hasChangedRegion: boolean;
 }
 
+// The gruff.hook.v1 envelope written to stdout; field names are the cross-analyzer contract.
 interface HookReport {
   contractVersion: "gruff.hook.v1";
   analyzer: { name: "gruff-ts"; version: string };
@@ -31,6 +34,8 @@ interface HookReport {
   config: { schemaOk: boolean; error: string | null };
 }
 
+// A finding projected into the hook contract, with enum scope and non-null remediation, keyed for
+// new-only tracking by the stable identity and fingerprint.
 interface HookFinding {
   ruleId: string;
   pillar: string;
@@ -47,6 +52,8 @@ interface HookFinding {
   fingerprint: string;
 }
 
+// A gruff.baseline.v1 entry as read for new-only comparison; every field is optional because older
+// baselines predate stableIdentity.
 interface BaselineEntry {
   stableIdentity?: string;
   ruleId?: string;
@@ -55,15 +62,17 @@ interface BaselineEntry {
   message?: string;
 }
 
-const CONTRACT_VERSION = "gruff.hook.v1";
+const HOOK_CONTRACT_VERSION = "gruff.hook.v1";
 const FILE_SCOPE_RULE_IDS = new Set(["design.large-module-concentration", "docs.missing-file-overview", "size.file-length"]);
 const PROJECT_SCOPE_RULE_IDS = new Set(["design.circular-import"]);
 const SEVERITY_RANK: Record<Severity, number> = { error: 0, warning: 1, advisory: 2 };
 const DESCRIPTORS = new Map(ruleDescriptors().map((descriptor) => [descriptor.ruleId, descriptor]));
 
+// Emits the gruff.hook.v1 capability handshake so a consumer can resolve flag names before a real
+// request; the advertised supports/flags object is the stable gruff.hook.v1 contract.
 export function renderHookCapabilities(): string {
-  return `${JSON.stringify({
-    contractVersion: CONTRACT_VERSION,
+  return JSON.stringify({
+    contractVersion: HOOK_CONTRACT_VERSION,
     analyzer: analyzerInfo(),
     supports: {
       changedRanges: true,
@@ -77,33 +86,41 @@ export function renderHookCapabilities(): string {
     },
     flags: { changedRanges: "--changed-ranges", diff: "--diff", baseline: "--baseline" },
     flagOrder: "any" satisfies FlagOrder,
-  }, null, 2)}\n`;
+  }, null, 2) + "\n";
 }
 
+// Runs the analysis (twice when a changed region is requested) and projects it into the gruff.hook.v1
+// envelope: scoped findings, suppressed count, ignored paths, and a schema-ok config block.
 export function renderHookReport(runAnalyse: HookAnalysisRunner, input: HookReportInput): string {
   const currentReport = runAnalyse(input.currentOptions);
   const scopedReport = input.hasChangedRegion ? runAnalyse(input.scopedOptions) : currentReport;
   const baseIdentities = hookBaseIdentities(runAnalyse, input, currentReport);
   const findings = hookFindings(currentReport, scopedReport, input.hasChangedRegion, baseIdentities);
   const suppressedCount = hookSuppressedCount(scopedReport, input.hasChangedRegion);
-  return `${JSON.stringify(hookReport(scopedReport, findings, suppressedCount, true, null), null, 2)}\n`;
+  return JSON.stringify(hookReport(scopedReport, findings, suppressedCount, true, null), null, 2) + "\n";
 }
 
+// Emits a gruff.hook.v1 envelope for an operational failure (config rejected, bad baseline, git
+// error) so the consumer always receives JSON with config.error set instead of a crash.
 export function renderHookConfigError(message: string, remediation: string): string {
-  return `${JSON.stringify(hookReport(undefined, [], 0, false, `${message}\nSuggested fix: ${remediation}`), null, 2)}\n`;
+  const error = `${message}\nSuggested fix: ${remediation}`;
+  return JSON.stringify(hookReport(undefined, [], 0, false, error), null, 2) + "\n";
 }
 
-function hookReport(report: AnalysisReport | undefined, findings: HookFinding[], suppressedCount: number, schemaOk: boolean, error: string | null): HookReport {
+// Assembles the gruff.hook.v1 envelope (sorted findings, suppressed count, ignored paths, config)
+// as the stable gruff.hook.v1 output contract.
+function hookReport(report: AnalysisReport | undefined, findings: HookFinding[], suppressedCount: number, isSchemaOk: boolean, error: string | null): HookReport {
   return {
-    contractVersion: CONTRACT_VERSION,
+    contractVersion: HOOK_CONTRACT_VERSION,
     analyzer: analyzerInfo(),
     findings: sortHookFindings(findings),
     suppressed: { count: suppressedCount },
     ignored: { paths: report?.paths.skipped ?? [] },
-    config: { schemaOk, error },
+    config: { schemaOk: isSchemaOk, error },
   };
 }
 
+// Analyzer identity block shared by the capability and report envelopes.
 function analyzerInfo(): { name: "gruff-ts"; version: string } {
   return { name: "gruff-ts", version: VERSION };
 }
@@ -123,6 +140,8 @@ function hookFindings(
   return baseIdentities ? withNewFileAndProject.filter((finding) => !baseIdentities.has(finding.stableIdentity)) : withNewFileAndProject;
 }
 
+// Collects file- and project-scope findings that are new since the base, excluding any already
+// emitted, deduped by fingerprint.
 function newFileAndProjectFindings(currentReport: AnalysisReport, scopedFindings: HookFinding[], baseIdentities: Set<string>): HookFinding[] {
   const alreadyIncluded = new Set(scopedFindings.map((finding) => finding.fingerprint));
   return currentReport.findings
@@ -130,6 +149,8 @@ function newFileAndProjectFindings(currentReport: AnalysisReport, scopedFindings
     .filter((finding) => (finding.scope === "file" || finding.scope === "project") && !baseIdentities.has(finding.stableIdentity) && !alreadyIncluded.has(finding.fingerprint));
 }
 
+// Counts the file/project findings the hook drops under changed-region attribution, keeping the
+// stable suppressed.count contract accurate.
 function hookSuppressedCount(scopedReport: AnalysisReport, hasChangedRegion: boolean): number {
   if (!hasChangedRegion) {
     return 0;
@@ -141,6 +162,8 @@ function hookSuppressedCount(scopedReport: AnalysisReport, hasChangedRegion: boo
   return (scopedReport.suppressedCount ?? 0) + fileOrProjectAnchorResiduals;
 }
 
+// Projects an analyser Finding into the hook shape, attaching scope, remediation, and the stable
+// identity plus fingerprint.
 function toHookFinding(finding: Finding): HookFinding {
   const scope = scopeForFinding(finding);
   return {
@@ -160,6 +183,8 @@ function toHookFinding(finding: Finding): HookFinding {
   };
 }
 
+// Classifies a finding as line/symbol/file/project scope; this choice drives changed-region
+// attribution and the stable hook identity.
 function scopeForFinding(finding: Finding): HookScope {
   if (PROJECT_SCOPE_RULE_IDS.has(finding.ruleId)) {
     return "project";
@@ -173,11 +198,15 @@ function scopeForFinding(finding: Finding): HookScope {
   return "line";
 }
 
+// Returns normalized threshold metadata when the rule has one, else the finding's own metadata,
+// keeping the contract's metadata shape stable.
 function hookMetadata(finding: Finding): Record<string, unknown> {
   const thresholdMetadata = thresholdMetadataFor(finding);
   return thresholdMetadata ?? finding.metadata;
 }
 
+// Maps known threshold rules to a measured/threshold/unit triple so the hook exposes a stable,
+// machine-readable measurement contract.
 function thresholdMetadataFor(finding: Finding): Record<string, unknown> | undefined {
   const metadata = finding.metadata;
   switch (finding.ruleId) {
@@ -200,12 +229,16 @@ function thresholdMetadataFor(finding: Finding): Record<string, unknown> | undef
   return undefined;
 }
 
+// Builds the normalized measurement object, or undefined when the measured/threshold pair is not
+// numeric.
 function metricMetadata(measured: unknown, threshold: unknown, unit: string): Record<string, unknown> | undefined {
   return typeof measured === "number" && typeof threshold === "number"
     ? { measured, threshold, unit, direction: "above" }
     : undefined;
 }
 
+// Hashes (ruleId, filePath, scope component) into the 16-hex hook identity; line-insensitive so it
+// stays the stable cross-edit key for new-only filtering.
 function hookStableIdentity(finding: Finding, scope: HookScope): string {
   const component = stableIdentityComponent(finding, scope);
   return createHash("sha256")
@@ -214,6 +247,7 @@ function hookStableIdentity(finding: Finding, scope: HookScope): string {
     .slice(0, 16);
 }
 
+// Derives the per-occurrence component of the stable hook identity: scope token, symbol, or message.
 function stableIdentityComponent(finding: { message: string; ruleId: string; symbol?: string }, scope: HookScope): string {
   if (scope === "file" || scope === "project") {
     return scope;
@@ -229,6 +263,8 @@ function stableIdentityComponent(finding: { message: string; ruleId: string; sym
   return `message:${finding.message}`;
 }
 
+// Builds the base identity set (from a baseline file and/or a diff base) that new-only filtering
+// compares against by stable hook identity; undefined when neither source is requested.
 function hookBaseIdentities(runAnalyse: HookAnalysisRunner, input: HookReportInput, currentReport: AnalysisReport): Set<string> | undefined {
   const identities = new Set<string>();
   if (input.baselinePath) {
@@ -244,6 +280,8 @@ function hookBaseIdentities(runAnalyse: HookAnalysisRunner, input: HookReportInp
   return identities.size > 0 || input.baselinePath || input.diffBase ? identities : undefined;
 }
 
+// Reads stable identities from a gruff.baseline.v1 file; the schema is the gruff.baseline.v1
+// contract and the reader throws on any schemaVersion mismatch.
 function stableIdentitiesFromBaseline(path: string): Set<string> {
   const baselinePath = absolutize(cwd(), path);
   const baseline = JSON.parse(readFileSync(baselinePath, "utf8")) as { schemaVersion?: string; entries?: BaselineEntry[] };
@@ -253,6 +291,8 @@ function stableIdentitiesFromBaseline(path: string): Set<string> {
   return new Set((baseline.entries ?? []).flatMap(stableIdentityFromBaselineEntry));
 }
 
+// Resolves one baseline entry to hook identities: its stored identity, or a recomputed one from
+// ruleId, filePath, and scope.
 function stableIdentityFromBaselineEntry(entry: BaselineEntry): string[] {
   if (typeof entry.stableIdentity === "string") {
     return [entry.stableIdentity];
@@ -274,6 +314,8 @@ function stableIdentityFromBaselineEntry(entry: BaselineEntry): string[] {
   ];
 }
 
+// Maps a rule id to its baseline scope so entries without a stored identity recompute the right
+// component.
 function baselineScopeForRule(ruleId: string): HookScope {
   if (PROJECT_SCOPE_RULE_IDS.has(ruleId)) {
     return "project";
@@ -314,6 +356,8 @@ function stableIdentitiesFromDiffBase(
   }
 }
 
+// Resolves a diff-base selector to a git ref, or undefined for modes (unstaged, stdin) that have no
+// committed base.
 function diffBaseRef(diffBase: string): string | undefined {
   if (diffBase === "-" || diffBase === "unstaged") {
     return undefined;
@@ -321,6 +365,8 @@ function diffBaseRef(diffBase: string): string | undefined {
   return diffBase === "working-tree" || diffBase === "staged" ? "HEAD" : diffBase;
 }
 
+// Writes each file's blob at the base ref into the temp dir via git; a blob missing at the ref is a
+// recover path so that file's findings count as new (filesystem writes).
 function materializeBaseFiles(ref: string, files: string[], root: string): string[] {
   const materialized: string[] = [];
   for (const file of files) {
@@ -331,12 +377,14 @@ function materializeBaseFiles(ref: string, files: string[], root: string): strin
       writeFileSync(target, source);
       materialized.push(file);
     } catch {
-      // File did not exist at the base ref, so every current finding in it is new.
+      // File is missing at the base ref, so every current finding in it is new.
     }
   }
   return materialized;
 }
 
+// Builds the analysis options for the base-ref scan: drops changed-region flags and resolves the
+// config path against the original root.
 function baseAnalysisOptions(options: AnalysisOptions, paths: string[], originalRoot: string): AnalysisOptions {
   return {
     ...withoutChangedRegion(options),
@@ -345,16 +393,22 @@ function baseAnalysisOptions(options: AnalysisOptions, paths: string[], original
   };
 }
 
+// Falls back to the project's default .gruff-ts.yaml for the base scan when one exists and config is
+// not skipped.
 function defaultConfigPathOption(originalRoot: string, options: AnalysisOptions): Partial<Pick<AnalysisOptions, "config">> {
   const defaultConfigPath = join(originalRoot, ".gruff-ts.yaml");
   return !options.shouldSkipConfig && existsSync(defaultConfigPath) ? { config: defaultConfigPath } : {};
 }
 
+// Strips every changed-region and baseline flag so the base-ref scan runs as a plain full scan,
+// deterministic regardless of the original changed-region request.
 function withoutChangedRegion(options: AnalysisOptions): AnalysisOptions {
   const { baseline: _baseline, changedRanges: _changedRanges, diff: _diff, diffPatch: _diffPatch, generateBaseline: _generateBaseline, since: _since, ...rest } = options;
   return { ...rest, shouldSkipBaseline: true };
 }
 
+// Orders findings by severity, then file, line, and rule id, giving the contract a deterministic,
+// stable finding order.
 function sortHookFindings(findings: HookFinding[]): HookFinding[] {
   return [...findings].sort(
     (left, right) =>

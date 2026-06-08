@@ -226,8 +226,8 @@ function registerCheckIgnoreCommand(program: Command): void {
     });
 }
 
-// Dedicated agent-hook surface for gruff.hook.v1. It owns hook defaults (JSON, advisory exit,
-// symbol attribution, no analysis baseline) so consumers do not assemble analyzer-specific flags.
+// Dedicated agent-hook surface for gruff.hook.v1. It owns hook defaults (JSON, advisory exit, symbol
+// attribution, no analysis baseline) and reports config failures in-band as config.error, exits 2.
 function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("hook")
@@ -493,8 +493,8 @@ function parseSummaryFormat(rawFormat: string): "text" | "json" {
   throw new InvalidArgumentError("must be text or json");
 }
 
-// Hook mode is a JSON-only contract. Keep the parser explicit so typoed formats fail as usage
-// errors before analysis starts.
+// Hook mode is a JSON-only contract. The parser is explicit so an unknown format value is caught
+// before analysis: it throws InvalidArgumentError so commander reports a usage error.
 function parseHookFormat(rawFormat: string): "json" {
   if (rawFormat === "json") {
     return rawFormat;
@@ -556,6 +556,8 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
   };
 }
 
+// Builds the scoped (changed-region) analysis options for the hook: JSON output, no fail-on gate,
+// symbol scope, and no analysis baseline.
 function hookScopedOptions(paths: string[], rawOptions: Record<string, unknown>): AnalysisOptions {
   return normalizeOptions(
     paths,
@@ -564,19 +566,24 @@ function hookScopedOptions(paths: string[], rawOptions: Record<string, unknown>)
   );
 }
 
+// Strips changed-region selectors so the hook's full-scan pass sees the whole file, used for
+// new-file and project-finding detection.
 function hookCurrentOptions(options: AnalysisOptions): AnalysisOptions {
   const { changedRanges: _changedRanges, diff: _diff, diffPatch: _diffPatch, since: _since, ...rest } = options;
   return { ...rest, shouldSkipBaseline: true };
 }
 
+// True when any changed-region selector (ranges, diff, since, stdin patch) is active for the run.
 function hasHookChangedRegion(options: AnalysisOptions): boolean {
   return Boolean(options.changedRanges || options.diff || options.since || options.diffPatch);
 }
 
+// Extracts the --baseline path for the hook's new-only filtering against the stable baseline contract.
 function hookBaselinePath(rawOptions: Record<string, unknown>): Partial<{ baselinePath: string }> {
   return typeof rawOptions.baseline === "string" ? { baselinePath: rawOptions.baseline } : {};
 }
 
+// Picks the diff or since ref the hook compares against for new-only filtering, when one is set.
 function hookDiffBase(options: AnalysisOptions): Partial<{ diffBase: string }> {
   return options.diff ? { diffBase: options.diff } : options.since ? { diffBase: options.since } : {};
 }

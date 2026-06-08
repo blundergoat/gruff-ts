@@ -87,17 +87,8 @@ export interface BlockFindingWithMetadataArgs extends BlockFindingArgs {
 // needing metadata or lower confidence go through `blockFindingWithMetadata` to keep the
 // per-rule fingerprint shape stable.
 export function blockFinding(args: BlockFindingArgs): Finding {
-  return makeFinding({
-    ruleId: args.ruleId,
-    message: args.message,
-    filePath: args.file.displayPath,
-    line: args.block.startLine,
-    endLine: args.block.startLine + args.block.lineCount - 1,
-    severity: args.severity,
-    pillar: args.pillar,
-    confidence: "high",
-    symbol: args.block.name,
-  });
+  const endLine = args.block.startLine + args.block.lineCount - 1;
+  return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.block.startLine, endLine, severity: args.severity, pillar: args.pillar, confidence: "high", symbol: args.block.name });
 }
 
 // Block-anchored variant that ships rule-specific metadata. Confidence defaults to "medium"
