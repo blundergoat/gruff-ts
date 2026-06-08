@@ -27,7 +27,7 @@ update `CHANGELOG.md` and run `npm run check`.
 - [ ] `CHANGELOG.md` has an entry for the new version with today's date.
 - [ ] `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, and docs under `docs/`
       reflect any user-visible changes.
-- [ ] `.goat-flow/tasks/0.3.0/` has no unresolved release blockers beyond
+- [ ] `.goat-flow/plans/` has no unresolved release blockers beyond
       explicitly accepted `human-verification-pending` milestones.
 - [ ] `LICENSE` is present and `package.json` `license` field matches.
 - [ ] `npm run check` passes.

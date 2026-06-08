@@ -2,7 +2,7 @@
 
 `gruff-ts` governs AI-generated code: wired in as a coding-agent hook, it forces an agent to produce changes a human who did not write them can sign off on - legible enough to verify, secure where the reviewer's eye slips, and tested for real behavior rather than low-signal ceremony. Mechanically it is a TypeScript project quality analyzer: a dependency-light Node.js/ESM CLI with a thin `src/cli.ts` bootstrap and focused runtime modules under `src/`. It scans TypeScript, JavaScript, CSS, and common config/text files (json, yaml, toml, env, ini, xml, npmrc-style secret files) and emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v1`) and report snapshots (`gruff.analysis.v2`) round-trip without churn.
 
-goat-flow version: 1.9.1
+goat-flow version: 1.10.1
 
 ## Workspace Boundary
 
@@ -20,7 +20,7 @@ This repo is the **selected target project**. The controlling goat-flow workspac
 
 - **Always:** Read source before changing it; run `npm run check` on changed `.ts`; edit within declared scope; append progress lines to the active session log when one exists.
 - **Ask First:** Before touching any of: schema strings (`gruff.analysis.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`), the `Finding` shape, the default-ignored directory list, baseline file format, dashboard wire format, or `package.json`/`tsconfig.json`. State boundary touched, related code read (file:symbol), footgun checked, local instruction checked, rollback command.
-- **Never:** Freeze writes if interrupted; commit/push without explicit ask; relax `tsconfig.json` strict flags; introduce runtime dependencies beyond `commander` + `tsx`; bypass `.codex/hooks/deny-dangerous.sh`; edit `CLAUDE.md` or `.claude/` (peer agent surfaces).
+- **Never:** Freeze writes if interrupted; commit/push without explicit ask; relax `tsconfig.json` strict flags; introduce runtime dependencies beyond `commander` + `tsx`; bypass `.goat-flow/hooks/deny-dangerous.sh`; edit `CLAUDE.md` or `.claude/` (peer agent surfaces).
 
 ## Hard Rules
 
@@ -33,10 +33,14 @@ This repo is the **selected target project**. The controlling goat-flow workspac
 - No new abstractions or error handling beyond what was asked.
 - Ambiguous requirements: present interpretations, do not pick silently.
 
+## Commit Messages
+
+Conventional commits (`type(scope): subject`); observed types: feat, refactor, chore, docs, fix, perf, test. Name the concrete behavior, file family, or command that changed - no bare weak verbs (`update`, `change`, `tweak`) as the whole subject. Full reference: `docs/coding-standards/git-commit.md`.
+
 ## Key Resources
 
-- **Learning loop** (grep before every change): `.goat-flow/footguns/`, `.goat-flow/lessons/`, `.goat-flow/patterns/`, `.goat-flow/decisions/`.
-- **Tool playbooks**: `.goat-flow/skill-playbooks/browser-use.md`, `.goat-flow/skill-playbooks/page-capture.md` - read BEFORE declaring a tool unavailable.
+- **Learning loop** (grep before every change): `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, `.goat-flow/learning-loop/decisions/`.
+- **Tool playbooks**: `.goat-flow/skill-docs/playbooks/README.md` is the full index (e.g. `.goat-flow/skill-docs/playbooks/browser-use.md`, `.goat-flow/skill-docs/playbooks/page-capture.md`) - read BEFORE declaring a tool unavailable.
 - Orientation: `.goat-flow/code-map.md`, `.goat-flow/architecture.md`, `.goat-flow/glossary.md`.
 
 ## Essential Commands
@@ -46,7 +50,7 @@ npm run check        # tsc --noEmit && npm test
 npm test             # node --import tsx --test src/**/*.test.ts
 npm run start-dev    # tsx src/cli.ts dashboard (binds 127.0.0.1:8767)
 ./bin/gruff-ts analyse .   # local CLI invocation
-bash .codex/hooks/deny-dangerous.sh --self-test   # verify deny hook
+bash .goat-flow/hooks/deny-dangerous.sh --self-test   # verify deny hook
 ```
 
 ## Execution Loop: READ → SCOPE → ACT → VERIFY
@@ -54,7 +58,7 @@ bash .codex/hooks/deny-dangerous.sh --self-test   # verify deny hook
 When a `goat-*` skill is active, its Step 0 replaces READ and selects the skill's mode/depth. SCOPE still applies before writes: a skill may write when its selected mode permits writes or the user explicitly approves them. `/goat-plan` File-Write may create gitignored milestone files without a separate approval gate; `/goat-debug` D3 still requires approval before fixes. Resume at ACT after Step 0 output or when a blocking gate releases.
 
 ### READ
-MUST read relevant files before changes. Never fabricate codebase facts (rule counts, pillar names, schema strings - read the live source first, especially `src/types.ts`, `src/rules.ts`, `src/constants.ts`, and the touched module). For URL, local HTML, localhost, screenshot, rendered UI, or browser-visible behaviour (the `dashboard` subcommand on `127.0.0.1:8767`), check browser evidence first. Use grep-first retrieval across `.goat-flow/footguns/`, `.goat-flow/lessons/`, and `.goat-flow/patterns/`; include `.goat-flow/decisions/` for architecture, schema, or setup work. Before declaring any tool or capability unavailable, read the matching playbook in `.goat-flow/skill-playbooks/` (e.g. `browser-use.md`, `page-capture.md`) and run that doc's "Availability Check" section verbatim - project-local CLI tools at `~/.local/bin/` are valid; do not conflate "no harness/MCP tool" with "no tool".
+MUST read relevant files before changes. Never fabricate codebase facts (rule counts, pillar names, schema strings - read the live source first, especially `src/types.ts`, `src/rules.ts`, `src/constants.ts`, and the touched module). For URL, local HTML, localhost, screenshot, rendered UI, or browser-visible behaviour (the `dashboard` subcommand on `127.0.0.1:8767`), check browser evidence first. Use grep-first retrieval across `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, and `.goat-flow/learning-loop/patterns/`; include `.goat-flow/learning-loop/decisions/` for architecture, schema, or setup work. Before declaring any tool or capability unavailable, read the matching playbook in `.goat-flow/skill-docs/playbooks/` (e.g. `browser-use.md`, `page-capture.md`) and run that doc's "Availability Check" section verbatim - project-local CLI tools at `~/.local/bin/` are valid; do not conflate "no harness/MCP tool" with "no tool".
 
 ### SCOPE
 Three signals before acting: (1) Intent - question vs directive. (2) Complexity tier + budget. (3) Mode - Plan / Implement / Explain / Debug / Review. MUST declare files allowed to change, non-goals, max blast radius. Expanding beyond scope = stop and re-scope.
@@ -78,7 +82,7 @@ Declare `State: [MODE] | Goal: [one line] | Exit: [condition]`.
 | Review | Investigate first. Never blindly apply suggestions |
 
 ### VERIFY
-MUST run `npm run check` after touching `src/**/*.ts`. MUST run `shellcheck` on `.sh` changes (including `.codex/hooks/*.sh`). Cross-reference grep after renames (`grep -r symbol src/`). Tick milestone `- [x]` immediately when working from a plan.
+MUST run `npm run check` after touching `src/**/*.ts`. MUST run `shellcheck` on `.sh` changes (including `.goat-flow/hooks/*.sh`). Cross-reference grep after renames (`grep -r symbol src/`). Tick milestone `- [x]` immediately when working from a plan.
 
 **Hallucination red-flags:**
 1. **Checks passed.** Quote the literal `tsc`/`node --test` pass line from this session - not paraphrase, not cached output.
@@ -86,11 +90,11 @@ MUST run `npm run check` after touching `src/**/*.ts`. MUST run `shellcheck` on 
 3. **Fix verification.** Run the original repro before claiming a bug is fixed.
 4. **Hedged claims.** "Should work", "probably fine", "looks good" are not verification.
 
-Before reporting done, reject the rationalisations catalogued in `.goat-flow/skill-reference/skill-preamble.md` (Rationalisations to reject): an excuse that trades a quoted result for hope is not verification.
+Before reporting done, reject the rationalisations catalogued in `.goat-flow/skill-docs/skill-preamble.md` (Rationalisations to reject): an excuse that trades a quoted result for hope is not verification.
 
 Stop-the-line on broken tests, failed `tsc`, or behaviour regression. Two corrections on the same approach = rewind.
 
-If VERIFY caught a failure or you corrected course, log behavioural mistakes in `.goat-flow/lessons/`, cross-doc traps in `.goat-flow/footguns/` (`Status:` / `Created:` / `Evidence:`), and significant decisions in `.goat-flow/decisions/`.
+If VERIFY caught a failure or you corrected course, log behavioural mistakes in `.goat-flow/learning-loop/lessons/`, cross-doc traps in `.goat-flow/learning-loop/footguns/` (`Status:` / `Created:` / `Evidence:`), and significant decisions in `.goat-flow/learning-loop/decisions/`.
 
 ## Definition of Done
 
@@ -102,10 +106,10 @@ If VERIFY caught a failure or you corrected course, log behavioural mistakes in 
 
 ## Artifact Routing
 
-- "Add a footgun" → `.goat-flow/footguns/<category>.md` (read its README first).
-- "Add a lesson" → `.goat-flow/lessons/<category>.md`.
-- "Add a decision/ADR" → `.goat-flow/decisions/`.
-- "Add a pattern" → `.goat-flow/patterns/`.
+- "Add a footgun" → `.goat-flow/learning-loop/footguns/<category>.md` (read its README first).
+- "Add a lesson" → `.goat-flow/learning-loop/lessons/<category>.md`.
+- "Add a decision/ADR" → `.goat-flow/learning-loop/decisions/`.
+- "Add a pattern" → `.goat-flow/learning-loop/patterns/`.
 
 Runtime code, hooks, and agent config are out of scope unless the user explicitly asks.
 
@@ -116,14 +120,14 @@ Runtime code, hooks, and agent config are out of scope unless the user explicitl
 | Instruction file | `AGENTS.md` |
 | Architecture | `.goat-flow/architecture.md` |
 | Code map / glossary | `.goat-flow/code-map.md`, `.goat-flow/glossary.md` |
-| Learning loop | `.goat-flow/footguns/`, `.goat-flow/lessons/`, `.goat-flow/patterns/`, `.goat-flow/decisions/` |
-| Skill reference (meta) | `.goat-flow/skill-reference/` |
-| Tool playbooks (CLI/MCP availability checks: browser-use, page-capture, skill-quality-testing) | `.goat-flow/skill-playbooks/` - read BEFORE declaring a tool unavailable |
-| Codex skills/config | `.agents/skills/`, `.codex/config.toml`, `.codex/hooks.json`, `.codex/hooks/deny-dangerous.sh` |
+| Learning loop | `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, `.goat-flow/learning-loop/decisions/` |
+| Skill reference (meta) | `.goat-flow/skill-docs/` |
+| Tool playbooks (CLI/MCP availability checks: browser-use, page-capture, skill-quality-testing) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |
+| Codex skills/config | `.agents/skills/`, `.codex/config.toml`, `.codex/hooks.json`, `.goat-flow/hooks/` (shared) |
 | Source | `src/cli.ts`, `src/*.ts`, `src/*.test.ts` |
 | Entry point / scripts | `bin/gruff-ts`, `scripts/check.sh`, `scripts/start-dev.sh` |
 | Fixtures | `fixtures/sample.ts` |
 | Build / config | `package.json`, `tsconfig.json` |
-| Commit policy | `.github/git-commit-instructions.md` |
-| Workspace notes | `.goat-flow/logs/sessions/`, `.goat-flow/tasks/`, `.goat-flow/scratchpad/` |
+| Commit policy | `docs/coding-standards/git-commit.md` |
+| Workspace notes | `.goat-flow/logs/sessions/`, `.goat-flow/plans/`, `.goat-flow/scratchpad/` |
 | Peer instructions | `CLAUDE.md` |
