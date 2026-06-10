@@ -12,7 +12,10 @@ import type { AnalysisOptions, AnalysisReport, Finding, Severity, SkippedPath } 
 
 type HookScope = "line" | "symbol" | "file" | "project";
 type FlagOrder = "any" | "flags-before-path";
-type HookAnalysisRunner = (options: AnalysisOptions) => AnalysisReport;
+type HookAnalysisViews = { currentReport: AnalysisReport; scopedReport: AnalysisReport };
+type HookAnalysisRunner = ((options: AnalysisOptions) => AnalysisReport) & {
+  hookViews?: (currentOptions: AnalysisOptions, scopedOptions: AnalysisOptions, hasChangedRegion: boolean) => HookAnalysisViews;
+};
 
 // Inputs for one hook render: full-scan options, changed-region options, and optional baseline/diff
 // bases used for new-only filtering.
@@ -89,15 +92,23 @@ export function renderHookCapabilities(): string {
   }, null, 2) + "\n";
 }
 
-// Runs the analysis (twice when a changed region is requested) and projects it into the gruff.hook.v1
-// envelope: scoped findings, suppressed count, ignored paths, and a schema-ok config block.
+// Runs the analysis and projects it into the gruff.hook.v1 envelope: scoped findings, suppressed
+// count, ignored paths, and a schema-ok config block.
 export function renderHookReport(runAnalyse: HookAnalysisRunner, input: HookReportInput): string {
-  const currentReport = runAnalyse(input.currentOptions);
-  const scopedReport = input.hasChangedRegion ? runAnalyse(input.scopedOptions) : currentReport;
+  const { currentReport, scopedReport } = hookAnalysisViews(runAnalyse, input);
   const baseIdentities = hookBaseIdentities(runAnalyse, input, currentReport);
   const findings = hookFindings(currentReport, scopedReport, input.hasChangedRegion, baseIdentities);
   const suppressedCount = hookSuppressedCount(scopedReport, findings, input.hasChangedRegion);
   return JSON.stringify(hookReport(scopedReport, findings, suppressedCount, true, null), null, 2) + "\n";
+}
+
+function hookAnalysisViews(runAnalyse: HookAnalysisRunner, input: HookReportInput): HookAnalysisViews {
+  if (runAnalyse.hookViews) {
+    return runAnalyse.hookViews(input.currentOptions, input.scopedOptions, input.hasChangedRegion);
+  }
+  const currentReport = runAnalyse(input.currentOptions);
+  const scopedReport = input.hasChangedRegion ? runAnalyse(input.scopedOptions) : currentReport;
+  return { currentReport, scopedReport };
 }
 
 // Emits a gruff.hook.v1 envelope for an operational failure (config rejected, bad baseline, git
@@ -133,7 +144,7 @@ function hookFindings(
 ): HookFinding[] {
   const scopedFindings = scopedReport.findings
     .map(toHookFinding)
-    .filter((finding) => !hasChangedRegion || (finding.scope !== "file" && finding.scope !== "project"));
+    .filter((finding) => !hasChangedRegion || finding.scope !== "file");
   const withNewFileAndProject = hasChangedRegion && baseIdentities
     ? [...scopedFindings, ...newFileAndProjectFindings(currentReport, scopedFindings, baseIdentities)]
     : scopedFindings;
@@ -254,12 +265,9 @@ function stableIdentityComponent(finding: { message: string; ruleId: string; sym
     return scope;
   }
   if (scope === "project") {
-    // Project rules are value-insensitive on their measurement, but one file can anchor several
-    // distinct project findings: design.circular-import emits one finding per cycle and sorts each
-    // cycle to its alphabetically-first member, so `a -> b` and `a -> c` both anchor `a.ts`. The
-    // cycle path (carried in `symbol`) is the only discriminator; folding it in keeps distinct
-    // cycles distinct so baselining one never suppresses a genuinely new one. A project finding with
-    // no symbol falls back to the bare scope token, preserving its value-insensitive identity.
+    // Project rules are value-insensitive on their measurement, but component-level findings still
+    // need a stable occurrence key. design.circular-import carries the canonical sorted SCC member
+    // list in `symbol`; folding it in keeps independent components distinct without line sensitivity.
     return finding.symbol && finding.symbol.length > 0 ? `project:${finding.symbol}` : scope;
   }
   if (finding.symbol && finding.symbol.length > 0) {
@@ -270,7 +278,7 @@ function stableIdentityComponent(finding: { message: string; ruleId: string; sym
   // collapsed them all, letting one baselined finding suppress later new ones in the same file. The
   // message carries the per-occurrence discriminator (redacted preview) and no line number, so it
   // stays stable across surrounding edits. file scope above stays fully value-insensitive; project
-  // scope folds in the cycle symbol when one is present.
+  // scope folds in a canonical symbol when one is present.
   return `message:${finding.message}`;
 }
 

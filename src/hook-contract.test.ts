@@ -4,8 +4,12 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { chdir, cwd } from "node:process";
 import test from "node:test";
+import { analyse, analyseHookReports } from "./analyser.ts";
+import { renderHookReport } from "./hook-contract.ts";
 import { gitAvailable, REPO_ROOT } from "./test-fixtures.ts";
+import type { AnalysisOptions, AnalysisReport } from "./types.ts";
 
 const BIN = join(REPO_ROOT, "bin/gruff-ts");
 const SEVERITIES = new Set(["advisory", "warning", "error"]);
@@ -90,6 +94,49 @@ test("hook changed-region scope omits inherited file findings but keeps changed 
   });
 });
 
+test("hook projects bounded deep-scan files without adding notes to gruff.hook.v1", () => {
+  const filler = Array.from({ length: 20_001 }, (_, index) => `export const filler${index} = ${index};`).join("\n");
+  withProject({ "huge.ts": `${filler}\neval("payload");\n` }, (dir) => {
+    const full = runHook(dir, ["hook", "--format", "json", "--no-config", "huge.ts"]);
+    assert.equal("notes" in full, false);
+    assert.equal(full.findings.some((finding) => finding.ruleId === "size.file-length"), true);
+    assert.equal(full.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
+
+    const changed = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "1-1", "huge.ts"]);
+    assert.equal("notes" in changed, false);
+    assert.equal(changed.findings.some((finding) => finding.ruleId === "size.file-length"), false);
+    assert.equal(changed.suppressed.count, 1);
+  });
+});
+
+test("hook render reuses one analysis for changed-region views", () => {
+  withProject({ "long.ts": longSource(FIXTURE_FILE_LINES, FIXTURE_EVAL_LINE) }, (dir) => {
+    withCwd(dir, () => {
+      const noRegion = hookRenderInput(baseHookOptions(["long.ts"]), baseHookOptions(["long.ts"]), false);
+      assertHookRenderCalls(noRegion, 1);
+
+      const changedScoped = baseHookOptions(["long.ts"], { changedRanges: "500-500" });
+      assertHookRenderCalls(hookRenderInput(currentHookOptions(changedScoped), changedScoped, true), 1);
+    });
+  });
+
+  if (!gitAvailable()) {
+    return;
+  }
+  withProject({ "long.ts": longSource(FIXTURE_FILE_LINES, FIXTURE_EVAL_LINE) }, (dir) => {
+    withCwd(dir, () => {
+      initGitCommit(dir);
+      writeProjectFile(dir, "long.ts", longSource(FIXTURE_FILE_LINES + 20, FIXTURE_EVAL_LINE));
+
+      const diffScoped = baseHookOptions(["long.ts"], { diff: "working-tree" });
+      assertHookRenderCalls(hookRenderInput(currentHookOptions(diffScoped), diffScoped, true, "working-tree"), 2);
+
+      const sinceScoped = baseHookOptions(["long.ts"], { since: "HEAD" });
+      assertHookRenderCalls(hookRenderInput(currentHookOptions(sinceScoped), sinceScoped, true, "HEAD"), 2);
+    });
+  });
+});
+
 test("hook findings carry remediation, enum values, and threshold metadata", () => {
   withProject({ "long.ts": longSource(760, 500) }, (dir) => {
     const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]);
@@ -151,10 +198,9 @@ test("hook stableIdentity distinguishes multiple same-rule line findings in one 
   });
 });
 
-test("hook stableIdentity distinguishes circular-import cycles sharing an anchor file", () => {
-  // Two 2-cycles (a<->b and a<->c) both sort to anchor `a.ts`, so they share file + project scope.
-  // The cycle symbol is the only discriminator; without it both findings collapse to one identity
-  // and baselining either suppresses the other - a newly introduced cycle would silently vanish.
+test("hook stableIdentity uses the canonical circular-import SCC symbol", () => {
+  // The SCC has two simple cycles through `a.ts`, but M09 reports one project finding keyed by the
+  // canonical sorted member list. Baselining that component should suppress the whole SCC.
   const cycleProject = {
     "src/cycle/a.ts": ['import { fromB } from "./b";', 'import { fromC } from "./c";', "export function fromA(): string {", "  return fromB() + fromC();", "}", ""].join("\n"),
     "src/cycle/b.ts": ['import { fromA } from "./a";', "export function fromB(): string {", "  return fromA();", "}", ""].join("\n"),
@@ -164,17 +210,35 @@ test("hook stableIdentity distinguishes circular-import cycles sharing an anchor
   withProject(cycleProject, (dir) => {
     const payload = runHook(dir, ["hook", "--format", "json", "--no-config", ...cyclePaths]);
     const cycles = payload.findings.filter((finding) => finding.ruleId === "design.circular-import");
-    assert.equal(cycles.length, 2);
+    assert.equal(cycles.length, 1);
     assert.equal(cycles[0]?.scope, "project");
-    assert.notEqual(cycles[0]?.stableIdentity, cycles[1]?.stableIdentity);
+    assert.equal(cycles[0]?.symbol, "src/cycle/a.ts -> src/cycle/b.ts -> src/cycle/c.ts");
+    assert.deepEqual(cycles[0]?.metadata.files, ["src/cycle/a.ts", "src/cycle/b.ts", "src/cycle/c.ts"]);
 
-    // Baseline only the first cycle; the second is a distinct cycle and must survive new-only
-    // filtering rather than collapsing onto the first cycle's project-scope identity.
+    const reordered = runHook(dir, ["hook", "--format", "json", "--no-config", ...[...cyclePaths].reverse()]);
+    const reorderedCycle = reordered.findings.find((finding) => finding.ruleId === "design.circular-import");
+    assert.equal(reorderedCycle?.stableIdentity, cycles[0]?.stableIdentity);
+
+    // Baselining the SCC suppresses the entire component, not an arbitrary simple-cycle variant.
     writeBaseline(dir, cycles.slice(0, 1));
     const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", ...cyclePaths]);
     const remaining = filtered.findings.filter((finding) => finding.ruleId === "design.circular-import");
-    assert.equal(remaining.length, 1);
-    assert.equal(remaining[0]?.stableIdentity, cycles[1]?.stableIdentity);
+    assert.equal(remaining.length, 0);
+  });
+});
+
+test("hook changed-ranges reports a circular import through the requested file", () => {
+  const cycleProject = {
+    "src/cycle/a.ts": ['import { fromB } from "./sub/b";', "export function fromA(): string {", "  return fromB();", "}", ""].join("\n"),
+    "src/cycle/sub/b.ts": ['import { fromA } from "../a";', "export function fromB(): string {", "  return fromA();", "}", ""].join("\n"),
+  };
+  withProject(cycleProject, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "1-1", "src/cycle/sub/b.ts"]);
+    const cycles = payload.findings.filter((finding) => finding.ruleId === "design.circular-import");
+    assert.equal(cycles.length, 1);
+    assert.equal(cycles[0]?.scope, "project");
+    assert.equal(cycles[0]?.file, "src/cycle/a.ts");
+    assert.deepEqual(cycles[0]?.metadata.files, ["src/cycle/a.ts", "src/cycle/sub/b.ts"]);
   });
 });
 
@@ -311,6 +375,17 @@ function runHook(cwdPath: string, args: string[]): HookPayload {
   return JSON.parse(execFileSync("bash", [BIN, ...args], { cwd: cwdPath, encoding: "utf8" })) as HookPayload;
 }
 
+// Runs a callback from a temp project root and restores the process cwd afterward.
+function withCwd(path: string, run: () => void): void {
+  const previous = cwd();
+  try {
+    chdir(path);
+    run();
+  } finally {
+    chdir(previous);
+  }
+}
+
 // Creates a temp project, writes the given files into it, runs the callback, then removes the dir.
 function withProject(files: Record<string, string>, run: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-hook-"));
@@ -329,6 +404,69 @@ function writeProjectFile(root: string, file: string, source: string): void {
   const path = join(root, file);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, source);
+}
+
+type HookRenderInput = Parameters<typeof renderHookReport>[1];
+
+type CountingHookRunner = ((options: AnalysisOptions) => AnalysisReport) & {
+  hookViews?: (currentOptions: AnalysisOptions, scopedOptions: AnalysisOptions, hasChangedRegion: boolean) => {
+    currentReport: AnalysisReport;
+    scopedReport: AnalysisReport;
+  };
+};
+
+// Base hook analysis options matching cli-program's hook defaults for direct render tests.
+function baseHookOptions(paths: string[], selectors: Partial<Pick<AnalysisOptions, "changedRanges" | "diff" | "since">> = {}): AnalysisOptions {
+  return {
+    paths,
+    shouldSkipConfig: true,
+    format: "json",
+    failOn: "none",
+    shouldIncludeIgnored: false,
+    changedScope: "symbol",
+    shouldSkipBaseline: true,
+    ...selectors,
+  };
+}
+
+function currentHookOptions(options: AnalysisOptions): AnalysisOptions {
+  const { changedRanges: _changedRanges, diff: _diff, diffPatch: _diffPatch, since: _since, ...rest } = options;
+  return { ...rest, shouldSkipBaseline: true };
+}
+
+function hookRenderInput(currentOptions: AnalysisOptions, scopedOptions: AnalysisOptions, hasChangedRegion: boolean, diffBase?: string): HookRenderInput {
+  return {
+    currentOptions,
+    scopedOptions,
+    hasChangedRegion,
+    ...(diffBase ? { diffBase } : {}),
+  };
+}
+
+function assertHookRenderCalls(input: HookRenderInput, expectedCalls: number): void {
+  const fallback = countingHookRunner(false);
+  const optimized = countingHookRunner(true);
+  const before = renderHookReport(fallback.runner, input);
+  const after = renderHookReport(optimized.runner, input);
+  assert.equal(after, before);
+  assert.equal(optimized.calls(), expectedCalls);
+  assert.equal(fallback.calls(), expectedCalls + (input.hasChangedRegion ? 1 : 0));
+}
+
+function countingHookRunner(useHookViews: boolean): { runner: CountingHookRunner; calls: () => number } {
+  let analyseCalls = 0;
+  let hookViewCalls = 0;
+  const runner = ((options: AnalysisOptions): AnalysisReport => {
+    analyseCalls += 1;
+    return analyse(options);
+  }) as CountingHookRunner;
+  if (useHookViews) {
+    runner.hookViews = (currentOptions, scopedOptions, hasChangedRegion) => {
+      hookViewCalls += 1;
+      return analyseHookReports(currentOptions, scopedOptions, hasChangedRegion);
+    };
+  }
+  return { runner, calls: () => analyseCalls + hookViewCalls };
 }
 
 // Finds the first finding for a rule id or fails the test; returns the stable contract finding.

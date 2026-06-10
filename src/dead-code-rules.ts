@@ -9,11 +9,16 @@ import type { Finding } from "./types.ts";
 
 // Deliberately single-file and low confidence because private methods can still be reached by
 // tests, decorators, framework hooks, or string-based reflection; reports stable advisory findings because removal still needs human confirmation.
+// Usage evidence is two counts over the masked code: call shapes (`name(`, where the declaration
+// itself contributes one match) and dot-prefixed references (`.name`, e.g. `items.map(this.double)`
+// or `onClick={this.double}`, where the declaration contributes zero). Either count above its
+// declaration-only floor suppresses the finding; comments and string literals are masked upstream
+// so mentions there never count.
 export function analyseDeadCode(file: SourceFile, source: string, findings: Finding[]): void {
   for (const match of source.matchAll(/\bprivate\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g)) {
     const name = match[1] ?? "";
     const escaped = escapeRegex(name);
-    if (countMatches(source, new RegExp(`${escaped}\\s*\\(`, "g")) <= 1) {
+    if (countMatches(source, new RegExp(`${escaped}\\s*\\(`, "g")) <= 1 && countMatches(source, new RegExp(`\\.${escaped}\\b`, "g")) === 0) {
       findings.push(
         makeFinding({
           ruleId: "dead-code.unused-private-method",

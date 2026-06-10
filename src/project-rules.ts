@@ -3,7 +3,7 @@
 // project-index types and the rules that consume them out of cli.ts so the orchestrator stays lean.
 import { dirname as dirnamePath, extname, join } from "node:path";
 import { isString } from "./config-parse.ts";
-import { optionNumber, ruleSeverity, threshold } from "./config.ts";
+import { optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { fileBaseName } from "./findings-helpers.ts";
@@ -47,10 +47,10 @@ interface ImportStatement {
   line: number;
 }
 
-// Ordered list of files participating in a cycle. Order is significant - the first edge is the
-// anchor reported in the finding, so rotating the list would shift the finding's source line.
+// Sorted SCC member list plus one deterministic closed cycle path for reviewer context.
 interface ImportCycle {
   files: string[];
+  representativeCycle: string[];
 }
 
 // Resolved thresholds passed into the large-module-concentration check. Holding them together
@@ -76,6 +76,10 @@ interface LargeModuleCandidate extends ModuleLineCount {
   thresholds: LargeModuleThresholds;
 }
 
+interface ArchitectureRuleOptions {
+  skipCircularImports?: boolean;
+}
+
 // Sorts sources by display path so every cross-file rule sees the same order regardless of which
 // filesystem yielded what entries first - the stable input ordering is what keeps reports deterministic.
 export function buildProjectIndex(projectSources: ProjectSource[]): ProjectIndex {
@@ -91,11 +95,21 @@ export function buildProjectIndex(projectSources: ProjectSource[]): ProjectIndex
 
 // Three architecture rules, evaluated in their stable contract order: deep imports, cycles, then
 // large-module concentration. Reordering shuffles the deterministic fingerprint output.
-export function analyseArchitectureRules(index: ProjectIndex, config: Config, findings: Finding[]): void {
-  analyseDeepRelativeImports(index, config, findings);
-  analyseCircularImports(index, findings);
-  analyseLargeModuleConcentration(index, config, findings);
+export function analyseArchitectureRules(index: ProjectIndex, config: Config, findings: Finding[], options: ArchitectureRuleOptions = {}): void {
+  if (ruleEnabled(config, DEEP_RELATIVE_IMPORT_RULE_ID)) {
+    analyseDeepRelativeImports(index, config, findings);
+  }
+  if (!options.skipCircularImports && ruleEnabled(config, CIRCULAR_IMPORT_RULE_ID)) {
+    analyseCircularImportRule(index, findings);
+  }
+  if (ruleEnabled(config, LARGE_MODULE_CONCENTRATION_RULE_ID)) {
+    analyseLargeModuleConcentration(index, config, findings);
+  }
 }
+
+const DEEP_RELATIVE_IMPORT_RULE_ID = "design.deep-relative-import";
+export const CIRCULAR_IMPORT_RULE_ID = "design.circular-import";
+const LARGE_MODULE_CONCENTRATION_RULE_ID = "design.large-module-concentration";
 
 /*
  * Reports imports that climb more than `maxParentSegments` `../` hops, anchored at the edge line
@@ -105,7 +119,7 @@ export function analyseArchitectureRules(index: ProjectIndex, config: Config, fi
  */
 function analyseDeepRelativeImports(index: ProjectIndex, config: Config, findings: Finding[]): void {
   const maxParentSegments = threshold(config, "design.deep-relative-import", 2);
-  const severity = ruleSeverity(config, "design.deep-relative-import", "advisory");
+  const severity = ruleSeverity(config, DEEP_RELATIVE_IMPORT_RULE_ID, "advisory");
   for (const source of index.scriptSources) {
     const edges = index.importsByFile.get(source.file.displayPath) ?? [];
     for (const edge of edges) {
@@ -114,7 +128,7 @@ function analyseDeepRelativeImports(index: ProjectIndex, config: Config, finding
       }
       findings.push(
         makeFinding({
-          ruleId: "design.deep-relative-import",
+          ruleId: DEEP_RELATIVE_IMPORT_RULE_ID,
           message: `Relative import \`${edge.specifier}\` climbs ${edge.parentSegments} directories.`,
           filePath: source.file.displayPath,
           line: edge.line,
@@ -131,10 +145,10 @@ function analyseDeepRelativeImports(index: ProjectIndex, config: Config, finding
 }
 
 /*
- * Reports one finding per detected cycle. The cycle list comes back already deterministic from
- * `importCycles`, so the resulting fingerprints are reproducible across runs.
+ * Reports one finding per strongly connected component in the runtime import graph. The component
+ * list comes back already deterministic from `importCycles`, so fingerprints are reproducible.
  */
-function analyseCircularImports(index: ProjectIndex, findings: Finding[]): void {
+export function analyseCircularImportRule(index: ProjectIndex, findings: Finding[]): void {
   for (const cycle of importCycles(index)) {
     const finding = circularImportFinding(index, cycle);
     if (finding) {
@@ -154,7 +168,7 @@ function circularImportFinding(index: ProjectIndex, cycle: ImportCycle): Finding
     return undefined;
   }
   return makeFinding({
-    ruleId: "design.circular-import",
+    ruleId: CIRCULAR_IMPORT_RULE_ID,
     message: `Import cycle detected among ${cycle.files.join(", ")}.`,
     filePath: anchorSource.file.displayPath,
     line: circularImportLine(index, anchorPath, cycle),
@@ -163,7 +177,7 @@ function circularImportFinding(index: ProjectIndex, cycle: ImportCycle): Finding
     confidence: "medium",
     symbol: cycle.files.join(" -> "),
     remediation: "Extract the shared contract or move one dependency behind an explicit boundary.",
-    metadata: { files: cycle.files },
+    metadata: { files: cycle.files, representativeCycle: cycle.representativeCycle },
   });
 }
 
@@ -237,7 +251,7 @@ function productionModuleLineCounts(index: ProjectIndex): ModuleLineCount[] {
 // can see why the rule fired without re-running with the same config - keeps reports stable for audits.
 function largeModuleConcentrationFinding(candidate: LargeModuleCandidate, severity: Severity): Finding {
   return makeFinding({
-    ruleId: "design.large-module-concentration",
+    ruleId: LARGE_MODULE_CONCENTRATION_RULE_ID,
     message: `Module \`${candidate.source.file.displayPath}\` contains ${candidate.sharePercent}% of production source lines.`,
     filePath: candidate.source.file.displayPath,
     line: 1,
@@ -366,42 +380,135 @@ function importPathCandidates(basePath: string): string[] {
   return [...candidates].map(normalizeDisplayPath);
 }
 
-// DFS over the import graph. Path length capped at 12 (see `visitImportCycle`) because beyond that
-// cycle detection becomes a search problem, not a useful signal. Output is sorted so report
-// ordering stays deterministic across runs.
+// Tarjan SCC pass over the import graph. Components, members, and outgoing edges are sorted so
+// one runtime import region yields one deterministic finding regardless of discovery order.
 function importCycles(index: ProjectIndex): ImportCycle[] {
-  const cycles = new Map<string, string[]>();
-  const paths = [...index.importsByFile.keys()].sort();
-  for (const start of paths) {
-    visitImportCycle(index, start, start, [start], new Set([start]), cycles);
-  }
-  return [...cycles.values()]
-    .map((files) => ({ files }))
+  return stronglyConnectedImportComponents(index)
+    .map((files) => ({ files, representativeCycle: representativeCycle(index, files) }))
     .sort((left, right) => left.files.join("\0").localeCompare(right.files.join("\0")));
 }
 
-function visitImportCycle(
-  index: ProjectIndex,
-  start: string,
-  current: string,
-  path: string[],
-  seen: Set<string>,
-  cycles: Map<string, string[]>,
-): void {
-  const targets = [...new Set((index.importsByFile.get(current) ?? []).filter((edge) => !edge.isTypeOnly).map((edge) => edge.targetPath).filter(isString))].sort();
-  for (const target of targets) {
-    if (target === start && path.length > 1) {
-      const files = [...path].sort();
-      cycles.set(files.join("\0"), files);
-      continue;
+// Mutable state for Tarjan's algorithm. Keeping it in one object makes the recursive visitor's
+// signature small enough to audit.
+interface StronglyConnectedState {
+  nextIndex: number;
+  indices: Map<string, number>;
+  lowLinks: Map<string, number>;
+  stack: string[];
+  onStack: Set<string>;
+  components: string[][];
+}
+
+function stronglyConnectedImportComponents(index: ProjectIndex): string[][] {
+  const state: StronglyConnectedState = {
+    nextIndex: 0,
+    indices: new Map(),
+    lowLinks: new Map(),
+    stack: [],
+    onStack: new Set(),
+    components: [],
+  };
+  for (const path of [...index.importsByFile.keys()].sort()) {
+    if (!state.indices.has(path)) {
+      visitStronglyConnectedImportComponent(index, path, state);
     }
-    if (seen.has(target) || path.length >= 12) {
-      continue;
-    }
-    seen.add(target);
-    visitImportCycle(index, start, target, [...path, target], seen, cycles);
-    seen.delete(target);
   }
+  return state.components
+    .map((component) => [...component].sort())
+    .filter((component) => component.length > 1)
+    .sort((left, right) => left.join("\0").localeCompare(right.join("\0")));
+}
+
+function visitStronglyConnectedImportComponent(index: ProjectIndex, path: string, state: StronglyConnectedState): void {
+  state.indices.set(path, state.nextIndex);
+  state.lowLinks.set(path, state.nextIndex);
+  state.nextIndex += 1;
+  state.stack.push(path);
+  state.onStack.add(path);
+
+  for (const target of circularImportTargets(index, path)) {
+    if (!state.indices.has(target)) {
+      visitStronglyConnectedImportComponent(index, target, state);
+      state.lowLinks.set(path, Math.min(lowLinkFor(state, path), lowLinkFor(state, target)));
+      continue;
+    }
+    if (state.onStack.has(target)) {
+      state.lowLinks.set(path, Math.min(lowLinkFor(state, path), indexFor(state, target)));
+    }
+  }
+
+  if (lowLinkFor(state, path) !== indexFor(state, path)) {
+    return;
+  }
+  const component: string[] = [];
+  while (state.stack.length > 0) {
+    const member = state.stack.pop();
+    if (!member) {
+      break;
+    }
+    state.onStack.delete(member);
+    component.push(member);
+    if (member === path) {
+      break;
+    }
+  }
+  state.components.push(component);
+}
+
+function indexFor(state: StronglyConnectedState, path: string): number {
+  return state.indices.get(path) ?? 0;
+}
+
+function lowLinkFor(state: StronglyConnectedState, path: string): number {
+  return state.lowLinks.get(path) ?? 0;
+}
+
+function circularImportTargets(index: ProjectIndex, path: string): string[] {
+  return [...new Set((index.importsByFile.get(path) ?? []).filter((edge) => !edge.isTypeOnly).map((edge) => edge.targetPath).filter(isString))].sort();
+}
+
+// Chooses one concrete closed path inside the SCC so the finding still shows a reviewable edge
+// chain even though the primary output unit is the whole component.
+function representativeCycle(index: ProjectIndex, files: string[]): string[] {
+  const anchor = files[0];
+  if (!anchor) {
+    return [];
+  }
+  const members = new Set(files);
+  for (const target of circularImportTargets(index, anchor).filter((candidate) => members.has(candidate))) {
+    const returnPath = pathBetweenComponentMembers(index, target, anchor, members);
+    if (returnPath) {
+      return [anchor, ...returnPath];
+    }
+  }
+  return files;
+}
+
+interface ComponentPathSearch {
+  current: string;
+  path: string[];
+}
+
+function pathBetweenComponentMembers(index: ProjectIndex, start: string, end: string, members: Set<string>): string[] | undefined {
+  const queue: ComponentPathSearch[] = [{ current: start, path: [start] }];
+  const visited = new Set([start]);
+  for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+    const item = queue[queueIndex];
+    if (!item) {
+      continue;
+    }
+    for (const target of circularImportTargets(index, item.current).filter((candidate) => members.has(candidate))) {
+      if (target === end) {
+        return [...item.path, target];
+      }
+      if (visited.has(target)) {
+        continue;
+      }
+      visited.add(target);
+      queue.push({ current: target, path: [...item.path, target] });
+    }
+  }
+  return undefined;
 }
 
 // Production = not a test, not a `.d.ts`, not a fixture, not under `generated/`. Conservative on

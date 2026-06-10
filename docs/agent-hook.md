@@ -47,7 +47,7 @@ npx gruff-ts analyse --changed-ranges "12-40,88-90" src/foo.ts --fail-on=warning
 git diff | npx gruff-ts analyse --diff - --fail-on=warning
 ```
 
-Changed-region scans keep only findings attributable to the changed hunk or its enclosing symbol, so the agent fixes its own work instead of inheriting the whole backlog. In `hook` mode, whole-file metrics such as `size.file-length` are omitted under changed-region attribution and counted in `suppressed.count`; they return only in full-scan hook output or when `--baseline` / `--diff` shows their stable identity is new. In `analyse`, use `--changed-scope file` for CI jobs that intentionally want every finding from a touched file.
+Changed-region scans keep only findings attributable to the changed hunk, its enclosing symbol, or a project relationship that includes the requested file, so the agent fixes its own work instead of inheriting the whole backlog. In `hook` mode, whole-file metrics such as `size.file-length` are omitted under changed-region attribution and counted in `suppressed.count`; they return only in full-scan hook output or when `--baseline` / `--diff` shows their stable identity is new. Circular-import findings can appear as project-scope findings when the requested file participates in the SCC; they keep the canonical SCC anchor rather than re-anchoring to the edited file. In `analyse`, use `--changed-scope file` for CI jobs that intentionally want every finding from a touched file.
 
 ## Respect the project's ignore policy
 

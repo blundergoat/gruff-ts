@@ -137,9 +137,17 @@ const IMPORTED_STATIC_ANALYSIS_REDUNDANT_CALLBACK = `
   assert.strictEqual(typeof analyseSecurityFlow, "function", "public export");
 `;
 
+const IMPORTABILITY_SENTINEL_CALLBACK = `
+  assert.equal(typeof ruleDescriptors, "function");
+`;
+
 const IMPORTED_STATIC_CONTEXT_PREFIX = `
 import * as rules from "./rules.ts";
 import { analyseSecurityFlow } from "./security-flow-rules.ts";
+`;
+
+const IMPORTABILITY_SENTINEL_CONTEXT_PREFIX = `
+import { ruleDescriptors } from "./rules.ts";
 `;
 
 const NON_NULLABLE_RETURN_CALLBACK = `
@@ -294,6 +302,17 @@ test("analyseTestBlock reports imported static-analysis-redundant shape assertio
   ]);
   assert.match(String(staticFindings[0]?.metadata.staticFact), /namespace import/);
   assert.match(String(staticFindings[1]?.metadata.staticFact), /named import/);
+});
+
+test("analyseTestBlock downgrades static-analysis importability sentinels to review guidance", () => {
+  const findings = analyseTestCallback(IMPORTABILITY_SENTINEL_CALLBACK, SOURCE_FILE.displayPath, "importability contract exposes rule descriptors", IMPORTABILITY_SENTINEL_CONTEXT_PREFIX);
+  const staticFinding = findings.find((finding) => finding.ruleId === STATIC_REDUNDANT_RULE_ID);
+
+  assert.equal(staticFinding?.confidence, "medium");
+  assert.match(staticFinding?.message ?? "", /review importability sentinel/i);
+  assert.equal(staticFinding?.metadata.reasonCategory, "importability-sentinel");
+  assert.equal(staticFinding?.metadata.suggestedAction, "review-or-document");
+  assert.match(String(staticFinding?.metadata.recommendation), /document why runtime module-load coverage matters/);
 });
 
 test("analyseTestBlock reports non-null assertions only for visible non-nullable return declarations", () => {

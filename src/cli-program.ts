@@ -17,7 +17,10 @@ import { completionShell, getRuleDescriptor, renderCompletionScript, renderConso
 import { exitFor } from "./scoring.ts";
 import type { AnalysisOptions, AnalysisReport, MinimumSeverityCommand } from "./types.ts";
 
-type AnalyseRunner = (options: AnalysisOptions) => AnalysisReport;
+type HookAnalysisViews = { currentReport: AnalysisReport; scopedReport: AnalysisReport };
+type AnalyseRunner = ((options: AnalysisOptions) => AnalysisReport) & {
+  hookViews?: (currentOptions: AnalysisOptions, scopedOptions: AnalysisOptions, hasChangedRegion: boolean) => HookAnalysisViews;
+};
 
 // The `report` command intentionally rejects `--baseline` because its output is meant to reflect
 // raw findings; this flag lets `normalizeOptions` enforce that without per-command branching.

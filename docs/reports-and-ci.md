@@ -12,6 +12,10 @@ the local dashboard.
 - `2` when diagnostics were produced, such as missing inputs or parse/config
   diagnostics.
 
+Parse diagnostics for TypeScript and JavaScript source use TypeScript's
+syntax-only parser, including TSX and JSX modes by extension. They do not run
+semantic typechecking.
+
 Examples:
 
 ```bash
@@ -48,6 +52,23 @@ Schema strings:
 - `gruff.analysis.v2` for full analysis reports.
 - `gruff.baseline.v1` for baselines.
 - `gruff.hotspot.v1` for hotspot output.
+
+`gruff.analysis.v2` may include an optional `notes` array. Notes are non-fatal:
+they explain scan-surface limits without changing exit codes. `diagnostics`
+still owns exit `2`.
+
+Current note types:
+
+- `no-analysable-files` - a requested path existed but contributed no supported
+  files, usually because ignore rules excluded everything under it.
+- `bounded-deep-scan` - a script file exceeded the deep-scan budget. It still
+  counts as analysed and text-level rules still run, but deep TypeScript passes,
+  parse diagnostics, and project-graph retention are skipped for that file.
+
+The deep-scan budget is `20,000` lines or `2,000,000` UTF-8 bytes, whichever
+limit is hit first. Text output prints notes in a `Notes:` block. JSON reports
+omit `notes` when there are no notes, so ordinary scans keep the same report
+shape.
 
 ## GitHub Actions
 

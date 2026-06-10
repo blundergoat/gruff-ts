@@ -2,7 +2,18 @@
  * Provides lightweight source text scanners that separate executable TypeScript
  * from comments, strings, and regex bodies before rule matching runs.
  */
+import { createRequire } from "node:module";
 import type { RunDiagnostic } from "./types.ts";
+
+const require = createRequire(import.meta.url);
+const typescriptSyntax = require("typescript") as typeof import("typescript");
+
+type TsDiagnostic = import("typescript").Diagnostic;
+type TsSourceFile = import("typescript").SourceFile;
+
+interface ParsedSourceFileWithDiagnostics extends TsSourceFile {
+  parseDiagnostics: readonly TsDiagnostic[];
+}
 
 // Just enough of `SourceFile` to keep `parseDiagnostics` decoupled from the full project type:
 // `isScript` gates whether to run the delimiter check; `displayPath` is the report-path anchor.
@@ -12,33 +23,44 @@ interface DiagnosticSourceFile {
 }
 
 /**
- * Lightweight delimiter sanity check for TypeScript/JavaScript. This is not a parser; it only
- * reports closers that outrun openers because those are local enough for a heuristic to trust.
+ * Syntax-only TypeScript parser diagnostics for script files; non-script inputs stay unparsed.
  *
  * @param file - Source metadata used to skip non-script inputs and report paths.
- * @param source - Raw file text to scan for delimiter balance.
+ * @param source - Raw file text to parse for syntax diagnostics.
  */
 function parseDiagnostics(file: DiagnosticSourceFile, source: string): RunDiagnostic[] {
   if (!file.isScript) {
     return [];
   }
-  const ctx: DelimiterScanContext = {
-    scan: defaultDelimiterScanState(),
-    counts: { braces: 0, parentheses: 0, brackets: 0 },
-  };
-  const lines = source.split(/\r?\n/);
-  for (const [index, line] of lines.entries()) {
-    scanDelimiterLine(line, ctx);
-    if (hasNegativeDelimiterCount(ctx.counts)) {
-      return [parseErrorDiagnostic(file, index + 1)];
-    }
+  const parsed = typescriptSyntax.createSourceFile(file.displayPath, source, typescriptSyntax.ScriptTarget.Latest, true, scriptKindFor(file.displayPath)) as ParsedSourceFileWithDiagnostics;
+  return parsed.parseDiagnostics.map((diagnostic) => parseErrorDiagnostic(file, diagnosticLine(parsed, diagnostic), diagnosticMessage(diagnostic)));
+}
+
+// Maps extensions onto the matching TypeScript parser mode so TSX/JSX syntax is parsed as syntax.
+function scriptKindFor(path: string): import("typescript").ScriptKind {
+  if (path.endsWith(".tsx")) {
+    return typescriptSyntax.ScriptKind.TSX;
   }
-  // Intentional: the EOF imbalance check was removed in M38 false-positive triage. The brace
-  // scanner is a regex-vs-division heuristic, not a real parser, and produces drift on valid
-  // TypeScript containing nested template literals, regex literals with parens in character
-  // classes, and similar constructs. tsc owns syntax validation; gruff's job here is to catch
-  // obvious local mismatches (negative counts) rather than rediscover end-of-file parser errors.
-  return [];
+  if (path.endsWith(".jsx")) {
+    return typescriptSyntax.ScriptKind.JSX;
+  }
+  if (path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs")) {
+    return typescriptSyntax.ScriptKind.JS;
+  }
+  return typescriptSyntax.ScriptKind.TS;
+}
+
+// Parser diagnostics may omit a start offset; line 1 is the stable fallback for malformed files.
+function diagnosticLine(sourceFile: TsSourceFile, diagnostic: TsDiagnostic): number {
+  if (diagnostic.start === undefined) {
+    return 1;
+  }
+  return sourceFile.getLineAndCharacterOfPosition(diagnostic.start).line + 1;
+}
+
+// Prefixes the TypeScript parser message while preserving the existing parse-error diagnostic shape.
+function diagnosticMessage(diagnostic: TsDiagnostic): string {
+  return `TypeScript syntax error: ${typescriptSyntax.flattenDiagnosticMessageText(diagnostic.messageText, "\n")}`;
 }
 
 // Running totals for `{}`, `()`, and `[]`. A negative count means a closer appeared with no opener
@@ -281,10 +303,10 @@ function hasUnbalancedDelimiterCount(counts: DelimiterCounts): boolean {
  * whenever diagnostics fire - this builder reports failures so a broken file in the scan tree
  * cannot hide silently rather than throw the error or recover quietly.
  */
-function parseErrorDiagnostic(file: DiagnosticSourceFile, line: number): RunDiagnostic {
+function parseErrorDiagnostic(file: DiagnosticSourceFile, line: number, message: string): RunDiagnostic {
   return {
     diagnosticType: "parse-error",
-    message: "Unbalanced TypeScript delimiters detected.",
+    message,
     filePath: file.displayPath,
     line,
   };
