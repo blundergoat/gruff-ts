@@ -11,6 +11,8 @@ const typescriptSyntax = require("typescript") as typeof import("typescript");
 type TsDiagnostic = import("typescript").Diagnostic;
 type TsSourceFile = import("typescript").SourceFile;
 
+// TypeScript's public SourceFile shape exposes parseDiagnostics at runtime; this interface gives
+// the syntax-only parser result the diagnostic field without requiring a full Program.
 interface ParsedSourceFileWithDiagnostics extends TsSourceFile {
   parseDiagnostics: readonly TsDiagnostic[];
 }

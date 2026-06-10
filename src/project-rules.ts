@@ -76,8 +76,10 @@ interface LargeModuleCandidate extends ModuleLineCount {
   thresholds: LargeModuleThresholds;
 }
 
+// Optional switches for architecture analysis. The circular-import gate lets a caller build root
+// graph context elsewhere without emitting duplicate SCC findings from the scoped index.
 interface ArchitectureRuleOptions {
-  skipCircularImports?: boolean;
+  shouldSkipCircularImports?: boolean;
 }
 
 // Sorts sources by display path so every cross-file rule sees the same order regardless of which
@@ -99,7 +101,7 @@ export function analyseArchitectureRules(index: ProjectIndex, config: Config, fi
   if (ruleEnabled(config, DEEP_RELATIVE_IMPORT_RULE_ID)) {
     analyseDeepRelativeImports(index, config, findings);
   }
-  if (!options.skipCircularImports && ruleEnabled(config, CIRCULAR_IMPORT_RULE_ID)) {
+  if (!options.shouldSkipCircularImports && ruleEnabled(config, CIRCULAR_IMPORT_RULE_ID)) {
     analyseCircularImportRule(index, findings);
   }
   if (ruleEnabled(config, LARGE_MODULE_CONCENTRATION_RULE_ID)) {
@@ -399,6 +401,8 @@ interface StronglyConnectedState {
   components: string[][];
 }
 
+// Finds strongly connected import components with Tarjan's algorithm, then normalizes component
+// order so one runtime cycle produces stable report anchors and fingerprints.
 function stronglyConnectedImportComponents(index: ProjectIndex): string[][] {
   const state: StronglyConnectedState = {
     nextIndex: 0,
@@ -419,6 +423,7 @@ function stronglyConnectedImportComponents(index: ProjectIndex): string[][] {
     .sort((left, right) => left.join("\0").localeCompare(right.join("\0")));
 }
 
+// Visits one graph node and updates Tarjan indices, low-links, and the active stack in lockstep.
 function visitStronglyConnectedImportComponent(index: ProjectIndex, path: string, state: StronglyConnectedState): void {
   state.indices.set(path, state.nextIndex);
   state.lowLinks.set(path, state.nextIndex);
@@ -455,14 +460,17 @@ function visitStronglyConnectedImportComponent(index: ProjectIndex, path: string
   state.components.push(component);
 }
 
+// Reads a Tarjan discovery index; missing entries fall back to zero only for malformed graph edges.
 function indexFor(state: StronglyConnectedState, path: string): number {
   return state.indices.get(path) ?? 0;
 }
 
+// Reads a Tarjan low-link value; the fallback keeps partially indexed edges bounded.
 function lowLinkFor(state: StronglyConnectedState, path: string): number {
   return state.lowLinks.get(path) ?? 0;
 }
 
+// Stable runtime-cycle contract: returns sorted value imports only; type-only edges never count.
 function circularImportTargets(index: ProjectIndex, path: string): string[] {
   return [...new Set((index.importsByFile.get(path) ?? []).filter((edge) => !edge.isTypeOnly).map((edge) => edge.targetPath).filter(isString))].sort();
 }
@@ -484,28 +492,30 @@ function representativeCycle(index: ProjectIndex, files: string[]): string[] {
   return files;
 }
 
+// Queue item for finding a representative path through one SCC.
 interface ComponentPathSearch {
   current: string;
   path: string[];
 }
 
+// Breadth-first path search inside one SCC so the grouped finding can display a concrete cycle.
 function pathBetweenComponentMembers(index: ProjectIndex, start: string, end: string, members: Set<string>): string[] | undefined {
   const queue: ComponentPathSearch[] = [{ current: start, path: [start] }];
   const visited = new Set([start]);
   for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
-    const item = queue[queueIndex];
-    if (!item) {
+    const searchState = queue[queueIndex];
+    if (!searchState) {
       continue;
     }
-    for (const target of circularImportTargets(index, item.current).filter((candidate) => members.has(candidate))) {
+    for (const target of circularImportTargets(index, searchState.current).filter((candidate) => members.has(candidate))) {
       if (target === end) {
-        return [...item.path, target];
+        return [...searchState.path, target];
       }
       if (visited.has(target)) {
         continue;
       }
       visited.add(target);
-      queue.push({ current: target, path: [...item.path, target] });
+      queue.push({ current: target, path: [...searchState.path, target] });
     }
   }
   return undefined;

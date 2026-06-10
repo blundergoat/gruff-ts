@@ -429,11 +429,13 @@ function baseHookOptions(paths: string[], selectors: Partial<Pick<AnalysisOption
   };
 }
 
+// Removes changed-region selectors so expected current-report calls always analyse the full file set.
 function currentHookOptions(options: AnalysisOptions): AnalysisOptions {
   const { changedRanges: _changedRanges, diff: _diff, diffPatch: _diffPatch, since: _since, ...rest } = options;
   return { ...rest, shouldSkipBaseline: true };
 }
 
+// Builds the hook renderer input with an optional diff base only when the test needs base replay.
 function hookRenderInput(currentOptions: AnalysisOptions, scopedOptions: AnalysisOptions, hasChangedRegion: boolean, diffBase?: string): HookRenderInput {
   return {
     currentOptions,
@@ -443,6 +445,7 @@ function hookRenderInput(currentOptions: AnalysisOptions, scopedOptions: Analysi
   };
 }
 
+// Compares fallback and optimized hook renderers and asserts the optimized call count.
 function assertHookRenderCalls(input: HookRenderInput, expectedCalls: number): void {
   const fallback = countingHookRunner(false);
   const optimized = countingHookRunner(true);
@@ -453,14 +456,15 @@ function assertHookRenderCalls(input: HookRenderInput, expectedCalls: number): v
   assert.equal(fallback.calls(), expectedCalls + (input.hasChangedRegion ? 1 : 0));
 }
 
-function countingHookRunner(useHookViews: boolean): { runner: CountingHookRunner; calls: () => number } {
+// Stable test contract: counts full analyse calls and optional hook-view calls behind one runner.
+function countingHookRunner(shouldUseHookViews: boolean): { runner: CountingHookRunner; calls: () => number } {
   let analyseCalls = 0;
   let hookViewCalls = 0;
   const runner = ((options: AnalysisOptions): AnalysisReport => {
     analyseCalls += 1;
     return analyse(options);
   }) as CountingHookRunner;
-  if (useHookViews) {
+  if (shouldUseHookViews) {
     runner.hookViews = (currentOptions, scopedOptions, hasChangedRegion) => {
       hookViewCalls += 1;
       return analyseHookReports(currentOptions, scopedOptions, hasChangedRegion);

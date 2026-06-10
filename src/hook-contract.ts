@@ -102,6 +102,7 @@ export function renderHookReport(runAnalyse: HookAnalysisRunner, input: HookRepo
   return JSON.stringify(hookReport(scopedReport, findings, suppressedCount, true, null), null, 2) + "\n";
 }
 
+// Selects the optimized hook view when available, otherwise falls back to one or two analyse calls.
 function hookAnalysisViews(runAnalyse: HookAnalysisRunner, input: HookReportInput): HookAnalysisViews {
   if (runAnalyse.hookViews) {
     return runAnalyse.hookViews(input.currentOptions, input.scopedOptions, input.hasChangedRegion);

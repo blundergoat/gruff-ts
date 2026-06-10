@@ -434,6 +434,7 @@ test("risk expansion finds security rules with safe non-candidates", () => {
 });
 
 test("sql-concatenation flags query execute and raw attack shapes", () => {
+  // This fixture covers SQL sink variants, unknown runtime prefix interpolation, and safe parameterized counterparts.
   const report = analyseFixture(`function unsafe(db: any, client: any, knex: any, name: string, prefix: string, userPrefix: string, id: string): void {
   db.query(\`SELECT * FROM users WHERE name = \${name}\`);
   db.query(\`SELECT * FROM \${prefix}users WHERE name = \${name}\`);

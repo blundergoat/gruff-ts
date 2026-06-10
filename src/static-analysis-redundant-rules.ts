@@ -374,6 +374,7 @@ function staticRedundantCandidate(args: Omit<StaticAnalysisRedundantAssertion, "
   };
 }
 
+// Downgrades importability sentinel tests to review/document guidance instead of delete guidance.
 function staticAnalysisActionabilityCandidate(block: FunctionBlock, candidate: StaticAnalysisRedundantAssertion): StaticAnalysisRedundantAssertion {
   if (!isImportabilitySentinelCandidate(block, candidate)) {
     return candidate;
@@ -388,18 +389,22 @@ function staticAnalysisActionabilityCandidate(block: FunctionBlock, candidate: S
   };
 }
 
+// Sentinel candidates need both a module-load style test name and static import evidence.
 function isImportabilitySentinelCandidate(block: FunctionBlock, candidate: StaticAnalysisRedundantAssertion): boolean {
   return hasImportabilitySentinelName(block.name) && hasStaticImportProof(candidate);
 }
 
+// Test names that say export/import/module contract imply the assertion may protect wiring.
 function hasImportabilitySentinelName(testName: string): boolean {
   return /\b(?:importability|module[-\s]+load|load[-\s]+graph|exports?|contract)\b/i.test(testName);
 }
 
+// Static import proof distinguishes module-load sentinels from ordinary type-shape assertions.
 function hasStaticImportProof(candidate: StaticAnalysisRedundantAssertion): boolean {
   return candidate.sourceProof !== undefined && /\bimport\b/i.test(candidate.staticFact) && /\bstatic(?:ally)?\b/i.test(candidate.staticFact);
 }
 
+// Renders the finding message from the final confidence/actionability decision.
 function staticAnalysisRedundantMessage(block: FunctionBlock, candidate: StaticAnalysisRedundantAssertion): string {
   if (candidate.reasonCategory === "importability-sentinel") {
     return `Review importability sentinel: ${candidate.confidence} confidence. Test \`${block.name}\` asserts static import shape rather than behaviour: ${candidate.assertion}.`;

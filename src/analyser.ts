@@ -2,10 +2,11 @@
 // documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality),
 // aggregates findings into the `gruff.analysis.v2` schema, and exposes `analyse` to the CLI shell.
 import { Buffer } from "node:buffer";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { cwd } from "node:process";
-import { basename, join } from "node:path";
-import { applyBaseline, dedupeFindings, DEFAULT_BASELINE, recordHistory, writeBaseline } from "./baseline.ts";
+import { basename } from "node:path";
+import { dedupeFindings, recordHistory } from "./baseline.ts";
+import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { changedRegionScope, filterChangedFindings } from "./changed-regions.ts";
 import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { VERSION } from "./constants.ts";
@@ -31,8 +32,10 @@ import { analyseSensitiveData } from "./sensitive-data-rules.ts";
 import { maskNonCode, maskTemplateLiteralBodies, parseDiagnostics } from "./source-text.ts";
 import type { AnalysisOptions, AnalysisReport, Config, Finding, Pillar, RunDiagnostic, ScanSurfaceNote, SkippedPath } from "./types.ts";
 
-// Pair of hook views built from one scanner pass: the full current file view and the changed-region
-// projection. Internal to the CLI/hook integration; not part of gruff.analysis.v2.
+/*
+ * Internal hook view contract: both reports come from one current-tree scan so full-file and
+ * changed-region rendering stay stable and cannot drift.
+ */
 export interface HookAnalysisReports {
   currentReport: AnalysisReport;
   scopedReport: AnalysisReport;
@@ -71,6 +74,7 @@ export function analyseHookReports(currentOptions: AnalysisOptions, scopedOption
   return { currentReport, scopedReport };
 }
 
+// Loads config and discovers inputs once so direct analysis and hook reuse share the same setup.
 function prepareAnalysis(options: AnalysisOptions): AnalysisPreparation {
   const projectRoot = cwd();
   const config = loadConfig(projectRoot, options);
@@ -79,6 +83,7 @@ function prepareAnalysis(options: AnalysisOptions): AnalysisPreparation {
   return { projectRoot, config, diagnostics, discovery };
 }
 
+// Runs per-file and project-level rules before applying baseline suppression; finding order remains stable.
 function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOptions): AnalysisRun {
   const { projectRoot, config, diagnostics, discovery } = preparation;
   pushMissingPathDiagnostics(discovery.missingPaths, diagnostics);
@@ -93,6 +98,7 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
   return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes };
 }
 
+// Converts a completed run into a stable report contract or changed-region projection.
 function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResult: BaselineApplication, suppressedCount?: number): AnalysisReport {
   return buildAnalysisReport(run.projectRoot, options, run.discovery, run.diagnostics, baselineResult, run.notes, suppressedCount);
 }
@@ -152,6 +158,8 @@ interface SourceScanResult {
   notes: ScanSurfaceNote[];
 }
 
+// Prepared inputs for one analysis run. Discovery stays separate from scanning so hook mode can
+// reuse setup without re-reading config.
 interface AnalysisPreparation {
   projectRoot: string;
   config: Config;
@@ -159,6 +167,8 @@ interface AnalysisPreparation {
   discovery: DiscoverySummary;
 }
 
+// Completed scan state before final report rendering. The baseline result is carried separately so
+// changed-region filtering can project findings without losing baseline metadata.
 interface AnalysisRun {
   projectRoot: string;
   discovery: DiscoverySummary;
@@ -166,23 +176,6 @@ interface AnalysisRun {
   scanned: SourceScanResult;
   baselineResult: BaselineApplication;
   notes: ScanSurfaceNote[];
-}
-
-/*
- * Result of applying a baseline (suppression) or generating a new one. The optional `baseline`
- * matches the `gruff.analysis.v2` schema's baseline metadata - present only when a baseline file
- * was actually used or generated, so the report stays stable across baseline-disabled runs.
- */
-interface BaselineApplication {
-  findings: Finding[];
-  baseline?: NonNullable<AnalysisReport["baseline"]>;
-}
-
-// Resolved baseline path plus the provenance string emitted in the report. `source` distinguishes
-// "explicit" (--baseline flag) from "default" (auto-discovered gruff-baseline.json).
-interface BaselineSelection {
-  path: string;
-  source: string;
 }
 
 // Emits a `missing-path` diagnostic per path that the user requested but discovery could not
@@ -289,72 +282,6 @@ function sortedUniqueFindings(findings: Finding[]): Finding[] {
   return dedupeFindings(findings);
 }
 
-/*
- * Three-way baseline dispatcher. `--generate-baseline` wins (writes a new file, returns findings
- * unchanged); `--no-baseline` skips entirely; otherwise look for an explicit or default baseline.
- * The stable identity tuple (fingerprint, ruleId, filePath) drives suppression matching.
- */
-function applyBaselineOptions(projectRoot: string, options: AnalysisOptions, findings: Finding[]): BaselineApplication {
-  if (options.generateBaseline) {
-    return generateBaselineResult(projectRoot, options.generateBaseline, findings);
-  }
-
-  if (options.shouldSkipBaseline) {
-    return { findings };
-  }
-
-  const selected = selectedBaseline(projectRoot, options);
-  if (!selected) {
-    return { findings };
-  }
-
-  return applySelectedBaseline(projectRoot, selected, findings);
-}
-
-/*
- * Writes the baseline file via writeBaseline and returns the report-shaped metadata. `suppressed: 0`
- * because generation does not filter findings - every current finding is captured in the stable baseline.
- */
-function generateBaselineResult(projectRoot: string, baselineFile: string, findings: Finding[]): BaselineApplication {
-  const baselinePath = absolutize(projectRoot, baselineFile);
-  writeBaseline(baselinePath, findings);
-  return {
-    findings,
-    baseline: {
-      path: displayPath(projectRoot, baselinePath),
-      source: "generated",
-      suppressed: 0,
-      generated: true,
-    },
-  };
-}
-
-// Loads the baseline file and filters findings whose identity tuple matches. `suppressed` is
-// computed from the size delta so the stable baseline report metadata stays accurate.
-function applySelectedBaseline(projectRoot: string, selected: BaselineSelection, findings: Finding[]): BaselineApplication {
-  const before = findings.length;
-  const filteredFindings = applyBaseline(selected.path, findings);
-  return {
-    findings: filteredFindings,
-    baseline: {
-      path: displayPath(projectRoot, selected.path),
-      source: selected.source,
-      suppressed: before - filteredFindings.length,
-      generated: false,
-    },
-  };
-}
-
-// Picks an explicit `--baseline` path first, then the conventional `gruff-baseline.json` at the
-// project root. Returning undefined means "no baseline" - the stable contract preserves report shape.
-function selectedBaseline(projectRoot: string, options: AnalysisOptions): BaselineSelection | undefined {
-  if (options.baseline) {
-    return { path: absolutize(projectRoot, options.baseline), source: "explicit" };
-  }
-  const defaultBaseline = join(projectRoot, DEFAULT_BASELINE);
-  return existsSync(defaultBaseline) ? { path: defaultBaseline, source: "default" } : undefined;
-}
-
 // Per-file rule pipeline. Text rules run on every file (including config/yaml); TypeScript rules
 // run only on scripts within the deep-scan budget. Fixed order is part of the stable fingerprint
 // contract. Generated/copied files keep every security and sensitive-data finding but drop
@@ -382,9 +309,12 @@ function isGeneratedSource(source: string): boolean {
   return source.split(/\r?\n/, 10).some((line) => /AUTO-?GENERATED|@generated\b|GENERATED FILE|Code generated|Generated by|DO NOT EDIT|Copied from/i.test(line));
 }
 
-// Cross-file rule pipeline that runs after every per-file scan completes. Scoped runs keep per-file
-// findings scoped, but circular-import may build root graph context so cycles through requested
-// files are visible without changing `paths.analysedFiles`.
+/*
+ * Cross-file rule pipeline. Contract invariant: scoped runs keep `paths.analysedFiles` scoped while
+ * circular-import may build root graph context so cycles through requested files stay visible. It
+ * swallows hidden root-context read failures in `graphProjectSources` so unrelated unreadable files
+ * do not break a narrow scan.
+ */
 function analyseProjectIndex(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[], projectSources: ProjectSource[], config: Config): Finding[] {
   const shouldUseRootCircularContext = ruleEnabled(config, CIRCULAR_IMPORT_RULE_ID) && shouldBuildRootCircularContext(projectRoot, options, scopedFiles);
   const shouldUseScopedIndex = isAnyRuleEnabled(config, SCOPED_PROJECT_INDEX_RULE_IDS) || (ruleEnabled(config, CIRCULAR_IMPORT_RULE_ID) && !shouldUseRootCircularContext);
@@ -394,7 +324,7 @@ function analyseProjectIndex(projectRoot: string, options: AnalysisOptions, scop
   const findings: Finding[] = [];
   if (shouldUseScopedIndex) {
     const index = buildProjectIndex(projectSources);
-    analyseArchitectureRules(index, config, findings, { skipCircularImports: shouldUseRootCircularContext });
+    analyseArchitectureRules(index, config, findings, { shouldSkipCircularImports: shouldUseRootCircularContext });
   }
   if (shouldUseRootCircularContext) {
     findings.push(...rootCircularImportFindings(projectRoot, options, scopedFiles, config));
@@ -412,6 +342,7 @@ const SCOPED_PROJECT_INDEX_RULE_IDS = [
   "design.large-module-concentration",
 ] as const;
 
+// Root graph context is needed only for narrow path operands; full-root scans already have context.
 function shouldBuildRootCircularContext(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[]): boolean {
   if (scopedFiles.length === 0 || options.paths.length === 0) {
     return false;
@@ -419,6 +350,7 @@ function shouldBuildRootCircularContext(projectRoot: string, options: AnalysisOp
   return options.paths.every((input) => displayPath(projectRoot, absolutize(projectRoot, input)) !== ".");
 }
 
+// Builds stable circular-import findings from the repository root, then filters back to requested files.
 function rootCircularImportFindings(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[], config: Config): Finding[] {
   const requestedFiles = new Set(scopedFiles.map((file) => file.displayPath));
   const rootDiscovery = discoverSources(projectRoot, { ...options, paths: [] }, config);
@@ -428,6 +360,7 @@ function rootCircularImportFindings(projectRoot: string, options: AnalysisOption
   return findings.filter((finding) => circularImportFindingTouchesRequestedFile(finding, requestedFiles));
 }
 
+// Reads just the root files needed for import graph context and swallows unrelated read failures.
 function graphProjectSources(files: SourceFile[]): ProjectSource[] {
   const projectSources: ProjectSource[] = [];
   for (const file of files) {
@@ -437,12 +370,13 @@ function graphProjectSources(files: SourceFile[]): ProjectSource[] {
         projectSources.push(projectSource(file, source));
       }
     } catch {
-      // Hidden root-context files must not turn a scoped run into an operational failure.
+      // ignore hidden root-context read failures; scoped scans still report requested-file errors.
     }
   }
   return projectSources;
 }
 
+// Contract filter: root-context circular findings survive only when the SCC contains a requested file.
 function circularImportFindingTouchesRequestedFile(finding: Finding, requestedFiles: Set<string>): boolean {
   const files = Array.isArray(finding.metadata.files) ? finding.metadata.files : [finding.filePath];
   return files.some((file) => typeof file === "string" && requestedFiles.has(file));

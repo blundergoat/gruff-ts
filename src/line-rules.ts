@@ -9,6 +9,7 @@ import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts";
 import { type NamingSurface, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
+import { processExecMetadata } from "./process-exec-metadata.ts";
 import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
@@ -25,8 +26,6 @@ interface LineRuleCheck {
   severity: Severity;
   pillar: Pillar;
 }
-
-type ProcessExecArgumentSource = "literal" | "process-exec-path" | "local-const" | "local-builder" | "parameter" | "member" | "template" | "unknown";
 
 /*
  * Per-line scratch state shared across every line rule in a single pass. `codeLine` is the
@@ -586,85 +585,6 @@ function analyseProcessExecCalls(file: SourceFile, rawSource: string, codeSource
       }),
     );
   }
-}
-
-function processExecMetadata(callName: string, rawSource: string, callStart: number, rawSegment: string, codeSegment: string): Record<string, unknown> {
-  const firstArgument = firstProcessCallArgument(rawSegment);
-  return {
-    callName,
-    argumentSource: processExecArgumentSource(rawSource, callStart, firstArgument),
-    shellEnabled: processExecShellEnabled(callName, codeSegment),
-  };
-}
-
-function firstProcessCallArgument(rawSegment: string): string {
-  const argsText = rawSegment.slice(rawSegment.indexOf("(") + 1, rawSegment.lastIndexOf(")"));
-  return firstTopLevelArgument(argsText).trim();
-}
-
-function firstTopLevelArgument(argsText: string): string {
-  let depth = 0;
-  let quote: string | undefined;
-  for (let index = 0; index < argsText.length; index += 1) {
-    const character = argsText[index] ?? "";
-    if (quote) {
-      if (character === "\\" && index + 1 < argsText.length) {
-        index += 1;
-      } else if (character === quote) {
-        quote = undefined;
-      }
-      continue;
-    }
-    if (character === "\"" || character === "'" || character === "`") {
-      quote = character;
-    } else if (character === "(" || character === "[" || character === "{") {
-      depth += 1;
-    } else if (character === ")" || character === "]" || character === "}") {
-      depth = Math.max(0, depth - 1);
-    } else if (character === "," && depth === 0) {
-      return argsText.slice(0, index);
-    }
-  }
-  return argsText;
-}
-
-function processExecArgumentSource(rawSource: string, callStart: number, firstArgument: string): ProcessExecArgumentSource {
-  if (firstArgument === "process.execPath") {
-    return "process-exec-path";
-  }
-  if (/^`/.test(firstArgument)) {
-    return /\$\{/.test(firstArgument) ? "template" : "literal";
-  }
-  if (/^["'][^"']*["']$/.test(firstArgument)) {
-    return "literal";
-  }
-  if (/^[A-Za-z_$][A-Za-z0-9_$]*\s*\(/.test(firstArgument)) {
-    return "local-builder";
-  }
-  const identifier = firstArgument.match(/^[A-Za-z_$][A-Za-z0-9_$]*$/)?.[0];
-  if (identifier) {
-    return hasConstLiteralCommandDeclaration(rawSource, callStart, identifier) ? "local-const" : "parameter";
-  }
-  if (/^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+/.test(firstArgument)) {
-    return "member";
-  }
-  return "unknown";
-}
-
-function hasConstLiteralCommandDeclaration(rawSource: string, callStart: number, identifier: string): boolean {
-  const declaration = rawSource.slice(0, callStart).match(new RegExp(`\\bconst\\s+${escapeRegex(identifier)}\\s*=\\s*([^;]+);\\s*$`, "s"));
-  const initializer = declaration?.[1] ?? "";
-  return /["'][^"']+["']/.test(initializer) && !/[`$()[\]{}]/.test(initializer);
-}
-
-function processExecShellEnabled(callName: string, codeSegment: string): boolean {
-  if (/\bshell\s*:\s*true\b/.test(codeSegment)) {
-    return true;
-  }
-  if (/\bshell\s*:\s*false\b/.test(codeSegment)) {
-    return false;
-  }
-  return callName === "exec" || callName === "execSync";
 }
 
 // Excludes ordinary member calls such as `pattern.exec(...)`; module receivers like `cp.exec(...)`

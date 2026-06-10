@@ -80,11 +80,12 @@ function analyseGcpServiceAccountKeys(file: SensitiveSourceFile, source: string,
   pushSensitiveFinding(config, findings, file, "sensitive-data.gcp-service-account-key", "GCP service-account key file detected.", byteLine(source, typeMatch.index ?? 0), identifier, "high");
 }
 
-// Payment-card PII detection is structural: candidate shape, known issuer prefix, length, and Luhn
-// check must all pass before a stable redacted finding is emitted. A bare unseparated digit run
-// additionally needs card vocabulary on its line - large statistics (GDP, population) can pass
-// Luhn by coincidence, while separator-grouped numbers ("4111 1111 ...") are card-formatted by
-// construction and flag without context.
+/*
+ * Payment-card PII detection contract: candidate shape, known issuer prefix, length, and Luhn
+ * check must all pass before a stable redacted finding is emitted. A bare unseparated digit run
+ * additionally needs card vocabulary on its line - large statistics can pass Luhn by coincidence,
+ * while separator-grouped numbers are card-formatted by construction.
+ */
 function analysePaymentCardNumbers(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const lines = source.split(/\r?\n/);
   for (const match of source.matchAll(/\b(?:\d[ -]?){12,18}\d\b/g)) {

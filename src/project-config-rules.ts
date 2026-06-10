@@ -404,6 +404,7 @@ function isLifecycleScript(scriptName: string): boolean {
   return ["preinstall", "install", "postinstall", "prepare", "prepublish", "prepublishOnly"].includes(scriptName);
 }
 
+// Allows closed-list validation commands in publish hooks while rejecting shell composition.
 function isValidationOnlyLifecycleCommand(scriptName: string, command: string): boolean {
   if (!["prepublish", "prepublishOnly"].includes(scriptName)) {
     return false;
