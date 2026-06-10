@@ -11,7 +11,7 @@
 - **Security and test-quality tuning** - `security.sql-concatenation` covers `prepare(...)`, validation-only publish gates stop flagging `security.risky-lifecycle-script`, `security.process-exec` carries `callName`/`argumentSource`/`shellEnabled` hints, and static-import test sentinels downgrade to review guidance.
 - **`dead-code.unused-private-method`** - bare `this.method` references count as usage; unrelated properties sharing the name no longer mask an unused private method.
 - **Execution-level rule gating** - rules disabled by config or profile now skip their scanner passes instead of filtering findings afterwards, and the comment-quality gate no longer silently disables `docs.fixture-purpose-missing`.
-- **Hook efficiency** - changed-region hook runs reuse one analysis pass; the diff/since new-only replay stays a second pass. vscode-scale repos still need the minimal profile.
+- **Hook efficiency** - changed-region hook runs reuse one analysis pass; the diff/since new-only replay stays a second pass and materializes every SCC member, so pre-existing cycles are not reported as new. vscode-scale repos still need the minimal profile.
 
 ## v0.3.2 - 2026-06-09
 

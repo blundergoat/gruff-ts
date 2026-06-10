@@ -332,6 +332,94 @@ test("hook unstaged new-only compares against the index", () => {
   });
 });
 
+// Fixture covers the diff-base materialization contract: every SCC member must replay at the base ref.
+test("hook diff new-only materializes SCC members so pre-existing cycles stay suppressed", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  const anchorSource = [
+    "// Cycle fixture: module a imports b and derives a number from it.",
+    "",
+    'import { valueFromB } from "./b";',
+    "",
+    "/**",
+    " * Derives the a-side value.",
+    " * @returns The b-derived value plus one.",
+    " */",
+    "export function valueFromA(): number {",
+    "  return valueFromB() + 1;",
+    "}",
+    "",
+  ].join("\n");
+  const cyclingMemberSource = [
+    "// Cycle fixture: module b imports a back, closing the import cycle.",
+    "",
+    'import { valueFromA } from "./a";',
+    "",
+    "/**",
+    " * Provides the seed value.",
+    " * @returns A fixed seed value.",
+    " */",
+    "export function valueFromB(): number {",
+    "  return 2;",
+    "}",
+    "",
+    "/**",
+    " * Round-trips through module a.",
+    " * @returns The a-side derived value.",
+    " */",
+    "export function roundTrip(): number {",
+    "  return valueFromA();",
+    "}",
+    "",
+  ].join("\n");
+  const harmlessAddition = [
+    "/**",
+    " * Reports the fixture label.",
+    " * @returns The fixture label.",
+    " */",
+    "export function fixtureLabel(): string {",
+    '  return "cycle-b";',
+    "}",
+    "",
+  ].join("\n");
+
+  // Pre-existing cycle: the edited member anchors no findings, so only member materialization can
+  // reconstruct the SCC at the base; the cycle must not be reported as new.
+  withProject({ "src/a.ts": anchorSource, "src/b.ts": cyclingMemberSource }, (dir) => {
+    initGitAdd(dir);
+    writeProjectFile(dir, "src/b.ts", cyclingMemberSource + "\n" + harmlessAddition);
+
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "unstaged", "src/b.ts"]);
+    assert.equal(payload.findings.some((finding) => finding.ruleId === "design.circular-import"), false);
+  });
+
+  const cycleFreeMemberSource = [
+    "// Cycle fixture: module b starts cycle-free.",
+    "",
+    "/**",
+    " * Provides the seed value.",
+    " * @returns A fixed seed value.",
+    " */",
+    "export function valueFromB(): number {",
+    "  return 2;",
+    "}",
+    "",
+  ].join("\n");
+
+  // New cycle: the unstaged edit adds the cycle-closing import, so the cycle is genuinely new and
+  // must still be reported.
+  withProject({ "src/a.ts": anchorSource, "src/b.ts": cycleFreeMemberSource }, (dir) => {
+    initGitAdd(dir);
+    writeProjectFile(dir, "src/b.ts", cyclingMemberSource);
+
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "unstaged", "src/b.ts"]);
+    const cycles = payload.findings.filter((finding) => finding.ruleId === "design.circular-import");
+    assert.equal(cycles.length, 1);
+    assert.equal(cycles[0]?.scope, "project");
+  });
+});
+
 test("hook does not double-count a re-emitted file finding as suppressed", () => {
   withProject({ "long.ts": longSource(760, 0) }, (dir) => {
     writeBaseline(dir, []);

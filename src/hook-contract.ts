@@ -356,7 +356,7 @@ function stableIdentitiesFromDiffBase(
   if (ref === undefined) {
     return new Set();
   }
-  const files = [...new Set(currentReport.findings.map((finding) => finding.filePath))];
+  const files = [...new Set(currentReport.findings.flatMap(findingBasePaths))];
   if (files.length === 0) {
     return new Set();
   }
@@ -374,6 +374,19 @@ function stableIdentitiesFromDiffBase(
     chdir(previous);
     rmSync(tempRoot, { recursive: true, force: true });
   }
+}
+
+/*
+ * A finding's base context is its anchor plus any project-relationship members from
+ * `metadata.files`. Contract invariant: without every SCC member at the base ref, the replay
+ * cannot reconstruct the cycle identity and a pre-existing cycle would be reported as new.
+ */
+function findingBasePaths(finding: Finding): string[] {
+  const memberFiles = finding.metadata.files;
+  if (!Array.isArray(memberFiles)) {
+    return [finding.filePath];
+  }
+  return [finding.filePath, ...memberFiles.filter((file): file is string => typeof file === "string")];
 }
 
 // Resolves a diff-base selector to the git rev whose blobs are the new-only base. "unstaged" diffs
