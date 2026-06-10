@@ -12,13 +12,15 @@ import type { Finding } from "./types.ts";
  * because tests, decorators, framework hooks, or reflection may still reach a private method. It
  * reports findings only and never throws for malformed snippets. Why two evidence counts:
  * declarations contribute to `name(` matches, while bare method references such as `items.map(this.double)`
- * appear only as `.name`, and either shape is enough usage evidence to suppress the finding.
+ * appear only as `this.name` / `this?.name`, and either shape is enough usage evidence to suppress
+ * the finding. The reference count requires a `this` receiver so unrelated properties that share
+ * the name (for example `settings.refresh`) cannot mask a genuinely unused private method.
  */
 export function analyseDeadCode(file: SourceFile, source: string, findings: Finding[]): void {
   for (const match of source.matchAll(/\bprivate\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g)) {
     const name = match[1] ?? "";
     const escaped = escapeRegex(name);
-    if (countMatches(source, new RegExp(`${escaped}\\s*\\(`, "g")) <= 1 && countMatches(source, new RegExp(`\\.${escaped}\\b`, "g")) === 0) {
+    if (countMatches(source, new RegExp(`${escaped}\\s*\\(`, "g")) <= 1 && countMatches(source, new RegExp(`\\bthis\\??\\.${escaped}\\b`, "g")) === 0) {
       findings.push(
         makeFinding({
           ruleId: "dead-code.unused-private-method",

@@ -45,6 +45,10 @@ interface DiffParseState {
 
 const FILE_WIDE_RULE_IDS = new Set(["design.large-module-concentration", "docs.missing-file-overview", "size.file-length"]);
 
+// Project-relationship rules anchor one canonical file but relate every member in `metadata.files`,
+// so changed-region attribution must consult the member list, not only the anchor `filePath`.
+const PROJECT_RELATIONSHIP_RULE_IDS = new Set(["design.circular-import"]);
+
 // Builds the changed-region scope requested by CLI options. Throws on stdin diffs missing patch text.
 export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope | undefined {
   if (options.changedRanges) {
@@ -94,6 +98,9 @@ function isFindingInChangedScope(
   sources: Map<string, SourceSnapshot>,
   declarationsByFile: Map<string, DeclarationRegion[]>,
 ): boolean {
+  if (PROJECT_RELATIONSHIP_RULE_IDS.has(finding.ruleId)) {
+    return projectRelationshipTouchesChange(finding, scope);
+  }
   if (scope.wholeFiles.has(finding.filePath)) {
     return true;
   }
@@ -120,6 +127,20 @@ function isFindingInChangedScope(
 // Invariant: file-wide findings are line-1 anchors with no declaration to widen through.
 function isFileWideFinding(finding: Finding): boolean {
   return FILE_WIDE_RULE_IDS.has(finding.ruleId) && finding.line === 1;
+}
+
+/*
+ * Keeps a project-relationship finding when any member file participates in the change, matching
+ * the documented contract "a project relationship that includes the requested file". Explicit
+ * `--changed-ranges` carry no per-file information (the ranges apply to every selected file), so
+ * they keep these findings by construction; narrow scans already filtered them to requested files.
+ */
+function projectRelationshipTouchesChange(finding: Finding, scope: ChangedRegionScope): boolean {
+  if (scope.explicitRanges !== undefined) {
+    return true;
+  }
+  const files = Array.isArray(finding.metadata.files) ? finding.metadata.files : [finding.filePath];
+  return files.some((file) => typeof file === "string" && (scope.wholeFiles.has(file) || scope.changedFiles.has(file)));
 }
 
 // Looks up explicit line ranges first because `--changed-ranges` applies to every selected file.

@@ -242,6 +242,23 @@ test("hook changed-ranges reports a circular import through the requested file",
   });
 });
 
+test("hook changed-ranges keeps a circular import when the range misses the canonical anchor line", () => {
+  // The agent edits line 3 of the non-anchor member; the SCC anchor file's import sits on line 1
+  // and never overlaps the range, so attribution must come from SCC membership, not from a
+  // coincidental anchor-line overlap.
+  const cycleProject = {
+    "src/cycle/a.ts": ['import { fromB } from "./sub/b";', "export function fromA(): string {", "  return fromB();", "}", ""].join("\n"),
+    "src/cycle/sub/b.ts": ['import { fromA } from "../a";', "export function fromB(): string {", "  return fromA();", "}", ""].join("\n"),
+  };
+  withProject(cycleProject, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "3-3", "src/cycle/sub/b.ts"]);
+    const cycles = payload.findings.filter((finding) => finding.ruleId === "design.circular-import");
+    assert.equal(cycles.length, 1);
+    assert.equal(cycles[0]?.scope, "project");
+    assert.equal(cycles[0]?.file, "src/cycle/a.ts");
+  });
+});
+
 test("hook reports operational failures as in-band JSON with exit 2", () => {
   withProject({ "long.ts": longSource(760, 500) }, (dir) => {
     const result = spawnSync("bash", [BIN, "hook", "--format", "json", "--no-config", "--baseline", "missing-baseline.json", "long.ts"], { cwd: dir, encoding: "utf8" });

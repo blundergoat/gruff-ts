@@ -183,6 +183,53 @@ export const value = helper;
   assert.equal(report.findings.some((finding) => finding.ruleId === "design.deep-relative-import" && finding.filePath === "src/unrequested/deep.ts"), false);
 });
 
+test("changed-region diff keeps a cycle through a changed member and suppresses unrelated cycles", () => {
+  // Fixture covers project-relationship changed-region attribution: the diff touches only the
+  // alpha cycle's non-anchor member, so that cycle must stay visible while the untouched beta
+  // cycle is suppressed into `suppressedCount`.
+  const report = analyseProject(
+    {
+      "src/alpha/a.ts": `import { fromB } from "./b";
+export function fromA(): string {
+  return fromB();
+}
+`,
+      "src/alpha/b.ts": `import { fromA } from "./a";
+export function fromB(): string {
+  return fromA();
+}
+`,
+      "src/beta/c.ts": `import { fromD } from "./d";
+export function fromC(): string {
+  return fromD();
+}
+`,
+      "src/beta/d.ts": `import { fromC } from "./c";
+export function fromD(): string {
+  return fromC();
+}
+`,
+    },
+    {
+      diff: "-",
+      diffPatch: [
+        "diff --git a/src/alpha/b.ts b/src/alpha/b.ts",
+        "--- a/src/alpha/b.ts",
+        "+++ b/src/alpha/b.ts",
+        "@@ -2 +2 @@",
+        "+export function fromB(): string {",
+        "",
+      ].join("\n"),
+    },
+  );
+  const cycles = circularImportFindings(report);
+
+  assert.equal(cycles.length, 1);
+  assert.equal(cycles[0]?.filePath, "src/alpha/a.ts");
+  assert.deepEqual(cycles[0]?.metadata.files, ["src/alpha/a.ts", "src/alpha/b.ts"]);
+  assert.equal((report.suppressedCount ?? 0) > 0, true);
+});
+
 test("disabled circular import rule emits no cycle finding", () => {
   const report = analyseProject(
     {

@@ -18,7 +18,7 @@ interface ParsedSourceFileWithDiagnostics extends TsSourceFile {
 }
 
 // Just enough of `SourceFile` to keep `parseDiagnostics` decoupled from the full project type:
-// `isScript` gates whether to run the delimiter check; `displayPath` is the report-path anchor.
+// `isScript` gates whether parser diagnostics run; `displayPath` is the report-path anchor.
 interface DiagnosticSourceFile {
   displayPath: string;
   isScript: boolean;
@@ -61,8 +61,9 @@ function diagnosticLine(sourceFile: TsSourceFile, diagnostic: TsDiagnostic): num
 }
 
 // Prefixes the TypeScript parser message while preserving the existing parse-error diagnostic shape.
+// Chained messages flatten with a space separator so text-format diagnostic rows stay single-line.
 function diagnosticMessage(diagnostic: TsDiagnostic): string {
-  return `TypeScript syntax error: ${typescriptSyntax.flattenDiagnosticMessageText(diagnostic.messageText, "\n")}`;
+  return `TypeScript syntax error: ${typescriptSyntax.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`;
 }
 
 // Running totals for `{}`, `()`, and `[]`. A negative count means a closer appeared with no opener

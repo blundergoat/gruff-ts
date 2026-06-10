@@ -112,3 +112,20 @@ test("FP-#48c dead-code.unused-private-method keeps direct calls quiet", () => {
 `);
   assert.equal(report.findings.some((entry) => entry.ruleId === "dead-code.unused-private-method"), false);
 });
+
+test("FP-#48d dead-code.unused-private-method ignores unrelated receivers sharing the name", () => {
+  // Purpose: reference-count usage evidence requires a `this` receiver, so a property access on an
+  // unrelated object (`settings.refresh`) must not mask the genuinely unused private `refresh`.
+  const report = analyseFixture(`export class Cache {
+  run(settings: { refresh: boolean }): boolean {
+    return settings.refresh;
+  }
+  private refresh(): number {
+    return 1;
+  }
+}
+`);
+  const findings = report.findings.filter((entry) => entry.ruleId === "dead-code.unused-private-method");
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.symbol, "refresh");
+});

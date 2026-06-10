@@ -1,6 +1,6 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-06-10
+last_reviewed: 2026-06-11
 ---
 
 # Rule scanner footguns
@@ -198,3 +198,9 @@ Three takeaways: (1) `analyseSecurityFlow` is the only caller and runs once per 
 `taintedInput` (`src/security-flow-rules.ts`, search: `function taintedInput`) originally walked every node under every sink argument. That is too broad for callback-style APIs: `fs.readFile("./safe.json", () => log(target))` mentions a tainted local inside the callback, but the tainted value is not the filesystem path argument. The same text-walk mistake also applies to literal text such as `"req.query.path"`; raw `getText()` matching turns documentation-shaped strings into fake sources.
 
 For syntax-only source-to-sink rules, inspect only sink-relevant expression trees. Prune nested function-like nodes while walking arguments, and treat string/no-substitution-template literals as literal text, not source evidence. Add a negative test any time a scanner starts using `node.getText()` over a subtree: one callback-only taint reference and one literal that names the source token. Tests: `src/security-flow-rules.test.ts`, search: `callback-only taint` and `string literals that only mention source tokens`.
+
+## Footgun: rule-group pass gates silently disable rules missing from the id list
+
+**Status:** resolved | **Created:** 2026-06-11 | **Evidence:** OBSERVED (runtime repro + regression test)
+
+The analyser's pass gates (`src/analyser.ts`, search: `runRuleGroupPass`) skip a whole scanner pass when no rule in the gate's id list is enabled. The contract is implicit: the list must contain EVERY rule id the pass can emit, including rules pushed by helpers the pass calls (`analyseCommentQualityRules` calls `pushFixturePurposeFindings`, which emits `docs.fixture-purpose-missing`). `COMMENT_QUALITY_RULE_IDS` omitted that id, so a config disabling the nine listed docs rules silently disabled the still-enabled fixture-purpose rule: zero findings, no diagnostic, catalogue still advertising the rule. Resolved 2026-06-11 by adding the id to the gate list and pinning `src/docs-comment-rules.test.ts` (search: `fixture purpose rule still runs`). When adding a rule to a shared pass, extend the matching gate list in `src/analyser.ts` and prefer an enabled-solo or disabled-siblings regression test for any rule that rides a group gate. Over-inclusive gates only waste cycles; under-inclusive gates silently kill enabled rules - bias toward over-inclusion.

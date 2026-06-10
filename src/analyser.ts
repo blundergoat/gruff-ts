@@ -286,6 +286,7 @@ function sortedUniqueFindings(findings: Finding[]): Finding[] {
 // run only on scripts within the deep-scan budget. Fixed order is part of the stable fingerprint
 // contract. Generated/copied files keep every security and sensitive-data finding but drop
 // documentation and naming findings - generated code is not maintainer-authored source, so pushing
+// doc/naming work at a human reviewer is unactionable noise.
 // Contract invariant: doc/naming skips must not suppress safety pillars or change rule order.
 function analyseSource(file: SourceFile, source: string, config: Config, isWithinDeepScanBudget: boolean): Finding[] {
   const findings: Finding[] = [];
@@ -445,7 +446,10 @@ const INTERFACE_FIELD_RULE_IDS = [
   "naming.negative-boolean",
 ] as const;
 
+// Every rule id `analyseCommentQualityRules` can emit - including `docs.fixture-purpose-missing`
+// via `pushFixturePurposeFindings` - so the group gate never silences an enabled rule.
 const COMMENT_QUALITY_RULE_IDS = [
+  "docs.fixture-purpose-missing",
   "docs.magic-threshold-without-rationale",
   "docs.missing-error-behavior-doc",
   "docs.missing-invariant-doc",

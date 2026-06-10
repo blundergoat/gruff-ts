@@ -1,6 +1,6 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-06-01
+last_reviewed: 2026-06-11
 ---
 
 # Schema + CLI surface footguns
@@ -81,13 +81,15 @@ Removing `size.stylesheet-length` (the CSS-scan removal) required hand-editing t
 
 ## Footgun: changed-region diff scope is not the same as project context
 
-**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED (review feedback + focused regression tests)
+**Status:** active | **Created:** 2026-06-01 | **Updated:** 2026-06-11 | **Evidence:** OBSERVED (review feedback + focused regression tests + runtime repro)
 
 `analyse` (`src/analyser.ts`, search: `function analyse`) originally filtered `discovery.files` before scanning whenever `--diff` / `--since` produced a file/range scope. That made per-file work cheaper, but it also built `ProjectIndex` from a partial project. Cross-file rules then lied: a changed exported source covered only by an unchanged central test could get `test-quality.missing-nearby-test`, and graph rules could miss unchanged nodes that complete a cycle. The correct split is "scan with whole-project context, then filter emitted findings"; `suppressedCount` becomes the count of full-scan findings dropped by region filtering, so tests must not expect zero simply because only one changed file remains visible.
 
 The same surface has a second trap: hunk headers are ranges in the target file, not proof that every target line in the range changed. Piped diffs usually include context, so trusting `@@ -10,5 +10,5 @@` keeps nearby untouched findings. Parse hunk bodies: `+` lines add target ranges, space-prefixed lines only advance the target cursor, `-` lines do not, and target length `0` means deletion-only with no target range. Base-ref modes should mirror `git diff <ref>`: pass the ref after `--end-of-options` and do not union untracked files except for the explicit `working-tree` mode.
 
-Tests: `src/changed-regions.test.ts` (search: `parses added target lines`, `skips deletion-only hunks`) and `src/baseline-and-project.test.ts` (search: `keeps central test context`, `base-ref diff does not include unrelated untracked files`).
+Third trap (resolved 2026-06-11): the emitted-finding filter attributed every finding by its anchor `filePath` alone, so `design.circular-import` (anchored at the lexicographically first SCC member under ADR-015) vanished from `--diff` / `--since` and un-based `hook --changed-ranges` runs whenever the edit touched a non-anchor member, while the docs promised attribution via "a project relationship that includes the requested file". The original hook regression test only passed by coincidence: its `--changed-ranges 1-1` overlapped the anchor file's line-1 import, because explicit ranges are file-agnostic. `isFindingInChangedScope` (`src/changed-regions.ts`, search: `projectRelationshipTouchesChange`) now keeps project-relationship findings when any `metadata.files` member is a changed file. When adding a project-scope rule whose finding spans several files, add its id to `PROJECT_RELATIONSHIP_RULE_IDS` and pin a non-anchor-member regression, not only an anchor-overlap one.
+
+Tests: `src/changed-regions.test.ts` (search: `parses added target lines`, `skips deletion-only hunks`), `src/baseline-and-project.test.ts` (search: `keeps central test context`, `base-ref diff does not include unrelated untracked files`), `src/project-graph-rules.test.ts` (search: `changed-region diff keeps a cycle`), and `src/hook-contract.test.ts` (search: `range misses the canonical anchor line`).
 
 ## Footgun: `check-ignore` answers both explicit-file and changed-file prefilter questions
 

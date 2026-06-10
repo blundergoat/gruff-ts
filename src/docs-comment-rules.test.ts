@@ -371,6 +371,29 @@ test("fixture purpose detector matrix", () => {
   assert.equal(changedInline?.fingerprint, originalInline?.fingerprint);
 });
 
+// Fixture covers the gate contract: comment-quality gating must keep the fixture-purpose rule alive.
+test("fixture purpose rule still runs when every other comment-quality rule is disabled", () => {
+  // Regression: the analyser's comment-quality group gate must include `docs.fixture-purpose-missing`,
+  // otherwise disabling the other comment rules silently disables this still-enabled rule too.
+  const disabledRuleIds = [
+    "docs.magic-threshold-without-rationale",
+    "docs.missing-error-behavior-doc",
+    "docs.missing-invariant-doc",
+    "docs.missing-side-effect-doc",
+    "docs.missing-why-for-complex-code",
+    "docs.stale-comment",
+    "docs.suppression-without-rationale",
+    "docs.todo-without-tracking",
+    "docs.useless-docblock",
+  ];
+  const report = analyseFixture(fixturePurposeMatrixSource(), {
+    fileName: "fixture-purpose.test.ts",
+    config: { rules: Object.fromEntries(disabledRuleIds.map((ruleId) => [ruleId, { enabled: false }])) },
+  });
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.fixture-purpose-missing"), true);
+  assert.equal(report.findings.some((finding) => disabledRuleIds.includes(finding.ruleId)), false);
+});
+
 // Fixture covers setup-block detection and stable fixture-purpose fingerprints.
 function fixturePurposeSetupBlockSource(): string {
   return [
