@@ -426,6 +426,9 @@ function renderText(report: AnalysisReport): string {
   if (report.diagnostics.length > 0) {
     lines.push("", "Diagnostics:", ...report.diagnostics.map(summaryDiagnosticLine));
   }
+  if ((report.notes ?? []).length > 0) {
+    lines.push("", "Notes:", ...(report.notes ?? []).map((note) => `- ${note.noteType}: ${note.message} (${note.path})`));
+  }
   if (report.findings.length > 0) {
     lines.push("", "Findings:", ...report.findings.map((finding) => `- [${finding.severity}] ${finding.filePath}:${finding.line ?? 1} ${finding.ruleId} - ${finding.message}`));
   }

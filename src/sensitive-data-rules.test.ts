@@ -6,12 +6,15 @@ import {
   analyseFixture,
   analyseProject,
   API_TOKEN_FIXTURE_VALUE,
+  AWS_ACCESS_KEY_FIXTURE_VALUE,
   CREDIT_CARD_FIXTURE_VALUE,
   DATABASE_URL_FIXTURE_VALUE,
   DISCORD_WEBHOOK_FIXTURE_VALUE,
   GCP_PRIVATE_KEY_ID_FIXTURE_VALUE,
   GOOGLE_API_KEY_FIXTURE_VALUE,
+  HIGH_ENTROPY_FIXTURE_VALUE,
   INVALID_CREDIT_CARD_FIXTURE_VALUE,
+  JWT_FIXTURE_VALUE,
   MBI_FIXTURE_VALUE,
   MRN_FIXTURE_VALUE,
   NPM_AUTH_TOKEN_FIXTURE_VALUE,
@@ -186,6 +189,78 @@ test("risk expansion ignores package integrity hashes", () => {
     { fileName: "package-lock.json" },
   );
   assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), false);
+});
+
+// Real-secret counter-fixtures for the high-entropy word-segment exemption. Each value is a
+// credential shape the exemption must never suppress; all four flagged before the exemption
+// landed and the assertions lock that in. Assembled from sub-24-char halves so this test file's
+// own source does not trip the detector during self-scans.
+const BASE64_PADDED_TOKEN_FIXTURE_VALUE = ["dGhpc0lzQVRva2VuV2l0", "aDFEaWdpdEFuZE1peGVkQ2FzZQ=="].join("");
+const BASE64URL_TOKEN_FIXTURE_VALUE = ["Xk9pQ2vLmN8sT4rY6wK1dF5g", "H7jC0bR3eW9qT2uV4xZ6aPmQ"].join("");
+
+test("high-entropy counter-fixtures: base64 padding, JWT, base64url, and coverage value all flag", () => {
+  const source = `const padded = "${BASE64_PADDED_TOKEN_FIXTURE_VALUE}";
+const webToken = "${JWT_FIXTURE_VALUE}";
+const urlSafe = "${BASE64URL_TOKEN_FIXTURE_VALUE}";
+const coverage = "${HIGH_ENTROPY_FIXTURE_VALUE}";
+void padded; void webToken; void urlSafe; void coverage;
+`;
+  const report = analyseFixture(source);
+  const entropyLines = report.findings
+    .filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string")
+    .map((finding) => finding.line)
+    .sort();
+  assert.deepEqual(entropyLines, [1, 2, 3, 4]);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.jwt-token" && finding.line === 2), true);
+});
+
+test("hardcoded-env requires a quoted value in script files but not in config files", () => {
+  // A quoted literal in TS keeps flagging; unquoted right-hand sides in TS are code expressions
+  // (secret-provider plumbing, schema builders) and stay quiet. The same unquoted value in a
+  // .env file is a literal and keeps flagging.
+  const scriptReport = analyseFixture(`const settings = {
+  ACCESS_TOKEN: "${API_TOKEN_FIXTURE_VALUE}",
+};
+STORAGE_SECRET_ACCESS_KEY: SECRET.R2SecretKey.value;
+const table = { access_token: text().$type<OAuth2Token>() };
+void settings; void table;
+`, { fileName: "config.ts" });
+  const scriptFindings = scriptReport.findings.filter((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value");
+  assert.equal(scriptFindings.length, 1);
+  assert.equal(scriptFindings[0]?.line, 2);
+
+  const envReport = analyseFixture(`API_TOKEN=${API_TOKEN_FIXTURE_VALUE}\n`, { fileName: ".env" });
+  assert.equal(envReport.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), true);
+});
+
+test("payment-card detection requires card context for bare digit runs", () => {
+  // GDP/population statistics can pass the Luhn check by coincidence; without card vocabulary on
+  // the line a bare digit run stays quiet. Card-context lines and separator-grouped numbers keep
+  // flagging - the formatted shape is card evidence on its own.
+  const bareCardDigits = CREDIT_CARD_FIXTURE_VALUE.replaceAll(" ", "");
+  const report = analyseFixture(`const gdpByCountry = [4300000000000];
+const cardNumber = "${bareCardDigits}";
+const formatted = "${CREDIT_CARD_FIXTURE_VALUE}";
+void gdpByCountry; void cardNumber; void formatted;
+`);
+  const cardFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.pii-pattern" && /Credit card/.test(finding.message));
+  assert.deepEqual(cardFindings.map((finding) => finding.line).sort(), [2, 3]);
+});
+
+test("explicitly example-marked credentials stay quiet while production-shaped ones flag", () => {
+  // D6 policy: the fake marker must sit inside the matched value (AWS doc keys end in EXAMPLE,
+  // redaction fixtures use REDACTED). Path or test location alone never suppresses.
+  const awsDocExampleKey = ["AKIAIOSFODNN7", "EXAMPLE"].join("");
+  const redactedUrl = "postgres://app:REDACTED@db.internal/app";
+  const report = analyseFixture(`AWS_KEY_ONE=${awsDocExampleKey}
+AWS_KEY_TWO=${AWS_ACCESS_KEY_FIXTURE_VALUE}
+URL_ONE=${redactedUrl}
+URL_TWO=${URL_CREDENTIAL_FIXTURE_VALUE}
+`, { fileName: ".env" });
+  const awsFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
+  assert.deepEqual(awsFindings.map((finding) => finding.line), [2]);
+  const urlFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.database-url-password");
+  assert.deepEqual(urlFindings.map((finding) => finding.line), [4]);
 });
 
 test("sensitive-data expansion scans secret dotfiles", () => {

@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-06-03
+last_reviewed: 2026-06-10
 ---
 
 # Verification lessons
@@ -248,6 +248,43 @@ Run the target command directly, save output to `/tmp` if parsing is needed, the
 **Updated:** 2026-05-23
 
 Workflow-security fixture smoke tests can trip the same hook if the shell command itself contains a literal remote-shell sample. Build risky fixture strings inside the test or temp-file writer from separated tokens, then run `gruff-ts` from the temp project root so workflow path gating still sees `.github/workflows/...`.
+
+**Updated:** 2026-06-10
+
+The hook also blocks broad cleanup commands such as `rm -rf /tmp/m09-scc /tmp/m09-two-cycle` even
+when the paths are intended temp fixtures. For verification fixtures, prefer fresh uniquely named
+`/tmp/<milestone>-<date>` directories and overwrite the files you need instead of starting with a
+recursive delete.
+
+**Updated:** 2026-06-10
+
+M10 before/after JSON snippet generation hit the same hook when a shell-visible `node -e` script
+used JavaScript template literals; the hook reads backticks as hidden command substitution. Build
+fixture source from quoted string arrays joined with `\n`, or put fixture text in temp files and
+read those files. A detached temp worktree with a symlinked `node_modules` also refuses
+`git worktree remove` until the symlink is removed; `unlink <worktree>/node_modules` first, then
+run `git worktree remove <worktree>`.
+
+**Updated:** 2026-06-10
+
+M04 before-snapshot generation failed once because the command's `workdir` was set to the temp
+worktree path before `git worktree add` had created it. Create or attach temp worktrees from the
+repo root first, then `cd` into the worktree inside the command after the path exists.
+
+## Lesson: zero-change refactor goldens come before edits
+
+**Created:** 2026-06-10
+
+**What happened:** During M06 hook pass reuse, the plan required the hook JSON golden matrix before
+implementation. Code edits started first, then the missing ordering was noticed. The recovery was
+acceptable only because `renderHookReport` still contained a preserved fallback path that executed
+the old two-pass algorithm with a plain `analyse` runner, and the new hook-view path could be
+byte-compared against it.
+
+**Prevention:** For zero-observable-change refactors, create the `/tmp/<milestone>-golden` matrix
+before the first patch. If that ordering is missed, do not pretend the artifact is a true pre-edit
+capture; name the substitute comparison path explicitly in the milestone evidence and use it only
+when the old behavior is still present in code.
 
 ## Lesson: run `npm run check` after every `src/cli.ts` edit, not just before commit
 

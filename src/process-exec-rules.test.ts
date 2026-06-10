@@ -34,3 +34,20 @@ function runHarness(full: string, userCommand: string): void {
   const processExecFindings = report.findings.filter((finding) => finding.ruleId === "security.process-exec");
   assert.deepEqual(processExecFindings.map((finding) => `${finding.filePath}:${finding.line}`), ["test/unit/cli-harness.test.ts:7"]);
 });
+
+test("process exec findings include dynamic argument source metadata", () => {
+  const report = analyseProject({
+    "src/runner.ts": `import { spawn } from "node:child_process";
+
+function run(input: string): void {
+  spawn(buildCommand(input), ["status"], { shell: false });
+}
+`,
+  });
+
+  const processExecFinding = report.findings.find((finding) => finding.ruleId === "security.process-exec");
+
+  assert.equal(processExecFinding?.metadata.callName, "spawn");
+  assert.equal(processExecFinding?.metadata.argumentSource, "local-builder");
+  assert.equal(processExecFinding?.metadata.shellEnabled, false);
+});

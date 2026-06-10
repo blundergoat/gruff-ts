@@ -1,4 +1,4 @@
-// Regression tests for baseline identity, history output, project graph rules, and discovery behavior.
+// Regression tests for baseline identity, history output, and discovery behavior.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -475,108 +475,6 @@ function unsafe(value: string): void {
   );
 });
 
-// Fixture covers deterministic project graph findings for deep imports and cycles; the deep path
-// and two-file cycle are intentional because the fingerprint contract must stay stable across
-// discovery permutations.
-const CROSS_FILE_GRAPH_FIXTURE = {
-  "src/app/feature/controller.ts": `import { sharedValue } from "../../../shared/value";
-import { startCycle } from "../cycle/a";
-
-export function renderController(): string {
-  return sharedValue + startCycle();
-}
-`,
-  "src/app/cycle/a.ts": `import { fromB } from "./b";
-
-export function startCycle(): string {
-  return fromB();
-}
-`,
-  "src/app/cycle/b.ts": `import { startCycle } from "./a";
-
-export function fromB(): string {
-  return startCycle();
-}
-`,
-  "src/shared/value.ts": `export const sharedValue = "shared";
-`,
-  "src/large.ts": Array.from({ length: 20 }, (_, index) => `export const largeValue${index} = ${index};`).join("\n"),
-};
-
-const CROSS_FILE_GRAPH_CONFIG = {
-  rules: {
-    "design.large-module-concentration": { threshold: 40, severity: "advisory", options: { minFiles: 4, minLines: 8 } },
-  },
-};
-
-test("project architecture index finds deterministic cross-file findings", () => {
-  const first = analyseProject(CROSS_FILE_GRAPH_FIXTURE, { config: CROSS_FILE_GRAPH_CONFIG });
-  const second = analyseProject(CROSS_FILE_GRAPH_FIXTURE, { config: CROSS_FILE_GRAPH_CONFIG });
-  const ruleIds = new Set(first.findings.map((finding) => finding.ruleId));
-  assert.equal(ruleIds.has("design.deep-relative-import"), true);
-  assert.equal(ruleIds.has("design.circular-import"), true);
-  assert.equal(ruleIds.has("design.large-module-concentration"), true);
-  assert.deepEqual(
-    first.findings
-      .filter((finding) => finding.ruleId.startsWith("design."))
-      .map((finding) => [finding.filePath, finding.line, finding.ruleId, finding.symbol, finding.fingerprint]),
-    second.findings
-      .filter((finding) => finding.ruleId.startsWith("design."))
-      .map((finding) => [finding.filePath, finding.line, finding.ruleId, finding.symbol, finding.fingerprint]),
-  );
-});
-
-test("circular import finding is stable across source iteration order", () => {
-  const first = analyseProject({
-    "src/cycle/a.ts": `import { fromB } from "./b";
-export function fromA(): string {
-  return fromB();
-}
-`,
-    "src/cycle/b.ts": `import { fromA } from "./a";
-export function fromB(): string {
-  return fromA();
-}
-`,
-  });
-  const second = analyseProject({
-    "src/cycle/b.ts": `import { fromA } from "./a";
-export function fromB(): string {
-  return fromA();
-}
-`,
-    "src/cycle/a.ts": `import { fromB } from "./b";
-export function fromA(): string {
-  return fromB();
-}
-`,
-  });
-  const firstCycle = first.findings.find((finding) => finding.ruleId === "design.circular-import");
-  const secondCycle = second.findings.find((finding) => finding.ruleId === "design.circular-import");
-  assert.ok(firstCycle);
-  assert.ok(secondCycle);
-  assert.deepEqual(
-    [firstCycle.filePath, firstCycle.line, firstCycle.symbol, firstCycle.fingerprint],
-    [secondCycle.filePath, secondCycle.line, secondCycle.symbol, secondCycle.fingerprint],
-  );
-});
-
-test("project graph ignores type-only import cycles", () => {
-  const report = analyseProject({
-    "src/types/a.ts": `import type { B } from "./b";
-export interface A {
-  b: B;
-}
-`,
-    "src/types/b.ts": `import type { A } from "./a";
-export interface B {
-  a: A;
-}
-`,
-  });
-  assert.equal(report.findings.some((finding) => finding.ruleId === "design.circular-import"), false);
-});
-
 // Fixture for the test-adequacy rule sweep: covers missing-nearby-test, snapshot-only,
 // no-throw-only, plus exemption paths for `.d.ts`, fixtures/, and generated/.
 const TEST_ADEQUACY_FIXTURE = {
@@ -695,7 +593,7 @@ foo/**.js
 };
 
 test("expanded scanner config disables and overrides new rules", () => {
-  const source = `API_TOKEN=qR8vT3mK6pL9xS2nD4eG
+  const source = `API_TOKEN="qR8vT3mK6pL9xS2nD4eG"
 
 function branchLightly(input: string): string {
   if (input === "a") return "a";

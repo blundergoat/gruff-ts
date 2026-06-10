@@ -4,11 +4,12 @@
 // detection and the block-rule parameter pass. Dead-code rules (unused imports, unreachable) are
 // invoked by the cli orchestrator before/after this module so the stable per-line emission order
 // stays a single contract.
-import { ruleSeverity } from "./config.ts";
+import { ruleEnabled, ruleSeverity } from "./config.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts";
 import { type NamingSurface, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
+import { processExecMetadata } from "./process-exec-metadata.ts";
 import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
@@ -44,11 +45,60 @@ interface LineRuleContext {
   codeChecks: LineRuleCheck[];
   literalChecks: LineRuleCheck[];
   variables: RegExp;
+  gates: LineRuleGates;
 }
 
 const CODE_LINE_CHECKS = codeLineChecks();
 const LITERAL_LINE_CHECKS = literalLineChecks();
 const VARIABLE_DECLARATIONS = /\b(?:const|let|for\s*\(\s*const|for\s*\(\s*let)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
+
+// Per-file rule-family switches. They avoid re-running helpers when every rule they emit is disabled.
+interface LineRuleGates {
+  shouldRunTypeSafety: boolean;
+  shouldRunReliability: boolean;
+  shouldRunCommentedOutCode: boolean;
+  shouldRunBooleanNaming: boolean;
+  shouldRunHungarianNotation: boolean;
+  shouldRunOptionalChaining: boolean;
+  shouldRunNullishCoalescing: boolean;
+  shouldRunLooseEquality: boolean;
+  shouldRunStringTimer: boolean;
+  shouldRunSecurityFlow: boolean;
+  shouldRunVariableNaming: boolean;
+  shouldRunProcessExec: boolean;
+  shouldRunUselessCatch: boolean;
+  shouldRunSwallowedCatch: boolean;
+}
+
+const TYPE_SAFETY_RULE_IDS = [
+  "modernisation.double-cast",
+  "modernisation.non-null-assertion",
+  "modernisation.ts-comment-without-rationale",
+  "waste.exported-any",
+] as const;
+
+const RELIABILITY_RULE_IDS = [
+  "security.async-foreach",
+  "security.floating-promise",
+  "security.throw-non-error",
+] as const;
+
+const BOOLEAN_NAMING_RULE_IDS = [
+  "naming.boolean-prefix",
+  "naming.negative-boolean",
+] as const;
+
+const SECURITY_FLOW_LINE_RULE_IDS = [
+  "security.dynamic-regexp",
+  "security.open-redirect-candidate",
+  "security.path-traversal-candidate",
+  "security.ssrf-candidate",
+] as const;
+
+const VARIABLE_NAMING_RULE_IDS = [
+  "naming.identifier-quality",
+  "naming.short-variable",
+] as const;
 
 /*
  * Per-line rule pipeline plus the two multi-line catch detectors. Excludes analyseUnusedImports
@@ -58,6 +108,22 @@ const VARIABLE_DECLARATIONS = /\b(?:const|let|for\s*\(\s*const|for\s*\(\s*let)\s
 export function analyseLineRules(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[]): void {
   const sourceLines = source.split(/\r?\n/);
   const codeLines = codeSource.split(/\r?\n/);
+  const gates: LineRuleGates = {
+    shouldRunTypeSafety: TYPE_SAFETY_RULE_IDS.some((ruleId) => ruleEnabled(config, ruleId)),
+    shouldRunReliability: RELIABILITY_RULE_IDS.some((ruleId) => ruleEnabled(config, ruleId)),
+    shouldRunCommentedOutCode: ruleEnabled(config, "waste.commented-out-code"),
+    shouldRunBooleanNaming: BOOLEAN_NAMING_RULE_IDS.some((ruleId) => ruleEnabled(config, ruleId)),
+    shouldRunHungarianNotation: ruleEnabled(config, "naming.hungarian-notation"),
+    shouldRunOptionalChaining: ruleEnabled(config, "modernisation.optional-chaining-candidate"),
+    shouldRunNullishCoalescing: ruleEnabled(config, "modernisation.nullish-coalescing-candidate"),
+    shouldRunLooseEquality: ruleEnabled(config, "modernisation.loose-equality"),
+    shouldRunStringTimer: ruleEnabled(config, "security.string-timer"),
+    shouldRunSecurityFlow: SECURITY_FLOW_LINE_RULE_IDS.some((ruleId) => ruleEnabled(config, ruleId)),
+    shouldRunVariableNaming: VARIABLE_NAMING_RULE_IDS.some((ruleId) => ruleEnabled(config, ruleId)),
+    shouldRunProcessExec: ruleEnabled(config, "security.process-exec"),
+    shouldRunUselessCatch: ruleEnabled(config, "waste.useless-catch"),
+    shouldRunSwallowedCatch: ruleEnabled(config, "waste.swallowed-catch"),
+  };
   const context: LineRuleContext = {
     file,
     line: "",
@@ -66,9 +132,10 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
     lineNumber: 0,
     config,
     findings,
-    codeChecks: CODE_LINE_CHECKS,
-    literalChecks: LITERAL_LINE_CHECKS,
+    codeChecks: CODE_LINE_CHECKS.filter((check) => ruleEnabled(config, check.ruleId)),
+    literalChecks: LITERAL_LINE_CHECKS.filter((check) => ruleEnabled(config, check.ruleId)),
     variables: VARIABLE_DECLARATIONS,
+    gates,
   };
   sourceLines.forEach((line, index) => {
     context.line = line;
@@ -78,26 +145,54 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
     analyseLineRuleContext(context);
   });
 
-  analyseProcessExecCalls(file, source, codeSource, findings);
-  analyseUselessCatches(file, codeSource, findings);
-  analyseSwallowedCatches(file, source, codeSource, findings);
+  if (gates.shouldRunProcessExec) {
+    analyseProcessExecCalls(file, source, codeSource, findings);
+  }
+  if (gates.shouldRunUselessCatch) {
+    analyseUselessCatches(file, codeSource, findings);
+  }
+  if (gates.shouldRunSwallowedCatch) {
+    analyseSwallowedCatches(file, source, codeSource, findings);
+  }
 }
 
 // All per-line checks for a single line in their stable, deterministic emission order. Each helper
 // either no-ops (rule skipped or no match) or appends to `findings`.
 function analyseLineRuleContext(context: LineRuleContext): void {
-  analyseTypeSafetyLine(context.file, context.line, context.codeLine, context.lineNumber, context.findings);
-  analyseReliabilityLine(context.file, context.codeLine, context.lineNumber, context.findings);
-  pushCommentedOutCodeFinding(context);
-  pushBooleanPrefixFinding(context);
-  pushHungarianNotationFindings(context);
-  pushOptionalChainingFindings(context);
-  pushNullishCoalescingFindings(context);
-  pushLooseEqualityFinding(context);
-  pushStringTimerFinding(context);
-  analyseSecurityFlowLine(context.file, context.codeLine, context.lineNumber, context.findings);
+  if (context.gates.shouldRunTypeSafety) {
+    analyseTypeSafetyLine(context.file, context.line, context.codeLine, context.lineNumber, context.findings);
+  }
+  if (context.gates.shouldRunReliability) {
+    analyseReliabilityLine(context.file, context.codeLine, context.lineNumber, context.findings);
+  }
+  if (context.gates.shouldRunCommentedOutCode) {
+    pushCommentedOutCodeFinding(context);
+  }
+  if (context.gates.shouldRunBooleanNaming) {
+    pushBooleanPrefixFinding(context);
+  }
+  if (context.gates.shouldRunHungarianNotation) {
+    pushHungarianNotationFindings(context);
+  }
+  if (context.gates.shouldRunOptionalChaining) {
+    pushOptionalChainingFindings(context);
+  }
+  if (context.gates.shouldRunNullishCoalescing) {
+    pushNullishCoalescingFindings(context);
+  }
+  if (context.gates.shouldRunLooseEquality) {
+    pushLooseEqualityFinding(context);
+  }
+  if (context.gates.shouldRunStringTimer) {
+    pushStringTimerFinding(context);
+  }
+  if (context.gates.shouldRunSecurityFlow) {
+    analyseSecurityFlowLine(context.file, context.codeLine, context.lineNumber, context.findings);
+  }
   pushPatternCheckFindings(context);
-  pushVariableNameFindings(context);
+  if (context.gates.shouldRunVariableNaming) {
+    pushVariableNameFindings(context);
+  }
 }
 
 // Code-shape rules: those that must match against the masked code (no comment or literal noise).
@@ -123,7 +218,7 @@ function literalLineChecks(): LineRuleCheck[] {
     { ruleId: "security.disabled-tls-verification", pattern: /\b(?:process\.env\.)?NODE_TLS_REJECT_UNAUTHORIZED\b\s*=\s*["']0["']|\brejectUnauthorized\s*:\s*false\b/i, message: "TLS certificate verification is disabled.", severity: "error", pillar: "security" },
     { ruleId: "security.javascript-url", pattern: /["'`]\s*javascript\s*:(?!\s+URL\b)/i, message: "javascript: URL literal can execute script.", severity: "error", pillar: "security" },
     { ruleId: "security.proto-access", pattern: /\[\s*["']__proto__["']\s*\]/, message: "Direct __proto__ access can enable prototype pollution.", severity: "warning", pillar: "security" },
-    { ruleId: "security.sql-concatenation", pattern: /\b(?:query|execute|raw)\s*\(\s*(?:`[^`]*(?:SELECT|INSERT|UPDATE|DELETE)[^`]*\$\{|["'][^"']*(?:SELECT|INSERT|UPDATE|DELETE)[^"']*["']\s*\+)/i, message: "SQL text is composed with runtime string interpolation.", severity: "warning", pillar: "security" },
+    { ruleId: "security.sql-concatenation", pattern: /\b(?:query|execute|raw|prepare)\s*\(\s*(?:`[^`]*(?:SELECT|INSERT|UPDATE|DELETE)[^`]*\$\{|["'][^"']*(?:SELECT|INSERT|UPDATE|DELETE)[^"']*["']\s*\+)/i, message: "SQL text is composed with runtime string interpolation.", severity: "warning", pillar: "security" },
     { ruleId: "modernisation.date-now-candidate", pattern: /\bnew\s+Date\s*\(\s*\)\s*\.getTime\s*\(\s*\)|\bNumber\s*\(\s*new\s+Date\s*\(\s*\)\s*\)/, message: "Current-time expression can use Date.now().", severity: "advisory", pillar: "modernisation" },
     { ruleId: "modernisation.object-spread-candidate", pattern: /\bObject\.assign\s*\(\s*\{\s*\}\s*,/, message: "Object.assign clone can usually use object spread.", severity: "advisory", pillar: "modernisation" },
     { ruleId: "waste.console-log", pattern: /\bconsole\.(log|debug)\s*\(/, message: "console logging is committed in source.", severity: "advisory", pillar: "maintainability" },
@@ -476,7 +571,19 @@ function analyseProcessExecCalls(file: SourceFile, rawSource: string, codeSource
     if (isSafeProcessExecCall(file, callName, rawSource, start, rawSegment, codeSegment)) {
       continue;
     }
-    findings.push(finding({ ruleId: "security.process-exec", message: "Child-process execution is used; validate arguments are not user-controlled.", file, line: byteLine(codeSource, start), severity: "warning", pillar: "security" }));
+    findings.push(
+      makeFinding({
+        ruleId: "security.process-exec",
+        message: "Child-process execution is used; validate arguments are not user-controlled.",
+        filePath: file.displayPath,
+        line: byteLine(codeSource, start),
+        severity: "warning",
+        pillar: "security",
+        confidence: "high",
+        remediation: "Review the command source and shell mode; prefer fixed command vectors with shell disabled.",
+        metadata: processExecMetadata(callName, rawSource, start, rawSegment, codeSegment),
+      }),
+    );
   }
 }
 

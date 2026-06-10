@@ -13,6 +13,8 @@ interface StaticAnalysisRedundantAssertion {
   sourceProof?: string;
   confidence: Confidence;
   recommendation: string;
+  reasonCategory?: string;
+  suggestedAction?: string;
   index: number;
 }
 
@@ -75,7 +77,7 @@ export function pushStaticAnalysisRedundantTestFindings(file: SourceFile, block:
     findings.push(
       makeFinding({
         ruleId: "test-quality.static-analysis-redundant-test",
-        message: `Static-analysis-redundant candidate: ${candidate.confidence} confidence. Test \`${block.name}\` asserts code shape rather than behaviour: ${candidate.assertion}.`,
+        message: staticAnalysisRedundantMessage(block, candidate),
         filePath: file.displayPath,
         line,
         severity: "advisory",
@@ -91,6 +93,8 @@ export function pushStaticAnalysisRedundantTestFindings(file: SourceFile, block:
           sourceProof: candidate.sourceProof ?? `${file.displayPath}:${line}`,
           confidence: candidate.confidence,
           recommendation: candidate.recommendation,
+          ...(candidate.reasonCategory ? { reasonCategory: candidate.reasonCategory } : {}),
+          ...(candidate.suggestedAction ? { suggestedAction: candidate.suggestedAction } : {}),
         },
       }),
     );
@@ -103,7 +107,9 @@ function staticAnalysisRedundantAssertions(file: SourceFile, block: FunctionBloc
     ...typeofFunctionAssertions(file, rawSource, codeSource, staticContext),
     ...directConstructionInstanceAssertions(file, rawSource, codeSource),
     ...nonNullableReturnAssertions(file, block, rawSource, codeSource),
-  ].sort((left, right) => left.index - right.index);
+  ]
+    .map((candidate) => staticAnalysisActionabilityCandidate(block, candidate))
+    .sort((left, right) => left.index - right.index);
 }
 
 // Detects `typeof x === "function"`-style assertions when TypeScript already proves the function.
@@ -366,6 +372,44 @@ function staticRedundantCandidate(args: Omit<StaticAnalysisRedundantAssertion, "
     confidence: "high",
     recommendation: "Remove this assertion if it is the only behavior being tested, or replace it with an assertion about the returned value or observable behavior.",
   };
+}
+
+// Downgrades importability sentinel tests to review/document guidance instead of delete guidance.
+function staticAnalysisActionabilityCandidate(block: FunctionBlock, candidate: StaticAnalysisRedundantAssertion): StaticAnalysisRedundantAssertion {
+  if (!isImportabilitySentinelCandidate(block, candidate)) {
+    return candidate;
+  }
+  return {
+    ...candidate,
+    confidence: "medium",
+    recommendation:
+      "Review or document this importability sentinel instead of deleting it mechanically; document why runtime module-load coverage matters if it protects export wiring, or replace it with observable behavior if it only repeats type information.",
+    reasonCategory: "importability-sentinel",
+    suggestedAction: "review-or-document",
+  };
+}
+
+// Sentinel candidates need both a module-load style test name and static import evidence.
+function isImportabilitySentinelCandidate(block: FunctionBlock, candidate: StaticAnalysisRedundantAssertion): boolean {
+  return hasImportabilitySentinelName(block.name) && hasStaticImportProof(candidate);
+}
+
+// Test names that say export/import/module contract imply the assertion may protect wiring.
+function hasImportabilitySentinelName(testName: string): boolean {
+  return /\b(?:importability|module[-\s]+load|load[-\s]+graph|exports?|contract)\b/i.test(testName);
+}
+
+// Static import proof distinguishes module-load sentinels from ordinary type-shape assertions.
+function hasStaticImportProof(candidate: StaticAnalysisRedundantAssertion): boolean {
+  return candidate.sourceProof !== undefined && /\bimport\b/i.test(candidate.staticFact) && /\bstatic(?:ally)?\b/i.test(candidate.staticFact);
+}
+
+// Renders the finding message from the final confidence/actionability decision.
+function staticAnalysisRedundantMessage(block: FunctionBlock, candidate: StaticAnalysisRedundantAssertion): string {
+  if (candidate.reasonCategory === "importability-sentinel") {
+    return `Review importability sentinel: ${candidate.confidence} confidence. Test \`${block.name}\` asserts static import shape rather than behaviour: ${candidate.assertion}.`;
+  }
+  return `Static-analysis-redundant candidate: ${candidate.confidence} confidence. Test \`${block.name}\` asserts code shape rather than behaviour: ${candidate.assertion}.`;
 }
 
 // Type guard used after optional candidate builders so callers keep precise arrays.

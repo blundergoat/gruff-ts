@@ -7,13 +7,20 @@ import { escapeRegex, finding } from "./findings-helpers.ts";
 import { byteLine, countMatches } from "./text-scans.ts";
 import type { Finding } from "./types.ts";
 
-// Deliberately single-file and low confidence because private methods can still be reached by
-// tests, decorators, framework hooks, or string-based reflection; reports stable advisory findings because removal still needs human confirmation.
+/*
+ * Single-file, low-confidence dead-code pass. Contract invariant: removal candidates stay advisory
+ * because tests, decorators, framework hooks, or reflection may still reach a private method. It
+ * reports findings only and never throws for malformed snippets. Why two evidence counts:
+ * declarations contribute to `name(` matches, while bare method references such as `items.map(this.double)`
+ * appear only as `this.name` / `this?.name`, and either shape is enough usage evidence to suppress
+ * the finding. The reference count requires a `this` receiver so unrelated properties that share
+ * the name (for example `settings.refresh`) cannot mask a genuinely unused private method.
+ */
 export function analyseDeadCode(file: SourceFile, source: string, findings: Finding[]): void {
   for (const match of source.matchAll(/\bprivate\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g)) {
     const name = match[1] ?? "";
     const escaped = escapeRegex(name);
-    if (countMatches(source, new RegExp(`${escaped}\\s*\\(`, "g")) <= 1) {
+    if (countMatches(source, new RegExp(`${escaped}\\s*\\(`, "g")) <= 1 && countMatches(source, new RegExp(`\\bthis\\??\\.${escaped}\\b`, "g")) === 0) {
       findings.push(
         makeFinding({
           ruleId: "dead-code.unused-private-method",

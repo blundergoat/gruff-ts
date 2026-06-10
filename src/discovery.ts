@@ -1,7 +1,7 @@
 // Filesystem discovery, ignore-policy matching, and display-path normalization for deterministic scans.
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
-import type { AnalysisOptions, Config, IgnoreSource, SkippedPath } from "./types.ts";
+import type { AnalysisOptions, Config, IgnoreSource, ScanSurfaceNote, SkippedPath } from "./types.ts";
 
 // `absolutePath` is what `node:fs` operates on; `displayPath` is the project-relative POSIX form
 // embedded in findings and baselines. They must stay aligned - diverging them breaks fingerprint stability.
@@ -22,12 +22,15 @@ interface SourceDiscovery {
 // Public discovery result. `files` are sorted by display path and deduped; `ignoredPaths` (the
 // back-compatible string[] of excluded paths) and `skipped` (the same paths enriched with ignore
 // source + matched pattern) are sorted so reports stay deterministic even when the underlying
-// filesystem returns directory entries in arbitrary order.
+// filesystem returns directory entries in arbitrary order. `notes` carries one entry per requested
+// input that exists but contributed zero analysable files, so an all-skipped scan is never a
+// silent zero-finding success.
 export interface SourceDiscoveryResult {
   files: SourceFile[];
   missingPaths: string[];
   ignoredPaths: string[];
   skipped: SkippedPath[];
+  notes: ScanSurfaceNote[];
 }
 
 // A single line from a `.gitignore`. The combination of `isAnchored`, `isDirectoryOnly`, and `hasSlash`
@@ -47,14 +50,35 @@ interface GitIgnoreRule {
 export function discoverSources(projectRoot: string, options: AnalysisOptions, config: Config): SourceDiscoveryResult {
   const discovery: SourceDiscovery = { files: [], missingPaths: [], skipped: new Map<string, SkippedPath>() };
   const inputs = options.paths.length > 0 ? options.paths : ["."];
+  const notes: ScanSurfaceNote[] = [];
 
   for (const input of inputs) {
+    const filesBefore = discovery.files.length;
+    const missingBefore = discovery.missingPaths.length;
+    const skippedBefore = discovery.skipped.size;
     discoverSourceInput(projectRoot, input, options, config, discovery);
+    if (discovery.missingPaths.length === missingBefore && discovery.files.length === filesBefore) {
+      notes.push(zeroFileInputNote(input, discovery.skipped.size - skippedBefore));
+    }
   }
 
   discovery.files.sort((left, right) => left.displayPath.localeCompare(right.displayPath));
   const skipped = [...discovery.skipped.values()].sort((left, right) => left.path.localeCompare(right.path));
-  return { files: uniqueFiles(discovery.files), missingPaths: discovery.missingPaths, ignoredPaths: skipped.map((entry) => entry.path), skipped };
+  return { files: uniqueFiles(discovery.files), missingPaths: discovery.missingPaths, ignoredPaths: skipped.map((entry) => entry.path), skipped, notes };
+}
+
+// A requested input that exists but contributed no analysable files is a per-input note, never a
+// diagnostic - exit codes stay unchanged. The skip count names the likely cause (parent gitignore
+// or config ignore rules hiding the whole subtree) so the caller does not read 0 findings as clean.
+function zeroFileInputNote(input: string, skippedCount: number): ScanSurfaceNote {
+  const cause = skippedCount > 0
+    ? `${skippedCount} path(s) under it were excluded by ignore rules`
+    : "it contains no analysable source files";
+  return {
+    noteType: "no-analysable-files",
+    path: input,
+    message: `Requested path '${input}' was not analysed: ${cause}. 0 findings here does not mean the path is clean.`,
+  };
 }
 
 // Resolves the input against `node:fs`. Missing inputs go into `missingPaths` so the CLI can

@@ -30,6 +30,9 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
   for (const [ruleId, pattern, message] of patterns) {
     for (const match of source.matchAll(pattern)) {
       const raw = match[0] ?? "";
+      if (isExplicitExampleCredential(raw)) {
+        continue;
+      }
       pushSensitiveFinding(config, findings, file, ruleId, message, byteLine(source, match.index ?? 0), raw, "high");
     }
   }
@@ -40,6 +43,14 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
   analysePhiLabelledIdentifiers(file, source, config, findings);
   analysePaymentCardNumbers(file, source, config, findings);
   analyseGcpServiceAccountKeys(file, source, config, findings);
+}
+
+// Explicit fake-credential evidence inside the MATCHED value itself: the canonical AWS doc keys
+// end in EXAMPLE, and redaction fixtures embed REDACTED/PLACEHOLDER/CHANGEME or masked runs.
+// A file path or test location alone never suppresses a production-shaped secret - the marker
+// must be part of the value the pattern matched.
+function isExplicitExampleCredential(raw: string): boolean {
+  return /EXAMPLE|REDACTED|PLACEHOLDER|CHANGEME/i.test(raw) || /\*{4}|X{4}/.test(raw);
 }
 
 // PHI beyond the MBI shape: medical-record-number assignments. Context-gated on an `MRN` / `medical
@@ -69,13 +80,22 @@ function analyseGcpServiceAccountKeys(file: SensitiveSourceFile, source: string,
   pushSensitiveFinding(config, findings, file, "sensitive-data.gcp-service-account-key", "GCP service-account key file detected.", byteLine(source, typeMatch.index ?? 0), identifier, "high");
 }
 
-// Payment-card PII detection is structural: candidate shape, known issuer prefix, length, and Luhn
-// check must all pass before a stable redacted finding is emitted.
+/*
+ * Payment-card PII detection contract: candidate shape, known issuer prefix, length, and Luhn
+ * check must all pass before a stable redacted finding is emitted. A bare unseparated digit run
+ * additionally needs card vocabulary on its line - large statistics can pass Luhn by coincidence,
+ * while separator-grouped numbers are card-formatted by construction.
+ */
 function analysePaymentCardNumbers(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
+  const lines = source.split(/\r?\n/);
   for (const match of source.matchAll(/\b(?:\d[ -]?){12,18}\d\b/g)) {
     const rawCandidate = match[0] ?? "";
     const cardNumber = normalizedPaymentCardNumber(rawCandidate);
     if (!isPaymentCardNumber(cardNumber)) {
+      continue;
+    }
+    const line = byteLine(source, match.index ?? 0);
+    if (!/[ -]/.test(rawCandidate) && !hasPaymentCardContext(lines[line - 1] ?? "")) {
       continue;
     }
     pushSensitiveFinding(
@@ -84,12 +104,19 @@ function analysePaymentCardNumbers(file: SensitiveSourceFile, source: string, co
       file,
       "sensitive-data.pii-pattern",
       "Credit card number (PII) pattern detected.",
-      byteLine(source, match.index ?? 0),
+      line,
       rawCandidate,
       "high",
       { piiKind: "credit-card", digits: cardNumber.length },
     );
   }
+}
+
+// Card vocabulary gate for bare digit runs. Substring matching is deliberate so identifier forms
+// (`cardNumber`, `creditCard`, `PAYMENT_CARD`) count as context; `pan` stays word-bounded because
+// it is a common substring of unrelated words.
+function hasPaymentCardContext(lineText: string): boolean {
+  return /(?:\bpan\b|card|payment|credit|debit|visa|master|amex|discover|jcb|diners)/i.test(lineText);
 }
 
 // Stable redaction contract: parses `_authToken=` config lines even when values lack an npm_ prefix.
@@ -125,9 +152,10 @@ function npmAuthTokenValue(line: string): string | undefined {
 // from churning the baseline - it is part of the rule's stable, deterministic contract.
 function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const minLength = threshold(config, "sensitive-data.hardcoded-env-value", 16);
+  const requiresQuotedValue = isScriptSourcePath(file.displayPath);
   const lines = source.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
-    const envValue = hardcodedEnvValue(line, minLength);
+    const envValue = hardcodedEnvValue(line, minLength, requiresQuotedValue);
     if (!envValue) {
       continue;
     }
@@ -204,24 +232,36 @@ function pushSensitiveFinding(
 
 // Two-stage filter: parse the line into a (key, value) pair, then apply the secret-shape filters.
 // Splitting them keeps the regex simple - the line shape is shared, only the value test changes.
-function hardcodedEnvValue(line: string, minLength: number): { keyName: string; value: string } | undefined {
+// In script files only quoted values count: an unquoted `TOKEN: expr` line in TS/JS is an
+// expression (schema builder, secret-provider plumbing), not an embedded string literal.
+function hardcodedEnvValue(line: string, minLength: number, requiresQuotedValue: boolean): { keyName: string; value: string } | undefined {
   const candidate = envValueCandidate(line);
   if (!candidate || !isHardcodedEnvCandidate(candidate.value, minLength)) {
+    return undefined;
+  }
+  if (requiresQuotedValue && !candidate.isQuoted) {
     return undefined;
   }
   return candidate;
 }
 
+// Script extensions where unquoted right-hand sides are code expressions rather than literal
+// values. Config formats (.env, .ini, .yaml, .json keys) keep their unquoted-literal semantics.
+function isScriptSourcePath(displayPath: string): boolean {
+  return /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i.test(displayPath);
+}
+
 // Matches the documented secret-key vocabulary (API_KEY, TOKEN, SECRET, PASSWORD, DATABASE_URL,
 // DSN, CREDENTIAL). Expanding this list will widen sensitive-data coverage - keep it intentional.
-function envValueCandidate(line: string): { keyName: string; value: string } | undefined {
-  const match = line.match(/^\s*((?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)|[A-Z][A-Z0-9_-]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)[A-Z0-9_-]*)\s*[:=]\s*["']?([^"'\s#]+)["']?/i);
+function envValueCandidate(line: string): { keyName: string; value: string; isQuoted: boolean } | undefined {
+  const match = line.match(/^\s*((?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)|[A-Z][A-Z0-9_-]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)[A-Z0-9_-]*)\s*[:=]\s*(["'`]?)([^"'`\s#]+)["'`]?/i);
   const keyName = match?.[1] ?? "";
-  const secretValue = match?.[2] ?? "";
+  const openingQuote = match?.[2] ?? "";
+  const secretValue = match?.[3] ?? "";
   if (!keyName) {
     return undefined;
   }
-  return { keyName, value: secretValue };
+  return { keyName, value: secretValue, isQuoted: openingQuote !== "" };
 }
 
 // Three predicates combined: long enough, not a literal placeholder, and shape-like (letters + digits).
@@ -262,8 +302,90 @@ function isHighEntropySecretCandidate(candidateText: string, minLength: number):
 // are well-known non-secrets - without these exclusions, package-lock.json scans become noise.
 // Repo-relative path-shaped strings (slashes plus a known extension and a conventional prefix
 // segment) also clear the entropy bar without being secrets; the path-shape guard suppresses them.
+// Alphabet enumerations and dotted/underscored/slug identifiers that decompose into dictionary-like
+// word segments are the remaining non-secret shapes that pass the entropy bar.
 function isExcludedHighEntropyCandidate(candidateText: string, minLength: number): boolean {
-  return candidateText.length < minLength || isHexDigest(candidateText) || isSubresourceIntegrityHash(candidateText) || isRepoPathShape(candidateText);
+  return candidateText.length < minLength
+    || isHexDigest(candidateText)
+    || isSubresourceIntegrityHash(candidateText)
+    || isRepoPathShape(candidateText)
+    || isCharacterAlphabetString(candidateText)
+    || isWordSegmentIdentifier(candidateText);
+}
+
+// Translation/encoding alphabets ("ABC...xyz0123456789+/" in PlantUML, base64 tables) clear the
+// entropy bar but are enumerations, not secrets. The proof is a run of 10+ consecutive code
+// points, which credential generators essentially never produce.
+function isCharacterAlphabetString(candidateText: string): boolean {
+  let runLength = 1;
+  for (let index = 1; index < candidateText.length; index += 1) {
+    if (candidateText.charCodeAt(index) === candidateText.charCodeAt(index - 1) + 1) {
+      runLength += 1;
+      if (runLength >= 10) {
+        return true;
+      }
+    } else {
+      runLength = 1;
+    }
+  }
+  return false;
+}
+
+// Word-segment identifier exemption: a dotted namespace ("Com.Example2.Services.TokenProvider"),
+// an underscored constant ("WC_Admin_Reports_V2"), or a slug-like catalog name
+// ("DeepSeek-R1-Distill-Qwen-32B") decomposes entirely into short dictionary-like segments.
+// Real credentials do not - their segments interleave case and digits or run past word length.
+// The token guard runs FIRST so a JWT or segmented token never earns the exemption.
+function isWordSegmentIdentifier(candidateText: string): boolean {
+  if (candidateText.includes("+") || candidateText.includes("=")) {
+    return false;
+  }
+  if (isTokenLikeSegmentedSecret(candidateText)) {
+    return false;
+  }
+  const segments = candidateText.split(/[/._-]+/);
+  if (segments.length < 2) {
+    return false;
+  }
+  return segments.every(isWordLikeSegment);
+}
+
+// Token guard for the word-segment exemption. JWTs always start with "eyJ" (base64 of `{"`), and
+// any single segment that is a 20+ char mixed-case-with-digit run is credential material even when
+// its separators mimic an identifier. Must stay ahead of the word-segment arms - relaxing it would
+// silently exempt JWT-shaped and long base64url secrets.
+function isTokenLikeSegmentedSecret(candidateText: string): boolean {
+  if (candidateText.startsWith("eyJ")) {
+    return true;
+  }
+  return candidateText.split(/[/._-]+/).some((segment) => segment.length >= 20 && hasLowerUpperAndDigit(segment));
+}
+
+// One identifier segment: letters with digits at most at one boundary ("Example2", "405B",
+// "20241022"), capped at 16 chars. More than one letter<->digit transition means the segment
+// interleaves like token material and must not earn the exemption.
+function isWordLikeSegment(segment: string): boolean {
+  if (segment.length === 0 || segment.length > 16 || !/^[A-Za-z0-9]+$/.test(segment)) {
+    return false;
+  }
+  return letterDigitTransitionCount(segment) <= 1;
+}
+
+// Counts boundaries where the segment switches between letter and digit runs; word-like segments
+// have at most one ("Example2"), token material alternates repeatedly ("Xk9pQ2vL").
+function letterDigitTransitionCount(segment: string): number {
+  let transitions = 0;
+  for (let index = 1; index < segment.length; index += 1) {
+    if (isDigitCharCode(segment.charCodeAt(index - 1)) !== isDigitCharCode(segment.charCodeAt(index))) {
+      transitions += 1;
+    }
+  }
+  return transitions;
+}
+
+// Character-code digit test so the transition counter never needs unchecked string indexing.
+function isDigitCharCode(code: number): boolean {
+  return code >= 48 && code <= 57;
 }
 
 // Path-shape guard: a string that contains at least one `/`, has a path-like extension, AND lives

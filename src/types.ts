@@ -170,6 +170,19 @@ export interface SkippedPath {
 }
 
 /**
+ * Non-fatal scan-surface note (additive in 0.4.0, owner-approved): explains a scan whose surface
+ * differs from what the caller likely expected - a requested input that produced no analysable
+ * files (`no-analysable-files`), or a file whose deep script analysis was bounded by the scan
+ * budget (`bounded-deep-scan`). Notes never affect exit codes; `diagnostics` stays the surface
+ * that drives exit 2.
+ */
+export interface ScanSurfaceNote {
+  noteType: "no-analysable-files" | "bounded-deep-scan";
+  path: string;
+  message: string;
+}
+
+/**
  * Stable gruff.analysis.v2 report schema returned by analyse and JSON report commands.
  *
  * `paths.skipped` (added in 0.3.0, ADR-007) is an additive field: each entry carries the excluded
@@ -183,6 +196,8 @@ export interface AnalysisReport {
   summary: { advisory: number; warning: number; error: number; total: number };
   paths: { analysedFiles: number; ignoredPaths: string[]; skipped: SkippedPath[]; missingPaths: string[] };
   diagnostics: RunDiagnostic[];
+  /** Additive in 0.4.0: present only when at least one scan-surface note was produced. */
+  notes?: ScanSurfaceNote[];
   findings: Finding[];
   suppressedCount?: number;
   score: {

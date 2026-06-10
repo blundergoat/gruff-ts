@@ -1,6 +1,6 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-06-04
+last_reviewed: 2026-06-11
 ---
 
 # Rule scanner footguns
@@ -72,6 +72,22 @@ The failure mode is silent at type-check time and only surfaces in `npm test`. B
 3. For coverage fixtures (`ruleCatalogueCoverageRuleIds`): add a deliberate confounder so the rule keeps firing as catalogue proof.
 4. Don't trust the type system to catch this - the affected tests assert finding existence, not types.
 
+## Footgun: rule descriptor threshold tests need literal rule ids
+
+**Status:** active | **Created:** 2026-06-10 | **Evidence:** OBSERVED (0.4.0 M01 execution gating)
+
+`src/rule-catalogue.test.ts` extracts implementation defaults with regexes over source text:
+`threshold(config, "rule.id", default)` and `optionNumber(config, "rule.id", "key", default)`.
+The extractor deliberately proves descriptor/default drift from readable call sites; it does not
+resolve constants. Replacing threshold or option call-site rule ids with constants makes
+`rule descriptor thresholds and options match implementation and config defaults` fail even when
+runtime behavior is unchanged.
+
+Use constants for gates, findings, and repeated non-contract strings if helpful, but keep the
+rule-id string literal at threshold/option call sites that descriptor tests audit. If a threshold
+call must be abstracted, update the extractor/test in the same change instead of assuming the
+catalogue test can infer aliases.
+
 ## Footgun: rule-descriptor prose triggers the rule it describes
 
 **Status:** active | **Created:** 2026-05-26 | **Evidence:** OBSERVED (M01 close-out self-scan)
@@ -79,6 +95,8 @@ The failure mode is silent at type-check time and only surfaces in `npm test`. B
 When M01 added a comment explaining the catch-rationale widening, the comment mentioned `TODO`/`FIXME`/`XXX` to explain which markers were excluded - and `docs.todo-without-tracking` immediately fired on the descriptor itself. Two findings appeared: one in `src/safety-rules.ts` (the function comment) and one in `src/false-positive-fixes.test.ts` (the test's purpose comment).
 
 Several gruff rules scan source-wide and don't distinguish "comment explaining what the rule does" from "actual TODO marker." Affected rules include `docs.todo-without-tracking`, `waste.commented-out-code` (matches code-shaped strings in comments), and `docs.stale-comment` (matches `--unknown-flag` mentions).
+
+Same shape for suppression directives in test fixtures: `docs.suppression-without-rationale` scans comments in the test source, so a test comment or template-literal fixture that contains a raw lint-disable directive can flag the test file instead of only exercising the generated fixture. During M07, `src/scan-surface.test.ts` (search: `const eslintDisable`) had to assemble the directive from split strings and rephrase the surrounding comment to avoid a self-scan finding while still writing a bare directive into the generated source under test.
 
 When writing rule-descriptor prose or test-naming prose that has to mention a trigger token, either:
 - Rephrase to avoid the literal token ("deferred-work markers" rather than "FIXME/XXX").
@@ -180,3 +198,9 @@ Three takeaways: (1) `analyseSecurityFlow` is the only caller and runs once per 
 `taintedInput` (`src/security-flow-rules.ts`, search: `function taintedInput`) originally walked every node under every sink argument. That is too broad for callback-style APIs: `fs.readFile("./safe.json", () => log(target))` mentions a tainted local inside the callback, but the tainted value is not the filesystem path argument. The same text-walk mistake also applies to literal text such as `"req.query.path"`; raw `getText()` matching turns documentation-shaped strings into fake sources.
 
 For syntax-only source-to-sink rules, inspect only sink-relevant expression trees. Prune nested function-like nodes while walking arguments, and treat string/no-substitution-template literals as literal text, not source evidence. Add a negative test any time a scanner starts using `node.getText()` over a subtree: one callback-only taint reference and one literal that names the source token. Tests: `src/security-flow-rules.test.ts`, search: `callback-only taint` and `string literals that only mention source tokens`.
+
+## Footgun: rule-group pass gates silently disable rules missing from the id list
+
+**Status:** resolved | **Created:** 2026-06-11 | **Evidence:** OBSERVED (runtime repro + regression test)
+
+The analyser's pass gates (`src/analyser.ts`, search: `runRuleGroupPass`) skip a whole scanner pass when no rule in the gate's id list is enabled. The contract is implicit: the list must contain EVERY rule id the pass can emit, including rules pushed by helpers the pass calls (`analyseCommentQualityRules` calls `pushFixturePurposeFindings`, which emits `docs.fixture-purpose-missing`). `COMMENT_QUALITY_RULE_IDS` omitted that id, so a config disabling the nine listed docs rules silently disabled the still-enabled fixture-purpose rule: zero findings, no diagnostic, catalogue still advertising the rule. Resolved 2026-06-11 by adding the id to the gate list and pinning `src/docs-comment-rules.test.ts` (search: `fixture purpose rule still runs`). When adding a rule to a shared pass, extend the matching gate list in `src/analyser.ts` and prefer an enabled-solo or disabled-siblings regression test for any rule that rides a group gate. Over-inclusive gates only waste cycles; under-inclusive gates silently kill enabled rules - bias toward over-inclusion.

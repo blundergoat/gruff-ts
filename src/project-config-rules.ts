@@ -63,7 +63,7 @@ function analysePackageScripts(file: ConfigSourceFile, source: string, scripts: 
       continue;
     }
     pushRemoteInstallScriptFinding(file, source, scriptName, scriptCommand, findings);
-    pushLifecycleScriptFinding(file, source, scriptName, findings);
+    pushLifecycleScriptFinding(file, source, scriptName, scriptCommand, findings);
   }
 }
 
@@ -93,13 +93,12 @@ function pushRemoteInstallScriptFinding(file: ConfigSourceFile, source: string, 
 }
 
 /*
- * Reports the stable `security.risky-lifecycle-script` finding for any preinstall/install/
- * postinstall/prepare/prepublish/prepublishOnly hook - these run automatically and even disabling
- * install scripts in npm config is not universally honoured. Flagged as `warning` rather than
- * `error` because some packages legitimately need them.
+ * Reports the stable `security.risky-lifecycle-script` finding for install-time and side-effectful
+ * publish hooks. Validation-only publish gates stay quiet, but install/prepare hooks stay visible
+ * because they run in broader contexts than an explicit release check.
  */
-function pushLifecycleScriptFinding(file: ConfigSourceFile, source: string, scriptName: string, findings: Finding[]): void {
-  if (!isLifecycleScript(scriptName)) {
+function pushLifecycleScriptFinding(file: ConfigSourceFile, source: string, scriptName: string, scriptCommand: string, findings: Finding[]): void {
+  if (!isLifecycleScript(scriptName) || isValidationOnlyLifecycleCommand(scriptName, scriptCommand)) {
     return;
   }
   findings.push(
@@ -112,7 +111,7 @@ function pushLifecycleScriptFinding(file: ConfigSourceFile, source: string, scri
       pillar: "security",
       confidence: "medium",
       symbol: scriptName,
-      remediation: "Move setup behind an explicit command unless lifecycle execution is required.",
+      remediation: "Review whether lifecycle execution is required; keep install/publish side effects behind explicit commands when possible.",
       metadata: { scriptName },
     }),
   );
@@ -404,6 +403,20 @@ function isRemoteInstallScript(command: string): boolean {
 function isLifecycleScript(scriptName: string): boolean {
   return ["preinstall", "install", "postinstall", "prepare", "prepublish", "prepublishOnly"].includes(scriptName);
 }
+
+// Allows closed-list validation commands in publish hooks while rejecting shell composition.
+function isValidationOnlyLifecycleCommand(scriptName: string, command: string): boolean {
+  if (!["prepublish", "prepublishOnly"].includes(scriptName)) {
+    return false;
+  }
+  const normalizedCommand = command.trim().replace(/\s+/g, " ");
+  if (/[;&|`$<>]/.test(normalizedCommand)) {
+    return false;
+  }
+  return VALIDATION_ONLY_LIFECYCLE_COMMANDS.has(normalizedCommand);
+}
+
+const VALIDATION_ONLY_LIFECYCLE_COMMANDS = new Set(["npm run check", "npm test", "npm run test", "npm run lint", "npm run typecheck", "npm run publish:check"]);
 
 // Recognises non-registry installs: full URLs, git+ssh, file:, and npm-hosting shortcuts.
 // These specs cannot be reproducibly locked the way registry versions can.
