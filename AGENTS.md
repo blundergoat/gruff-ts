@@ -2,11 +2,11 @@
 
 `gruff-ts` governs AI-generated code: wired in as a coding-agent hook, it forces an agent to produce changes a human who did not write them can sign off on - legible enough to verify, secure where the reviewer's eye slips, and tested for real behavior rather than low-signal ceremony. Mechanically it is a TypeScript project quality analyzer: a dependency-light Node.js/ESM CLI with a thin `src/cli.ts` bootstrap and focused runtime modules under `src/`. It scans TypeScript, JavaScript, CSS, and common config/text files (json, yaml, toml, env, ini, xml, npmrc-style secret files) and emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v1`) and report snapshots (`gruff.analysis.v2`) round-trip without churn.
 
-goat-flow version: 1.10.1
+goat-flow version: 1.12.1
 
 ## Workspace Boundary
 
-This repo is the **selected target project**. The controlling goat-flow workspace lives elsewhere on the operator's machine; treat its workflow, dist, and manifest as read-only context, not paths to edit. Inside this target project, only Codex-owned surfaces (`AGENTS.md`, `.codex/`, shared `.agents/skills/`, shared `.goat-flow/`) are in scope unless the user widens it. Do not modify `CLAUDE.md` or `.claude/` during Codex turns.
+This repo is the **selected target project**. If the controlling goat-flow workspace differs from the target, treat its workflow, dist, and manifest as read-only context, not paths to edit. Inside this target project, only Codex-owned surfaces (`AGENTS.md`, `.codex/`, shared `.agents/skills/`, shared `.goat-flow/`) are in scope unless the user widens it. Do not modify `CLAUDE.md` or `.claude/` during Codex turns.
 
 ## Truth Order
 
@@ -122,7 +122,7 @@ Runtime code, hooks, and agent config are out of scope unless the user explicitl
 | Code map / glossary | `.goat-flow/code-map.md`, `.goat-flow/glossary.md` |
 | Learning loop | `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, `.goat-flow/learning-loop/decisions/` |
 | Skill reference (meta) | `.goat-flow/skill-docs/` |
-| Tool playbooks (CLI/MCP availability checks: browser-use, page-capture, skill-quality-testing) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |
+| Tool playbooks (README index for CLI/MCP availability checks; examples: browser-use, page-capture, skill-quality-testing) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |
 | Codex skills/config | `.agents/skills/`, `.codex/config.toml`, `.codex/hooks.json`, `.goat-flow/hooks/` (shared) |
 | Source | `src/cli.ts`, `src/*.ts`, `src/*.test.ts` |
 | Entry point / scripts | `bin/gruff-ts`, `scripts/check.sh`, `scripts/start-dev.sh` |

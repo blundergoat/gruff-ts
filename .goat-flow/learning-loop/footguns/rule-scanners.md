@@ -199,6 +199,8 @@ Three takeaways: (1) `analyseSecurityFlow` is the only caller and runs once per 
 
 For syntax-only source-to-sink rules, inspect only sink-relevant expression trees. Prune nested function-like nodes while walking arguments, and treat string/no-substitution-template literals as literal text, not source evidence. Add a negative test any time a scanner starts using `node.getText()` over a subtree: one callback-only taint reference and one literal that names the source token. Tests: `src/security-flow-rules.test.ts`, search: `callback-only taint` and `string literals that only mention source tokens`.
 
+## Resolved Entries
+
 ## Footgun: rule-group pass gates silently disable rules missing from the id list
 
 **Status:** resolved | **Created:** 2026-06-11 | **Evidence:** OBSERVED (runtime repro + regression test)

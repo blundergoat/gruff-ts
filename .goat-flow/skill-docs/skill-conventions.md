@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.10.1"
+goat-flow-reference-version: "1.12.1"
 ---
 # Skill Conventions
 
@@ -124,7 +124,7 @@ When a milestone completes, run the per-milestone AI verification gate then the 
 3. Re-read the next milestone and update it if assumptions, scope, or exit criteria changed.
 4. Update the completed milestone status to `complete`; next milestone to `in-progress`.
 
-Write a session log entry for each completed milestone sequence.
+Do not write a session log for every completed milestone sequence. Session logs are optional continuity notes: write one when `/compact` fires without an active milestone file, or when the human explicitly asks for a session summary.
 
 ### Plan Completion Protocol
 

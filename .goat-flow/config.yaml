@@ -1,4 +1,4 @@
-version: "1.10.1"
+version: "1.12.1"
 
 skills:
   install: all
@@ -9,4 +9,6 @@ hooks:
   deny-dangerous:
     enabled: true
   gruff-code-quality:
+    enabled: true
+  post-turn-safety:
     enabled: true
