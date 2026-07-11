@@ -128,6 +128,15 @@ gruff-ts analyse . --no-baseline --fail-on=none
 Review baseline diffs carefully. A baseline suppresses matching fingerprints, so
 unexpected additions can hide findings.
 
+Known `gruff.baseline.v1` limitation: entries match on `(fingerprint, ruleId,
+filePath)`, and the fingerprint hashes the line. Two distinct same-line findings
+from one rule (for example two secrets on one line) therefore share a
+fingerprint and match a baseline as one identity, and pure code movement changes
+the fingerprint and resurfaces baselined findings as new. Both are addressed by
+the count-based `gruff.baseline.v2` planned for the coordinated cross-analyzer
+schema release (ADR-013, ADR-017); until then, regenerate the baseline after
+moves instead of hand-editing entries.
+
 `report` intentionally renders raw scan results and does not accept a
 `--baseline` option. Use `analyse` for baseline-aware machine output.
 

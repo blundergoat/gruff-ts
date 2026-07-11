@@ -37,6 +37,7 @@ interface HookPayload {
   flags?: Record<string, string>;
   flagOrder?: string;
   findings: HookFinding[];
+  diagnostics?: Array<{ type: string; message: string; file?: string; line?: number }>;
   suppressed: { count: number };
   ignored: { paths: Array<{ path: string; source: string; pattern: string }> };
   config: { schemaOk: boolean; error: string | null };
@@ -69,8 +70,35 @@ test("hook capabilities advertises gruff.hook.v1", () => {
   assert.equal(capabilities.supports?.stableIdentity, true);
   assert.equal(capabilities.supports?.ignoreReport, true);
   assert.equal(capabilities.supports?.newOnly, true);
-  assert.deepEqual(capabilities.flags, { changedRanges: "--changed-ranges", diff: "--diff", baseline: "--baseline" });
+  assert.equal(capabilities.supports?.diagnostics, true);
+  assert.deepEqual(capabilities.flags, { changedRanges: "--changed-ranges", diff: "--diff", baseline: "--baseline", failOnDiagnostics: "--fail-on-diagnostics" });
   assert.equal(capabilities.flagOrder, "any");
+});
+
+test("hook reports diagnostics in-band with exit 0 and honors --fail-on-diagnostics", () => {
+  // A lone unterminated brace is a real parse diagnostic; the default hook contract still exits 0
+  // and surfaces it in the additive diagnostics field, so non-opting consumers keep old semantics.
+  withProject({ "broken.ts": "// File overview: diagnostics fixture.\nexport const dangling = {\n" }, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "broken.ts"]);
+    assert.equal(payload.diagnostics?.length, 1);
+    assert.equal(payload.diagnostics?.[0]?.type, "parse-error");
+    assert.equal(payload.diagnostics?.[0]?.file, "broken.ts");
+    assert.equal(typeof payload.diagnostics?.[0]?.message, "string");
+
+    // The explicit consumer request flips the same run to exit 2 while keeping identical JSON.
+    const requested = spawnSync("bash", [BIN, "hook", "--format", "json", "--no-config", "--fail-on-diagnostics", "broken.ts"], { cwd: dir, encoding: "utf8" });
+    assert.equal(requested.status, 2);
+    const requestedPayload = JSON.parse(requested.stdout) as HookPayload;
+    assert.equal(requestedPayload.diagnostics?.length, 1);
+  });
+
+  // No relevant diagnostics: the flag must not change the exit code of a clean run.
+  withProject({ "clean.ts": "// File overview: diagnostics fixture.\nexport const fine = 1;\n" }, (dir) => {
+    const clean = spawnSync("bash", [BIN, "hook", "--format", "json", "--no-config", "--fail-on-diagnostics", "clean.ts"], { cwd: dir, encoding: "utf8" });
+    assert.equal(clean.status, 0);
+    const cleanPayload = JSON.parse(clean.stdout) as HookPayload;
+    assert.equal(cleanPayload.diagnostics?.length, 0);
+  });
 });
 
 test("hook changed-region scope omits inherited file findings but keeps changed line findings", () => {
@@ -190,6 +218,32 @@ test("hook stableIdentity distinguishes multiple same-rule line findings in one 
 
     // Baseline only the first secret; the second is new and must survive new-only filtering rather
     // than collapsing onto the first secret's identity.
+    writeBaseline(dir, secrets.slice(0, 1));
+    const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "secrets.ts"]);
+    const remaining = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0]?.stableIdentity, secrets[1]?.stableIdentity);
+  });
+});
+
+test("hook keeps two same-line secrets independently classifiable", () => {
+  // Same sub-24-char assembly as above so this test file never trips the high-entropy rule itself;
+  // both secrets sit on ONE line, so their fingerprints collide and only the ADR-017 column
+  // discriminator keeps the second finding alive through dedupe for the hook to classify.
+  const firstSecret = "aB3xY7kLmN9pQ2rS5" + "tU8vW1zC4dE6fG0hJ2kQ8w";
+  const secondSecret = "zX9wV3uT6sR1qP8oN5" + "mL2kJ4iH7gF0eD3cB6aZ1y";
+  const sameLine = [
+    "// File overview: hook same-line contract fixture.",
+    `export const firstSecret = "${firstSecret}"; export const secondSecret = "${secondSecret}";`,
+  ].join("\n");
+  withProject({ "secrets.ts": sameLine }, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "secrets.ts"]);
+    const secrets = payload.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+    assert.equal(secrets.length, 2);
+    assert.notEqual(secrets[0]?.stableIdentity, secrets[1]?.stableIdentity);
+
+    // Baseline only the first same-line secret; the second must survive new-only filtering on its
+    // own message-keyed identity instead of vanishing with the suppressed first occurrence.
     writeBaseline(dir, secrets.slice(0, 1));
     const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "secrets.ts"]);
     const remaining = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");

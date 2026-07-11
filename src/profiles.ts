@@ -186,6 +186,20 @@ export function isKnownRuleId(ruleId: string): boolean {
   return KNOWN_RULE_IDS.has(ruleId);
 }
 
+// Option keys a rule descriptor declares for `rules.<id>.options`, empty when the rule has none.
+// Exported for config validation so `config.ts` keeps depending on this module, not `rules.ts`.
+const RULE_OPTION_KEYS: ReadonlyMap<string, readonly string[]> = new Map(DESCRIPTORS.map((descriptor) => [descriptor.ruleId, descriptor.optionKeys ?? []]));
+
+/**
+ * Returns the option keys a rule accepts under `rules.<id>.options`.
+ *
+ * @param ruleId Rule id already validated against the catalogue.
+ * @returns The declared option keys; an empty array means the rule accepts no options.
+ */
+export function ruleOptionKeys(ruleId: string): readonly string[] {
+  return RULE_OPTION_KEYS.get(ruleId) ?? [];
+}
+
 /**
  * Returns the built-in profile names in catalogue order for error messages and CLI hints.
  *

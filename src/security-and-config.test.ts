@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { AnalysisReport } from "./cli.ts";
+import { exitFor } from "./scoring.ts";
 import { analyseFixture, analyseProject, REPO_ROOT, TS_IGNORE_DIRECTIVE, writeFixtureFiles } from "./test-fixtures.ts";
 
 const EXPECTED_DYNAMIC_PROCESS_EXEC_LINE = 15;
@@ -725,4 +726,24 @@ function testBuildsLibraryValue(): void {
   });
   assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.no-assertions"), false);
   assert.deepEqual(report.findings.filter((finding) => finding.pillar === "test-quality" && finding.symbol === "testBuildsLibraryValue"), []);
+});
+
+test("configured severity overrides reach scanner families that hardcode literals", () => {
+  // Three families that never consulted ruleSeverity before the central pass: comment, safety, class rules.
+  const report = analyseFixture(`// File overview: severity override fixture.
+// TODO tighten this later
+export class PaymentController {
+  ship(value?: string): string {
+    return value!.trim();
+  }
+}
+`, {
+    fileName: "helpers.ts",
+    config: { rules: { "docs.todo-without-tracking": { severity: "error" }, "modernisation.non-null-assertion": { severity: "error" }, "naming.class-file-mismatch": { severity: "error" } } },
+  });
+  assert.equal(report.findings.find((finding) => finding.ruleId === "docs.todo-without-tracking")?.severity, "error");
+  assert.equal(report.findings.find((finding) => finding.ruleId === "modernisation.non-null-assertion")?.severity, "error");
+  assert.equal(report.findings.find((finding) => finding.ruleId === "naming.class-file-mismatch")?.severity, "error");
+  // `--fail-on=error` must honor the configured severity, not the descriptor default.
+  assert.equal(exitFor(report, "error"), 1);
 });

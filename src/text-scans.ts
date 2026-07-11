@@ -39,4 +39,11 @@ function byteLine(source: string, index: number): number {
   return line;
 }
 
-export { byteLine, countMatches, firstLine };
+// One-based column of byte offset `index` on its line. Lets two matches on one line report
+// distinct positions so neither occurrence is lost when their line-keyed identities collide.
+function byteColumn(source: string, index: number): number {
+  const end = Math.max(0, index);
+  return end - source.lastIndexOf("\n", end - 1);
+}
+
+export { byteColumn, byteLine, countMatches, firstLine };

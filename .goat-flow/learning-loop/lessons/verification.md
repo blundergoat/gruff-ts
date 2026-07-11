@@ -1,9 +1,19 @@
 ---
 category: verification
-last_reviewed: 2026-06-10
+last_reviewed: 2026-07-11
 ---
 
 # Verification lessons
+
+## Lesson: performance-plan commands must exercise the helper's comparison mode
+
+**Created:** 2026-07-11
+
+**What happened:** During the 0.5.0 plan audit, M07 was first rewritten with a 15% parser-performance gate but its Verification section named only `bash scripts/test-performance.sh`. The helper's default mode records one current run; it cannot enforce any regression percentage unless a matrix baseline is written first and then supplied with `--baseline` plus `--fail-on-regression`.
+
+**Evidence:** `scripts/test-performance.sh` (search: `--write-baseline requires --matrix`) and (search: `--fail-on-regression requires --baseline`); `.goat-flow/plans/0.5.0/M07-ast-function-discovery.md` (search: `/tmp/m07-perf-before.json`) now names the supported before/after commands.
+
+**Prevention:** Before putting a helper command in a plan exit criterion, read its `--help` and validation branches, then spell out every state-producing and state-consuming invocation. A percentage in prose is not a gate unless the cited command receives a baseline and exits non-zero on that percentage.
 
 ## Lesson: self-scan new CLI fixtures before settling their test file
 

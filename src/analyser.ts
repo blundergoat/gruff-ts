@@ -7,12 +7,12 @@ import { cwd } from "node:process";
 import { basename } from "node:path";
 import { dedupeFindings, recordHistory } from "./baseline.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
-import { changedRegionScope, filterChangedFindings } from "./changed-regions.ts";
+import { changedRegionScope, filterChangedFindings, filterScopedDiagnostics } from "./changed-regions.ts";
 import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { finding } from "./findings-helpers.ts";
+import { applyConfiguredSeverity, finding } from "./findings-helpers.ts";
 import { commentRecords } from "./comment-scanner.ts";
 import { analyseArchitectureRules, analyseCircularImportRule, buildProjectIndex, CIRCULAR_IMPORT_RULE_ID, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
 import { analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks, parameterNames } from "./blocks.ts";
@@ -57,7 +57,9 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
     recordHistory(run.projectRoot, options.historyFile, changedResult.findings, run.diagnostics);
   }
 
-  return reportFromRun(run, options, { ...run.baselineResult, findings: changedResult.findings }, changedResult.suppressedCount);
+  // File-scoped policy: diff runs report and fail on diagnostics from changed target files only.
+  const scopedRun = { ...run, diagnostics: filterScopedDiagnostics(run.diagnostics, changedScope) };
+  return reportFromRun(scopedRun, options, { ...run.baselineResult, findings: changedResult.findings }, changedResult.suppressedCount);
 }
 
 // Builds the hook's full and changed-region reports from one scan. The diff-base replay still uses
@@ -70,7 +72,9 @@ export function analyseHookReports(currentOptions: AnalysisOptions, scopedOption
   }
   const scopedChangedScope = changedRegionScope(scopedOptions);
   const scopedChangedResult = filterChangedFindings(run.baselineResult.findings, scopedChangedScope, run.scanned.sources);
-  const scopedReport = reportFromRun(run, scopedOptions, { ...run.baselineResult, findings: scopedChangedResult.findings }, scopedChangedResult.suppressedCount);
+  // Same file-scoped diagnostics policy as diff-scoped analyse, so both surfaces agree.
+  const scopedRun = { ...run, diagnostics: filterScopedDiagnostics(run.diagnostics, scopedChangedScope) };
+  const scopedReport = reportFromRun(scopedRun, scopedOptions, { ...run.baselineResult, findings: scopedChangedResult.findings }, scopedChangedResult.suppressedCount);
   return { currentReport, scopedReport };
 }
 
@@ -92,7 +96,7 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
   const allFindings = sortedUniqueFindings([
     ...scanned.findings,
     ...analyseProjectIndex(projectRoot, options, discovery.files, scanned.projectSources, config).filter((finding) => ruleEnabled(config, finding.ruleId)),
-  ]);
+  ].map((finding) => applyConfiguredSeverity(config, finding)));
   const baselineResult = applyBaselineOptions(projectRoot, options, allFindings);
   const notes = [...discovery.notes, ...scanned.notes];
   return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes };

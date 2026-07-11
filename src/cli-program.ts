@@ -10,7 +10,7 @@ import { ConfigLoadError } from "./config-load-error.ts";
 import { loadConfig, minimumSeverityFor } from "./config.ts";
 import { VERSION } from "./constants.ts";
 import { startDashboard } from "./dashboard.ts";
-import { renderHookCapabilities, renderHookConfigError, renderHookReport } from "./hook-contract.ts";
+import { hookRenderedDiagnosticsCount, renderHookCapabilities, renderHookConfigError, renderHookReport } from "./hook-contract.ts";
 import { promptYesNo, shouldPromptForInit, writeDefaultConfig } from "./init-config.ts";
 import { renderReport, renderSummary, renderSummaryJson } from "./report-renderers.ts";
 import { completionShell, getRuleDescriptor, renderCompletionScript, renderConsoleList, renderProfileList, renderRuleDetail, renderRuleList, type RuleListFormat } from "./rule-list.ts";
@@ -183,13 +183,13 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
-    .option("--format <format>", "Output format: text, json, html, markdown, github, hotspot, or sarif.", "text")
-    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "advisory")
+    .option("--format <format>", "Output format: text, json, html, markdown, github, hotspot, or sarif.", parseAnalyseFormat, "text")
+    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "advisory")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--changed-ranges <ranges>", "Filter findings to changed regions, for example 3-3,8-10.")
     .option("--since <ref>", "Filter findings to regions changed against a git base ref.")
     .option("--diff [mode]", "Filter findings to changed regions. Use working-tree, staged, unstaged, a base ref, or - for unified diff on stdin.")
-    .option("--changed-scope <scope>", "Changed-region scope: hunk, symbol, or file.", "symbol")
+    .option("--changed-scope <scope>", "Changed-region scope: hunk, symbol, or file.", parseChangedScope, "symbol")
     .option("--history-file <path>", "Append score trend history to this JSON file.")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
@@ -246,6 +246,7 @@ function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void 
     .option("--since <ref>", "Filter hook findings to regions changed against a git base ref and compare against that ref.")
     .option("--diff [mode]", "Filter hook findings to changed regions. Use working-tree, staged, unstaged, a base ref, or - for unified diff on stdin.")
     .option("--baseline <path>", "Compare hook findings against a gruff baseline JSON file using stableIdentity.")
+    .option("--fail-on-diagnostics", "Exit 2 when parse/read diagnostics affect the analysed change; the default reports them in-band with exit 0.")
     .action((paths: string[], rawOptions: Record<string, unknown>) => {
       if (rawOptions.capabilities === true) {
         writeCommandOutput(program, renderHookCapabilities());
@@ -255,14 +256,17 @@ function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void 
       try {
         const scopedOptions = hookScopedOptions(paths, rawOptions);
         const currentOptions = hookCurrentOptions(scopedOptions);
-        writeCommandOutput(program, renderHookReport(runAnalyse, {
+        const rendered = renderHookReport(runAnalyse, {
           currentOptions,
           scopedOptions,
           ...hookBaselinePath(rawOptions),
           ...hookDiffBase(scopedOptions),
           hasChangedRegion: hasHookChangedRegion(scopedOptions),
-        }));
-        process.exitCode = 0;
+        });
+        writeCommandOutput(program, rendered);
+        // Explicit consumer request (gruff.hook.v1): only --fail-on-diagnostics turns in-band
+        // diagnostics into exit 2; every other successful hook run keeps the documented exit 0.
+        process.exitCode = rawOptions.failOnDiagnostics === true && hookRenderedDiagnosticsCount(rendered) > 0 ? 2 : 0;
       } catch (error) {
         if (error instanceof ConfigLoadError) {
           writeCommandOutput(program, renderHookConfigError(error.message, error.suggestion));
@@ -320,6 +324,7 @@ function registerDashboardCommand(program: Command, runAnalyse: AnalyseRunner): 
     .option("--port <port>", "Port to bind.", "8767")
     .option("--project-root <path>", "Default project root.", ".")
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
+    .option("--scan-timeout <seconds>", "Accepted for cross-port compatibility; not implemented in gruff-ts.")
     .action(async (rawOptions: Record<string, unknown>) => {
       const projectRoot = resolve(String(rawOptions.projectRoot ?? "."));
       await maybePromptInitConfig(program, projectRoot, { shouldSkipConfig: false, hasExplicitConfig: false });
@@ -418,12 +423,12 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     .command("report")
     .description("Render a gruff report to stdout or a file.")
     .argument("[paths...]", "Files or directories to analyse.")
-    .option("--format <format>", "Report format: html or json.", "html")
+    .option("--format <format>", "Report format: html or json.", parseReportFormat, "html")
     .option("--output <path>", "Write report to a file.")
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
-    .option("--fail-on <severity>", "Finding severity that fails the run.", "none")
+    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "none")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
@@ -457,7 +462,7 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
     .option("--format <format>", "Output format: text or json.", parseSummaryFormat, "text")
     .option("--top <n>", "How many top rules and file offenders to list.", parseNonNegativeInteger, 10)
-    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", "advisory")
+    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "advisory")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
     .option("--history-file <path>", "Append score trend history to this JSON file.")
@@ -504,6 +509,27 @@ function parseHookFormat(rawFormat: string): "json" {
   }
   throw new InvalidArgumentError("must be json");
 }
+
+/*
+ * Builds a commander argParser for one constrained-choice option. Governance controls (format,
+ * failure severity, diff scope) must reject a misspelled value as a usage error before analysis
+ * starts - a silent fallback would let CI pass under semantics the caller never asked for.
+ */
+function parseChoiceOf(choices: readonly string[]): (rawValue: string) => string {
+  // Validates one raw CLI value against the documented set; throws InvalidArgumentError otherwise.
+  return (rawValue: string): string => {
+    // A value outside the documented set is a caller mistake, never a silent default.
+    if (choices.includes(rawValue)) {
+      return rawValue;
+    }
+    throw new InvalidArgumentError(`must be one of: ${choices.join(", ")}`);
+  };
+}
+
+const parseAnalyseFormat = parseChoiceOf(["text", "json", "html", "markdown", "github", "hotspot", "sarif"]);
+const parseReportFormat = parseChoiceOf(["html", "json"]);
+const parseFailOn = parseChoiceOf(["none", "advisory", "warning", "error"]);
+const parseChangedScope = parseChoiceOf(["symbol", "hunk", "file"]);
 
 /*
  * Commander argParser for `--top`-style numeric flags. Throws `InvalidArgumentError` on non-integer

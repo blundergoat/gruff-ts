@@ -296,6 +296,7 @@ function knownCliFlags(): Set<string> {
     "--changed-ranges",
     "--changed-scope",
     "--fail-on",
+    "--fail-on-diagnostics",
     "--force",
     "--format",
     "--generate-baseline",

@@ -32,9 +32,21 @@ interface HookReport {
   contractVersion: "gruff.hook.v1";
   analyzer: { name: "gruff-ts"; version: string };
   findings: HookFinding[];
+  // File-scoped parse/read diagnostics relevant to the analysed change, reported in-band. The
+  // default hook exit stays 0; only an explicit --fail-on-diagnostics run turns these into exit 2.
+  diagnostics: HookDiagnostic[];
   suppressed: { count: number };
   ignored: { paths: SkippedPath[] };
   config: { schemaOk: boolean; error: string | null };
+}
+
+// One diagnostic projected into the hook contract: what kind of problem, where, and the message a
+// consumer can surface. `file`/`line` are absent for operational diagnostics with no anchor.
+interface HookDiagnostic {
+  type: string;
+  message: string;
+  file?: string;
+  line?: number;
 }
 
 // A finding projected into the hook contract, with enum scope and non-null remediation, keyed for
@@ -86,8 +98,11 @@ export function renderHookCapabilities(): string {
       stableIdentity: true,
       ignoreReport: true,
       newOnly: true,
+      // Producer advertisement only: diagnostics are always reported in-band; the advertised
+      // failOnDiagnostics flag is the explicit consumer request that changes exit semantics.
+      diagnostics: true,
     },
-    flags: { changedRanges: "--changed-ranges", diff: "--diff", baseline: "--baseline" },
+    flags: { changedRanges: "--changed-ranges", diff: "--diff", baseline: "--baseline", failOnDiagnostics: "--fail-on-diagnostics" },
     flagOrder: "any" satisfies FlagOrder,
   }, null, 2) + "\n";
 }
@@ -119,17 +134,35 @@ export function renderHookConfigError(message: string, remediation: string): str
   return JSON.stringify(hookReport(undefined, [], 0, false, error), null, 2) + "\n";
 }
 
-// Assembles the gruff.hook.v1 envelope (sorted findings, suppressed count, ignored paths, config)
-// as the stable gruff.hook.v1 output contract.
+// Assembles the gruff.hook.v1 envelope (sorted findings, diagnostics, suppressed count, ignored
+// paths, config) as the stable gruff.hook.v1 output contract.
 function hookReport(report: AnalysisReport | undefined, findings: HookFinding[], suppressedCount: number, isSchemaOk: boolean, error: string | null): HookReport {
   return {
     contractVersion: HOOK_CONTRACT_VERSION,
     analyzer: analyzerInfo(),
     findings: sortHookFindings(findings),
+    diagnostics: (report?.diagnostics ?? []).map(toHookDiagnostic),
     suppressed: { count: suppressedCount },
     ignored: { paths: report?.paths.skipped ?? [] },
     config: { schemaOk: isSchemaOk, error },
   };
+}
+
+// Projects one run diagnostic into the hook contract's shape; never throws - absent anchors are omitted.
+function toHookDiagnostic(diagnostic: { diagnosticType: string; message: string; filePath?: string; line?: number }): HookDiagnostic {
+  return {
+    type: diagnostic.diagnosticType,
+    message: diagnostic.message,
+    ...(diagnostic.filePath === undefined ? {} : { file: diagnostic.filePath }),
+    ...(diagnostic.line === undefined ? {} : { line: diagnostic.line }),
+  };
+}
+
+// Counts the diagnostics in a rendered gruff.hook.v1 envelope so the CLI can apply the explicit
+// --fail-on-diagnostics exit policy without re-running analysis or duplicating envelope knowledge.
+export function hookRenderedDiagnosticsCount(renderedEnvelope: string): number {
+  const payload = JSON.parse(renderedEnvelope) as { diagnostics?: unknown[] };
+  return Array.isArray(payload.diagnostics) ? payload.diagnostics.length : 0;
 }
 
 // Analyzer identity block shared by the capability and report envelopes.

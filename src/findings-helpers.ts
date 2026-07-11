@@ -3,9 +3,21 @@
 // on it without forming a cycle.
 import { execFileSync } from "node:child_process";
 import { basename } from "node:path";
+import { ruleSeverity } from "./config.ts";
 import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import type { Finding, Pillar, Severity } from "./types.ts";
+import type { Config, Finding, Pillar, Severity } from "./types.ts";
+
+/*
+ * Central severity-override pass: config `rules.<id>.severity` wins over the scanner's created
+ * severity for every rule family in one place, so a user's policy applies even to scanners that
+ * hardcode their descriptor literal; without an override the created severity stands.
+ * Invariant: the fingerprint hashes (ruleId, filePath, line, symbol), so overrides never churn identity.
+ */
+export function applyConfiguredSeverity(config: Config, finding: Finding): Finding {
+  const severity = ruleSeverity(config, finding.ruleId, finding.severity);
+  return severity === finding.severity ? finding : { ...finding, severity };
+}
 
 // Input bundle for `finding()` - the lowest-cost finding factory. Captures everything the caller
 // must supply for a line-anchored Finding; shared defaults (confidence "high", empty metadata)

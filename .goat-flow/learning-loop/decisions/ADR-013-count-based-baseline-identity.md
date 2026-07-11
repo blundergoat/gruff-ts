@@ -1,6 +1,7 @@
 # ADR-013: Count-based baseline identity (file + rule + count, not line)
 
 **Status:** Accepted
+**Amended:** 2026-07-12 by ADR-017 (search: "# ADR-017") - direction reaffirmed; the implementation vehicle moves to the coordinated family JSON break, so no port-local `gruff.baseline.v2` ships in 0.5.0.
 **Date:** 2026-06-01
 **Author(s):** Claude, user
 **Ticket/Context:** Operator directive while moving the baseline cluster (M01/M03/M24) out of the 0.3.0 plan into 0.4.0: "baseline ... can't have the file line number because that is too fragile. Use file count instead and see how phpstan does their baseline."

@@ -24,6 +24,18 @@ gruff-ts hook --capabilities --format json
 metadata. Hook mode is advisory: findings exit `0`; config failures are returned in
 `config.error` and exit `2`.
 
+Parse and read diagnostics are file-scoped and reported in-band via the additive
+`diagnostics` array (`{ type, message, file, line }`): a full scan carries every
+analysed file's diagnostics, a `--diff`/`--since` run carries only diagnostics
+from changed target files, and `--changed-ranges` carries every diagnostic of
+each requested file (a syntax error breaks parsing of the whole file, so ranges
+never filter diagnostics). The default hook exit stays `0` with diagnostics
+in-band; pass the explicit consumer request flag `--fail-on-diagnostics` to exit
+`2` when relevant diagnostics exist. The capability handshake advertises this via
+`supports.diagnostics` and `flags.failOnDiagnostics` - the capability is a
+producer advertisement only and never changes behavior by itself. Fatal failures
+(analysis could not run at all) keep operational-error exit `2` semantics.
+
 ## Scan the change, not the repo
 
 > **Goal:** govern only the code the agent changed, not the whole repo - so the agent resolves findings in its own diff and a clean change is never blocked by pre-existing findings elsewhere.

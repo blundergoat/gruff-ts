@@ -278,3 +278,31 @@ password = ${["pY7sK2mN8qR4", "vT6xW9zA1bC3"].join("")}
   assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value" && finding.filePath === ".pypirc"), true);
   assert.equal(renderReport(report, "json").includes(NPM_AUTH_TOKEN_FIXTURE_VALUE), false);
 });
+
+test("two distinct same-line secrets keep two findings with distinct columns", () => {
+  const report = analyseFixture(`// File overview: same-line secret fixture.
+const firstToken = "${HIGH_ENTROPY_FIXTURE_VALUE}"; const secondToken = "${API_TOKEN_FIXTURE_VALUE}";
+`);
+  const secrets = report.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+  // Two distinct secrets on one line share a fingerprint (line-keyed) but must both survive as
+  // findings; the column discriminator keeps dedupe from dropping the second occurrence (ADR-017).
+  assert.equal(secrets.length, 2);
+  assert.equal(secrets[0]?.line, secrets[1]?.line);
+  assert.equal(typeof secrets[0]?.column, "number");
+  assert.notEqual(secrets[0]?.column, secrets[1]?.column);
+  assert.equal(secrets[0]?.fingerprint, secrets[1]?.fingerprint);
+  assert.notEqual(secrets[0]?.stableIdentity, secrets[1]?.stableIdentity);
+  const previews = secrets.map((finding) => String(finding.metadata.preview));
+  assert.equal(previews.every((preview) => preview.includes("(redacted")), true);
+  assert.equal(new Set(previews).size, 2);
+});
+
+test("different-rule secrets on one line stay distinct findings", () => {
+  const report = analyseFixture(`// File overview: mixed same-line secret fixture.
+const mixed = "${AWS_ACCESS_KEY_FIXTURE_VALUE}"; const other = "${HIGH_ENTROPY_FIXTURE_VALUE}";
+`);
+  const sameLineFindings = report.findings.filter((finding) => finding.pillar === "sensitive-data" && finding.line === 2);
+  const ruleIds = new Set(sameLineFindings.map((finding) => finding.ruleId));
+  assert.equal(ruleIds.has("sensitive-data.aws-access-key"), true);
+  assert.equal(ruleIds.has("sensitive-data.high-entropy-string"), true);
+});

@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { functionBlocks } from "./blocks.ts";
 import type { SourceFile } from "./discovery.ts";
 import { maskNonCode } from "./source-text.ts";
-import type { AnalysisOptions, ChangedScopeMode, Finding } from "./types.ts";
+import type { AnalysisOptions, ChangedScopeMode, Finding, RunDiagnostic } from "./types.ts";
 
 // Inclusive line range from a changed hunk or explicit `--changed-ranges` input.
 export interface ChangedRange {
@@ -67,6 +67,31 @@ export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope
     return gitDiffScope(options.diff, options.changedScope);
   }
   return undefined;
+}
+
+// Diagnostic types that describe one analysed file's content or readability. Only these are
+// file-scoped under diff filtering; operational diagnostics (missing paths, history errors) always
+// stay, because they describe the request rather than an unchanged context file.
+const FILE_CONTENT_DIAGNOSTIC_TYPES = new Set(["parse-error", "read-error"]);
+
+/*
+ * Applies the file-scoped diagnostics policy to a changed-region run: a full scan keeps every
+ * diagnostic; explicit `--changed-ranges` keeps every diagnostic of each requested file (a syntax
+ * error breaks parsing of the whole file, so ranges never filter diagnostics); `--diff`/`--since`
+ * keeps only diagnostics from changed target files, so a pre-existing broken context file no
+ * longer fails a clean diff. Operational diagnostics are never dropped.
+ */
+export function filterScopedDiagnostics(diagnostics: RunDiagnostic[], scope: ChangedRegionScope | undefined): RunDiagnostic[] {
+  if (!scope || scope.explicitRanges !== undefined) {
+    return diagnostics;
+  }
+  return diagnostics.filter((diagnostic) => {
+    // Operational diagnostics (missing-path, history-error) describe the request, not file content.
+    if (!diagnostic.filePath || !FILE_CONTENT_DIAGNOSTIC_TYPES.has(diagnostic.diagnosticType)) {
+      return true;
+    }
+    return scope.changedFiles.has(diagnostic.filePath) || scope.wholeFiles.has(diagnostic.filePath);
+  });
 }
 
 // Applies changed-region filtering to findings and reports how many pre-existing findings dropped.
@@ -255,25 +280,31 @@ function parseChangedRange(rawRange: string): ChangedRange {
   return { start, end };
 }
 
-// Produces a changed-region scope from a named git diff mode or arbitrary git ref.
+/*
+ * Produces a changed-region scope from a named git diff mode or arbitrary git ref. Every git diff
+ * runs in git's relative-path mode, so paths arrive relative to the analysis root (the process
+ * cwd) and match finding display paths even when the scan starts from a nested package directory
+ * inside the repository. Invariant: from the repo root that mode is a no-op, so root-run diffs
+ * are byte-identical to the previous behavior.
+ */
 function gitDiffScope(mode: string, changedScope: ChangedScopeMode): ChangedRegionScope {
   if (mode === "staged") {
-    return parseUnifiedDiff(gitOutput(["diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff"]), changedScope);
+    return parseUnifiedDiff(gitOutput(["diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff", "--relative"]), changedScope);
   }
   if (mode === "unstaged") {
-    return parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff"]), changedScope);
+    return parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", "--relative"]), changedScope);
   }
   if (mode === "working-tree") {
     return mergeScopes(
       [
-        parseUnifiedDiff(gitOutput(["diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff"]), changedScope),
-        parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff"]), changedScope),
+        parseUnifiedDiff(gitOutput(["diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff", "--relative"]), changedScope),
+        parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", "--relative"]), changedScope),
         untrackedFileScope(changedScope),
       ],
       changedScope,
     );
   }
-  return parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", "--end-of-options", mode]), changedScope);
+  return parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", "--relative", "--end-of-options", mode]), changedScope);
 }
 
 // Parses a unified diff into file-level and hunk-level scope.

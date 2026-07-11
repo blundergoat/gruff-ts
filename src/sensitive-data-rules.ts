@@ -1,7 +1,7 @@
 // Sensitive-data scanners and redaction helpers for secret-like raw text findings.
 import { ruleSeverity, threshold } from "./config.ts";
 import { makeFinding } from "./findings.ts";
-import { byteLine } from "./text-scans.ts";
+import { byteColumn, byteLine } from "./text-scans.ts";
 import type { Config, Finding } from "./types.ts";
 
 // Just the display path - sensitive-data rules anchor findings on file path + line and never need
@@ -33,7 +33,7 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
       if (isExplicitExampleCredential(raw)) {
         continue;
       }
-      pushSensitiveFinding(config, findings, file, ruleId, message, byteLine(source, match.index ?? 0), raw, "high");
+      pushSensitiveFinding(config, findings, file, ruleId, message, byteLine(source, match.index ?? 0), byteColumn(source, match.index ?? 0), raw, "high");
     }
   }
 
@@ -63,7 +63,7 @@ function analysePhiLabelledIdentifiers(file: SensitiveSourceFile, source: string
     if (!medicalRecordNumber) {
       continue;
     }
-    pushSensitiveFinding(config, findings, file, "sensitive-data.phi-pattern", "Medical record number (PHI) detected.", index + 1, medicalRecordNumber, "high");
+    pushSensitiveFinding(config, findings, file, "sensitive-data.phi-pattern", "Medical record number (PHI) detected.", index + 1, (match.index ?? 0) + 1, medicalRecordNumber, "high");
   }
 }
 
@@ -77,7 +77,7 @@ function analyseGcpServiceAccountKeys(file: SensitiveSourceFile, source: string,
   const identifier = source.match(/"private_key_id"\s*:\s*"([^"]+)"/)?.[1]
     ?? source.match(/"client_email"\s*:\s*"([^"]+)"/)?.[1]
     ?? "service_account";
-  pushSensitiveFinding(config, findings, file, "sensitive-data.gcp-service-account-key", "GCP service-account key file detected.", byteLine(source, typeMatch.index ?? 0), identifier, "high");
+  pushSensitiveFinding(config, findings, file, "sensitive-data.gcp-service-account-key", "GCP service-account key file detected.", byteLine(source, typeMatch.index ?? 0), byteColumn(source, typeMatch.index ?? 0), identifier, "high");
 }
 
 /*
@@ -105,6 +105,7 @@ function analysePaymentCardNumbers(file: SensitiveSourceFile, source: string, co
       "sensitive-data.pii-pattern",
       "Credit card number (PII) pattern detected.",
       line,
+      byteColumn(source, match.index ?? 0),
       rawCandidate,
       "high",
       { piiKind: "credit-card", digits: cardNumber.length },
@@ -134,6 +135,7 @@ function analyseNpmAuthTokens(file: SensitiveSourceFile, source: string, config:
       "sensitive-data.api-key-pattern",
       "npm auth token pattern detected.",
       index + 1,
+      undefined,
       token,
       "high",
       { keyName: "_authToken" },
@@ -166,6 +168,7 @@ function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: st
       "sensitive-data.hardcoded-env-value",
       `Environment-style value \`${envValue.keyName}\` appears to be hardcoded with secret-like content.`,
       index + 1,
+      undefined,
       envValue.value,
       "medium",
       { keyName: envValue.keyName, length: envValue.value.length, threshold: minLength },
@@ -191,6 +194,7 @@ function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, co
       "sensitive-data.high-entropy-string",
       "High-entropy string literal may be an embedded secret.",
       byteLine(source, match.index ?? 0),
+      byteColumn(source, match.index ?? 0),
       raw,
       "medium",
       { length: raw.length, detector: "high-entropy-string", threshold: minLength },
@@ -199,6 +203,10 @@ function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, co
   }
 }
 
+// Central sensitive-finding emitter: redacts the raw value into the message preview and anchors the
+// finding at line plus, when the scanner pinpointed one, the one-based match column - the column is
+// what keeps two distinct same-line secrets from collapsing into one report entry (ADR-017).
+// `column` is undefined for line-shaped detectors whose helpers expose no match offset.
 function pushSensitiveFinding(
   config: Config,
   findings: Finding[],
@@ -206,6 +214,7 @@ function pushSensitiveFinding(
   ruleId: string,
   message: string,
   line: number,
+  column: number | undefined,
   raw: string,
   confidence: Finding["confidence"],
   metadata: Record<string, unknown> = {},
@@ -221,6 +230,7 @@ function pushSensitiveFinding(
       message: `${message} Redacted preview: ${preview}.`,
       filePath: file.displayPath,
       line,
+      ...(column === undefined ? {} : { column }),
       severity,
       pillar: "sensitive-data",
       confidence,
