@@ -179,7 +179,7 @@ fingerprints:
 | Key | Used by | Default behavior |
 | --- | --- | --- |
 | `acceptedAbbreviations` | `naming.short-variable` | Adds short names that should not be flagged. |
-| `acceptedBooleanNames` | `naming.boolean-prefix` | Replaces exact public/CLI/DTO boolean names such as `verbose`, `enabled`, `ok`, and `force`. |
+| `acceptedBooleanNames` | `naming.boolean-prefix` | Replaces the complete set of exact interface/type contract-field names, such as `verbose`, `enabled`, `ok`, and `force`. |
 | `bannedGenericNames` | `naming.generic-function` | Replaces the built-in generic function-name denylist. |
 | `booleanPrefixes` | `naming.boolean-prefix` | Replaces the accepted boolean-name prefixes such as `is`, `has`, `should`, `may`, `supports`, and `requires`. |
 | `hungarianPrefixes` | `naming.hungarian-notation` | Replaces type-style prefixes to flag. |
@@ -189,6 +189,12 @@ fingerprints:
 
 For replace-style allowlists, use an empty list (`[]`) when you intentionally
 want no entries.
+
+When a boolean-prefix finding names `allowlists.acceptedBooleanNames`, copy any
+defaults the project still needs into the configured list before adding the
+external key - the configured list replaces defaults rather than extending
+them. If renaming a JSON, CLI, or DTO key would break consumers, keep a clearer
+internal field and map the external key explicitly at the serialization boundary.
 
 ## Rule Controls
 

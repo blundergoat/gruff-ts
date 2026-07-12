@@ -485,7 +485,7 @@ export function updateName(name: string): string {
 `;
 
 test("core expansion finds naming and documentation rules", () => {
-  const report = analyseFixture(NAMING_DOC_FIXTURE, { fileName: "CustomerProfile.ts" });
+  const report = analyseProject({ "CustomerProfile.ts": NAMING_DOC_FIXTURE, "helpers.ts": "/** Handles payment requests. */\nexport class PaymentController {}\n" });
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   ["naming.boolean-prefix", "naming.hungarian-notation", "naming.class-file-mismatch", "docs.stale-param-tag", "docs.missing-param-tag", "docs.missing-return-tag", "docs.useless-docblock"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);

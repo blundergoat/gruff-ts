@@ -5,6 +5,16 @@ last_reviewed: 2026-07-12
 
 # Verification lessons
 
+## Lesson: project shared structural fields instead of spreading broader objects
+
+**Created:** 2026-07-12
+
+**What happened:** Declaration ownership reused `CallableMatchPoint` as an `IdentifierOwner` because it structurally contains `ownerId`, `ownerKind`, and `ownerName`. The first implementation spread that whole callable object into a parameter inventory row. Its unrelated `name` field then overwrote the parameter name, so the focused owner test reported `# pass 45` / `# fail 1` even though both rows carried the correct function id.
+
+**Evidence:** `src/class-rules.ts` (search: `ownerId: owner.ownerId`) now projects only the three owner fields; the parameter/local probe shows `note_id` and `noteId` under the same `function:0:94` owner, and the focused suite reports `# tests 46` / `# pass 46` / `# fail 0`.
+
+**Prevention:** When a narrower TypeScript interface accepts a structurally broader runtime object, do not assume object spread narrows it. Explicitly project the allowed fields before merging with another domain row, especially when both shapes use common keys such as `name`, `line`, or `kind`.
+
 ## Lesson: performance-plan commands must exercise the helper's comparison mode
 
 **Created:** 2026-07-11

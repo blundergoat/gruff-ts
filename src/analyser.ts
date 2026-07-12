@@ -598,10 +598,14 @@ function analyseTypeScriptRules(file: SourceFile, source: string, config: Config
   runRulePass(config, "docs.missing-interface-doc", () => analyseInterfaceDocs(file, source, codeSource, findings));
   runRuleGroupPass(config, INTERFACE_FIELD_RULE_IDS, () => analyseInterfaceFields(file, source, codeSource, config, findings));
   runRuleGroupPass(config, COMMENT_QUALITY_RULE_IDS, () => analyseCommentQualityRules({ file, source, codeSource, blocks, comments: commentRecords(source), config, findings }));
-  runRuleGroupPass(config, CLASS_RULE_IDS, () => analyseClassRules(file, source, codeSource, findings));
+  runRuleGroupPass(config, CLASS_RULE_IDS, () => analyseClassRules(file, source, codeSource, findings, parsed));
   runRulePass(config, "dead-code.unused-private-method", () => analyseDeadCode(file, codeSource, findings));
   runRuleGroupPass(config, IDENTIFIER_INVENTORY_RULE_IDS, () => {
-    const inventory = collectDeclaredIdentifiers(source, codeSource, blocks);
+    // A normal deep script scan always supplies the shared parse; a missing result must not reparse.
+    if (!parsed) {
+      return;
+    }
+    const inventory = collectDeclaredIdentifiers(source, codeSource, parsed);
     runRulePass(config, "naming.inconsistent-casing", () => analyseInconsistentCasing(file, inventory, findings));
     runRulePass(config, "naming.acronym-case", () => analyseAcronymCase(file, inventory, config, findings));
   });

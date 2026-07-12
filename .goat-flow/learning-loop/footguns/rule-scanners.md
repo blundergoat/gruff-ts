@@ -77,6 +77,8 @@ Every rule's suppression heuristic - whether a rationale-comment regex (M01), a 
 
 The failure mode is silent at type-check time and only surfaces in `npm test`. Before widening any rule's suppression criteria:
 
+The same trap appeared when `naming.class-file-mismatch` changed from every mismatched exported class to a sole-public-declaration policy. The broad catalogue, core-expansion, and cumulative fixtures still declared mismatched classes, but their other public declarations correctly suppressed the finding, so three coverage assertions lost the rule. Each project gained a dedicated `helpers.ts` fixture with one documented `PaymentController` export instead of weakening the new policy.
+
 1. Grep for every fixture using the newly-suppressed shape as proof the rule fires.
 2. For per-rule placeholder fixtures: migrate to a still-non-suppressed shape (different token, different iterable, different body branch).
 3. For coverage fixtures (`ruleCatalogueCoverageRuleIds`): add a deliberate confounder so the rule keeps firing as catalogue proof.

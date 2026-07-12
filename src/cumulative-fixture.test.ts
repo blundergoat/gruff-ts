@@ -124,6 +124,9 @@ test("cumulative expanded fixture covers every new rule with unique fingerprints
 function cumulativeExpandedFixtureFiles(): Record<string, string> {
   return {
     "Widget.ts": cumulativeWidgetSource(),
+    "helpers.ts": `/** Handles payment requests in the cumulative fixture. */
+export class PaymentController {}
+`,
     "src/fixture-purpose.test.ts": [
       "const report = analyseFixture(`",
       ...largeFixtureSourceLines("expandedFixtureValue"),

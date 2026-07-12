@@ -99,13 +99,13 @@ Both rules consume the same parsed callable measurement as `docs.missing-why-for
 ## Naming
 
 - `naming.acronym-case` (advisory; medium confidence): Flags mixed casings of a known acronym in one file.
-- `naming.boolean-prefix` (advisory; medium confidence; allowlists: booleanPrefixes, acceptedBooleanNames): Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields.
-- `naming.class-file-mismatch` (advisory; medium confidence): Flags exported classes whose name differs from the file name.
+- `naming.boolean-prefix` (advisory; medium confidence; allowlists: booleanPrefixes, acceptedBooleanNames): Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields. Local and parameter findings recommend a safe rename (`remediationAction: APPLY`). Contract-field findings use `CONFIGURE` with `configurationKey: allowlists.acceptedBooleanNames` and explain that users may instead preserve an external key through explicit serialization mapping; configuration replaces the complete accepted-name list rather than merging one entry into the defaults.
+- `naming.class-file-mismatch` (advisory; medium confidence): Flags a named class whose normalized name differs from the file only when it is the module's sole supported public declaration. Direct exports, named default exports, and bottom re-exports share one syntax inventory; a public class beside an interface, type, enum, function, default value, or external re-export stays quiet. Retained findings include `candidatePrimaryExport: true` and sorted `publicExports` metadata.
 - `naming.generic-function` (advisory; high confidence): Flags generic function names that hide intent.
 - `naming.generic-parameter` (advisory; medium confidence; options: minCyclomatic, minLineCount, minParameters): Flags placeholder parameter names in multi-parameter, long, exported, or complex functions.
 - `naming.hungarian-notation` (advisory; medium confidence): Flags identifiers named after storage type prefixes.
 - `naming.identifier-quality` (advisory; medium confidence): Flags placeholder or numbered identifiers on declarations, function parameters, and destructured locals.
-- `naming.inconsistent-casing` (advisory; medium confidence): Flags the same canonical identifier appearing in two different surface forms (for example CONSTANT_CASE and camelCase) in one file.
+- `naming.inconsistent-casing` (advisory; medium confidence): Flags one canonical identifier appearing in different forms within the same module, function, interface, or named type-literal owner. Separate raw DTO and normalized UI model contracts may keep their own conventions; same-name interface declaration blocks in one lexical scope are treated as one merged owner.
 - `naming.negative-boolean` (advisory; medium confidence): Flags boolean identifiers framed as a negation on declarations, parameters, and interface fields.
 - `naming.short-variable` (advisory; medium confidence): Flags very short variable names outside common loop counters; covers declarations, function parameters, and destructured locals.
 
