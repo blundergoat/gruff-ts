@@ -20,14 +20,19 @@ Used as a hook on an agent's output, gruff-ts is a forcing function rather than 
 
 | Field | Value |
 | --- | --- |
-| Release line | Published `0.3.2` package line |
-| Runtime | Node.js `22+` |
+| Release line | `0.5.0` |
+| Runtime | Node.js `22+`; release CI covers 22, 24, and 26 |
+| Runtime dependencies | `commander`, `tsx`, and `typescript` |
 | Package | `@blundergoat/gruff-ts` |
 | Binary | `gruff-ts` |
 | Rule catalogue | 120 rules across 11 pillars |
 | Primary config | `.gruff-ts.yaml`; `.gruff.json`, `.gruff.yaml`, and `.gruff.yml` are fallback files |
 | Analysis schema | `gruff.analysis.v2` |
+| Summary schema | `gruff.summary.v2` |
 | Baseline schema | `gruff.baseline.v1` |
+| Hotspot schema | `gruff.hotspot.v1` |
+| Agent-hook schema | `gruff.hook.v1` |
+| Config schema | `gruff-ts.config.v0.1` |
 | Severity gate | `--fail-on` with `none`, `advisory`, `warning`, `error` |
 | Dashboard | `127.0.0.1:8767` by default |
 
@@ -94,9 +99,10 @@ Open `http://127.0.0.1:8767/` for the dashboard.
 | `list-rules` | Print rule metadata as text or JSON. |
 | `list-profiles` | Print the built-in profiles (`gruff.minimal`, `gruff.recommended`, `gruff.strict`) with their rule-count summary, as text or JSON. |
 | `check-ignore <paths...>` | Report whether each path is ignored (config, gitignore, or default) with the matching source and pattern; runs no analysis. |
+| `hook [paths...]` | Emit the `gruff.hook.v1` coding-agent contract and capability metadata. |
 | `dashboard` | Serve the local browser dashboard. |
 | `completion [shell]` | Print a shell completion script for `bash`, `zsh`, or `fish`. |
-| `list`, `help` | Show command lists and command-specific help. |
+| `list` | Show the registered command catalogue. Use `--help` on the root or a command for detailed help. |
 
 Global console options match the broader gruff CLI surface: `--silent`, `--quiet`, `--ansi` / `--no-ansi`, `--no-interaction`, and `-v` / `-vv` / `-vvv`.
 
@@ -298,11 +304,13 @@ In polyglot repositories, `gruff-ts` defaults to port `8767`, `gruff-rs` default
 
 ## Trust Boundary
 
-Default scans are local source inspections. `gruff-ts` parses supported source, config, and package metadata files; it does not execute target application code, run tests, invoke the TypeScript compiler, query package registries, or read vulnerability feeds. Git is used only for explicit diff modes. Secret-like findings use redacted previews; raw secret values should not appear in terminal, JSON, SARIF, GitHub, Markdown, hotspot, or HTML output.
+Default scans are local source inspections. `gruff-ts` parses supported source, config, and package metadata files; it does not execute target application code, run tests, type-check or emit through the TypeScript compiler, query package registries, or read vulnerability feeds. The runtime `typescript` dependency is used only for syntax parsing, while `tsx` launches the shipped TypeScript source and `commander` owns the CLI. Git is used only for explicit diff modes. Secret-like findings use redacted previews; raw secret values should not appear in terminal, JSON, SARIF, GitHub, Markdown, hotspot, or HTML output.
 
 ## Stability Contract
 
-The `0.3.x` line treats rule IDs, finding fingerprints, baseline identity, `gruff.analysis.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`, SARIF rendering, and CLI exit semantics as compatibility-sensitive. Breaking changes should be tagged as a future minor release and recorded in [`CHANGELOG.md`](CHANGELOG.md).
+The `0.5.x` line treats rule IDs, finding fingerprints, baseline identity, `gruff.analysis.v2`, `gruff.summary.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`, `gruff.hook.v1`, `gruff-ts.config.v0.1`, SARIF rendering, and CLI exit semantics as compatibility-sensitive. Breaking changes belong in a coordinated future release and must be recorded in [`CHANGELOG.md`](CHANGELOG.md).
+
+Analysis JSON continues to emit canonical `file` alongside legacy `filePath` for findings and top offenders. The v0.3.1 plan to remove `filePath` in the next release was superseded when v0.4.0 retained the alias. Consumers should read `file` now; removing `filePath` waits for the coordinated family JSON unification instead of happening in this port alone.
 
 ## How It Compares
 

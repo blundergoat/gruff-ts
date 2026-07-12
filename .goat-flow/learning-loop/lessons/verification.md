@@ -332,6 +332,8 @@ when the old behavior is still present in code.
 
 `.goat-flow/hooks/deny-dangerous.sh` blocks "pipe to interpreter" patterns. When summarising audit JSON or processing tool output with a one-liner, write to `/tmp/<file>.json` first and then run the interpreter against the file path. Trying to retry the same pipeline after a block triggers the same hook - the lesson is to switch to a file-based intermediate, not to keep retrying.
 
+**Recurrence, 2026-07-12:** A package-content probe was blocked when `npm pack --json` was piped into `node -e`; the safe retry wrote npm output to a temporary JSON file first. Later searches were also blocked because literal backticks appeared inside double-quoted shell patterns. Use single-quoted search patterns whenever repository text contains backticks.
+
 ## Lesson: threshold fixtures must exceed the threshold they are proving
 
 **Created:** 2026-05-13
@@ -349,6 +351,8 @@ when the old behavior is still present in code.
 **What happened:** Core-expansion unit fixtures passed, but `./bin/gruff-ts analyse src --format=json --fail-on=none --no-config` exposed a `parse-error` in `src/cli.ts` and false positives where control statements were treated as function blocks.
 
 **Markdown-renderer recurrence, 2026-07-12:** The focused Markdown suite and the full 395-test gate passed, but the zero-tolerance self-scan reported 12 advisories. One inline type import needed the repository's split type-import style; ten cascading unused/empty-function findings came from a nested template literal inside another template's interpolation confusing `maskNonCode`; and the final finding required explicit invariant vocabulary on the complexity grouping helper. Precomputing the inner label and rerunning the original scan cleared the cascade, then the concise `Invariant:` comment cleared the last finding.
+
+**Release-truth recurrence, 2026-07-12:** The full 420-test gate passed, but the self-scan found three missing-context advisories in a new determinism test. A block comment fixed the invariant, while `Side effect:` still failed because that label is not in the rule's accepted vocabulary. Naming the concrete `writes` and `filesystem` behavior cleared the final finding. The exact self-scan, not TypeScript or unit tests, proved the comments met gruff's user-facing contract.
 
 **Evidence:** `src/cli.ts` + `(search: "function parseDiagnostics")` and `(search: "function functionBlocks")`; `src/cli.test.ts` now includes clean control-flow coverage and delimiter-looking literal coverage; `src/report-renderers.ts` (search: `function renderMarkdownComplexityClusterRow`) is the flattened renderer shape; `.goat-flow/learning-loop/footguns/rule-scanners.md` (search: `nested template interpolation`) records the masking limit.
 

@@ -41,7 +41,8 @@ type JsonAnalysisReport = Omit<AnalysisReport, "findings" | "score"> & {
   score: Omit<AnalysisReport["score"], "topOffenders"> & { topOffenders: JsonTopOffender[] };
 };
 
-// JSON boundary adapter: canonical `file` is emitted while legacy `filePath` stays for one release.
+// JSON boundary adapter: canonical `file` is emitted while legacy `filePath` remains until the
+// coordinated family JSON unification; a port-local removal would break existing report users.
 // Stable `gruff.analysis.v2` contract line kept adjacent to the function for the doc-context rule.
 function toJsonReport(report: AnalysisReport): JsonAnalysisReport {
   return {

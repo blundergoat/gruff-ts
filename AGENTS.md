@@ -20,7 +20,7 @@ This repo is the **selected target project**. If the controlling goat-flow works
 
 - **Always:** Read source before changing it; run `npm run check` on changed `.ts`; edit within declared scope; append progress lines to the active session log when one exists.
 - **Ask First:** Before touching any of: schema strings (`gruff.analysis.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`), the `Finding` shape, the default-ignored directory list, baseline file format, dashboard wire format, or `package.json`/`tsconfig.json`. State boundary touched, related code read (file:symbol), footgun checked, local instruction checked, rollback command.
-- **Never:** Freeze writes if interrupted; commit/push without explicit ask; relax `tsconfig.json` strict flags; introduce runtime dependencies beyond `commander` + `tsx`; bypass `.goat-flow/hooks/deny-dangerous.sh`; edit `CLAUDE.md` or `.claude/` (peer agent surfaces).
+- **Never:** Freeze writes if interrupted; commit/push without explicit ask; relax `tsconfig.json` strict flags; introduce runtime dependencies beyond `commander`, `tsx`, and `typescript` (syntax-only parsing per ADR-012); bypass `.goat-flow/hooks/deny-dangerous.sh`; edit `CLAUDE.md` or `.claude/` (peer agent surfaces).
 
 ## Hard Rules
 

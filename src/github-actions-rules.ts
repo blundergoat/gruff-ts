@@ -41,13 +41,21 @@ interface WorkflowCommand {
   line: WorkflowLine;
 }
 
+// GitHub's 2026-07-12 workflow table defines the current write-capable keys below.
+// `repository-projects` remains so users scanning legacy Enterprise workflows still see the risk.
 const WRITE_PERMISSION_SCOPES = new Set([
   "actions",
+  "artifact-metadata",
+  "attestations",
   "checks",
+  "code-quality",
   "contents",
   "deployments",
+  "discussions",
+  "id-token",
   "issues",
   "packages",
+  "pages",
   "pull-requests",
   "repository-projects",
   "security-events",

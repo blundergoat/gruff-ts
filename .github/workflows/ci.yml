@@ -1,3 +1,6 @@
+# Verifies every supported Node release before users receive a package or report contract change.
+# Contributors reach this workflow on pushes and pull requests to the maintained branches.
+# Read-only repository permission is sufficient for checkout, tests, audit, and the self-scan.
 name: CI
 
 on:
@@ -6,10 +9,17 @@ on:
   pull_request:
     branches: [main, dev]
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    name: Test and analyse
+    name: Test and analyse (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24, 26]
 
     steps:
       - name: Checkout
@@ -18,7 +28,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
       - name: Install dependencies
