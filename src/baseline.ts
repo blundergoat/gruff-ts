@@ -105,4 +105,17 @@ function dedupeKey(finding: Finding): string {
   return finding.fingerprint;
 }
 
-export { DEFAULT_BASELINE, writeBaseline, applyBaseline, recordHistory, dedupeFindings };
+// Canonical finding ordering: (filePath, line, ruleId, message). The same tuple is part of the
+// stable baseline matching contract, so changing the comparator would churn every existing baseline.
+function sortedUniqueFindings(findings: Finding[]): Finding[] {
+  findings.sort(
+    (left, right) =>
+      left.filePath.localeCompare(right.filePath) ||
+      (left.line ?? 0) - (right.line ?? 0) ||
+      left.ruleId.localeCompare(right.ruleId) ||
+      left.message.localeCompare(right.message),
+  );
+  return dedupeFindings(findings);
+}
+
+export { DEFAULT_BASELINE, writeBaseline, applyBaseline, recordHistory, dedupeFindings, sortedUniqueFindings };

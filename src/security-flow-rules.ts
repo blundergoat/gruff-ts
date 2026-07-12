@@ -92,7 +92,7 @@ const SECURITY_FLOW_RULES: readonly SecurityFlowRule[] = [
     message: "External input reaches a redirect or browser navigation sink.",
     sinkKind: "redirect",
     remediation: "Redirect only to relative paths or destinations from an allowlist.",
-    callPattern: /\b(?:(?:res|reply|response)\.redirect|redirect|(?:location|window\.location)\.(?:assign|replace))\s*\(|\b(?:location|window\.location)\.href\s*=/g,
+    callPattern: /\b(?:(?:res|reply|response)\.redirect|(?:location|window\.location)\.(?:assign|replace))\s*\(|\b(?:location|window\.location)\.href\s*=/g,
   },
   {
     ruleId: "security.dynamic-regexp",
@@ -215,7 +215,6 @@ const AST_FLOW_SINKS: readonly AstFlowSink[] = [
     sinkKind: "redirect",
     isSink: ({ callee }) =>
       /^(?:res|reply|response)\.redirect$/.test(callee) ||
-      /^redirect$/.test(callee) ||
       /^(?:location|window\.location)\.(?:assign|replace)$/.test(callee),
   },
   {
@@ -249,9 +248,12 @@ const MAX_SCOPE_NODES = 4000;
  * @param file - discovered script file whose display path anchors emitted fingerprints
  * @param source - full source text to parse with syntax-only TypeScript APIs
  * @param findings - accumulator that receives additional AST flow findings
+ * @param sharedSourceFile - the run's shared parse result; null/undefined falls back to a local parse
  */
-export function analyseSecurityFlow(file: SourceFile, source: string, findings: Finding[]): void {
-  const parsedSource = getSourceFile(file, source);
+export function analyseSecurityFlow(file: SourceFile, source: string, findings: Finding[], sharedSourceFile?: TsSourceFile | null): void {
+  // Prefer the shared per-run parse (one parse per script); the local parse remains only as the
+  // fallback for direct callers that have no boundary result, such as focused unit tests.
+  const parsedSource = sharedSourceFile ?? getSourceFile(file, source);
   if (!parsedSource) {
     return;
   }
@@ -385,8 +387,9 @@ function recordUnsafeXmlParser(parsedSource: TsSourceFile, node: TsNode, unsafeX
   }
 }
 
-// Emits a finding when a sink call consumes a tainted local. Because legacy same-line
-// scanners own existing rule ids, same-line AST reports are limited to AST-only rules.
+// Emits a finding when a sink call consumes a tainted local. Because legacy same-line scanners
+// own existing rule ids, same-line AST hits stay theirs. Reports at most one finding per sink
+// call, never throws on recovery trees, and existing same-line fingerprints must never move.
 function reportSink(
   parsedSource: TsSourceFile,
   node: TsNode,

@@ -95,6 +95,7 @@ export function filterScopedDiagnostics(diagnostics: RunDiagnostic[], scope: Cha
 }
 
 // Applies changed-region filtering to findings and reports how many pre-existing findings dropped.
+// Invariant: kept plus suppressedCount always equals the pre-filter total - the hook's arithmetic contract.
 export function filterChangedFindings(
   findings: Finding[],
   scope: ChangedRegionScope | undefined,
@@ -116,7 +117,8 @@ export function filterChangedFindings(
   return { findings: kept, suppressedCount };
 }
 
-// Keeps a finding when its own line, enclosing declaration, or changed-file scope intersects the change.
+// Keeps a finding when its own line, enclosing declaration, or changed-file scope intersects the
+// change. Invariant: findings outside the requested change must stay suppressed - the agent-gate contract.
 function isFindingInChangedScope(
   finding: Finding,
   scope: ChangedRegionScope,
@@ -142,6 +144,18 @@ function isFindingInChangedScope(
   if (overlapsAny(findingRange, changedRanges)) {
     return true;
   }
+  return symbolScopeWidensFinding(finding, scope, sources, declarationsByFile, changedRanges);
+}
+
+// Symbol scope widens a finding through its enclosing declaration: an edit anywhere inside a
+// callable keeps that callable's findings. Invariant: file-wide findings must never widen this way.
+function symbolScopeWidensFinding(
+  finding: Finding,
+  scope: ChangedRegionScope,
+  sources: Map<string, SourceSnapshot>,
+  declarationsByFile: Map<string, DeclarationRegion[]>,
+  changedRanges: ChangedRange[],
+): boolean {
   if (scope.mode !== "symbol" || isFileWideFinding(finding)) {
     return false;
   }
@@ -174,6 +188,7 @@ function rangesForFindingFile(scope: ChangedRegionScope, filePath: string): Chan
 }
 
 // Resolves the narrowest declaration around a finding so symbol-scope mode can keep whole callables.
+// Invariant: the smallest enclosing span wins, so sibling declarations never widen each other's findings.
 function enclosingDeclaration(
   finding: Finding,
   sources: Map<string, SourceSnapshot>,

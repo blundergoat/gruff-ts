@@ -2,12 +2,13 @@
 // Broader same-line behavioural cases also live in security-and-config.test.ts.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyseSecurityFlow } from "./security-flow-rules.ts";
+import { analyseSecurityFlow, analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import type { SourceFile } from "./discovery.ts";
 import type { Finding } from "./types.ts";
 
 const fileStub = { displayPath: "sample.ts", absolutePath: "/sample.ts", isScript: true } as SourceFile;
 const expectedUnsafeDeserializationFindings = 4;
+const expectedResponseRedirectAliases = 3;
 const unsafeDeserializationSource = [
   "function inflate(req) {",
   "  const serialized = req.body.serialized;",
@@ -26,6 +27,14 @@ const unsafeDeserializationSource = [
 function analyseSecurityFixture(source: string): Finding[] {
   const findings: Finding[] = [];
   analyseSecurityFlow(fileStub, source, findings);
+  return findings;
+}
+
+// Analyse one executable line through the legacy same-line path used by full scans.
+// Invariant: tests can compare its sink precision independently from AST flow.
+function analyseSecurityLineFixture(sourceLine: string): Finding[] {
+  const findings: Finding[] = [];
+  analyseSecurityFlowLine(fileStub, sourceLine, 1, findings);
   return findings;
 }
 
@@ -48,6 +57,54 @@ test("flags external input reaching an open redirect sink across lines", () => {
     "function login(req, res) {\n  const next = req.query.next;\n  res.redirect(next);\n}\n",
   );
   assert.ok(findings.some((finding) => finding.ruleId === "security.open-redirect-candidate"));
+});
+
+// Fixture purpose: local redirect functions and router methods are not response sinks.
+// Stable contract: names alone never turn these helpers into open-redirect findings.
+test("keeps local redirect functions and router methods quiet", () => {
+  const routerFindings = analyseSecurityLineFixture("myRouter.redirect(req.query.next);");
+  const localFunctionFindings = analyseSecurityFixture(
+    [
+      "function handler(req) {",
+      "  const next = req.query.next;",
+      "  function redirect(target) { return target; }",
+      "  return redirect(next);",
+      "}",
+      "",
+    ].join("\n"),
+  );
+
+  assert.deepEqual(
+    {
+      router: routerFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length,
+      localFunction: localFunctionFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length,
+    },
+    { router: 0, localFunction: 0 },
+  );
+});
+
+// Fixture purpose: Express and Fastify response aliases cover same-line and cross-line paths.
+// Stable fixture contract: all three response-object redirects remain security sinks.
+test("keeps response redirect aliases as open-redirect sinks", () => {
+  const sameLineFindings = [
+    ...analyseSecurityLineFixture("res.redirect(req.query.next);"),
+    ...analyseSecurityLineFixture("reply.redirect(req.query.next);"),
+    ...analyseSecurityLineFixture("response.redirect(req.query.next);"),
+  ].filter((finding) => finding.ruleId === "security.open-redirect-candidate");
+  const flowFindings = analyseSecurityFixture(
+    [
+      "function handler(req, res, reply, response) {",
+      "  const next = req.query.next;",
+      "  res.redirect(next);",
+      "  reply.redirect(next);",
+      "  response.redirect(next);",
+      "}",
+      "",
+    ].join("\n"),
+  ).filter((finding) => finding.ruleId === "security.open-redirect-candidate");
+
+  assert.equal(sameLineFindings.length, expectedResponseRedirectAliases);
+  assert.equal(flowFindings.length, expectedResponseRedirectAliases);
 });
 
 test("flags external input assigned to location.href across lines", () => {

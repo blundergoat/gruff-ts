@@ -349,7 +349,10 @@ export function fromB(): string {
   });
 }
 
-/** Verifies generated, suppressed, and mismatched baseline entries by stable fingerprint identity. */
+/**
+ * Verifies generated, suppressed, and mismatched baselines as a CLI user would encounter them.
+ * Stable contract: writes stay inside caller-owned fixture directories that the test removes.
+ */
 function assertBaselineRoundTrip(baselineDir: string): number {
   const baseOptions = baselineRoundTripOptions();
   const report = analyse(baseOptions);
@@ -365,6 +368,14 @@ function assertBaselineRoundTrip(baselineDir: string): number {
   const suppressed = analyse({ ...baseOptions, shouldSkipBaseline: false, baseline: baselinePath });
   assert.equal(suppressed.baseline?.suppressed, report.findings.length);
   assert.equal(suppressed.findings.length, 0);
+  // A user may retain an old secret preview in v1; message-only churn must not unsuppress it.
+  const changedPreviewPath = join(baselineDir, "changed-secret-preview.json");
+  const changedPreviewEntries = entries.map((entry) => entry.ruleId === "sensitive-data.high-entropy-string"
+    ? { ...entry, message: "Legacy redaction preview retained for review." }
+    : entry);
+  writeFileSync(changedPreviewPath, JSON.stringify({ ...baseline, entries: changedPreviewEntries }));
+  const previewChanged = analyse({ ...baseOptions, shouldSkipBaseline: false, baseline: changedPreviewPath });
+  assert.equal(previewChanged.findings.length, 0);
   assertMismatchedBaselineEntryReportsFinding(baselineDir, "wrong-rule.json", baseline, target, (entry) => ({ ...entry, ruleId: "security.wrong-rule" }));
   assertMismatchedBaselineEntryReportsFinding(baselineDir, "wrong-file.json", baseline, target, (entry) => ({ ...entry, filePath: "other.ts" }));
   return report.findings.length;
@@ -430,7 +441,10 @@ function assertBaselineEntryMetadata(schemaVersion: string | undefined, target: 
   assert.equal(typeof target.message, "string");
 }
 
-/** Confirms a changed identity tuple no longer suppresses the original finding. */
+/**
+ * Confirms a changed identity tuple no longer suppresses the original finding. Writes the mutated
+ * baseline file to disk first; the tuple must mismatch for the finding to resurface as new.
+ */
 function assertMismatchedBaselineEntryReportsFinding(
   baselineDir: string,
   fileName: string,

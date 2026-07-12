@@ -2,20 +2,8 @@
  * Provides lightweight source text scanners that separate executable TypeScript
  * from comments, strings, and regex bodies before rule matching runs.
  */
-import { createRequire } from "node:module";
+import { parseScript } from "./parsed-script.ts";
 import type { RunDiagnostic } from "./types.ts";
-
-const require = createRequire(import.meta.url);
-const typescriptSyntax = require("typescript") as typeof import("typescript");
-
-type TsDiagnostic = import("typescript").Diagnostic;
-type TsSourceFile = import("typescript").SourceFile;
-
-// TypeScript's public SourceFile shape exposes parseDiagnostics at runtime; this interface gives
-// the syntax-only parser result the diagnostic field without requiring a full Program.
-interface ParsedSourceFileWithDiagnostics extends TsSourceFile {
-  parseDiagnostics: readonly TsDiagnostic[];
-}
 
 // Just enough of `SourceFile` to keep `parseDiagnostics` decoupled from the full project type:
 // `isScript` gates whether parser diagnostics run; `displayPath` is the report-path anchor.
@@ -26,44 +14,14 @@ interface DiagnosticSourceFile {
 
 /**
  * Syntax-only TypeScript parser diagnostics for script files; non-script inputs stay unparsed.
+ * Thin wrapper over the shared parse boundary so direct callers keep this signature while the
+ * analyser consumes the boundary result once per script.
  *
  * @param file - Source metadata used to skip non-script inputs and report paths.
  * @param source - Raw file text to parse for syntax diagnostics.
  */
 function parseDiagnostics(file: DiagnosticSourceFile, source: string): RunDiagnostic[] {
-  if (!file.isScript) {
-    return [];
-  }
-  const parsed = typescriptSyntax.createSourceFile(file.displayPath, source, typescriptSyntax.ScriptTarget.Latest, true, scriptKindFor(file.displayPath)) as ParsedSourceFileWithDiagnostics;
-  return parsed.parseDiagnostics.map((diagnostic) => parseErrorDiagnostic(file, diagnosticLine(parsed, diagnostic), diagnosticMessage(diagnostic)));
-}
-
-// Maps extensions onto the matching TypeScript parser mode so TSX/JSX syntax is parsed as syntax.
-function scriptKindFor(path: string): import("typescript").ScriptKind {
-  if (path.endsWith(".tsx")) {
-    return typescriptSyntax.ScriptKind.TSX;
-  }
-  if (path.endsWith(".jsx")) {
-    return typescriptSyntax.ScriptKind.JSX;
-  }
-  if (path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs")) {
-    return typescriptSyntax.ScriptKind.JS;
-  }
-  return typescriptSyntax.ScriptKind.TS;
-}
-
-// Parser diagnostics may omit a start offset; line 1 is the stable fallback for malformed files.
-function diagnosticLine(sourceFile: TsSourceFile, diagnostic: TsDiagnostic): number {
-  if (diagnostic.start === undefined) {
-    return 1;
-  }
-  return sourceFile.getLineAndCharacterOfPosition(diagnostic.start).line + 1;
-}
-
-// Prefixes the TypeScript parser message while preserving the existing parse-error diagnostic shape.
-// Chained messages flatten with a space separator so text-format diagnostic rows stay single-line.
-function diagnosticMessage(diagnostic: TsDiagnostic): string {
-  return `TypeScript syntax error: ${typescriptSyntax.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`;
+  return parseScript(file, source)?.diagnostics ?? [];
 }
 
 // Running totals for `{}`, `()`, and `[]`. A negative count means a closer appeared with no opener

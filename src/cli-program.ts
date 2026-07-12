@@ -190,7 +190,7 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--since <ref>", "Filter findings to regions changed against a git base ref.")
     .option("--diff [mode]", "Filter findings to changed regions. Use working-tree, staged, unstaged, a base ref, or - for unified diff on stdin.")
     .option("--changed-scope <scope>", "Changed-region scope: hunk, symbol, or file.", parseChangedScope, "symbol")
-    .option("--history-file <path>", "Append score trend history to this JSON file.")
+    .option("--history-file <path>", "Append score trend history to this JSON file (full scans only; incompatible with --diff, --since, and --changed-ranges).")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
@@ -465,7 +465,7 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "advisory")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
-    .option("--history-file <path>", "Append score trend history to this JSON file.")
+    .option("--history-file <path>", "Append score trend history to this JSON file (full scans only; incompatible with --diff).")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
@@ -556,6 +556,7 @@ function summaryPathLabel(paths: string[], projectRoot: string): string {
 // two CLI invocations producing identical AnalysisOptions must produce identical, stable findings -
 // adding new fields here without folding them into that hash is a deterministic-output regression.
 function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, context: NormalizeContext): AnalysisOptions {
+  assertFullScanHistoryOptions(rawOptions);
   const format = stringChoice(rawOptions.format, ["text", "json", "html", "markdown", "github", "hotspot", "sarif"], "text");
   const failOn = stringChoice(rawOptions.failOn, ["none", "advisory", "warning", "error"], "advisory");
   const diffInput = diffOption(paths, rawOptions);
@@ -583,6 +584,24 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
     ...generateBaselineOption(rawOptions),
     shouldSkipBaseline,
   };
+}
+
+/*
+ * Rejects a history path paired with any changed-region selector before analysis or rendering.
+ * Throws ConfigLoadError so analyse and summary emit the same exit-2 guidance with no stdout.
+ */
+function assertFullScanHistoryOptions(rawOptions: Record<string, unknown>): void {
+  const hasChangedRegionSelector = rawOptions.diff === true
+    || typeof rawOptions.diff === "string"
+    || typeof rawOptions.since === "string"
+    || typeof rawOptions.changedRanges === "string";
+  // A filtered request would mix partial scores into the full-project trend users review.
+  if (typeof rawOptions.historyFile === "string" && hasChangedRegionSelector) {
+    throw new ConfigLoadError(
+      "`--history-file` requires a full scan and cannot be combined with `--diff`, `--since`, or `--changed-ranges`.",
+      "Remove the changed-region option, or omit `--history-file` for this filtered scan.",
+    );
+  }
 }
 
 // Builds the scoped (changed-region) analysis options for the hook: JSON output, no fail-on gate,
@@ -680,8 +699,10 @@ function generateBaselineOption(rawOptions: Record<string, unknown>): Partial<Pi
   return rawOptions.generateBaseline === true ? { generateBaseline: DEFAULT_BASELINE } : {};
 }
 
-function stringChoice<T extends string>(value: unknown, choices: readonly T[], fallback: T): T {
-  return typeof value === "string" && choices.includes(value as T) ? (value as T) : fallback;
+// Last-resort choice normalizer for programmatic option bags; the CLI surfaces validate the same
+// sets at parse time, so this fallback only guards direct `normalizeOptions` callers.
+function stringChoice<T extends string>(rawValue: unknown, choices: readonly T[], fallback: T): T {
+  return typeof rawValue === "string" && choices.includes(rawValue as T) ? (rawValue as T) : fallback;
 }
 
 /*

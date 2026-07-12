@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-07-11
+last_reviewed: 2026-07-12
 ---
 
 # Verification lessons
@@ -102,9 +102,17 @@ itself dynamic.
 
 **What happened:** A first self-scan cleanup added leading comments and removed most findings, but the follow-up scan still reported context-doc gaps because the comments did not include the rule's expected contract, throws, or side-effect vocabulary.
 
-**Evidence:** `src/changed-regions.ts` + `(search: "function parseChangedRanges")` and `(search: "function gitOutput")`; `src/test-fixtures.ts` + `(search: "function analyseProject")`; `src/baseline-and-project.test.ts` + `(search: "function evalFindingLines")`.
+**Recurrence, 2026-07-12:** New quoted-hash scanner tests used useful fixture-purpose comments but omitted `stable` or `contract` from the final line. The focused suite and full check passed, then the self-scan reported both test callbacks under `docs.missing-invariant-doc` until the final comment lines named the stable contract. A later redirect fixture made the inverse mistake: `Fixture purpose` appeared on the first line and `Stable contract` on the final line, so `docs.fixture-purpose-missing` fired. The final line must carry every applicable vocabulary, such as `Stable fixture contract`.
 
-**Prevention:** When adding comments to clear self-scan documentation findings, include the relevant marker word in the declaration's leading comment (`contract`/`stable`, `throws`, `spawns`, `filesystem`, etc.) and rerun the full self-scan before close-out.
+**Redaction-policy recurrence, 2026-07-12:** The focused suites and full 389-test gate passed, but self-scan found four comment-contract gaps: a rewritten baseline helper omitted its temp-file write, the complex preview test's final comment line omitted why the boundary exists, and two named display limits lacked nearby threshold rationale. The first fix reduced the scan to one finding because the baseline helper still omitted invariant vocabulary; the final line now combines `Stable contract` with the fixture-directory write. The other fixes put `because` on the fixture contract's final line and explain both limits beside their declarations.
+
+**History-scope recurrence, 2026-07-12:** The focused suites and full 392-test gate passed, but self-scan reported all three new CLI test callbacks for missing side-effect documentation. Their final fixture comments named the stable user contract but not the subprocess action; adding `spawns` to each final line made the real CLI execution explicit.
+
+**Complexity-metric recurrence, 2026-07-12:** The focused suites and full 404-test gate passed, then self-scan reported 16 comment-context findings. Large test callbacks needed `Stable fixture contract` on their final leading line, while the fixed metadata key `catch` made the new metric helpers look error-bearing until their comments said they report deterministically or never throw. The same scan caught `src/blocks.ts` six lines over budget; concise comments brought it to 749 without moving behavior.
+
+**Evidence:** `src/changed-regions.ts` + `(search: "function parseChangedRanges")` and `(search: "function gitOutput")`; `src/test-fixtures.ts` + `(search: "function analyseProject")`; `src/baseline-and-project.test.ts` + `(search: "function assertBaselineRoundTrip")`; `src/sensitive-data-rules.test.ts` + `(search: "short masks stay opaque because")`; `src/sensitive-data-rules.ts` + `(search: "24-character threshold")`; `src/security-flow-rules.test.ts` + `(search: "Stable fixture contract")`; `src/history-scope.test.ts` + `(search: "spawns filtered commands")`; `src/complexity-metrics.test.ts` + `(search: "Stable fixture contract")`; `src/complexity-metrics.ts` + `(search: "It reports one deterministic breakdown")`.
+
+**Prevention:** When adding comments to clear self-scan documentation findings, include the relevant marker word in the declaration's leading comment (`contract`/`stable`, `throws`, `spawns`, `filesystem`, etc.). For stacked `//` comments, put every applicable vocabulary on the final line, then rerun the full self-scan before close-out.
 
 ## Lesson: broadening scope can invalidate old suppression-count assertions
 
@@ -330,9 +338,11 @@ when the old behavior is still present in code.
 
 **What happened:** Core-expansion unit fixtures passed, but `./bin/gruff-ts analyse src --format=json --fail-on=none --no-config` exposed a `parse-error` in `src/cli.ts` and false positives where control statements were treated as function blocks.
 
-**Evidence:** `src/cli.ts` + `(search: "function parseDiagnostics")` and `(search: "function functionBlocks")`; `src/cli.test.ts` now includes clean control-flow coverage and delimiter-looking literal coverage.
+**Markdown-renderer recurrence, 2026-07-12:** The focused Markdown suite and the full 395-test gate passed, but the zero-tolerance self-scan reported 12 advisories. One inline type import needed the repository's split type-import style; ten cascading unused/empty-function findings came from a nested template literal inside another template's interpolation confusing `maskNonCode`; and the final finding required explicit invariant vocabulary on the complexity grouping helper. Precomputing the inner label and rerunning the original scan cleared the cascade, then the concise `Invariant:` comment cleared the last finding.
 
-**Prevention:** For regex-heavy rule work, run the analyzer against `src` before declaring the work done, and check the output for diagnostics plus impossible symbols such as `if`, `switch`, or `catch`.
+**Evidence:** `src/cli.ts` + `(search: "function parseDiagnostics")` and `(search: "function functionBlocks")`; `src/cli.test.ts` now includes clean control-flow coverage and delimiter-looking literal coverage; `src/report-renderers.ts` (search: `function renderMarkdownComplexityClusterRow`) is the flattened renderer shape; `.goat-flow/learning-loop/footguns/rule-scanners.md` (search: `nested template interpolation`) records the masking limit.
+
+**Prevention:** For regex-heavy or renderer work, run the analyzer against the final tree before declaring the work done. Treat a sudden run of impossible empty functions or unused parameters after a template expression as a masking signal, flatten the source shape, and rerun the exact scan rather than adding suppressive comments to every downstream symptom.
 
 ## Lesson: inspect smoke output, not just exit status
 

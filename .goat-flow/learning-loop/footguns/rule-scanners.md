@@ -1,9 +1,19 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-06-11
+last_reviewed: 2026-07-12
 ---
 
 # Rule scanner footguns
+
+## Footgun: nested template interpolation can mask the rest of a scanned file
+
+**Status:** active | **Created:** 2026-07-12 | **Evidence:** OBSERVED (Markdown renderer self-scan)
+
+`maskNonCode` (`src/source-text.ts`, search: `function maskNonCode`) tracks template interpolation with one numeric `templateInterpolationDepth`. An inner template literal opened inside an outer `${...}` expression can enter its own `${...}` expression, but closing the inner expression only decrements that shared depth; it does not restore the inner template's quote state. The inner closing backtick can then be treated as a new opener, masking valid code later in the file.
+
+The user-visible symptom is a cascade far from the new line: a valid nested interpolation in `src/report-renderers.ts` made the self-scan claim that later parameters were unused and several later functions were empty even though TypeScript and all 395 tests passed. Precomputing the inner path-symbol label before interpolating it into the outer row reduced the scan from 12 findings to the one independent comment-contract finding.
+
+Until `maskNonCode` gains a template quote stack, avoid a template literal directly inside another template's interpolation in gruff-scanned source. Name the inner user-facing value first, interpolate that variable into the outer string, and run the full self-scan because `tsc` cannot expose this text-mask failure.
 
 ## Footgun: line-rule emitters hardcode severity, so config `severity:` overrides are silently dropped
 
@@ -198,6 +208,12 @@ Three takeaways: (1) `analyseSecurityFlow` is the only caller and runs once per 
 `taintedInput` (`src/security-flow-rules.ts`, search: `function taintedInput`) originally walked every node under every sink argument. That is too broad for callback-style APIs: `fs.readFile("./safe.json", () => log(target))` mentions a tainted local inside the callback, but the tainted value is not the filesystem path argument. The same text-walk mistake also applies to literal text such as `"req.query.path"`; raw `getText()` matching turns documentation-shaped strings into fake sources.
 
 For syntax-only source-to-sink rules, inspect only sink-relevant expression trees. Prune nested function-like nodes while walking arguments, and treat string/no-substitution-template literals as literal text, not source evidence. Add a negative test any time a scanner starts using `node.getText()` over a subtree: one callback-only taint reference and one literal that names the source token. Tests: `src/security-flow-rules.test.ts`, search: `callback-only taint` and `string literals that only mention source tokens`.
+
+## Footgun: context-doc markers are checked against only the LAST line of a leading line-comment run
+
+**Status:** active | **Created:** 2026-07-12 | **Evidence:** OBSERVED (0.5.0 self-scan fix-forward, six reword iterations)
+
+The context-doc rules (`docs.missing-invariant-doc`, `docs.missing-side-effect-doc`, `docs.missing-error-behavior-doc`, `docs.missing-why-for-complex-code`) test their marker vocabulary against the comment record adjacent to the declaration. `commentRecords` (`src/comment-scanner.ts`) emits each `//` line as its OWN record, so for a multi-line `//` run only the FINAL line is the leading comment those marker regexes see. A perfectly good `Invariant:` sentence on line 1 of a three-line comment does not count: the marker word (invariant/contract/must/stable/deterministic/schema/fingerprint; writes/reads/spawns/mutates/filesystem/...; throws/reports/exits/swallows/...; because/avoid/preserve/...) must appear on the LAST line before the declaration. Block comments (`/** ... */`) are one record, so a marker anywhere inside them counts. When adding maintainer comments to satisfy these rules, put the contract sentence last or use a block comment; when a fix "did not take", check which line carries the marker before rewording again.
 
 ## Resolved Entries
 

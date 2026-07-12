@@ -33,7 +33,7 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
       if (isExplicitExampleCredential(raw)) {
         continue;
       }
-      pushSensitiveFinding(config, findings, file, ruleId, message, byteLine(source, match.index ?? 0), byteColumn(source, match.index ?? 0), raw, "high");
+      pushSensitiveFinding({ config, findings, file, ruleId, message, line: byteLine(source, match.index ?? 0), column: byteColumn(source, match.index ?? 0), raw, confidence: "high" });
     }
   }
 
@@ -63,7 +63,7 @@ function analysePhiLabelledIdentifiers(file: SensitiveSourceFile, source: string
     if (!medicalRecordNumber) {
       continue;
     }
-    pushSensitiveFinding(config, findings, file, "sensitive-data.phi-pattern", "Medical record number (PHI) detected.", index + 1, (match.index ?? 0) + 1, medicalRecordNumber, "high");
+    pushSensitiveFinding({ config, findings, file, ruleId: "sensitive-data.phi-pattern", message: "Medical record number (PHI) detected.", line: index + 1, column: (match.index ?? 0) + 1, raw: medicalRecordNumber, confidence: "high" });
   }
 }
 
@@ -77,7 +77,7 @@ function analyseGcpServiceAccountKeys(file: SensitiveSourceFile, source: string,
   const identifier = source.match(/"private_key_id"\s*:\s*"([^"]+)"/)?.[1]
     ?? source.match(/"client_email"\s*:\s*"([^"]+)"/)?.[1]
     ?? "service_account";
-  pushSensitiveFinding(config, findings, file, "sensitive-data.gcp-service-account-key", "GCP service-account key file detected.", byteLine(source, typeMatch.index ?? 0), byteColumn(source, typeMatch.index ?? 0), identifier, "high");
+  pushSensitiveFinding({ config, findings, file, ruleId: "sensitive-data.gcp-service-account-key", message: "GCP service-account key file detected.", line: byteLine(source, typeMatch.index ?? 0), column: byteColumn(source, typeMatch.index ?? 0), raw: identifier, confidence: "high" });
 }
 
 /*
@@ -91,26 +91,35 @@ function analysePaymentCardNumbers(file: SensitiveSourceFile, source: string, co
   for (const match of source.matchAll(/\b(?:\d[ -]?){12,18}\d\b/g)) {
     const rawCandidate = match[0] ?? "";
     const cardNumber = normalizedPaymentCardNumber(rawCandidate);
-    if (!isPaymentCardNumber(cardNumber)) {
-      continue;
-    }
     const line = byteLine(source, match.index ?? 0);
-    if (!/[ -]/.test(rawCandidate) && !hasPaymentCardContext(lines[line - 1] ?? "")) {
+    // The helper owns the shape/checksum/vocabulary gates; anything failing them is not a card.
+    if (!isReportablePaymentCardCandidate(rawCandidate, cardNumber, lines[line - 1] ?? "")) {
       continue;
     }
-    pushSensitiveFinding(
+    pushSensitiveFinding({
       config,
       findings,
       file,
-      "sensitive-data.pii-pattern",
-      "Credit card number (PII) pattern detected.",
+      ruleId: "sensitive-data.pii-pattern",
+      message: "Credit card number (PII) pattern detected.",
       line,
-      byteColumn(source, match.index ?? 0),
-      rawCandidate,
-      "high",
-      { piiKind: "credit-card", digits: cardNumber.length },
-    );
+      column: byteColumn(source, match.index ?? 0),
+      raw: rawCandidate,
+      confidence: "high",
+      metadata: { piiKind: "credit-card", digits: cardNumber.length },
+    });
   }
+}
+
+// Full reportability gate for one digit-run candidate: card shape and Luhn first, then the
+// context rule - separator-grouped numbers are card-formatted by construction, while bare digit
+// runs additionally need card vocabulary on their line because large statistics can pass Luhn
+// by coincidence.
+function isReportablePaymentCardCandidate(rawCandidate: string, cardNumber: string, contextLine: string): boolean {
+  if (!isPaymentCardNumber(cardNumber)) {
+    return false;
+  }
+  return /[ -]/.test(rawCandidate) || hasPaymentCardContext(contextLine);
 }
 
 // Card vocabulary gate for bare digit runs. Substring matching is deliberate so identifier forms
@@ -128,18 +137,17 @@ function analyseNpmAuthTokens(file: SensitiveSourceFile, source: string, config:
     if (!token) {
       continue;
     }
-    pushSensitiveFinding(
+    pushSensitiveFinding({
       config,
       findings,
       file,
-      "sensitive-data.api-key-pattern",
-      "npm auth token pattern detected.",
-      index + 1,
-      undefined,
-      token,
-      "high",
-      { keyName: "_authToken" },
-    );
+      ruleId: "sensitive-data.api-key-pattern",
+      message: "npm auth token pattern detected.",
+      line: index + 1,
+      raw: token,
+      confidence: "high",
+      metadata: { keyName: "_authToken" },
+    });
   }
 }
 
@@ -161,19 +169,18 @@ function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: st
     if (!envValue) {
       continue;
     }
-    pushSensitiveFinding(
+    pushSensitiveFinding({
       config,
       findings,
       file,
-      "sensitive-data.hardcoded-env-value",
-      `Environment-style value \`${envValue.keyName}\` appears to be hardcoded with secret-like content.`,
-      index + 1,
-      undefined,
-      envValue.value,
-      "medium",
-      { keyName: envValue.keyName, length: envValue.value.length, threshold: minLength },
-      ruleSeverity(config, "sensitive-data.hardcoded-env-value", "error"),
-    );
+      ruleId: "sensitive-data.hardcoded-env-value",
+      message: `Environment-style value \`${envValue.keyName}\` appears to be hardcoded with secret-like content.`,
+      line: index + 1,
+      raw: envValue.value,
+      confidence: "medium",
+      metadata: { keyName: envValue.keyName, length: envValue.value.length, threshold: minLength },
+      severity: ruleSeverity(config, "sensitive-data.hardcoded-env-value", "error"),
+    });
   }
 }
 
@@ -187,55 +194,62 @@ function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, co
     if (!isHighEntropySecretCandidate(raw, minLength)) {
       continue;
     }
-    pushSensitiveFinding(
+    pushSensitiveFinding({
       config,
       findings,
       file,
-      "sensitive-data.high-entropy-string",
-      "High-entropy string literal may be an embedded secret.",
-      byteLine(source, match.index ?? 0),
-      byteColumn(source, match.index ?? 0),
+      ruleId: "sensitive-data.high-entropy-string",
+      message: "High-entropy string literal may be an embedded secret.",
+      line: byteLine(source, match.index ?? 0),
+      column: byteColumn(source, match.index ?? 0),
       raw,
-      "medium",
-      { length: raw.length, detector: "high-entropy-string", threshold: minLength },
-      ruleSeverity(config, "sensitive-data.high-entropy-string", "error"),
-    );
+      confidence: "medium",
+      metadata: { length: raw.length, detector: "high-entropy-string", threshold: minLength },
+      severity: ruleSeverity(config, "sensitive-data.high-entropy-string", "error"),
+    });
   }
 }
 
-// Central sensitive-finding emitter: redacts the raw value into the message preview and anchors the
-// finding at line plus, when the scanner pinpointed one, the one-based match column - the column is
-// what keeps two distinct same-line secrets from collapsing into one report entry (ADR-017).
-// `column` is undefined for line-shaped detectors whose helpers expose no match offset.
-function pushSensitiveFinding(
-  config: Config,
-  findings: Finding[],
-  file: SensitiveSourceFile,
-  ruleId: string,
-  message: string,
-  line: number,
-  column: number | undefined,
-  raw: string,
-  confidence: Finding["confidence"],
-  metadata: Record<string, unknown> = {},
-  severity: Finding["severity"] = "error",
-): void {
-  const preview = redact(raw);
-  if (config.secretPreviews.has(preview)) {
+// Input bundle for `pushSensitiveFinding`: everything one sensitive occurrence needs to become a
+// redacted finding. `column` is the one-based match offset when the scanner pinpointed one and is
+// absent for line-shaped detectors; `metadata` and `severity` default inside the builder.
+// Stable contract: `raw` never reaches a finding unredacted.
+interface SensitiveFindingArgs {
+  config: Config;
+  findings: Finding[];
+  file: SensitiveSourceFile;
+  ruleId: string;
+  message: string;
+  line: number;
+  column?: number;
+  raw: string;
+  confidence: Finding["confidence"];
+  metadata?: Record<string, unknown>;
+  severity?: Finding["severity"];
+}
+
+// Central sensitive-finding emitter: redacts the raw value into the message preview and anchors
+// the finding at line plus, when provided, the match column that keeps two distinct same-line
+// secrets from collapsing into one report entry (ADR-017). Invariant: raw secret values never
+// leave this function unredacted, and the `secretPreviews` allowlist must run before any push.
+// Reports exactly one finding per occurrence and never throws.
+function pushSensitiveFinding(args: SensitiveFindingArgs): void {
+  const preview = redact(args.raw);
+  if (args.config.secretPreviews.has(preview)) {
     return;
   }
-  findings.push(
+  args.findings.push(
     makeFinding({
-      ruleId,
-      message: `${message} Redacted preview: ${preview}.`,
-      filePath: file.displayPath,
-      line,
-      ...(column === undefined ? {} : { column }),
-      severity,
+      ruleId: args.ruleId,
+      message: `${args.message} Redacted preview: ${preview}.`,
+      filePath: args.file.displayPath,
+      line: args.line,
+      ...(args.column === undefined ? {} : { column: args.column }),
+      severity: args.severity ?? "error",
       pillar: "sensitive-data",
-      confidence,
+      confidence: args.confidence,
       remediation: "Remove the sensitive value and load it from a secure runtime source.",
-      metadata: { ...metadata, preview },
+      metadata: { ...(args.metadata ?? {}), preview },
     }),
   );
 }
@@ -261,17 +275,24 @@ function isScriptSourcePath(displayPath: string): boolean {
   return /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i.test(displayPath);
 }
 
-// Matches the documented secret-key vocabulary (API_KEY, TOKEN, SECRET, PASSWORD, DATABASE_URL,
-// DSN, CREDENTIAL). Expanding this list will widen sensitive-data coverage - keep it intentional.
+const SECRET_ASSIGNMENT_PATTERN = /^\s*((?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)|[A-Z][A-Z0-9_-]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)[A-Z0-9_-]*)\s*[:=]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|`([^`\r\n]+)`|([^"'`\s#]+))/i;
+
+// Extracts secret-labelled assignment values for scan reporting. Quoted arms preserve hashes,
+// while unquoted values stop at whitespace or hash because comments must not inflate a finding.
 function envValueCandidate(line: string): { keyName: string; value: string; isQuoted: boolean } | undefined {
-  const match = line.match(/^\s*((?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)|[A-Z][A-Z0-9_-]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)[A-Z0-9_-]*)\s*[:=]\s*(["'`]?)([^"'`\s#]+)["'`]?/i);
-  const keyName = match?.[1] ?? "";
-  const openingQuote = match?.[2] ?? "";
-  const secretValue = match?.[3] ?? "";
-  if (!keyName) {
+  const match = line.match(SECRET_ASSIGNMENT_PATTERN);
+  // A user may have supplied an unrelated line or unknown key, which cannot produce this finding.
+  if (!match) {
     return undefined;
   }
-  return { keyName, value: secretValue, isQuoted: openingQuote !== "" };
+  const keyName = match[1];
+  const quotedValue = match[2] ?? match[3] ?? match[4];
+  const secretValue = quotedValue ?? match[5];
+  // A user may have supplied an empty or unterminated assignment; neither is a secret candidate.
+  if (!keyName || !secretValue) {
+    return undefined;
+  }
+  return { keyName, value: secretValue, isQuoted: quotedValue !== undefined };
 }
 
 // Three predicates combined: long enough, not a literal placeholder, and shape-like (letters + digits).
@@ -544,13 +565,19 @@ function shannonEntropy(candidateText: string): number {
   }, 0);
 }
 
-// Preview format used in finding messages. Short values are fully masked; longer values show only
-// the first/last 4 characters so an operator can identify which secret to rotate without leaking it.
+// The 24-character threshold prevents edge context from exposing most of a short credential.
+const MINIMUM_SECRET_LENGTH_FOR_CONTEXT = 24;
+// The four-character limit keeps long tokens recognizable without revealing most of their value.
+const VISIBLE_SECRET_EDGE_LENGTH = 4;
+
+// Formats the secret evidence shown in findings and every report. Reviewers see only length for
+// short values, while long credentials retain limited edge context to identify what to rotate.
 function redact(rawSecret: string): string {
-  if (rawSecret.length <= 8) {
+  // A reviewer opening any report gets a full mask when edge context would disclose too much.
+  if (rawSecret.length < MINIMUM_SECRET_LENGTH_FOR_CONTEXT) {
     return `${"*".repeat(rawSecret.length)} (redacted, ${rawSecret.length} chars)`;
   }
-  return `${rawSecret.slice(0, 4)}...${rawSecret.slice(-4)} (redacted, ${rawSecret.length} chars)`;
+  return `${rawSecret.slice(0, VISIBLE_SECRET_EDGE_LENGTH)}...${rawSecret.slice(-VISIBLE_SECRET_EDGE_LENGTH)} (redacted, ${rawSecret.length} chars)`;
 }
 
 export { analyseSensitiveData };

@@ -1,11 +1,11 @@
 // JSDoc and exported-declaration documentation rules. Covers `docs.missing-public-doc`,
 // `docs.missing-file-overview`, `docs.missing-interface-doc`, and the docblock rule pack
 // (stale/missing @param, missing @returns, useless docblock). Stable, deterministic emission order.
-import { parameterNames } from "./blocks.ts";
 import { commentTextAtLine, hasLeadingCommentBeforeLine } from "./comment-scanner.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { normalizedIdentifier, splitIdentifierWords } from "./findings-helpers.ts";
+import { normalizedIdentifier, parameterNames, splitIdentifierWords } from "./findings-helpers.ts";
+import { documentedExportFunctions, type ParsedScript } from "./parsed-script.ts";
 import { byteLine } from "./text-scans.ts";
 import type { Finding } from "./types.ts";
 
@@ -137,8 +137,8 @@ export function interfaceDeclarations(source: string, codeSource: string): Expor
  * Docblock rule pack. Walks every `/** … *\/ export function …` pair and fires four sub-rules per
  * block in a stable, deterministic emission order (stale-param → missing-param → missing-return → useless-docblock).
  */
-export function analyseDocRules(file: SourceFile, source: string, codeSource: string, findings: Finding[]): void {
-  for (const documentedExport of documentedExportBlocks(source, codeSource)) {
+export function analyseDocRules(file: SourceFile, source: string, codeSource: string, findings: Finding[], parsed?: ParsedScript): void {
+  for (const documentedExport of documentedExportBlocks(source, codeSource, parsed)) {
     pushStaleParamFindings(file, documentedExport, findings);
     pushMissingParamFindings(file, documentedExport, findings);
     pushMissingReturnFinding(file, documentedExport, findings);
@@ -146,9 +146,23 @@ export function analyseDocRules(file: SourceFile, source: string, codeSource: st
   }
 }
 
-// Walks every `/** … */ export function …` pair in the source. Skips matches whose `export`
-// keyword is inside a string/regex by confirming it shows up in the masked code as well.
-function documentedExportBlocks(source: string, codeSource: string): DocumentedExportBlock[] {
+/*
+ * Walks every documented exported function. With the shared parse, detection anchors on the syntax
+ * tree: prose containing `export` inside the docblock can no longer suppress a block, and
+ * `export async function` plus generic and multi-line signatures are covered. The legacy regex walk
+ * remains only as the fallback for direct callers without a parse.
+ */
+function documentedExportBlocks(source: string, codeSource: string, parsed?: ParsedScript): DocumentedExportBlock[] {
+  if (parsed) {
+    return documentedExportFunctions(parsed).map((documented) => ({
+      doc: documented.docText,
+      name: documented.name,
+      params: documented.parameterNames,
+      paramTags: docParamTags(documented.docText),
+      line: documented.line,
+      returnType: documented.returnTypeText,
+    }));
+  }
   const blocks: DocumentedExportBlock[] = [];
   const documentedExport = /\/\*\*((?:(?!\*\/)[\s\S])*?)\*\/\s*export\s+function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*(?::\s*([^\x7b\n]+))?/g;
   for (const match of source.matchAll(documentedExport)) {

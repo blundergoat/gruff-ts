@@ -8,6 +8,22 @@ import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
+// Splits on `,` then strips visibility modifiers, `...rest`, default values, and type annotations
+// in that order. Final filter rejects entries whose name isn't a plain identifier - destructured
+// parameters land in that bucket and are intentionally invisible to per-parameter rules.
+export function parameterNames(params: string): Array<{ name: string; raw: string }> {
+  return params
+    .split(",")
+    .map((parameter) => parameter.trim())
+    .filter(Boolean)
+    .map((raw) => {
+      const stripped = raw.replace(/^(?:public|private|protected|readonly)\s+/, "").replace(/^\.\.\./, "");
+      const name = stripped.split(/[?:=]/)[0]?.trim() ?? "";
+      return { name, raw: stripped };
+    })
+    .filter((parameter) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(parameter.name));
+}
+
 /*
  * Central severity-override pass: config `rules.<id>.severity` wins over the scanner's created
  * severity for every rule family in one place, so a user's policy applies even to scanners that

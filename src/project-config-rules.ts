@@ -118,7 +118,7 @@ function pushLifecycleScriptFinding(file: ConfigSourceFile, source: string, scri
 }
 
 /*
- * Walks every dependency section in a stable, deterministic order. `runtimeDependency` flag
+ * Walks every dependency section in a stable, deterministic order. The `isRuntimeDependency` flag
  * separates devDependencies from the rest because the broad-version rule should only fire for
  * runtime drift.
  */
@@ -128,35 +128,38 @@ function analysePackageDependencies(file: ConfigSourceFile, source: string, pkg:
     if (!dependencies) {
       continue;
     }
-    const runtimeDependency = section === "dependencies" || section === "optionalDependencies";
+    const isRuntimeDependency = section === "dependencies" || section === "optionalDependencies";
     for (const [packageName, value] of Object.entries(dependencies)) {
       if (isString(value)) {
-        analysePackageDependency(file, source, section, packageName, value, runtimeDependency, findings);
+        analysePackageDependency(file, source, section, packageName, value, isRuntimeDependency, findings);
       }
     }
   }
 }
 
+// Runs both per-dependency checks for one entry; the emission order is a stable contract.
 function analysePackageDependency(
   file: ConfigSourceFile,
   source: string,
   section: string,
   packageName: string,
   versionSpec: string,
-  runtimeDependency: boolean,
+  isRuntimeDependency: boolean,
   findings: Finding[],
 ): void {
-  pushUrlDependencyFinding(file, source, section, packageName, versionSpec, runtimeDependency, findings);
-  pushBroadRuntimeDependencyFinding(file, source, section, packageName, versionSpec, runtimeDependency, findings);
+  pushUrlDependencyFinding(file, source, section, packageName, versionSpec, isRuntimeDependency, findings);
+  pushBroadRuntimeDependencyFinding(file, source, section, packageName, versionSpec, isRuntimeDependency, findings);
 }
 
+// Flags URL/git/file version specs, which bypass registry auditing.
+// Stable `security.url-dependency` contract: reports exactly one finding per offending spec.
 function pushUrlDependencyFinding(
   file: ConfigSourceFile,
   source: string,
   section: string,
   packageName: string,
   versionSpec: string,
-  runtimeDependency: boolean,
+  isRuntimeDependency: boolean,
   findings: Finding[],
 ): void {
   if (!isUrlDependency(versionSpec)) {
@@ -173,21 +176,23 @@ function pushUrlDependencyFinding(
       confidence: "medium",
       symbol: packageName,
       remediation: "Prefer a registry package version that can be locked and audited.",
-      metadata: { packageName, section, runtimeDependency },
+      metadata: { packageName, section, runtimeDependency: isRuntimeDependency },
     }),
   );
 }
 
+// Flags broad runtime version ranges (`*`, `latest`, bare majors) under the stable
+// `waste.broad-runtime-version` contract: reports runtime sections only; dev sections must stay exempt.
 function pushBroadRuntimeDependencyFinding(
   file: ConfigSourceFile,
   source: string,
   section: string,
   packageName: string,
   versionSpec: string,
-  runtimeDependency: boolean,
+  isRuntimeDependency: boolean,
   findings: Finding[],
 ): void {
-  if (!runtimeDependency || !isBroadRuntimeVersion(versionSpec)) {
+  if (!isRuntimeDependency || !isBroadRuntimeVersion(versionSpec)) {
     return;
   }
   findings.push(

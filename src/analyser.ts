@@ -5,17 +5,17 @@ import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { cwd } from "node:process";
 import { basename } from "node:path";
-import { dedupeFindings, recordHistory } from "./baseline.ts";
+import { recordHistory, sortedUniqueFindings } from "./baseline.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { changedRegionScope, filterChangedFindings, filterScopedDiagnostics } from "./changed-regions.ts";
 import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { applyConfiguredSeverity, finding } from "./findings-helpers.ts";
+import { applyConfiguredSeverity, finding, parameterNames } from "./findings-helpers.ts";
 import { commentRecords } from "./comment-scanner.ts";
 import { analyseArchitectureRules, analyseCircularImportRule, buildProjectIndex, CIRCULAR_IMPORT_RULE_ID, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
-import { analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks, parameterNames } from "./blocks.ts";
+import { analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks } from "./blocks.ts";
 import { analyseClassRules, analyseAcronymCase, analyseInconsistentCasing, analyseInterfaceFields, collectDeclaredIdentifiers } from "./class-rules.ts";
 import { analyseDeadCode, analyseUnreachable, analyseUnusedImports } from "./dead-code-rules.ts";
 import { analyseCommentQualityRules } from "./comment-rules.ts";
@@ -29,7 +29,8 @@ import { analyseProjectConfigRules } from "./project-config-rules.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { scoreReport, summarize } from "./scoring.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
-import { maskNonCode, maskTemplateLiteralBodies, parseDiagnostics } from "./source-text.ts";
+import { parseScript, type ParsedScript } from "./parsed-script.ts";
+import { maskNonCode, maskTemplateLiteralBodies } from "./source-text.ts";
 import type { AnalysisOptions, AnalysisReport, Config, Finding, Pillar, RunDiagnostic, ScanSurfaceNote, SkippedPath } from "./types.ts";
 
 /*
@@ -58,8 +59,7 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
   }
 
   // File-scoped policy: diff runs report and fail on diagnostics from changed target files only.
-  const scopedRun = { ...run, diagnostics: filterScopedDiagnostics(run.diagnostics, changedScope) };
-  return reportFromRun(scopedRun, options, { ...run.baselineResult, findings: changedResult.findings }, changedResult.suppressedCount);
+  return reportFromRun({ ...run, diagnostics: filterScopedDiagnostics(run.diagnostics, changedScope) }, options, { ...run.baselineResult, findings: changedResult.findings }, changedResult.suppressedCount);
 }
 
 // Builds the hook's full and changed-region reports from one scan. The diff-base replay still uses
@@ -73,8 +73,7 @@ export function analyseHookReports(currentOptions: AnalysisOptions, scopedOption
   const scopedChangedScope = changedRegionScope(scopedOptions);
   const scopedChangedResult = filterChangedFindings(run.baselineResult.findings, scopedChangedScope, run.scanned.sources);
   // Same file-scoped diagnostics policy as diff-scoped analyse, so both surfaces agree.
-  const scopedRun = { ...run, diagnostics: filterScopedDiagnostics(run.diagnostics, scopedChangedScope) };
-  const scopedReport = reportFromRun(scopedRun, scopedOptions, { ...run.baselineResult, findings: scopedChangedResult.findings }, scopedChangedResult.suppressedCount);
+  const scopedReport = reportFromRun({ ...run, diagnostics: filterScopedDiagnostics(run.diagnostics, scopedChangedScope) }, scopedOptions, { ...run.baselineResult, findings: scopedChangedResult.findings }, scopedChangedResult.suppressedCount);
   return { currentReport, scopedReport };
 }
 
@@ -107,6 +106,7 @@ function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResul
   return buildAnalysisReport(run.projectRoot, options, run.discovery, run.diagnostics, baselineResult, run.notes, suppressedCount);
 }
 
+// Assembles the run's payload; the field shape is the stable gruff.analysis.v2 schema contract.
 function buildAnalysisReport(
   projectRoot: string,
   options: AnalysisOptions,
@@ -209,15 +209,17 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
       const source = readFileSync(file.absolutePath, "utf8");
       sources.set(file.displayPath, { file, source });
       const budgetNote = deepScanBudgetNote(file, source);
+      // One parse per script per run: every deep consumer shares this result; over-budget files skip it.
+      const parsed = budgetNote ? undefined : parseScript(file, source);
       if (budgetNote) {
         notes.push(budgetNote);
       } else {
         if (shouldRetainProjectSource(file, source)) {
           projectSources.push(projectSource(file, source));
         }
-        diagnostics.push(...parseDiagnostics(file, source));
+        diagnostics.push(...(parsed?.diagnostics ?? []));
       }
-      findings.push(...analyseSource(file, source, config, budgetNote === undefined));
+      findings.push(...analyseSource(file, source, config, budgetNote === undefined, parsed));
     } catch (error) {
       diagnostics.push({
         diagnosticType: "read-error",
@@ -273,30 +275,17 @@ function hasImportSyntaxCandidate(source: string): boolean {
   return source.includes("import") || source.includes("from");
 }
 
-// Canonical finding ordering: (filePath, line, ruleId, message). The same tuple is part of the
-// stable baseline matching contract, so changing the comparator would churn every existing baseline.
-function sortedUniqueFindings(findings: Finding[]): Finding[] {
-  findings.sort(
-    (left, right) =>
-      left.filePath.localeCompare(right.filePath) ||
-      (left.line ?? 0) - (right.line ?? 0) ||
-      left.ruleId.localeCompare(right.ruleId) ||
-      left.message.localeCompare(right.message),
-  );
-  return dedupeFindings(findings);
-}
-
 // Per-file rule pipeline. Text rules run on every file (including config/yaml); TypeScript rules
 // run only on scripts within the deep-scan budget. Fixed order is part of the stable fingerprint
 // contract. Generated/copied files keep every security and sensitive-data finding but drop
 // documentation and naming findings - generated code is not maintainer-authored source, so pushing
 // doc/naming work at a human reviewer is unactionable noise.
 // Contract invariant: doc/naming skips must not suppress safety pillars or change rule order.
-function analyseSource(file: SourceFile, source: string, config: Config, isWithinDeepScanBudget: boolean): Finding[] {
+function analyseSource(file: SourceFile, source: string, config: Config, isWithinDeepScanBudget: boolean, parsed?: ParsedScript): Finding[] {
   const findings: Finding[] = [];
   analyseTextRules(file, source, config, findings);
   if (file.isScript && isWithinDeepScanBudget) {
-    analyseTypeScriptRules(file, source, config, findings);
+    analyseTypeScriptRules(file, source, config, findings, parsed);
   }
   const isGenerated = isGeneratedSource(source);
   return findings.filter((finding) => ruleEnabled(config, finding.ruleId) && !(isGenerated && GENERATED_SKIPPED_PILLARS.has(finding.pillar)));
@@ -593,19 +582,19 @@ function isGeneratedLockfile(path: string): boolean {
  * TypeScript-only rule pipeline. Masks comments and literals once, parses callable blocks once,
  * then walks every rule pack in a stable, deterministic order so reports and baselines remain reproducible.
  */
-function analyseTypeScriptRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
+function analyseTypeScriptRules(file: SourceFile, source: string, config: Config, findings: Finding[], parsed?: ParsedScript): void {
   if (!isAnyRuleEnabled(config, TYPESCRIPT_RULE_IDS)) {
     return;
   }
   const codeSource = maskNonCode(source);
-  const blocks = isAnyRuleEnabled(config, BLOCK_DEPENDENT_RULE_IDS) ? functionBlocks(source, codeSource) : [];
+  const blocks = isAnyRuleEnabled(config, BLOCK_DEPENDENT_RULE_IDS) ? functionBlocks(source, codeSource, parsed) : [];
   runRulePass(config, "docs.missing-file-overview", () => analyseFileOverviewDoc(file, source, findings));
   analyseBlocks(file, source, codeSource, blocks, config, findings);
   runRulePass(config, "waste.unused-import", () => analyseUnusedImports(file, codeSource, source, findings));
   runRuleGroupPass(config, LINE_RULE_IDS, () => analyseLineRules(file, source, codeSource, config, findings));
-  runRuleGroupPass(config, SECURITY_FLOW_RULE_IDS, () => analyseSecurityFlow(file, source, findings));
+  runRuleGroupPass(config, SECURITY_FLOW_RULE_IDS, () => analyseSecurityFlow(file, source, findings, parsed?.sourceFile));
   runRulePass(config, "waste.unreachable-code", () => analyseUnreachable(file, codeSource, findings));
-  runRuleGroupPass(config, DOCBLOCK_RULE_IDS, () => analyseDocRules(file, source, codeSource, findings));
+  runRuleGroupPass(config, DOCBLOCK_RULE_IDS, () => analyseDocRules(file, source, codeSource, findings, parsed));
   runRulePass(config, "docs.missing-interface-doc", () => analyseInterfaceDocs(file, source, codeSource, findings));
   runRuleGroupPass(config, INTERFACE_FIELD_RULE_IDS, () => analyseInterfaceFields(file, source, codeSource, config, findings));
   runRuleGroupPass(config, COMMENT_QUALITY_RULE_IDS, () => analyseCommentQualityRules({ file, source, codeSource, blocks, comments: commentRecords(source), config, findings }));

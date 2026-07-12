@@ -41,8 +41,10 @@ itself suppress any rule family.
 
 ## Complexity
 
-- `complexity.cognitive` (warning; high confidence; threshold 15): Flags functions with high combined branch and nesting complexity.
-- `complexity.cyclomatic` (warning; high confidence; threshold 15): Flags functions with many independent branch paths.
+- `complexity.cognitive` (warning; high confidence; threshold 15): Flags syntax-aware decisions plus nested `if`, loop, `switch`, `catch`, and ternary depth. Object literals, callback wrappers, classes, and ordinary blocks do not add nesting; `else if` remains at peer depth and switch cases do not stack.
+- `complexity.cyclomatic` (warning; high confidence; threshold 15): Starts at one, then counts each `if`, loop, `catch`, non-default `case`, ternary, `&&`, and `||` syntax node once. The `switch` wrapper, `default`, `??`, optional property/element/call chains, and non-null assertions add zero.
+
+Both rules consume the same parsed callable measurement as `docs.missing-why-for-complex-code`. A nested callable already reported as its own block is measured separately; an anonymous callback without its own block stays part of the nearest reported owner. Complexity findings retain `metadata.complexity` and `metadata.threshold` and add a fixed `metadata.breakdown` object with `if`, `loop`, `catch`, `case`, `ternary`, `logicalAnd`, `logicalOr`, and `maxNesting` counts.
 
 ## Dead Code
 

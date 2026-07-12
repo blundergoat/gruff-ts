@@ -3,6 +3,45 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { analyseFixture, analyseProject, largeFixtureSourceLines, TS_IGNORE_DIRECTIVE } from "./test-fixtures.ts";
 
+test("docblock rules cover async exports and survive prose containing the word export", () => {
+  const report = analyseFixture(`// File overview: docblock anchoring fixture.
+/**
+ * Handles the export pipeline for shipped reports; the word export here is prose, not code.
+ * @param wrongName documents a parameter that does not exist
+ */
+export async function shipReports(actualName: string): Promise<number> {
+  return actualName.length;
+}
+`);
+  const docblockFindings = report.findings.filter((finding) => finding.symbol === "shipReports");
+  const ruleIds = new Set(docblockFindings.map((finding) => finding.ruleId));
+  // Before AST anchoring, the async keyword broke detection and the prose "export" inside the
+  // docblock suppressed the block entirely - all three sub-rules were silently skipped.
+  assert.equal(ruleIds.has("docs.stale-param-tag"), true);
+  assert.equal(ruleIds.has("docs.missing-param-tag"), true);
+  assert.equal(ruleIds.has("docs.missing-return-tag"), true);
+});
+
+test("a draft-mutating apply function does not absorb a later filesystem writer", () => {
+  const report = analyseFixture(`// File overview: callable boundary fixture.
+// Applies pending edits onto the supplied draft object in place.
+function applyPendingEdits(draft: { total: number }): void {
+  draft.total += 1;
+}
+
+// Renders the final report body for the caller.
+function persistReport(path: string, body: string): void {
+  writeFileSync(path, body);
+}
+`);
+  const sideEffectSymbols = report.findings
+    .filter((finding) => finding.ruleId === "docs.missing-side-effect-doc")
+    .map((finding) => finding.symbol);
+  // Exact block boundaries: only the real filesystem writer needs a side-effect note; the
+  // in-memory draft mutation above it must not inherit the later function's write signal.
+  assert.deepEqual(sideEffectSymbols, ["persistReport"]);
+});
+
 test("documentation rubric requires file overview and comments on functions and interfaces", () => {
   const report = analyseFixture(`interface DiagnosticSourceFile {
   displayPath: string;

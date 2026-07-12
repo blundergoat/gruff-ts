@@ -2,11 +2,11 @@
 // public-property + readonly candidates, inconsistent casing, acronym case, interface fields.
 // Pulls the declaration walkers and casing helpers out of cli.ts so the orchestrator just calls
 // the entry points.
-import { type FunctionBlock, parameterNames } from "./blocks.ts";
+import { type FunctionBlock } from "./blocks.ts";
 import { type ExportedDeclaration, exportedDeclarations, pushMissingPublicDocFinding } from "./doc-rules.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { fileBaseName, finding, normalizedIdentifier } from "./findings-helpers.ts";
+import { fileBaseName, finding, normalizedIdentifier, parameterNames } from "./findings-helpers.ts";
 import { pushBooleanPrefixAt, pushNegativeBooleanAt, type NamingSurface } from "./naming-pushers.ts";
 import { byteLine } from "./text-scans.ts";
 import type { Config, Finding } from "./types.ts";
@@ -24,6 +24,7 @@ interface DeclaredIdentifier {
 export function collectDeclaredIdentifiers(source: string, codeSource: string, blocks: FunctionBlock[]): DeclaredIdentifier[] {
   const inventory: DeclaredIdentifier[] = [];
   const seen = new Set<string>();
+  // Records one identifier per (name, line, surface) so overlapping scans stay de-duplicated.
   const push = (name: string, line: number, surface: NamingSurface): void => {
     if (!name) return;
     const key = `${name}@${line}@${surface}`;
@@ -256,24 +257,32 @@ export function analyseInterfaceFields(file: SourceFile, source: string, codeSou
 
 const INTERFACE_HEADER_REGEX = /\b(?:export\s+)?(?:interface\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^>]*>)?(?:\s+extends\s+[^{]+)?|type\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^>]*>)?\s*=\s*)\s*\{/g;
 
+// Streams the depth-1 member lines of every interface/type-literal body so the field rules see
+// each declaration exactly once. Mapped types (`{ [K in ...] }`) are skipped - no field names there.
 function* walkInterfaceBodyLines(source: string, codeSource: string): Generator<{ lineIndex: number; sourceLine: string }> {
   const codeLines = codeSource.split(/\r?\n/);
   const sourceLines = source.split(/\r?\n/);
   for (const header of codeSource.matchAll(INTERFACE_HEADER_REGEX)) {
     const headerEnd = (header.index ?? 0) + header[0].length;
+    // An index-signature-first body is a mapped type, not a field list the naming rules can judge.
     if (codeSource.slice(headerEnd, headerEnd + 30).trimStart().startsWith("[")) {
       continue;
     }
-    const headerLineIndex = byteLine(source, headerEnd - 1) - 1;
-    const headerLine = codeLines[headerLineIndex] ?? "";
-    let depth = 1 + countBraceChange(headerLine.slice(headerLine.lastIndexOf("{") + 1));
-    for (let lineIndex = headerLineIndex + 1; depth > 0 && lineIndex < codeLines.length; lineIndex += 1) {
-      const codeLine = codeLines[lineIndex] ?? "";
-      if (depth === 1) {
-        yield { lineIndex, sourceLine: sourceLines[lineIndex] ?? "" };
-      }
-      depth += countBraceChange(codeLine);
+    yield* interfaceBodyMemberLines(codeLines, sourceLines, byteLine(source, headerEnd - 1) - 1);
+  }
+}
+
+// Walks one body from its header line, yielding lines while brace depth stays at the member level.
+function* interfaceBodyMemberLines(codeLines: string[], sourceLines: string[], headerLineIndex: number): Generator<{ lineIndex: number; sourceLine: string }> {
+  const headerLine = codeLines[headerLineIndex] ?? "";
+  let depth = 1 + countBraceChange(headerLine.slice(headerLine.lastIndexOf("{") + 1));
+  for (let lineIndex = headerLineIndex + 1; depth > 0 && lineIndex < codeLines.length; lineIndex += 1) {
+    const codeLine = codeLines[lineIndex] ?? "";
+    // Depth 1 means we are directly inside the declaration body, where the member lines live.
+    if (depth === 1) {
+      yield { lineIndex, sourceLine: sourceLines[lineIndex] ?? "" };
     }
+    depth += countBraceChange(codeLine);
   }
 }
 

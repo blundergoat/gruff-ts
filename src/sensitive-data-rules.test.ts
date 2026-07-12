@@ -41,6 +41,18 @@ const RAW_SECRET_FIXTURE_VALUES = [
 ];
 const EXPECTED_SECRET_DOTFILE_ANALYSED_FILES = 2;
 const EXPECTED_NEW_DETECTOR_PREVIEWS = 2;
+const SHORT_HASH_PREFIX = "a1B2";
+const HASH_SECRET_SUFFIX = "c3D4e5F6g7H8";
+const QUOTED_HASH_SECRET_FIXTURE_VALUE = [SHORT_HASH_PREFIX, "#", HASH_SECRET_SUFFIX].join("");
+const EXPECTED_QUOTED_HASH_SECRET_LENGTH = 17;
+const MINIMUM_CONTEXT_PREVIEW_LENGTH = 24;
+const REDACTION_PREVIEW_CASES = [
+  { keyName: "SHORT_TOKEN_NINE", secretValue: ["a1B2", "c3D4e"].join("") },
+  { keyName: "SHORT_TOKEN_TWELVE", secretValue: ["f5G6h7", "J8k9L0"].join("") },
+  { keyName: "SHORT_TOKEN_SIXTEEN", secretValue: ["m1N2p3Q4", "r5S6t7U8"].join("") },
+  { keyName: "LONG_TOKEN_TWENTY_FOUR", secretValue: ["v1W2x3Y4z5A6", "b7C8d9E0f1G2"].join("") },
+  { keyName: "LONG_TOKEN_FORTY", secretValue: ["h3J4k5L6m7N8p9Q0r1S2", "t3U4v5W6x7Y8z9A0b1C2"].join("") },
+] as const;
 
 // Fixture covers the redaction contract across every report renderer using safe synthetic values.
 function redactedSecretsFixtureSource(): string {
@@ -72,6 +84,35 @@ test("risk expansion redacts sensitive data in all render formats", () => {
   });
   PREVIEW_RENDER_FORMATS.forEach((format) => {
     assert.match(renderReport(report, format), /redacted/);
+  });
+});
+
+// Fixture purpose: exercises every disclosure boundary without storing a complete long token.
+// Stable fixture contract: short masks stay opaque because edge context would expose too much.
+test("redaction previews fully mask short values and limit long-value context", () => {
+  // These exact lengths pin both sides of the reviewer-visible disclosure boundary.
+  assert.deepEqual(REDACTION_PREVIEW_CASES.map(({ secretValue }) => secretValue.length), [9, 12, 16, 24, 40]);
+  // A test-only low detector threshold lets the report exercise redaction without changing defaults.
+  const source = REDACTION_PREVIEW_CASES.map(({ keyName, secretValue }) => `${keyName}=${secretValue}`).join("\n");
+  const report = analyseFixture(source, {
+    fileName: ".env",
+    config: { rules: { "sensitive-data.hardcoded-env-value": { threshold: 1 } } },
+  });
+  // Reviewer-facing rows are indexed by their key label so each boundary is checked directly.
+  const previewsByKey = new Map(
+    report.findings
+      .filter((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value")
+      .map((finding) => [finding.metadata.keyName, String(finding.metadata.preview)]),
+  );
+
+  assert.equal(previewsByKey.size, REDACTION_PREVIEW_CASES.length);
+  // Each report row must expose only the policy-approved amount of credential context.
+  REDACTION_PREVIEW_CASES.forEach(({ keyName, secretValue }) => {
+    const expectedPreview = secretValue.length < MINIMUM_CONTEXT_PREVIEW_LENGTH
+      ? `${"*".repeat(secretValue.length)} (redacted, ${secretValue.length} chars)`
+      : `${secretValue.slice(0, 4)}...${secretValue.slice(-4)} (redacted, ${secretValue.length} chars)`;
+    assert.equal(previewsByKey.get(keyName), expectedPreview);
+    assert.equal(JSON.stringify(report).includes(secretValue), false);
   });
 });
 
@@ -231,6 +272,36 @@ void settings; void table;
 
   const envReport = analyseFixture(`API_TOKEN=${API_TOKEN_FIXTURE_VALUE}\n`, { fileName: ".env" });
   assert.equal(envReport.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), true);
+});
+
+// Fixture purpose: quoted assignment values exercise every quote style accepted by the scanner.
+// Stable contract: matching quotes preserve an embedded hash as secret data.
+test("hardcoded-env preserves hash characters inside matching quotes", () => {
+  assert.equal(QUOTED_HASH_SECRET_FIXTURE_VALUE.length, EXPECTED_QUOTED_HASH_SECRET_LENGTH);
+  const source = [
+    `DOUBLE_TOKEN="${QUOTED_HASH_SECRET_FIXTURE_VALUE}"`,
+    `SINGLE_TOKEN='${QUOTED_HASH_SECRET_FIXTURE_VALUE}'`,
+    `BACKTICK_TOKEN=\`${QUOTED_HASH_SECRET_FIXTURE_VALUE}\``,
+  ].join("\n");
+  const report = analyseFixture(source, { fileName: ".env" });
+  const findings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value");
+
+  assert.deepEqual(findings.map((finding) => finding.metadata.keyName), ["DOUBLE_TOKEN", "SINGLE_TOKEN", "BACKTICK_TOKEN"]);
+  assert.equal(findings.every((finding) => finding.metadata.length === QUOTED_HASH_SECRET_FIXTURE_VALUE.length), true);
+});
+
+// Fixture purpose: unquoted hashes exercise .env, YAML, INI, and npmrc assignment handling.
+// Stable contract: comment text never inflates an unquoted value into a secret finding.
+test("hardcoded-env does not inflate unquoted values with hash comments across config dialects", () => {
+  const report = analyseProject({
+    ".env": `TOKEN=${QUOTED_HASH_SECRET_FIXTURE_VALUE}\nPASSWORD=${SHORT_HASH_PREFIX} #${HASH_SECRET_SUFFIX}\n`,
+    "config.yaml": `API_KEY: ${QUOTED_HASH_SECRET_FIXTURE_VALUE}\n`,
+    "settings.ini": `SECRET=${QUOTED_HASH_SECRET_FIXTURE_VALUE}\n`,
+    ".npmrc": `CREDENTIAL=${QUOTED_HASH_SECRET_FIXTURE_VALUE}\n`,
+  });
+  const findings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value");
+
+  assert.deepEqual(findings, []);
 });
 
 test("payment-card detection requires card context for bare digit runs", () => {

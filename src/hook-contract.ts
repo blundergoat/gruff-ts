@@ -170,6 +170,9 @@ function analyzerInfo(): { name: "gruff-ts"; version: string } {
   return { name: "gruff-ts", version: VERSION };
 }
 
+// Builds the hook finding list: changed-region scoping drops inherited file findings, then
+// new-only filtering re-admits file/project findings absent from the base identities.
+// Invariant: suppressed.count arithmetic must stay exact across both filtering stages.
 function hookFindings(
   currentReport: AnalysisReport,
   scopedReport: AnalysisReport,
@@ -379,6 +382,8 @@ function baselineScopeForRule(ruleId: string): HookScope {
   return "line";
 }
 
+// Replays the diff base ref and returns its findings' stable hook identities for new-only filtering.
+// Writes a temp tree, spawns git to materialize base files, and must clean both up afterward.
 function stableIdentitiesFromDiffBase(
   runAnalyse: HookAnalysisRunner,
   options: AnalysisOptions,

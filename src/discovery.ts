@@ -107,6 +107,8 @@ function discoverSourceInput(projectRoot: string, input: string, options: Analys
   walk(projectRoot, absolute, options, config, discovery.skipped, discovery.files, gitIgnoreRules);
 }
 
+// Depth-first directory walk that applies ignore rules before recursing, because descending into
+// an excluded subtree would waste reads; skips record source and pattern to avoid silent exclusions.
 function walk(
   projectRoot: string,
   directory: string,

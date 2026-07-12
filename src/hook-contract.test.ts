@@ -252,6 +252,32 @@ test("hook keeps two same-line secrets independently classifiable", () => {
   });
 });
 
+// Fixture purpose: models a hook user carrying a baseline entry with the former short preview.
+// Stable contract: presentation churn resurfaces the credential once for fail-safe review.
+test("hook resurfaces a finding after its redaction preview policy changes", () => {
+  const previewPolicySecret = ["a1B2c3D4", "e5F6g7H8"].join("");
+  const legacyPreview = `${previewPolicySecret.slice(0, 4)}...${previewPolicySecret.slice(-4)} (redacted, ${previewPolicySecret.length} chars)`;
+  const legacyMessage = `Environment-style value \`API_TOKEN\` appears to be hardcoded with secret-like content. Redacted preview: ${legacyPreview}.`;
+  withProject({ ".env": `API_TOKEN=${previewPolicySecret}\n` }, (dir) => {
+    const currentFinding = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", ".env"]), "sensitive-data.hardcoded-env-value");
+    // A baseline without a stored identity recomputes the old message-derived hook identity.
+    writeProjectFile(dir, "legacy-preview-baseline.json", JSON.stringify({
+      schemaVersion: "gruff.baseline.v1",
+      entries: [{
+        ruleId: currentFinding.ruleId,
+        filePath: currentFinding.file,
+        line: currentFinding.line,
+        message: legacyMessage,
+      }],
+    }));
+
+    const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "legacy-preview-baseline.json", ".env"]);
+    // The hook user must see the changed preview again instead of silently retaining suppression.
+    assert.equal(filtered.findings.some((finding) => finding.ruleId === currentFinding.ruleId), true);
+    assert.equal(filtered.suppressed.count, 0);
+  });
+});
+
 test("hook stableIdentity uses the canonical circular-import SCC symbol", () => {
   // The SCC has two simple cycles through `a.ts`, but M09 reports one project finding keyed by the
   // canonical sorted member list. Baselining that component should suppress the whole SCC.

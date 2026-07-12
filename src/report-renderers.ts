@@ -314,6 +314,7 @@ function formatSummaryDuration(elapsedMs: number): string {
   return `${(bounded / 1000).toFixed(2)}s`;
 }
 
+// Tallies findings under the caller-supplied key; iteration order stays deterministic for renderers.
 function countBy<T extends string>(findings: Finding[], keyFor: (finding: Finding) => T): Map<T, number> {
   const counts = new Map<T, number>();
   for (const finding of findings) {
@@ -390,6 +391,7 @@ function truncateDescription(text: string): string {
   return text.length <= DESCRIPTION_BODY_LIMIT ? text : `${text.slice(0, DESCRIPTION_BODY_LIMIT).trimEnd()}…`;
 }
 
+// Renders a count map as ranked text bullets; the (count DESC, key ASC) ordering is deterministic.
 function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText: string, limit?: number): string[] {
   if (counts.size === 0) {
     return [`- ${emptyText}`];
@@ -400,6 +402,7 @@ function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText:
     .map(([key, count]) => `- ${key}: ${count}`);
 }
 
+// Structured variant of `renderRankedCounts` for JSON consumers; the same deterministic ordering.
 function renderRankedCountRows<T extends string>(counts: Map<T, number>, limit?: number): Array<{ name: T; count: number }> {
   return [...counts.entries()]
     .sort(([leftKey, leftCount], [rightKey, rightCount]) => rightCount - leftCount || leftKey.localeCompare(rightKey))
@@ -448,6 +451,10 @@ function renderText(report: AnalysisReport): string {
  */
 function renderMarkdown(report: AnalysisReport): string {
   const breakdown = severityGradeBreakdown(report.findings);
+  // A repository controls each displayed value; a missing line keeps the historic line-1 fallback.
+  const findingRows = report.findings
+    .slice(0, 50)
+    .map((finding) => `- ${markdownInlineCode(finding.ruleId)} ${markdownInlineCode(finding.filePath)}:${finding.line ?? 1} - ${escapeMarkdownFindingMessage(finding.message)}`);
   return [
     "# gruff-ts report",
     "",
@@ -461,7 +468,7 @@ function renderMarkdown(report: AnalysisReport): string {
     "",
     ...renderMarkdownPillarsTable(buildPillarRows(report)),
     "",
-    ...report.findings.slice(0, 50).map((finding) => `- \`${finding.ruleId}\` \`${finding.filePath}\`:${finding.line ?? 1} - ${finding.message}`),
+    ...findingRows,
   ].join("\n");
 }
 
@@ -499,6 +506,38 @@ function escapeMarkdownCell(cell: string): string {
   return cell.replaceAll("|", "\\|");
 }
 
+// Wraps a repository-controlled label in a CommonMark code span for PR and issue reports.
+// A fence longer than the label's longest backtick run keeps the label inside one span.
+function markdownInlineCode(reportLabel: string): string {
+  const singleLineLabel = reportLabel.replace(/[\r\n]+/g, " ");
+  // An empty analyzer label still needs content so Markdown does not merge its two fences.
+  const visibleLabel = singleLineLabel.length === 0 ? " " : singleLineLabel;
+  const fenceLength = Math.max(1, ...Array.from(visibleLabel.matchAll(/`+/g), (match) => match[0].length + 1));
+  const fence = "`".repeat(fenceLength);
+  // Edge backticks need padding so CommonMark can distinguish label content from the fence.
+  const paddedLabel = visibleLabel.startsWith("`") || visibleLabel.endsWith("`") ? ` ${visibleLabel} ` : visibleLabel;
+  return `${fence}${paddedLabel}${fence}`;
+}
+
+// Escapes repository-controlled finding prose before a reviewer sees the Markdown report.
+// Line breaks collapse so a message cannot start a new heading, list, or HTML block.
+function escapeMarkdownFindingMessage(findingMessage: string): string {
+  return findingMessage
+    .replace(/[\r\n]+/g, " ")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\\", "\\\\")
+    .replaceAll("`", "\\`")
+    .replaceAll("*", "\\*")
+    .replaceAll("_", "\\_")
+    .replaceAll("[", "\\[")
+    .replaceAll("]", "\\]")
+    .replaceAll("|", "\\|")
+    .replaceAll("#", "\\#")
+    .replaceAll("~", "\\~");
+}
+
 // Render-only summary of overlapping complexity findings for one function symbol.
 interface ComplexityCluster {
   filePath: string;
@@ -523,18 +562,29 @@ function renderComplexityClusterLines(findings: Finding[], limit = 10): string[]
 // Invariant: markdown mirrors text complexity clusters without adding JSON fields.
 function renderMarkdownComplexityClusterLines(findings: Finding[]): string[] {
   const clusters = complexityClusters(findings);
+  // A scan with no overlapping complexity findings should not show an empty review section.
   if (clusters.length === 0) {
     return [];
   }
+  // Repository paths and symbols stay inside one code span in the reviewer's cluster list.
+  const clusterRows = clusters.map(renderMarkdownComplexityClusterRow);
   return [
     "",
     "## Correlated Complexity Clusters",
     "",
-    ...clusters.map((cluster) => `- \`${cluster.filePath}#${cluster.symbol}\`: ${cluster.ruleIds.length} linked findings (${cluster.ruleIds.map((ruleId) => `\`${ruleId}\``).join(", ")})`),
+    ...clusterRows,
   ];
 }
 
-// Groups correlated complexity findings by file and symbol so renderers can explain score overlap.
+// Formats one correlated cluster for the Markdown list a reviewer sees in pull-request output.
+function renderMarkdownComplexityClusterRow(cluster: ComplexityCluster): string {
+  const clusterLabel = `${cluster.filePath}#${cluster.symbol}`;
+  // Every linked rule remains its own code span so a reviewer can copy its exact identifier.
+  const linkedRuleLabels = cluster.ruleIds.map((ruleId) => markdownInlineCode(ruleId)).join(", ");
+  return `- ${markdownInlineCode(clusterLabel)}: ${cluster.ruleIds.length} linked findings (${linkedRuleLabels})`;
+}
+
+// Invariant: groups findings by file and symbol so every renderer explains score overlap consistently.
 function complexityClusters(findings: Finding[]): ComplexityCluster[] {
   const bySymbol = new Map<string, ComplexityCluster>();
   for (const finding of findings) {
