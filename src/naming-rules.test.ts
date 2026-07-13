@@ -347,6 +347,22 @@ interface NoteView {
     ownerKind: "interface",
     ownerName: "NoteView",
   });
+
+  const acceptedAliasFindings = analyseFixture(`interface NoteView {
+  note_id: string;
+  noteId: string;
+}
+`, { config: { allowlists: { acceptedCasingPairs: ["note_id:noteId"] } } }).findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
+  assert.deepEqual(acceptedAliasFindings, []);
+
+  const unlistedThirdVariant = analyseFixture(`interface NoteView {
+  note_id: string;
+  noteId: string;
+  noteID: string;
+}
+`, { config: { allowlists: { acceptedCasingPairs: ["note_id:noteId"] } } }).findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
+  assert.equal(unlistedThirdVariant.length, 1);
+  assert.equal(unlistedThirdVariant[0]?.symbol, "noteID");
 });
 
 // Unrelated request handlers should not ask a CLI user to unify private local conventions.
@@ -733,4 +749,10 @@ test("naming class-file mismatch requires one public declaration across export f
   assert.equal(retainedFinding?.fingerprint, "41a529f0d00d2fcd");
   assert.equal(retainedFinding?.stableIdentity, "ec592eb253c6c1b3");
   assert.deepEqual(retainedFinding?.metadata, { className: "PaymentController", fileName: "helpers", candidatePrimaryExport: true, publicExports: ["class:PaymentController"] });
+
+  const acceptedPairFindings = analyseFixture("export class TranscriptFocusController {}\n", {
+    fileName: "focusModeTranscript.ts",
+    config: { allowlists: { acceptedClassFilePairs: ["focusModeTranscript:TranscriptFocusController"] } },
+  }).findings.filter((finding) => finding.ruleId === "naming.class-file-mismatch");
+  assert.deepEqual(acceptedPairFindings, []);
 });

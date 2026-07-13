@@ -23,6 +23,8 @@ function defaultConfig(): Config {
     secretPreviews: new Set(),
     bannedGenericNames: new Set(["process", "handle", "doit", "run", "execute", "manage"]),
     acceptedBooleanNames: new Set(["all", "apply", "check", "dev", "enabled", "force", "fresh", "harness", "json", "ok", "verbose", "yes"]),
+    acceptedClassFilePairs: new Set(),
+    acceptedCasingPairs: new Set(),
     booleanPrefixes: new Set(["is", "has", "can", "should", "does", "did", "was", "will", "may", "in", "scan", "supports", "requires", "allow", "check", "enable", "exclude", "include", "omit", "skip", "with", "without"]),
     hungarianPrefixes: new Set(["str", "obj", "arr", "bool", "int", "num"]),
     placeholderNames: new Set(["foo", "bar", "baz", "tmp", "temp", "thing", "stuff", "data", "value", "item"]),
@@ -348,7 +350,7 @@ function applyPathConfig(config: Config, raw: Record<string, unknown>): void {
 }
 
 // The allowlist section is the main lever users have for tuning gruff to their conventions.
-// `acceptedAbbreviations` and the seven naming lists are lowercased on import so case-insensitive
+// `acceptedAbbreviations` and the naming lists are lowercased on import so case-insensitive
 // matching is the stable behaviour regardless of how users write entries.
 function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): void {
   const allowlists = objectValue(raw.allowlists);
@@ -359,6 +361,8 @@ function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): voi
   config.secretPreviews = new Set(arrayValue(allowlists?.secretPreviews).filter(isString));
   applyNamingAllowlist(config, allowlists, "bannedGenericNames");
   applyNamingAllowlist(config, allowlists, "acceptedBooleanNames");
+  applyNamingAllowlist(config, allowlists, "acceptedClassFilePairs");
+  applyNamingAllowlist(config, allowlists, "acceptedCasingPairs");
   applyNamingAllowlist(config, allowlists, "booleanPrefixes");
   applyNamingAllowlist(config, allowlists, "hungarianPrefixes");
   applyNamingAllowlist(config, allowlists, "placeholderNames");
@@ -368,7 +372,7 @@ function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): voi
 
 // Replaces the entire list when the user provides that key - there is no merge with defaults.
 // The "set the whole list" semantic is intentional so users can deliberately empty a list.
-function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "bannedGenericNames" | "acceptedBooleanNames" | "booleanPrefixes" | "hungarianPrefixes" | "placeholderNames" | "negativeBooleanAllowed" | "knownAcronyms"): void {
+function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "bannedGenericNames" | "acceptedBooleanNames" | "acceptedClassFilePairs" | "acceptedCasingPairs" | "booleanPrefixes" | "hungarianPrefixes" | "placeholderNames" | "negativeBooleanAllowed" | "knownAcronyms"): void {
   if (!allowlists || !(key in allowlists)) {
     return;
   }

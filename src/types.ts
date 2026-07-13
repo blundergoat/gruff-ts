@@ -72,6 +72,8 @@ export interface Config {
   secretPreviews: Set<string>;
   bannedGenericNames: Set<string>;
   acceptedBooleanNames: Set<string>;
+  acceptedClassFilePairs: Set<string>;
+  acceptedCasingPairs: Set<string>;
   booleanPrefixes: Set<string>;
   hungarianPrefixes: Set<string>;
   placeholderNames: Set<string>;

@@ -1,6 +1,6 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-07-12
+last_reviewed: 2026-07-13
 ---
 
 # Rule scanner footguns
@@ -41,15 +41,13 @@ Directly referencing `handler` or `plugin.activate` does not prove a statically 
 
 When implementing or extending this rule, require static evidence before emitting a high-confidence `typeof ... "function"` finding: a visible function declaration, function-valued const, named import, namespace import member, or another source-backed fact with a source proof. Suppress or downgrade unresolved locals and members bound from calls. Add paired fixtures: one shape-only hit and one runtime-callable non-hit using the same assertion syntax (`src/test-block-rules.test.ts`, search: `keeps runtime callable typeof assertions quiet`).
 
-## Footgun: context-doc rules read ONLY the last `//` line above a declaration
+## Footgun: fixture-purpose rules read ONLY the last `//` line above a fixture
 
 **Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED (named-profiles self-scan)
 
-The context-doc rules - `docs.missing-error-behavior-doc`, `docs.missing-why-for-complex-code`, `docs.missing-side-effect-doc`, `docs.missing-invariant-doc` (`src/context-doc-rules.ts`, search: `function functionContextDocFindings`) - test their marker vocabulary (`hasErrorBehaviorMarker`, search: `function hasErrorBehaviorMarker`; `hasComplexWhyMarker`, etc.) against `comment.text` from `leadingCommentForLine` (`src/comment-rules.ts`, search: `function leadingCommentForLine`). `commentRecords` (`src/comment-scanner.ts`, search: `emits one CommentRecord per`) emits ONE record per `//` line and does NOT merge a run of consecutive `//` lines, so `leadingCommentForLine` returns only the SINGLE comment line directly above the declaration. A `/* ... */` block, by contrast, is one record whose whole body is checked.
+`docs.fixture-purpose-missing` (`src/fixture-purpose-rules.ts`, search: `function hasFixturePurposeComment`; search: `function leadingFixturePurposeComment`) checks its marker vocabulary (`fixture`/`covers`/`regression`/`baseline`/`fingerprint`/`because`/...) against only the single `//` line directly above a large template-literal fixture. A marker on an earlier line of a stacked `//` header does not clear it. The rule engages only above `FIXTURE_PURPOSE_MIN_LINES` (12), and an object-literal fixture whose backtick begins after the `const` line is not a candidate.
 
-Consequence: for a function documented with stacked `//` lines, the marker word (`throws`/`reports`/`exits` for error-behavior; `because`/`why`/`avoid`/`preserve` for complex-why) MUST appear on the FINAL `//` line, the one immediately above the signature. Putting "Throws ConfigLoadError" on line 2 of a 3-line `//` comment does NOT clear `docs.missing-error-behavior-doc` - the rule never sees line 2. During the profiles work, four `//`-commented throwing helpers and one complex renderer kept firing until each marker was moved to the last line (or the comment was made a single line ending in the marker). When clearing a context-doc finding on a `//`-commented declaration, put the marker on the last line or convert the comment to a `/* */` block.
-
-Same root cause, different rule: `docs.fixture-purpose-missing` (`src/fixture-purpose-rules.ts`, search: `function hasFixturePurposeComment`; search: `function leadingFixturePurposeComment`) checks its marker vocabulary (`hasFixturePurposeMarker`, search: `function hasFixturePurposeMarker` - `fixture`/`covers`/`regression`/`baseline`/`fingerprint`/`because`/...) against ONLY the single `//` line directly above a large ``const *FIXTURE = `...` `` template literal. A marker on an earlier line of a stacked `//` header does not clear it. Two extra notes: the rule fires only when the trigger is a template literal ON the const line (an object-literal fixture ``const X = { "a.ts": `...` }`` is not a candidate - `templateLiteralAtLine` finds no backtick on the `const X = {` line), and it only engages above `FIXTURE_PURPOSE_MIN_LINES` (12) of fixture source. Observed 2026-06-04 adding `src/changed-region-contract.test.ts` (search: `const REGION_FIXTURE`): a 5-line `//` header with "Fixture purpose:" on its FIRST line kept firing until "This fixture covers ..." was moved to the final line; the smaller `DUAL_EVAL_FIXTURE` never tripped it because it is under the line threshold.
+Observed in `src/changed-region-contract.test.ts` (search: `const REGION_FIXTURE`): a multi-line header with "Fixture purpose:" on its first line kept firing until "This fixture covers ..." moved to the final line. Put the purpose marker on the final adjacent line or use one block comment. The context-doc rules no longer share this trap: `src/comment-rules.ts` (search: `function combinedContextLineComment`) combines contiguous leading `//` text for their marker evaluation.
 
 ## Footgun: per-line walkers miss multi-line conditional context
 
@@ -211,13 +209,13 @@ Three takeaways: (1) `analyseSecurityFlow` is the only caller and runs once per 
 
 For syntax-only source-to-sink rules, inspect only sink-relevant expression trees. Prune nested function-like nodes while walking arguments, and treat string/no-substitution-template literals as literal text, not source evidence. Add a negative test any time a scanner starts using `node.getText()` over a subtree: one callback-only taint reference and one literal that names the source token. Tests: `src/security-flow-rules.test.ts`, search: `callback-only taint` and `string literals that only mention source tokens`.
 
-## Footgun: context-doc markers are checked against only the LAST line of a leading line-comment run
-
-**Status:** active | **Created:** 2026-07-12 | **Evidence:** OBSERVED (0.5.0 self-scan fix-forward, six reword iterations)
-
-The context-doc rules (`docs.missing-invariant-doc`, `docs.missing-side-effect-doc`, `docs.missing-error-behavior-doc`, `docs.missing-why-for-complex-code`) test their marker vocabulary against the comment record adjacent to the declaration. `commentRecords` (`src/comment-scanner.ts`) emits each `//` line as its OWN record, so for a multi-line `//` run only the FINAL line is the leading comment those marker regexes see. A perfectly good `Invariant:` sentence on line 1 of a three-line comment does not count: the marker word (invariant/contract/must/stable/deterministic/schema/fingerprint; writes/reads/spawns/mutates/filesystem/...; throws/reports/exits/swallows/...; because/avoid/preserve/...) must appear on the LAST line before the declaration. Block comments (`/** ... */`) are one record, so a marker anywhere inside them counts. The label `Side effect:` alone is not a side-effect marker; name the concrete action or surface, such as `writes`, `reads`, or `filesystem`. When adding maintainer comments to satisfy these rules, put the contract sentence last or use a block comment; when a fix "did not take", check which line carries the accepted marker before rewording again.
-
 ## Resolved Entries
+
+## Footgun: context-doc markers were checked against only the last line of a leading line-comment run
+
+**Status:** resolved | **Created:** 2026-07-12 | **Evidence:** OBSERVED (0.5.0 self-scan fix-forward, six reword iterations)
+
+The context-doc rules previously tested only the comment record adjacent to a declaration, so marker wording on earlier lines of a contiguous `//` run was invisible. Resolved 2026-07-13: `src/comment-rules.ts` (search: `function combinedContextLineComment`) now joins contiguous line-comment text for context-doc evaluation while retaining the final record's anchor. Stale-reference, restatement, magic-threshold, and fixture-purpose checks keep their narrower behavior.
 
 ## Footgun: rule-group pass gates silently disable rules missing from the id list
 

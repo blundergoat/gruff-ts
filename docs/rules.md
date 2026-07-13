@@ -72,7 +72,7 @@ Both rules consume the same parsed callable measurement as `docs.missing-why-for
 - `docs.missing-public-doc` (advisory; medium confidence): Flags exported class, type, and enum APIs without a nearby doc comment.
 - `docs.missing-return-tag` (advisory; medium confidence): Flags documented non-void exports without @returns.
 - `docs.missing-side-effect-doc` (advisory; medium confidence): Flags commented functions that perform observable side effects without naming them.
-- `docs.missing-why-for-complex-code` (advisory; medium confidence): Flags comments on complex functions that do not explain why the shape exists.
+- `docs.missing-why-for-complex-code` (advisory; medium confidence): Flags comments on complex functions that do not explain why the shape exists. Accepted rationale vocabulary includes `because`, `why`, `intentional`, `tradeoff`/`trade-off`, `compat`/`compatible`/`compatibility`, `avoid`, and `preserve`, plus the phrases `due to`, `so that`, `in order to`, and `required by`. A contiguous run of leading `//` lines is evaluated as one comment; block comments are already evaluated as one body.
 - `docs.stale-comment` (advisory; medium confidence): Flags comments that reference missing files, unknown rules, stale CLI flags, or the wrong declaration.
 - `docs.stale-param-tag` (advisory; medium confidence): Flags @param tags for parameters no longer in the signature.
 - `docs.suppression-without-rationale` (advisory; medium confidence): Flags lint, formatter, coverage, or tool suppressions without a maintainer rationale.
@@ -100,12 +100,12 @@ Both rules consume the same parsed callable measurement as `docs.missing-why-for
 
 - `naming.acronym-case` (advisory; medium confidence): Flags mixed casings of a known acronym in one file.
 - `naming.boolean-prefix` (advisory; medium confidence; allowlists: booleanPrefixes, acceptedBooleanNames): Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields. Local and parameter findings recommend a safe rename (`remediationAction: APPLY`). Contract-field findings use `CONFIGURE` with `configurationKey: allowlists.acceptedBooleanNames` and explain that users may instead preserve an external key through explicit serialization mapping; configuration replaces the complete accepted-name list rather than merging one entry into the defaults.
-- `naming.class-file-mismatch` (advisory; medium confidence): Flags a named class whose normalized name differs from the file only when it is the module's sole supported public declaration. Direct exports, named default exports, and bottom re-exports share one syntax inventory; a public class beside an interface, type, enum, function, default value, or external re-export stays quiet. Retained findings include `candidatePrimaryExport: true` and sorted `publicExports` metadata.
+- `naming.class-file-mismatch` (advisory; medium confidence; allowlist: acceptedClassFilePairs): Flags a named class whose normalized name differs from the file only when it is the module's sole supported public declaration. Direct exports, named default exports, and bottom re-exports share one syntax inventory; a public class beside an interface, type, enum, function, default value, or external re-export stays quiet. Exact case-insensitive `fileBase:ClassName` entries preserve intentional feature-file/class-role conventions. Retained findings include `candidatePrimaryExport: true` and sorted `publicExports` metadata.
 - `naming.generic-function` (advisory; high confidence): Flags generic function names that hide intent.
 - `naming.generic-parameter` (advisory; medium confidence; options: minCyclomatic, minLineCount, minParameters): Flags placeholder parameter names in multi-parameter, long, exported, or complex functions.
 - `naming.hungarian-notation` (advisory; medium confidence): Flags identifiers named after storage type prefixes.
 - `naming.identifier-quality` (advisory; medium confidence): Flags placeholder or numbered identifiers on declarations, function parameters, and destructured locals.
-- `naming.inconsistent-casing` (advisory; medium confidence): Flags one canonical identifier appearing in different forms within the same module, function, interface, or named type-literal owner. Separate raw DTO and normalized UI model contracts may keep their own conventions; same-name interface declaration blocks in one lexical scope are treated as one merged owner.
+- `naming.inconsistent-casing` (advisory; medium confidence; allowlist: acceptedCasingPairs): Flags one canonical identifier appearing in different forms within the same module, function, interface, or named type-literal owner. Separate raw DTO and normalized UI model contracts may keep their own conventions; same-name interface declaration blocks in one lexical scope are treated as one merged owner. Exact case-insensitive pairs such as `note_id:noteId` preserve documented wire aliases inside one owner without hiding other variants.
 - `naming.negative-boolean` (advisory; medium confidence): Flags boolean identifiers framed as a negation on declarations, parameters, and interface fields.
 - `naming.short-variable` (advisory; medium confidence): Flags very short variable names outside common loop counters; covers declarations, function parameters, and destructured locals.
 
@@ -158,7 +158,7 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 
 ## Size
 
-- `size.file-length` (warning; high confidence; threshold 750): Flags files longer than the configured threshold.
+- `size.file-length` (warning; high confidence; threshold 750): Flags files with more than 750 substantive lines by default. Blank lines and comment-only lines (`//`, `/* */`, XML comments, and the leading comment markers used by supported YAML/TOML/env/INI/npmrc files) do not count; lines containing code or data still count. `metadata.lines` is the substantive count.
 - `size.function-length` (warning; high confidence; threshold 200): Flags functions longer than the configured threshold.
 - `size.parameter-count` (warning; high confidence; threshold 7): Flags functions with too many parameters.
 

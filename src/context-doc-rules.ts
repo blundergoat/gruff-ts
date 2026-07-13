@@ -162,7 +162,7 @@ function isComplexContextCandidate(block: FunctionBlock, config: Config): boolea
 // Vocabulary list signalling "the comment explains why" - the missing-why rule passes when any
 // listed word appears. Adding entries here loosens the rule; removing them tightens it.
 function hasComplexWhyMarker(text: string): boolean {
-  return /\b(?:because|why|intentional|tradeoff|compat|avoid|preserve)\b/i.test(text);
+  return /\b(?:because|why|intentional|trade-?off|compat(?:ibility|ible)?|avoid|preserve)\b|\b(?:due to|so that|in order to|required by)\b/i.test(text);
 }
 
 // Vocabulary for "comment names a side effect". Pairs with `SIDE_EFFECT_BODY_PATTERNS` - if the

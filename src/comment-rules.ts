@@ -91,7 +91,7 @@ function analyseCommentedDeclarationQuality(file: SourceFile, lines: string[], c
     pushStaleDeclarationCommentFinding(file, comment, declaration, findings);
     pushRestatingSignatureCommentFinding(file, comment, declaration, findings);
     if (!isRestatingSignatureComment(comment.text, declaration.name, declaration.kind)) {
-      pushDeclarationContextFindings(file, lines, declaration, comment, findings);
+      pushDeclarationContextFindings(file, lines, declaration, combinedContextLineComment(comments, comment), findings);
     }
   }
 }
@@ -105,7 +105,7 @@ function analyseFunctionContextCommentQuality(input: FunctionContextCommentQuali
     if (!comment || isRestatingSignatureComment(comment.text, block.name, "function")) {
       continue;
     }
-    pushFunctionContextFindings(file, block, comment, config, findings);
+    pushFunctionContextFindings(file, block, combinedContextLineComment(comments, comment), config, findings);
   }
 }
 
@@ -598,6 +598,32 @@ function leadingCommentForLine(lines: string[], comments: CommentRecord[], line:
     return undefined;
   }
   return undefined;
+}
+
+// Context-doc rules read a contiguous `//` run as one maintainer comment. Stale-reference and
+// restatement checks keep the final line only so examples in earlier prose do not become symbols.
+function combinedContextLineComment(comments: CommentRecord[], finalComment: CommentRecord): CommentRecord {
+  if (finalComment.kind !== "line") {
+    return finalComment;
+  }
+  const finalIndex = comments.indexOf(finalComment);
+  if (finalIndex < 0) {
+    return finalComment;
+  }
+  let firstIndex = finalIndex;
+  while (firstIndex > 0) {
+    const previous = comments[firstIndex - 1];
+    const current = comments[firstIndex];
+    if (!previous || !current || previous.kind !== "line" || previous.endLine + 1 !== current.line) {
+      break;
+    }
+    firstIndex -= 1;
+  }
+  const text = comments
+    .slice(firstIndex, finalIndex + 1)
+    .map((comment) => comment.text)
+    .join(" ");
+  return { ...finalComment, text };
 }
 
 // Tighter sibling of `hasOnlyBlankFixturePurposeGap` - exclusive upper bound. Used by

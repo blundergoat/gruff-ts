@@ -26,6 +26,7 @@ const THRESHOLD_RULE_IDS = new Set([
   "size.parameter-count",
 ]);
 const FIXTURE_FILE_LINES = 760;
+const FIXTURE_SUBSTANTIVE_LINES = FIXTURE_FILE_LINES - 1;
 const FILE_LENGTH_THRESHOLD = 750;
 const FIXTURE_EVAL_LINE = 500;
 
@@ -108,7 +109,7 @@ test("hook changed-region scope omits inherited file findings but keeps changed 
     const fullEval = requiredFinding(full, "security.eval-call");
 
     assert.equal(fullFileLength.scope, "file");
-    assert.equal(fullFileLength.metadata.measured, FIXTURE_FILE_LINES);
+    assert.equal(fullFileLength.metadata.measured, FIXTURE_SUBSTANTIVE_LINES);
     assert.equal(fullFileLength.metadata.threshold, FILE_LENGTH_THRESHOLD);
     assert.equal(fullEval.scope, "line");
 

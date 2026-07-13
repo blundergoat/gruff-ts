@@ -4,7 +4,7 @@
 import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { cwd } from "node:process";
-import { basename } from "node:path";
+import { basename, extname } from "node:path";
 import { recordHistory, sortedUniqueFindings } from "./baseline.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { changedRegionScope, filterChangedFindings, filterScopedDiagnostics } from "./changed-regions.ts";
@@ -13,7 +13,7 @@ import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { applyConfiguredSeverity, finding, parameterNames } from "./findings-helpers.ts";
-import { commentRecords } from "./comment-scanner.ts";
+import { commentRecords, type CommentRecord } from "./comment-scanner.ts";
 import { analyseArchitectureRules, analyseCircularImportRule, buildProjectIndex, CIRCULAR_IMPORT_RULE_ID, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
 import { analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks } from "./blocks.ts";
 import { analyseClassRules, analyseAcronymCase, analyseInconsistentCasing, analyseInterfaceFields, collectDeclaredIdentifiers } from "./class-rules.ts";
@@ -283,9 +283,11 @@ function hasImportSyntaxCandidate(source: string): boolean {
 // Contract invariant: doc/naming skips must not suppress safety pillars or change rule order.
 function analyseSource(file: SourceFile, source: string, config: Config, isWithinDeepScanBudget: boolean, parsed?: ParsedScript): Finding[] {
   const findings: Finding[] = [];
-  analyseTextRules(file, source, config, findings);
+  // Size and documentation rules share one comment scan so code-only line counts do not add a second pass.
+  const comments = (ruleEnabled(config, "size.file-length") && usesCStyleComments(file)) || (file.isScript && isAnyRuleEnabled(config, COMMENT_QUALITY_RULE_IDS)) ? commentRecords(source) : [];
+  analyseTextRules(file, source, comments, config, findings);
   if (file.isScript && isWithinDeepScanBudget) {
-    analyseTypeScriptRules(file, source, config, findings, parsed);
+    analyseTypeScriptRules(file, source, comments, config, findings, parsed);
   }
   const isGenerated = isGeneratedSource(source);
   return findings.filter((finding) => ruleEnabled(config, finding.ruleId) && !(isGenerated && GENERATED_SKIPPED_PILLARS.has(finding.pillar)));
@@ -528,15 +530,15 @@ function isAnyRuleEnabled(config: Config, ruleIds: readonly string[]): boolean {
  * secret surfaces are not TypeScript. The order is a stable baseline contract: reshuffling these
  * checks changes same-line finding order for machine reports.
  */
-function analyseTextRules(file: SourceFile, source: string, config: Config, findings: Finding[]): void {
-  const lines = lineCount(source);
+function analyseTextRules(file: SourceFile, source: string, comments: CommentRecord[], config: Config, findings: Finding[]): void {
+  const lines = substantiveLineCount(file, source, comments);
   if (ruleEnabled(config, "size.file-length") && !isGeneratedLockfile(file.displayPath)) {
     const fileLengthThreshold = threshold(config, "size.file-length", 750);
     if (lines > fileLengthThreshold) {
       findings.push(
         makeFinding({
           ruleId: "size.file-length",
-          message: `File has ${lines} lines, above the threshold of ${fileLengthThreshold}.`,
+          message: `File has ${lines} substantive lines, above the threshold of ${fileLengthThreshold}.`,
           filePath: file.displayPath,
           line: 1,
           severity: ruleSeverity(config, "size.file-length", "warning"),
@@ -558,6 +560,59 @@ function analyseTextRules(file: SourceFile, source: string, config: Config, find
   if (isAnyRuleEnabled(config, PROJECT_CONFIG_RULE_IDS)) {
     analyseProjectConfigRules(file, source, findings);
   }
+}
+
+// Counts nonblank lines after removing C-style and XML comments, then applies config-format
+// full-line markers. Strings remain intact, so a line containing only a string literal still counts.
+function substantiveLineCount(file: SourceFile, source: string, comments: CommentRecord[]): number {
+  const withoutCStyleComments = maskRecordedComments(source, comments);
+  const withoutComments = extname(file.displayPath).toLowerCase() === ".xml" ? maskXmlComments(withoutCStyleComments) : withoutCStyleComments;
+  return withoutComments
+    .split(/\r?\n/)
+    .filter((line) => isSubstantiveLine(file, line))
+    .length;
+}
+
+// C-style comments are valid on script/CSS surfaces and common in JSON-with-comments configs.
+// Other supported text formats use their own full-line markers and must keep literal slash pairs.
+function usesCStyleComments(file: SourceFile): boolean {
+  const extension = extname(file.displayPath).toLowerCase();
+  return file.isScript || extension === ".css" || extension === ".json";
+}
+
+// Replaces comment text with spaces while retaining newlines and UTF-16 offsets from CommentRecord.
+function maskRecordedComments(source: string, comments: CommentRecord[]): string {
+  let cursor = 0;
+  let masked = "";
+  for (const comment of comments) {
+    const end = comment.kind === "block" ? Math.min(source.length, comment.endIndex + 1) : comment.endIndex;
+    masked += source.slice(cursor, comment.startIndex);
+    masked += source.slice(comment.startIndex, end).replace(/[^\r\n]/g, " ");
+    cursor = end;
+  }
+  return masked + source.slice(cursor);
+}
+
+// XML comments are outside the JavaScript lexer; preserving their newlines keeps line accounting stable.
+function maskXmlComments(source: string): string {
+  return source.replace(/<!--[\s\S]*?(?:-->|$)/g, (comment) => comment.replace(/[^\r\n]/g, " "));
+}
+
+// Hash and semicolon markers are restricted to formats where they are comments, so TypeScript
+// private fields and ordinary semicolon statements remain substantive.
+function isSubstantiveLine(file: SourceFile, line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return false;
+  }
+  const name = basename(file.displayPath).toLowerCase();
+  const extension = extname(name);
+  const usesHashComments = [".yaml", ".yml", ".toml"].includes(extension) || name === ".npmrc" || name.startsWith(".env");
+  if ((usesHashComments || (file.isScript && trimmed.startsWith("#!"))) && trimmed.startsWith("#")) {
+    return false;
+  }
+  const usesSemicolonComments = extension === ".ini" || name === ".npmrc";
+  return !(usesSemicolonComments && trimmed.startsWith(";"));
 }
 
 // Counts the same logical lines as `source.split(/\r?\n/)` without allocating the full line array.
@@ -582,7 +637,7 @@ function isGeneratedLockfile(path: string): boolean {
  * TypeScript-only rule pipeline. Masks comments and literals once, parses callable blocks once,
  * then walks every rule pack in a stable, deterministic order so reports and baselines remain reproducible.
  */
-function analyseTypeScriptRules(file: SourceFile, source: string, config: Config, findings: Finding[], parsed?: ParsedScript): void {
+function analyseTypeScriptRules(file: SourceFile, source: string, comments: CommentRecord[], config: Config, findings: Finding[], parsed?: ParsedScript): void {
   if (!isAnyRuleEnabled(config, TYPESCRIPT_RULE_IDS)) {
     return;
   }
@@ -597,8 +652,8 @@ function analyseTypeScriptRules(file: SourceFile, source: string, config: Config
   runRuleGroupPass(config, DOCBLOCK_RULE_IDS, () => analyseDocRules(file, source, codeSource, findings, parsed));
   runRulePass(config, "docs.missing-interface-doc", () => analyseInterfaceDocs(file, source, codeSource, findings));
   runRuleGroupPass(config, INTERFACE_FIELD_RULE_IDS, () => analyseInterfaceFields(file, source, codeSource, config, findings));
-  runRuleGroupPass(config, COMMENT_QUALITY_RULE_IDS, () => analyseCommentQualityRules({ file, source, codeSource, blocks, comments: commentRecords(source), config, findings }));
-  runRuleGroupPass(config, CLASS_RULE_IDS, () => analyseClassRules(file, source, codeSource, findings, parsed));
+  runRuleGroupPass(config, COMMENT_QUALITY_RULE_IDS, () => analyseCommentQualityRules({ file, source, codeSource, blocks, comments, config, findings }));
+  runRuleGroupPass(config, CLASS_RULE_IDS, () => analyseClassRules(file, source, codeSource, config, findings, parsed));
   runRulePass(config, "dead-code.unused-private-method", () => analyseDeadCode(file, codeSource, findings));
   runRuleGroupPass(config, IDENTIFIER_INVENTORY_RULE_IDS, () => {
     // A normal deep script scan always supplies the shared parse; a missing result must not reparse.
@@ -606,7 +661,7 @@ function analyseTypeScriptRules(file: SourceFile, source: string, config: Config
       return;
     }
     const inventory = collectDeclaredIdentifiers(source, codeSource, parsed);
-    runRulePass(config, "naming.inconsistent-casing", () => analyseInconsistentCasing(file, inventory, findings));
+    runRulePass(config, "naming.inconsistent-casing", () => analyseInconsistentCasing(file, inventory, config, findings));
     runRulePass(config, "naming.acronym-case", () => analyseAcronymCase(file, inventory, config, findings));
   });
 }

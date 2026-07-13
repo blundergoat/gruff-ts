@@ -43,7 +43,7 @@ test("symbol changed-region filtering keeps file-wide findings when the anchor i
 
   const fileLength = report.findings.find((finding) => finding.ruleId === "size.file-length");
   assert.ok(fileLength);
-  assert.deepEqual(fileLength.metadata, { lines: 8, threshold: 3 });
+  assert.deepEqual(fileLength.metadata, { lines: 7, threshold: 3 });
   assert.equal(typeof fileLength.remediation, "string");
 });
 

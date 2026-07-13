@@ -332,6 +332,35 @@ ${switchCases}
   assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-why-for-complex-code"), false);
 });
 
+// Stable fixture contract covers causal phrases, contiguous comments, and an unexplained control.
+test("missing-why accepts natural rationale phrases across contiguous line comments", () => {
+  const routingBranches = branchFixtureLines(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p"]);
+  // This fixture covers accepted phrase shapes beside one deliberately unexplained function.
+  const report = analyseFixture(`// Required by the legacy wire-order contract.
+// Routes known states to stable output.
+function requiredByCompatibility(value: string): string {
+${routingBranches}
+  return value;
+}
+
+/** Routes states this way due to the backend ordering contract. */
+function dueToBackend(value: string): string {
+${routingBranches}
+  return value;
+}
+
+/** Routes known states to stable output. */
+function unexplainedRouting(value: string): string {
+${routingBranches}
+  return value;
+}
+`);
+  const symbols = report.findings
+    .filter((finding) => finding.ruleId === "docs.missing-why-for-complex-code")
+    .map((finding) => finding.symbol);
+  assert.deepEqual(symbols, ["unexplainedRouting"]);
+});
+
 /** Generates repeated branch lines without making the outer test look complex. */
 function branchFixtureLines(values: string[]): string {
   return values.map((value) => `  if (value === "${value}") return "${value}";`).join("\n");

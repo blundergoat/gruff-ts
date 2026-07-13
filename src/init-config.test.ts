@@ -60,6 +60,12 @@ test("renderDefaultConfig explains and seeds the family abbreviation allowlist",
   assert.equal(generatedConfig.includes(expectedFamilyAbbreviationBlock), true);
 });
 
+test("renderDefaultConfig documents exact naming-pair allowlists", () => {
+  const generatedConfig = renderDefaultConfig();
+  assert.match(generatedConfig, /acceptedClassFilePairs: \[focusModeTranscript:TranscriptFocusController\]/);
+  assert.match(generatedConfig, /acceptedCasingPairs: \[note_id:noteId\]/);
+});
+
 test("RULE_OPTION_DEFAULTS mirrors live optionNumber call-site defaults", () => {
   // The init renderer hardcodes option defaults because RuleDescriptor only carries optionKeys,
   // not values. Drift between this table and the rule implementations would make `gruff-ts init`

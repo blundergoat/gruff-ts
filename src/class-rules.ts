@@ -130,16 +130,23 @@ function casingCanonicalKey(name: string): string {
  * across DTO/UI contracts, functions, constants, or intentionally-unused `_` names. Error behavior:
  * never throws; it appends findings only. Invariant: one owner-key group yields at most one finding.
  */
-export function analyseInconsistentCasing(file: SourceFile, inventory: DeclaredIdentifier[], findings: Finding[]): void {
+export function analyseInconsistentCasing(file: SourceFile, inventory: DeclaredIdentifier[], config: Config, findings: Finding[]): void {
   // Each owner-key group can produce at most one actionable diagnostic for the CLI user.
   for (const entries of declaredIdentifierGroups(inventory).values()) {
-    const candidate = inconsistentCasingCandidate(entries);
+    const candidate = inconsistentCasingCandidate(entries, config.acceptedCasingPairs);
     // A single spelling after boundary filtering means the reviewed scope is already consistent.
     if (!candidate) {
       continue;
     }
     findings.push(inconsistentCasingFinding(file, candidate));
   }
+}
+
+// Exact pair exemptions are case-insensitive but retain separators.
+function isAcceptedCasingPair(first: DeclaredIdentifier, second: DeclaredIdentifier, acceptedPairs: Set<string>): boolean {
+  const forward = `${first.name}:${second.name}`.toLowerCase();
+  const reverse = `${second.name}:${first.name}`.toLowerCase();
+  return acceptedPairs.has(forward) || acceptedPairs.has(reverse);
 }
 
 // Builds owner-plus-canonical groups once so the reporting pass cannot compare unrelated surfaces.
@@ -161,7 +168,7 @@ function declaredIdentifierGroups(inventory: DeclaredIdentifier[]): Map<string, 
 }
 
 // Invariant: returns the exact variant pair to report after boundary-aware suppression has run.
-function inconsistentCasingCandidate(entries: DeclaredIdentifier[]): { first: DeclaredIdentifier; second: DeclaredIdentifier; surfaces: string[] } | undefined {
+function inconsistentCasingCandidate(entries: DeclaredIdentifier[], acceptedPairs: Set<string>): { first: DeclaredIdentifier; second: DeclaredIdentifier; surfaces: string[] } | undefined {
   const reportableEntries = casingReportableEntries(entries);
   const sameSurfaceEntries = sameCasingSurfaceEntries(reportableEntries);
   const surfaces = [...new Set(sameSurfaceEntries.map((entry) => entry.name))].sort();
@@ -169,9 +176,17 @@ function inconsistentCasingCandidate(entries: DeclaredIdentifier[]): { first: De
     return undefined;
   }
   const sorted = [...sameSurfaceEntries].sort((a, b) => a.line - b.line);
-  const first = sorted[0];
-  const second = sorted.find((entry, index) => index > 0 && entry.name !== first?.name);
-  return first && second ? { first, second, surfaces } : undefined;
+  for (let firstIndex = 0; firstIndex < sorted.length; firstIndex += 1) {
+    const first = sorted[firstIndex];
+    if (!first) {
+      continue;
+    }
+    const second = sorted.find((entry, secondIndex) => secondIndex > firstIndex && entry.name !== first.name && !isAcceptedCasingPair(first, entry, acceptedPairs));
+    if (second) {
+      return { first, second, surfaces };
+    }
+  }
+  return undefined;
 }
 
 // Builds the stable finding after candidate selection so fingerprint shape stays in one place.
@@ -186,7 +201,7 @@ function inconsistentCasingFinding(file: SourceFile, candidate: { first: Declare
     pillar: "naming",
     confidence: "medium",
     symbol: candidate.second.name,
-    remediation: `Choose one form and use it consistently within ${ownerLabel}.`,
+    remediation: `Choose one form within ${ownerLabel}, or add the exact alias pair to allowlists.acceptedCasingPairs.`,
     metadata: {
       variants: candidate.surfaces,
       ownerId: candidate.first.ownerId,
@@ -392,8 +407,8 @@ function countBraceChange(text: string): number {
  * Three class-pillar rules in their stable, deterministic emission order: exported-declaration
  * docs and file-name mismatch, public-property, readonly candidates.
  */
-export function analyseClassRules(file: SourceFile, source: string, codeSource: string, findings: Finding[], parsed?: ParsedScript): void {
-  analyseExportedDeclarations(file, source, codeSource, findings, parsed);
+export function analyseClassRules(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[], parsed?: ParsedScript): void {
+  analyseExportedDeclarations(file, source, codeSource, config, findings, parsed);
   analysePublicProperties(file, source, codeSource, findings);
   analyseReadonlyCandidates(file, source, codeSource, findings);
 }
@@ -402,7 +417,7 @@ export function analyseClassRules(file: SourceFile, source: string, codeSource: 
  * Keeps public-doc checks on direct exports, then evaluates class/file naming against the complete
  * syntax inventory so reports cover default/re-export forms without changing the documentation contract.
  */
-function analyseExportedDeclarations(file: SourceFile, source: string, codeSource: string, findings: Finding[], parsed?: ParsedScript): void {
+function analyseExportedDeclarations(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[], parsed?: ParsedScript): void {
   const directlyExportedDeclarations = exportedDeclarations(source, codeSource);
   // Public-doc findings retain their existing direct-export policy and deterministic source order.
   for (const declaration of directlyExportedDeclarations) {
@@ -412,14 +427,14 @@ function analyseExportedDeclarations(file: SourceFile, source: string, codeSourc
   const modulePublicDeclarations = parsed
     ? publicExportDeclarations(parsed)
     : directlyExportedDeclarations.map((declaration) => ({ ...declaration, kind: declaration.kind as PublicExportDeclaration["kind"] }));
-  pushClassFileMismatchFinding(file, modulePublicDeclarations, findings);
+  pushClassFileMismatchFinding(file, modulePublicDeclarations, config, findings);
 }
 
 /*
  * Reports a normalized class/file mismatch only when one named class is the module's sole public
  * declaration, keeping feature modules quiet while preserving the stable finding anchor.
  */
-function pushClassFileMismatchFinding(file: SourceFile, publicDeclarations: PublicExportDeclaration[], findings: Finding[]): void {
+function pushClassFileMismatchFinding(file: SourceFile, publicDeclarations: PublicExportDeclaration[], config: Config, findings: Finding[]): void {
   // Feature modules with a second public declaration do not claim one primary class-to-file convention.
   if (publicDeclarations.length !== 1) {
     return;
@@ -430,6 +445,11 @@ function pushClassFileMismatchFinding(file: SourceFile, publicDeclarations: Publ
     return;
   }
   const fileName = fileBaseName(file.displayPath);
+  const acceptedPair = `${fileName}:${declaration.name}`.toLowerCase();
+  // Pair-level configuration preserves an intentional feature-file/class-role convention narrowly.
+  if (config.acceptedClassFilePairs.has(acceptedPair)) {
+    return;
+  }
   // A normalized name match already lets a report user locate the class from the file name.
   if (normalizedIdentifier(declaration.name) === normalizedIdentifier(fileName)) {
     return;
@@ -444,7 +464,7 @@ function pushClassFileMismatchFinding(file: SourceFile, publicDeclarations: Publ
       pillar: "naming",
       confidence: "medium",
       symbol: declaration.name,
-      remediation: "Rename the class or file so the sole public export is easy to locate.",
+      remediation: "Rename the class or file, or add the exact fileBase:ClassName pair to allowlists.acceptedClassFilePairs.",
       metadata: {
         className: declaration.name,
         fileName,

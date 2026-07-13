@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-07-12
+last_reviewed: 2026-07-13
 ---
 
 # Verification lessons
@@ -254,16 +254,6 @@ itself dynamic.
 **Evidence:** `scripts/test-performance.sh` + `(search: "local cell_name=")` now sanitizes workload/config/format labels before building per-cell temp file paths.
 
 **Prevention:** Any benchmark or report label that can contain `/`, spaces, or option-like prefixes must be converted to a filesystem slug before it is used as a path segment. Keep human labels in JSON/report fields; use sanitized names only for temp files.
-
-## Lesson: source-scanning contract tests must follow refactors across helper contexts
-
-**Created:** 2026-05-17
-
-**What happened:** During self-scan cleanup, `npm run check` failed after threshold-backed rules were refactored to read thresholds through `context.config` instead of a direct `config` parameter. The analyzer behavior was intact, but the descriptor/config threshold contract test only searched for `threshold(config, ...)`, so it undercounted implemented thresholds until the regex was widened.
-
-**Evidence:** `src/cli.test.ts` + `(search: "function thresholdUsages")`; the failing run reported missing implementation thresholds for `size.function-length`, `size.parameter-count`, `complexity.cyclomatic`, `complexity.cognitive`, and `complexity.npath`.
-
-**Prevention:** When a contract test scans source text instead of calling a structured API, update its extractor in the same refactor that changes call shape. Prefer matching the semantic argument form, such as optional context prefixes, over one local variable spelling.
 
 ## Lesson: keep verification wrappers visible to the deny hook
 

@@ -40,6 +40,29 @@ test("one ignored input plus one analysed input notes only the ignored input", (
   assert.deepEqual(notes.map((note) => note.path), ["nested"]);
 });
 
+test("size file-length counts substantive lines instead of documentation padding", () => {
+  const commentOnlyTypeScript = Array.from({ length: 751 }, (_, index) => `// Documentation line ${index + 1}`).join("\n");
+  const blockCommentTypeScript = ["/**", ...Array.from({ length: 751 }, (_, index) => ` * Guide line ${index + 1}`), " */"].join("\n");
+  const commentOnlyYaml = Array.from({ length: 751 }, (_, index) => `# Configuration note ${index + 1}`).join("\n");
+  const commentOnlyIni = Array.from({ length: 751 }, (_, index) => `; Configuration note ${index + 1}`).join("\n");
+  const commentOnlyXml = ["<!--", ...Array.from({ length: 751 }, (_, index) => `Guide line ${index + 1}`), "-->"].join("\n");
+  const substantiveJson = Array.from({ length: 751 }, (_, index) => `"// route ${index}",`).join("\n");
+
+  const typeScriptFinding = analyseFixture(commentOnlyTypeScript, { fileName: "help-guide.ts" }).findings.find((finding) => finding.ruleId === "size.file-length");
+  const blockCommentFinding = analyseFixture(blockCommentTypeScript, { fileName: "block-guide.ts" }).findings.find((finding) => finding.ruleId === "size.file-length");
+  const yamlFinding = analyseFixture(commentOnlyYaml, { fileName: "settings.yaml" }).findings.find((finding) => finding.ruleId === "size.file-length");
+  const iniFinding = analyseFixture(commentOnlyIni, { fileName: "settings.ini" }).findings.find((finding) => finding.ruleId === "size.file-length");
+  const xmlFinding = analyseFixture(commentOnlyXml, { fileName: "guide.xml" }).findings.find((finding) => finding.ruleId === "size.file-length");
+  const substantiveFinding = analyseFixture(substantiveJson, { fileName: "large.json" }).findings.find((finding) => finding.ruleId === "size.file-length");
+
+  assert.equal(typeScriptFinding, undefined);
+  assert.equal(blockCommentFinding, undefined);
+  assert.equal(yamlFinding, undefined);
+  assert.equal(iniFinding, undefined);
+  assert.equal(xmlFinding, undefined);
+  assert.deepEqual(substantiveFinding?.metadata, { lines: 751, threshold: 750 });
+});
+
 test("a normally analysable scan carries no notes field", () => {
   // The additive field is present only when at least one note exists, so existing gruff.analysis.v2
   // consumers and golden outputs see byte-identical reports for ordinary scans.
