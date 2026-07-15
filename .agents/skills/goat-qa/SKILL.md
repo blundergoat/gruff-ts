@@ -175,11 +175,13 @@ Record coverage using the Coverage Depth vocabulary above.
 
 ### A4 - Gap Report
 
-Rank gaps by `Risk × (1 - CoverageLevel)` descending - Risk maps CRITICAL=4, HIGH=3, MEDIUM=2, LOW=1; CoverageLevel is a coverage fraction (NONE=0, STRUCTURAL=0.34, PARTIAL-BEHAVIOURAL=0.67, BEHAVIOURAL=1.0), so `(1 - CoverageLevel)` is the uncovered fraction and a CRITICAL+NONE file ranks top (4.0). Output:
+Score gaps as `Risk × (1 - CoverageLevel)` with Risk CRITICAL=4, HIGH=3, MEDIUM=2, LOW=1 and CoverageLevel NONE=0, STRUCTURAL=0.34, PARTIAL-BEHAVIOURAL=0.67, BEHAVIOURAL=1.0. Assign buckets, then order each by score descending:
 
-- **Blocking gaps** - CRITICAL-risk file with NONE or STRUCTURAL coverage. One line per file: missing behaviour + the test the user should add.
-- **High-value additions** - HIGH-risk file with PARTIAL coverage. Describe the untested path.
-- **Defer** - LOW-risk or already well-covered files. Name them explicitly so the user sees what was considered and why.
+- **Blocking gaps** - every CRITICAL gap and any other score ≥3.0.
+- **High-value additions** - every remaining score >0, descending.
+- **Defer** - score 0, plus explicit LOW deferrals with rationale.
+
+Every inventoried file appears in exactly one bucket; include each score, missing behaviour, and proposed test.
 
 **Worked Audit example:** Scope a small audit module; read tests, not filenames - the heuristic misleads both ways. An orchestrator can lack a same-name test yet run behaviourally through an integration suite, so it is PARTIAL-BEHAVIOURAL, not NONE. A content-integrity helper with no unit, integration, or exported-symbol references is genuinely NONE. Expected A4 blocking gap: that content-integrity check, CRITICAL by role, NONE coverage - add a test planting a wrong count and asserting it is flagged. Proof class STATIC.
 
@@ -280,9 +282,9 @@ Output shape depends on the mode declared in Step 0. Pick the template that matc
 <!-- Coverage: NONE | STRUCTURAL | PARTIAL-BEHAVIOURAL | BEHAVIOURAL -->
 
 ## Gap Report
-### Blocking gaps  <!-- CRITICAL-risk + NONE/STRUCTURAL coverage; each item includes proof class -->
-### High-value additions  <!-- HIGH-risk + PARTIAL coverage; each item includes proof class -->
-### Defer  <!-- LOW-risk or well-covered; each item includes proof class -->
+### Blocking gaps  <!-- every CRITICAL gap plus any other score >=3.0; include score + proof class -->
+### High-value additions  <!-- every remaining score >0; include score + proof class -->
+### Defer  <!-- score 0 plus explicit LOW deferrals, with any non-zero score visible -->
 
 ## Verification Integrity
 - Intent spec: [audit scope rationale or `no-intent-spec`]

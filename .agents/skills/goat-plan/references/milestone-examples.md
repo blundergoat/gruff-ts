@@ -28,10 +28,11 @@ For each milestone, produce:
   - Automated: which test commands must pass
   - Manual: what a human must check (checkbox list, one action + one expected result per item)
   - Acceptance: who signs off (developer self-check, QA review, or stakeholder demo)
-- **Mid-implementation proof** - for milestones expected to touch 3+ files or run longer than 30-60 minutes, name one focused command, reproduction, or smoke check to run before switching modules or after a bounded edit batch
+- **Mid-implementation proof** - Always name one focused command, reproduction, or smoke check. Scale its cost to the milestone, but never replace it with `Not required` or implicit verification.
 - **Kill criteria** - What would make us stop at this milestone rather than continue
 - **Depends on** - Which milestone must complete first
 - **Read first** - Files the implementing agent should read before starting this milestone
+- **Deferred** - Items deliberately cut, with pointers to their destination; state `None` when nothing was deferred
 
 ## Assumption Tracking
 
@@ -85,12 +86,45 @@ Prove the OAuth provider issues rotated refresh tokens and that the app can pers
 - [ ] [RISKY] Confirm the session store can atomically replace refresh-token metadata
 - [ ] [CORE] Add the minimal refresh-token persistence path
 
+## Assumptions to validate
+- [ ] The provider rotates refresh tokens for the configured grant
+- [ ] The session store can reject a stale concurrent replacement
+
+## Exit criteria
+- [ ] A refresh returns a token different from the previously stored token
+- [ ] Concurrent refresh attempts cannot restore stale token metadata
+- [ ] Existing sessions remain authenticated after one rotation
+
+## Kill criteria
+- Stop if the provider never rotates refresh tokens for the configured grant
+- Stop if the session store cannot make replacement atomic without a wider storage migration
+
+## Depends on
+- None
+
+## Read first
+- `src/auth/refresh.ts`
+- `src/auth/session-store.ts`
+- `test/auth/refresh.test.ts`
+
+## Deferred
+- None
+
 ## Testing Gate
 ### Static / Contract Check
 - [ ] `npm run typecheck` exits 0
 
+### Automated
+- [ ] `npm test -- refresh.test.ts` exits 0
+
 ### Manual
 - [ ] Refresh an expiring session in a local browser; expected: the user remains signed in and the stored refresh token changes
+
+### Acceptance
+- [ ] Developer self-check confirms every exit criterion has current evidence
+
+## Mid-implementation proof
+- [ ] After the provider spike, run `npm test -- refresh.test.ts` before editing the session store
 ```
 
 Expected checkpoint: `Milestone files + ISSUE.md written to .goat-flow/plans/oauth-refresh/. Ready to start implementation.`

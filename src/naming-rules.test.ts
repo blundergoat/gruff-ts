@@ -6,6 +6,7 @@ import { cwd } from "node:process";
 import test from "node:test";
 import { ruleDescriptors } from "./cli.ts";
 import { loadConfig, ruleEnabled } from "./config.ts";
+import { parameterNames } from "./findings-helpers.ts";
 import { analyseFixture, analyseProject } from "./test-fixtures.ts";
 
 // Returns only casing-drift diagnostics so these tests model what a CLI user sees without noise.
@@ -17,6 +18,18 @@ function inconsistentCasingFindings(source: string) {
 // Both fixtures place their second spelling on line six because the assertion pins report identity.
 const MERGED_CONTRACT_DRIFT_LINE = 6;
 const FILE_WIDE_ACRONYM_DRIFT_LINE = 6;
+
+test("parameter parsing keeps commas inside defaults and type expressions", () => {
+  assert.deepEqual(
+    parameterNames("opts = { a: 1, b: 2 }, public readonly name: string, handler: (left: string, right: number) => void, values: Map<string, number>"),
+    [
+      { name: "opts", raw: "opts = { a: 1, b: 2 }" },
+      { name: "name", raw: "name: string" },
+      { name: "handler", raw: "handler: (left: string, right: number) => void" },
+      { name: "values", raw: "values: Map<string, number>" },
+    ],
+  );
+});
 
 test("naming blacklists default to current behavior", () => {
   const report = analyseFixture(`function process(): void {}
@@ -378,6 +391,17 @@ function readView(): void {
 }
 `);
   assert.deepEqual(separateFunctionFindings, []);
+});
+
+// Two lexical owners can share a source line and public fingerprint without being the same finding.
+test("naming inconsistent-casing keeps owner-distinct same-line findings", () => {
+  const findings = inconsistentCasingFindings(
+    'function first(note_id: string, noteId: string): void {} function second(): void { const note_id = "x"; const noteId = note_id; console.log(noteId); }\n',
+  );
+
+  assert.equal(findings.length, 2);
+  assert.equal(new Set(findings.map((finding) => finding.metadata.ownerId)).size, 2);
+  assert.equal(new Set(findings.map((finding) => finding.fingerprint)).size, 1);
 });
 
 // Stable fixture contract: two forms inside one handler retain the original identity tuple.

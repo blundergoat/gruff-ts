@@ -1,6 +1,6 @@
 ---
 category: docs-authoring
-last_reviewed: 2026-06-09
+last_reviewed: 2026-07-16
 ---
 
 # Docs-authoring footguns
@@ -35,3 +35,13 @@ Source comments cite learning-loop docs by relative path. A reorg that relocates
 Defence: when moving any doc under `.goat-flow/`, grep all source for the old relative path before committing the move (for example `grep -rn "goat-flow/lessons/" --include='*.ts' src`) and update every hit in the same change.
 
 Instance: the learning-loop reorg in commit `cddf7f9` left `src/cli-program.ts` (search: `buildProgram`) and `src/dashboard.ts` (search: `startDashboard`) citing `.goat-flow/lessons/verification.md` after it moved under `.goat-flow/learning-loop/lessons/`; both tripped `docs.stale-comment` until repointed.
+
+## Footgun: generic Codex skill validation rejects required goat-flow version metadata
+
+**Status:** active | **Created:** 2026-07-16 | **Evidence:** OBSERVED (`quick_validate.py` rejected `goat-flow-skill-version`; goat-flow audit still reported `agent-skills` pass)
+
+The system `skill-creator/scripts/quick_validate.py` validator and goat-flow use different frontmatter contracts. The generic validator rejects `goat-flow-skill-version` as an unexpected key, while `.goat-flow/skill-docs/skill-quality-testing/deployment.md` (search: `Frontmatter has`) requires that exact key on installed goat-flow skills. Treating the generic failure as a skill defect and deleting the version field would make the file pass the wrong validator while violating the repository's real deployment contract.
+
+Defence: keep `goat-flow-skill-version`, use goat-flow's own `audit . --agent codex` `agent-skills` result for installed-skill structure, and report template drift separately. Deliberately edited installed skills and hooks are expected to appear in the audit's drift section until their upstream goat-flow templates receive the same fix; never run `install` merely to erase that evidence because it overwrites the local corrections under review.
+
+Smoke evidence: `.goat-flow/logs/sessions/2026-07-16-goat-{critique,plan,qa,security}-tdd.md` records the project-native application checks used instead of claiming generic-validator success or bulletproof coverage.

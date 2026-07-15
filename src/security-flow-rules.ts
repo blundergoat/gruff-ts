@@ -179,6 +179,7 @@ interface AstSinkInput {
   call: TsCallLikeExpression;
   sourceFile: TsSourceFile;
   unsafeXmlParsers: ReadonlySet<string>;
+  frameworkRedirectCallees: ReadonlySet<string>;
 }
 
 // Describes one AST sink candidate. Some AST-only rules report same-line direct-source
@@ -213,9 +214,10 @@ const AST_FLOW_SINKS: readonly AstFlowSink[] = [
   {
     ruleId: "security.open-redirect-candidate",
     sinkKind: "redirect",
-    isSink: ({ callee }) =>
+    isSink: ({ callee, frameworkRedirectCallees }) =>
       /^(?:res|reply|response)\.redirect$/.test(callee) ||
-      /^(?:location|window\.location)\.(?:assign|replace)$/.test(callee),
+      /^(?:location|window\.location)\.(?:assign|replace)$/.test(callee) ||
+      frameworkRedirectCallees.has(callee),
   },
   {
     ruleId: "security.dynamic-regexp",
@@ -238,6 +240,36 @@ const AST_FLOW_SINKS: readonly AstFlowSink[] = [
 
 const MAX_ALIAS_DEPTH = 2;
 const MAX_SCOPE_NODES = 4000;
+
+// Framework redirects are plain imported functions, so their local alias is the syntax-only
+// evidence that distinguishes them from unrelated helpers named `redirect`.
+function importedFrameworkRedirectCallees(parsedSource: TsSourceFile): ReadonlySet<string> {
+  const callees = new Set<string>();
+  for (const statement of parsedSource.statements) {
+    if (!typescriptSyntax.isImportDeclaration(statement) || !typescriptSyntax.isStringLiteral(statement.moduleSpecifier)) {
+      continue;
+    }
+    const moduleName = statement.moduleSpecifier.text;
+    if (moduleName !== "next/navigation" && !/^@remix-run\/(?:node|cloudflare|deno|server-runtime)$/.test(moduleName)) {
+      continue;
+    }
+    const importClause = statement.importClause;
+    if (!importClause || importClause.isTypeOnly || !importClause.namedBindings) {
+      continue;
+    }
+    if (typescriptSyntax.isNamespaceImport(importClause.namedBindings)) {
+      callees.add(`${importClause.namedBindings.name.text}.redirect`);
+      continue;
+    }
+    for (const element of importClause.namedBindings.elements) {
+      const importedName = element.propertyName?.text ?? element.name.text;
+      if (!element.isTypeOnly && importedName === "redirect") {
+        callees.add(element.name.text);
+      }
+    }
+  }
+  return callees;
+}
 
 /**
  * Per-file AST pass. Parses the file once (syntax-only) and reports cross-line
@@ -262,6 +294,7 @@ export function analyseSecurityFlow(file: SourceFile, source: string, findings: 
   // partial result. The same-line scan remains the fallback for such files.
   const flowFindings: Finding[] = [];
   try {
+    const frameworkRedirectCallees = importedFrameworkRedirectCallees(parsedSource);
     const scopes: TsNode[] = [parsedSource];
     walk(parsedSource, (node) => {
       if (isFunctionLike(node)) {
@@ -269,7 +302,7 @@ export function analyseSecurityFlow(file: SourceFile, source: string, findings: 
       }
     });
     for (const scope of scopes) {
-      analyseFlowScope(parsedSource, scope, file, flowFindings);
+      analyseFlowScope(parsedSource, scope, frameworkRedirectCallees, file, flowFindings);
     }
   } catch {
     return;
@@ -288,7 +321,13 @@ export function analyseSecurityFlow(file: SourceFile, source: string, findings: 
  * @param file - discovered file used for stable finding locations
  * @param findings - accumulator that receives sink findings for this scope
  */
-function analyseFlowScope(parsedSource: TsSourceFile, scopeOwner: TsNode, file: SourceFile, findings: Finding[]): void {
+function analyseFlowScope(
+  parsedSource: TsSourceFile,
+  scopeOwner: TsNode,
+  frameworkRedirectCallees: ReadonlySet<string>,
+  file: SourceFile,
+  findings: Finding[],
+): void {
   const tainted = new Map<string, TaintRecord>();
   const unsafeXmlParsers = new Set<string>();
   let budget = MAX_SCOPE_NODES;
@@ -302,7 +341,7 @@ function analyseFlowScope(parsedSource: TsSourceFile, scopeOwner: TsNode, file: 
     }
     recordUnsafeXmlParser(parsedSource, node, unsafeXmlParsers);
     recordTaint(parsedSource, node, tainted);
-    reportSink(parsedSource, node, tainted, unsafeXmlParsers, file, findings);
+    reportSink(parsedSource, node, tainted, unsafeXmlParsers, frameworkRedirectCallees, file, findings);
     return;
   });
 }
@@ -387,14 +426,14 @@ function recordUnsafeXmlParser(parsedSource: TsSourceFile, node: TsNode, unsafeX
   }
 }
 
-// Emits a finding when a sink call consumes a tainted local. Because legacy same-line scanners
-// own existing rule ids, same-line AST hits stay theirs. Reports at most one finding per sink
-// call, never throws on recovery trees, and existing same-line fingerprints must never move.
+// Emits a finding when a sink call consumes a tainted local. Legacy scanners retain same-line
+// ownership except for imported framework redirects, which have no safe line-regex equivalent.
 function reportSink(
   parsedSource: TsSourceFile,
   node: TsNode,
   tainted: Map<string, TaintRecord>,
   unsafeXmlParsers: ReadonlySet<string>,
+  frameworkRedirectCallees: ReadonlySet<string>,
   file: SourceFile,
   findings: Finding[],
 ): void {
@@ -404,7 +443,7 @@ function reportSink(
     return;
   }
   const callee = call.expression.getText(parsedSource);
-  const sink = AST_FLOW_SINKS.find((candidate) => candidate.isSink({ callee, call, sourceFile: parsedSource, unsafeXmlParsers }));
+  const sink = AST_FLOW_SINKS.find((candidate) => candidate.isSink({ callee, call, sourceFile: parsedSource, unsafeXmlParsers, frameworkRedirectCallees }));
   if (!sink) {
     return;
   }
@@ -413,7 +452,8 @@ function reportSink(
     return;
   }
   const sinkLine = lineIndexOf(parsedSource, call);
-  if (sinkLine === hit.line && sink.shouldReportSameLine !== true) {
+  const reportsSameLine = sink.shouldReportSameLine === true || frameworkRedirectCallees.has(callee);
+  if (sinkLine === hit.line && !reportsSameLine) {
     return;
   }
   findings.push(flowFinding(file, sinkLine, sink.ruleId, sink.sinkKind, hit.kind, hit.depth));

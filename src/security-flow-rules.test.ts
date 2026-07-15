@@ -59,6 +59,16 @@ test("flags external input reaching an open redirect sink across lines", () => {
   assert.ok(findings.some((finding) => finding.ruleId === "security.open-redirect-candidate"));
 });
 
+test("flags imported framework redirect functions without widening local helper matching", () => {
+  const directFindings = analyseSecurityFixture('import { redirect } from "next/navigation";\nredirect(req.query.next);\n');
+  const aliasedFindings = analyseSecurityFixture(
+    'import { redirect as remixRedirect } from "@remix-run/node";\nfunction login(req) {\n  const next = req.query.next;\n  return remixRedirect(next);\n}\n',
+  );
+
+  assert.equal(directFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length, 1);
+  assert.equal(aliasedFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length, 1);
+});
+
 // Fixture purpose: local redirect functions and router methods are not response sinks.
 // Stable contract: names alone never turn these helpers into open-redirect findings.
 test("keeps local redirect functions and router methods quiet", () => {

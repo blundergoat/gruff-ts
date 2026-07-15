@@ -73,7 +73,7 @@ Full directives: `references/sub-agent-directives.md`.
 - **B (Alternatives):** SKEPTIC/ANALYST/STRATEGIST on alternatives, ranked by implementation friction. Must surface at least one alternative.
 - **C (Fresh Eyes):** No project context. Flags unstated assumptions and readability gaps. ISOLATION RULE enforced.
 
-Each sub-agent MUST return 3-7 findings plus required lens fields, severity, evidence, confidence, Proof class, rubric dimensions, overall assessment, and one strength; see `references/sub-agent-directives.md`.
+Each sub-agent MUST return 3-7 genuine findings plus the fields in `references/sub-agent-directives.md`. Documented post-re-run convergence is an exemption, not a finding.
 
 **Lens-finding floor:** A/B need >= 1 finding per lens or one re-run. C needs >= 1 unstated-assumption, readability-gap, or context-limited finding or one re-run. See anti-fabrication constraint and reference pack.
 
@@ -101,7 +101,7 @@ Execute in this order:
 
 **Early exit:** If Phase 2 yields zero split findings and zero unique HIGH/CRITICAL findings, skip Phase 3. Note "no disputes - full consensus" in output and proceed to Phase 4.
 
-If splits + unique HIGH/CRITICAL exceed the cross-examination budget (max 3 cross-exam agents total, 3 tool calls each - see Constraints), batch multiple disputes into a single agent prompt. Triage by severity - CRITICAL and HIGH first.
+If splits + unique HIGH/CRITICAL exceed the cross-examination budget (max 3 cross-exam agents total, 3 tool calls each - see Constraints), give one agent the bounded objective of adjudicating all remaining disputes as a fixed, enumerated set. Require a separate `RESOLVED` (with winner), `STILL DISPUTED`, or `RETRACTED` result with evidence for each; never merge or omit disputes. Order CRITICAL and HIGH first.
 
 For each split finding, spawn a cross-exam agent: "Agent A says [X], Agent B says [Y]. Which is correct given the actual codebase?"
 
@@ -154,7 +154,7 @@ Then the full critique:
 
 **BLOCKING GATE:** Present the synthesised critique (including Meta-score if 5.5 produced one). "Options: (A) apply, (B) dig deeper, (C) re-run, (D) close. Default: D." After plan critique, suggest `/goat-plan`.
 
-**Phase 5.6 - Outcome capture.** After the human picks A/B/C/D, tag each surviving finding: `accepted | rejected | deferred | partial`. Defaults: A → accepted, D → deferred. Persist under `## Outcomes`. Do not show `## Outcomes` in the initial Phase 5 gate response.
+**Phase 5.6 - Outcome capture.** B (`dig deeper`) and C (`re-run`) continue the workflow: follow up, return to the Phase 5 gate, and capture no outcomes yet. After A (`apply`), D (`close`), or explicit final dispositions, tag surviving findings `accepted | rejected | deferred | partial`; defaults are A → `accepted`, D → `deferred`. Append `## Outcomes` to the Phase 4 critique log. Omit it from the initial gate response.
 
 **Integration hooks.** Populate from surviving findings when applicable:
 - `for-goat-plan` - milestone updates, reordering
@@ -184,7 +184,7 @@ The rubric determines what sub-agents evaluate. Match to artifact type. Dimensio
 - MUST set max 5 tool-call budget per critique sub-agent; log calls/limit when exposed, otherwise unavailable markers. Do not claim mechanical enforcement when counts are unavailable.
 - MUST log per spawned critique/cross-exam/meta agent: id/handle if exposed, calls/limit, or unavailable markers.
 - MUST Scan Agent C output for context leaks before any other Phase 2 work. Only flag references absent from the input artifact. Any untraceable match = CONTEXT LEAK; discard and re-spawn.
-- MUST Check sub-agent completeness: verify 3-7 findings plus required lens fields against `references/sub-agent-directives.md`. Incomplete → re-spawn once; if still incomplete, record `sub-agent completeness limited`.
+- MUST Check sub-agent completeness against `references/sub-agent-directives.md`: 3-7 genuine findings or the documented post-re-run convergence exemption, plus required fields. Incomplete → re-spawn once; if still incomplete, record `sub-agent completeness limited`.
 - MUST enforce cross-examination budget: Max 3 cross-examination agents total, max 3 tool calls per agent.
 - Recommendations are never auto-applied. After synthesis, stop. Do not enter implementation mode unless the user explicitly asks to apply changes.
 - MUST apply the Proof Gate from `skill-preamble.md` to every synthesised finding and preserve one proof class tag (`RUNTIME | CONTRACT-GREP | STATIC | NOT-REPRODUCED`) on each. Sub-agent reports are inputs to verify, not evidence to launder. Re-read applies to findings surviving to Phase 5 (typically 3-7 after Phase 3/4 filtering), not to all findings raised in Phase 1.

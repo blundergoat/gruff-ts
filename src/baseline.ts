@@ -98,6 +98,11 @@ function dedupeKey(finding: Finding): string {
   if (finding.ruleId === "docs.missing-public-doc" && finding.symbol) {
     return [finding.ruleId, finding.filePath, finding.symbol].join("\0");
   }
+  // Casing drift is scoped to a lexical owner. Preserve owner-distinct diagnostics in memory
+  // without changing their public line-keyed fingerprints or baseline matching contract.
+  if (finding.ruleId === "naming.inconsistent-casing" && typeof finding.metadata.ownerId === "string") {
+    return [finding.fingerprint, finding.metadata.ownerId].join("\0");
+  }
   // A column means the scanner pinpointed the occurrence; same-line occurrences stay distinct.
   if (finding.column !== undefined) {
     return [finding.fingerprint, String(finding.column)].join("\0");

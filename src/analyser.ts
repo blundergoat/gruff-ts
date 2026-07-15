@@ -531,8 +531,8 @@ function isAnyRuleEnabled(config: Config, ruleIds: readonly string[]): boolean {
  * checks changes same-line finding order for machine reports.
  */
 function analyseTextRules(file: SourceFile, source: string, comments: CommentRecord[], config: Config, findings: Finding[]): void {
-  const lines = substantiveLineCount(file, source, comments);
   if (ruleEnabled(config, "size.file-length") && !isGeneratedLockfile(file.displayPath)) {
+    const lines = substantiveLineCount(file, source, comments);
     const fileLengthThreshold = threshold(config, "size.file-length", 750);
     if (lines > fileLengthThreshold) {
       findings.push(

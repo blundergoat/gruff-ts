@@ -220,7 +220,7 @@ Plan is NOT complete until the human explicitly approves.
 - MUST treat bare task paths as read-only context, not implementation permission
 - MUST NOT update `.active`, status, checkboxes, or code from path-only intake
 - MUST default to Mode 1 only on explicit plan-file edit verb
-- MUST include a testing gate on every milestone and mid-implementation proof for long milestones (run before switching modules or after a bounded edit batch)
+- MUST include a testing gate and specific mid-implementation proof on every milestone; for long milestones, run it before switching modules or after a bounded edit batch
 - MUST re-read and update the next milestone after completing each one
 - MUST check kill criteria between milestones - triggered = BLOCKING GATE
 - MUST tick assumption checkboxes with evidence when validated or invalidated

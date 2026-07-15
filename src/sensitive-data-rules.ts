@@ -84,7 +84,7 @@ function analyseGcpServiceAccountKeys(file: SensitiveSourceFile, source: string,
  * Payment-card PII detection contract: candidate shape, known issuer prefix, length, and Luhn
  * check must all pass before a stable redacted finding is emitted. A bare unseparated digit run
  * additionally needs card vocabulary on its line - large statistics can pass Luhn by coincidence,
- * while separator-grouped numbers are card-formatted by construction.
+ * while canonically grouped numbers provide formatting evidence on their own.
  */
 function analysePaymentCardNumbers(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const lines = source.split(/\r?\n/);
@@ -112,14 +112,29 @@ function analysePaymentCardNumbers(file: SensitiveSourceFile, source: string, co
 }
 
 // Full reportability gate for one digit-run candidate: card shape and Luhn first, then the
-// context rule - separator-grouped numbers are card-formatted by construction, while bare digit
-// runs additionally need card vocabulary on their line because large statistics can pass Luhn
-// by coincidence.
+// context rule - canonical card grouping provides formatting evidence, while bare or irregularly
+// grouped digit runs need card vocabulary because large statistics can pass Luhn by coincidence.
 function isReportablePaymentCardCandidate(rawCandidate: string, cardNumber: string, contextLine: string): boolean {
   if (!isPaymentCardNumber(cardNumber)) {
     return false;
   }
-  return /[ -]/.test(rawCandidate) || hasPaymentCardContext(contextLine);
+  return hasCanonicalPaymentCardGrouping(rawCandidate, cardNumber) || hasPaymentCardContext(contextLine);
+}
+
+// Accept one consistent separator and the display grouping used by the detected card network.
+// Arbitrary chunks such as 8-8 remain statistics unless their source line supplies card context.
+function hasCanonicalPaymentCardGrouping(rawCandidate: string, cardNumber: string): boolean {
+  const separators = rawCandidate.match(/[ -]/g) ?? [];
+  if (separators.length === 0 || new Set(separators).size !== 1) {
+    return false;
+  }
+  const groupSizes = rawCandidate.split(separators[0] ?? " ").map((group) => group.length);
+  const expectedGroupSizes = isAmericanExpressPaymentCard(cardNumber)
+    ? [4, 6, 5]
+    : isDinersPaymentCard(cardNumber)
+      ? [4, 6, 4]
+      : Array.from({ length: Math.ceil(cardNumber.length / 4) }, (_, index) => Math.min(4, cardNumber.length - index * 4));
+  return groupSizes.length === expectedGroupSizes.length && groupSizes.every((size, index) => size === expectedGroupSizes[index]);
 }
 
 // Card vocabulary gate for bare digit runs. Substring matching is deliberate so identifier forms

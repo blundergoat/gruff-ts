@@ -8,20 +8,85 @@ import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
-// Splits on `,` then strips visibility modifiers, `...rest`, default values, and type annotations
-// in that order. Final filter rejects entries whose name isn't a plain identifier - destructured
-// parameters land in that bucket and are intentionally invisible to per-parameter rules.
+// Splits only at top-level commas, then strips parameter-property modifiers and `...rest`.
+// Destructured parameters remain intentionally invisible to per-parameter rules.
 export function parameterNames(params: string): Array<{ name: string; raw: string }> {
-  return params
-    .split(",")
+  return splitTopLevelParameters(params)
     .map((parameter) => parameter.trim())
     .filter(Boolean)
     .map((raw) => {
-      const stripped = raw.replace(/^(?:public|private|protected|readonly)\s+/, "").replace(/^\.\.\./, "");
-      const name = stripped.split(/[?:=]/)[0]?.trim() ?? "";
+      const stripped = raw.replace(/^(?:(?:public|private|protected|readonly|override)\s+)*/, "").replace(/^\.\.\./, "");
+      const name = stripped.match(/^([A-Za-z_$][A-Za-z0-9_$]*)\s*(?=[?:=]|$)/)?.[1] ?? "";
       return { name, raw: stripped };
     })
     .filter((parameter) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(parameter.name));
+}
+
+// Parameter defaults and type expressions can contain their own commas. A small delimiter scanner
+// keeps those nested commas attached without adding another TypeScript parse to the analysis path.
+function splitTopLevelParameters(params: string): string[] {
+  const parameters: string[] = [];
+  let start = 0;
+  let parenthesisDepth = 0;
+  let bracketDepth = 0;
+  let braceDepth = 0;
+  let angleDepth = 0;
+  let quote = "";
+  let escaped = false;
+
+  for (let index = 0; index < params.length; index += 1) {
+    const character = params[index] ?? "";
+    if (quote !== "") {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === "(") parenthesisDepth += 1;
+    else if (character === ")") parenthesisDepth = Math.max(0, parenthesisDepth - 1);
+    else if (character === "[") bracketDepth += 1;
+    else if (character === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+    else if (character === "{") braceDepth += 1;
+    else if (character === "}") braceDepth = Math.max(0, braceDepth - 1);
+    else if (character === "<" && opensTypeArgumentList(params, index, start)) angleDepth += 1;
+    else if (character === ">" && angleDepth > 0 && params[index - 1] !== "=") angleDepth -= 1;
+    else if (character === "," && parenthesisDepth === 0 && bracketDepth === 0 && braceDepth === 0 && angleDepth === 0) {
+      parameters.push(params.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parameters.push(params.slice(start));
+  return parameters;
+}
+
+// Treat `<...>` as type arguments only in type/generic-looking contexts with a real closing `>`;
+// this avoids swallowing the next parameter for defaults such as `value = left < right`.
+function opensTypeArgumentList(params: string, index: number, parameterStart: number): boolean {
+  const prefix = params.slice(parameterStart, index);
+  const previousCharacter = params[index - 1] ?? "";
+  const isTypeContext = prefix.includes(":") && !prefix.includes("=");
+  const followsTokenWithoutWhitespace = previousCharacter !== "" && !/\s/.test(previousCharacter);
+  if (!isTypeContext && !followsTokenWithoutWhitespace) {
+    return false;
+  }
+  let depth = 1;
+  for (let cursor = index + 1; cursor < params.length; cursor += 1) {
+    const character = params[cursor] ?? "";
+    if (character === "<") depth += 1;
+    else if (character === ">" && params[cursor - 1] !== "=") {
+      depth -= 1;
+      if (depth === 0) return true;
+    }
+  }
+  return false;
 }
 
 /*

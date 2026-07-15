@@ -306,13 +306,15 @@ test("hardcoded-env does not inflate unquoted values with hash comments across c
 
 test("payment-card detection requires card context for bare digit runs", () => {
   // GDP/population statistics can pass the Luhn check by coincidence; without card vocabulary on
-  // the line a bare digit run stays quiet. Card-context lines and separator-grouped numbers keep
-  // flagging - the formatted shape is card evidence on its own.
+  // the line a bare or irregularly-grouped digit run stays quiet. Card-context lines and canonical
+  // card grouping keep flagging because their formatted shape is evidence on its own.
   const bareCardDigits = CREDIT_CARD_FIXTURE_VALUE.replaceAll(" ", "");
+  const irregularStatistic = `${bareCardDigits.slice(0, 8)}-${bareCardDigits.slice(8)}`;
   const report = analyseFixture(`const gdpByCountry = [4300000000000];
 const cardNumber = "${bareCardDigits}";
 const formatted = "${CREDIT_CARD_FIXTURE_VALUE}";
-void gdpByCountry; void cardNumber; void formatted;
+const irregularStatistic = "${irregularStatistic}";
+void gdpByCountry; void cardNumber; void formatted; void irregularStatistic;
 `);
   const cardFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.pii-pattern" && /Credit card/.test(finding.message));
   assert.deepEqual(cardFindings.map((finding) => finding.line).sort(), [2, 3]);

@@ -155,47 +155,6 @@ is_interpreter_command() {
   esac
 }
 
-is_local_data_pipe_source() {
-  local c
-  c=$(normalize_command_candidate "$1")
-  c="${c#"${c%%[![:space:]]*}"}"
-  case "$(first_word_base "$c")" in
-    cat|printf|echo) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-is_downloader_pipe_source() {
-  local c
-  c=$(normalize_command_candidate "$1")
-  c="${c#"${c%%[![:space:]]*}"}"
-  case "$(first_word_base "$c")" in
-    curl|wget|fetch|http) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-is_inline_interpreter_command() {
-  local c="$1"
-  local -a words=()
-  local base i word
-  c=$(normalize_command_candidate "$c")
-  c="${c#"${c%%[![:space:]]*}"}"
-  split_shell_words_into words "$c"
-  [[ "${#words[@]}" -gt 0 ]] || return 1
-
-  base="${words[0]##*/}"
-  for ((i = 1; i < ${#words[@]}; i++)); do
-    word="${words[$i]}"
-    case "$base:$word" in
-      python:-c|python3:-c|node:-e|node:--eval|perl:-e|ruby:-e)
-        return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
 strip_sql_literals_inside_double_quotes() {
   local input="$1"
   local out=""
@@ -262,21 +221,12 @@ check_pipeline_shell_consumers() {
   local pipe_scan="${CMD_UNQUOTED//||/__GOAT_OR__}"
   local -a pipeline_parts
   local pipe_index
-  local previous_part
-  local saw_downloader_pipe_source=0
   IFS='|' read -ra pipeline_parts <<< "$pipe_scan"
   for ((pipe_index = 1; pipe_index < ${#pipeline_parts[@]}; pipe_index++)); do
-    previous_part="${pipeline_parts[$((pipe_index - 1))]}"
-    if is_downloader_pipe_source "$previous_part"; then
-      saw_downloader_pipe_source=1
-    fi
     if is_shell_command "${pipeline_parts[$pipe_index]}"; then
       block "Pipe to shell. Download or inspect first, then run; to feed a local script, redirect from a file (cmd < file) instead of piping." || return $?
     fi
     if is_interpreter_command "${pipeline_parts[$pipe_index]}"; then
-      if [[ "${depth:-0}" -eq 0 && "$saw_downloader_pipe_source" -eq 0 ]] && is_local_data_pipe_source "$previous_part" && is_inline_interpreter_command "${pipeline_parts[$pipe_index]}"; then
-        continue
-      fi
       block "Pipe to interpreter. Download or inspect first, then run; to feed local data to inline interpreter code, redirect from a file (cmd < file) instead of piping." || return $?
     fi
   done

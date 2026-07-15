@@ -11,6 +11,28 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".goat-flow/hooks/gruff-code-quality.sh",
+            "statusMessage": "gruff code quality"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".goat-flow/hooks/gruff-code-quality.sh",
+            "statusMessage": "gruff code quality"
+          }
+        ]
+      }
     ]
   }
 }

@@ -329,7 +329,7 @@ discover_binary() {
   env_name="$(binary_env_name "$binary")"
   override="${!env_name:-}"
   if [[ -n "$override" ]]; then
-    if [[ -x "$override" ]]; then
+    if [[ -f "$override" && -x "$override" ]]; then
       printf '%s' "$override"
     fi
     return 0
@@ -341,7 +341,7 @@ discover_binary() {
     "$root/.venv/bin/$binary" \
     "${HOME:-}/.local/bin/$binary"
   do
-    if [[ -n "$candidate" && -x "$candidate" ]]; then
+    if [[ -n "$candidate" && -f "$candidate" && -x "$candidate" ]]; then
       printf '%s' "$candidate"
       return 0
     fi
@@ -552,6 +552,12 @@ self_test() {
   [[ "$override_path" == "$tmp/strands_agents/.venv/bin/gruff-py" ]] || {
     rm -rf "$tmp"
     printf 'gruff-code-quality self-test: env binary override failed: %s\n' "$override_path" >&2
+    return 1
+  }
+  override_path="$(PATH="$tmp/empty-bin" GRUFF_PY_BIN="$tmp/strands_agents" discover_binary "$tmp" gruff-py)"
+  [[ -z "$override_path" ]] || {
+    rm -rf "$tmp"
+    printf 'gruff-code-quality self-test: directory env override passed: %s\n' "$override_path" >&2
     return 1
   }
   rm -rf "$tmp"

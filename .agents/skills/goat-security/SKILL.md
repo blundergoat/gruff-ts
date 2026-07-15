@@ -90,8 +90,9 @@ Default false-positive suppression:
 
 False-positive calibration example:
 - **Removed lead:** "Terminal WebSocket writes arbitrary input to `session.pty?.write`."
-- **Why removed:** This is intended terminal functionality, not a standalone vulnerability, when the path is gated by a crypto-random dashboard token plus Host and Origin checks.
-- **Evidence needed:** cite the token generation/check, WebSocket authorization guard, and PTY write sink before calling the lead false-positive.
+- **Why removed:** The PTY write is intended terminal functionality, not a standalone arbitrary-input vulnerability. Authorization controls can remove a remote unauthenticated path, but do not by themselves settle token exposure or replay risk.
+- **Evidence needed:** cite token generation and delivery, URL/log/history exposure, lifetime and revocation, Host/Origin checks, the WebSocket authorization guard, the PTY write sink, and the local threat model.
+- **Residual decision:** If a same-host actor can recover and replay the token while it is valid, retain a separate token-exposure/replay finding at calibrated severity; remove the lead only when that path is also disproved.
 
 Also call out positive observations when they materially reduce risk.
 
@@ -134,8 +135,8 @@ Worked examples:
 - authenticated user can reset another account password due to missing ownership check -> `High`
 - local dashboard token is printed in a startup URL and accepted from `?token=`; a same-host process can replay it to attach a terminal WebSocket, while loopback-only bind and ephemeral token prevent a remote path -> `Low`
 
-Report calibration example:
-- S-01: local dashboard token parser (search: `return url.searchParams.get("token")`) | asset: local dashboard authorization token | entry->sink: query token in startup/dev logs -> local history or scrollback -> replay against API/WebSocket | trust boundary: process secret to local stores readable by same-host actors | preconditions: same-host read access while the process is alive | confidence: CONFIRMED | severity: Low | proof-class: STATIC | blast radius: local dashboard API and PTY attach as the running user | proof-of-fix: stop logging query tokens, prefer a header token, and verify no request logger prints raw URL search params.
+Report calibration example (CONFIRMED only after all three anchors are observed):
+- S-01: startup URL emitter + query-token parser (search: `return url.searchParams.get("token")`) + API/WebSocket authorization guard | asset: local dashboard authorization token | entry->sink: emitted query token -> local history or scrollback -> replay accepted by API/WebSocket guard | trust boundary: process secret to local stores readable by same-host actors | preconditions: same-host read access while the process is alive | confidence: CONFIRMED | severity: Low | proof-class: STATIC | blast radius: local dashboard API and PTY attach as the running user | proof-of-fix: stop emitting query tokens, prefer a header token, and verify no request logger prints raw URL search params. If any anchor is missing, classify the lead as PROBABLE and name the evidence needed.
 
 For Critical/High, write the attack scenario: "An [attacker] can [action] via [vector], resulting in [impact]."
 For diff reviews, map posture explicitly:
