@@ -2,6 +2,7 @@
 
 ## v0.5.0 - 2026-08-04
 
+- **file-length raised to error at 1000 (family ratification)** - substantive counting unchanged; `--fail-on` consumers see exit-code changes.
 - **Composite counts clean pillars as 100** - the mean spans all 11 pillars; fixing a pillar's last finding cannot lower it (ADR-019).
 - **Docblock rules require the shared parse** - AST signatures only, so paren types cannot fake stale @param tags; bounded files skip the pack.
 - **Labeled data-driven loops opt out of loop-in-test** - per-case messages opt out; destructured bodies now analysed. (`src/test-block-rules.ts`)

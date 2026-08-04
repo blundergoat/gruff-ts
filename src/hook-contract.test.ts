@@ -25,9 +25,9 @@ const THRESHOLD_RULE_IDS = new Set([
   "size.function-length",
   "size.parameter-count",
 ]);
-const FIXTURE_FILE_LINES = 760;
+const FIXTURE_FILE_LINES = 1010;
 const FIXTURE_SUBSTANTIVE_LINES = FIXTURE_FILE_LINES - 1;
-const FILE_LENGTH_THRESHOLD = 750;
+const FILE_LENGTH_THRESHOLD = 1000;
 const FIXTURE_EVAL_LINE = 500;
 
 // Parsed gruff.hook.v1 payload as the conformance tests read it; mirrors the analyzer output contract.
@@ -167,7 +167,7 @@ test("hook render reuses one analysis for changed-region views", () => {
 });
 
 test("hook findings carry remediation, enum values, and threshold metadata", () => {
-  withProject({ "long.ts": longSource(760, 500) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 500) }, (dir) => {
     const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]);
 
     assert.equal(payload.findings.length > 0, true);
@@ -190,9 +190,9 @@ test("hook stableIdentity survives line shifts and measured-value changes", () =
     assert.notEqual(first.fingerprint, shifted.fingerprint);
   });
 
-  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 0) }, (dir) => {
     const first = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]), "size.file-length");
-    writeProjectFile(dir, "long.ts", longSource(820, 0));
+    writeProjectFile(dir, "long.ts", longSource(1070, 0));
     const grown = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]), "size.file-length");
 
     assert.equal(first.stableIdentity, grown.stableIdentity);
@@ -341,7 +341,7 @@ test("hook changed-ranges keeps a circular import when the range misses the cano
 });
 
 test("hook reports operational failures as in-band JSON with exit 2", () => {
-  withProject({ "long.ts": longSource(760, 500) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 500) }, (dir) => {
     const result = spawnSync("bash", [BIN, "hook", "--format", "json", "--no-config", "--baseline", "missing-baseline.json", "long.ts"], { cwd: dir, encoding: "utf8" });
     const payload = JSON.parse(result.stdout) as HookPayload;
 
@@ -353,18 +353,18 @@ test("hook reports operational failures as in-band JSON with exit 2", () => {
 });
 
 test("hook baseline new-only uses stableIdentity for file-scope findings", () => {
-  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 0) }, (dir) => {
     const first = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]), "size.file-length");
     writeBaseline(dir, [first]);
-    writeProjectFile(dir, "long.ts", longSource(820, 0));
+    writeProjectFile(dir, "long.ts", longSource(1070, 0));
 
     const grown = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "long.ts"]);
     assert.equal(grown.findings.some((finding) => finding.ruleId === "size.file-length"), false);
   });
 
-  withProject({ "long.ts": longSource(740, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(990, 0) }, (dir) => {
     writeBaseline(dir, []);
-    writeProjectFile(dir, "long.ts", longSource(760, 0));
+    writeProjectFile(dir, "long.ts", longSource(1010, 0));
 
     const crossed = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "long.ts"]);
     assert.equal(crossed.findings.some((finding) => finding.ruleId === "size.file-length"), true);
@@ -375,17 +375,17 @@ test("hook diff new-only uses stableIdentity for file-scope findings", () => {
   if (!gitAvailable()) {
     return;
   }
-  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 0) }, (dir) => {
     initGitCommit(dir);
-    writeProjectFile(dir, "long.ts", longSource(820, 0));
+    writeProjectFile(dir, "long.ts", longSource(1070, 0));
 
     const grown = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "working-tree", "long.ts"]);
     assert.equal(grown.findings.some((finding) => finding.ruleId === "size.file-length"), false);
   });
 
-  withProject({ "long.ts": longSource(740, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(990, 0) }, (dir) => {
     initGitCommit(dir);
-    writeProjectFile(dir, "long.ts", longSource(760, 0));
+    writeProjectFile(dir, "long.ts", longSource(1010, 0));
 
     const crossed = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "working-tree", "long.ts"]);
     assert.equal(crossed.findings.some((finding) => finding.ruleId === "size.file-length"), true);
@@ -396,17 +396,17 @@ test("hook unstaged new-only compares against the index", () => {
   if (!gitAvailable()) {
     return;
   }
-  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 0) }, (dir) => {
     initGitAdd(dir);
-    writeProjectFile(dir, "long.ts", longSource(820, 0));
+    writeProjectFile(dir, "long.ts", longSource(1070, 0));
 
     const grown = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "unstaged", "long.ts"]);
     assert.equal(grown.findings.some((finding) => finding.ruleId === "size.file-length"), false);
   });
 
-  withProject({ "long.ts": longSource(740, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(990, 0) }, (dir) => {
     initGitAdd(dir);
-    writeProjectFile(dir, "long.ts", longSource(760, 0));
+    writeProjectFile(dir, "long.ts", longSource(1010, 0));
 
     const crossed = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "unstaged", "long.ts"]);
     assert.equal(crossed.findings.some((finding) => finding.ruleId === "size.file-length"), true);
@@ -502,7 +502,7 @@ test("hook diff new-only materializes SCC members so pre-existing cycles stay su
 });
 
 test("hook does not double-count a re-emitted file finding as suppressed", () => {
-  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 0) }, (dir) => {
     writeBaseline(dir, []);
     const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "--changed-ranges", "1-1", "long.ts"]);
 
@@ -512,7 +512,7 @@ test("hook does not double-count a re-emitted file finding as suppressed", () =>
 });
 
 test("hook flags parse before and after paths", () => {
-  withProject({ "long.ts": longSource(760, 500) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 500) }, (dir) => {
     const before = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "500-500", "long.ts"]);
     const after = runHook(dir, ["hook", "long.ts", "--format", "json", "--no-config", "--changed-ranges", "500-500"]);
 
@@ -522,7 +522,7 @@ test("hook flags parse before and after paths", () => {
 });
 
 test("hook exits zero with findings", () => {
-  withProject({ "long.ts": longSource(760, 500) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 500) }, (dir) => {
     const result = spawnSync("bash", [BIN, "hook", "--format", "json", "--no-config", "long.ts"], { cwd: dir, encoding: "utf8" });
     const payload = JSON.parse(result.stdout) as HookPayload;
 

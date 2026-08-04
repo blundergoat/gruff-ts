@@ -158,7 +158,7 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 
 ## Size
 
-- `size.file-length` (warning; high confidence; threshold 750): Flags files with more than 750 substantive lines by default. Blank lines and comment-only lines (`//`, `/* */`, XML comments, and the leading comment markers used by supported YAML/TOML/env/INI/npmrc files) do not count; lines containing code or data still count. `metadata.lines` is the substantive count.
+- `size.file-length` (error; high confidence; threshold 1000): Flags files with more than 1000 substantive lines by default. Blank lines and comment-only lines (`//`, `/* */`, XML comments, and the leading comment markers used by supported YAML/TOML/env/INI/npmrc files) do not count; lines containing code or data still count. `metadata.lines` is the substantive count.
 - `size.function-length` (warning; high confidence; threshold 200): Flags functions longer than the configured threshold.
 - `size.parameter-count` (warning; high confidence; threshold 7): Flags functions with too many parameters.
 

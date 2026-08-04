@@ -279,16 +279,16 @@ test("rule config accepts threshold-only and severity-only overrides", () => {
   // rules have no `threshold` at all (e.g. security.eval-call, waste.any-type). Each field is
   // independently optional; the validator must not require them to appear together.
   // Threshold-only: file-length threshold 5 on an 8-line fixture must load cleanly AND fire the
-  // rule with the descriptor's default severity (warning, untouched by this config).
+  // rule with the descriptor's default severity (error, untouched by this config).
   const longFixture = `${"const v = 1;\n".repeat(7)}export {};\n`;
   const thresholdOnly = analyseProject({ "long.ts": longFixture }, { config: { rules: { "size.file-length": { threshold: 5 } } } });
   const thresholdFinding = thresholdOnly.findings.find((finding) => finding.ruleId === "size.file-length");
-  assert.equal(thresholdFinding?.severity, "warning", "threshold-only override leaves the default severity in place");
-  // Severity-only: change size.file-length to advisory without touching its threshold (750 default).
+  assert.equal(thresholdFinding?.severity, "error", "threshold-only override leaves the default severity in place");
+  // Severity-only: change size.file-length to advisory without touching its threshold (1000 default).
   // The same 8-line fixture is below the default threshold so the rule does not fire; the config
   // simply must load without the prior "configured together" rejection.
   const severityOnly = analyseProject({ "long.ts": longFixture }, { config: { rules: { "size.file-length": { severity: "advisory" } } } });
-  assert.equal(severityOnly.findings.some((finding) => finding.ruleId === "size.file-length"), false, "fixture is below the default 750-line threshold");
+  assert.equal(severityOnly.findings.some((finding) => finding.ruleId === "size.file-length"), false, "fixture is below the default 1000-line threshold");
 });
 
 test("rule config still rejects malformed threshold or severity types", () => {

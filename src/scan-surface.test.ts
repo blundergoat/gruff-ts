@@ -41,12 +41,12 @@ test("one ignored input plus one analysed input notes only the ignored input", (
 });
 
 test("size file-length counts substantive lines instead of documentation padding", () => {
-  const commentOnlyTypeScript = Array.from({ length: 751 }, (_, index) => `// Documentation line ${index + 1}`).join("\n");
-  const blockCommentTypeScript = ["/**", ...Array.from({ length: 751 }, (_, index) => ` * Guide line ${index + 1}`), " */"].join("\n");
-  const commentOnlyYaml = Array.from({ length: 751 }, (_, index) => `# Configuration note ${index + 1}`).join("\n");
-  const commentOnlyIni = Array.from({ length: 751 }, (_, index) => `; Configuration note ${index + 1}`).join("\n");
-  const commentOnlyXml = ["<!--", ...Array.from({ length: 751 }, (_, index) => `Guide line ${index + 1}`), "-->"].join("\n");
-  const substantiveJson = Array.from({ length: 751 }, (_, index) => `"// route ${index}",`).join("\n");
+  const commentOnlyTypeScript = Array.from({ length: 1001 }, (_, index) => `// Documentation line ${index + 1}`).join("\n");
+  const blockCommentTypeScript = ["/**", ...Array.from({ length: 1001 }, (_, index) => ` * Guide line ${index + 1}`), " */"].join("\n");
+  const commentOnlyYaml = Array.from({ length: 1001 }, (_, index) => `# Configuration note ${index + 1}`).join("\n");
+  const commentOnlyIni = Array.from({ length: 1001 }, (_, index) => `; Configuration note ${index + 1}`).join("\n");
+  const commentOnlyXml = ["<!--", ...Array.from({ length: 1001 }, (_, index) => `Guide line ${index + 1}`), "-->"].join("\n");
+  const substantiveJson = Array.from({ length: 1001 }, (_, index) => `"// route ${index}",`).join("\n");
 
   const typeScriptFinding = analyseFixture(commentOnlyTypeScript, { fileName: "help-guide.ts" }).findings.find((finding) => finding.ruleId === "size.file-length");
   const blockCommentFinding = analyseFixture(blockCommentTypeScript, { fileName: "block-guide.ts" }).findings.find((finding) => finding.ruleId === "size.file-length");
@@ -60,7 +60,7 @@ test("size file-length counts substantive lines instead of documentation padding
   assert.equal(yamlFinding, undefined);
   assert.equal(iniFinding, undefined);
   assert.equal(xmlFinding, undefined);
-  assert.deepEqual(substantiveFinding?.metadata, { lines: 751, threshold: 750 });
+  assert.deepEqual(substantiveFinding?.metadata, { lines: 1001, threshold: 1000 });
 });
 
 test("a normally analysable scan carries no notes field", () => {

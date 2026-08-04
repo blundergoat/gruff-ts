@@ -533,7 +533,7 @@ function isAnyRuleEnabled(config: Config, ruleIds: readonly string[]): boolean {
 function analyseTextRules(file: SourceFile, source: string, comments: CommentRecord[], config: Config, findings: Finding[]): void {
   if (ruleEnabled(config, "size.file-length") && !isGeneratedLockfile(file.displayPath)) {
     const lines = substantiveLineCount(file, source, comments);
-    const fileLengthThreshold = threshold(config, "size.file-length", 750);
+    const fileLengthThreshold = threshold(config, "size.file-length", 1000);
     if (lines > fileLengthThreshold) {
       findings.push(
         makeFinding({
@@ -541,7 +541,7 @@ function analyseTextRules(file: SourceFile, source: string, comments: CommentRec
           message: `File has ${lines} substantive lines, above the threshold of ${fileLengthThreshold}.`,
           filePath: file.displayPath,
           line: 1,
-          severity: ruleSeverity(config, "size.file-length", "warning"),
+          severity: ruleSeverity(config, "size.file-length", "error"),
           pillar: "size",
           confidence: "high",
           remediation: "Split unrelated responsibilities into smaller files. Or raise rules.size.file-length.threshold in .gruff-ts.yaml if the bound is wrong for this project.",
