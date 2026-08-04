@@ -571,20 +571,57 @@ function analyseProcessExecCalls(file: SourceFile, rawSource: string, codeSource
     if (isSafeProcessExecCall(file, callName, rawSource, start, rawSegment, codeSegment)) {
       continue;
     }
+    const metadata = processExecMetadata(callName, rawSource, start, rawSegment, codeSegment);
+    const grade = processExecGrade(metadata);
     findings.push(
       makeFinding({
         ruleId: "security.process-exec",
-        message: "Child-process execution is used; validate arguments are not user-controlled.",
+        message: grade.message,
         filePath: file.displayPath,
         line: byteLine(codeSource, start),
-        severity: "warning",
+        severity: grade.severity,
         pillar: "security",
         confidence: "high",
-        remediation: "Review the command source and shell mode; prefer fixed command vectors with shell disabled.",
-        metadata: processExecMetadata(callName, rawSource, start, rawSegment, codeSegment),
+        remediation: grade.remediation,
+        metadata,
       }),
     );
   }
+}
+
+// Command sources an attacker could influence at runtime, versus sources fixed in the source text.
+const PROCESS_EXEC_DYNAMIC_SOURCES = new Set(["template", "parameter", "member", "local-builder", "unknown"]);
+const PROCESS_EXEC_FIXED_SOURCES = new Set(["literal", "local-const", "process-exec-path"]);
+
+/*
+ * Severity follows the evidence the metadata already carries: only a shell-enabled call with a
+ * dynamic command keeps the warning. A fixed vector with the shell disabled becomes advisory and
+ * its message says what would make it dangerous instead of implying it already is; everything in
+ * between stays advisory with the review prompt, so the security pillar is not permanently
+ * occupied by calls the reviewer cannot change.
+ */
+function processExecGrade(metadata: Record<string, unknown>): { severity: Severity; message: string; remediation: string } {
+  const argumentSource = String(metadata["argumentSource"] ?? "unknown");
+  const shellEnabled = metadata["shellEnabled"] === true;
+  if (shellEnabled && PROCESS_EXEC_DYNAMIC_SOURCES.has(argumentSource)) {
+    return {
+      severity: "warning",
+      message: "Child-process execution is used; validate arguments are not user-controlled.",
+      remediation: "Review the command source and shell mode; prefer fixed command vectors with shell disabled.",
+    };
+  }
+  if (!shellEnabled && PROCESS_EXEC_FIXED_SOURCES.has(argumentSource)) {
+    return {
+      severity: "advisory",
+      message: "Child-process execution uses a fixed command with shell disabled.",
+      remediation: "No action needed while the command stays fixed; revisit if the command or its arguments start deriving from user input or a shell gets enabled.",
+    };
+  }
+  return {
+    severity: "advisory",
+    message: "Child-process execution is used; validate arguments are not user-controlled.",
+    remediation: "Review the command source and shell mode; prefer fixed command vectors with shell disabled.",
+  };
 }
 
 // Excludes ordinary member calls such as `pattern.exec(...)`; module receivers like `cp.exec(...)`

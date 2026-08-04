@@ -95,7 +95,7 @@ const riskyRuleQualityDoctrine = [
     invalidFixture: "large inline source fixture, generated fixture source, or fixture-heavy test setup without a nearby purpose comment",
     noisyValidFixture: "ordinary prose strings, UI text, markdown snippets, snapshots, short code examples, and purpose-commented fixtures",
     missingInvalidFixture: "large scanner-relevant fixture remains reported when unrelated strings and documented fixtures are present",
-    falsePositiveEscapeHatch: "scope to test/fixture-like files, require large source-like content or fixture setup signals, and accept bounded purpose markers",
+    falsePositiveEscapeHatch: "scope to test/fixture-like files, require large source-like content or fixture setup signals, and accept purpose vocabulary or a substantive leading explanation with stacked // headers read as one comment",
     fingerprintStability: "anchor to the fixture declaration, helper call, or test invocation line rather than fixture body text",
   },
   {
@@ -197,7 +197,7 @@ const riskyRuleQualityDoctrine = [
     expectedConfidence: "high",
     fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
     invalidFixture: "TODO, FIXME, HACK, or XXX comment with no tracking context",
-    noisyValidFixture: "marker words inside strings/templates/regexes plus comments with explicit tracking markers",
+    noisyValidFixture: "marker words inside strings/templates/regexes, quoted or mid-sentence prose mentions, plus comments with explicit tracking markers",
     missingInvalidFixture: "untracked marker remains reported when tracked marker examples are present",
     falsePositiveEscapeHatch: "scan extracted comments only and accept bounded tracking patterns",
     fingerprintStability: "anchor to the marker comment line and keep raw TODO text out of the fingerprint",

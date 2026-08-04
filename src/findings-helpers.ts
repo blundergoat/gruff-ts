@@ -22,49 +22,77 @@ export function parameterNames(params: string): Array<{ name: string; raw: strin
     .filter((parameter) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(parameter.name));
 }
 
+// Nesting and quote context for the parameter splitter. Kept as one mutable record so the
+// per-character helpers stay small enough to read at a glance.
+interface ParameterSplitState {
+  parenthesisDepth: number;
+  bracketDepth: number;
+  braceDepth: number;
+  angleDepth: number;
+  quote: string;
+  isEscaped: boolean;
+}
+
 // Parameter defaults and type expressions can contain their own commas. A small delimiter scanner
-// keeps those nested commas attached without adding another TypeScript parse to the analysis path.
+// keeps those nested commas attached, because adding another TypeScript parse to this hot path
+// would cost more than the character walk saves.
 function splitTopLevelParameters(params: string): string[] {
   const parameters: string[] = [];
+  const state: ParameterSplitState = { parenthesisDepth: 0, bracketDepth: 0, braceDepth: 0, angleDepth: 0, quote: "", isEscaped: false };
   let start = 0;
-  let parenthesisDepth = 0;
-  let bracketDepth = 0;
-  let braceDepth = 0;
-  let angleDepth = 0;
-  let quote = "";
-  let escaped = false;
-
   for (let index = 0; index < params.length; index += 1) {
     const character = params[index] ?? "";
-    if (quote !== "") {
-      if (escaped) {
-        escaped = false;
-      } else if (character === "\\") {
-        escaped = true;
-      } else if (character === quote) {
-        quote = "";
-      }
+    if (advanceParameterQuoteState(state, character)) {
       continue;
     }
-    if (character === '"' || character === "'" || character === "`") {
-      quote = character;
-      continue;
-    }
-    if (character === "(") parenthesisDepth += 1;
-    else if (character === ")") parenthesisDepth = Math.max(0, parenthesisDepth - 1);
-    else if (character === "[") bracketDepth += 1;
-    else if (character === "]") bracketDepth = Math.max(0, bracketDepth - 1);
-    else if (character === "{") braceDepth += 1;
-    else if (character === "}") braceDepth = Math.max(0, braceDepth - 1);
-    else if (character === "<" && opensTypeArgumentList(params, index, start)) angleDepth += 1;
-    else if (character === ">" && angleDepth > 0 && params[index - 1] !== "=") angleDepth -= 1;
-    else if (character === "," && parenthesisDepth === 0 && bracketDepth === 0 && braceDepth === 0 && angleDepth === 0) {
+    if (character === "," && isTopLevelParameterPosition(state)) {
       parameters.push(params.slice(start, index));
       start = index + 1;
+      continue;
     }
+    advanceParameterDepths(state, params, index, start);
   }
   parameters.push(params.slice(start));
   return parameters;
+}
+
+// Consumes quote-context characters: inside a string nothing is structural, and a quote character
+// opens string context. Returns false for ordinary characters so the caller keeps scanning.
+function advanceParameterQuoteState(state: ParameterSplitState, character: string): boolean {
+  if (state.quote !== "") {
+    if (state.isEscaped) {
+      state.isEscaped = false;
+    } else if (character === "\\") {
+      state.isEscaped = true;
+    } else if (character === state.quote) {
+      state.quote = "";
+    }
+    return true;
+  }
+  if (character === '"' || character === "'" || character === "`") {
+    state.quote = character;
+    return true;
+  }
+  return false;
+}
+
+// Tracks nesting for parentheses, brackets, braces, and guarded type-argument angles so commas
+// inside them stay attached to their parameter.
+function advanceParameterDepths(state: ParameterSplitState, params: string, index: number, start: number): void {
+  const character = params[index] ?? "";
+  if (character === "(") state.parenthesisDepth += 1;
+  else if (character === ")") state.parenthesisDepth = Math.max(0, state.parenthesisDepth - 1);
+  else if (character === "[") state.bracketDepth += 1;
+  else if (character === "]") state.bracketDepth = Math.max(0, state.bracketDepth - 1);
+  else if (character === "{") state.braceDepth += 1;
+  else if (character === "}") state.braceDepth = Math.max(0, state.braceDepth - 1);
+  else if (character === "<" && opensTypeArgumentList(params, index, start)) state.angleDepth += 1;
+  else if (character === ">" && state.angleDepth > 0 && params[index - 1] !== "=") state.angleDepth -= 1;
+}
+
+// A comma splits parameters only outside every nesting kind.
+function isTopLevelParameterPosition(state: ParameterSplitState): boolean {
+  return state.parenthesisDepth === 0 && state.bracketDepth === 0 && state.braceDepth === 0 && state.angleDepth === 0;
 }
 
 // Treat `<...>` as type arguments only in type/generic-looking contexts with a real closing `>`;

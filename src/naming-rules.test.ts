@@ -514,20 +514,24 @@ function readView(): void {
 });
 
 test("naming acronym-case flags URL next to Url in identifiers", () => {
+  // Both names choose their casing (camelCase), so URL beside Url is real drift; a SCREAMING
+  // constant in the same file is a convention-forced surface and carries no drift signal.
   const report = analyseFixture(`const databaseUrl = "/a";
-const SERVICE_URL = "/b";
-console.log(databaseUrl, SERVICE_URL);
+const rawURL = "/b";
+const SERVICE_URL = "/c";
+console.log(databaseUrl, rawURL, SERVICE_URL);
 `);
   const findings = report.findings.filter((finding) => finding.ruleId === "naming.acronym-case");
   assert.equal(findings.length, 1);
   assert.equal(findings[0]?.metadata?.acronym, "URL");
+  assert.equal(findings[0]?.symbol, "rawURL");
 });
 
 test("naming acronym-case respects custom knownAcronyms", () => {
   const report = analyseFixture(
     `const grpcChannel = "/a";
-const GRPC_HOST = "/b";
-console.log(grpcChannel, GRPC_HOST);
+const fastGRPCHost = "/b";
+console.log(grpcChannel, fastGRPCHost);
 `,
     { config: { allowlists: { knownAcronyms: ["grpc"] } } },
   );
@@ -634,11 +638,13 @@ test("naming rule pack catalogue coverage", () => {
 });
 
 test("naming rule pack config disable independence", () => {
+  // rawURL supplies the chosen upper-case acronym observation; a SCREAMING constant would be a
+  // convention-forced surface and keep the acronym rule quiet.
   const source = `const url_path = "/a";
 const urlPath = "/b";
 const databaseUrl = "/c";
-const DATABASE_URL = "/d";
-console.log(url_path, urlPath, databaseUrl, DATABASE_URL);
+const rawURL = "/d";
+console.log(url_path, urlPath, databaseUrl, rawURL);
 `;
   const both = analyseFixture(source);
   assert.equal(both.findings.some((finding) => finding.ruleId === "naming.inconsistent-casing"), true);

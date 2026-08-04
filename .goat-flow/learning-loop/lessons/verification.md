@@ -387,3 +387,13 @@ when the old behavior is still present in code.
 **Evidence:** `src/cli.test.ts` + `(search: "rule descriptors cover emitted rules and fixture-backed coverage")`; failing runs of `node --import tsx --test src/cli.test.ts` reported missing positive fixture coverage for those rule ids.
 
 **Prevention:** For catalogue coverage, make each fixture intentionally boring and shaped exactly like the scanner pattern: simple variables for assertion arguments, deliberately long blocks for composite size/complexity rules, and no accidental symbol references that mask unused-import coverage.
+
+## Lesson: re-verify external defect reports against HEAD before fixing
+
+**Created:** 2026-08-04
+
+**What happened:** A detailed false-positive report written against gruff-ts 0.4.0 arrived after 0.5.0 had landed. Rebuilding every reproduction as a scratchpad project and scanning it with HEAD showed two of six items already fixed (comment-style coupling via combinedContextLineComment; the docs-versus-size interaction via substantive line counting), and one claimed workaround (extracting an inline payload to a named const) no longer cleared the finding at HEAD. Fixing from the report's text alone would have produced no-op "fixes" and a wrong changelog.
+
+**Evidence:** scratchpad repro scans - orig/extracted/stacked d1 variants all fired `docs.fixture-purpose-missing` at HEAD while the report said extraction cleared it at 0.4.0; d3 JSDoc and `//` variants produced identical finding sets at HEAD.
+
+**Prevention:** Turn each reported reproduction into a runnable fixture and scan it with the current build FIRST; classify each item as reproduces / already-fixed / diverged, and only then write red tests for the ones that reproduce. Say so explicitly when a repro does not fail rather than "fixing" it.

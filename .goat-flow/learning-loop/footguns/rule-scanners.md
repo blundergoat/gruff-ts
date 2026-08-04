@@ -43,11 +43,13 @@ When implementing or extending this rule, require static evidence before emittin
 
 ## Footgun: fixture-purpose rules read ONLY the last `//` line above a fixture
 
-**Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED (named-profiles self-scan)
+**Status:** resolved 2026-08-04 | **Created:** 2026-05-31 | **Evidence:** OBSERVED (named-profiles self-scan)
 
-`docs.fixture-purpose-missing` (`src/fixture-purpose-rules.ts`, search: `function hasFixturePurposeComment`; search: `function leadingFixturePurposeComment`) checks its marker vocabulary (`fixture`/`covers`/`regression`/`baseline`/`fingerprint`/`because`/...) against only the single `//` line directly above a large template-literal fixture. A marker on an earlier line of a stacked `//` header does not clear it. The rule engages only above `FIXTURE_PURPOSE_MIN_LINES` (12), and an object-literal fixture whose backtick begins after the `const` line is not a candidate.
+`docs.fixture-purpose-missing` (`src/fixture-purpose-rules.ts`, search: `function hasFixturePurposeComment`; search: `function leadingFixturePurposeComment`) checked its marker vocabulary (`fixture`/`covers`/`regression`/`baseline`/`fingerprint`/`because`/...) against only the single `//` line directly above a large template-literal fixture. A marker on an earlier line of a stacked `//` header did not clear it. The rule engages only above `FIXTURE_PURPOSE_MIN_LINES` (12), and an object-literal fixture whose backtick begins after the `const` line is not a candidate.
 
-Observed in `src/changed-region-contract.test.ts` (search: `const REGION_FIXTURE`): a multi-line header with "Fixture purpose:" on its first line kept firing until "This fixture covers ..." moved to the final line. Put the purpose marker on the final adjacent line or use one block comment. The context-doc rules no longer share this trap: `src/comment-rules.ts` (search: `function combinedContextLineComment`) combines contiguous leading `//` text for their marker evaluation.
+Observed in `src/changed-region-contract.test.ts` (search: `const REGION_FIXTURE`): a multi-line header with "Fixture purpose:" on its first line kept firing until "This fixture covers ..." moved to the final line.
+
+Resolved 2026-08-04: `hasFixturePurposeComment` now evaluates the joined contiguous `//` run (shared `src/comment-scanner.ts`, search: `combinedContextLineComment`), and a leading or same-line comment of eight or more words clears the rule even without the vocabulary list (search: `FIXTURE_PURPOSE_MIN_WORDS`). Keyword placement games are no longer needed; short comments still need a vocabulary word.
 
 ## Footgun: per-line walkers miss multi-line conditional context
 
@@ -61,7 +63,7 @@ When writing or extending a per-line walker that depends on the prior line being
 
 ## Footgun: widening any rule's suppression criteria breaks coverage fixtures
 
-**Status:** active | **Created:** 2026-05-26 | **Evidence:** OBSERVED (M01 §2.2, M03 §2.6)
+**Status:** active | **Created:** 2026-05-26 | **Evidence:** OBSERVED (M01 §2.2, M03 §2.6; recurred 2026-08-04 when `naming.acronym-case` stopped counting SCREAMING constants and the catalogue coverage fixture's `DATABASE_URL`/`databaseUrl` proof pair went quiet - fixed by switching the proof to the chosen-case pair `rawURL`/`databaseUrl`)
 
 Every rule's suppression heuristic - whether a rationale-comment regex (M01), a fixture-loop iterable+body check (M03), or any other "this case isn't really a defect" gate - has at least two failure modes when widened:
 
@@ -100,11 +102,13 @@ catalogue test can infer aliases.
 
 ## Footgun: rule-descriptor prose triggers the rule it describes
 
-**Status:** active | **Created:** 2026-05-26 | **Evidence:** OBSERVED (M01 close-out self-scan)
+**Status:** partially resolved 2026-08-04 | **Created:** 2026-05-26 | **Evidence:** OBSERVED (M01 close-out self-scan)
 
 When M01 added a comment explaining the catch-rationale widening, the comment mentioned `TODO`/`FIXME`/`XXX` to explain which markers were excluded - and `docs.todo-without-tracking` immediately fired on the descriptor itself. Two findings appeared: one in `src/safety-rules.ts` (the function comment) and one in `src/false-positive-fixes.test.ts` (the test's purpose comment).
 
 Several gruff rules scan source-wide and don't distinguish "comment explaining what the rule does" from "actual TODO marker." Affected rules include `docs.todo-without-tracking`, `waste.commented-out-code` (matches code-shaped strings in comments), and `docs.stale-comment` (matches `--unknown-flag` mentions).
+
+Resolved for `docs.todo-without-tracking` on 2026-08-04: the marker must now introduce a comment body line with a marker delimiter (`src/comment-rules.ts`, search: `function leadingTodoMarker`), so mid-sentence, quoted, backticked, and fenced-example mentions stay quiet. `waste.commented-out-code` and `docs.stale-comment` still behave as described above.
 
 Same shape for suppression directives in test fixtures: `docs.suppression-without-rationale` scans comments in the test source, so a test comment or template-literal fixture that contains a raw lint-disable directive can flag the test file instead of only exercising the generated fixture. During M07, `src/scan-surface.test.ts` (search: `const eslintDisable`) had to assemble the directive from split strings and rephrase the surrounding comment to avoid a self-scan finding while still writing a bare directive into the generated source under test.
 
@@ -163,9 +167,11 @@ Two implications: (1) when adding a per-symbol classification rule that depends 
 
 ## Footgun: `naming.acronym-case` is file-wide, not per-symbol
 
-**Status:** active | **Created:** 2026-05-25 | **Evidence:** OBSERVED
+**Status:** resolved 2026-08-04 (for convention-forced surfaces) | **Created:** 2026-05-25 | **Evidence:** OBSERVED
 
-`naming.acronym-case` (`src/class-rules.ts`, search: `ruleId: "naming.acronym-case"`) fires when the same known acronym appears in more than one casing anywhere in a single source file. Identifier casings like `Html` (titled), `HTML` (all-caps), and `html` (all-lower) are all counted independently; a single file that uses `parseHtmlPillarRows` AND a constant named `HTML_PILLAR_HEADERS` will get a finding even though both names are internally consistent on their own.
+`naming.acronym-case` (`src/class-rules.ts`, search: `ruleId: "naming.acronym-case"`) fired when the same known acronym appeared in more than one casing anywhere in a single source file. Identifier casings like `Html` (titled), `HTML` (all-caps), and `html` (all-lower) were all counted independently; a single file that used `parseHtmlPillarRows` AND a constant named `HTML_PILLAR_HEADERS` got a finding even though both names were internally consistent on their own.
+
+Resolved 2026-08-04: SCREAMING_SNAKE constants and all-lower names are convention-forced surfaces and no longer contribute observations (search: `isConventionForcedAcronymCasing`), so the `parseHtmlPillarRows` + `HTML_PILLAR_HEADERS` mix is quiet. The rule stays file-wide across CHOSEN casings: `parsedHtml` beside `rawHTML` still fires, including across separate function owners.
 
 When extracting helpers in a file that already uses the titled form (`Html`, `Css`, `Sql`, `Url`, etc.), match the existing casing for new identifiers - including SCREAMING_SNAKE_CASE constants. Either rename the constant to `pillarHeaderColumns` (camelCase, no acronym) or accept that the codebase convention is title-cased acronyms even in constants. The rule has no per-symbol override; only file-wide consistency clears it.
 
@@ -215,7 +221,7 @@ For syntax-only source-to-sink rules, inspect only sink-relevant expression tree
 
 **Status:** resolved | **Created:** 2026-07-12 | **Evidence:** OBSERVED (0.5.0 self-scan fix-forward, six reword iterations)
 
-The context-doc rules previously tested only the comment record adjacent to a declaration, so marker wording on earlier lines of a contiguous `//` run was invisible. Resolved 2026-07-13: `src/comment-rules.ts` (search: `function combinedContextLineComment`) now joins contiguous line-comment text for context-doc evaluation while retaining the final record's anchor. Stale-reference, restatement, magic-threshold, and fixture-purpose checks keep their narrower behavior.
+The context-doc rules previously tested only the comment record adjacent to a declaration, so marker wording on earlier lines of a contiguous `//` run was invisible. Resolved 2026-07-13: `src/comment-scanner.ts` (search: `function combinedContextLineComment`, moved there 2026-08-04) joins contiguous line-comment text for context-doc evaluation while retaining the final record's anchor. Extended 2026-08-04: magic-threshold and fixture-purpose leading-comment checks now read the joined run too. Stale-reference and restatement checks deliberately keep the final record only, so examples in earlier prose do not become symbols.
 
 ## Footgun: rule-group pass gates silently disable rules missing from the id list
 

@@ -60,7 +60,7 @@ Both rules consume the same parsed callable measurement as `docs.missing-why-for
 
 ## Documentation
 
-- `docs.fixture-purpose-missing` (advisory; medium confidence): Flags large or scanner-relevant fixtures without a nearby purpose comment.
+- `docs.fixture-purpose-missing` (advisory; medium confidence): Flags large or scanner-relevant fixtures without a nearby purpose comment. A comment on or directly above the fixture (or above the test declaration for setup findings) clears it when it uses the purpose vocabulary or is a substantive explanation of eight or more words; stacked `//` headers count as one comment.
 - `docs.magic-threshold-without-rationale` (advisory; medium confidence): Flags threshold-like numeric values without a nearby rationale comment.
 - `docs.missing-error-behavior-doc` (advisory; medium confidence): Flags commented functions whose error behavior is not described.
 - `docs.missing-exported-function-doc` (warning; medium confidence): Flags exported functions without a leading maintainer comment.
@@ -76,7 +76,7 @@ Both rules consume the same parsed callable measurement as `docs.missing-why-for
 - `docs.stale-comment` (advisory; medium confidence): Flags comments that reference missing files, unknown rules, stale CLI flags, or the wrong declaration.
 - `docs.stale-param-tag` (advisory; medium confidence): Flags @param tags for parameters no longer in the signature.
 - `docs.suppression-without-rationale` (advisory; medium confidence): Flags lint, formatter, coverage, or tool suppressions without a maintainer rationale.
-- `docs.todo-without-tracking` (advisory; high confidence): Flags TODO, FIXME, HACK, and XXX comments without tracking context.
+- `docs.todo-without-tracking` (advisory; high confidence): Flags comments introduced by a TODO, FIXME, HACK, or XXX marker without tracking context. The marker must start a comment body line (followed by `:`, `(`, `-`, whitespace, or end of line); quoted, backticked, mid-sentence, and fenced-example mentions are prose and stay quiet.
 - `docs.useless-docblock` (advisory; medium confidence): Flags comments or docblocks that only restate the symbol name.
 
 ## Modernisation
@@ -98,7 +98,7 @@ Both rules consume the same parsed callable measurement as `docs.missing-why-for
 
 ## Naming
 
-- `naming.acronym-case` (advisory; medium confidence): Flags mixed casings of a known acronym in one file.
+- `naming.acronym-case` (advisory; medium confidence): Flags a known acronym cased inconsistently across a file's chosen-case names (camelCase/PascalCase and other mixed-case forms). SCREAMING_SNAKE constants and all-lower names are convention-forced surfaces and do not count.
 - `naming.boolean-prefix` (advisory; medium confidence; allowlists: booleanPrefixes, acceptedBooleanNames): Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields. Local and parameter findings recommend a safe rename (`remediationAction: APPLY`). Contract-field findings use `CONFIGURE` with `configurationKey: allowlists.acceptedBooleanNames` and explain that users may instead preserve an external key through explicit serialization mapping; configuration replaces the complete accepted-name list rather than merging one entry into the defaults.
 - `naming.class-file-mismatch` (advisory; medium confidence; allowlist: acceptedClassFilePairs): Flags a named class whose normalized name differs from the file only when it is the module's sole supported public declaration. Direct exports, named default exports, and bottom re-exports share one syntax inventory; a public class beside an interface, type, enum, function, default value, or external re-export stays quiet. Exact case-insensitive `fileBase:ClassName` entries preserve intentional feature-file/class-role conventions. Retained findings include `candidatePrimaryExport: true` and sorted `publicExports` metadata.
 - `naming.generic-function` (advisory; high confidence): Flags generic function names that hide intent.
@@ -128,7 +128,7 @@ Both rules consume the same parsed callable measurement as `docs.missing-why-for
 - `security.new-function` (error; high confidence): Flags Function constructor dynamic code execution.
 - `security.open-redirect-candidate` (warning; medium confidence): Flags external input sent to redirect or navigation sinks.
 - `security.path-traversal-candidate` (warning; medium confidence): Flags external input sent to filesystem path sinks.
-- `security.process-exec` (warning; high confidence): Flags child-process execution calls and annotates emitted findings with command-source and shell-mode hints.
+- `security.process-exec` (warning; high confidence): Flags child-process execution calls, grading severity from command-source and shell-mode evidence: warning only when a shell-enabled call takes a dynamic command.
 - `security.proto-access` (warning; medium confidence): Flags direct __proto__ access that can enable prototype pollution.
 - `security.remote-install-script` (error; medium confidence): Flags package scripts that pipe remote content to a shell.
 - `security.risky-lifecycle-script` (warning; medium confidence): Flags install-time and side-effectful publish lifecycle scripts while allowing validation-only publish gates.
@@ -167,7 +167,7 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 - `test-quality.conditional-logic` (advisory; high confidence): Flags tests with conditional logic.
 - `test-quality.exception-type-only` (advisory; high confidence): Flags tests that only assert exception type.
 - `test-quality.global-state-mutation` (warning; high confidence): Flags tests mutating process or global runtime state.
-- `test-quality.loop-in-test` (advisory; high confidence): Flags loops inside test bodies.
+- `test-quality.loop-in-test` (advisory; medium confidence): Flags test-body loops whose assertions do not identify the failing iteration.
 - `test-quality.magic-number-assertion` (advisory; medium confidence): Flags assertions against unexplained numeric literals.
 - `test-quality.mock-only-test` (advisory; high confidence): Flags tests that only verify mock interaction.
 - `test-quality.no-assertions` (warning; high confidence): Flags tests without apparent assertions.

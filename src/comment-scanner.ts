@@ -281,6 +281,33 @@ function normalizedBlockCommentText(text: string): string {
     .trim();
 }
 
+// Reads a contiguous `//` run as one maintainer comment while keeping the final record's anchor.
+// Rules that accept a leading comment use this so a purpose or context statement on an earlier
+// line of a stacked header still counts; block comments pass through unchanged.
+export function combinedContextLineComment(comments: CommentRecord[], finalComment: CommentRecord): CommentRecord {
+  if (finalComment.kind !== "line") {
+    return finalComment;
+  }
+  const finalIndex = comments.indexOf(finalComment);
+  if (finalIndex < 0) {
+    return finalComment;
+  }
+  let firstIndex = finalIndex;
+  while (firstIndex > 0) {
+    const previous = comments[firstIndex - 1];
+    const current = comments[firstIndex];
+    if (!previous || !current || previous.kind !== "line" || previous.endLine + 1 !== current.line) {
+      break;
+    }
+    firstIndex -= 1;
+  }
+  const text = comments
+    .slice(firstIndex, finalIndex + 1)
+    .map((comment) => comment.text)
+    .join(" ");
+  return { ...finalComment, text };
+}
+
 // String-input wrapper around `hasLeadingCommentBeforeLines`. Keeps call sites that already hold
 // a split line array from re-splitting on every lookup.
 export function hasLeadingCommentBeforeLine(source: string, line: number): boolean {

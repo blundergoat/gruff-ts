@@ -273,10 +273,13 @@ function acronymCaseClass(token: string): "upper" | "lower" | "title" {
 }
 
 /*
- * Reports when an acronym from `config.knownAcronyms` appears as all-caps plus another case form.
- * The all-caps gate exists because lower/title-only forms like `apiToken` beside `googleApiKey`
- * are idiomatic enough to avoid noisy findings. Like `analyseInconsistentCasing`, the finding
- * anchors on the second occurrence so the stable fingerprint sticks to the divergence.
+ * Reports when an acronym from `config.knownAcronyms` appears as all-caps plus another case form
+ * among names whose casing the author chose. SCREAMING_SNAKE constants and all-lower names are
+ * excluded because their convention fixes the acronym's case - a `RAW_HTML_TAGS` constant beside
+ * `startsHtmlBlock` is standard TypeScript, not drift. The all-caps gate exists because
+ * lower/title-only forms like `apiToken` beside `googleApiKey` are idiomatic enough to avoid
+ * noisy findings. Like `analyseInconsistentCasing`, the finding anchors on the second occurrence
+ * so the stable fingerprint sticks to the divergence.
  */
 export function analyseAcronymCase(file: SourceFile, inventory: DeclaredIdentifier[], config: Config, findings: Finding[]): void {
   const observed = new Map<string, Map<string, { name: string; line: number }>>();
@@ -288,9 +291,10 @@ export function analyseAcronymCase(file: SourceFile, inventory: DeclaredIdentifi
   }
 }
 
-// Adds one identifier's acronym tokens to the observed case map, skipping fixture-only constants.
+// Adds one identifier's acronym tokens to the observed case map, skipping fixture-only constants
+// and names whose acronym casing the convention already fixes.
 function recordAcronymCases(observed: Map<string, Map<string, { name: string; line: number }>>, config: Config, entry: DeclaredIdentifier): void {
-  if (isFixtureIdentifier(entry.name)) {
+  if (isFixtureIdentifier(entry.name) || isConventionForcedAcronymCasing(entry.name)) {
     return;
   }
   for (const token of tokensForAcronymCheck(entry.name)) {
@@ -338,6 +342,13 @@ function shouldReportAcronymCase(cases: Map<string, { name: string; line: number
 // camelCase variables to adopt the same acronym style.
 function isFixtureIdentifier(name: string): boolean {
   return /(?:^|[_-])fixture(?:[_-]|$)/i.test(name);
+}
+
+// SCREAMING_SNAKE constants and all-lower names cannot choose an acronym casing - the convention
+// fixes it - so they carry no drift signal against camelCase/PascalCase names, where the author
+// does choose (`parsedHtml` versus `rawHTML`). Only chosen casings are compared file-wide.
+function isConventionForcedAcronymCasing(name: string): boolean {
+  return isScreamingConstant(name) || name === name.toLowerCase();
 }
 
 /*

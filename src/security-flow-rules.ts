@@ -14,6 +14,7 @@ const typescriptSyntax = require("typescript") as typeof import("typescript");
 type TsSourceFile = import("typescript").SourceFile;
 type TsNode = import("typescript").Node;
 type TsCallLikeExpression = import("typescript").CallExpression | import("typescript").NewExpression;
+type TsNamedImportBindings = import("typescript").NamedImportBindings;
 
 // Parse a discovered script to a syntax-only AST; null on non-parseable input so
 // callers use the same-line scan. Parser exceptions recover to null as fallback.
@@ -249,26 +250,37 @@ function importedFrameworkRedirectCallees(parsedSource: TsSourceFile): ReadonlyS
     if (!typescriptSyntax.isImportDeclaration(statement) || !typescriptSyntax.isStringLiteral(statement.moduleSpecifier)) {
       continue;
     }
-    const moduleName = statement.moduleSpecifier.text;
-    if (moduleName !== "next/navigation" && !/^@remix-run\/(?:node|cloudflare|deno|server-runtime)$/.test(moduleName)) {
+    if (!isFrameworkRedirectModule(statement.moduleSpecifier.text)) {
       continue;
     }
     const importClause = statement.importClause;
     if (!importClause || importClause.isTypeOnly || !importClause.namedBindings) {
       continue;
     }
-    if (typescriptSyntax.isNamespaceImport(importClause.namedBindings)) {
-      callees.add(`${importClause.namedBindings.name.text}.redirect`);
-      continue;
-    }
-    for (const element of importClause.namedBindings.elements) {
-      const importedName = element.propertyName?.text ?? element.name.text;
-      if (!element.isTypeOnly && importedName === "redirect") {
-        callees.add(element.name.text);
-      }
-    }
+    collectRedirectAliases(importClause.namedBindings, callees);
   }
   return callees;
+}
+
+// Only these framework modules export a throw-to-navigate redirect; matching the module first
+// avoids treating every imported `redirect` helper as a navigation sink.
+function isFrameworkRedirectModule(moduleName: string): boolean {
+  return moduleName === "next/navigation" || /^@remix-run\/(?:node|cloudflare|deno|server-runtime)$/.test(moduleName);
+}
+
+// Records the local alias each binding style gives the framework `redirect` export: the member
+// path for a namespace import, the (possibly renamed) local name for named imports.
+function collectRedirectAliases(namedBindings: TsNamedImportBindings, callees: Set<string>): void {
+  if (typescriptSyntax.isNamespaceImport(namedBindings)) {
+    callees.add(`${namedBindings.name.text}.redirect`);
+    return;
+  }
+  for (const element of namedBindings.elements) {
+    const importedName = element.propertyName?.text ?? element.name.text;
+    if (!element.isTypeOnly && importedName === "redirect") {
+      callees.add(element.name.text);
+    }
+  }
 }
 
 /**
@@ -426,8 +438,8 @@ function recordUnsafeXmlParser(parsedSource: TsSourceFile, node: TsNode, unsafeX
   }
 }
 
-// Emits a finding when a sink call consumes a tainted local. Legacy scanners retain same-line
-// ownership except for imported framework redirects, which have no safe line-regex equivalent.
+// Reports a finding when a sink call consumes a tainted local. Invariant: legacy scanners retain
+// same-line ownership except for imported framework redirects, which have no safe line-regex equivalent.
 function reportSink(
   parsedSource: TsSourceFile,
   node: TsNode,

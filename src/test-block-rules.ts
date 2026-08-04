@@ -119,14 +119,21 @@ function analyseGlobalStateMutation(file: SourceFile, block: FunctionBlock, body
 function analyseTestStructureChecks(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
   const checks: Array<[string, boolean, string]> = [
     ["test-quality.sleep-in-test", /\b(setTimeout|sleep|waitForTimeout)\s*\(/.test(body), "Test sleeps instead of synchronising on behaviour."],
-    ["test-quality.loop-in-test", controlFlowContainsNonFixtureLoop(body), "Test contains loop logic around assertions."],
+    ["test-quality.loop-in-test", controlFlowContainsNonFixtureLoop(body), "Test contains loop logic that hides which iteration failed."],
     ["test-quality.conditional-logic", controlFlowContainsAssertion(body, /\b(?:if|switch)\b/g), "Test contains conditional logic around assertions."],
     ["test-quality.only-skip", /\.(only|skip)\s*\(/.test(body), "Focused or skipped test is committed."],
   ];
   for (const [ruleId, active, message] of checks) {
-    if (active) {
-      findings.push(blockFinding({ ruleId, message, file, block, severity: "advisory", pillar: "test-quality" }));
+    if (!active) {
+      continue;
     }
+    // Loop findings report at medium confidence: parametrized tests are a legitimate pattern and
+    // the label heuristic cannot see every message shape (multi-line assertion calls, helpers).
+    if (ruleId === "test-quality.loop-in-test") {
+      findings.push(blockFindingWithMetadata({ ruleId, message, file, block, severity: "advisory", pillar: "test-quality", metadata: {} }));
+      continue;
+    }
+    findings.push(blockFinding({ ruleId, message, file, block, severity: "advisory", pillar: "test-quality" }));
   }
 }
 
@@ -144,7 +151,51 @@ function controlFlowContainsNonFixtureLoop(source: string): boolean {
     if (isFixtureLoop(source, start, segment)) {
       continue;
     }
+    if (isLabeledCaseLoop(segment)) {
+      continue;
+    }
     return true;
+  }
+  return false;
+}
+
+/*
+ * A data-driven loop whose assertions each carry a per-case template message referencing a
+ * loop-bound name keeps a failing row identifiable - the failure mode this rule exists to catch -
+ * so it opts out even when the case table is built dynamically. Multi-line assertion calls fall
+ * outside the statement split and stay reported; the rule's medium confidence reflects that.
+ */
+function isLabeledCaseLoop(segment: string): boolean {
+  const parts = loopSegmentParts(segment);
+  if (!parts) {
+    return false;
+  }
+  const boundNames = loopBoundNames(parts.header);
+  if (boundNames.length === 0) {
+    return false;
+  }
+  const assertionStatements = parts.body.split(/[;\n]/).map((statement) => statement.trim()).filter((statement) => statement.length > 0 && hasAssertion(statement));
+  if (assertionStatements.length === 0) {
+    return false;
+  }
+  return assertionStatements.every((statement) => hasLoopCaseLabel(statement, boundNames));
+}
+
+// Identifier names bound by a for..of header - `for (const { name, input } of cases)` binds both.
+// While-loops bind nothing here, so they never take the labeled opt-out.
+function loopBoundNames(header: string): string[] {
+  const binding = header.match(/\b(?:const|let|var)\s+([^)]*?)\s+of\b/)?.[1] ?? "";
+  return [...binding.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)].map((match) => match[0] ?? "").filter(Boolean);
+}
+
+// The per-case label: a template interpolation in the assertion statement naming a bound
+// identifier. Masked source keeps `${...}` expressions intact, so this works on codeBody.
+function hasLoopCaseLabel(statement: string, boundNames: string[]): boolean {
+  for (const interpolation of statement.matchAll(/\$\{([^}]*)\}/g)) {
+    const expressionText = interpolation[1] ?? "";
+    if (boundNames.some((name) => new RegExp(`\\b${escapeRegex(name)}\\b`).test(expressionText))) {
+      return true;
+    }
   }
   return false;
 }
@@ -153,21 +204,55 @@ function controlFlowContainsNonFixtureLoop(source: string): boolean {
 // fixture table, AND every path through the body terminates in an assertion call. Guard branches
 // without assertions are allowed, but assertion-bearing branches still opt out.
 function isFixtureLoop(source: string, start: number, segment: string): boolean {
-  const braceIndex = segment.indexOf("{");
-  const header = braceIndex === -1 ? segment : segment.slice(0, braceIndex);
-  if (!hasFixtureIterable(source, start, header)) {
+  const parts = loopSegmentParts(segment);
+  if (!parts || !hasFixtureIterable(source, start, parts.header)) {
     return false;
   }
-  if (braceIndex === -1) {
+  if (hasUnsafeFixtureLoopBranch(source.slice(0, start + parts.bodyBraceIndex + 1), parts.body)) {
     return false;
   }
-  const body = segment.slice(braceIndex + 1, segment.length - 1);
-  if (hasUnsafeFixtureLoopBranch(source.slice(0, start + braceIndex + 1), body)) {
-    return false;
-  }
-  const statements = body.split(/[;\n]/).map((statement) => statement.trim()).filter((statement) => statement.length > 0 && statement !== "}" && !/^(?:break|continue)\b/.test(statement));
+  // Bare `void identifier` lines are lint pacifiers, not work, so they cannot be the loop's
+  // terminal action; `void call()` still counts as a real trailing statement.
+  const statements = parts.body.split(/[;\n]/).map((statement) => statement.trim()).filter((statement) => statement.length > 0 && statement !== "}" && !/^(?:break|continue)\b/.test(statement) && !/^void\s+[A-Za-z_$][A-Za-z0-9_$]*$/.test(statement));
   const lastStatement = statements[statements.length - 1] ?? "";
   return /^(?:assert\.[a-z]+\s*\(|expect\s*\(|[a-z][A-Za-z0-9_]*\.should(?:Be|Equal)?\s*\()/i.test(lastStatement);
+}
+
+// Splits a loop segment into header and body at the body-opening brace, walking past the header's
+// balanced parentheses first so that a destructured binding such as `for (const { name } of rows)`
+// does not end the header at the destructuring brace. Braceless bodies return undefined.
+function loopSegmentParts(segment: string): { header: string; body: string; bodyBraceIndex: number } | undefined {
+  const parenIndex = segment.indexOf("(");
+  if (parenIndex === -1) {
+    return undefined;
+  }
+  const headerCloseIndex = matchingHeaderCloseParen(segment, parenIndex);
+  if (headerCloseIndex === undefined) {
+    return undefined;
+  }
+  const bodyBraceIndex = segment.indexOf("{", headerCloseIndex);
+  if (bodyBraceIndex === -1) {
+    return undefined;
+  }
+  return { header: segment.slice(0, bodyBraceIndex), body: segment.slice(bodyBraceIndex + 1, segment.length - 1), bodyBraceIndex };
+}
+
+// Walks a header's parentheses to the close of the outermost group, tolerating nested calls such
+// as `of Object.entries({ a: 1 })` inside the loop header.
+function matchingHeaderCloseParen(segment: string, parenIndex: number): number | undefined {
+  let depth = 0;
+  for (let index = parenIndex; index < segment.length; index += 1) {
+    const character = segment[index];
+    if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return undefined;
 }
 
 // Fixture sweeps may carry invariant guards such as `if (expectedIds.has(case.id))`; other branches
@@ -255,12 +340,31 @@ function isFixtureMembershipGuard(sourceBeforeCondition: string, condition: stri
 // Captures the smallest control-flow segment so assertion detection does not scan the whole test.
 function controlFlowSegment(source: string, start: number): string {
   const lineEnd = source.indexOf("\n", start);
-  const openBrace = source.indexOf("{", start);
-  if (openBrace === -1 || (lineEnd !== -1 && openBrace > lineEnd)) {
+  const openBrace = controlFlowBodyBraceIndex(source, start, lineEnd);
+  if (openBrace === undefined) {
     return source.slice(start, lineEnd === -1 ? source.length : lineEnd);
   }
   const closeBrace = matchingCloseBrace(source, openBrace);
   return source.slice(start, closeBrace === undefined ? openBrace + 1 : closeBrace + 1);
+}
+
+// Finds the body-opening brace for a control-flow keyword: the first `{` at parenthesis depth zero
+// on the keyword's line. Braces inside the header parens - destructured bindings such as
+// `for (const { name } of rows)` - belong to the header, not the body.
+function controlFlowBodyBraceIndex(source: string, start: number, lineEnd: number): number | undefined {
+  const limit = lineEnd === -1 ? source.length : lineEnd;
+  let parenDepth = 0;
+  for (let index = start; index < limit; index += 1) {
+    const character = source[index];
+    if (character === "(") {
+      parenDepth += 1;
+    } else if (character === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+    } else if (character === "{" && parenDepth === 0) {
+      return index;
+    }
+  }
+  return undefined;
 }
 
 // Lightweight brace matcher for already-isolated test block text; enough to bound loop/if bodies.
