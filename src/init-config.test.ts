@@ -77,6 +77,28 @@ test("RULE_OPTION_DEFAULTS mirrors live optionNumber call-site defaults", () => 
   assert.deepEqual(normalizeOptionDefaults(RULE_OPTION_DEFAULTS), implementationDefaults);
 });
 
+// Guards the init contract: the generated allowlist must mirror the runtime defaults, so a fresh
+// init cannot silently make a project stricter or looser than a zero-config scan. Reads the
+// defaults through a throwaway filesystem directory that is removed afterward.
+test("renderDefaultConfig seeds the same abbreviations as the runtime defaults", () => {
+  const abbreviationsBlock = renderDefaultConfig().split("acceptedAbbreviations:")[1] ?? "";
+  const generatedAbbreviations: string[] = [];
+  for (const line of abbreviationsBlock.split("\n").slice(1)) {
+    const entry = line.match(/^    - ([a-z0-9]+)$/)?.[1];
+    if (!entry) {
+      break;
+    }
+    generatedAbbreviations.push(entry);
+  }
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-init-defaults-"));
+  try {
+    const defaults = loadConfig(projectRoot, { ...baseOptions(), shouldSkipConfig: true });
+    assert.deepEqual([...generatedAbbreviations].sort(), [...defaults.acceptedAbbreviations].sort());
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
 test("renderDefaultConfig round-trips through loadConfig with every rule registered", () => {
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-init-"));
   try {
