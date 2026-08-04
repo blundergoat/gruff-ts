@@ -2,6 +2,8 @@
 
 ## v0.5.0 - 2026-08-04
 
+- **Composite counts clean pillars as 100** - the mean spans all 11 pillars; fixing a pillar's last finding cannot lower it (ADR-019).
+- **Docblock rules require the shared parse** - AST signatures only, so paren types cannot fake stale @param tags; bounded files skip the pack.
 - **Labeled data-driven loops opt out of loop-in-test** - per-case messages opt out; destructured bodies now analysed. (`src/test-block-rules.ts`)
 - **Acronym-case compares only chosen casings** - forced SCREAMING/lower names exempt; a surviving pair churns identity once. (`src/class-rules.ts`)
 - **process-exec severity follows evidence** - warning only for shell-enabled dynamic commands; fixed vectors advisory; ids churn once (ADR-018).

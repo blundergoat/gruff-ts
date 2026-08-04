@@ -649,7 +649,13 @@ function analyseTypeScriptRules(file: SourceFile, source: string, comments: Comm
   runRuleGroupPass(config, LINE_RULE_IDS, () => analyseLineRules(file, source, codeSource, config, findings));
   runRuleGroupPass(config, SECURITY_FLOW_RULE_IDS, () => analyseSecurityFlow(file, source, findings, parsed?.sourceFile));
   runRulePass(config, "waste.unreachable-code", () => analyseUnreachable(file, codeSource, findings));
-  runRuleGroupPass(config, DOCBLOCK_RULE_IDS, () => analyseDocRules(file, source, codeSource, findings, parsed));
+  // Docblock rules read real AST signatures; a bounded-deep-scan file without a parse skips them
+  // like the other syntax-backed passes instead of falling back to a lossy regex walk.
+  runRuleGroupPass(config, DOCBLOCK_RULE_IDS, () => {
+    if (parsed) {
+      analyseDocRules(file, findings, parsed);
+    }
+  });
   runRulePass(config, "docs.missing-interface-doc", () => analyseInterfaceDocs(file, source, codeSource, findings));
   runRuleGroupPass(config, INTERFACE_FIELD_RULE_IDS, () => analyseInterfaceFields(file, source, codeSource, config, findings));
   runRuleGroupPass(config, COMMENT_QUALITY_RULE_IDS, () => analyseCommentQualityRules({ file, source, codeSource, blocks, comments, config, findings }));

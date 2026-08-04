@@ -397,3 +397,7 @@ when the old behavior is still present in code.
 **Evidence:** scratchpad repro scans - orig/extracted/stacked d1 variants all fired `docs.fixture-purpose-missing` at HEAD while the report said extraction cleared it at 0.4.0; d3 JSDoc and `//` variants produced identical finding sets at HEAD.
 
 **Prevention:** Turn each reported reproduction into a runnable fixture and scan it with the current build FIRST; classify each item as reproduces / already-fixed / diverged, and only then write red tests for the ones that reproduce. Say so explicitly when a repro does not fail rather than "fixing" it.
+
+**Recurrence, 2026-08-05:** The same external report gained two new items (composite scoring, stale-param paren types) after the first remediation pass shipped. Re-running the repros against HEAD split them cleanly: the stale-param defect no longer reproduced (fixed structurally by the 0.5.0 shared AST parameter discovery, pinned with both-direction tests), while the composite defect reproduced exactly as measured and was fixed (ADR-019). Treat an amended report as a fresh report: re-verify every new item before touching code.
+
+**Recurrence, 2026-08-05 (vocabulary plurals):** context-doc vocabulary is matched with word boundaries, so plural forms fail: a comment saying "keeps fingerprints unique" does not satisfy `\bfingerprint\b` and `docs.missing-invariant-doc` fired on the new scoring test helper until the comment said "each fingerprint". When writing marker vocabulary, use the singular form the regex lists.

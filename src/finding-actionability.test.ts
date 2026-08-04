@@ -3,13 +3,98 @@
 // follow the evidence each rule already computes.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { makeFinding } from "./findings.ts";
+import { ruleDescriptors } from "./rules.ts";
+import { scoreReport } from "./scoring.ts";
 import { analyseFixture } from "./test-fixtures.ts";
+import type { Finding } from "./types.ts";
 
 // Filters one scan down to a single rule so every case reads as fixture + expectation.
 function ruleFindings(source: string, ruleId: string, fileName?: string) {
   const report = analyseFixture(source, fileName ? { fileName } : {});
   return report.findings.filter((entry) => entry.ruleId === ruleId);
 }
+
+// Minimal real finding for direct scoring-math tests; distinct lines keep each fingerprint unique.
+function scoredFinding(ruleId: string, pillar: Finding["pillar"], severity: Finding["severity"], line: number): Finding {
+  return makeFinding({ ruleId, message: `${ruleId} fired.`, filePath: "src/sample.ts", line, severity, pillar, confidence: "medium" });
+}
+
+test("composite counts clean pillars as perfect instead of dropping them", () => {
+  // Covers the punished-finisher regression: a pillar with zero findings must average in at 100,
+  // not vanish from the mean, so finishing a pillar can never lower the headline score.
+  const expectedPillarUniverse = 11;
+  const pillarUniverseCount = new Set(ruleDescriptors().map((descriptor) => descriptor.pillar)).size;
+  assert.equal(pillarUniverseCount, expectedPillarUniverse);
+  const score = scoreReport([
+    scoredFinding("docs.missing-file-overview", "documentation", "advisory", 1),
+    scoredFinding("security.process-exec", "security", "warning", 2),
+  ]);
+  const documentationScore = 100 - 1.5;
+  const securityScore = 100 - 4;
+  assert.equal(score.composite, (documentationScore + securityScore + 100 * (pillarUniverseCount - 2)) / pillarUniverseCount);
+});
+
+test("removing any single finding never decreases the composite", () => {
+  // Covers the report's invariant: fixing a finding must never read as a score regression.
+  const findings = [
+    scoredFinding("docs.missing-file-overview", "documentation", "advisory", 1),
+    scoredFinding("security.process-exec", "security", "warning", 2),
+    scoredFinding("security.eval-usage", "security", "error", 3),
+    scoredFinding("size.file-length", "size", "warning", 4),
+  ];
+  const fullComposite = scoreReport(findings).composite;
+  findings.forEach((_finding, index) => {
+    const reducedComposite = scoreReport(findings.filter((_entry, entryIndex) => entryIndex !== index)).composite;
+    assert.equal(reducedComposite >= fullComposite, true, `removing finding ${index} lowered the composite`);
+  });
+});
+
+test("stale-param-tag stays quiet for parenthesised parameter types", () => {
+  // Covers the paren-type regression the shared AST parse fixed: every tag below is correct, so
+  // indexed typeof, parenthesised unions, nested generics, and function types must all stay clean.
+  const findings = ruleFindings(`const SECTIONS = ["a", "b"] as const;
+
+/**
+ * Accepts one section pick per call.
+ *
+ * @param section - one of the known sections
+ * @param authority - the resolution authority
+ * @param pair - union-typed spare values
+ * @param picks - reads chosen section entries
+ * @param onDone - completion callback
+ * @returns whether the section was accepted
+ */
+export function withComplexTypes(
+  section: (typeof SECTIONS)[number],
+  authority: string,
+  pair: (string | number)[],
+  picks: Array<(typeof SECTIONS)[number]>,
+  onDone: (value: string) => void,
+): boolean {
+  onDone(authority);
+  return section.length > 0 && pair.length + picks.length >= 0;
+}
+`, "docs.stale-param-tag");
+  assert.deepEqual(findings, []);
+});
+
+test("stale-param-tag still fires when a tag names a removed parameter", () => {
+  // Covers detection preservation beside a parenthesised type: the stale tag must still report.
+  const findings = ruleFindings(`/**
+ * Formats the header row.
+ *
+ * @param removedName - no longer exists
+ * @param value - the text to format
+ * @returns the formatted text
+ */
+export function formatHeader(value: (string | null)[]): string {
+  return String(value.length);
+}
+`, "docs.stale-param-tag");
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.metadata.parameter, "removedName");
+});
 
 test("todo-without-tracking stays quiet on prose describing marker words", () => {
   // Covers the marker-prose regression: a JSDoc and a line comment ABOUT "TODO" handling fired twice.

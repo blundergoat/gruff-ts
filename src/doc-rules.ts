@@ -4,7 +4,7 @@
 import { commentTextAtLine, hasLeadingCommentBeforeLine } from "./comment-scanner.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { normalizedIdentifier, parameterNames, splitIdentifierWords } from "./findings-helpers.ts";
+import { normalizedIdentifier, splitIdentifierWords } from "./findings-helpers.ts";
 import { documentedExportFunctions, type ParsedScript } from "./parsed-script.ts";
 import { byteLine } from "./text-scans.ts";
 import type { Finding } from "./types.ts";
@@ -134,11 +134,12 @@ export function interfaceDeclarations(source: string, codeSource: string): Expor
 }
 
 /*
- * Docblock rule pack. Walks every `/** … *\/ export function …` pair and fires four sub-rules per
- * block in a stable, deterministic emission order (stale-param → missing-param → missing-return → useless-docblock).
+ * Docblock rule pack. Walks every documented exported function from the shared syntax tree and
+ * fires four sub-rules per block in a stable, deterministic emission order
+ * (stale-param → missing-param → missing-return → useless-docblock).
  */
-export function analyseDocRules(file: SourceFile, source: string, codeSource: string, findings: Finding[], parsed?: ParsedScript): void {
-  for (const documentedExport of documentedExportBlocks(source, codeSource, parsed)) {
+export function analyseDocRules(file: SourceFile, findings: Finding[], parsed: ParsedScript): void {
+  for (const documentedExport of documentedExportBlocks(parsed)) {
     pushStaleParamFindings(file, documentedExport, findings);
     pushMissingParamFindings(file, documentedExport, findings);
     pushMissingReturnFinding(file, documentedExport, findings);
@@ -147,67 +148,21 @@ export function analyseDocRules(file: SourceFile, source: string, codeSource: st
 }
 
 /*
- * Walks every documented exported function. With the shared parse, detection anchors on the syntax
- * tree: prose containing `export` inside the docblock can no longer suppress a block, and
- * `export async function` plus generic and multi-line signatures are covered. The legacy regex walk
- * remains only as the fallback for direct callers without a parse.
+ * Detection anchors on the syntax tree: parameter names are real AST parameters, so parenthesised
+ * types such as `(typeof X)[number]` cannot truncate the signature, prose containing `export`
+ * inside the docblock cannot suppress a block, and `export async function` plus generic and
+ * multi-line signatures are covered. The former regex fallback for parse-less callers is gone -
+ * every caller supplies the shared parse.
  */
-function documentedExportBlocks(source: string, codeSource: string, parsed?: ParsedScript): DocumentedExportBlock[] {
-  if (parsed) {
-    return documentedExportFunctions(parsed).map((documented) => ({
-      doc: documented.docText,
-      name: documented.name,
-      params: documented.parameterNames,
-      paramTags: docParamTags(documented.docText),
-      line: documented.line,
-      returnType: documented.returnTypeText,
-    }));
-  }
-  const blocks: DocumentedExportBlock[] = [];
-  const documentedExport = /\/\*\*((?:(?!\*\/)[\s\S])*?)\*\/\s*export\s+function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*(?::\s*([^\x7b\n]+))?/g;
-  for (const match of source.matchAll(documentedExport)) {
-    const block = documentedExportBlock(source, codeSource, match);
-    if (block) {
-      blocks.push(block);
-    }
-  }
-  return blocks;
-}
-
-// Promotes a regex match into the structured block consumed by docblock rules. Returns undefined
-// when the matched `export` keyword is actually inside a string literal in the masked source.
-function documentedExportBlock(source: string, codeSource: string, match: RegExpMatchArray): DocumentedExportBlock | undefined {
-  const matchStart = regexMatchStart(match);
-  const exportIndex = source.indexOf("export", matchStart);
-  if (!isDocumentedExportInCode(codeSource, exportIndex)) {
-    return undefined;
-  }
-  const doc = regexGroup(match, 1);
-  return {
-    doc,
-    name: regexGroup(match, 2),
-    params: parameterNames(regexGroup(match, 3)).map((parameter) => parameter.name),
-    paramTags: docParamTags(doc),
-    line: byteLine(source, matchStart),
-    returnType: regexGroup(match, 4).trim(),
-  };
-}
-
-// `index ?? 0` adapter for the standard regex API - match.index is technically optional under
-// strict TypeScript even though every real match has it.
-function regexMatchStart(match: RegExpMatchArray): number {
-  return match.index ?? 0;
-}
-
-// `match[index] ?? ""` adapter - keeps callers from sprinkling default-empty handling.
-function regexGroup(match: RegExpMatchArray, index: number): string {
-  return match[index] ?? "";
-}
-
-// Confirms the captured `export` keyword is in real code, not inside a masked comment or string.
-// The mask preserves the first letter of code tokens, so checking for `e` is sufficient.
-function isDocumentedExportInCode(codeSource: string, exportIndex: number): boolean {
-  return exportIndex >= 0 && codeSource[exportIndex] === "e";
+function documentedExportBlocks(parsed: ParsedScript): DocumentedExportBlock[] {
+  return documentedExportFunctions(parsed).map((documented) => ({
+    doc: documented.docText,
+    name: documented.name,
+    params: documented.parameterNames,
+    paramTags: docParamTags(documented.docText),
+    line: documented.line,
+    returnType: documented.returnTypeText,
+  }));
 }
 
 // Reports stale `@param` tags before missing ones because a rename should produce a stable pair:
