@@ -3,6 +3,7 @@
 ## v0.5.0 - 2026-08-04
 
 - **Claude agent surface synced to goat-flow 1.15.0** - skill pack now mirrors `.agents/skills`; deny and Stop hooks route through the managed `run-with-bash.mjs` launcher; unmatched `Write(...)` deny rules dropped in favour of their enforced `Edit`/`Read` forms; the post-edit gruff quality hook now follows `.goat-flow/config.yaml` (currently disabled). (`.claude/settings.json`)
+- **Copilot agent surface synced to goat-flow 1.15.0** - skill pack lifted from 1.12.1 to match `.claude/skills`, adding the three reference files its audit reported missing (`goat-debug/references/diagnostic-techniques.md`, `goat-qa/references/output-templates.md`, `goat-review/references/review-traps.md`); the deny hook now routes through the managed `run-with-bash.mjs` launcher, and the stale registration for the disabled gruff quality hook was dropped. (`.github/hooks/hooks.json`)
 - **file-length raised to error at 1000 (family ratification)** - substantive counting unchanged; `--fail-on` consumers see exit-code changes.
 - **Composite counts clean pillars as 100** - the mean spans all 11 pillars; fixing a pillar's last finding cannot lower it (ADR-019).
 - **Docblock rules require the shared parse** - AST signatures only, so paren types cannot fake stale @param tags; bounded files skip the pack.
