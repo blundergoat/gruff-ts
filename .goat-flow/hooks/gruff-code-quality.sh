@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # gruff-code-quality.sh
-# goat-flow-hook-version: 1.12.1
+# goat-flow-hook-version: 1.15.0
 #
 # Purpose:
 #   Optional PostToolUse hook that runs the matching gruff analyzer after
@@ -34,8 +34,14 @@
 #   node_modules/.bin, bin, .venv/bin, ~/.local/bin, then PATH. It deliberately
 #   does not auto-discover `*/.venv/bin` or build-output directories. Monorepos
 #   with a deliberately managed analyzer in a non-standard location can opt in
-#   explicitly with `GRUFF_TS_BIN`, `GRUFF_PHP_BIN`, `GRUFF_GO_BIN`,
-#   `GRUFF_RS_BIN`, or `GRUFF_PY_BIN`; the value must name an executable file.
+#   explicitly, either per repo in `.goat-flow/config.yaml` under
+#   `hooks.gruff-code-quality.binaries.<lang>` (e.g. `binaries: { py:
+#   strands_agents/.venv/bin/gruff-py }`; the value must be a repo-relative
+#   path that stays inside the repo and names an executable file), or per
+#   machine with `GRUFF_TS_BIN`, `GRUFF_PHP_BIN`, `GRUFF_GO_BIN`,
+#   `GRUFF_RS_BIN`, or `GRUFF_PY_BIN` naming an executable path. The env
+#   override wins over the config entry; either override names the exact
+#   executable - the hook never searches arbitrary subtrees.
 #   Timeout defaults to 60s via `GRUFF_CODE_QUALITY_TIMEOUT_SECONDS`; set
 #   `GRUFF_TS_TIMEOUT_SECONDS`, `GRUFF_PHP_TIMEOUT_SECONDS`,
 #   `GRUFF_GO_TIMEOUT_SECONDS`, `GRUFF_RS_TIMEOUT_SECONDS`, or
@@ -314,23 +320,154 @@ payload_supported_file_paths() {
   done | awk '!seen[$0]++'
 }
 
+# Read the repo-owned analyzer override for one binary from
+# `.goat-flow/config.yaml` (`hooks.gruff-code-quality.binaries.<lang>`). Prints
+# the raw configured value, or nothing when the config or key is absent. The
+# awk pass tracks indentation depth rather than fixed columns so hand-edited
+# indent widths and CRLF files parse; anything that does not match the expected
+# key path fails soft to "not configured".
+config_binary_override() {
+  local root="$1"
+  local binary="$2"
+  local lang="${binary#gruff-}"
+  local config_file="$root/.goat-flow/config.yaml"
+  local value
+  [[ -f "$config_file" ]] || return 0
+  value="$(awk -v lang="$lang" '
+    function trim_value(s) {
+      sub(/^[[:space:]]+/, "", s)
+      sub(/[[:space:]]+#.*$/, "", s)
+      sub(/[[:space:]]+$/, "", s)
+      return s
+    }
+    function inline_map_value(rest, map_body, pattern, value) {
+      rest = trim_value(rest)
+      # Users may paste the documented one-line form: binaries: { py: path }.
+      if (rest !~ /^\{.*\}$/) return ""
+      map_body = rest
+      sub(/^\{[[:space:]]*/, "", map_body)
+      sub(/[[:space:]]*\}$/, "", map_body)
+      pattern = "(^|,)[[:space:]]*" lang "[[:space:]]*:[[:space:]]*"
+      # A different language in the inline map belongs to another analyzer.
+      if (!match(map_body, pattern)) return ""
+      value = substr(map_body, RSTART + RLENGTH)
+      sub(/[[:space:]]*,[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*:.*$/, "", value)
+      return trim_value(value)
+    }
+    BEGIN {
+      want[1] = "hooks"
+      want[2] = "gruff-code-quality"
+      want[3] = "binaries"
+      want[4] = lang
+      depth = 0
+    }
+    {
+      sub(/\r$/, "")
+      trimmed = $0
+      sub(/^ */, "", trimmed)
+      # Blank/comment lines do not change the hook settings the user sees.
+      if (trimmed == "" || trimmed ~ /^#/) next
+      ind = length($0) - length(trimmed)
+      # Moving back up the YAML tree means the previous nested key is done.
+      while (depth > 0 && ind <= lvl[depth]) depth--
+      # Nested content without a matching parent is outside the hook block.
+      if (depth == 0 && ind != 0) next
+      # Only plain key/value rows participate in this tiny config reader.
+      if (trimmed !~ /^[A-Za-z0-9_-]+:( |$)/) next
+      key = trimmed
+      sub(/:.*$/, "", key)
+      # Skip sibling keys until the requested hooks/gruff/binaries path resumes.
+      if (key != want[depth + 1]) next
+      depth++
+      lvl[depth] = ind
+      # Inline binaries maps keep the override visible in compact config files.
+      if (depth == 3) {
+        rest = trimmed
+        sub(/^[A-Za-z0-9_-]+:[ ]*/, "", rest)
+        inline_value = inline_map_value(rest)
+        # A matching inline value lets the edited file run the configured tool.
+        if (inline_value != "") {
+          print inline_value
+          exit
+        }
+      }
+      # Block-style language rows name the exact analyzer the hook should run.
+      if (depth == 4) {
+        rest = trimmed
+        sub(/^[A-Za-z0-9_-]+:[ ]*/, "", rest)
+        print trim_value(rest)
+        exit
+      }
+    }
+  ' "$config_file" 2>/dev/null || true)"
+  # YAML comments are for humans; strip them before quote cleanup.
+  value="${value%% \#*}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  # Double-quoted values should resolve to the path the user typed.
+  if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+    value="${value#\"}"
+    value="${value%\"}"
+  # Single-quoted values get the same user-facing path cleanup.
+  elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+    value="${value#\'}"
+    value="${value%\'}"
+  else
+    value="${value%"${value##*[![:space:]]}"}"
+  fi
+  [[ -n "$value" ]] && printf '%s' "$value"
+  return 0
+}
+
+# Resolve a repo-owned config override to an absolute path, or print nothing
+# when the value is not acceptable. Only repo-relative values that stay inside
+# the repo are accepted: machine-specific absolute, home, or drive-letter paths
+# belong in the GRUFF_<LANG>_BIN env override, and rejecting `.`/`..` segments
+# keeps the named executable inside the reviewed repo (the ADR-032 property:
+# configuration names the exact executable, discovery never leaves the repo).
+resolve_config_binary() {
+  local root="$1"
+  local value="${2//\\//}"
+  value="${value#./}"
+  case "$value" in
+    ''|/*|~*|[A-Za-z]:*) return 0 ;;
+  esac
+  case "/$value/" in
+    */../*|*/./*) return 0 ;;
+  esac
+  printf '%s/%s' "$root" "$value"
+}
+
 # Discovery covers each ecosystem's standard install location - package-manager
 # bin dirs (vendor/bin for composer, node_modules/.bin for npm), an in-repo bin/,
 # the root virtualenv (.venv/bin), user-local installs (~/.local/bin), and finally
 # PATH. It deliberately excludes a `*/.venv/bin` subdirectory glob and the
 # `target/debug` build-output dir: auto-executing a name-matched binary from an
 # arbitrary subtree or build artifact on every edit is RCE-shaped for little gain.
-# A per-language `GRUFF_<LANG>_BIN` override is explicit opt-in and therefore safe
-# for monorepos with a deliberately managed analyzer in a non-standard location.
+# A per-language `GRUFF_<LANG>_BIN` env override or a repo-owned
+# `hooks.gruff-code-quality.binaries.<lang>` config entry is explicit opt-in and
+# therefore safe for monorepos with a deliberately managed analyzer in a
+# non-standard location. Env wins over config; an override that is set but
+# invalid resolves to nothing rather than falling back to discovery, so a wrong
+# override fails loudly in the caller's diagnostic instead of silently running
+# a different binary.
 discover_binary() {
   local root="$1"
   local binary="$2"
-  local candidate env_name override
+  local candidate env_name override config_override resolved
   env_name="$(binary_env_name "$binary")"
   override="${!env_name:-}"
   if [[ -n "$override" ]]; then
-    if [[ -f "$override" && -x "$override" ]]; then
+    if [[ -x "$override" ]]; then
       printf '%s' "$override"
+    fi
+    return 0
+  fi
+  config_override="$(config_binary_override "$root" "$binary")"
+  if [[ -n "$config_override" ]]; then
+    resolved="$(resolve_config_binary "$root" "$config_override")"
+    if [[ -n "$resolved" && -f "$resolved" && -x "$resolved" ]]; then
+      printf '%s' "$resolved"
     fi
     return 0
   fi
@@ -341,7 +478,7 @@ discover_binary() {
     "$root/.venv/bin/$binary" \
     "${HOME:-}/.local/bin/$binary"
   do
-    if [[ -n "$candidate" && -f "$candidate" && -x "$candidate" ]]; then
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
       printf '%s' "$candidate"
       return 0
     fi
@@ -472,6 +609,7 @@ self_test() {
   local payload paths ranges variant report_output report_json first_line
   local help_full help_missing counts
   local tmp output override_path config_error
+  local sample_payload discovered config_path winner
   if ! command -v jq >/dev/null 2>&1; then
     printf 'gruff-code-quality self-test: jq unavailable\n' >&2
     return 1
@@ -537,27 +675,101 @@ self_test() {
   }
 
   tmp="$(mktemp -d)"
-  mkdir -p "$tmp/src" "$tmp/empty-bin" "$tmp/strands_agents/.venv/bin"
+  mkdir -p "$tmp/src" "$tmp/empty-bin" "$tmp/env-bin" "$tmp/strands_agents/.venv/bin" "$tmp/.goat-flow"
+  sample_payload='{"tool_name":"Edit","tool_input":{"file_path":"src/sample.py","changed_ranges":[{"startLine":1,"endLine":1}]}}'
   printf 'rules: {}\n' > "$tmp/.gruff-py.yaml"
   printf 'print("x")\n' > "$tmp/src/sample.py"
-  output="$(PATH="$tmp/empty-bin" process_file '{"tool_name":"Edit","tool_input":{"file_path":"src/sample.py","changed_ranges":[{"startLine":1,"endLine":1}]}}' "$tmp" "src/sample.py" 1 1 2>&1)"
-  [[ "$output" == *".gruff-py.yaml present but gruff-py not found on search paths"* && "$output" == *"GRUFF_PY_BIN"* ]] || {
+  output="$(PATH="$tmp/empty-bin" process_file "$sample_payload" "$tmp" "src/sample.py" 1 1 2>&1)"
+  [[ "$output" == *".gruff-py.yaml present but gruff-py not found on search paths"* && "$output" == *"hooks.gruff-code-quality.binaries.py"* && "$output" == *"GRUFF_PY_BIN"* ]] || {
     rm -rf "$tmp"
     printf 'gruff-code-quality self-test: binary-missing diagnostic failed: %s\n' "$output" >&2
     return 1
   }
   printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/strands_agents/.venv/bin/gruff-py"
   chmod +x "$tmp/strands_agents/.venv/bin/gruff-py"
+  # The nested venv binary now exists but no override names it - discovery must
+  # still skip it (ADR-032: no arbitrary-subtree auto-discovery).
+  discovered="$(PATH="$tmp/empty-bin" discover_binary "$tmp" gruff-py)"
+  [[ -z "$discovered" ]] || {
+    rm -rf "$tmp"
+    printf 'gruff-code-quality self-test: nested venv must not be auto-discovered: %s\n' "$discovered" >&2
+    return 1
+  }
   override_path="$(PATH="$tmp/empty-bin" GRUFF_PY_BIN="$tmp/strands_agents/.venv/bin/gruff-py" discover_binary "$tmp" gruff-py)"
   [[ "$override_path" == "$tmp/strands_agents/.venv/bin/gruff-py" ]] || {
     rm -rf "$tmp"
     printf 'gruff-code-quality self-test: env binary override failed: %s\n' "$override_path" >&2
     return 1
   }
-  override_path="$(PATH="$tmp/empty-bin" GRUFF_PY_BIN="$tmp/strands_agents" discover_binary "$tmp" gruff-py)"
-  [[ -z "$override_path" ]] || {
+  output="$(PATH="$tmp/empty-bin" GRUFF_PY_BIN="$tmp/missing-gruff-py" process_file "$sample_payload" "$tmp" "src/sample.py" 1 1 2>&1)"
+  [[ "$output" == *"GRUFF_PY_BIN is set but is not executable: $tmp/missing-gruff-py"* ]] || {
     rm -rf "$tmp"
-    printf 'gruff-code-quality self-test: directory env override passed: %s\n' "$override_path" >&2
+    printf 'gruff-code-quality self-test: invalid env override diagnostic failed: %s\n' "$output" >&2
+    return 1
+  }
+  # Repo-owned config override: quoted value plus CRLF line endings must both
+  # parse, and the resolved path must be the configured nested-venv binary.
+  # These config-driven calls keep the real PATH appended because the parser
+  # needs awk; they never reach the PATH binary search - a present config
+  # override returns from discovery before the standard-location loop.
+  printf 'hooks:\r\n  gruff-code-quality:\r\n    enabled: true\r\n    binaries:\r\n      py: "strands_agents/.venv/bin/gruff-py"\r\n' > "$tmp/.goat-flow/config.yaml"
+  config_path="$(PATH="$tmp/empty-bin:$PATH" discover_binary "$tmp" gruff-py)"
+  [[ "$config_path" == "$tmp/strands_agents/.venv/bin/gruff-py" ]] || {
+    rm -rf "$tmp"
+    printf 'gruff-code-quality self-test: config binary override failed: %s\n' "$config_path" >&2
+    return 1
+  }
+  printf 'hooks:\n  gruff-code-quality:\n    enabled: true\n    binaries: { py: strands_agents/.venv/bin/gruff-py }\n' > "$tmp/.goat-flow/config.yaml"
+  inline_config_path="$(PATH="$tmp/empty-bin:$PATH" discover_binary "$tmp" gruff-py)"
+  # The compact dashboard-friendly YAML form must run the same analyzer.
+  [[ "$inline_config_path" == "$tmp/strands_agents/.venv/bin/gruff-py" ]] || {
+    rm -rf "$tmp"
+    printf 'gruff-code-quality self-test: inline config binary override failed: %s\n' "$inline_config_path" >&2
+    return 1
+  }
+  printf 'hooks:\n  gruff-code-quality:\n    enabled: true\n    binaries:\n      py: "strands_agents/.venv/bin/gruff-py" # analyzer\n' > "$tmp/.goat-flow/config.yaml"
+  commented_config_path="$(PATH="$tmp/empty-bin:$PATH" discover_binary "$tmp" gruff-py)"
+  # Inline comments should stay readable without becoming part of the path.
+  [[ "$commented_config_path" == "$tmp/strands_agents/.venv/bin/gruff-py" ]] || {
+    rm -rf "$tmp"
+    printf 'gruff-code-quality self-test: commented config binary override failed: %s\n' "$commented_config_path" >&2
+    return 1
+  }
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/env-bin/gruff-py"
+  chmod +x "$tmp/env-bin/gruff-py"
+  winner="$(PATH="$tmp/empty-bin" GRUFF_PY_BIN="$tmp/env-bin/gruff-py" discover_binary "$tmp" gruff-py)"
+  [[ "$winner" == "$tmp/env-bin/gruff-py" ]] || {
+    rm -rf "$tmp"
+    printf 'gruff-code-quality self-test: env override must beat config override: %s\n' "$winner" >&2
+    return 1
+  }
+  chmod -x "$tmp/strands_agents/.venv/bin/gruff-py"
+  output="$(PATH="$tmp/empty-bin:$PATH" process_file "$sample_payload" "$tmp" "src/sample.py" 1 1 2>&1)"
+  [[ "$output" == *"hooks.gruff-code-quality.binaries.py points at strands_agents/.venv/bin/gruff-py which is not an executable file"* ]] || {
+    rm -rf "$tmp"
+    printf 'gruff-code-quality self-test: non-executable config override diagnostic failed: %s\n' "$output" >&2
+    return 1
+  }
+  chmod +x "$tmp/strands_agents/.venv/bin/gruff-py"
+  printf 'hooks:\n  gruff-code-quality:\n    binaries:\n      py: missing/gruff-py\n' > "$tmp/.goat-flow/config.yaml"
+  output="$(PATH="$tmp/empty-bin:$PATH" process_file "$sample_payload" "$tmp" "src/sample.py" 1 1 2>&1)"
+  [[ "$output" == *"hooks.gruff-code-quality.binaries.py points at missing/gruff-py which does not exist"* ]] || {
+    rm -rf "$tmp"
+    printf 'gruff-code-quality self-test: missing config override diagnostic failed: %s\n' "$output" >&2
+    return 1
+  }
+  printf 'hooks:\n  gruff-code-quality:\n    binaries:\n      py: /usr/bin/env\n' > "$tmp/.goat-flow/config.yaml"
+  output="$(PATH="$tmp/empty-bin:$PATH" process_file "$sample_payload" "$tmp" "src/sample.py" 1 1 2>&1)"
+  [[ "$output" == *"hooks.gruff-code-quality.binaries.py must be a repo-relative path inside the repo, got /usr/bin/env"* ]] || {
+    rm -rf "$tmp"
+    printf 'gruff-code-quality self-test: absolute config override must be rejected: %s\n' "$output" >&2
+    return 1
+  }
+  printf 'hooks:\n  gruff-code-quality:\n    binaries:\n      py: ../outside/gruff-py\n' > "$tmp/.goat-flow/config.yaml"
+  output="$(PATH="$tmp/empty-bin:$PATH" process_file "$sample_payload" "$tmp" "src/sample.py" 1 1 2>&1)"
+  [[ "$output" == *"hooks.gruff-code-quality.binaries.py must be a repo-relative path inside the repo, got ../outside/gruff-py"* ]] || {
+    rm -rf "$tmp"
+    printf 'gruff-code-quality self-test: escaping config override must be rejected: %s\n' "$output" >&2
     return 1
   }
   rm -rf "$tmp"
@@ -712,6 +924,7 @@ run_gruff_json() {
   local help="$3"
   local file_path="$4"
   local ranges="$5"
+  local scope="${6:-symbol}"
   local args timeout_seconds
   args=(analyse)
   if [[ "$help" == *"--format"* ]]; then
@@ -720,7 +933,7 @@ run_gruff_json() {
       args+=(--fail-on none)
     fi
     if supports_native_changed_regions "$help"; then
-      args+=(--no-baseline --changed-ranges "$ranges" --changed-scope symbol)
+      args+=(--no-baseline --changed-ranges "$ranges" --changed-scope "$scope")
     fi
   elif [[ "$help" == *"-format"* ]]; then
     args+=(-format json)
@@ -953,6 +1166,45 @@ ignored_descriptor() {
   ' 2>/dev/null || true
 }
 
+# Translate rule families into the specific thing a reviewer will be missing, so an agent
+# fixes the underlying gap instead of inserting marker words to clear the finding. The
+# wording deliberately mirrors code-comments.md, which is the standard these rules approximate.
+print_reviewability_guidance() {
+  local report="$1"
+  local surfaced_lines
+  surfaced_lines="$(printf '%s' "$report" | jq -r '.lines[]?' 2>/dev/null || true)"
+  [[ -n "$surfaced_lines" ]] || return 0
+
+  local shown_docs=0 shown_naming=0 shown_structure=0 line
+  while IFS= read -r line; do
+    case "$line" in
+      *" docs."*)
+        [[ "$shown_docs" -eq 1 ]] || {
+          shown_docs=1
+          printf 'gruff-code-quality: docs findings want a real contract, not a marker word - say what it does, when a reader reaches it, and what null/empty means for them (code-comments.md tiers 1 and 4).\n'
+        }
+        ;;
+    esac
+    case "$line" in
+      *" naming."*)
+        [[ "$shown_naming" -eq 1 ]] || {
+          shown_naming=1
+          printf 'gruff-code-quality: naming findings want the words a reader already knows, not internal mechanics - a better name often removes the need for the comment too (code-comments.md tier 2).\n'
+        }
+        ;;
+    esac
+    case "$line" in
+      *" size."*|*" design.circular-import"*)
+        [[ "$shown_structure" -eq 1 ]] || {
+          shown_structure=1
+          printf "gruff-code-quality: structural findings are review cost - split along the concern a reader follows, then re-run \`goat-flow stats --check\`, because moving a symbol breaks learning-loop anchors that no compiler can see.\n"
+        }
+        ;;
+    esac
+  done <<<"$surfaced_lines"
+  return 0
+}
+
 print_scope_header() {
   local binary="$1"
   local rel_path="$2"
@@ -998,12 +1250,28 @@ hook_capabilities() {
 # surfaced - no re-filtering by line. file/project-scope findings render without
 # a `:line` because their line is a synthetic anchor, not a code location.
 hook_v1_report() {
-  local output="$1" floor_rank="$2" max="$3"
-  printf '%s' "$output" | jq -c --argjson floor_rank "$floor_rank" --argjson max "$max" '
+  local output="$1" floor_rank="$2" max="$3" ranges="${4:-}"
+  printf '%s' "$output" | jq -c --argjson floor_rank "$floor_rank" --argjson max "$max" --arg ranges "$ranges" '
     def sev_rank($s):
       ($s | tostring | ascii_downcase) as $x
       | if $x == "error" then 3 elif $x == "warning" then 2 else 1 end;
+    def parsed_ranges:
+      $ranges
+      | split(",")
+      | map(select(length > 0) | split("-") | {start: (.[0] | tonumber), end: (.[1] | tonumber)});
+    def in_changed_ranges($line):
+      parsed_ranges as $parsed
+      | ($parsed | length) == 0 or any($parsed[]; $line >= .start and $line <= .end);
+    # A file-scope finding describes the file the agent is editing right now - it is too long,
+    # it has no overview, it sits in an import cycle. Those never overlap a changed line, so
+    # range filtering would hide them forever and let a file grow unbounded while every edit
+    # reports clean. They always surface. Line and symbol findings stay range-filtered so the
+    # agent is not handed pre-existing debt from parts of the file it did not touch.
     [ (.findings // [])[]
+      | select(
+          ((.scope // "line") == "file" or (.scope // "line") == "project")
+          or in_changed_ranges(.line // 0)
+        )
       | { sev: ((.severity // "advisory") | tostring | ascii_downcase),
           rank: sev_rank(.severity // ""),
           file: (.file // .filePath // .path // ""),
@@ -1032,13 +1300,18 @@ hook_v1_report() {
 # as the legacy path. Findings never set a non-zero exit.
 process_file_contract() {
   local binary_path="$1" binary="$2" rel_path="$3" ranges="$4" caps="$5"
-  local cr_flag output status timeout_seconds report_json suppressed
+  local output status timeout_seconds report_json suppressed
   local config_error ignored_match scope_fields
   local max_findings floor_rank total err warn adv surfaced floored more
 
-  cr_flag="$(printf '%s' "$caps" | jq -r '.flags.changedRanges // "--changed-ranges"' 2>/dev/null || true)"
-  [[ -n "$cr_flag" ]] || cr_flag="--changed-ranges"
   timeout_seconds="$(normalized_timeout_seconds "$binary")"
+
+  # Ranges are applied by this hook rather than by the analyzer. Passing `--changed-ranges`
+  # makes the analyzer drop every `scope=file` finding - too long, no file overview, import
+  # cycle - because none of them sit on a changed line. That is how a file grows past the size
+  # gate forever while every edit reports clean: the warning is never emitted, not ignored.
+  # Asking for the whole file and filtering here lets file-scope findings through while
+  # line-scope findings stay confined to what the agent actually touched.
 
   # Scope to the changed lines and let the analyzer return the attributable
   # findings. Capture stdout ONLY: the gruff.hook.v1 envelope is JSON on stdout,
@@ -1048,11 +1321,22 @@ process_file_contract() {
   # filters line/symbol findings, hiding pre-existing findings on the very lines
   # the agent edited (confirmed across all five analyzers). See M02 for the
   # scope-specific combined-mode fix that re-enables it.
+  #
+  # Ranges are applied by this hook rather than by the analyzer, and that is a deliberate
+  # trade. Passing `--changed-ranges` gives symbol-aware scoping, but it also makes the
+  # analyzer drop every `scope=file` finding - over the size gate, no file overview, import
+  # cycle - because none of them sit on a changed line. That is how a file grows past the size
+  # gate indefinitely while every single edit reports clean: the warning is never emitted, so
+  # there is nothing for an agent to ignore. Structural visibility is worth more than symbol
+  # widening, so the whole file is requested and `hook_v1_report` keeps file-scope findings
+  # while confining line and symbol findings to the lines actually edited. The call is direct
+  # rather than through an argument array: an empty array expanded with "${arr[@]}" is an
+  # unbound-variable error on the stock macOS Bash 3.2 this hook must run on.
   set +e
   if command -v timeout >/dev/null 2>&1; then
-    output="$(timeout "$timeout_seconds" "$binary_path" hook --format json "$cr_flag" "$ranges" "$rel_path" 2>/dev/null)"
+    output="$(timeout "$timeout_seconds" "$binary_path" hook --format json "$rel_path" 2>/dev/null)"
   else
-    output="$("$binary_path" hook --format json "$cr_flag" "$ranges" "$rel_path" 2>/dev/null)"
+    output="$("$binary_path" hook --format json "$rel_path" 2>/dev/null)"
   fi
   status=$?
   set -e
@@ -1092,7 +1376,7 @@ process_file_contract() {
   [[ "$max_findings" =~ ^[0-9]+$ && "$max_findings" -ge 1 ]] || max_findings=20
   floor_rank="$(min_severity_rank "$GRUFF_CODE_QUALITY_MIN_SEVERITY")"
 
-  report_json="$(hook_v1_report "$output" "$floor_rank" "$max_findings")"
+  report_json="$(hook_v1_report "$output" "$floor_rank" "$max_findings" "$ranges")"
   [[ -n "$report_json" ]] || report_json='{"total":0,"e":0,"w":0,"a":0,"surfaced":0,"floored":0,"more":0,"lines":[]}'
   suppressed="$(printf '%s' "$output" | jq -r '.suppressed.count // 0' 2>/dev/null || true)"
   [[ "$suppressed" =~ ^[0-9]+$ ]] || suppressed=0
@@ -1120,6 +1404,7 @@ process_file_contract() {
     printf 'gruff-code-quality: suppressed %s finding(s) outside the changed scope\n' "$suppressed"
   fi
   if [[ "$surfaced" -gt 0 ]]; then
+    print_reviewability_guidance "$report_json"
     printf '%s\n' "$FOOTER"
   fi
   return 0
@@ -1133,8 +1418,9 @@ process_file() {
   local allow_cached_fallback="${5:-1}"
   local rel_path abs_path binary binary_path config_file config_rel
   local binary_env binary_override config_error
+  local config_binary config_key resolved_binary
   local ranges help output status suppressed ignored_desc uses_native_regions
-  local max_findings floor_rank report_json scope_fields
+  local max_findings floor_rank report_json scope_fields changed_scope
   local total err warn adv surfaced floored more
 
   [[ -n "$file_path" ]] || return 0
@@ -1158,11 +1444,22 @@ process_file() {
   if [[ -z "$binary_path" ]]; then
     binary_env="$(binary_env_name "$binary")"
     binary_override="${!binary_env:-}"
+    config_binary="$(config_binary_override "$root" "$binary")"
+    config_key="hooks.gruff-code-quality.binaries.${binary#gruff-}"
     if [[ -n "$binary_override" ]]; then
       printf 'gruff-code-quality: %s is set but is not executable: %s; skipped\n' "$binary_env" "$binary_override" >&2
+    elif [[ -n "$config_binary" ]]; then
+      resolved_binary="$(resolve_config_binary "$root" "$config_binary")"
+      if [[ -z "$resolved_binary" ]]; then
+        printf 'gruff-code-quality: %s must be a repo-relative path inside the repo, got %s; use %s for machine-specific paths; skipped\n' "$config_key" "$config_binary" "$binary_env" >&2
+      elif [[ ! -e "$resolved_binary" ]]; then
+        printf 'gruff-code-quality: %s points at %s which does not exist; skipped\n' "$config_key" "${resolved_binary#"$root"/}" >&2
+      else
+        printf 'gruff-code-quality: %s points at %s which is not an executable file; skipped\n' "$config_key" "${resolved_binary#"$root"/}" >&2
+      fi
     else
       config_rel="${config_file#"$root"/}"
-      printf 'gruff-code-quality: %s present but %s not found on search paths (%s); set %s to an executable path for non-standard monorepo layouts; skipped\n' "$config_rel" "$binary" "$BINARY_SEARCH_PATHS" "$binary_env" >&2
+      printf 'gruff-code-quality: %s present but %s not found on search paths (%s); set %s in .goat-flow/config.yaml or %s to an executable path for non-standard monorepo layouts; skipped\n' "$config_rel" "$binary" "$BINARY_SEARCH_PATHS" "$config_key" "$binary_env" >&2
     fi
     return 0
   fi
@@ -1198,8 +1495,16 @@ process_file() {
     uses_native_regions=1
   fi
 
+  # Same rule as the contract path: when the changed range already covers the whole file,
+  # `symbol` scope only serves to hide findings that belong to no symbol - a missing file
+  # overview, an over-long file - so widen to `file` scope for that case alone.
+  changed_scope="symbol"
+  if [[ -n "$ranges" && "$ranges" == "$(all_file_range "$abs_path")" ]]; then
+    changed_scope="file"
+  fi
+
   set +e
-  output="$(run_gruff_json "$binary_path" "$binary" "$help" "$rel_path" "$ranges")"
+  output="$(run_gruff_json "$binary_path" "$binary" "$help" "$rel_path" "$ranges" "$changed_scope")"
   status=$?
   set -e
 
@@ -1284,8 +1589,51 @@ process_file() {
     printf 'gruff-code-quality: suppressed %s pre-existing finding(s) outside changed lines\n' "$suppressed"
   fi
   if [[ "$surfaced" -gt 0 ]]; then
+    print_reviewability_guidance "$report_json"
     printf '%s\n' "$FOOTER"
   fi
+  return 0
+}
+
+# Confirm once per session that the hook actually ran and which analyzer answered.
+#
+# Every failure path here is deliberately soft - missing jq, missing binary, missing config,
+# timeout - so an agent that never sees output cannot tell "your code is clean" from "the
+# hook has been dead all session". One line on the first run makes silence afterwards mean
+# something. The marker lives under the gitignored logs tree and is keyed by pid so it
+# neither pollutes the repo nor persists past this session.
+announce_liveness() {
+  local root="$1"
+  local sample_path="$2"
+  local marker_dir="$root/.goat-flow/logs/events"
+  local marker="$marker_dir/.gruff-hook-alive.$PPID"
+  [[ -e "$marker" ]] && return 0
+  mkdir -p "$marker_dir" 2>/dev/null || return 0
+
+  # Markers are keyed by session pid, so ended sessions would otherwise leave one file each
+  # forever. Prune markers whose owning process is gone before writing this session's.
+  local stale_marker stale_pid
+  for stale_marker in "$marker_dir"/.gruff-hook-alive.*; do
+    [[ -e "$stale_marker" ]] || continue
+    stale_pid="${stale_marker##*.}"
+    [[ "$stale_pid" =~ ^[0-9]+$ ]] || continue
+    kill -0 "$stale_pid" 2>/dev/null || rm -f "$stale_marker" 2>/dev/null
+  done
+
+  : >"$marker" 2>/dev/null || return 0
+
+  local binary binary_path
+  binary="$(variant_for_path "$sample_path" 2>/dev/null || true)"
+  [[ -n "$binary" ]] || return 0
+  binary_path="$(discover_binary "$root" "$binary" 2>/dev/null || true)"
+  if [[ -z "$binary_path" ]]; then
+    printf 'gruff-code-quality: active, but no %s binary resolved - findings will NOT be reported this session.\n' "$binary" >&2
+    return 0
+  fi
+  # stderr, not stdout: stdout is reserved for findings, and several contracts require the
+  # hook to stay completely silent there when it has nothing to report. Operational
+  # diagnostics already go to stderr, so this joins them.
+  printf 'gruff-code-quality: active (%s); from here, no output for an edit means no findings on the changed lines.\n' "$binary" >&2
   return 0
 }
 
@@ -1320,6 +1668,8 @@ main() {
     allow_cached_fallback=1
   fi
   [[ "${#file_paths[@]}" -gt 0 ]] || exit 0
+
+  announce_liveness "$root" "${file_paths[0]}"
 
   for file_path in "${file_paths[@]}"; do
     process_file "$payload" "$root" "$file_path" "${#file_paths[@]}" "$allow_cached_fallback"

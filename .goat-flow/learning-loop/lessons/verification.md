@@ -1,29 +1,9 @@
 ---
 category: verification
-last_reviewed: 2026-07-13
+last_reviewed: 2026-08-07
 ---
 
 # Verification lessons
-
-## Lesson: project shared structural fields instead of spreading broader objects
-
-**Created:** 2026-07-12
-
-**What happened:** Declaration ownership reused `CallableMatchPoint` as an `IdentifierOwner` because it structurally contains `ownerId`, `ownerKind`, and `ownerName`. The first implementation spread that whole callable object into a parameter inventory row. Its unrelated `name` field then overwrote the parameter name, so the focused owner test reported `# pass 45` / `# fail 1` even though both rows carried the correct function id.
-
-**Evidence:** `src/class-rules.ts` (search: `ownerId: owner.ownerId`) now projects only the three owner fields; the parameter/local probe shows `note_id` and `noteId` under the same `function:0:94` owner, and the focused suite reports `# tests 46` / `# pass 46` / `# fail 0`.
-
-**Prevention:** When a narrower TypeScript interface accepts a structurally broader runtime object, do not assume object spread narrows it. Explicitly project the allowed fields before merging with another domain row, especially when both shapes use common keys such as `name`, `line`, or `kind`.
-
-## Lesson: performance-plan commands must exercise the helper's comparison mode
-
-**Created:** 2026-07-11
-
-**What happened:** During the 0.5.0 plan audit, M07 was first rewritten with a 15% parser-performance gate but its Verification section named only `bash scripts/test-performance.sh`. The helper's default mode records one current run; it cannot enforce any regression percentage unless a matrix baseline is written first and then supplied with `--baseline` plus `--fail-on-regression`.
-
-**Evidence:** `scripts/test-performance.sh` (search: `--write-baseline requires --matrix`) and (search: `--fail-on-regression requires --baseline`); `.goat-flow/plans/0.5.0/M07-ast-function-discovery.md` (search: `/tmp/m07-perf-before.json`) now names the supported before/after commands.
-
-**Prevention:** Before putting a helper command in a plan exit criterion, read its `--help` and validation branches, then spell out every state-producing and state-consuming invocation. A percentage in prose is not a gate unless the cited command receives a baseline and exits non-zero on that percentage.
 
 ## Lesson: self-scan new CLI fixtures before settling their test file
 
@@ -316,13 +296,17 @@ when the old behavior is still present in code.
 
 `src/cli.test.ts` writes a fixture and asserts that specific `ruleId`s appear (`security.eval-call`, `size.parameter-count`, `test-quality.no-assertions`, `modernisation.public-property`). If you alter a rule's `ruleId`, threshold, or matcher, the fixture text - not the assertion list - is the part to expand: add a new bad pattern that triggers the renamed rule. Editing the assertion to "make the test pass" with the existing fixture defeats the test's purpose (proving the rule fires at all).
 
-## Lesson: the deny-dangerous hook treats piping into `python3 -c`/`node -e` as blocked
+## Lesson: classify interpreter pipelines by whether stdin is data or code
 
 **Created:** 2026-05-10
+**Updated:** 2026-08-07
+**Decision changed:** Check the current hook's stdin classification before rewriting a local-data pipeline; downloader and executable-stdin paths remain blocked, while reviewed local data consumers may be allowed.
 
-`.goat-flow/hooks/deny-dangerous.sh` blocks "pipe to interpreter" patterns. When summarising audit JSON or processing tool output with a one-liner, write to `/tmp/<file>.json` first and then run the interpreter against the file path. Trying to retry the same pipeline after a block triggers the same hook - the lesson is to switch to a file-based intermediate, not to keep retrying.
+The pre-1.14 policy blocked every pipe into `python3 -c` or `node -e`, so local-data processing had to switch to a file intermediate. Goat-flow 1.14 now distinguishes reviewed local producers feeding an inline snippet or checked-in script (stdin remains data) from raw interpreter stdin, stdin-path/module spellings, and downloader pipelines (stdin may execute code).
 
-**Recurrence, 2026-07-12:** A package-content probe was blocked when `npm pack --json` was piped into `node -e`; the safe retry wrote npm output to a temporary JSON file first. Later searches were also blocked because literal backticks appeared inside double-quoted shell patterns. Use single-quoted search patterns whenever repository text contains backticks.
+**Evidence:** `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` (search: `interpreter_treats_stdin_as_data`) owns the current classification; `.goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh` (search: `Local data may be piped into explicit inline interpreter snippets`) pins allowed local-data cases and blocked executable-input cases.
+
+**Prevention:** If the hook blocks a pipeline, do not retry an equivalent spelling. Inspect whether stdin is code or data; keep downloader and raw-stdin execution blocked, and use an explicit file input when the command falls outside the reviewed local-data cases. Use single-quoted search patterns when repository text contains backticks.
 
 ## Lesson: threshold fixtures must exceed the threshold they are proving
 

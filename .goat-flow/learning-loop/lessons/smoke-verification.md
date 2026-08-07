@@ -1,9 +1,19 @@
 ---
 category: smoke-verification
-last_reviewed: 2026-07-03
+last_reviewed: 2026-08-07
 ---
 
 # Smoke verification lessons
+
+## Lesson: performance-plan commands must exercise the helper's comparison mode
+
+**Created:** 2026-07-11
+
+**What happened:** During the 0.5.0 plan audit, M07 was first rewritten with a 15% parser-performance gate but its Verification section named only `bash scripts/test-performance.sh`. The helper's default mode records one current run; it cannot enforce any regression percentage unless a matrix baseline is written first and then supplied with `--baseline` plus `--fail-on-regression`.
+
+**Evidence:** `scripts/test-performance.sh` (search: `--write-baseline requires --matrix`) and (search: `--fail-on-regression requires --baseline`) define the supported before/after comparison commands; the original milestone was local coordination state rather than a durable evidence anchor.
+
+**Prevention:** Before putting a helper command in a plan exit criterion, read its `--help` and validation branches, then spell out every state-producing and state-consuming invocation. A percentage in prose is not a gate unless the cited command receives a baseline and exits non-zero on that percentage.
 
 ## Lesson: restart browser-visible servers after source edits
 

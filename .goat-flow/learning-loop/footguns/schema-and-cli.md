@@ -1,25 +1,28 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-06-11
+last_reviewed: 2026-08-07
 ---
 
 # Schema + CLI surface footguns
 
 ## Footgun: score value semantics and JSON field shape are different contracts
 
-**Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED (M06 score clustering)
+**Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED
+**Evidence context:** M06 score clustering.
 
-`scoreReport` (`src/scoring.ts`, search: `function scoreReport`) owns both the public `gruff.analysis.v2` score object shape and the numeric semantics inside that shape. M06 added correlated-complexity clustering (`src/scoring.ts`, search: `function scoringPenaltyMap`) so `score.composite`, `score.pillars[].penalty`, and `score.topOffenders[].score` can change while the JSON field names stay unchanged. It is valid to keep `schemaVersion: "gruff.analysis.v2"` when only score values change, but comments/docs must not say "score semantics unchanged" or "composite score byte-stable" unless the math is actually untouched. When editing scoring or report wording, grep for `score semantics`, `field shape`, `byte-stable`, `gruff.analysis.v2`, and `schema unchanged`; then verify against `src/m06-rubric-refinements.test.ts` (search: `clusters correlated complexity penalties by symbol`) and ADR-009 (search: `score field names and detailed finding array stay unchanged`).
+`scoreReport` (`src/scoring.ts`, search: `function scoreReport`) owns both the public `gruff.analysis.v2` score object shape and the numeric semantics inside that shape. M06 added correlated-complexity clustering (`src/scoring.ts`, search: `function scoringPenaltyMap`) so `score.composite`, `score.pillars[].penalty`, and `score.topOffenders[].score` can change while the JSON field names stay unchanged. It is valid to keep `schemaVersion: "gruff.analysis.v2"` when only score values change, but comments/docs must not say "score semantics unchanged" or "composite score byte-stable" unless the math is actually untouched. When editing scoring or report wording, grep for `score semantics`, `field shape`, `byte-stable`, `gruff.analysis.v2`, and `schema unchanged`; then verify against `src/m06-rubric-refinements.test.ts` (search: `clusters correlated complexity penalties by symbol`) and `.goat-flow/learning-loop/decisions/ADR-009-cluster-correlated-complexity-score-penalties.md` (search: `score field names and detailed finding array stay unchanged`).
 
 ## Footgun: docs, milestone plans, and these footguns still point at the pre-split `src/cli.ts`
 
-**Status:** active | **Created:** 2026-05-30 | **Evidence:** OBSERVED (0.3.0 plan audit)
+**Status:** active | **Created:** 2026-05-30 | **Evidence:** OBSERVED
+**Evidence context:** 0.3.0 plan audit.
 
 `src/cli.ts` was split into focused modules and is now a ~22-line shell, but many durable docs were never refreshed: they still say "in `src/cli.ts`" for symbols that moved, and still cite `gruff.analysis.v1` (the v1->v2 analysis bump shipped in 0.2.0). Verified relocations: `exitFor` -> `src/scoring.ts` (search: `function exitFor`); `analyse` -> `src/analyser.ts`; `buildProgram` / `normalizeOptions` -> `src/cli-program.ts`; `changedFiles` -> `src/findings-helpers.ts`; `writeBaseline` / `applyBaseline` -> `src/baseline.ts`; `makeFinding` -> `src/findings.ts`; `RULE_DESCRIPTORS` / `ruleDescriptors` -> `src/rules.ts`; `isDefaultIgnoredDir` -> `src/discovery.ts`. Stale carriers include `.goat-flow/architecture.md` (it said `exitFor` was in `cli-program.ts`), every `.goat-flow/tasks/0.3.0/M0x`-`M2x` plan's "Read first" list and `rg ... src/cli.ts` gates, and the entries in this very file. Always grep the `search:` anchor against current source; treat any file path or schema version stated in a doc or plan as advisory until confirmed. A `rg ... src/cli.ts` static-check gate now matches nothing and silently "passes."
 
 ## Footgun: routing migration-path reads through the strict schema validator silently clobbers user state
 
-**Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED (PR #4 review, codex P1)
+**Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED
+**Evidence context:** PR #4 review, Codex P1.
 
 `readExistingPreservedConfig` (`src/init-config.ts`, search: `function readExistingPreservedConfig`) originally called `loadConfig` to recover `paths.ignore` and `minimumSeverity` from the existing file before `init --force` regenerates it. `loadConfig` runs `applySchemaVersionConfig` (`src/config.ts`, search: `function applySchemaVersionConfig`), which throws `ConfigLoadError` on any config without `schemaVersion: gruff-ts.config.v0.1` - exactly the shape of every pre-0.1.2 config in the wild. The `try { ... } catch { return EMPTY }` swallowed the throw and the regenerated file lost the user's curated entries. The CHANGELOG simultaneously promised "init --force preserves … paths.ignore"; the implementation delivered the opposite for the migration cohort.
 
@@ -29,7 +32,8 @@ When introducing a strict validator for a new required field, audit every code p
 
 ## Footgun: catching only ConfigLoadError lets raw IO/parse errors escape the formatted error path
 
-**Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED (PR #4 review, codex P2)
+**Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED
+**Evidence context:** PR #4 review, Codex P2.
 
 `runWithConfigErrorHandling` (`src/cli-program.ts`, search: `async function runWithConfigErrorHandling`) catches `ConfigLoadError` and rethrows everything else. The catch is correct as written; the gap was upstream. `parseConfigFile` (`src/config.ts`, search: `function parseConfigFile`) called `readFileSync` and `JSON.parse` directly: `--config <missing>` produced raw `ENOENT`, malformed `.gruff.json` produced raw `SyntaxError`, both bypassed the "gruff-ts: config error\n  ..." stderr template and the documented exit-2 contract by dumping a Node stack.
 
@@ -81,7 +85,8 @@ Removing `size.stylesheet-length` (the CSS-scan removal) required hand-editing t
 
 ## Footgun: changed-region diff scope is not the same as project context
 
-**Status:** active | **Created:** 2026-06-01 | **Updated:** 2026-06-11 | **Evidence:** OBSERVED (review feedback + focused regression tests + runtime repro)
+**Status:** active | **Created:** 2026-06-01 | **Updated:** 2026-06-11 | **Evidence:** ACTUAL_MEASURED
+**Evidence context:** review feedback, focused regression tests, and runtime reproduction.
 
 `analyse` (`src/analyser.ts`, search: `function analyse`) originally filtered `discovery.files` before scanning whenever `--diff` / `--since` produced a file/range scope. That made per-file work cheaper, but it also built `ProjectIndex` from a partial project. Cross-file rules then lied: a changed exported source covered only by an unchanged central test could get `test-quality.missing-nearby-test`, and graph rules could miss unchanged nodes that complete a cycle. The correct split is "scan with whole-project context, then filter emitted findings"; `suppressedCount` becomes the count of full-scan findings dropped by region filtering, so tests must not expect zero simply because only one changed file remains visible.
 
@@ -93,7 +98,8 @@ Tests: `src/changed-regions.test.ts` (search: `parses added target lines`, `skip
 
 ## Footgun: `check-ignore` answers both explicit-file and changed-file prefilter questions
 
-**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED (review feedback + ignore-authority tests)
+**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED
+**Evidence context:** review feedback plus ignore-authority tests.
 
 `check-ignore` (`src/check-ignore.ts`, search: `function checkIgnore`) calls `classifyPathIgnore` (`src/discovery.ts`) without knowing whether the caller is asking "would `analyse this-file.ts` scan it?" or "would `analyse . --diff ...` later skip this changed path during the walk?" Those are not identical for default/git ignores: explicit file operands bypass `.gitignore` by design, while a directory walk stops at built-in ignored parent dirs like `dist/` and `node_modules/`.
 
@@ -131,7 +137,8 @@ If a session starts with `M .gruff-ts.yaml` (or any other user-curated config) a
 
 ## Footgun: the finding fingerprint embeds `line`, so a baseline keyed on it churns on pure code movement
 
-**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED (0.4.0 baseline plan audit)
+**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED
+**Evidence context:** 0.4.0 baseline plan audit.
 
 `makeFinding` (`src/findings.ts`, search: `const fingerprint = createHash`) hashes `[ruleId, filePath, line, symbol]` into the 16-hex fingerprint, and `applyBaseline` (`src/baseline.ts`, search: `function applyBaseline`) keys suppression on `(fingerprint, ruleId, filePath)`. Because `line` is inside the hash, inserting code above a baselined finding changes its line, changes its fingerprint, and resurfaces the finding as "new" even though the defect is unchanged - churn-by-design for any committed `gruff-baseline.json` that real code drifts under. The 0.4.0 M24 plan assumed the opposite ("a line-moved entry that still matches the same fingerprint"); that assumption is false against the current `makeFinding` and was the trigger for ADR-013, which moves the persistent baseline to PHPStan-style `(filePath, ruleId)` + `count` identity (no line). Keep the fingerprint for SARIF `partialFingerprints.gruffFingerprint` (search: `gruffFingerprint`) and report dedupe (`src/baseline.ts`, search: `function dedupeFindings`) - those WANT per-line identity - but never reintroduce `line` or `fingerprint` as the persistent-baseline match key. When editing baseline matching, grep `gruff.baseline.v`, `applyBaseline`, and `ADR-013`.
 
@@ -139,6 +146,7 @@ If a session starts with `M .gruff-ts.yaml` (or any other user-curated config) a
 
 ## Footgun: diff-base replay reconstructs only materialized files
 
-**Status:** resolved | **Created:** 2026-06-11 | **Evidence:** OBSERVED (runtime repro + regression test)
+**Status:** resolved | **Created:** 2026-06-11 | **Evidence:** ACTUAL_MEASURED
+**Evidence context:** runtime reproduction plus regression test.
 
 `stableIdentitiesFromDiffBase` (`src/hook-contract.ts`, search: `function stableIdentitiesFromDiffBase`) replays the base ref inside a temp tree built only from materialized paths. It originally materialized just current finding anchor paths, so a multi-file finding (`design.circular-import` anchors one SCC member) could not be reconstructed at the base whenever the other members anchored no findings: the base scan saw a partial import graph, the cycle identity never entered the base set, and a pre-existing cycle was reported as new - false blame in the agent hook. Resolved 2026-06-11 by materializing `metadata.files` members alongside anchors (search: `findingBasePaths`); regression pinned in `src/hook-contract.test.ts` (search: `materializes SCC members`). When adding any finding whose stable identity depends on files beyond its anchor, extend `findingBasePaths` - a partial replay silently breaks the new-only comparison, and a member missing at the base ref is the correct "this cycle is new" signal, not an error.

@@ -1,9 +1,31 @@
 ---
 category: workflow
-last_reviewed: 2026-05-27
+last_reviewed: 2026-08-08
 ---
 
 # Workflow lessons
+
+## Lesson: preview managed setup conflicts before choosing force
+
+**Created:** 2026-08-07
+**Decision changed:** Run the plain managed dry run first, inspect its conflicts, then invoke a separate force command only when the requested upgrade authorizes those replacements.
+**Trigger phase:** READ
+
+**What happened:** During the goat-flow 1.14.0 upgrade preflight, I tried to combine `--dry-run` and `--force` to preview the force result. The CLI rejected the combination because force is the post-review write decision, not a second preview mode.
+
+**Prevention:** Use `goat-flow install . --agent <agent> --dry-run` to resolve exact targets and content conflicts. If the preview is blocked only by reviewed content conflicts and the upgrade authorizes replacement, run `goat-flow install . --agent <agent> --force` as a separate command; never claim the force path was previewed.
+
+## Lesson: run strict plan validation before presenting the human gate
+
+**Created:** 2026-08-08
+**Decision changed:** Run the active plan's strict validator before asking for approval, then rerun it after applying the approved lifecycle transition.
+**Trigger phase:** VERIFY
+
+**What happened:** The goat-flow setup milestone reached `human-verification-pending` with every implementation and audit checkbox closed, but its legacy plan shape had never been checked against the 1.15.0 strict contract. The first strict check ran only after approval and reported `missing scope` plus a missing structured effort estimate. The setup evidence remained valid; the milestone snapshot did not satisfy the current recovery format when it was presented.
+
+**Evidence:** `.agents/skills/goat-plan/SKILL.md` (search: `Rerun strict validation after each transition`) requires validation across lifecycle changes; `.agents/skills/goat-plan/references/milestone-examples.md` (search: `Before the human gate`) defines the pre-approval timing.
+
+**Prevention:** Run `goat-flow plans check .goat-flow/plans/<active> --strict` before the human gate. Migrate legacy Scope and effort fields before requesting approval, use an `unavailable:` Actual when no honest timing exists, and rerun the same command after changing the milestone status.
 
 ## Lesson: milestone close-out must compare self-scan delta, not just `npm run check` pass count
 

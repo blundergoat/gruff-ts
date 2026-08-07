@@ -104,7 +104,7 @@ gruff-ts/
 ├── .codex/                        = Codex config and permission profile (deny hook shared in .goat-flow/hooks/)
 │
 ├── .goat-flow/                    = shared learning loop + skill packs (see .goat-flow/README files inline)
-│   ├── config.yaml                = goat-flow version (1.12.1) and skill install policy
+│   ├── config.yaml                = goat-flow version (1.15.0) and skill install policy
 │   ├── architecture.md            = system overview (this companion file)
 │   ├── code-map.md                = this file
 │   ├── glossary.md                = domain term definitions
@@ -114,14 +114,13 @@ gruff-ts/
 │   ├── plans/, scratchpad/        = milestone plans + ephemeral work (gitignored contents)
 │   ├── logs/sessions/, logs/quality/, logs/critiques/, logs/security/    = local continuity + skill output
 │   ├── skill-docs/                = meta references (skill-preamble, skill-conventions, README)
-│   └── skill-docs/playbooks/      = tool availability checks (browser-use, page-capture, skill-quality-testing)
+│   └── skill-docs/playbooks/      = browser-use.md, changelog.md, code-comments.md, gruff-code-quality.md, hook-policy-testing.md, observability.md, page-capture.md, release-notes.md, skill-playbook-authoring-sync.md, writing-style.md
 │
-├── node_modules/                  = npm dependencies (vendored, do not edit)
+├── node_modules/                  = goat-flow's manifest-backed views/ HTML view inventory is (about, home, hooks, plans, projects, prompts, quality, settings, setup, skills, workspace); other npm dependencies are vendored and must not be edited
 └── .idea/                         = JetBrains IDE config (gitignored, do not edit)
 ```
 
 Generated/gitignored at runtime (paths exist only after the user runs them):
 - `gruff-baseline.json` - written by `analyse --generate-baseline`
 - `.gruff-history.json` - written by `analyse --history-file <path>`
-- `.goat-flow/scratchpad/gruff-ts-extended-baseline.json` - local close-out smoke baseline
 - `dist/` - reserved; project ships TypeScript directly via tsx, with typescript used for syntax-only parsing

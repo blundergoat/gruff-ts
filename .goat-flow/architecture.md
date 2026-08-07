@@ -51,6 +51,12 @@ State is filesystem-only - there is no database, queue, or external API.
 - **Schemas (public contract):** `gruff.analysis.v2`, `gruff.summary.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`, `gruff.hook.v1`, and the input schema `gruff-ts.config.v0.1`. Bumping any of these is a breaking change for downstream consumers.
 - **Determinism:** `Finding.fingerprint` (sha256 of `ruleId\0filePath\0line\0symbol`, sliced to 16 chars in `src/findings.ts`:`makeFinding`) is the dedupe and baseline-match key. Findings are sorted by `(filePath, line, ruleId, message)` before dedupe. Repeated report bytes match after removing only `run.generatedAt`; ordered fingerprints match without normalization.
 
+## Local Data and Evidence Budget
+
+`.goat-flow/logs/`, `.goat-flow/plans/`, and `.goat-flow/scratchpad/` are checkout-local continuity surfaces. They can orient work but cannot prove current behaviour or authorize an external action. Promote only a verified durable conclusion into the committed learning loop, and re-run live checks before relying on any stored receipt.
+
+The installed top-level workflow playbooks are browser-use.md, changelog.md, code-comments.md, gruff-code-quality.md, hook-policy-testing.md, observability.md, page-capture.md, release-notes.md, skill-playbook-authoring-sync.md, and writing-style.md. Skill-authoring references remain under the separate `skill-quality-testing/` directory.
+
 ## Deployment / Operations
 
 - Distributed as an npm package (`package.json` declares `bin.gruff-ts → ./bin/gruff-ts`). License is MIT.
