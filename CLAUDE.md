@@ -2,7 +2,7 @@
 
 `gruff-ts` - TypeScript project quality analyser. Modular Node.js/ESM CLI: a thin `src/cli.ts` shell (~20 lines) delegates to `src/analyser.ts` and ~30 sibling rule modules under `src/` (`blocks.ts`, `line-rules.ts`, `project-rules.ts`, `class-rules.ts`, `dead-code-rules.ts`, `safety-rules.ts`, `naming-pushers.ts`, `comment-rules.ts`, `doc-rules.ts`, `report-renderers.ts`, etc.). It scans TypeScript, JavaScript, CSS, and common config (json, yaml, toml, env) files and emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v1`) and report snapshots (`gruff.analysis.v2`) round-trip without churn.
 
-goat-flow version: 1.10.1
+goat-flow version: 1.15.0
 
 ## Workspace Boundary
 
@@ -35,7 +35,7 @@ This repo is the **selected target project**. The controlling goat-flow workspac
 
 ## Commit Messages
 
-Conventional commits (`type(scope): subject`); observed types: feat, refactor, chore, docs, fix, perf, test. Name the concrete behavior, file family, or command that changed - no bare weak verbs (`update`, `change`, `tweak`) as the whole subject. Full reference: `docs/coding-standards/git-commit.md`.
+Conventional commits (`type(scope): subject`); observed types: feat, refactor, chore, docs, fix, perf, test. Name the concrete behavior, file family, or command that changed - no bare weak verbs (`update`, `change`, `tweak`) as the whole subject. Full reference: `docs/coding-standards/git-commit-message.md`.
 
 ## Key Resources
 

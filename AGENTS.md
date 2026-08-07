@@ -37,7 +37,7 @@ The Never tier and accepted ADR safety constraints are non-overridable. Approval
 
 ## Commit Messages
 
-Conventional commits (`type(scope): subject`); observed types: feat, refactor, chore, docs, fix, perf, test. Name the concrete behavior, file family, or command that changed - no bare weak verbs (`update`, `change`, `tweak`) as the whole subject. Full reference: `docs/coding-standards/git-commit.md`.
+Conventional commits (`type(scope): subject`); observed types: feat, refactor, chore, docs, fix, perf, test. Name the concrete behavior, file family, or command that changed - no bare weak verbs (`update`, `change`, `tweak`) as the whole subject. Full reference: `docs/coding-standards/git-commit-message.md`.
 
 ## Key Resources
 
@@ -131,6 +131,6 @@ Runtime code, hooks, and agent config are out of scope unless the user explicitl
 | Entry point / scripts | `bin/gruff-ts`, `scripts/check.sh`, `scripts/start-dev.sh` |
 | Fixtures | `fixtures/sample.ts` |
 | Build / config | `package.json`, `tsconfig.json` |
-| Commit policy | `docs/coding-standards/git-commit.md` |
+| Commit policy | `docs/coding-standards/git-commit-message.md` |
 | Workspace notes | `.goat-flow/logs/sessions/`, `.goat-flow/plans/`, `.goat-flow/scratchpad/` |
 | Peer instructions | `CLAUDE.md` |

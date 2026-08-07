@@ -1,6 +1,6 @@
 ---
 category: docs-authoring
-last_reviewed: 2026-08-07
+last_reviewed: 2026-08-08
 ---
 
 # Docs-authoring footguns
@@ -64,3 +64,17 @@ The 1.15.0 `audit . --agent codex --check-content` gate then found the same pres
 Evidence: `.goat-flow/learning-loop/footguns/README.md` (search: `Evidence labels are mutually exclusive`) defines the current label/status contract; `.goat-flow/learning-loop/lessons/README.md` (search: `Automatic Capture Policy`) confirms project-owned entries are manually consolidated rather than auto-rewritten; `.goat-flow/logs/sessions/README.md` (search: `Local Data and Evidence Budget`) demonstrates the managed-to-project-owned anchor contract.
 
 Prevention: immediately run `stats . --check`, the base audit, the harness audit, and the content audit after installation. Normalize only reported project-owned entries, replace gitignored task paths with committed semantic anchors, reconcile architecture and code-map inventories against live files, regenerate indexes, and rerun each original failing command.
+
+## Footgun: `audit --agent <one>` never inspects the sibling agents' instruction files
+
+**Status:** active | **Created:** 2026-08-08 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** After renaming or moving any doc an instruction file cites, grep every agent surface for the old path instead of trusting a passing single-agent audit.
+**Trigger phase:** VERIFY
+**Incident count:** 1
+**Latest occurrence:** 2026-08-08
+
+This workspace keeps four near-identical agent instruction files (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, plus the `.agents/` surface). `audit . --agent claude` reads only the Claude surface, and its path-resolution finding ("All 64 referenced paths resolve across router tables, architecture.md, and core docs") covers router tables and core docs - not inline prose in the body. Two blind spots stack: a stale path in a Commit Messages sentence is invisible even in the audited file, and a stale path in a *sibling* file's router table is invisible because that file was never opened. gruff's own `docs.stale-comment` rule does not close the gap either - it resolves paths cited in source comments, not in markdown prose.
+
+Defence: after renaming a doc, run one repo-wide grep for the old basename across all extensions (`grep -rn "old-name\.md" . | grep -v node_modules`) and fix every agent surface in the same change. A green `--agent claude` audit is not evidence that the other three surfaces are consistent.
+
+Instance: `docs/coding-standards/git-commit.md` was renamed to `git-commit-message.md`, but six references survived - inline prose in all three of `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, the router-table `Commit policy` row in the latter two, and the Copilot Workspace Boundary owned-surfaces list. Both `audit . --agent claude --harness` and `--check-content` reported pass (all five concerns at 100, drift 0/53 findings, 177 files scanned) while every one of those pointers was broken. The audit's own verification concern named the real file (`Commit guidance found at docs/coding-standards/git-commit-message.md`), so the mismatch was only visible by reading that finding against the instruction file.

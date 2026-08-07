@@ -6,7 +6,7 @@ goat-flow version: 1.12.1
 
 ## Workspace Boundary
 
-This repo is the **selected target project**. The controlling goat-flow workspace lives elsewhere on the operator's machine; treat its workflow, dist, and manifest as read-only context, not paths to edit. Inside this target project, only Copilot-owned surfaces (`.github/copilot-instructions.md`, `.github/skills/`, `.github/hooks/`, `docs/coding-standards/git-commit.md`, shared `.goat-flow/`) are in scope unless the user widens it. Do not modify `CLAUDE.md`, `.claude/`, `AGENTS.md`, `.codex/`, or `.agents/` during Copilot turns.
+This repo is the **selected target project**. The controlling goat-flow workspace lives elsewhere on the operator's machine; treat its workflow, dist, and manifest as read-only context, not paths to edit. Inside this target project, only Copilot-owned surfaces (`.github/copilot-instructions.md`, `.github/skills/`, `.github/hooks/`, `docs/coding-standards/git-commit-message.md`, shared `.goat-flow/`) are in scope unless the user widens it. Do not modify `CLAUDE.md`, `.claude/`, `AGENTS.md`, `.codex/`, or `.agents/` during Copilot turns.
 
 ## Truth Order
 
@@ -35,7 +35,7 @@ This repo is the **selected target project**. The controlling goat-flow workspac
 
 ## Commit Messages
 
-Conventional commits (`type(scope): subject`); observed types: feat, refactor, chore, docs, fix, perf, test. Name the concrete behavior, file family, or command that changed - no bare weak verbs (`update`, `change`, `tweak`) as the whole subject. Full reference: `docs/coding-standards/git-commit.md`.
+Conventional commits (`type(scope): subject`); observed types: feat, refactor, chore, docs, fix, perf, test. Name the concrete behavior, file family, or command that changed - no bare weak verbs (`update`, `change`, `tweak`) as the whole subject. Full reference: `docs/coding-standards/git-commit-message.md`.
 
 ## Key Resources
 
@@ -128,6 +128,6 @@ Runtime code, hooks, and agent config are out of scope unless the user explicitl
 | Entry point / scripts | `bin/gruff-ts`, `scripts/check.sh`, `scripts/start-dev.sh` |
 | Fixtures | `fixtures/sample.ts` |
 | Build / config | `package.json`, `tsconfig.json` |
-| Commit policy | `docs/coding-standards/git-commit.md` |
+| Commit policy | `docs/coding-standards/git-commit-message.md` |
 | Workspace notes | `.goat-flow/logs/sessions/`, `.goat-flow/plans/`, `.goat-flow/scratchpad/` |
 | Peer instructions | `CLAUDE.md`, `AGENTS.md` |
