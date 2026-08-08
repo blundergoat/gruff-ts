@@ -51,7 +51,7 @@ last_reviewed: 2026-05-24
 
 **When to use:** any flow that overwrites `.gruff-ts.yaml` from defaults (`gruff-ts init --force`, future migrate flows). The naive approach — render defaults and write — silently destroys user-curated `paths.ignore`, `allowlists.acceptedAbbreviations`, per-rule `threshold`/`severity`/`options` tuning, and disabled-rule states.
 
-**Shape** (see `src/init-config.ts`, search: `function readExistingIgnoredPaths`):
+**Shape** (see `src/init-config.ts`, search: `function readExistingPreservedConfig`):
 
 ```ts
 function writeDefaultConfig(projectRoot: string, shouldOverwrite: boolean): InitResult {
@@ -74,6 +74,8 @@ function readExistingIgnoredPaths(projectRoot: string): readonly string[] {
   }
 }
 ```
+
+The sketch above is the original 2026-05-24 shape and is kept because it shows the pattern at its simplest. The live reader is now `readExistingPreservedConfig` (`src/init-config.ts`, search: `function readExistingPreservedConfig`), which returns a `PreservedInitConfig` carrying both `ignoredPaths` and a `minimumSeverity` map rather than a bare string array. Preserve the shape, not the signature.
 
 Three invariants:
 

@@ -43,7 +43,7 @@ last_reviewed: 2026-05-25
 
 **Approach:**
 1. Reframe the step as "Version consistency" (`scripts/preflight-checks.sh`, search: `Version consistency`). Drop the `npm view` call entirely; drop `NPM_REGISTRY_URL` from environment docs.
-2. Extend `scripts/bump-version.sh --check` (search: `function check_version_lockstep`) to ALSO verify that `CHANGELOG.md`'s most-recent `## [version]` heading matches `package.json`. Two failure modes are both inconsistency: (a) package bumped without changelog entry, (b) changelog bumped without package bumped. The error message names both remediations - "run `scripts/bump-version.sh <changelog-version>` or add a CHANGELOG.md entry for <package-version>".
+2. Extend `scripts/bump-version.sh --check` (search: `check_version_lockstep()`) to ALSO verify that `CHANGELOG.md`'s most-recent `## [version]` heading matches `package.json`. Two failure modes are both inconsistency: (a) package bumped without changelog entry, (b) changelog bumped without package bumped. The error message names both remediations - "run `scripts/bump-version.sh <changelog-version>` or add a CHANGELOG.md entry for <package-version>".
 3. The "should we bump?" question moves out of the preflight - either it lives in the release process, or the user runs `npm view` ad-hoc. Local development never hits the noisy "already published" failure.
 
 **Evidence:** `scripts/preflight-checks.sh` `version_consistency_check`; `scripts/bump-version.sh` `check_version_lockstep` (reads `CHANGELOG.md` via `read_changelog_latest_version`). After the rework, `scripts/preflight-checks.sh` ran 5/5 green at 0.1.2 with the CHANGELOG, package files, and `src/constants.ts` all in agreement; a deliberately desynced CHANGELOG triggers a clear failure that names both fix paths.

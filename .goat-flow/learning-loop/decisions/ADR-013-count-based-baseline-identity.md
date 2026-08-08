@@ -16,7 +16,7 @@ The persistent baseline (`gruff-baseline.json`) keys suppressed findings on `(fi
 
 gruff's faithful analog, adapted to the fact that gruff already has stable rule IDs (PHPStan keys on the message text because it historically lacked stable identifiers):
 
-- Baseline entry shape becomes `{ ruleId, filePath, count }`. `message` MAY be persisted for human review but is NOT part of the match key - the exact stance `applyBaseline` already takes on `message` today (`src/baseline.ts`, search: `applyBaseline ignores it`). `line`, `symbol`, and `fingerprint` are dropped from the entry.
+- Baseline entry shape becomes `{ ruleId, filePath, count }`. `message` MAY be persisted for human review but is NOT part of the match key - the exact stance `applyBaseline` already takes on `message` today (`src/baseline.ts`, search: `ignores it so cosmetic message changes`). `line`, `symbol`, and `fingerprint` are dropped from the entry.
 - Match: group current findings by `(filePath, ruleId)`. In deterministic order, the first `count` of a group are `unchanged`; any surplus beyond `count` are `new`; a baselined group whose current count is lower than `count` is `absent`/stale (PHPStan's "expected N, occurred M").
 - This is a `gruff.baseline.v1` -> `gruff.baseline.v2` format change. The bump and the entry-shape change are an Ask-First boundary per CLAUDE.md. This ADR records the operator's explicit go-ahead for the DIRECTION; the schema-string edit in `src/` is still gated to implementation time.
 

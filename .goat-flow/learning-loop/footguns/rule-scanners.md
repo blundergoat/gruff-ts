@@ -30,7 +30,7 @@ There is no central pass that re-applies config severity to findings - each rule
 **Status:** active | **Created:** 2026-06-03 | **Evidence:** OBSERVED
 **Evidence context:** static-analysis-redundant-test QA.
 
-`test-quality.static-analysis-redundant-test` (`src/test-block-rules.ts`, search: `function typeofFunctionAssertions`) must not treat every `typeof <identifier-or-member> === "function"` assertion as a static-analysis-redundant candidate. The same syntax is a legitimate runtime contract when the operand comes from a factory, plugin loader, parsed module, dependency injection container, callback registry, or any other call result:
+`test-quality.static-analysis-redundant-test` (`src/static-analysis-redundant-rules.ts`, search: `function typeofFunctionAssertions`) must not treat every `typeof <identifier-or-member> === "function"` assertion as a static-analysis-redundant candidate. The same syntax is a legitimate runtime contract when the operand comes from a factory, plugin loader, parsed module, dependency injection container, callback registry, or any other call result:
 
 ```ts
 const handler = createMiddleware(options);
@@ -152,11 +152,11 @@ When adding an exemption that targets a specific control-flow header shape, do n
 **Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED
 **Evidence context:** PR #4 review, Codex P2.
 
-`functionBlockFromMatch` (`src/blocks.ts`, search: `function functionBlockFromMatch`) originally set `isExported: /^\s*export\b/.test(scan.codeLines[index])` - a line-local check on the declaration line only. Common module pattern is to declare locally and re-export at the bottom: `function foo() {}` followed by `export { foo };` (search: `^export \{` across `src/`). That declaration's `isExported` came back false, so `docs.missing-exported-function-doc` (warning) silently downgraded to `docs.missing-internal-function-doc` (advisory) - undercutting the public-API doc gate for a pervasive shape.
+The block builder in `src/blocks.ts` originally set `isExported` from a line-local `/^\s*export\b/` test on the declaration line only; the function that did so has since been refactored away, so classify against the current owner (`src/blocks.ts`, search: `isExported: boolean`). Common module pattern is to declare locally and re-export at the bottom: `function foo() {}` followed by `export { foo };` (search: `^export \{` across `src/`). That declaration's `isExported` came back false, so `docs.missing-exported-function-doc` (warning) silently downgraded to `docs.missing-internal-function-doc` (advisory) - undercutting the public-API doc gate for a pervasive shape.
 
 The fix runs `collectReExportedNames` (`src/blocks.ts`, search: `function collectReExportedNames`) once per file, scanning the masked codeSource for `export { ... }` (multi-name, alias-aware) and `export default <Ident>`. `isExported` ORs the line-local check with the file-level set, so a function declared inline gets the export classification when its name is re-exported anywhere in the file.
 
-Two implications: (1) when adding a per-symbol classification rule that depends on "is this exported," do the file-level re-export scan once and thread the result; do not rely on per-line patterns alone. (2) `isPublic` (which considers `public` keyword too) was unaffected, but the moral is identical for any future "this declaration is part of the public surface" gate. Tests: `false-positive-fixes.test.ts`, search: `FP-#33b docs.missing-exported-function-doc fires on re-exported function`.
+Two implications: (1) when adding a per-symbol classification rule that depends on "is this exported," do the file-level re-export scan once and thread the result; do not rely on per-line patterns alone. (2) `isPublic` (which considers `public` keyword too) was unaffected, but the moral is identical for any future "this declaration is part of the public surface" gate. Tests: `src/false-positive-fixes.test.ts`, search: `FP-#33b docs.missing-exported-function-doc fires on plain and aliased re-exports`.
 
 ## Footgun: `naming.acronym-case` is file-wide, not per-symbol
 
@@ -183,7 +183,7 @@ When you add or remove a rule from the complexity cluster (e.g. retiring `design
 **Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED
 **Evidence context:** design.god-function removal self-scan.
 
-After removing a rule from the catalogue, any committed comment that still names the dotted id (`pillar.name`) becomes an "unknown rule id" to `pushStaleRuleReferenceFindings` (`src/comment-rules.ts`, search: `function pushStaleRuleReferenceFindings`), which checks each id against `DESCRIPTOR_IDS`. The escape hatch is `hasHistoricalContext` (`src/comment-rules.ts`, search: `function hasHistoricalContext`): it matches `previously|legacy|compat|migration|ADR` and is checked PER comment line, because the scanner emits one record per `//` line. So the historical marker MUST sit on the SAME `//` line as the removed id - "retired"/"removed" are NOT in the vocabulary, and an `ADR-NNN` reference on the next line does not count.
+After removing a rule from the catalogue, any committed comment that still names the dotted id (`pillar.name`) becomes an "unknown rule id" to `pushStaleRuleReferenceFindings` (`src/comment-rules.ts`, search: `function pushStaleRuleReferenceFindings`), which checks each id against `DESCRIPTOR_IDS`. The escape hatch is `isHistoricalContextComment` (`src/comment-rules.ts`, search: `function isHistoricalContextComment`): it matches `previously|legacy|compat|migration|ADR` and is checked PER comment line, because the scanner emits one record per `//` line. So the historical marker MUST sit on the SAME `//` line as the removed id - "retired"/"removed" are NOT in the vocabulary, and an `ADR-NNN` reference on the next line does not count.
 
 When a comment explains a retired rule (e.g. an ADR cross-reference about `design.god-function`), keep the id and an `ADR-NNN` (or `legacy`/`migration`) token on one line: `// ... the retired design.god-function (ADR-011) composite ...`. This compounds with the context-doc footgun above (the invariant/why marker must be on the LAST `//` line above the declaration), so one explanatory comment near a contract-owning declaration must satisfy both per-line constraints at once.
 

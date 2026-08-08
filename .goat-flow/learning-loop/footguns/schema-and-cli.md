@@ -42,7 +42,7 @@ When introducing a strict validator for a new required field, audit every code p
 **Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED
 **Evidence context:** PR #4 review, Codex P2.
 
-`runWithConfigErrorHandling` (`src/cli-program.ts`, search: `async function runWithConfigErrorHandling`) catches `ConfigLoadError` and rethrows everything else. The catch is correct as written; the gap was upstream. `parseConfigFile` (`src/config.ts`, search: `function parseConfigFile`) called `readFileSync` and `JSON.parse` directly: `--config <missing>` produced raw `ENOENT`, malformed `.gruff.json` produced raw `SyntaxError`, both bypassed the "gruff-ts: config error\n  ..." stderr template and the documented exit-2 contract by dumping a Node stack.
+`runWithConfigErrorHandling` (`src/cli-program.ts`, search: `async function runWithConfigErrorHandling`) catches `ConfigLoadError` and rethrows everything else. The catch is correct as written; the gap was upstream. `parseConfigFile` (`src/config-parse.ts`, search: `function parseConfigFile`) called `readFileSync` and `JSON.parse` directly: `--config <missing>` produced raw `ENOENT`, malformed `.gruff.json` produced raw `SyntaxError`, both bypassed the "gruff-ts: config error\n  ..." stderr template and the documented exit-2 contract by dumping a Node stack.
 
 The fix wraps both producers (`readConfigSource` search: `function readConfigSource`, and `parseConfigSource` search: `function parseConfigSource`) so the IO and parse errors are rewrapped as `ConfigLoadError` at the boundary. The catch site stays unchanged.
 
