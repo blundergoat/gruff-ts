@@ -257,7 +257,12 @@ See [Rules](./rules.md) for the full rule catalogue grouped by pillar.
 
 ## Example Project Config
 
+A complete file. The shorter snippets above omit `schemaVersion` because they
+show a single key in isolation; every real `.gruff-ts.yaml` needs it.
+
 ```yaml
+schemaVersion: gruff-ts.config.v0.1
+
 paths:
   ignore:
     - "generated/**"

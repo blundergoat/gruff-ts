@@ -31,6 +31,6 @@ is a deferred design question; raise it as an issue if your workflow needs it.
 
 ## Polyglot Repos
 
-`gruff-ts` defaults to port `8767`, `gruff-rs` defaults to `8766`, and Go, PHP,
-and Python default to `8765`. Use `--port` when running multiple dashboards at
-once.
+`gruff-ts` defaults to port `8767`, `gruff-rs` defaults to `8766`, and
+`gruff-go`, `gruff-php`, and `gruff-py` default to `8765`. Use `--port` when
+running multiple dashboards at once.

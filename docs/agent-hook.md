@@ -12,7 +12,7 @@ For CI-style gates, `analyse` owns the exit code:
 - `1` - at least one finding met `--fail-on`; the agent must fix and re-run.
 - `2` - fatal (bad input, parse or config error); stop and surface it.
 
-For editor or PostToolUse feedback, use the analyzer-owned hook contract instead:
+For editor or PostToolUse feedback, use the analyser-owned hook contract instead:
 
 ```bash
 gruff-ts hook --format json --changed-ranges "12-40,88-90" src/foo.ts
@@ -40,7 +40,7 @@ producer advertisement only and never changes behavior by itself. Fatal failures
 
 > **Goal:** govern only the code the agent changed, not the whole repo - so the agent resolves findings in its own diff and a clean change is never blocked by pre-existing findings elsewhere.
 
-Gate the agent on what it actually touched, so a clean diff is not blocked by pre-existing findings elsewhere:
+Gate the agent on what it actually touched:
 
 ```bash
 # Uncommitted working-tree changes (typical agent loop)

@@ -79,6 +79,27 @@ Both rules consume the same parsed callable measurement as `docs.missing-why-for
 - `docs.todo-without-tracking` (advisory; high confidence): Flags comments introduced by a TODO, FIXME, HACK, or XXX marker without tracking context. The marker must start a comment body line (followed by `:`, `(`, `-`, whitespace, or end of line); quoted, backticked, mid-sentence, and fenced-example mentions are prose and stay quiet.
 - `docs.useless-docblock` (advisory; medium confidence): Flags comments or docblocks that only restate the symbol name.
 
+## Maintainability
+
+Rule IDs in this pillar keep the `waste.` prefix. The pillar was renamed from
+`waste` to `maintainability` in 0.1.1 and the IDs deliberately stayed put, so
+existing config overrides and baselines keep matching.
+
+- `waste.any-type` (warning; high confidence): Flags any type usage.
+- `waste.broad-runtime-version` (advisory; medium confidence): Flags broad runtime dependency version ranges.
+- `waste.commented-out-code` (advisory; high confidence): Flags comments that appear to contain disabled code.
+- `waste.console-log` (advisory; high confidence): Flags console log/debug calls in source.
+- `waste.empty-function` (advisory; high confidence): Flags functions with no executable body.
+- `waste.exported-any` (warning; medium confidence): Flags exported APIs exposing any.
+- `waste.redundant-boolean-cast` (advisory; medium confidence): Flags redundant boolean casts in condition expressions.
+- `waste.redundant-variable` (advisory; medium confidence): Flags variables returned immediately after assignment.
+- `waste.swallowed-catch` (warning; medium confidence): Flags empty catch blocks.
+- `waste.unreachable-code` (warning; high confidence): Flags statements after terminating statements.
+- `waste.unused-import` (advisory; medium confidence): Flags named imports with no apparent usage.
+- `waste.unused-parameter` (advisory; medium confidence): Flags parameters with no apparent usage.
+- `waste.useless-catch` (advisory; high confidence): Flags catch blocks that only rethrow the caught value.
+- `waste.useless-return` (advisory; medium confidence): Flags terminal bare return statements in void functions.
+
 ## Modernisation
 
 - `modernisation.date-now-candidate` (advisory; high confidence): Flags verbose current-time expressions that can use Date.now().
@@ -178,20 +199,3 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 - `test-quality.static-analysis-redundant-test` (advisory; high confidence): Flags tests that primarily assert code shape rather than behavior, with review guidance for importability sentinels.
 - `test-quality.trivial-assertion` (warning; high confidence): Flags tautological assertions.
 - `test-quality.unused-mock` (advisory; medium confidence): Flags mocks created but not used.
-
-## Maintainability
-
-- `waste.any-type` (warning; high confidence): Flags any type usage.
-- `waste.broad-runtime-version` (advisory; medium confidence): Flags broad runtime dependency version ranges.
-- `waste.commented-out-code` (advisory; high confidence): Flags comments that appear to contain disabled code.
-- `waste.console-log` (advisory; high confidence): Flags console log/debug calls in source.
-- `waste.empty-function` (advisory; high confidence): Flags functions with no executable body.
-- `waste.exported-any` (warning; medium confidence): Flags exported APIs exposing any.
-- `waste.redundant-boolean-cast` (advisory; medium confidence): Flags redundant boolean casts in condition expressions.
-- `waste.redundant-variable` (advisory; medium confidence): Flags variables returned immediately after assignment.
-- `waste.swallowed-catch` (warning; medium confidence): Flags empty catch blocks.
-- `waste.unreachable-code` (warning; high confidence): Flags statements after terminating statements.
-- `waste.unused-import` (advisory; medium confidence): Flags named imports with no apparent usage.
-- `waste.unused-parameter` (advisory; medium confidence): Flags parameters with no apparent usage.
-- `waste.useless-catch` (advisory; high confidence): Flags catch blocks that only rethrow the caught value.
-- `waste.useless-return` (advisory; medium confidence): Flags terminal bare return statements in void functions.

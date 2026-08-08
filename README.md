@@ -164,6 +164,8 @@ npx gruff-ts analyse . --no-baseline --fail-on=error
 Use `--config <path>` for an explicit file or `--no-config` to skip config loading. Recursive scans respect root and nested `.gitignore` files; `--include-ignored` includes default and Git-ignored paths for one run, but `paths.ignore` entries still apply as project policy.
 
 ```yaml
+schemaVersion: gruff-ts.config.v0.1
+
 paths:
   ignore:
     - "generated/**"
@@ -249,7 +251,7 @@ Use `npx gruff-ts list-rules --format=json` for exact rule IDs, severities, conf
 
 ## Baselines And Changed-Code Scans
 
-For editor and coding-agent feedback, prefer the analyzer-owned hook contract:
+For editor and coding-agent feedback, prefer the analyser-owned hook contract:
 
 ```bash
 npx gruff-ts hook --format=json --changed-ranges "3-3,8-10" src/foo.ts
