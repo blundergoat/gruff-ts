@@ -263,9 +263,12 @@ function importedFrameworkRedirectCallees(parsedSource: TsSourceFile): ReadonlyS
 }
 
 // Only these framework modules export a throw-to-navigate redirect; matching the module first
-// avoids treating every imported `redirect` helper as a navigation sink.
+// avoids treating every imported `redirect` helper as a navigation sink. React Router ships the
+// same data-router `redirect` from both its core and DOM packages.
 function isFrameworkRedirectModule(moduleName: string): boolean {
-  return moduleName === "next/navigation" || /^@remix-run\/(?:node|cloudflare|deno|server-runtime)$/.test(moduleName);
+  return moduleName === "next/navigation" ||
+    /^react-router(?:-dom)?$/.test(moduleName) ||
+    /^@remix-run\/(?:node|cloudflare|deno|server-runtime)$/.test(moduleName);
 }
 
 // Records the local alias each binding style gives the framework `redirect` export: the member

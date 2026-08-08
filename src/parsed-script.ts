@@ -154,6 +154,10 @@ export interface CallableMatchPoint extends IdentifierOwner {
   params: string;
   parameterCount: number;
   isTestCallable: boolean;
+  // False for signature-only declarations: interface and type-literal methods, overload
+  // signatures, and abstract or ambient members. The block rules use this instead of guessing
+  // from text, because a multi-line signature reads like an implementation on its first line.
+  hasBody: boolean;
   // Shared-parse node whose parameters and body belong to this stable analysed block.
   callableNode: TsNode;
 }
@@ -435,8 +439,16 @@ function declarationPoint(sourceFile: TsSourceFile, position: number, callableNo
     params: parametersText(sourceFile, parameters),
     parameterCount: parameters.length,
     isTestCallable: false,
+    hasBody: callableNodeHasBody(callableNode),
     callableNode,
   };
+}
+
+// Arrow functions and function expressions always carry a body, so only declaration-shaped nodes
+// can answer false here: a method signature has no `body` property at all, and an overload or
+// abstract member leaves it undefined.
+function callableNodeHasBody(callableNode: TsNode): boolean {
+  return (callableNode as { body?: unknown }).body !== undefined;
 }
 
 // const/let initializer arrows and function expressions become blocks named after the variable;
@@ -476,6 +488,7 @@ function testCallbackPoint(sourceFile: TsSourceFile, node: import("typescript").
     params: parametersText(sourceFile, callback.parameters),
     parameterCount: callback.parameters.length,
     isTestCallable: true,
+    hasBody: true,
     callableNode: callback,
   };
 }

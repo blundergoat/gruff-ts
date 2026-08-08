@@ -277,3 +277,22 @@ test("returns an array and does not throw on unparseable input", () => {
   const findings = analyseSecurityFixture("function ( { this is not valid <<< ts");
   assert.ok(Array.isArray(findings));
 });
+
+// Fixture purpose: React Router ships the same data-router `redirect` from its core and DOM
+// packages, and both were missing from the framework module allowlist.
+// Stable contract: recognised framework redirects fire; a locally declared helper stays quiet.
+test("flags React Router redirect imports without widening local helper matching", () => {
+  const coreFindings = analyseSecurityFixture(
+    'import { redirect } from "react-router";\nfunction login(req) {\n  const next = req.query.next;\n  return redirect(next);\n}\n',
+  );
+  const domFindings = analyseSecurityFixture(
+    'import { redirect as routerRedirect } from "react-router-dom";\nfunction login(req) {\n  const next = req.query.next;\n  return routerRedirect(next);\n}\n',
+  );
+  const localFindings = analyseSecurityFixture(
+    'function redirect(target) {\n  return target;\n}\nfunction login(req) {\n  const next = req.query.next;\n  return redirect(next);\n}\n',
+  );
+
+  assert.equal(coreFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length, 1);
+  assert.equal(domFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length, 1);
+  assert.equal(localFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length, 0);
+});

@@ -46,12 +46,19 @@ When implementing or extending this rule, require static evidence before emittin
 
 ## Footgun: per-line walkers miss multi-line conditional context
 
-**Status:** active | **Created:** 2026-05-26 | **Evidence:** OBSERVED
-**Evidence context:** goat-flow scan of the dashboard scanner.
+**Status:** active | **Created:** 2026-05-26 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** When a rule needs a structural property of a declaration, read it from the shared parse instead of inspecting lines; a line walker only sees the shape the first line happens to show.
+**Trigger phase:** ACT
+**Incident count:** 2
+**Latest occurrence:** 2026-08-08
 
 `analyseUnreachable` (`src/dead-code-rules.ts`, search: `function analyseUnreachable`) walks lines one at a time and originally tracked "previous line was a braceless conditional opener" as a single boolean. That works for `if (x)\n  return;\nnext` (single-line predicate), but for the multi-line variant - `if (\n  a &&\n  b\n)\n  return;\nnext` - the boolean only set true on line 1 and was already false by the time the walker reached `return;`, so the next line got falsely flagged as unreachable.
 
 The fix in `src/dead-code-rules.ts` (search: `isConsequentPending`) tracks open-paren depth across lines plus a `isConsequentPending` flag for the one-line consequent that follows the closing `)`. Both states must be active for `isInConditionalBranch` to be true.
+
+Second occurrence, 2026-08-08: `isBodyLessDeclaration` (`src/blocks.ts`, search: `function isBodyLessDeclaration`) decided whether a callable had an implementation by testing the first non-comment line for `)...;`. A single-line interface method matched, but a multi-line one starts at `findMany(`, so the walker called it an implementation and `waste.empty-function` plus `waste.unused-parameter` fired on a signature that cannot have a body. Reported on PR #9 and reproduced with a two-parameter interface method.
+
+That fix threads AST truth instead of improving the heuristic: `CallableMatchPoint` (`src/parsed-script.ts`, search: `function callableNodeHasBody`) carries `hasBody`, and the text walk survives only as the legacy regex-block fallback. When the shared parse already knows a property, a better line heuristic is the wrong repair - it will fail again on the next multi-line shape.
 
 When writing or extending a per-line walker that depends on the prior line being part of a control-flow construct, account for the construct spanning multiple lines. Single-line opener-detection booleans WILL miss multi-line predicates. Use paren-depth or brace-depth tracking, scoped to the construct; the masked `codeSource` already blanks parens inside string literals, so its count is reliable.
 

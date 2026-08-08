@@ -20,6 +20,8 @@ export interface FunctionBlock {
   parameterCount?: number;
   // Shared syntax metric; absent only for legacy regex span probes.
   complexityMetrics?: ComplexityMetrics;
+  // AST-known body presence; absent only for legacy regex-derived blocks.
+  hasBody?: boolean;
   startLine: number;
   lineCount: number;
   body: string;
@@ -285,6 +287,11 @@ function pushUnusedParameterFindings(context: BlockRuleContext): void {
 // overload signatures - all of which look like a function declaration ending in `;` rather than `{`,
 // and have no real body to check for emptiness or parameter usage.
 function isBodyLessDeclaration(block: FunctionBlock): boolean {
+  // The shared parse already knows; the text walk below only covers legacy regex-derived blocks,
+  // and it misreads a multi-line signature whose first line stops at the open paren.
+  if (block.hasBody !== undefined) {
+    return !block.hasBody;
+  }
   for (const rawLine of block.codeBody.split("\n")) {
     const trimmed = rawLine.trim();
     if (trimmed === "" || trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
@@ -466,6 +473,8 @@ interface BlockMatchPoint {
   name: string;
   params: string;
   parameterCount?: number;
+  // AST-known body presence; regex points leave it absent and fall back to the text heuristic.
+  hasBody?: boolean;
   callableNode?: import("typescript").Node;
 }
 
@@ -473,7 +482,7 @@ interface BlockMatchPoint {
 function matchPointsFor(scan: FunctionBlockScan, parsed: ParsedScript | undefined): BlockMatchPoint[] {
   // A normal script scan already owns one ParsedScript and must reuse its callable points here.
   if (parsed) {
-    return callableMatchPoints(parsed).map((point) => ({ lineIndex: point.lineIndex, endLineIndex: point.endLineIndex, name: point.name, params: point.params, parameterCount: point.parameterCount, callableNode: point.callableNode }));
+    return callableMatchPoints(parsed).map((point) => ({ lineIndex: point.lineIndex, endLineIndex: point.endLineIndex, name: point.name, params: point.params, parameterCount: point.parameterCount, hasBody: point.hasBody, callableNode: point.callableNode }));
   }
   const points: BlockMatchPoint[] = [];
   // Span-only utilities still use the legacy masked-line inventory without triggering a parse.
@@ -578,6 +587,7 @@ function functionBlockFromPoint(scan: FunctionBlockScan, point: BlockMatchPoint,
     name: point.name,
     params: point.params,
     ...(point.parameterCount === undefined ? {} : { parameterCount: point.parameterCount }),
+    ...(point.hasBody === undefined ? {} : { hasBody: point.hasBody }),
     ...(sharedComplexityMetrics === undefined ? {} : { complexityMetrics: sharedComplexityMetrics }),
     startLine: start + 1,
     lineCount: end - start + 1,

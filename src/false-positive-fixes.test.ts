@@ -737,3 +737,27 @@ test("FP-#20 waste.swallowed-catch still flags /* silent */ and empty catch", ()
 `);
   assert.equal(emptyReport.findings.some((entry) => entry.ruleId === "waste.swallowed-catch"), true);
 });
+
+// Fixture purpose: a multi-line signature's first line stops at the open paren, so the legacy
+// text heuristic read it as an implementation. The shared parse now answers body presence.
+// Stable contract: bodyless declarations never draw implementation-only findings.
+test("FP-#46 bodyless multi-line signatures skip empty-function and unused-parameter", () => {
+  const signatureReport = analyseFixture(`export interface Repository {
+  findMany(
+    filter: string,
+    limit: number,
+  ): Promise<string[]>;
+}
+`);
+  const implementationOnlyRules = ["waste.empty-function", "waste.unused-parameter"];
+  assert.equal(signatureReport.findings.some((entry) => implementationOnlyRules.includes(entry.ruleId)), false);
+
+  // A real implementation with an empty body and an unused parameter must still fire.
+  const implementationReport = analyseFixture(`export function reallyEmpty(
+  unusedThing: string,
+): void {
+}
+`);
+  assert.equal(implementationReport.findings.some((entry) => entry.ruleId === "waste.empty-function"), true);
+  assert.equal(implementationReport.findings.some((entry) => entry.ruleId === "waste.unused-parameter"), true);
+});

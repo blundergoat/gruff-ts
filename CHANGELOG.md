@@ -2,6 +2,8 @@
 
 ## v0.5.0 - 2026-08-04
 
+- **React Router redirects are open-redirect sinks** - `react-router` and `react-router-dom` join next/navigation and remix; local helpers stay quiet.
+- **Bodyless signatures skip implementation rules** - multi-line interface and overload signatures no longer draw empty-function or unused-parameter.
 - **Claude agent surface synced to goat-flow 1.15.0** - deny and Stop hooks route through `run-with-bash.mjs`. (`.claude/settings.json`)
 - **Copilot agent surface lifted from goat-flow 1.12.1 to 1.15.0** - skill pack and deny hook match Claude's. (`.github/hooks/hooks.json`)
 - **file-length raised to error at 1000 (family ratification)** - substantive counting unchanged; `--fail-on` consumers see exit-code changes.
