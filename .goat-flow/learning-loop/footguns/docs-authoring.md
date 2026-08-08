@@ -78,3 +78,18 @@ This workspace keeps four near-identical agent instruction files (`CLAUDE.md`, `
 Defence: after renaming a doc, run one repo-wide grep for the old basename across all extensions (`grep -rn "old-name\.md" . | grep -v node_modules`) and fix every agent surface in the same change. A green `--agent claude` audit is not evidence that the other three surfaces are consistent.
 
 Instance: `docs/coding-standards/git-commit.md` was renamed to `git-commit-message.md`, but six references survived - inline prose in all three of `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, the router-table `Commit policy` row in the latter two, and the Copilot Workspace Boundary owned-surfaces list. Both `audit . --agent claude --harness` and `--check-content` reported pass (all five concerns at 100, drift 0/53 findings, 177 files scanned) while every one of those pointers was broken. The audit's own verification concern named the real file (`Commit guidance found at docs/coding-standards/git-commit-message.md`), so the mismatch was only visible by reading that finding against the instruction file.
+
+## Footgun: gitignore-aware search finds nothing when recursion starts at `.goat-flow/`
+
+**Status:** active | **Created:** 2026-08-08 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Scope learning-loop greps at the bucket directory or deeper, and treat a zero-hit result rooted at `.goat-flow/` as a tooling artifact rather than a genuine retrieval miss.
+**Trigger phase:** READ
+**hallucination-risk:** high
+
+`.goat-flow/.gitignore` (search: `# Ignore everything by default`) opens with a blanket `*` and re-admits content through negations such as `!learning-loop/**`. Git resolves that correctly - `git ls-files .goat-flow/learning-loop/` lists 44 tracked files and `git check-ignore` exits 1 for `footguns/README.md`. Gitignore-aware search tools do not. Claude Code replaces `grep` with a shell function that execs `ugrep --ignore-files`, which honours the leading `*` and prunes the whole tree before the negations apply.
+
+Measured on 2026-08-08: `grep -rl Footgun .goat-flow/` returned 0 files while `command grep -rl Footgun .goat-flow/` returned 23. Searching `ADR-024` under `.goat-flow/` returned 0 hits; the identical pattern under `.goat-flow/learning-loop/` returned 1. The failure is silent - no error, no warning, just an empty result that reads exactly like "no prior learnings exist".
+
+This matters because the instruction file's READ step mandates grep-first retrieval over the learning loop and `.goat-flow/skill-docs/skill-preamble.md` (search: `Relevant prior learnings`) requires every functional skill to report the outcome. An agent that scopes one directory too high records a fabricated `none found` as evidence, which is the exact failure the evidence standard exists to prevent. It is also self-concealing: a footgun about retrieval failure cannot be retrieved by the failing search.
+
+Defence: root learning-loop searches at `.goat-flow/learning-loop/<bucket>/` or deeper, which works, or repo root, which also works. When a search must span `.goat-flow/`, use `command grep` to bypass the wrapper. The `.gitignore` is byte-identical to the shipped template at `workflow/setup/reference/goat-flow-gitignore`, so this is framework-owned; editing it locally would trade this trap for permanent audit drift.

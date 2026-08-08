@@ -1,6 +1,6 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-08-07
+last_reviewed: 2026-08-08
 ---
 
 # Rule scanner footguns
@@ -117,14 +117,6 @@ When writing rule-descriptor prose or test-naming prose that has to mention a tr
 Skipping the rule for descriptor files is NOT an option - the file-level granularity isn't there, and the broader principle is "every finding stays visible."
 
 
-## Footgun: `process-exec` matches `RegExp.exec` source text
-
-**Status:** active | **Created:** 2026-05-17 | **Evidence:** OBSERVED
-
-`processExecCandidate` (`src/cli.ts`, search: `function processExecCandidate`) matches bare `exec(`, `spawn(`, or `execFile(` in masked code. That intentionally catches child-process helpers, but it also catches ordinary `RegExp.exec(...)` calls because the current regex does not require a child-process receiver or import context.
-
-When adding hot-path regex loops, avoid writing `.exec(` in scanner source unless you also refine the rule. This performance pass used bracket dispatch (`src/text-scans.ts`, search: `globalPattern["exec"]`) to keep the source self-scan from adding `security.process-exec` noise.
-
 ## Footgun: widening commented-out-code calls needs a prose-shape guard
 
 **Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED
@@ -223,6 +215,16 @@ Three takeaways: (1) `analyseSecurityFlow` is the only caller and runs once per 
 For syntax-only source-to-sink rules, inspect only sink-relevant expression trees. Prune nested function-like nodes while walking arguments, and treat string/no-substitution-template literals as literal text, not source evidence. Add a negative test any time a scanner starts using `node.getText()` over a subtree: one callback-only taint reference and one literal that names the source token. Tests: `src/security-flow-rules.test.ts`, search: `callback-only taint` and `string literals that only mention source tokens`.
 
 ## Resolved Entries
+
+## Footgun: `process-exec` matches `RegExp.exec` source text
+
+**Status:** resolved | **Created:** 2026-05-17 | **Evidence:** ACTUAL_MEASURED
+**Resolved:** 2026-08-08
+**Evidence context:** probe file asserting the false positive no longer fires.
+
+`processExecCandidate` matched bare `exec(`, `spawn(`, or `execFile(` in masked code without requiring a child-process receiver or import context, so ordinary `RegExp.exec(...)` calls were reported as `security.process-exec`. Authors worked around it by avoiding `.exec(` in scanner source, including the bracket dispatch still visible at `src/text-scans.ts` (search: `globalPattern["exec"]`).
+
+Resolved 2026-08-08 on two counts. The symbol is gone: `processExecCandidate` returns zero hits anywhere under `src/`, and the rule now lives in `src/line-rules.ts` (search: `ruleId: "security.process-exec"`) with evidence grading from `src/process-exec-metadata.ts` per ADR-018. The behaviour is gone too: a probe file whose only `exec` call is `pattern.exec(input)` on a `RegExp` scored zero `security.process-exec` findings. The bracket dispatch in `src/text-scans.ts` is now a historical workaround, not a required defence.
 
 ## Footgun: fixture-purpose rules read ONLY the last `//` line above a fixture
 

@@ -1,6 +1,6 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-08-07
+last_reviewed: 2026-08-08
 ---
 
 # Schema + CLI surface footguns
@@ -14,10 +14,17 @@ last_reviewed: 2026-08-07
 
 ## Footgun: docs, milestone plans, and these footguns still point at the pre-split `src/cli.ts`
 
-**Status:** active | **Created:** 2026-05-30 | **Evidence:** OBSERVED
-**Evidence context:** 0.3.0 plan audit.
+**Status:** active | **Created:** 2026-05-30 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** After any module split, grep every `search:` anchor against current source in the same change; never trust a green `stats --check` as proof that anchors still resolve.
+**Trigger phase:** VERIFY
+**Incident count:** 2
+**Latest occurrence:** 2026-08-08
 
-`src/cli.ts` was split into focused modules and is now a ~22-line shell, but many durable docs were never refreshed: they still say "in `src/cli.ts`" for symbols that moved, and still cite `gruff.analysis.v1` (the v1->v2 analysis bump shipped in 0.2.0). Verified relocations: `exitFor` -> `src/scoring.ts` (search: `function exitFor`); `analyse` -> `src/analyser.ts`; `buildProgram` / `normalizeOptions` -> `src/cli-program.ts`; `changedFiles` -> `src/findings-helpers.ts`; `writeBaseline` / `applyBaseline` -> `src/baseline.ts`; `makeFinding` -> `src/findings.ts`; `RULE_DESCRIPTORS` / `ruleDescriptors` -> `src/rules.ts`; `isDefaultIgnoredDir` -> `src/discovery.ts`. Stale carriers include `.goat-flow/architecture.md` (it said `exitFor` was in `cli-program.ts`), every `.goat-flow/tasks/0.3.0/M0x`-`M2x` plan's "Read first" list and `rg ... src/cli.ts` gates, and the entries in this very file. Always grep the `search:` anchor against current source; treat any file path or schema version stated in a doc or plan as advisory until confirmed. A `rg ... src/cli.ts` static-check gate now matches nothing and silently "passes."
+`src/cli.ts` was split into focused modules and is now a 24-line shell, but durable docs kept naming it as the home of symbols that moved. Verified relocations: `exitFor` -> `src/scoring.ts` (search: `function exitFor`); `analyse` -> `src/analyser.ts`; `buildProgram` / `normalizeOptions` -> `src/cli-program.ts`; `changedFiles` -> `src/findings-helpers.ts`; `writeBaseline` / `applyBaseline` -> `src/baseline.ts`; `makeFinding` -> `src/findings.ts`; `RULE_DESCRIPTORS` / `ruleDescriptors` -> `src/rules.ts`; `isDefaultIgnoredDir` -> `src/discovery.ts`; `startDashboard` -> `src/dashboard.ts`; `renderHtml` / `escapeHtml` -> `src/report-html.ts`; `analyseSensitiveData` -> `src/sensitive-data-rules.ts`.
+
+The reason this survived two audits is mechanical: no shipped gate resolves an anchor. `goat-flow stats --check` exited 0 with empty findings and warnings on 2026-08-08 while 13 citations across four footgun buckets still pointed at `src/cli.ts` for symbols living elsewhere, because the check confirms the cited *path* exists and `src/cli.ts` does exist. A `grep ... src/cli.ts` static gate has the same shape of blind spot: it matches nothing and silently passes. Only comparing `search:` anchors against live source finds this.
+
+Repointed on 2026-08-08 across `dashboard.md`, `schema-and-cli.md`, and `sensitive-data.md`. One survivor is correct and must stay: `src/cli.ts` (search: `buildProgram().parseAsync(argv)`) genuinely lives in the entrypoint. Treat any file path or schema version stated in a doc or plan as advisory until re-grepped.
 
 ## Footgun: routing migration-path reads through the strict schema validator silently clobbers user state
 
@@ -51,19 +58,19 @@ Three string literals are part of the public output contract: `gruff.analysis.v2
 
 **Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
 
-`exitFor` (`src/cli.ts`, search: `function exitFor`) returns `2` if `report.diagnostics.length > 0` before it ever consults `failOn`. That means a single `read-error`, `missing-path`, `parse-error`, or `history-error` fails the run even with `--fail-on none`. Tests and CI users sometimes assume `--fail-on none` is "always exit 0" - it is not. If you add a new diagnostic type, that diagnostic alone will start failing every consumer's CI on first appearance.
+`exitFor` (`src/scoring.ts`, search: `function exitFor`) returns `2` if `report.diagnostics.length > 0` before it ever consults `failOn`. That means a single `read-error`, `missing-path`, `parse-error`, or `history-error` fails the run even with `--fail-on none`. Tests and CI users sometimes assume `--fail-on none` is "always exit 0" - it is not. If you add a new diagnostic type, that diagnostic alone will start failing every consumer's CI on first appearance.
 
 ## Footgun: `--no-baseline` and `--no-config` are CommanderJS auto-negations, not custom flags
 
 **Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
 
-`normalizeOptions` (`src/cli.ts`, search: `function normalizeOptions`) reads `rawOptions.config === false` and `rawOptions.noConfig === true` to decide whether to load the default `.gruff-ts.yaml`; same pattern for baseline (`baselineValue === false || rawOptions.noBaseline === true`). These come from Commander's `--no-config`/`--no-baseline` automatic negations, which set the *positive* option to `false`. If you migrate to a different CLI framework or change the option declaration, both branches must be reviewed together - testing only `noConfig` will leave silent gaps.
+`normalizeOptions` (`src/cli-program.ts`, search: `function normalizeOptions`) reads `rawOptions.config === false` and `rawOptions.noConfig === true` to decide whether to load the default `.gruff-ts.yaml`; same pattern for baseline (`baselineValue === false || rawOptions.noBaseline === true`). These come from Commander's `--no-config`/`--no-baseline` automatic negations, which set the *positive* option to `false`. If you migrate to a different CLI framework or change the option declaration, both branches must be reviewed together - testing only `noConfig` will leave silent gaps.
 
 ## Footgun: default-ignored directories are hardcoded and lowercase-only
 
 **Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
 
-`isDefaultIgnoredDir` (`src/cli.ts`, search: `function isDefaultIgnoredDir`) checks the FIRST path segment against a fixed lowercase list (`.git`, `.hg`, `.svn`, `.idea`, `.vscode`, `build`, `cache`, `coverage`, `dist`, `generated`, `node_modules`, `target`, `tmp`, `vendor`). Project conventions like `Build/`, `out/`, `__pycache__/`, `.next/`, `.turbo/`, `.venv/` are NOT ignored by default - they get walked, scanned, and reported. Adding to the list is one line, but every addition is a behavioural change for users who had findings inside those dirs accepted into their baseline.
+`isDefaultIgnoredDir` (`src/discovery.ts`, search: `function isDefaultIgnoredDir`) checks the FIRST path segment against a fixed lowercase list (`.git`, `.hg`, `.svn`, `.idea`, `.vscode`, `build`, `cache`, `coverage`, `dist`, `generated`, `node_modules`, `target`, `tmp`, `vendor`). Project conventions like `Build/`, `out/`, `__pycache__/`, `.next/`, `.turbo/`, `.venv/` are NOT ignored by default - they get walked, scanned, and reported. Adding to the list is one line, but every addition is a behavioural change for users who had findings inside those dirs accepted into their baseline.
 
 ## Footgun: `gruff-ts init --force` regenerates the whole YAML and can wipe user customisations
 
