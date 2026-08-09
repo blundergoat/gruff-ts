@@ -22,7 +22,7 @@
 - **Tarball smoke gate** - packs in isolation, rejects dev files, installs fresh, runs the binary against a known finding. (`scripts/pack-smoke.sh`)
 - **Executable release drift guards** - 120 descriptors pinned; repeated scans byte-identical after stripping `run.generatedAt`.
 - **One abbreviation vocabulary** - `gruff-ts init` seeds the same acceptedAbbreviations list the runtime defaults use. (`src/init-config.ts`)
-- **Actions write-permission coverage updated** - artifact, attestations, code-quality, discussions, OIDC, and Pages writes named by scope.
+- **Actions write-permission coverage updated** - artifact, code-quality, discussions, and Pages named by scope; `id-token`/`attestations` stay quiet.
 - **Naming separates local edits from contract decisions** - APPLY vs CONFIGURE remediation; class/file mismatch needs a sole public class.
 - **Casing consistency follows owners** - variants compare within one module/function/interface owner; DTO vs UI fields no longer conflict.
 - **Complexity follows control flow** - syntax nodes drive cyclomatic/cognitive; punctuation adds nothing; identities and thresholds unchanged.
@@ -39,7 +39,8 @@
 - **Invalid CLI values fail fast** - format/fail-on/changed-scope validated at parse as usage errors; compat tightening. (`src/cli-program.ts`)
 - **File-scoped diagnostics on both surfaces** - diff/since keep changed-file diagnostics only; hook adds diagnostics array + fail flag.
 - **Diff scoping works from nested directories** - relative-path git diffs; nested runs cannot match siblings; root runs byte-identical.
-- **Same-line secrets stay distinct** - column discriminates same-line findings (ADR-017); fingerprints and baseline v1 matching unchanged.
+- **Same-line secrets stay distinct** - column discriminates same-line findings and ships in the hook payload (ADR-017); fingerprints unchanged.
+- **Hook identities separate same-line secrets** - column joins the wire identity; baseline suppression still matches on the column-free key.
 
 ## v0.4.0 - 2026-06-11
 

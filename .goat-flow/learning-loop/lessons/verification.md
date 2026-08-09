@@ -387,3 +387,24 @@ The pre-1.14 policy blocked every pipe into `python3 -c` or `node -e`, so local-
 **Recurrence, 2026-08-05:** The same external report gained two new items (composite scoring, stale-param paren types) after the first remediation pass shipped. Re-running the repros against HEAD split them cleanly: the stale-param defect no longer reproduced (fixed structurally by the 0.5.0 shared AST parameter discovery, pinned with both-direction tests), while the composite defect reproduced exactly as measured and was fixed (ADR-019). Treat an amended report as a fresh report: re-verify every new item before touching code.
 
 **Recurrence, 2026-08-05 (vocabulary plurals):** context-doc vocabulary is matched with word boundaries, so plural forms fail: a comment saying "keeps fingerprints unique" does not satisfy `\bfingerprint\b` and `docs.missing-invariant-doc` fired on the new scoring test helper until the comment said "each fingerprint". When writing marker vocabulary, use the singular form the regex lists.
+
+## Lesson: a test-local fixture writer can hide a break in the real on-disk format
+
+**Created:** 2026-08-10
+
+**What happened:** Adding the match column to the hook stable identity broke `hook --baseline`
+suppression for every finding that reports a column, and the whole baseline suite still passed. The
+local `writeBaseline` helper in `src/hook-contract.test.ts` persists a `stableIdentity` field, so its
+baselines matched by stored identity and never reached the recompute path. The production writer,
+`writeBaseline` in `src/baseline.ts`, persists no such field, so a real baseline recomputes its
+identity from the stored message and stopped matching the now column-bearing live finding.
+
+**Evidence:** `src/hook-contract.test.ts` (search: `function writeBaseline`) writes `stableIdentity`;
+`src/baseline.ts` (search: `function writeBaseline`) writes only fingerprint, ruleId, filePath, line,
+symbol, and message. A worktree at the pre-change commit suppressed the finding; the patched tree
+reported it.
+
+**What to do instead:** When changing anything a persisted artifact is matched on, generate the
+artifact with the real command (`analyse --generate-baseline`) and re-run the consumer against it.
+A passing suite proves the helper's shape, not the format users actually have on disk. Compare
+against a `git worktree` of the pre-change commit when the question is whether behaviour regressed.

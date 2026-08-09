@@ -63,7 +63,9 @@ interface HookFinding {
   scope: string;
   file: string;
   line?: number;
+  column?: number;
   symbol: string | null;
+  message: string;
   remediation: string;
   metadata: Record<string, unknown>;
   stableIdentity: string;
@@ -575,6 +577,49 @@ test("hook reports ignored paths and config errors in-band", () => {
     assert.equal(payload.config.schemaOk, false);
     assert.match(String(payload.config.error), /schemaVersion/);
     assert.match(String(payload.config.error), /gruff-ts init/);
+  });
+});
+
+test("two secrets on one line reach the hook as separately trackable findings", () => {
+  // Split so this test file carries no scannable key of its own; the written fixture holds both.
+  const firstKey = ["AKIAJ7SVBRXYZ", "Q2KLMNP"].join("");
+  const secondKey = ["AKIAQ4TWMZPLK", "D8RVNXC"].join("");
+  withProject({
+    "keys.ts": `const first = "${firstKey}"; const second = "${secondKey}";\n`,
+  }, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json"]);
+    const secrets = payload.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
+
+    assert.equal(secrets.length, 2);
+    const [first, second] = secrets;
+    assert.ok(first && second);
+    // Both keys are 20 characters, so redaction masks them fully and the previews are identical.
+    assert.equal(first.message, second.message);
+    // gruff.baseline.v1 keys on line, so the pair deliberately shares one fingerprint.
+    assert.equal(first.fingerprint, second.fingerprint);
+    // Column and identity are what let a consumer act on the second key instead of collapsing it.
+    assert.notEqual(first.column, second.column);
+    assert.notEqual(first.stableIdentity, second.stableIdentity);
+  });
+});
+
+// Fixture purpose: models a baseline produced by `analyse --generate-baseline`, which stores no
+// stableIdentity and no column. Stable contract: a column-bearing finding still matches it, so
+// adding a column to the wire identity cannot silently un-suppress every accepted secret.
+test("hook suppression survives a baseline written in the on-disk format", () => {
+  const secret = "aB3xY7kLmN9pQ2rS5" + "tU8vW1zC4dE6fG0hJ2kQ8w";
+  const source = ["// File overview: hook baseline-format fixture.", `export const token = "${secret}";`].join("\n");
+  withProject({ "secret.ts": source }, (dir) => {
+    const before = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "secret.ts"]), "sensitive-data.high-entropy-string");
+    assert.equal(typeof before.column, "number");
+    // Exactly the entry shape `writeBaseline` persists: no stableIdentity, no column.
+    writeProjectFile(dir, "on-disk-baseline.json", JSON.stringify({
+      schemaVersion: "gruff.baseline.v1",
+      entries: [{ fingerprint: before.fingerprint, ruleId: before.ruleId, filePath: before.file, line: before.line, message: before.message }],
+    }));
+
+    const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "on-disk-baseline.json", "secret.ts"]);
+    assert.equal(filtered.findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), false);
   });
 });
 

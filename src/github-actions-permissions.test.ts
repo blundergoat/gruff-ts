@@ -8,13 +8,11 @@ import { analyseProject } from "./test-fixtures.ts";
 const REVIEWED_WRITE_PERMISSION_SCOPES = [
   { scope: "actions", documentation: "current", reviewedOn: "2026-07-12" },
   { scope: "artifact-metadata", documentation: "current", reviewedOn: "2026-07-12" },
-  { scope: "attestations", documentation: "current", reviewedOn: "2026-07-12" },
   { scope: "checks", documentation: "current", reviewedOn: "2026-07-12" },
   { scope: "code-quality", documentation: "current", reviewedOn: "2026-07-12" },
   { scope: "contents", documentation: "current", reviewedOn: "2026-07-12" },
   { scope: "deployments", documentation: "current", reviewedOn: "2026-07-12" },
   { scope: "discussions", documentation: "current", reviewedOn: "2026-07-12" },
-  { scope: "id-token", documentation: "current", reviewedOn: "2026-07-12" },
   { scope: "issues", documentation: "current", reviewedOn: "2026-07-12" },
   { scope: "packages", documentation: "current", reviewedOn: "2026-07-12" },
   { scope: "pages", documentation: "current", reviewedOn: "2026-07-12" },
@@ -25,6 +23,11 @@ const REVIEWED_WRITE_PERMISSION_SCOPES = [
 ] as const;
 
 const READ_ONLY_PERMISSION_SCOPES = ["models", "vulnerability-alerts"] as const;
+
+// Write-capable in GitHub's table, but they mint a token or an attestation rather than granting a
+// repository resource. Requesting them is GitHub's recommended alternative to storing long-lived
+// credentials, so the broad-permission rule stays quiet on them.
+const CAPABILITY_PERMISSION_SCOPES = ["attestations", "id-token"] as const;
 
 test("explicit workflow writes report every reviewed write-capable permission", () => {
   const permissionsYaml = REVIEWED_WRITE_PERMISSION_SCOPES
@@ -48,6 +51,20 @@ test("explicit workflow writes report every reviewed write-capable permission", 
       message: `Workflow grants broad write permission \`${scope}\`.`,
       metadataPermission: scope,
     })),
+  );
+});
+
+test("capability scopes stay quiet so keyless auth is not reported as over-permissioned", () => {
+  const permissionsYaml = CAPABILITY_PERMISSION_SCOPES
+    .map((scope) => `  ${scope}: write`)
+    .join("\n");
+  const report = analyseProject({
+    ".github/workflows/oidc.yml": `permissions:\n${permissionsYaml}\n  contents: read\n`,
+  });
+
+  assert.deepEqual(
+    report.findings.filter((finding) => finding.ruleId === "security.github-actions-broad-permissions"),
+    [],
   );
 });
 

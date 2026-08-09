@@ -59,6 +59,9 @@ interface HookFinding {
   file: string;
   line?: number;
   endLine?: number;
+  // One-based match column, present when the scanner pinpointed the occurrence. Two secrets on one
+  // line share every other field, so this is the only thing that lets a consumer tell them apart.
+  column?: number;
   symbol: string | null;
   message: string;
   remediation: string;
@@ -185,7 +188,9 @@ function hookFindings(
   const withNewFileAndProject = hasChangedRegion && baseIdentities
     ? [...scopedFindings, ...newFileAndProjectFindings(currentReport, scopedFindings, baseIdentities)]
     : scopedFindings;
-  return baseIdentities ? withNewFileAndProject.filter((finding) => !baseIdentities.has(finding.stableIdentity)) : withNewFileAndProject;
+  return baseIdentities
+    ? withNewFileAndProject.filter((finding) => !baselineMatchIdentities(finding).some((identity) => baseIdentities.has(identity)))
+    : withNewFileAndProject;
 }
 
 // Collects file- and project-scope findings that are new since the base, excluding any already
@@ -223,6 +228,7 @@ function toHookFinding(finding: Finding): HookFinding {
     file: finding.filePath,
     ...(finding.line === undefined ? {} : { line: finding.line }),
     ...(finding.endLine === undefined ? {} : { endLine: finding.endLine }),
+    ...(finding.column === undefined ? {} : { column: finding.column }),
     symbol: finding.symbol ?? null,
     message: finding.message,
     remediation: finding.remediation ?? DESCRIPTORS.get(finding.ruleId)?.remediation ?? "Review and address this finding.",
@@ -289,15 +295,38 @@ function metricMetadata(measured: unknown, threshold: unknown, unit: string): Re
 // Hashes (ruleId, filePath, scope component) into the 16-hex hook identity; line-insensitive so it
 // stays the stable cross-edit key for new-only filtering.
 function hookStableIdentity(finding: Finding, scope: HookScope): string {
-  const component = stableIdentityComponent(finding, scope);
+  return identityHash(finding.ruleId, finding.filePath, stableIdentityComponent(finding, scope));
+}
+
+// The one place the 16-hex identity is derived, so every caller hashes the same tuple.
+function identityHash(ruleId: string, filePath: string, component: string): string {
   return createHash("sha256")
-    .update([finding.ruleId, finding.filePath, component].join("\0"))
+    .update([ruleId, filePath, component].join("\0"))
     .digest("hex")
     .slice(0, 16);
 }
 
-// Derives the per-occurrence component of the stable hook identity: scope token, symbol, or message.
-function stableIdentityComponent(finding: { message: string; ruleId: string; symbol?: string }, scope: HookScope): string {
+// Identities one emitted finding answers to when matched against a base set. gruff.baseline.v1
+// stores no column, so a baseline recomputes the column-free key; a finding that now reports a
+// column must still recognise it, or every previously accepted secret comes back on the next run.
+// Same-line occurrences share that older key, which is the baseline limitation ADR-017 documents:
+// accepting one accepts every secret on its line. The wire identity stays column-aware, so a
+// consumer tracking findings by identity still sees the two occurrences as separate.
+function baselineMatchIdentities(finding: HookFinding): string[] {
+  if (finding.column === undefined) {
+    return [finding.stableIdentity];
+  }
+  const columnFreeComponent = stableIdentityComponent({
+    message: finding.message,
+    ruleId: finding.ruleId,
+    ...(finding.symbol === null ? {} : { symbol: finding.symbol }),
+  }, finding.scope);
+  return [finding.stableIdentity, identityHash(finding.ruleId, finding.file, columnFreeComponent)];
+}
+
+// Derives the per-occurrence component of the stable hook identity: scope token, symbol, or message
+// plus match column.
+function stableIdentityComponent(finding: { message: string; ruleId: string; symbol?: string; column?: number }, scope: HookScope): string {
   if (scope === "file") {
     return scope;
   }
@@ -312,11 +341,14 @@ function stableIdentityComponent(finding: { message: string; ruleId: string; sym
   }
   // Symbol-less line findings (e.g. each hardcoded secret) key on the message so several same-rule
   // findings in one file get distinct identities. A value-insensitive `metric:${scope}` token
-  // collapsed them all, letting one baselined finding suppress later new ones in the same file. The
-  // message carries the per-occurrence discriminator (redacted preview) and no line number, so it
-  // stays stable across surrounding edits. file scope above stays fully value-insensitive; project
-  // scope folds in a canonical symbol when one is present.
-  return `message:${finding.message}`;
+  // collapsed them all, letting one baselined finding suppress later new ones in the same file. file
+  // scope above stays fully value-insensitive; project scope folds in a canonical symbol when present.
+  const messageComponent = `message:${finding.message}`;
+  // The redacted preview alone stopped separating occurrences once short secrets became fully
+  // masked: two 20-character keys on one line produce the same preview, so the same message. The
+  // match column separates them and names no line, so an edit above the finding still keeps the
+  // identity stable. Scanners that report a whole line supply no column and keep the older key.
+  return finding.column === undefined ? messageComponent : `${messageComponent}\0column:${finding.column}`;
 }
 
 // Builds the base identity set (from a baseline file and/or a diff base) that new-only filtering
@@ -348,7 +380,8 @@ function stableIdentitiesFromBaseline(path: string): Set<string> {
 }
 
 // Resolves one baseline entry to hook identities: its stored identity, or a recomputed one from
-// ruleId, filePath, and scope.
+// ruleId, filePath, and scope. The recomputed key carries no column because gruff.baseline.v1 stores
+// none; `baselineMatchIdentities` is what lets a column-bearing finding still match it.
 function stableIdentityFromBaselineEntry(entry: BaselineEntry): string[] {
   if (typeof entry.stableIdentity === "string") {
     return [entry.stableIdentity];

@@ -62,6 +62,17 @@ const WRITE_PERMISSION_SCOPES = new Set([
   "statuses",
 ]);
 
+// These two scopes mint a short-lived OIDC token or a build attestation. Neither grants write access
+// to any repository resource, and GitHub documents both as the recommended alternative to storing
+// long-lived credentials, so a workflow that requests them is not over-permissioned. Reporting them
+// pushed users away from keyless auth and toward the static secrets this pillar exists to remove.
+// They still reach `broadPermissionSignal`, where a pull_request_target workflow hands that minting
+// power to untrusted pull-request code.
+const CAPABILITY_PERMISSION_SCOPES = new Set([
+  "attestations",
+  "id-token",
+]);
+
 // Stable rule contract: workflow-only checks ignore non-workflow YAML so example docs avoid findings.
 function analyseGithubActionsRules(file: SourceFile, source: string, findings: Finding[]): void {
   if (!isGithubWorkflowPath(file.displayPath)) {
@@ -204,10 +215,14 @@ function closeBlockWhenOutdented(state: IndentedBlockState, line: WorkflowLine):
   }
 }
 
-// Extracts selected write scopes that are broad enough to matter for workflow security.
+// Extracts the write scopes that grant a repository resource, which is what this rule reports.
 function scopedWritePermission(line: WorkflowLine): string | undefined {
   const scoped = line.trimmed.match(/^([a-z-]+):\s*write\b/i);
   const scope = scoped?.[1] ?? "";
+  // A capability scope grants no repository resource, so requesting one is not a broad permission.
+  if (CAPABILITY_PERMISSION_SCOPES.has(scope)) {
+    return undefined;
+  }
   return WRITE_PERMISSION_SCOPES.has(scope) ? scope : undefined;
 }
 
