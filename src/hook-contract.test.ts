@@ -29,6 +29,18 @@ const FIXTURE_FILE_LINES = 1010;
 const FIXTURE_SUBSTANTIVE_LINES = FIXTURE_FILE_LINES - 1;
 const FILE_LENGTH_THRESHOLD = 1000;
 const FIXTURE_EVAL_LINE = 500;
+const GENERIC_SYMBOL_HOOK_SOURCE = `// File overview: generic hook symbol-scope fixture.
+const script = "reviewed";
+export function generic<T extends string>(
+  value: T,
+): void {
+  const touched = value;
+  eval(script);
+}
+export function sibling(): void {
+  eval(script);
+}
+`;
 
 // Parsed gruff.hook.v1 payload as the conformance tests read it; mirrors the analyzer output contract.
 interface HookPayload {
@@ -120,6 +132,16 @@ test("hook changed-region scope omits inherited file findings but keeps changed 
 
     const anchorChanged = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "1-1", "long.ts"]);
     assert.equal(anchorChanged.findings.some((finding) => finding.ruleId === "size.file-length"), false);
+  });
+});
+
+test("hook symbol scope keeps eval findings inside generic multi-line callables", () => {
+  withProject({ "generic.ts": GENERIC_SYMBOL_HOOK_SOURCE }, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "6-6", "generic.ts"]);
+
+    assert.equal(payload.contractVersion, "gruff.hook.v1");
+    assert.deepEqual(Object.keys(payload).sort(), ["analyzer", "config", "contractVersion", "diagnostics", "findings", "ignored", "suppressed"]);
+    assert.deepEqual(payload.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.line), [7]);
   });
 });
 

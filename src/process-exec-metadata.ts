@@ -2,7 +2,15 @@
 // first argument and shell option into review hints without changing whether the rule fires.
 import { escapeRegex } from "./findings-helpers.ts";
 
-type ProcessExecArgumentSource = "literal" | "process-exec-path" | "local-const" | "local-builder" | "parameter" | "member" | "template" | "unknown";
+/** Closed command-source vocabulary used by process-exec grading and finding metadata. */
+export type ProcessExecArgumentSource = "literal" | "process-exec-path" | "local-const" | "local-builder" | "parameter" | "member" | "template" | "unknown";
+
+/** Typed process-exec classifier result used to grade and serialize finding metadata. */
+export type ProcessExecMetadata = {
+  callName: string;
+  argumentSource: ProcessExecArgumentSource;
+  isShellEnabled: boolean;
+};
 
 // Stable scanner state for the first-argument boundary walk.
 interface ArgumentScanState {
@@ -27,12 +35,12 @@ interface ArgumentScanStep {
  * @param codeSegment Masked source segment used to read the shell option safely.
  * @returns Stable metadata describing command-source shape and shell mode.
  */
-export function processExecMetadata(callName: string, rawSource: string, callStart: number, rawSegment: string, codeSegment: string): Record<string, unknown> {
+export function processExecMetadata(callName: string, rawSource: string, callStart: number, rawSegment: string, codeSegment: string): ProcessExecMetadata {
   const firstArgument = firstProcessCallArgument(rawSegment);
   return {
     callName,
     argumentSource: processExecArgumentSource(rawSource, callStart, firstArgument),
-    shellEnabled: processExecShellEnabled(callName, codeSegment),
+    isShellEnabled: processExecShellEnabled(callName, codeSegment),
   };
 }
 

@@ -49,6 +49,38 @@ export function changed(value: string): unknown {
 }
 `;
 
+const SYMBOL_SCOPE_CLI_FIXTURES = [
+  {
+    file: "plain.ts",
+    changedLine: 4,
+    findingLine: 5,
+    source: `// File overview: plain CLI symbol-scope fixture.
+const script = "reviewed";
+export function plain(value: string): void {
+  const touched = value;
+  eval(script);
+}
+`,
+  },
+  {
+    file: "generic.ts",
+    changedLine: 6,
+    findingLine: 7,
+    source: `// File overview: generic CLI symbol-scope fixture.
+const script = "reviewed";
+export function generic<T extends string>(
+  value: T,
+): void {
+  const touched = value;
+  eval(script);
+}
+export function sibling(): void {
+  eval(script);
+}
+`,
+  },
+] as const;
+
 // Eval-call findings carry no symbol, so the dual-eval tests distinguish the two sinks by line.
 const STALE_EVAL_LINE = 2;
 const CHANGED_EVAL_LINE = 6;
@@ -209,6 +241,26 @@ test("delegated CLI invocation emits the file alias, severity vocabulary, and to
     // Every finding must expose the canonical `file` alias and a severity from the hook's vocabulary.
     assert.equal(payload.findings.every((finding) => typeof finding.file === "string"), true);
     assert.equal(payload.findings.every((finding) => ["advisory", "warning", "error"].includes(finding.severity)), true);
+  } finally {
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("delegated CLI symbol scope keeps eval findings in plain and generic callables", () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "gruff-ts-symbol-cli-"));
+  try {
+    writeFixtureFiles(projectDir, Object.fromEntries(SYMBOL_SCOPE_CLI_FIXTURES.map((fixture) => [fixture.file, fixture.source])));
+
+    for (const fixture of SYMBOL_SCOPE_CLI_FIXTURES) {
+      const output = execFileSync(
+        "bash",
+        [join(REPO_ROOT, "bin/gruff-ts"), "analyse", "--format", "json", "--fail-on", "none", "--no-baseline", "--changed-ranges", `${fixture.changedLine}-${fixture.changedLine}`, "--changed-scope", "symbol", fixture.file],
+        { cwd: projectDir, encoding: "utf8" },
+      );
+      const payload = JSON.parse(output) as HookReport;
+      const evalLines = payload.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.line);
+      assert.deepEqual(evalLines, [fixture.findingLine]);
+    }
   } finally {
     rmSync(projectDir, { recursive: true, force: true });
   }

@@ -34,6 +34,8 @@ last_reviewed: 2026-05-25
 
 **Why this works:** the typed field and the JSON key are two different surfaces. The TypeScript field exists for compile-time clarity; the JSON key exists for cross-port wire compatibility. Renaming one without the other - via an explicit map at the boundary - keeps both surfaces clean. The reverse is also true for tests parsing the JSON: treat `payload` as `Record<string, unknown>` and access `row.applicable` at runtime to avoid declaring a typed interface whose field name fights the lint (see `assertPillarRowShape` in `src/cli-surfaces.test.ts`).
 
+**Reinforced (M28, 2026-08-09):** Typing process-exec metadata exposed the report key `shellEnabled` to the boolean-name rule. `ProcessExecMetadata` now uses `isShellEnabled`, and the finding emitter maps it back to `shellEnabled`; the focused grading test and zero-finding self-scan preserve both contracts. Evidence: `src/process-exec-metadata.ts` (search: `export type ProcessExecMetadata`) and `src/line-rules.ts` (search: `shellEnabled: metadata.isShellEnabled`).
+
 **When NOT to use:** if the field is consumed by your own TypeScript code (not just at a serialization boundary), the mapping cost spreads everywhere and the dual surface becomes confusing. Bump the schema instead.
 
 ## Pattern: "version consistency" check verifies internal surfaces, not registry state

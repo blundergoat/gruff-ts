@@ -31,6 +31,18 @@ test("parameter parsing keeps commas inside defaults and type expressions", () =
   );
 });
 
+test("parameter parsing keeps commas between comparison defaults", () => {
+  assert.deepEqual(parameterNames("lo = min<max, hi = max>min, tag: string").map(({ name }) => name), ["lo", "hi", "tag"]);
+});
+
+test("parameter parsing keeps commas inside generic call defaults", () => {
+  assert.deepEqual(parameterNames("fn = factory<T, U>(x), next = 1").map(({ name }) => name), ["fn", "next"]);
+});
+
+test("parameter parsing keeps commas inside generic arrow defaults", () => {
+  assert.deepEqual(parameterNames("fn = <T, U = string>(value: T) => value, tag: string").map(({ name }) => name), ["fn", "tag"]);
+});
+
 test("naming blacklists default to current behavior", () => {
   const report = analyseFixture(`function process(): void {}
 

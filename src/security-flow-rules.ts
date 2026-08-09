@@ -2,6 +2,7 @@
 // report only when an external-input token is visibly inside a known risky sink expression.
 import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
+import { scriptKindFor } from "./parsed-script.ts";
 import type { Finding } from "./types.ts";
 import { createRequire } from "node:module";
 
@@ -24,16 +25,6 @@ function getSourceFile(file: SourceFile, source: string): TsSourceFile | null {
   } catch {
     return null;
   }
-}
-
-// Maps file extensions to TypeScript parser script kind so JSX files parse with JSX grammar.
-function scriptKindFor(path: string) {
-  if (path.endsWith(".tsx")) return typescriptSyntax.ScriptKind.TSX;
-  if (path.endsWith(".jsx")) return typescriptSyntax.ScriptKind.JSX;
-  if (path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs")) {
-    return typescriptSyntax.ScriptKind.JS;
-  }
-  return typescriptSyntax.ScriptKind.TS;
 }
 
 // Depth-first walk; return false from visit to skip a node's children.

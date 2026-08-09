@@ -4,6 +4,7 @@
 
 - **React Router redirects are open-redirect sinks** - `react-router` and `react-router-dom` join next/navigation and remix; local helpers stay quiet.
 - **Bodyless signatures skip implementation rules** - multi-line interface and overload signatures no longer draw empty-function or unused-parameter.
+- **Parameter defaults keep names** - Comparison expressions and generic arrow defaults no longer swallow or invent parameters in naming findings.
 - **Claude agent surface synced to goat-flow 1.15.0** - deny and Stop hooks route through `run-with-bash.mjs`. (`.claude/settings.json`)
 - **Copilot agent surface lifted from goat-flow 1.12.1 to 1.15.0** - skill pack and deny hook match Claude's. (`.github/hooks/hooks.json`)
 - **file-length raised to error at 1000 (family ratification)** - substantive counting unchanged; `--fail-on` consumers see exit-code changes.
@@ -28,9 +29,11 @@
 - **Markdown reports escape repo text** - fenced labels/paths and escaped messages block injection into PR comments. (`src/report-renderers.ts`)
 - **Filtered scans cannot record history** - `--history-file` with diff/since/ranges exits 2 before any write; full scans still append.
 - **Short secret previews fully masked** - under 24 chars shows mask+length; longer keeps first/last 4; hook identities churn once (ADR-017).
+- **Short preview allowlists cannot hide same-length secrets** - Values under 24 characters remain reportable even when the mask is configured.
 - **Open-redirect needs a real sink** - name-only `redirect` helpers stay quiet; tainted input to response/location sinks still reports.
 - **Quoted env secrets keep embedded hashes** - quoted values read whole so `#` cannot truncate a credential; unquoted still stop at `#`.
 - **Shared AST discovery (one parse per script)** - generics, multi-line, and parenless arrows analysed; anchors and fingerprints preserved.
+- **Symbol-scoped scans cover generic callables** - Generic and multi-line functions retain findings when another line in the same callable changes.
 - **Config validation fails loudly** - unknown rules, non-boolean enabled, bad option keys exit 2 naming accepted forms; compat tightening.
 - **Severity overrides reach every scanner** - one central pass applies rules.<id>.severity everywhere; fingerprints stay severity-free.
 - **Invalid CLI values fail fast** - format/fail-on/changed-scope validated at parse as usage errors; compat tightening. (`src/cli-program.ts`)

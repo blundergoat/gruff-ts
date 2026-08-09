@@ -3,6 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { functionBlocks } from "./blocks.ts";
 import type { SourceFile } from "./discovery.ts";
+import type { ParsedScript } from "./parsed-script.ts";
 import { maskNonCode } from "./source-text.ts";
 import type { AnalysisOptions, ChangedScopeMode, Finding, RunDiagnostic } from "./types.ts";
 
@@ -27,6 +28,7 @@ export interface ChangedRegionScope {
 interface SourceSnapshot {
   file: SourceFile;
   source: string;
+  parsed?: ParsedScript;
 }
 
 // Named source span used to keep symbol-scope findings when their declaration overlaps a hunk.
@@ -200,7 +202,7 @@ function enclosingDeclaration(
   }
   let declarations = declarationsByFile.get(finding.filePath);
   if (!declarations) {
-    declarations = declarationRegions(source.source);
+    declarations = declarationRegions(source.source, source.parsed);
     declarationsByFile.set(finding.filePath, declarations);
   }
   const line = finding.line ?? 1;
@@ -212,10 +214,10 @@ function enclosingDeclaration(
 }
 
 // Combines function and class/interface spans into one declaration inventory per source file.
-function declarationRegions(source: string): DeclarationRegion[] {
+function declarationRegions(source: string, parsed?: ParsedScript): DeclarationRegion[] {
   const codeSource = maskNonCode(source);
   return [
-    ...functionBlocks(source, codeSource).map((block) => ({
+    ...functionBlocks(source, codeSource, parsed).map((block) => ({
       name: block.name,
       start: block.startLine,
       end: block.startLine + block.lineCount - 1,

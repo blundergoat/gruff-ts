@@ -1,6 +1,6 @@
 ---
 category: workflow
-last_reviewed: 2026-08-08
+last_reviewed: 2026-08-09
 ---
 
 # Workflow lessons
@@ -18,14 +18,18 @@ last_reviewed: 2026-08-08
 ## Lesson: run strict plan validation before presenting the human gate
 
 **Created:** 2026-08-08
-**Decision changed:** Run the active plan's strict validator before asking for approval, then rerun it after applying the approved lifecycle transition.
+**Incident count:** 3
+**Latest occurrence:** 2026-08-09
+**Decision changed:** Run strict validation before activating or presenting any milestone, inventory every active status including legacy syntax, and rerun after approved lifecycle transitions.
 **Trigger phase:** VERIFY
 
-**What happened:** The goat-flow setup milestone reached `human-verification-pending` with every implementation and audit checkbox closed, but its legacy plan shape had never been checked against the 1.15.0 strict contract. The first strict check ran only after approval and reported `missing scope` plus a missing structured effort estimate. The setup evidence remained valid; the milestone snapshot did not satisfy the current recovery format when it was presented.
+**What happened:** The goat-flow setup milestone first reached `human-verification-pending` before its legacy shape was checked against the 1.15.0 strict contract. The same mistake recurred when M26-M30 were refreshed with `Effort: small|medium`, `## Plan`, and `## Testing Gate` still in place. Those labels described complexity but supplied no agent-time forecast, task/proof arithmetic, or current recovery grammar. The implementation evidence remained valid; the written milestones were not ready to present as current goat-plan artifacts.
 
-**Evidence:** `.agents/skills/goat-plan/SKILL.md` (search: `Rerun strict validation after each transition`) requires validation across lifecycle changes; `.agents/skills/goat-plan/references/milestone-examples.md` (search: `Before the human gate`) defines the pre-approval timing.
+**M26 execution recurrence, 2026-08-09:** Strict validation was deferred until proof closeout and found legacy M25 still `in-progress` while M26 was in its testing gate. M26's implementation evidence remained green, but its lifecycle paused until the operator classified M25 as blocked and operator-owned.
 
-**Prevention:** Run `goat-flow plans check .goat-flow/plans/<active> --strict` before the human gate. Migrate legacy Scope and effort fields before requesting approval, use an `unavailable:` Actual when no honest timing exists, and rerun the same command after changing the milestone status.
+**Evidence:** `.agents/skills/goat-plan/SKILL.md` (search: `Always include outcome, Status, agent-time estimate`) requires the estimate on every milestone; `.agents/skills/goat-plan/references/milestone-examples.md` (search: `must exactly reproduce each category`) requires task, proof, mid-proof, and admin arithmetic to match the headline.
+
+**Prevention:** Before changing a milestone to `in-progress` or `testing-gate`, run strict validation and inspect every active-status error across the whole active plan, including legacy `Status:` fields. For plan writes, also use derived current-format estimates and honest Actual provenance; if legacy siblings keep the directory red, prove the named milestone has zero format errors and report the remaining scope.
 
 ## Lesson: milestone close-out must compare self-scan delta, not just `npm run check` pass count
 

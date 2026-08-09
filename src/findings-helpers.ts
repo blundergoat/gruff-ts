@@ -95,14 +95,16 @@ function isTopLevelParameterPosition(state: ParameterSplitState): boolean {
   return state.parenthesisDepth === 0 && state.bracketDepth === 0 && state.braceDepth === 0 && state.angleDepth === 0;
 }
 
-// Treat `<...>` as type arguments only in type/generic-looking contexts with a real closing `>`;
-// this avoids swallowing the next parameter for defaults such as `value = left < right`.
+// Treat `<...>` as type arguments in annotations, or in generic call/arrow defaults whose closing
+// token is followed by `(`. Requiring that call boundary keeps comparison chains from swallowing
+// a later parameter while preserving commas inside `factory<T, U>(...)` and `<T, U>(...) => ...`.
 function opensTypeArgumentList(params: string, index: number, parameterStart: number): boolean {
   const prefix = params.slice(parameterStart, index);
   const previousCharacter = params[index - 1] ?? "";
   const isTypeContext = prefix.includes(":") && !prefix.includes("=");
   const followsTokenWithoutWhitespace = previousCharacter !== "" && !/\s/.test(previousCharacter);
-  if (!isTypeContext && !followsTokenWithoutWhitespace) {
+  const startsGenericArrowDefault = /=\s*$/.test(prefix);
+  if (!isTypeContext && !followsTokenWithoutWhitespace && !startsGenericArrowDefault) {
     return false;
   }
   let depth = 1;
@@ -111,7 +113,10 @@ function opensTypeArgumentList(params: string, index: number, parameterStart: nu
     if (character === "<") depth += 1;
     else if (character === ">" && params[cursor - 1] !== "=") {
       depth -= 1;
-      if (depth === 0) return true;
+      if (depth === 0) {
+        const isFollowedByCallParameters = /^\s*\(/.test(params.slice(cursor + 1));
+        return isTypeContext || isFollowedByCallParameters;
+      }
     }
   }
   return false;

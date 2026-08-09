@@ -9,7 +9,7 @@ import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts";
 import { type NamingSurface, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
-import { processExecMetadata } from "./process-exec-metadata.ts";
+import { processExecMetadata, type ProcessExecArgumentSource, type ProcessExecMetadata } from "./process-exec-metadata.ts";
 import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
@@ -583,15 +583,28 @@ function analyseProcessExecCalls(file: SourceFile, rawSource: string, codeSource
         pillar: "security",
         confidence: "high",
         remediation: grade.remediation,
-        metadata,
+        metadata: {
+          callName: metadata.callName,
+          argumentSource: metadata.argumentSource,
+          shellEnabled: metadata.isShellEnabled,
+        },
       }),
     );
   }
 }
 
-// Command sources an attacker could influence at runtime, versus sources fixed in the source text.
-const PROCESS_EXEC_DYNAMIC_SOURCES = new Set(["template", "parameter", "member", "local-builder", "unknown"]);
-const PROCESS_EXEC_FIXED_SOURCES = new Set(["literal", "local-const", "process-exec-path"]);
+// Every command-source shape has one compile-time class, so adding a metadata variant cannot fall
+// through to a quieter grade until its security posture is chosen explicitly.
+const PROCESS_EXEC_SOURCE_CLASSES = {
+  literal: "fixed",
+  "process-exec-path": "fixed",
+  "local-const": "fixed",
+  "local-builder": "dynamic",
+  parameter: "dynamic",
+  member: "dynamic",
+  template: "dynamic",
+  unknown: "dynamic",
+} as const satisfies Record<ProcessExecArgumentSource, "dynamic" | "fixed">;
 
 /*
  * Severity follows the evidence the metadata already carries: only a shell-enabled call with a
@@ -600,17 +613,16 @@ const PROCESS_EXEC_FIXED_SOURCES = new Set(["literal", "local-const", "process-e
  * between stays advisory with the review prompt, so the security pillar is not permanently
  * occupied by calls the reviewer cannot change.
  */
-function processExecGrade(metadata: Record<string, unknown>): { severity: Severity; message: string; remediation: string } {
-  const argumentSource = String(metadata["argumentSource"] ?? "unknown");
-  const shellEnabled = metadata["shellEnabled"] === true;
-  if (shellEnabled && PROCESS_EXEC_DYNAMIC_SOURCES.has(argumentSource)) {
+function processExecGrade(metadata: ProcessExecMetadata): { severity: Severity; message: string; remediation: string } {
+  const sourceClass = PROCESS_EXEC_SOURCE_CLASSES[metadata.argumentSource];
+  if (metadata.isShellEnabled && sourceClass === "dynamic") {
     return {
       severity: "warning",
       message: "Child-process execution is used; validate arguments are not user-controlled.",
       remediation: "Review the command source and shell mode; prefer fixed command vectors with shell disabled.",
     };
   }
-  if (!shellEnabled && PROCESS_EXEC_FIXED_SOURCES.has(argumentSource)) {
+  if (!metadata.isShellEnabled && sourceClass === "fixed") {
     return {
       severity: "advisory",
       message: "Child-process execution uses a fixed command with shell disabled.",

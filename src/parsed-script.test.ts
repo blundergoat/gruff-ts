@@ -149,4 +149,12 @@ test("one analysed script parses exactly once per run", () => {
   // Diagnostics, security-flow analysis, block discovery, and docblock rules all consumed the
   // same two parses; any additional parser call in the pipeline would raise this delta.
   assert.equal(parsedScriptParseCount() - before, 2);
+
+  const beforeSymbolScope = parsedScriptParseCount();
+  analyseProject({
+    "scoped.ts": "// File overview: symbol-scope parse-count fixture.\nexport function scoped(): number {\n  return 1;\n}\n",
+    // The line-count budget rejects this file before parsing; symbol widening must not reparse it.
+    "oversized.ts": "\n".repeat(20_001),
+  }, { changedRanges: "3-3" });
+  assert.equal(parsedScriptParseCount() - beforeSymbolScope, 1);
 });

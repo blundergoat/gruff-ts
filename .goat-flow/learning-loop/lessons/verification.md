@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-08-07
+last_reviewed: 2026-08-09
 ---
 
 # Verification lessons
@@ -299,10 +299,12 @@ when the old behavior is still present in code.
 ## Lesson: classify interpreter pipelines by whether stdin is data or code
 
 **Created:** 2026-05-10
-**Updated:** 2026-08-07
+**Updated:** 2026-08-09
 **Decision changed:** Check the current hook's stdin classification before rewriting a local-data pipeline; downloader and executable-stdin paths remain blocked, while reviewed local data consumers may be allowed.
 
 The pre-1.14 policy blocked every pipe into `python3 -c` or `node -e`, so local-data processing had to switch to a file intermediate. Goat-flow 1.14 now distinguishes reviewed local producers feeding an inline snippet or checked-in script (stdin remains data) from raw interpreter stdin, stdin-path/module spellings, and downloader pipelines (stdin may execute code).
+
+**Recurrence, 2026-08-09:** M28 put literal backticks inside a double-quoted `rg` pattern; the deny hook blocked it before execution.
 
 **Evidence:** `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` (search: `interpreter_treats_stdin_as_data`) owns the current classification; `.goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh` (search: `Local data may be piped into explicit inline interpreter snippets`) pins allowed local-data cases and blocked executable-input cases.
 

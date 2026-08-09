@@ -158,7 +158,7 @@ interface DiscoverySummary {
 interface SourceScanResult {
   findings: Finding[];
   projectSources: ProjectSource[];
-  sources: Map<string, { file: SourceFile; source: string }>;
+  sources: Map<string, { file: SourceFile; source: string; parsed?: ParsedScript }>;
   notes: ScanSurfaceNote[];
 }
 
@@ -202,15 +202,15 @@ function pushMissingPathDiagnostics(missingPaths: string[], diagnostics: RunDiag
 function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics: RunDiagnostic[]): SourceScanResult {
   const findings: Finding[] = [];
   const projectSources: ProjectSource[] = [];
-  const sources = new Map<string, { file: SourceFile; source: string }>();
+  const sources = new Map<string, { file: SourceFile; source: string; parsed?: ParsedScript }>();
   const notes: ScanSurfaceNote[] = [];
   for (const file of files) {
     try {
       const source = readFileSync(file.absolutePath, "utf8");
-      sources.set(file.displayPath, { file, source });
       const budgetNote = deepScanBudgetNote(file, source);
       // One parse per script per run: every deep consumer shares this result; over-budget files skip it.
       const parsed = budgetNote ? undefined : parseScript(file, source);
+      sources.set(file.displayPath, { file, source, ...(parsed ? { parsed } : {}) });
       if (budgetNote) {
         notes.push(budgetNote);
       } else {
