@@ -170,6 +170,11 @@ allowlists:
     - "abcd...wxyz (redacted, 32 chars)"
 ```
 
+Only previews for values of at least 24 characters can be allowlisted. Shorter
+previews are fully masked and identify only the value length, so gruff continues
+to report them even if the same mask appears in `secretPreviews`. This prevents
+one entry from hiding unrelated secrets of the same length.
+
 Prefer fixing false positives with a narrow config entry instead of disabling an
 entire sensitive-data rule.
 

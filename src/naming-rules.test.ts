@@ -769,6 +769,7 @@ test("naming class-file mismatch requires one public declaration across export f
     { fileName: "with-reexport.ts", source: "export class PaymentController {}\nclass PaymentHelper {}\nexport { PaymentHelper };\n", expected: 0 },
     { fileName: "default-helper.ts", source: "export default class PaymentController {}\n", expected: 1 },
     { fileName: "reexport-helper.ts", source: "class PaymentController {}\nexport { PaymentController };\n", expected: 1 },
+    { fileName: "merged-helper.ts", source: "interface PaymentController { id: string; }\nclass PaymentController { id = \"payment\"; }\nexport { PaymentController };\n", expected: 1 },
   ] as const;
   const findingsByFile = new Map(exportScenarios.map((scenario) => [
     scenario.fileName,

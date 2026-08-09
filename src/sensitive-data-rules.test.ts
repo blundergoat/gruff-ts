@@ -139,7 +139,7 @@ INVALID_CARD=${INVALID_CREDIT_CARD_FIXTURE_VALUE}
   assert.equal(JSON.stringify(report).includes(INVALID_CREDIT_CARD_FIXTURE_VALUE), false);
 });
 
-test("M26 sensitive-data allowlists match redacted previews for new detector coverage", () => {
+test("M26 sensitive-data allowlists match only distinct redacted previews", () => {
   const source = `REMOTE_CONTROL_URL=${URL_CREDENTIAL_FIXTURE_VALUE}
 PAYMENT_CARD=${CREDIT_CARD_FIXTURE_VALUE}
 `;
@@ -155,7 +155,24 @@ PAYMENT_CARD=${CREDIT_CARD_FIXTURE_VALUE}
   });
 
   assert.equal(allowlistedReport.findings.some((finding) => finding.ruleId === "sensitive-data.database-url-password"), false);
-  assert.equal(allowlistedReport.findings.some((finding) => finding.ruleId === "sensitive-data.pii-pattern"), false);
+  assert.equal(allowlistedReport.findings.some((finding) => finding.ruleId === "sensitive-data.pii-pattern"), true);
+});
+
+test("fully masked short previews cannot allowlist unrelated secrets by length", () => {
+  const firstShortSecret = ["a1B2c3D4", "e5F6g7H8"].join("");
+  const secondShortSecret = ["j9K0m1N2", "p3Q4r5S6"].join("");
+  assert.equal(firstShortSecret.length, secondShortSecret.length);
+  const sharedPreview = `${"*".repeat(firstShortSecret.length)} (redacted, ${firstShortSecret.length} chars)`;
+
+  const report = analyseFixture(`FIRST_TOKEN=${firstShortSecret}\nSECOND_TOKEN=${secondShortSecret}\n`, {
+    fileName: ".env",
+    config: { allowlists: { secretPreviews: [sharedPreview] } },
+  });
+  const keyNames = report.findings
+    .filter((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value")
+    .map((finding) => finding.metadata.keyName);
+
+  assert.deepEqual(keyNames, ["FIRST_TOKEN", "SECOND_TOKEN"]);
 });
 
 test("M26 PHI (MBI/MRN) and GCP service-account detectors fire and redact across every renderer", () => {

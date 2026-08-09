@@ -94,6 +94,52 @@ export function manyParams(a: string, b: string, c: string, d: string, e: string
   assert.equal(finding?.metadata.parameters, DECLARED_PLAIN_PARAMETERS);
 });
 
+test("parameter text keeps names that follow end-of-line comments", () => {
+  const report = analyseFixture(`function inspect(
+  first: string, // Retained parameter.
+  second: string,
+): string {
+  return first;
+}
+`);
+  const unusedParameters = report.findings
+    .filter((finding) => finding.ruleId === "waste.unused-parameter")
+    .map((finding) => finding.metadata.parameter);
+
+  assert.deepEqual(unusedParameters, ["second"]);
+});
+
+test("AST export classification handles split declarations and same-name class methods", () => {
+  const splitExportBlocks = discoveredBlocks("split-export.ts", `export async function
+publicApi(): Promise<void> {
+  await Promise.resolve();
+}
+`);
+  const publicApi = splitExportBlocks.find((block) => block.name === "publicApi");
+  assert.equal(publicApi?.declarationLine, 2);
+  assert.equal(publicApi?.startLine, 2);
+  assert.equal(publicApi?.isPublic, true);
+  assert.equal(publicApi?.isExported, true);
+
+  const sameNameBlocks = discoveredBlocks("same-name.ts", `function helper(): number {
+  return 1;
+}
+class Worker {
+  helper(): number {
+    return 2;
+  }
+}
+export { helper };
+`).filter((block) => block.name === "helper");
+  assert.deepEqual(
+    sameNameBlocks.map((block) => ({ declarationLine: block.declarationLine, isExported: block.isExported })),
+    [
+      { declarationLine: 1, isExported: true },
+      { declarationLine: 5, isExported: false },
+    ],
+  );
+});
+
 test("one analysed script parses exactly once per run", () => {
   const before = parsedScriptParseCount();
   analyseProject({

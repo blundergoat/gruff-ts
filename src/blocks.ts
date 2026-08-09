@@ -475,6 +475,10 @@ interface BlockMatchPoint {
   parameterCount?: number;
   // AST-known body presence; regex points leave it absent and fall back to the text heuristic.
   hasBody?: boolean;
+  // AST-backed visibility; regex points leave these absent and retain the text fallback.
+  isDirectlyExported?: boolean;
+  isExplicitlyPublic?: boolean;
+  isModuleScoped?: boolean;
   callableNode?: import("typescript").Node;
 }
 
@@ -482,7 +486,18 @@ interface BlockMatchPoint {
 function matchPointsFor(scan: FunctionBlockScan, parsed: ParsedScript | undefined): BlockMatchPoint[] {
   // A normal script scan already owns one ParsedScript and must reuse its callable points here.
   if (parsed) {
-    return callableMatchPoints(parsed).map((point) => ({ lineIndex: point.lineIndex, endLineIndex: point.endLineIndex, name: point.name, params: point.params, parameterCount: point.parameterCount, hasBody: point.hasBody, callableNode: point.callableNode }));
+    return callableMatchPoints(parsed).map((point) => ({
+      lineIndex: point.lineIndex,
+      endLineIndex: point.endLineIndex,
+      name: point.name,
+      params: point.params,
+      parameterCount: point.parameterCount,
+      hasBody: point.hasBody,
+      isDirectlyExported: point.isDirectlyExported,
+      isExplicitlyPublic: point.isExplicitlyPublic,
+      isModuleScoped: point.isModuleScoped,
+      callableNode: point.callableNode,
+    }));
   }
   const points: BlockMatchPoint[] = [];
   // Span-only utilities still use the legacy masked-line inventory without triggering a parse.
@@ -593,8 +608,9 @@ function functionBlockFromPoint(scan: FunctionBlockScan, point: BlockMatchPoint,
     lineCount: end - start + 1,
     body,
     codeBody,
-    isPublic: /\bexport\b|\bpublic\b/.test(scan.codeLines.slice(start, index + 1).join("\n")),
-    isExported: /^\s*export\b/.test(scan.codeLines[index] ?? "") || scan.reExportedNames.has(point.name),
+    isPublic: point.isExplicitlyPublic ?? /\bexport\b|\bpublic\b/.test(scan.codeLines.slice(start, index + 1).join("\n")),
+    isExported: (point.isDirectlyExported ?? /^\s*export\b/.test(scan.codeLines[index] ?? ""))
+      || point.isModuleScoped !== false && scan.reExportedNames.has(point.name),
     isTest: isTestInvocationLine(scan.codeLines[index] ?? ""),
     hasLeadingComment: hasLeadingCommentBeforeLines(scan.lines, index + 1),
     declarationLine: index + 1,

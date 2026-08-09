@@ -154,6 +154,11 @@ export interface CallableMatchPoint extends IdentifierOwner {
   params: string;
   parameterCount: number;
   isTestCallable: boolean;
+  // Syntax-backed visibility keeps split-line modifiers and file-level re-exports scoped to the
+  // declaration that owns them without moving the legacy name-line finding anchor.
+  isDirectlyExported: boolean;
+  isExplicitlyPublic: boolean;
+  isModuleScoped: boolean;
   // False for signature-only declarations: interface and type-literal methods, overload
   // signatures, and abstract or ambient members. The block rules use this instead of guessing
   // from text, because a multi-line signature reads like an implementation on its first line.
@@ -431,6 +436,8 @@ function matchPointFor(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoi
 // Builds the point for a named declaration: the anchor line is the name's line, matching where
 // the legacy line-oriented patterns fired; the end line is the declaration's final token.
 function declarationPoint(sourceFile: TsSourceFile, position: number, callableNode: TsNode, name: string, parameters: readonly TsNode[]): CallableMatchPoint {
+  const visibilityNode = callableVisibilityNode(callableNode);
+  const isDirectlyExported = hasNodeModifier(visibilityNode, typescriptSyntax.SyntaxKind.ExportKeyword);
   return {
     ...callableIdentifierOwner(sourceFile, callableNode),
     lineIndex: sourceFile.getLineAndCharacterOfPosition(position).line,
@@ -439,9 +446,33 @@ function declarationPoint(sourceFile: TsSourceFile, position: number, callableNo
     params: parametersText(sourceFile, parameters),
     parameterCount: parameters.length,
     isTestCallable: false,
+    isDirectlyExported,
+    isExplicitlyPublic: isDirectlyExported || hasNodeModifier(visibilityNode, typescriptSyntax.SyntaxKind.PublicKeyword),
+    isModuleScoped: visibilityNode.parent === sourceFile,
     hasBody: callableNodeHasBody(callableNode),
     callableNode,
   };
+}
+
+// Variable-backed callables inherit export modifiers and module scope from their statement;
+// declaration-shaped callables already carry both facts on their own node.
+function callableVisibilityNode(callableNode: TsNode): TsNode {
+  const declaration = callableNode.parent;
+  if (!typescriptSyntax.isVariableDeclaration(declaration)) {
+    return callableNode;
+  }
+  const declarationList = declaration.parent;
+  if (!typescriptSyntax.isVariableDeclarationList(declarationList)) {
+    return callableNode;
+  }
+  const statement = declarationList.parent;
+  return typescriptSyntax.isVariableStatement(statement) ? statement : callableNode;
+}
+
+// Reads a modifier only when the syntax node can own modifiers.
+function hasNodeModifier(node: TsNode, modifierKind: import("typescript").SyntaxKind): boolean {
+  const modifiers = typescriptSyntax.canHaveModifiers(node) ? typescriptSyntax.getModifiers(node) : undefined;
+  return modifiers?.some((modifier) => modifier.kind === modifierKind) === true;
 }
 
 // Arrow functions and function expressions always carry a body, so only declaration-shaped nodes
@@ -488,20 +519,21 @@ function testCallbackPoint(sourceFile: TsSourceFile, node: import("typescript").
     params: parametersText(sourceFile, callback.parameters),
     parameterCount: callback.parameters.length,
     isTestCallable: true,
+    isDirectlyExported: false,
+    isExplicitlyPublic: false,
+    isModuleScoped: false,
     hasBody: true,
     callableNode: callback,
   };
 }
 
-// Raw text between the parameter list's start and end, exactly what the legacy patterns captured
-// between the parens; empty when the callable declares no parameters.
+// Joins each AST parameter span without the inter-parameter trivia where an end-of-line comment
+// could otherwise swallow the following name after newlines are flattened.
 function parametersText(sourceFile: TsSourceFile, parameters: readonly TsNode[]): string {
-  const first = parameters[0];
-  const last = parameters[parameters.length - 1];
-  if (!first || !last) {
-    return "";
-  }
-  return sourceFile.text.slice(first.getStart(sourceFile), last.getEnd()).replace(/\r?\n/g, " ");
+  return parameters
+    .map((parameter) => sourceFile.text.slice(parameter.getStart(sourceFile), parameter.getEnd()))
+    .join(", ")
+    .replace(/\r?\n/g, " ");
 }
 
 /*

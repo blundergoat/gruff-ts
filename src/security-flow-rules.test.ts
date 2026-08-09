@@ -69,6 +69,25 @@ test("flags imported framework redirect functions without widening local helper 
   assert.equal(aliasedFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length, 1);
 });
 
+test("keeps lexically shadowed framework redirect imports quiet", () => {
+  const parameterFindings = analyseSecurityFixture(
+    'import { redirect } from "next/navigation";\nfunction login(req, redirect) {\n  return redirect(req.query.next);\n}\n',
+  );
+  const functionFindings = analyseSecurityFixture(
+    'import { redirect } from "next/navigation";\nfunction login(req) {\n  const next = req.query.next;\n  function redirect(target) { return target; }\n  return redirect(next);\n}\n',
+  );
+  const namespaceFindings = analyseSecurityFixture(
+    'import * as navigation from "next/navigation";\nfunction login(req) {\n  const navigation = { redirect: (target) => target };\n  return navigation.redirect(req.query.next);\n}\n',
+  );
+
+  assert.deepEqual(
+    [parameterFindings, functionFindings, namespaceFindings].map((findings) =>
+      findings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length,
+    ),
+    [0, 0, 0],
+  );
+});
+
 // Fixture purpose: local redirect functions and router methods are not response sinks.
 // Stable contract: names alone never turn these helpers into open-redirect findings.
 test("keeps local redirect functions and router methods quiet", () => {

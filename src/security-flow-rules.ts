@@ -180,7 +180,7 @@ interface AstSinkInput {
   call: TsCallLikeExpression;
   sourceFile: TsSourceFile;
   unsafeXmlParsers: ReadonlySet<string>;
-  frameworkRedirectCallees: ReadonlySet<string>;
+  isFrameworkRedirectCallee: boolean;
 }
 
 // Describes one AST sink candidate. Some AST-only rules report same-line direct-source
@@ -215,10 +215,10 @@ const AST_FLOW_SINKS: readonly AstFlowSink[] = [
   {
     ruleId: "security.open-redirect-candidate",
     sinkKind: "redirect",
-    isSink: ({ callee, frameworkRedirectCallees }) =>
+    isSink: ({ callee, isFrameworkRedirectCallee }) =>
       /^(?:res|reply|response)\.redirect$/.test(callee) ||
       /^(?:location|window\.location)\.(?:assign|replace)$/.test(callee) ||
-      frameworkRedirectCallees.has(callee),
+      isFrameworkRedirectCallee,
   },
   {
     ruleId: "security.dynamic-regexp",
@@ -458,7 +458,8 @@ function reportSink(
     return;
   }
   const callee = call.expression.getText(parsedSource);
-  const sink = AST_FLOW_SINKS.find((candidate) => candidate.isSink({ callee, call, sourceFile: parsedSource, unsafeXmlParsers, frameworkRedirectCallees }));
+  const isFrameworkRedirectCallee = frameworkRedirectCallees.has(callee) && !isFrameworkRedirectShadowed(call, callee);
+  const sink = AST_FLOW_SINKS.find((candidate) => candidate.isSink({ callee, call, sourceFile: parsedSource, unsafeXmlParsers, isFrameworkRedirectCallee }));
   if (!sink) {
     return;
   }
@@ -467,11 +468,100 @@ function reportSink(
     return;
   }
   const sinkLine = lineIndexOf(parsedSource, call);
-  const reportsSameLine = sink.shouldReportSameLine === true || frameworkRedirectCallees.has(callee);
+  const reportsSameLine = sink.shouldReportSameLine === true || isFrameworkRedirectCallee;
   if (sinkLine === hit.line && !reportsSameLine) {
     return;
   }
   findings.push(flowFinding(file, sinkLine, sink.ruleId, sink.sinkKind, hit.kind, hit.depth));
+}
+
+// Imported redirect aliases stop being sink evidence inside a lexical scope that declares the
+// alias again. Syntax-only binding checks cover parameters and local value declarations.
+function isFrameworkRedirectShadowed(call: TsCallLikeExpression, callee: string): boolean {
+  const rootName = callee.split(".", 1)[0];
+  if (!rootName) {
+    return false;
+  }
+  for (let ancestor = call.parent; ancestor && !typescriptSyntax.isSourceFile(ancestor); ancestor = ancestor.parent) {
+    if (functionLikeBindsName(ancestor, rootName) || lexicalStatementsBindName(ancestor, rootName) || loopOrCatchBindsName(ancestor, rootName)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Function parameters and named function expressions bind identifiers throughout their body.
+function functionLikeBindsName(node: TsNode, name: string): boolean {
+  if (!isFunctionLike(node)) {
+    return false;
+  }
+  const functionNode = node as TsNode & {
+    name?: import("typescript").PropertyName;
+    parameters: readonly import("typescript").ParameterDeclaration[];
+  };
+  if (functionNode.name && typescriptSyntax.isIdentifier(functionNode.name) && functionNode.name.text === name) {
+    return true;
+  }
+  return functionNode.parameters.some((parameter) => bindingNameContains(parameter.name, name));
+}
+
+// Block-level value declarations shadow an import across the whole lexical block, including its
+// temporal-dead-zone prefix. Case clauses carry their own direct statement list.
+function lexicalStatementsBindName(node: TsNode, name: string): boolean {
+  if (typescriptSyntax.isBlock(node) || typescriptSyntax.isModuleBlock(node) || typescriptSyntax.isCaseClause(node) || typescriptSyntax.isDefaultClause(node)) {
+    return node.statements.some((statement) => statementBindsName(statement, name));
+  }
+  return false;
+}
+
+// Loops and catch clauses introduce bindings outside a nested statement list.
+function loopOrCatchBindsName(node: TsNode, name: string): boolean {
+  if (typescriptSyntax.isCatchClause(node)) {
+    return node.variableDeclaration ? bindingNameContains(node.variableDeclaration.name, name) : false;
+  }
+  if (typescriptSyntax.isForStatement(node)) {
+    return node.initializer && typescriptSyntax.isVariableDeclarationList(node.initializer)
+      ? variableDeclarationListBindsName(node.initializer, name)
+      : false;
+  }
+  if (typescriptSyntax.isForInStatement(node) || typescriptSyntax.isForOfStatement(node)) {
+    return typescriptSyntax.isVariableDeclarationList(node.initializer)
+      ? variableDeclarationListBindsName(node.initializer, name)
+      : false;
+  }
+  return false;
+}
+
+// Only runtime declarations count: type-only declarations do not shadow an imported value.
+function statementBindsName(statement: import("typescript").Statement, name: string): boolean {
+  if (typescriptSyntax.isVariableStatement(statement)) {
+    return variableDeclarationListBindsName(statement.declarationList, name);
+  }
+  if (typescriptSyntax.isFunctionDeclaration(statement) || typescriptSyntax.isClassDeclaration(statement) || typescriptSyntax.isEnumDeclaration(statement)) {
+    return statement.name?.text === name;
+  }
+  if (typescriptSyntax.isImportEqualsDeclaration(statement)) {
+    return statement.name.text === name;
+  }
+  if (typescriptSyntax.isModuleDeclaration(statement) && typescriptSyntax.isIdentifier(statement.name)) {
+    return statement.name.text === name;
+  }
+  return false;
+}
+
+// Variable declaration lists may contain identifier or destructuring bindings.
+function variableDeclarationListBindsName(list: import("typescript").VariableDeclarationList, name: string): boolean {
+  return list.declarations.some((declaration) => bindingNameContains(declaration.name, name));
+}
+
+// Recurses through object and array binding patterns without inspecting property names.
+function bindingNameContains(bindingName: import("typescript").BindingName, name: string): boolean {
+  if (typescriptSyntax.isIdentifier(bindingName)) {
+    return bindingName.text === name;
+  }
+  return bindingName.elements.some((element) =>
+    !typescriptSyntax.isOmittedExpression(element) && bindingNameContains(element.name, name),
+  );
 }
 
 // Reports redirect assignment flows; invariant: same-line cases stay with the legacy scanner.

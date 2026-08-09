@@ -77,8 +77,10 @@ function localDeclarationIndex(sourceFile: TsSourceFile): Map<string, PublicExpo
     if (!declaration || declaration.name === "default") {
       continue;
     }
-    // Declaration merging keeps the earliest same-kind/name anchor visible to the report user.
-    if (!declarations.has(declaration.name)) {
+    const existingDeclaration = declarations.get(declaration.name);
+    // A merged class is the runtime value a bottom export exposes; otherwise retain the earliest
+    // declaration anchor for deterministic output.
+    if (!existingDeclaration || declaration.kind === "class" && existingDeclaration.kind !== "class") {
       declarations.set(declaration.name, declaration);
     }
   }

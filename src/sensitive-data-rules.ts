@@ -250,7 +250,9 @@ interface SensitiveFindingArgs {
 // Reports exactly one finding per occurrence and never throws.
 function pushSensitiveFinding(args: SensitiveFindingArgs): void {
   const preview = redact(args.raw);
-  if (args.config.secretPreviews.has(preview)) {
+  // Fully masked short previews identify only a length, so accepting one would suppress every
+  // unrelated secret of that length. Only previews with bounded edge context are distinct enough.
+  if (args.raw.length >= MINIMUM_SECRET_LENGTH_FOR_CONTEXT && args.config.secretPreviews.has(preview)) {
     return;
   }
   args.findings.push(
