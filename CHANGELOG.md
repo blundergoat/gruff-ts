@@ -4,6 +4,8 @@
 
 - **Lockfiles leave sensitive-data scans** - package-manager lockfiles no longer emit secret findings; source files still use error severity.
 - **Baseline impact** - NodeGoat entropy findings drop 1,292→0 and nodejs-goof 833→1; zod stays 47 and juice-shop 97.
+- **Known scoring limitation** - composite scores remain volume-sensitive: vulnerable nodejs-goof scores 80.4 (B), NodeGoat 52.2 and clean zod 18.8.
+- **Short variables skip local callable parameters** - findings fall 879→856 on zod, 5,405→5,269 on angular and 492→483 on typeorm.
 - **Parser errors collapse per file** - reports retain the first message plus raw count; angular drops 1,854 diagnostics to 476 affected files.
 - **Non-text scripts skip parsing** - invalid UTF-8 or NUL-bearing files produce a non-fatal `non-text-file` note instead of a parse error.
 - **BREAKING: External finding paths** - outside-root scans emit absolute paths; regenerate baselines made from a different working directory.

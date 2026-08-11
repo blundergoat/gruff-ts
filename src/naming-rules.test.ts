@@ -111,6 +111,24 @@ test("naming short-variable flags single-letter parameter", () => {
   assert.equal(shorts[0]?.metadata?.surface, "parameter");
 });
 
+test("naming short-variable skips locally bound callable parameters", () => {
+  const report = analyseFixture(`const transform = (x: number): number => x + 1;
+const predicate = function (y: number): boolean {
+  return y > 0;
+};
+test("uses a callback", (t) => {
+  console.log(t);
+});
+function declared(z: number): number {
+  return z + 1;
+}
+`);
+  const parameters = report.findings
+    .filter((finding) => finding.ruleId === "naming.short-variable" && finding.metadata?.surface === "parameter")
+    .map((finding) => finding.symbol);
+  assert.deepEqual(parameters, ["z"]);
+});
+
 test("naming short-variable flags destructured single-letter", () => {
   const report = analyseFixture(`function unpack(): void {
   const { a, b } = { a: 1, b: 2 };

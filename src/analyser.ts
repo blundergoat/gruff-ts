@@ -728,8 +728,9 @@ function analyseBlocks(file: SourceFile, source: string, codeSource: string, blo
 function pushParameterNamingFindings(context: BlockRuleContext): void {
   const line = context.block.declarationLine;
   const params = parameterNames(context.block.params);
+  const hasLocallyBoundParameters = isLocallyBoundParameterOwner(context.block);
   for (const parameter of params) {
-    if (!isComparatorShortParameter(context, params, parameter.name)) {
+    if (!hasLocallyBoundParameters && !isComparatorShortParameter(context, params, parameter.name)) {
       pushShortVariableAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
     }
     pushIdentifierQualityAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
@@ -741,6 +742,19 @@ function pushParameterNamingFindings(context: BlockRuleContext): void {
       pushGenericParameterAt(context.file, line, parameter.name, context.findings);
     }
   }
+}
+
+// Variable-bound callables and test callbacks keep their parameters beside the implementation,
+// so short closure names do not create the cross-file review cost this rule is meant to surface.
+// Declared functions and methods remain covered. Other parameter naming rules still run here.
+function isLocallyBoundParameterOwner(block: FunctionBlock): boolean {
+  if (block.isTest) {
+    return true;
+  }
+  const declarationOffset = block.declarationLine - block.startLine;
+  const declarationLine = block.codeBody.split(/\r?\n/)[declarationOffset] ?? "";
+  const bindingName = declarationLine.match(/\b(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/)?.[1];
+  return bindingName === block.name;
 }
 
 // `(a, b)` is a conventional comparator pair when the callable is explicitly shaped like sorting.
