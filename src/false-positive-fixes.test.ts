@@ -359,19 +359,24 @@ test("FP-#21 naming.boolean-prefix accepts imperative-flag verbs", () => {
   assert.deepEqual(findings, []);
 });
 
-test("FP-#22 naming.short-variable accepts fn and cb abbreviations", () => {
-  // §2.8(a): `fn` and `cb` are universal conventions for "function parameter" and "callback
-  // parameter" and are now in the default acceptedAbbreviations set.
-  const report = analyseFixture(`export function bind(fn: (n: number) => number, cb: () => void): (n: number) => number {
-  return (n: number) => {
-    const result = fn(n);
+test("family abbreviation defaults require projects to opt in to fn and cb", () => {
+  const abbreviatedParameterSource = `export function bind(fn: (value: number) => number, cb: () => void): (value: number) => number {
+  return (value: number) => {
+    const result = fn(value);
     cb();
     return result;
   };
 }
-`);
-  const findings = report.findings.filter((entry) => entry.ruleId === "naming.short-variable");
-  assert.deepEqual(findings, []);
+`;
+  const defaultShortVariableSymbols = analyseFixture(abbreviatedParameterSource).findings
+    .filter((entry) => entry.ruleId === "naming.short-variable")
+    .map((entry) => entry.symbol)
+    .sort();
+  const configuredShortVariableFindings = analyseFixture(abbreviatedParameterSource, { config: { allowlists: { acceptedAbbreviations: ["cb", "fn"] } } }).findings
+    .filter((entry) => entry.ruleId === "naming.short-variable");
+
+  assert.deepEqual(defaultShortVariableSymbols, ["cb", "fn"]);
+  assert.deepEqual(configuredShortVariableFindings, []);
 });
 
 test("FP-#23 naming.short-variable accepts for-of binding in short body", () => {

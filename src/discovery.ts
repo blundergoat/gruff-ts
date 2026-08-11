@@ -3,8 +3,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
 import type { AnalysisOptions, Config, IgnoreSource, ScanSurfaceNote, SkippedPath } from "./types.ts";
 
-// `absolutePath` is what `node:fs` operates on; `displayPath` is the project-relative POSIX form
-// embedded in findings and baselines. They must stay aligned - diverging them breaks fingerprint stability.
+// `absolutePath` is what `node:fs` operates on; `displayPath` is project-relative inside the run
+// root and absolute outside it. They must stay aligned - diverging them breaks fingerprint stability.
 export interface SourceFile {
   absolutePath: string;
   displayPath: string;
@@ -577,11 +577,27 @@ export function absolutize(projectRoot: string, path: string): string {
   return isAbsolute(path) ? path : join(projectRoot, path);
 }
 
-// Project-relative form with forward slashes - the report contract uses POSIX-style display paths
-// on every platform. "" collapses to "." so the root has a stable label in findings.
-export function displayPath(projectRoot: string, path: string): string {
-  const relativePath = relative(projectRoot, path).replaceAll("\\", "/");
-  return relativePath === "" ? "." : relativePath;
+/**
+ * Formats a scanned path for findings, diagnostics, and baselines.
+ * Paths inside the run root stay relative; outside paths are absolute so editor and CI links remain usable.
+ *
+ * @param projectRoot - working directory that anchors relative report paths
+ * @param inputPath - scanned path; an empty path addresses the run root itself
+ * @returns POSIX report path; `.` means the input is the run root
+ */
+export function displayPath(projectRoot: string, inputPath: string): string {
+  // Relative CLI inputs are resolved from the run root before report formatting.
+  const absoluteInputPath = isAbsolute(inputPath) ? inputPath : join(projectRoot, inputPath);
+  const projectRelativePath = relative(projectRoot, absoluteInputPath).replaceAll("\\", "/");
+  // The run root itself needs a non-empty label in reports.
+  if (projectRelativePath === "") {
+    return ".";
+  }
+  // A relative escape cannot serve as an editor or CI link from the run root.
+  if (projectRelativePath === ".." || projectRelativePath.startsWith("../") || isAbsolute(projectRelativePath)) {
+    return absoluteInputPath.replaceAll("\\", "/");
+  }
+  return projectRelativePath;
 }
 
 // Escapes the standard regex metacharacters so untrusted patterns can be embedded literally.

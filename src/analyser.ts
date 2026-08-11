@@ -1,7 +1,7 @@
 // Analyser pipeline: walks discovered sources, runs every rule pass (complexity, dead-code, design,
 // documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality),
 // aggregates findings into the `gruff.analysis.v2` schema, and exposes `analyse` to the CLI shell.
-import { Buffer } from "node:buffer";
+import { Buffer, isUtf8 } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { cwd } from "node:process";
 import { basename, extname } from "node:path";
@@ -206,7 +206,17 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
   const notes: ScanSurfaceNote[] = [];
   for (const file of files) {
     try {
-      const source = readFileSync(file.absolutePath, "utf8");
+      const fileBytes = readFileSync(file.absolutePath);
+      // Non-text bytes cannot produce trustworthy findings; the note explains why the file was skipped.
+      if (!isUtf8(fileBytes) || fileBytes.includes(0)) {
+        notes.push({
+          noteType: "non-text-file",
+          path: file.displayPath,
+          message: "File was skipped before parsing because it contains invalid UTF-8 or NUL bytes.",
+        });
+        continue;
+      }
+      const source = fileBytes.toString("utf8");
       const budgetNote = deepScanBudgetNote(file, source);
       // One parse per script per run: every deep consumer shares this result; over-budget files skip it.
       const parsed = budgetNote ? undefined : parseScript(file, source);
@@ -551,7 +561,8 @@ function analyseTextRules(file: SourceFile, source: string, comments: CommentRec
     }
   }
 
-  if (isAnyRuleEnabled(config, SENSITIVE_DATA_RULE_IDS)) {
+  // Published lockfile digests are not credentials; authored text keeps the full sensitive-data scan.
+  if (isAnyRuleEnabled(config, SENSITIVE_DATA_RULE_IDS) && !isGeneratedLockfile(file.displayPath)) {
     analyseSensitiveData(file, source, config, findings);
   }
   if (isAnyRuleEnabled(config, GITHUB_ACTIONS_RULE_IDS)) {
@@ -626,11 +637,11 @@ function lineCount(source: string): number {
   return count;
 }
 
-// Exact-name match against the five major package managers. Lockfiles routinely break size and
-// sensitive-data thresholds without being meaningful project code, so they get excluded by file rules.
-function isGeneratedLockfile(path: string): boolean {
-  const name = basename(path);
-  return name === "package-lock.json" || name === "npm-shrinkwrap.json" || name === "yarn.lock" || name === "pnpm-lock.yaml" || name === "bun.lockb";
+// Package-manager lockfiles contain generated dependency metadata, including public integrity digests.
+// Discovery retains them; size and sensitive-data rules use this predicate to avoid generated-content findings.
+function isGeneratedLockfile(filePath: string): boolean {
+  const fileName = basename(filePath);
+  return fileName === "package-lock.json" || fileName === "npm-shrinkwrap.json" || fileName === "yarn.lock" || fileName === "pnpm-lock.yaml" || fileName === "bun.lockb";
 }
 
 /*

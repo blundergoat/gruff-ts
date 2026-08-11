@@ -2,8 +2,12 @@
 // huge files get a bounded deep scan with text-level rules intact, and generated/copied files
 // drop docs/naming churn while keeping sensitive-data coverage.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { chdir, cwd } from "node:process";
 import test from "node:test";
-import { analyseFixture, analyseProject, HIGH_ENTROPY_FIXTURE_VALUE, PRIVATE_KEY_HEADER_FIXTURE_VALUE } from "./test-fixtures.ts";
+import { analyseFixture, analyseProject, analyseProjectInCurrentDirectory, HIGH_ENTROPY_FIXTURE_VALUE, PRIVATE_KEY_HEADER_FIXTURE_VALUE } from "./test-fixtures.ts";
 
 test("requested directory hidden by parent gitignore reports a no-analysable-files note", () => {
   // The adoption-scan repro: a nested project excluded by the parent's .gitignore analysed zero
@@ -40,6 +44,26 @@ test("one ignored input plus one analysed input notes only the ignored input", (
   assert.deepEqual(notes.map((note) => note.path), ["nested"]);
 });
 
+test("findings outside the run root use absolute paths", () => {
+  const scanWorkingDirectory = mkdtempSync(join(tmpdir(), "gruff-run-root-"));
+  const externalProjectDirectory = mkdtempSync(join(tmpdir(), "gruff-external-root-"));
+  const originalWorkingDirectory = cwd();
+  try {
+    const externalSourcePath = join(externalProjectDirectory, "external.ts");
+    writeFileSync(externalSourcePath, "export function run(input: string): unknown { return eval(input); }\n");
+    chdir(scanWorkingDirectory);
+    const report = analyseProjectInCurrentDirectory({ paths: [externalProjectDirectory] });
+    const evalFinding = report.findings.find((entry) => entry.ruleId === "security.eval-call");
+
+    assert.equal(evalFinding?.filePath, externalSourcePath.replaceAll("\\", "/"));
+    assert.equal(evalFinding?.filePath.startsWith("../"), false);
+  } finally {
+    chdir(originalWorkingDirectory);
+    rmSync(scanWorkingDirectory, { recursive: true, force: true });
+    rmSync(externalProjectDirectory, { recursive: true, force: true });
+  }
+});
+
 test("size file-length counts substantive lines instead of documentation padding", () => {
   const commentOnlyTypeScript = Array.from({ length: 1001 }, (_, index) => `// Documentation line ${index + 1}`).join("\n");
   const blockCommentTypeScript = ["/**", ...Array.from({ length: 1001 }, (_, index) => ` * Guide line ${index + 1}`), " */"].join("\n");
@@ -68,6 +92,16 @@ test("a normally analysable scan carries no notes field", () => {
   // consumers and golden outputs see byte-identical reports for ordinary scans.
   const report = analyseFixture("export const value = 1;\n");
   assert.equal(report.notes, undefined);
+});
+
+test("non-text script bytes are noted and skipped before parser diagnostics", () => {
+  const report = analyseFixture("\0eval(userInput);\n", { fileName: "binary.js" });
+
+  assert.deepEqual(report.diagnostics, []);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
+  assert.deepEqual((report.notes ?? []).map((note) => ({ type: note.noteType, path: note.path })), [
+    { type: "non-text-file", path: "binary.js" },
+  ]);
 });
 
 test("a script file over the deep-scan budget keeps text rules and reports a bounded note", () => {

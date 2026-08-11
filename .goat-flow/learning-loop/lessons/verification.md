@@ -124,6 +124,11 @@ last_reviewed: 2026-08-11
 
 **Follow-up:** A later cleanup made comments more readable but removed words such as `stable`, `deterministic`, `fingerprint`, `throws`, and `reports` that encode the analyzer's own context-doc contracts. Before closing a comment rewrite, rerun the self-scan and compare context-doc rules as well as the originally targeted missing-doc rules.
 
+**Parse-summary recurrence, 2026-08-11:** Renaming the per-file parser diagnostic helper to
+`summarizeParseErrors` made its purpose clearer, but its first comment revision described only the
+returned report entry. The self-scan still emitted `docs.missing-error-behavior-doc` until the return
+contract stated that parser errors are reported and do not throw.
+
 ## Lesson: verify extracted modules for circular self-scan edges
 
 **Created:** 2026-05-19

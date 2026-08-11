@@ -97,17 +97,25 @@ export function parsedScriptParseCount(): number {
  * Parses one script into the shared boundary result. Non-script inputs return undefined so a
  * config or text file never parses; diagnostics always cover the whole file (never range-filtered).
  *
- * @param file Display path plus the script flag from discovery.
- * @param source Raw file text to parse.
- * @returns The shared parse result, or undefined when the input is not a script.
+ * @param file - display path plus the script flag from discovery; a false script flag skips parsing
+ * @param source - decoded file text; empty script text produces a source file with no diagnostics
+ * @returns shared parse result; undefined means the input was a config or text file
  */
 export function parseScript(file: ParsedScriptInput, source: string): ParsedScript | undefined {
+  // Config and text inputs do not enter the script parser, so callers receive no parse result.
   if (!file.isScript) {
     return undefined;
   }
   parseCount += 1;
-  const parsed = typescriptSyntax.createSourceFile(file.displayPath, source, typescriptSyntax.ScriptTarget.Latest, true, scriptKindFor(file.displayPath)) as ParsedSourceFileWithDiagnostics;
-  return { sourceFile: parsed, diagnostics: parsed.parseDiagnostics.map((diagnostic) => parseErrorDiagnostic(file, parsed, diagnostic)) };
+  const parsedSourceFile = typescriptSyntax.createSourceFile(file.displayPath, source, typescriptSyntax.ScriptTarget.Latest, true, scriptKindFor(file.displayPath)) as ParsedSourceFileWithDiagnostics;
+  const firstParseError = parsedSourceFile.parseDiagnostics[0];
+  return {
+    sourceFile: parsedSourceFile,
+    // One report entry per malformed file keeps diagnostics proportional to affected files.
+    diagnostics: firstParseError
+      ? [summarizeParseErrors(file, parsedSourceFile, firstParseError, parsedSourceFile.parseDiagnostics.length)]
+      : [],
+  };
 }
 
 // Maps extensions onto the matching TypeScript parser mode so TSX/JSX syntax parses as syntax.
@@ -125,15 +133,31 @@ export function scriptKindFor(path: string): import("typescript").ScriptKind {
   return typescriptSyntax.ScriptKind.TS;
 }
 
-// Projects one recovered parser diagnostic into the run-diagnostic contract (type, message, path,
-// line). Line 1 is the stable fallback when the parser omits a start offset on malformed files.
-function parseErrorDiagnostic(file: ParsedScriptInput, sourceFile: TsSourceFile, diagnostic: TsDiagnostic): RunDiagnostic {
-  const line = diagnostic.start === undefined ? 1 : sourceFile.getLineAndCharacterOfPosition(diagnostic.start).line + 1;
+/**
+ * Builds the single parse-error entry reported for a source file.
+ * Multiple parser errors retain their count and first location so one malformed file cannot flood the report.
+ *
+ * @param file - discovered source metadata used for the reported path
+ * @param sourceFile - parser output used to translate the first error offset into a source line
+ * @param firstParseError - first parser error; a missing offset falls back to line 1
+ * @param parseErrorCount - total errors in this file; callers provide at least one
+ * @returns one diagnostic for the file; parser errors are reported here and do not throw
+ */
+function summarizeParseErrors(file: ParsedScriptInput, sourceFile: TsSourceFile, firstParseError: TsDiagnostic, parseErrorCount: number): RunDiagnostic {
+  // TypeScript can omit an offset for malformed input; line 1 remains a usable report anchor.
+  const firstErrorLine = firstParseError.start === undefined
+    ? 1
+    : sourceFile.getLineAndCharacterOfPosition(firstParseError.start).line + 1;
+  const firstErrorMessage = typescriptSyntax.flattenDiagnosticMessageText(firstParseError.messageText, " ");
+  // A single error keeps the established wording; larger sets expose their count without repeated entries.
+  const parseErrorMessage = parseErrorCount === 1
+    ? `TypeScript syntax error: ${firstErrorMessage}`
+    : `TypeScript syntax errors: ${parseErrorCount} diagnostics in this file; first: ${firstErrorMessage}`;
   return {
     diagnosticType: "parse-error",
-    message: `TypeScript syntax error: ${typescriptSyntax.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`,
+    message: parseErrorMessage,
     filePath: file.displayPath,
-    line,
+    line: firstErrorLine,
   };
 }
 

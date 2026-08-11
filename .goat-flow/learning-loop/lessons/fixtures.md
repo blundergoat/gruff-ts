@@ -48,12 +48,13 @@ itself dynamic.
 ## Lesson: threshold fixtures must exceed the threshold they are proving
 
 **Created:** 2026-05-13
+**Updated:** 2026-08-11
 
-**What happened:** The first high-entropy sensitive-data fixture initially used a 31-character secret-like value while the rule default required 32 characters, so the targeted test failed after implementation until the fixture value was corrected.
+**What happened:** The first high-entropy sensitive-data fixture initially used a 31-character secret-like value while the rule default required 32 characters, so the targeted test failed after implementation until the fixture value was corrected. A later SHA-512 non-candidate test split its value into two literals, but the second 38-character fragment independently crossed the entropy threshold. The focused test passed because the assembled integrity value was excluded; the repository self-scan still reported the fragment in the test source.
 
-**Evidence:** `src/cli.test.ts` + `(search: "const secret =")` - the first-slice fixture owns the candidate value for `sensitive-data.high-entropy-string`.
+**Evidence:** `src/cli.test.ts` + `(search: "const secret =")` - the first-slice fixture owns the candidate value for `sensitive-data.high-entropy-string`; `src/sensitive-data-rules.test.ts` (search: `SHA512_INTEGRITY_FIXTURE_VALUE`) - every stored fragment is now shorter than the entropy scanner's 24-character candidate floor while their joined value retains the integrity shape.
 
-**Prevention:** When adding threshold-backed rule fixtures, count or otherwise prove the fixture value crosses the threshold before treating a missing finding as an implementation bug.
+**Prevention:** When adding threshold-backed rule fixtures, count or otherwise prove the fixture value crosses the threshold before treating a missing finding as an implementation bug. When an exclusion fixture is assembled to stay quiet under self-scan, prove both boundaries: the joined value must exercise the exclusion and every source literal must stay below the scanner's candidate floor.
 
 ## Lesson: anchor repetitive fixture patches before trusting cumulative coverage
 

@@ -2,6 +2,11 @@
 
 ## v0.5.0 - 2026-08-04
 
+- **Lockfiles leave sensitive-data scans** - package-manager lockfiles no longer emit secret findings; source files still use error severity.
+- **Baseline impact** - NodeGoat entropy findings drop 1,292→0 and nodejs-goof 833→1; zod stays 47 and juice-shop 97.
+- **Parser errors collapse per file** - reports retain the first message plus raw count; angular drops 1,854 diagnostics to 476 affected files.
+- **Non-text scripts skip parsing** - invalid UTF-8 or NUL-bearing files produce a non-fatal `non-text-file` note instead of a parse error.
+- **BREAKING: External finding paths** - outside-root scans emit absolute paths; regenerate baselines made from a different working directory.
 - **React Router redirects are open-redirect sinks** - `react-router` and `react-router-dom` join next/navigation and remix; local helpers stay quiet.
 - **Bodyless signatures skip implementation rules** - multi-line interface and overload signatures no longer draw empty-function or unused-parameter.
 - **Parameter defaults keep names** - Comparison expressions and generic arrow defaults no longer swallow or invent parameters in naming findings.
@@ -24,7 +29,7 @@
 - **Release docs match the package** - eleven commands, 120 rules, Node 22+, runtime roles, schemas, npm surface; JSON keeps `file` + `filePath`.
 - **Tarball smoke gate** - packs in isolation, rejects dev files, installs fresh, runs the binary against a known finding. (`scripts/pack-smoke.sh`)
 - **Executable release drift guards** - 120 descriptors pinned; repeated scans byte-identical after stripping `run.generatedAt`.
-- **One abbreviation vocabulary** - `gruff-ts init` seeds the same acceptedAbbreviations list the runtime defaults use. (`src/init-config.ts`)
+- **BREAKING: Family abbreviations** - `cb`/`fn` now trigger `naming.short-variable`; add them to `allowlists.acceptedAbbreviations` to retain them.
 - **Actions write-permission coverage updated** - artifact, code-quality, discussions, and Pages named by scope; `id-token`/`attestations` stay quiet.
 - **Naming separates local edits from contract decisions** - APPLY vs CONFIGURE remediation; class/file mismatch needs a sole public class.
 - **Casing consistency follows owners** - variants compare within one module/function/interface owner; DTO vs UI fields no longer conflict.

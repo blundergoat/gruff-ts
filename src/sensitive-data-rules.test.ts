@@ -234,17 +234,35 @@ test("risk expansion respects sensitive-data config", () => {
   assert.equal(thresholdReport.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), false);
 });
 
-test("risk expansion ignores package integrity hashes", () => {
+// Each fragment stays below the 24-character candidate floor while the joined values retain complete
+// package integrity shapes. This is the stable fixture contract for repository self-scans.
+const SHA1_INTEGRITY_FIXTURE_VALUE = ["sha1-p3SS9LEdzHxEaj", "Sz4ochr9M8ZCo="].join("");
+const SHA512_INTEGRITY_FIXTURE_VALUE = [
+  "sha512-Zx7pQ9vLm3N8sT2",
+  "rY6wK1dF4gH5jC0bR2",
+  "mN5pQ8sR1tV4xY7zA0",
+  "bC3dE6fG9hI2jK5lM8",
+  "nO1pQ4rS7tU0vW3xY6",
+  "zA9bC2dE5fG8h==",
+].join("");
+
+test("package-manager lockfiles are excluded from sensitive-data scanning", () => {
+  const report = analyseProject({
+    "package-lock.json": JSON.stringify({ integrity: SHA1_INTEGRITY_FIXTURE_VALUE, token: HIGH_ENTROPY_FIXTURE_VALUE }),
+    "npm-shrinkwrap.json": JSON.stringify({ integrity: SHA512_INTEGRITY_FIXTURE_VALUE, token: HIGH_ENTROPY_FIXTURE_VALUE }),
+    "pnpm-lock.yaml": `integrity: ${SHA512_INTEGRITY_FIXTURE_VALUE}\ntoken: ${HIGH_ENTROPY_FIXTURE_VALUE}\n`,
+    "source.ts": `const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";\nvoid embeddedToken;\n`,
+  });
+  const sensitiveDataFindings = report.findings.filter((finding) => finding.pillar === "sensitive-data");
+
+  assert.deepEqual([...new Set(sensitiveDataFindings.map((finding) => finding.filePath))], ["source.ts"]);
+  assert.equal(sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string" && finding.severity === "error"), true);
+});
+
+test("integrity hashes outside lockfiles do not become high-entropy findings", () => {
   const report = analyseFixture(
-    `{
-  "packages": {
-    "": {
-      "integrity": "sha512-Zx7pQ9vLm3N8sT2rY6wK1dF4gH5jC0bR2mN5pQ8sR1tV4xY7zA0bC3dE6fG9hI2jK5lM8nO1pQ4rS7tU0vW3xY6zA9bC2dE5fG8h=="
-    }
-  }
-}
-`,
-    { fileName: "package-lock.json" },
+    JSON.stringify({ legacyIntegrity: SHA1_INTEGRITY_FIXTURE_VALUE, integrity: SHA512_INTEGRITY_FIXTURE_VALUE }),
+    { fileName: "registry-metadata.json" },
   );
   assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), false);
 });

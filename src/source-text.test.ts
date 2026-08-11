@@ -25,6 +25,19 @@ test("parse diagnostics report real TSX syntax errors", () => {
   assert.match(diagnostics[0]?.message ?? "", /JSX element 'span'/);
 });
 
+test("parse diagnostics collapse multiple parser errors into one file summary", () => {
+  const diagnostics = parseDiagnostics(scriptFile("golden.js"), `export class Demo {
+  …
+  static value = 1;
+  …
+}
+`);
+
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0]?.line, 2);
+  assert.match(diagnostics[0]?.message ?? "", /2 diagnostics in this file; first: Invalid character/);
+});
+
 test("parse diagnostics accept template literal interpolation", () => {
   const diagnostics = parseDiagnostics(scriptFile("src/template.ts"), `const names = ["a", "b"];
 const banner = \`**Skills:** \${names.map((name) => \`\\\`\${name}\\\`\`).join(", ")}\`;

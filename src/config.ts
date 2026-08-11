@@ -19,7 +19,7 @@ function defaultConfig(): Config {
   return {
     schemaVersion: "gruff-ts.config.v0.1",
     ignoredPaths: [],
-    acceptedAbbreviations: new Set(["age", "app", "cb", "db", "fn", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url"]),
+    acceptedAbbreviations: new Set(["age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url"]),
     secretPreviews: new Set(),
     bannedGenericNames: new Set(["process", "handle", "doit", "run", "execute", "manage"]),
     acceptedBooleanNames: new Set(["all", "apply", "check", "dev", "enabled", "force", "fresh", "harness", "json", "ok", "verbose", "yes"]),

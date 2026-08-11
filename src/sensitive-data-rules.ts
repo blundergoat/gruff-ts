@@ -551,10 +551,10 @@ function isHexDigest(candidateText: string): boolean {
   return /^[0-9a-f]+$/i.test(candidateText);
 }
 
-// SRI hashes from `package-lock.json` and `<script integrity=...>` attributes. Excluded so the
-// detector stays quiet on dependency manifests.
+// Registry metadata and HTML integrity attributes use public SRI digests, not credentials.
+// Excluding that standard shape keeps the detector focused on values that grant access.
 function isSubresourceIntegrityHash(candidateText: string): boolean {
-  return /^sha(?:256|384|512)-[A-Za-z0-9+/=]+$/.test(candidateText);
+  return /^sha(?:1|256|384|512)-[A-Za-z0-9+/=]+$/.test(candidateText);
 }
 
 // Three-class character requirement that filters out single-case identifiers and pure base64 hashes
