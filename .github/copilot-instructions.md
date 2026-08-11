@@ -2,7 +2,7 @@
 
 `gruff-ts` governs AI-generated code: wired in as a coding-agent hook, it forces an agent to produce changes a human who did not write them can sign off on - legible enough to verify, secure where the reviewer's eye slips, and tested for real behavior rather than low-signal ceremony. Mechanically it is a TypeScript project quality analyzer: a dependency-light Node.js/ESM CLI with a thin `src/cli.ts` bootstrap and focused runtime modules under `src/`. It scans TypeScript, JavaScript, CSS, and common config/text files (json, yaml, toml, env, ini, xml) and emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v1`) and report snapshots (`gruff.analysis.v2`) round-trip without churn.
 
-goat-flow version: 1.12.1
+goat-flow version: 1.15.1
 
 ## Workspace Boundary
 
@@ -49,7 +49,8 @@ Conventional commits (`type(scope): subject`); observed types: feat, refactor, c
 npm run check        # tsc --noEmit && npm test
 npm test             # node --import tsx --test src/**/*.test.ts
 npm run start-dev    # tsx src/cli.ts dashboard (binds 127.0.0.1:8767)
-./bin/gruff-ts analyse .   # local CLI invocation
+./bin/gruff-ts analyse . --fail-on=advisory   # the self-scan gate CI enforces
+bash scripts/preflight-checks.sh              # full local gate: version, npm audit, check, self-scan, shellcheck
 bash .goat-flow/hooks/deny-dangerous.sh --self-test   # verify shared deny hook
 ```
 
@@ -82,7 +83,7 @@ Declare `State: [MODE] | Goal: [one line] | Exit: [condition]`.
 | Review | Investigate first. Never blindly apply suggestions |
 
 ### VERIFY
-MUST run `npm run check` after touching `src/**/*.ts`. MUST run `shellcheck` on `.sh` changes (including `.goat-flow/hooks/*.sh`). Cross-reference grep after renames (`grep -r symbol src/`). Tick milestone `- [x]` immediately when working from a plan.
+MUST run `npm run check` after touching `src/**/*.ts`, then the CI self-scan `./bin/gruff-ts analyse . --fail-on=advisory` (or `bash scripts/preflight-checks.sh` for the full sweep). MUST run `shellcheck` on `.sh` changes (including `.goat-flow/hooks/*.sh`). Cross-reference grep after renames (`grep -r symbol src/`). Tick milestone `- [x]` immediately when working from a plan.
 
 **Hallucination red-flags:**
 1. **Checks passed.** Quote the literal `tsc`/`node --test` pass line from this session - not paraphrase, not cached output.
@@ -98,7 +99,7 @@ If VERIFY caught a failure or you corrected course, log behavioural mistakes in 
 
 ## Definition of Done
 
-- `npm run check` passes (paste the literal pass line).
+- `npm run check` AND the CI self-scan `./bin/gruff-ts analyse . --fail-on=advisory` pass (paste the literal pass lines). `bash scripts/preflight-checks.sh` covers both.
 - No broken cross-references; renames grepped.
 - No unapproved boundary changes (peer-agent files untouched).
 - Learning loop updated if VERIFY tripped.
@@ -122,10 +123,11 @@ Runtime code, hooks, and agent config are out of scope unless the user explicitl
 | Code map / glossary | `.goat-flow/code-map.md`, `.goat-flow/glossary.md` |
 | Learning loop | `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, `.goat-flow/learning-loop/decisions/` |
 | Skill reference (meta) | `.goat-flow/skill-docs/` |
-| Tool playbooks (CLI/MCP availability checks: browser-use, page-capture, skill-quality-testing) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |
+| Tool playbooks (CLI/MCP availability checks: browser-use, page-capture) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |
+| Skill-authoring methodology | `.goat-flow/skill-docs/skill-quality-testing/` - load the README, then the topical authoring guide |
 | Copilot skills/config | `.github/skills/`, `.github/hooks/hooks.json`, `.goat-flow/hooks/` (shared) |
-| Source | `src/cli.ts`, `src/*.ts`, `src/*.test.ts` |
-| Entry point / scripts | `bin/gruff-ts`, `scripts/check.sh`, `scripts/start-dev.sh` |
+| Source | `src/analyser.ts` (pipeline), `src/rules.ts` (catalogue), `src/cli-program.ts` (commands); `src/cli.ts` is a 24-line entrypoint |
+| Entry point / scripts | `bin/gruff-ts`, `scripts/preflight-checks.sh`, `scripts/check.sh`, `scripts/start-dev.sh` |
 | Fixtures | `fixtures/sample.ts` |
 | Build / config | `package.json`, `tsconfig.json` |
 | Commit policy | `docs/coding-standards/git-commit-message.md` |

@@ -1,6 +1,6 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-08-08
+last_reviewed: 2026-08-11
 ---
 
 # Schema + CLI surface footguns
@@ -12,19 +12,22 @@ last_reviewed: 2026-08-08
 
 `scoreReport` (`src/scoring.ts`, search: `function scoreReport`) owns both the public `gruff.analysis.v2` score object shape and the numeric semantics inside that shape. M06 added correlated-complexity clustering (`src/scoring.ts`, search: `function scoringPenaltyMap`) so `score.composite`, `score.pillars[].penalty`, and `score.topOffenders[].score` can change while the JSON field names stay unchanged. It is valid to keep `schemaVersion: "gruff.analysis.v2"` when only score values change, but comments/docs must not say "score semantics unchanged" or "composite score byte-stable" unless the math is actually untouched. When editing scoring or report wording, grep for `score semantics`, `field shape`, `byte-stable`, `gruff.analysis.v2`, and `schema unchanged`; then verify against `src/m06-rubric-refinements.test.ts` (search: `clusters correlated complexity penalties by symbol`) and `.goat-flow/learning-loop/decisions/ADR-009-cluster-correlated-complexity-score-penalties.md` (search: `score field names and detailed finding array stay unchanged`).
 
-## Footgun: docs, milestone plans, and these footguns still point at the pre-split `src/cli.ts`
+## Footgun: durable docs keep stale claims because no gate re-checks paths, anchors, or `Status` against live source
 
 **Status:** active | **Created:** 2026-05-30 | **Evidence:** ACTUAL_MEASURED
-**Decision changed:** After any module split, grep every `search:` anchor against current source in the same change; never trust a green `stats --check` as proof that anchors still resolve.
+**Decision changed:** After any module split or landed fix, grep every `search:` anchor against current source AND re-read every `Status:` in the touched bucket in the same change; never trust a green `stats --check` as proof that a durable claim still holds.
 **Trigger phase:** VERIFY
-**Incident count:** 2
-**Latest occurrence:** 2026-08-08
+**Incident count:** 3
+**Latest occurrence:** 2026-08-11
+**hallucination-risk:** high
 
 `src/cli.ts` was split into focused modules and is now a 24-line shell, but durable docs kept naming it as the home of symbols that moved. Verified relocations: `exitFor` -> `src/scoring.ts` (search: `function exitFor`); `analyse` -> `src/analyser.ts`; `buildProgram` / `normalizeOptions` -> `src/cli-program.ts`; `changedFiles` -> `src/findings-helpers.ts`; `writeBaseline` / `applyBaseline` -> `src/baseline.ts`; `makeFinding` -> `src/findings.ts`; `RULE_DESCRIPTORS` / `ruleDescriptors` -> `src/rules.ts`; `isDefaultIgnoredDir` -> `src/discovery.ts`; `startDashboard` -> `src/dashboard.ts`; `renderHtml` / `escapeHtml` -> `src/report-html.ts`; `analyseSensitiveData` -> `src/sensitive-data-rules.ts`.
 
 The reason this survived two audits is mechanical: no shipped gate resolves an anchor. `goat-flow stats --check` exited 0 with empty findings and warnings on 2026-08-08 while 13 citations across four footgun buckets still pointed at `src/cli.ts` for symbols living elsewhere, because the check confirms the cited *path* exists and `src/cli.ts` does exist. A `grep ... src/cli.ts` static gate has the same shape of blind spot: it matches nothing and silently passes. Only comparing `search:` anchors against live source finds this.
 
 Repointed on 2026-08-08 across `dashboard.md`, `schema-and-cli.md`, and `sensitive-data.md`. One survivor is correct and must stay: `src/cli.ts` (search: `buildProgram().parseAsync(argv)`) genuinely lives in the entrypoint. Treat any file path or schema version stated in a doc or plan as advisory until re-grepped.
+
+Third occurrence, 2026-08-11, in two shapes the 2026-08-08 sweep did not cover. First, the sweep repointed only learning-loop buckets, so the hot-path instruction files kept the same drift: the `CLAUDE.md` router table still listed `src/cli.ts` plus its test as the project's Source row. A doc sweep MUST include `CLAUDE.md`, `AGENTS.md`, and `.github/copilot-instructions.md`, which no bucket-scoped grep reaches. Second, the decay is not limited to paths: two entries in this bucket still read `Status: active` after their defects shipped fixes (`--format` argParser wiring, `shouldPromptForInit` stdout gating), and one cited `buildInitPromptContext`, a symbol that has never existed here. `stats --check` passed both because it validates cited paths and frontmatter dates, never the claim. The cheap detector is to re-run an entry's own stated reproduction: both stale entries collapsed in one command each.
 
 ## Footgun: routing migration-path reads through the strict schema validator silently clobbers user state
 
@@ -130,18 +133,6 @@ If a session starts with `M .gruff-ts.yaml` (or any other user-curated config) a
 
 `writeDefaultConfig` (search: `function writeDefaultConfig`) calls `existsSync(join(projectRoot, DEFAULT_CONFIG_FILE_NAME))` to decide whether to refuse a write. But config resolution treats four names as interchangeable defaults via `DEFAULT_CONFIG_FILES` (search: `const DEFAULT_CONFIG_FILES`): `.gruff-ts.yaml`, `.gruff.json`, `.gruff.yaml`, `.gruff.yml`, with `.gruff-ts.yaml` first (highest precedence). Reproduced in `/tmp/init-clobber-test/`: with only `.gruff.yaml` present, `gruff-ts init` printed `Wrote .gruff-ts.yaml` with no warning and the project's effective config silently switched to the registry-derived default. Use `defaultConfigPath(projectRoot)` (already exported from `src/config.ts`) when deciding to refuse, and treat `--force` as the explicit override. Same precedence list governs every other code path that "the default config" means - adding a fifth name without updating both `DEFAULT_CONFIG_FILES` and the init guard repeats this trap.
 
-## Footgun: `--format` argParser wiring is inconsistent across commands
-
-**Status:** active | **Created:** 2026-05-24 | **Evidence:** OBSERVED
-
-`src/cli-program.ts` defines `parseSummaryFormat` (search: `function parseSummaryFormat`) as a Commander argParser that throws `InvalidArgumentError` on anything other than `text` or `json`. `registerListRulesCommand` wires it in; `registerSummaryCommand` does not (search: `Output format: text or json.`). Instead, `summary` declares the option with no parser, forces `format: "text"` for the analyser run via `normalizeOptions`, and then coerces the *summary render* format with `rawOptions.format === "json" ? "json" : "text"` (search: `const summaryFormat`). Reproduced: `gruff-ts summary fixtures --format=garbage --no-config --no-baseline` prints normal text output with exit 0; `gruff-ts list-rules --format=garbage` errors with `argument 'garbage' is invalid`. Silent coercion breaks CI jobs that expect JSON - a typo like `--format=jsno` exits zero with text and downstream parsing fails on an unrelated line. When adding a `--format` flag to another command, decide explicitly: argParser everywhere, or silent fallback everywhere. The current half-and-half is the trap.
-
-## Footgun: `shouldPromptForInit` gates on stdin/stderr TTY but not stdout
-
-**Status:** active | **Created:** 2026-05-24 | **Evidence:** OBSERVED
-
-`shouldPromptForInit` (search: `function shouldPromptForInit`) checks `context.isStdinTty` and `context.isStderrTty`, but `InitPromptContext` (search: `interface InitPromptContext`) has no `isStdoutTty` field and `buildInitPromptContext` (search: `function buildInitPromptContext`) never reads `process.stdout.isTTY`. The pipeline-from-TTY-parent case stays unguarded: `gruff-ts analyse . --format=json | jq ...` invoked from an interactive shell still has both stdin and stderr as TTYs while stdout is a pipe, so the prompt fires on stderr and the pipeline blocks waiting for input the user is not expecting to provide. Add `isStdoutTty` to the context and require it true before prompting (or invert: require none of the three streams to be a pipe). Any future expansion of "is this run interactive?" must reason about all three streams, not just two.
-
 ## Footgun: the finding fingerprint embeds `line`, so a baseline keyed on it churns on pure code movement
 
 **Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED
@@ -150,6 +141,20 @@ If a session starts with `M .gruff-ts.yaml` (or any other user-curated config) a
 `makeFinding` (`src/findings.ts`, search: `const fingerprint = createHash`) hashes `[ruleId, filePath, line, symbol]` into the 16-hex fingerprint, and `applyBaseline` (`src/baseline.ts`, search: `function applyBaseline`) keys suppression on `(fingerprint, ruleId, filePath)`. Because `line` is inside the hash, inserting code above a baselined finding changes its line, changes its fingerprint, and resurfaces the finding as "new" even though the defect is unchanged - churn-by-design for any committed `gruff-baseline.json` that real code drifts under. The 0.4.0 M24 plan assumed the opposite ("a line-moved entry that still matches the same fingerprint"); that assumption is false against the current `makeFinding` and was the trigger for ADR-013, which moves the persistent baseline to PHPStan-style `(filePath, ruleId)` + `count` identity (no line). Keep the fingerprint for SARIF `partialFingerprints.gruffFingerprint` (search: `gruffFingerprint`) and report dedupe (`src/baseline.ts`, search: `function dedupeFindings`) - those WANT per-line identity - but never reintroduce `line` or `fingerprint` as the persistent-baseline match key. When editing baseline matching, grep `gruff.baseline.v`, `applyBaseline`, and `ADR-013`.
 
 ## Resolved Entries
+
+## Footgun: `--format` argParser wiring is inconsistent across commands
+
+**Status:** resolved | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
+**Evidence context:** original reproduction re-run against HEAD on 2026-08-11.
+
+`summary` once declared `--format` with no Commander argParser and coerced the render format with `rawOptions.format === "json" ? "json" : "text"`, so a typo like `--format=jsno` exited 0 with text output and broke downstream JSON consumers, while `list-rules --format=garbage` failed loudly. Resolved by taking the "argParser everywhere" branch: every `--format` option in `src/cli-program.ts` now passes an explicit parser (`parseAnalyseFormat`, `parseSummaryFormat`, `parseHookFormat`, `parseReportFormat`), including `registerSummaryCommand` (search: `function registerSummaryCommand`). The original reproduction, `gruff-ts summary fixtures --format=garbage --no-config --no-baseline`, now exits 1 with `argument 'garbage' is invalid. must be text or json`. The surviving `const summaryFormat` coercion (search: `const summaryFormat`) is only type narrowing now, because Commander rejects out-of-range values before the action body runs. When adding a `--format` flag to another command, keep the parser; do not reintroduce the silent-fallback half.
+
+## Footgun: `shouldPromptForInit` gates on stdin/stderr TTY but not stdout
+
+**Status:** resolved | **Created:** 2026-05-24 | **Evidence:** OBSERVED
+**Evidence context:** re-verified at both the predicate and the caller on 2026-08-11.
+
+The interactive-init prompt originally tested only stdin and stderr, so `gruff-ts analyse . --format=json | jq ...` launched from an interactive shell still saw two TTYs and blocked the pipeline on a prompt the user never asked for. Resolved: `shouldPromptForInit` (`src/init-config.ts`, search: `function shouldPromptForInit`) now refuses to prompt unless all three streams are TTYs, `InitPromptContext` (search: `interface InitPromptContext`) carries `isStdoutTty`, and the caller reads the real handle (`src/cli-program.ts`, search: `isStdoutTty: process.stdout.isTTY === true`). Per-gate coverage is pinned in `src/init-config.test.ts` (search: `shouldPromptForInit suppresses on every individual opt-out gate`). Any future widening of "is this run interactive?" must still reason about all three streams. Note for anchor hygiene: the earlier text of this entry cited a `buildInitPromptContext` helper that has never existed in this repo, which is why the entry outlived its fix.
 
 ## Footgun: diff-base replay reconstructs only materialized files
 

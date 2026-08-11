@@ -5,8 +5,11 @@
 - **React Router redirects are open-redirect sinks** - `react-router` and `react-router-dom` join next/navigation and remix; local helpers stay quiet.
 - **Bodyless signatures skip implementation rules** - multi-line interface and overload signatures no longer draw empty-function or unused-parameter.
 - **Parameter defaults keep names** - Comparison expressions and generic arrow defaults no longer swallow or invent parameters in naming findings.
-- **Claude agent surface synced to goat-flow 1.15.0** - deny and Stop hooks route through `run-with-bash.mjs`. (`.claude/settings.json`)
-- **Copilot agent surface lifted from goat-flow 1.12.1 to 1.15.0** - skill pack and deny hook match Claude's. (`.github/hooks/hooks.json`)
+- **Claude agent surface synced to goat-flow 1.15.1** - deny and Stop hooks route through `run-with-bash.mjs`. (`.claude/settings.json`)
+- **Copilot agent surface lifted from goat-flow 1.12.1 to 1.15.1** - skill pack and deny hook match Claude's. (`.github/hooks/hooks.json`)
+- **Codex runs the post-turn safety scan** - goat-flow 1.15.1 registers a Stop hook beside the Bash deny hook. (`.codex/hooks.json`)
+- **`.env.example` is editable again** - the blanket `Edit(**/.env*)` deny is gone; real env variants stay denied. (`.claude/settings.json`)
+- **Hook coverage evidence expires** - re-run `goat-flow hooks verify . --agent <id> --scenario <name>` or the audit reports coverage unverified.
 - **file-length raised to error at 1000 (family ratification)** - substantive counting unchanged; `--fail-on` consumers see exit-code changes.
 - **Composite counts clean pillars as 100** - the mean spans all 11 pillars; fixing a pillar's last finding cannot lower it (ADR-019).
 - **Docblock rules require the shared parse** - AST signatures only, so paren types cannot fake stale @param tags; bounded files skip the pack.

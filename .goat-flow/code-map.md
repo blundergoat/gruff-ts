@@ -104,7 +104,7 @@ gruff-ts/
 ├── .codex/                        = Codex config and permission profile (deny hook shared in .goat-flow/hooks/)
 │
 ├── .goat-flow/                    = shared learning loop + skill packs (see .goat-flow/README files inline)
-│   ├── config.yaml                = goat-flow version (1.15.0) and skill install policy
+│   ├── config.yaml                = goat-flow version (1.15.1) and skill install policy
 │   ├── architecture.md            = system overview (this companion file)
 │   ├── code-map.md                = this file
 │   ├── glossary.md                = domain term definitions

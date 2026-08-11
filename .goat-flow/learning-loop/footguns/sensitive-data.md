@@ -1,6 +1,6 @@
 ---
 category: sensitive-data
-last_reviewed: 2026-08-08
+last_reviewed: 2026-08-11
 hallucination-risk: high
 ---
 

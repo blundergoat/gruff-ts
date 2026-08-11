@@ -1,8 +1,8 @@
 # CLAUDE.md
 
-`gruff-ts` - TypeScript project quality analyser. Modular Node.js/ESM CLI: a thin `src/cli.ts` shell (~20 lines) delegates to `src/analyser.ts` and ~30 sibling rule modules under `src/` (`blocks.ts`, `line-rules.ts`, `project-rules.ts`, `class-rules.ts`, `dead-code-rules.ts`, `safety-rules.ts`, `naming-pushers.ts`, `comment-rules.ts`, `doc-rules.ts`, `report-renderers.ts`, etc.). It scans TypeScript, JavaScript, CSS, and common config (json, yaml, toml, env) files and emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v1`) and report snapshots (`gruff.analysis.v2`) round-trip without churn.
+`gruff-ts` - TypeScript project quality analyser. Modular Node.js/ESM CLI: a thin `src/cli.ts` shell (24 lines) delegates to `src/analyser.ts` and ~30 sibling rule modules under `src/` (`blocks.ts`, `line-rules.ts`, `project-rules.ts`, `class-rules.ts`, `dead-code-rules.ts`, `safety-rules.ts`, `naming-pushers.ts`, `comment-rules.ts`, `doc-rules.ts`, `report-renderers.ts`, etc.). It scans TypeScript, JavaScript, CSS, and common config (json, yaml, toml, env) files and emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v1`) and report snapshots (`gruff.analysis.v2`) round-trip without churn.
 
-goat-flow version: 1.15.0
+goat-flow version: 1.15.1
 
 ## Workspace Boundary
 
@@ -49,7 +49,8 @@ Conventional commits (`type(scope): subject`); observed types: feat, refactor, c
 npm run check        # tsc --noEmit && npm test
 npm test             # node --import tsx --test src/**/*.test.ts
 npm run start-dev    # tsx src/cli.ts dashboard (binds 127.0.0.1:8767)
-./bin/gruff-ts analyse .   # local CLI invocation
+./bin/gruff-ts analyse . --fail-on=advisory   # the self-scan gate CI enforces
+bash scripts/preflight-checks.sh              # full local gate: version, npm audit, check, self-scan, shellcheck
 ```
 
 ## Execution Loop: READ → SCOPE → ACT → VERIFY
@@ -81,7 +82,7 @@ Declare `State: [MODE] | Goal: [one line] | Exit: [condition]`.
 | Review | Investigate first. Never blindly apply suggestions |
 
 ### VERIFY
-MUST run `npm run check` after touching `src/**/*.ts`. MUST run `shellcheck` on `.sh` changes. Cross-reference grep after renames (`grep -r symbol src/`). Tick milestone `- [x]` immediately when working from a plan.
+MUST run `npm run check` after touching `src/**/*.ts`, then the CI self-scan `./bin/gruff-ts analyse . --fail-on=advisory` (or `bash scripts/preflight-checks.sh` for the full sweep). MUST run `shellcheck` on `.sh` changes. Cross-reference grep after renames (`grep -r symbol src/`). Tick milestone `- [x]` immediately when working from a plan.
 
 **Hallucination red-flags:**
 1. **Checks passed.** Quote the literal `tsc`/`node --test` pass line from this session - not paraphrase, not cached output.
@@ -97,7 +98,7 @@ If VERIFY caught a failure or you corrected course, log behavioural mistakes in 
 
 ## Definition of Done
 
-- `npm run check` passes (paste the literal pass line).
+- `npm run check` AND the CI self-scan `./bin/gruff-ts analyse . --fail-on=advisory` pass (paste the literal pass lines). `bash scripts/preflight-checks.sh` covers both.
 - No broken cross-references; renames grepped.
 - No unapproved boundary changes.
 - Learning loop updated if VERIFY tripped.
@@ -120,11 +121,11 @@ Runtime code, hooks, and agent config are out of scope unless the user explicitl
 | Architecture | `.goat-flow/architecture.md` |
 | Code map / glossary | `.goat-flow/code-map.md`, `.goat-flow/glossary.md` |
 | Learning loop | `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, `.goat-flow/learning-loop/decisions/` |
-| Skill reference (meta) | `.goat-flow/skill-docs/` |
-| Tool playbooks (CLI/MCP availability checks: browser-use, page-capture, skill-quality-testing) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |
+| Skill reference (meta) | `.goat-flow/skill-docs/`, incl. `.goat-flow/skill-docs/skill-quality-testing/` for authoring goat-* skills |
+| Tool playbooks (CLI/MCP availability checks: browser-use, page-capture) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |
 | Claude skills/config | `.claude/skills/`, `.claude/settings.json`, `.goat-flow/hooks/` (shared deny-dangerous + gruff-code-quality) |
-| Source | `src/cli.ts`, `src/cli.test.ts` |
-| Entry point / scripts | `bin/gruff-ts`, `scripts/check.sh`, `scripts/start-dev.sh` |
+| Source | `src/analyser.ts` (pipeline), `src/rules.ts` (catalogue), `src/cli-program.ts` (commands); `src/cli.ts` is a 24-line entrypoint |
+| Entry point / scripts | `bin/gruff-ts`, `scripts/preflight-checks.sh`, `scripts/check.sh`, `scripts/start-dev.sh` |
 | Fixtures | `fixtures/sample.ts` |
 | Build / config | `package.json`, `tsconfig.json` |
 | Workspace notes | `.goat-flow/logs/sessions/`, `.goat-flow/plans/`, `.goat-flow/scratchpad/` |
