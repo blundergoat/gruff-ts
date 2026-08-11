@@ -126,8 +126,8 @@ last_reviewed: 2026-08-11
 
 **Parse-summary recurrence, 2026-08-11:** Renaming the per-file parser diagnostic helper to
 `summarizeParseErrors` made its purpose clearer, but its first comment revision described only the
-returned report entry. The self-scan still emitted `docs.missing-error-behavior-doc` until the return
-contract stated that parser errors are reported and do not throw.
+returned report entry. “Reported” and “do not throw” still missed the rule's canonical vocabulary;
+the self-scan cleared when the return contract used `reports`: “reports parser errors without throwing.”
 
 ## Lesson: verify extracted modules for circular self-scan edges
 

@@ -141,7 +141,7 @@ export function scriptKindFor(path: string): import("typescript").ScriptKind {
  * @param sourceFile - parser output used to translate the first error offset into a source line
  * @param firstParseError - first parser error; a missing offset falls back to line 1
  * @param parseErrorCount - total errors in this file; callers provide at least one
- * @returns one diagnostic for the file; parser errors are reported here and do not throw
+ * @returns one diagnostic for the file; reports parser errors without throwing
  */
 function summarizeParseErrors(file: ParsedScriptInput, sourceFile: TsSourceFile, firstParseError: TsDiagnostic, parseErrorCount: number): RunDiagnostic {
   // TypeScript can omit an offset for malformed input; line 1 remains a usable report anchor.
