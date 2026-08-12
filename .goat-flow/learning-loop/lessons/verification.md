@@ -1,9 +1,19 @@
 ---
 category: verification
-last_reviewed: 2026-08-11
+last_reviewed: 2026-08-13
 ---
 
 # Verification lessons
+
+## Lesson: a relaxed guard is only a regression when the equivalent direct command was blocked
+
+**Created:** 2026-08-13
+
+**What happened:** Reviewing the 0.5.0 hook changes, I reported that the new local-producer exemption in `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` (search: `interpreter_treats_stdin_as_data`) allowed arbitrary destructive inline interpreter code, and I graded it a blocking security regression. The evidence looked decisive: `printf x | node -e 'require("fs").rmSync("dist",{recursive:true})'` was BLOCKED at the base commit and ALLOWED at head, reproduced at runtime on both. An automated reviewer had independently flagged the same exemption, which reinforced the reading.
+
+**Evidence:** the base-versus-head comparison was real but incomplete. Running the same body without the pipe showed `node -e 'require("fs").rmSync("dist",{recursive:true})'` ALLOWED at base as well as head. The base only blocked the piped spelling through a blanket pipe-to-interpreter rule; it never inspected the body. Since anything reachable via `printf x | node -e 'BODY'` was already reachable via `node -e 'BODY'`, the change granted no new capability. The residual exposure is the project's documented accepted scope limit, stated in the suite itself (search: `ACCEPTED scope: python3 shell escape in body is not inspected`).
+
+**Rule going forward:** a base-to-head behaviour delta is necessary but not sufficient for a regression claim. Before grading one, run the nearest always-permitted equivalent of the same capability. If that equivalent was already allowed, the guard being removed was incidental rather than load-bearing, and the finding is an accepted-scope pointer, not a blocker. Applies equally to bot findings: the same check refuted the automated report. The sibling finding in that review survived this test precisely because `cat .env` is blocked, so `find .env -exec cat {} \;` had no permitted equivalent.
 
 ## Lesson: converting the dogfood config to a profile breaks rule-enumeration contract tests
 

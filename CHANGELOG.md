@@ -20,6 +20,11 @@
 - **Codex runs the post-turn safety scan** - goat-flow 1.15.1 registers a Stop hook beside the Bash deny hook. (`.codex/hooks.json`)
 - **`.env.example` is editable again** - the blanket `Edit(**/.env*)` deny is gone; real env variants stay denied. (`.claude/settings.json`)
 - **Hook coverage evidence expires** - re-run `goat-flow hooks verify . --agent <id> --scenario <name>` or the audit reports coverage unverified.
+- **Nested find actions no longer mask the outer command** - `find .env -exec cat {} \;` reached the secret guard as `cat {}` and was allowed; the shared segment context is restored after each nested walk. (`.goat-flow/hooks/deny-dangerous/patterns-shell.sh`)
+- **Guardrail hooks deliberately diverge from the goat-flow 1.15.1 template** - the two fixes above are not in the upstream template yet, so `audit --agent <id>` reports `agent-guardrails` as differing and `install`/`hooks sync` would revert them. Re-apply after any goat-flow upgrade.
+- **`secrets` counts as a path, not a word** - `npm run secrets` and `ls secrets` work again, while `secrets/api.key`, `./secrets`, and `~/secrets` stay blocked. (`.goat-flow/hooks/deny-dangerous/patterns-paths.sh`)
+- **CI reads the guardrails it ships** - a hooks job runs shellcheck plus the deny-dangerous and post-turn-safety self-tests, which the Node matrix and the self-scan both skip. (`.github/workflows/ci.yml`)
+- **Preflight lints and exercises the hooks** - shellcheck covers `.goat-flow/hooks`, and a safety hook policy step runs both hook self-tests locally. (`scripts/preflight-checks.sh`)
 - **file-length raised to error at 1000 (family ratification)** - only the threshold and severity moved; `--fail-on` consumers see exit-code changes.
 - **Composite counts clean pillars as 100** - the mean spans all 11 pillars; fixing a pillar's last finding cannot lower it (ADR-019).
 - **Docblock rules require the shared parse** - AST signatures only, so paren types cannot fake stale @param tags; bounded files skip the pack.

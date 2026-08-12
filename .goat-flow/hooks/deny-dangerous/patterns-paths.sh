@@ -96,9 +96,16 @@ is_secret_path_touch() {
   fi
   if [[ "$env_scan" =~ (^|[[:space:]]|=|:|/|[\'\"])\.env[a-zA-Z0-9_.-]*([[:space:]]|$|[\'\"]) ]]; then return 0; fi
   if [[ "$env_scan" =~ (\>|\>\>|\>\|)[[:space:]]*[\'\"]?\.env[a-zA-Z0-9_.-]*([[:space:]]|$|[\'\"]) ]]; then return 0; fi
-  local secret_directory_re='(^|[[:space:]]|=|:|/|['\''"])(\.ssh|\.aws|\.config/gcloud|\.gnupg|secrets)(/|[[:space:]]|$|['\''"])'
+  local secret_directory_re='(^|[[:space:]]|=|:|/|['\''"])(\.ssh|\.aws|\.config/gcloud|\.gnupg)(/|[[:space:]]|$|['\''"])'
   # Exact directory operands matter because users usually copy a whole key store without a slash.
+  # These names all start with a dot, so a bare operand is still unambiguously the credential store.
   if [[ "$c" =~ $secret_directory_re ]]; then return 0; fi
+  # `secrets` is an ordinary word as well as a directory, so it only counts when written
+  # as a path. Matching it bare blocked routine commands like `npm run secrets` with no
+  # override, and a hook users switch off protects nobody.
+  local secrets_store_re='(^|[[:space:]]|=|:|/|['\''"])secrets/'
+  local secrets_nested_re='/secrets(/|[[:space:]]|$|['\''"])'
+  if [[ "$c" =~ $secrets_store_re ]] || [[ "$c" =~ $secrets_nested_re ]]; then return 0; fi
   local secret_config_file_re='(^|[[:space:]]|=|:|/|['\''"])(\.docker/config\.json|\.kube/config)([[:space:]]|$|['\''"])'
   # Exact client config files contain credentials even though their parent directories are ordinary.
   if [[ "$c" =~ $secret_config_file_re ]]; then return 0; fi

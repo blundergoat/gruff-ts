@@ -91,6 +91,19 @@ find_has_destructive_action() {
   local i=1
   local word=""
   local exec_cmd=""
+  # check_segment parses the segment context once and the secret and repository
+  # modules read those globals rather than their own argument. Recursing below
+  # would leave them describing the -exec payload, so the outer command would
+  # skip both modules: `find .env -exec cat {} \;` once read a secret file.
+  # Save here and restore after every nested walk, as prepare_segment_context
+  # already does around its own `bash -c` recursion.
+  local saved_cmd_trimmed="$CMD_TRIMMED"
+  local saved_cmd_normalized="$CMD_NORMALIZED"
+  local saved_cmd_verb="$CMD_VERB"
+  local saved_cmd_unquoted="$CMD_UNQUOTED"
+  local saved_cmd_lower="$CMD_LOWER"
+  local saved_has_redirect="$HAS_REDIRECT"
+  local saved_has_pipe="$HAS_PIPE"
   # Walk find arguments until every executable action has been inspected.
   while [[ "$i" -lt "${#words[@]}" ]]; do
     word="${words[$i]}"
@@ -112,7 +125,17 @@ find_has_destructive_action() {
       exec_cmd="${exec_cmd% }"
       # A non-empty exec payload receives every policy module before find can run it.
       if [[ -n "$exec_cmd" ]]; then
-        check_command_segments "$exec_cmd" $((depth + 1)) || return $?
+        check_command_segments "$exec_cmd" $((depth + 1))
+        local nested_status=$?
+        # Hand the outer find command back to the modules that still have to judge it.
+        CMD_TRIMMED="$saved_cmd_trimmed"
+        CMD_NORMALIZED="$saved_cmd_normalized"
+        CMD_VERB="$saved_cmd_verb"
+        CMD_UNQUOTED="$saved_cmd_unquoted"
+        CMD_LOWER="$saved_cmd_lower"
+        HAS_REDIRECT="$saved_has_redirect"
+        HAS_PIPE="$saved_has_pipe"
+        [[ "$nested_status" -eq 0 ]] || return "$nested_status"
       fi
       # Recursive deletion remains a destructive find action even with a scoped target.
       if rm_has_recursive "$exec_cmd"; then

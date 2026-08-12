@@ -42,3 +42,28 @@ jobs:
 
       - name: gruff-ts analyse
         run: ./bin/gruff-ts analyse . --fail-on=advisory
+
+  hooks:
+    name: Safety hook policy
+    runs-on: ubuntu-latest
+
+    # The analyse step above skips .goat-flow, and npm run check only globs src,
+    # so nothing else in CI reads the guardrails that decide what an agent may run.
+    # The policy is the same on every Node release, so check it once.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Lint hook scripts
+        run: shellcheck .goat-flow/hooks/*.sh .goat-flow/hooks/deny-dangerous/*.sh
+
+      - name: Deny-dangerous policy self-test
+        run: bash .goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh
+
+      - name: Post-turn safety self-test
+        run: bash .goat-flow/hooks/post-turn-safety.sh --self-test
