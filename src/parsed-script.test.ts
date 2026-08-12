@@ -4,7 +4,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { functionBlocks } from "./blocks.ts";
+import type { SourceFile } from "./discovery.ts";
 import { parsedScriptParseCount, parseScript } from "./parsed-script.ts";
+import { analyseSecurityFlow } from "./security-flow-rules.ts";
 import { maskNonCode } from "./source-text.ts";
 import { analyseFixture, analyseProject } from "./test-fixtures.ts";
 
@@ -157,4 +159,24 @@ test("one analysed script parses exactly once per run", () => {
     "oversized.ts": "\n".repeat(20_001),
   }, { changedRanges: "3-3" });
   assert.equal(parsedScriptParseCount() - beforeSymbolScope, 1);
+});
+
+// Fixture purpose: the one-parse-per-run assertion above is only as wide as the parse counter. The
+// security-flow scanner owns the pipeline's second parser entry point, and it used to call
+// createSourceFile directly, so an analysis-path caller that stopped threading the run's parse
+// would have re-parsed every script while the count still read one per file.
+// Stable contract: every parser entry point in the pipeline increments the shared counter.
+test("the security-flow fallback parse is counted by the shared boundary", () => {
+  const fileStub = { displayPath: "flow.ts", absolutePath: "/flow.ts", isScript: true } as SourceFile;
+  const source = "function read(req) {\n  const target = req.query.path;\n  fs.readFile(target);\n}\n";
+
+  const before = parsedScriptParseCount();
+  analyseSecurityFlow(fileStub, source, []);
+  assert.equal(parsedScriptParseCount() - before, 1, "the fallback parse must be visible to the counter");
+
+  // Supplying the run's shared parse must add no parse of its own.
+  const shared = parseScript(fileStub, source);
+  const beforeShared = parsedScriptParseCount();
+  analyseSecurityFlow(fileStub, source, [], shared?.sourceFile);
+  assert.equal(parsedScriptParseCount() - beforeShared, 0, "a threaded shared parse must not reparse");
 });

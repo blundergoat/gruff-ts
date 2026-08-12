@@ -1,6 +1,6 @@
 ---
 category: workflow
-last_reviewed: 2026-08-09
+last_reviewed: 2026-08-12
 ---
 
 # Workflow lessons
@@ -135,3 +135,13 @@ Standing rule: every commit-message-or-diff-description response begins with rea
 **Evidence:** the 0.1 task files M38-css-metrics-and-todo-density-calibration.md line 3 (`Status: proposed`) and ISSUE-related-project-study.md line 3 (`Status: human-verification-pending` at the time), both since archived under `.goat-flow/plans/_archive/0.1/`. CLAUDE.md's Router Table explicitly lists `.goat-flow/plans/` under workspace notes, and the SCOPE rule "MUST read relevant files before changes" - release-readiness is a project-state question, so the project's own task folder is relevant by definition.
 
 **Prevention:** For any "is X ready / are we done / can we ship" question, before invoking build/test/lint/self-scan signals, list and grep status lines in `.goat-flow/plans/<active-milestone>/`. Concretely: `grep -m1 -iE "^(status|state):" .goat-flow/plans/<version>/*.md` and surface anything that is not `complete`, `superseded`, `shipped`, or explicitly deferred. Green CI is a necessary signal, not a sufficient one - the task ledger encodes intent that CI cannot see (proposed scope, human-pending signoffs, deliberately deferred work). Treat unaudited task folders as a red-flag the same way you'd treat untested code paths.
+
+## Lesson: a plan's own invalidation tests are load-bearing, and both fired on first execution
+
+**Created:** 2026-08-12
+
+**What happened:** The `0.5.0-go-live` plan was written on 2026-08-11 at `7bec5932` and executed on 2026-08-12 at `d2eb6fe6`, three commits later. Each of its milestones carried a written invalidation test. Running them before starting produced two failures and one expired premise. M31 asserted six substantially-changed analyser files; its own test (`git diff --numstat`, over 100 changed lines) selected **ten** - `src/analyser.ts`, `src/blocks.ts`, `src/test-block-rules.ts`, and `src/findings-helpers.ts` were missing. M32 asserted 61 PR comments with 24 against `src/`; a fresh fetch returned **66 and 27**, including two new codex P1s. M33's first item had been fixed upstream by `9eb2531` thirteen hours after the plan was written.
+
+**Evidence:** the four files M31 missed were not marginal. `src/analyser.ts` owns the rule-group pass gates, and it had since drawn both a P1 and a P2 automated-review comment. The next file below the 100-line cut was `src/hook-contract.ts` at 99, so the boundary was clean rather than arbitrary. Of the three defects this milestone confirmed and fixed, two lived in files the original six-file table did not cover.
+
+**Prevention:** run every invalidation test a plan writes for itself as the first act of execution, before reading any source, and rescope in the plan file rather than in your head. A plan built from a point-in-time snapshot decays against a branch that is still moving, and the decay is silent: the milestone text reads equally plausible whether or not its numbers still hold. Treat "planned at SHA X, executing at SHA Y" as a prompt to re-derive every count, file set, and external-state claim.

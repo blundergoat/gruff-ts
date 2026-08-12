@@ -141,11 +141,13 @@ function processExecArgumentSource(rawSource: string, callStart: number, firstAr
 }
 
 // Looks backward from the call for a same-scope `const command = "fixed"` shape so reviewers can
-// distinguish fixed command vectors from parameter-driven command names.
+// distinguish fixed command vectors from parameter-driven command names. The initializer must be
+// wholly one quoted literal: `"echo " + input` also contains a quoted fragment, and grading that as
+// fixed would drop a shell-enabled, input-derived command from warning to advisory.
 function hasConstLiteralCommandDeclaration(rawSource: string, callStart: number, identifier: string): boolean {
   const declaration = rawSource.slice(0, callStart).match(new RegExp(`\\bconst\\s+${escapeRegex(identifier)}\\s*=\\s*([^;]+);\\s*$`, "s"));
-  const initializer = declaration?.[1] ?? "";
-  return /["'][^"']+["']/.test(initializer) && !/[`$()[\]{}]/.test(initializer);
+  const initializer = (declaration?.[1] ?? "").trim();
+  return /^(?:"[^"\\]*"|'[^'\\]*')$/.test(initializer);
 }
 
 // Reports default shell semantics: exec/execSync imply a shell unless an explicit option says false,

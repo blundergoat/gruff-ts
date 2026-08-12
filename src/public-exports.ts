@@ -24,11 +24,14 @@ export type PublicExportKind = "class" | "interface" | "type" | "enum" | "functi
  * One deterministic public declaration from the user's module. Resolved local re-exports retain
  * the local kind, name, and declaration line; unresolved external/default values use the export
  * statement line so the inventory remains complete without a semantic program.
+ * `exportedName` is present only when an alias renames the declaration on its way out, because the
+ * name a consumer imports is the one a naming rule about the public surface has to judge.
  */
 export interface PublicExportDeclaration {
   kind: PublicExportKind;
   name: string;
   line: number;
+  exportedName?: string;
 }
 
 /*
@@ -116,9 +119,13 @@ function collectNamedOrExternalExport(sourceFile: TsSourceFile, statement: TsExp
   for (const exportSpecifier of exportClause.elements) {
     // An alias resolves through its local source name; an unaliased export uses its public name.
     const localName = (exportSpecifier.propertyName ?? exportSpecifier.name).text;
+    const publicName = exportSpecifier.name.text;
     const localDeclaration = statement.moduleSpecifier ? undefined : localDeclarations.get(localName);
     // External or unresolved names remain visible as re-exports so they still prevent sole-class advice.
-    addPublicDeclaration(publicDeclarations, localDeclaration ?? { kind: "re-export", name: exportSpecifier.name.text, line: exportLine });
+    addPublicDeclaration(publicDeclarations, localDeclaration
+      // A rename keeps the local kind and anchor but records the name consumers actually import.
+      ? { ...localDeclaration, ...(publicName === localDeclaration.name ? {} : { exportedName: publicName }) }
+      : { kind: "re-export", name: publicName, line: exportLine });
   }
 }
 

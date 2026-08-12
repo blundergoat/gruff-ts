@@ -1,7 +1,7 @@
 // Focused process-exec false-positive coverage for safe wrappers and fixed test harnesses.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyseProject } from "./test-fixtures.ts";
+import { analyseFixture, analyseProject } from "./test-fixtures.ts";
 
 test("process exec exempts safe wrappers and fixed test harness invocations", () => {
   const report = analyseProject({
@@ -99,4 +99,45 @@ function run(input: string): void {
   assert.equal(processExecFinding?.metadata.callName, "spawn");
   assert.equal(processExecFinding?.metadata.argumentSource, "local-builder");
   assert.equal(processExecFinding?.metadata.shellEnabled, false);
+});
+
+// Fixture purpose: a concatenated command is dynamic no matter that one half is a literal. The
+// declaration scan accepted any initializer containing a quoted fragment, so `"echo " + input`
+// graded as a fixed vector and a shell-enabled command-injection candidate dropped to advisory.
+// Stable contract: only a wholly literal initializer counts as a fixed command vector.
+test("a concatenated const command stays dynamic and keeps warning severity", () => {
+  // This fixture covers the shell-enabled concatenated command that used to grade as fixed.
+  const concatenatedReport = analyseFixture(`// File overview: concatenated shell command.
+import { exec } from "node:child_process";
+
+/**
+ * Runs a shell command built from caller input.
+ *
+ * @param input - untrusted fragment appended to the command
+ */
+export function runEcho(input: string): void {
+  const command = "echo " + input;
+  exec(command);
+}
+`);
+  const concatenated = concatenatedReport.findings.find((entry) => entry.ruleId === "security.process-exec");
+  assert.notEqual(concatenated, undefined);
+  assert.notEqual(concatenated?.metadata.argumentSource, "local-const");
+  assert.equal(concatenated?.severity, "warning");
+
+  // A genuinely fixed literal command must still grade as a fixed vector.
+  const fixedReport = analyseFixture(`// File overview: fixed shell command.
+import { exec } from "node:child_process";
+
+/**
+ * Runs one fixed shell command.
+ */
+export function runStatus(): void {
+  const command = "git status";
+  exec(command);
+}
+`);
+  const fixed = fixedReport.findings.find((entry) => entry.ruleId === "security.process-exec");
+  assert.equal(fixed?.metadata.argumentSource, "local-const");
+  assert.equal(fixed?.severity, "advisory");
 });

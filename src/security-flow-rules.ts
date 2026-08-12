@@ -2,7 +2,7 @@
 // report only when an external-input token is visibly inside a known risky sink expression.
 import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { scriptKindFor } from "./parsed-script.ts";
+import { parseScript } from "./parsed-script.ts";
 import type { Finding } from "./types.ts";
 import { createRequire } from "node:module";
 
@@ -19,9 +19,12 @@ type TsNamedImportBindings = import("typescript").NamedImportBindings;
 
 // Parse a discovered script to a syntax-only AST; null on non-parseable input so
 // callers use the same-line scan. Parser exceptions recover to null as fallback.
+// Routed through the shared parse boundary rather than calling `createSourceFile` here, so this
+// fallback is counted: an analysis-path caller that stopped threading the run's parse would double
+// the measured parse count instead of re-parsing every script undetected.
 function getSourceFile(file: SourceFile, source: string): TsSourceFile | null {
   try {
-    return typescriptSyntax.createSourceFile(file.displayPath, source, typescriptSyntax.ScriptTarget.Latest, true, scriptKindFor(file.displayPath));
+    return parseScript(file, source)?.sourceFile ?? null;
   } catch {
     return null;
   }

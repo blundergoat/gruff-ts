@@ -1,6 +1,6 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-08-08
+last_reviewed: 2026-08-12
 ---
 
 # Rule scanner footguns
@@ -258,3 +258,29 @@ The context-doc rules previously tested only the comment record adjacent to a de
 **Evidence context:** runtime reproduction plus regression test.
 
 The analyser's pass gates (`src/analyser.ts`, search: `runRuleGroupPass`) skip a whole scanner pass when no rule in the gate's id list is enabled. The contract is implicit: the list must contain EVERY rule id the pass can emit, including rules pushed by helpers the pass calls (`analyseCommentQualityRules` calls `pushFixturePurposeFindings`, which emits `docs.fixture-purpose-missing`). `COMMENT_QUALITY_RULE_IDS` omitted that id, so a config disabling the nine listed docs rules silently disabled the still-enabled fixture-purpose rule: zero findings, no diagnostic, catalogue still advertising the rule. Resolved 2026-06-11 by adding the id to the gate list and pinning `src/docs-comment-rules.test.ts` (search: `fixture purpose rule still runs`). When adding a rule to a shared pass, extend the matching gate list in `src/analyser.ts` and prefer an enabled-solo or disabled-siblings regression test for any rule that rides a group gate. Over-inclusive gates only waste cycles; under-inclusive gates silently kill enabled rules - bias toward over-inclusion.
+
+## Footgun: declaration anchors keyed to the name line hide decorators and split modifiers
+
+**Status:** resolved | **Created:** 2026-08-12 | **Evidence:** ACTUAL_MEASURED
+**Resolved:** 2026-08-12
+
+`CallableMatchPoint.lineIndex` deliberately anchors on the callable's NAME line, because that is where the legacy regex scanner fired and the finding anchor must not move. `src/blocks.ts` then used that same index to ask whether the declaration had a leading comment, which is a different question: the name line is not the start of the declaration when modifiers or decorators precede it.
+
+Two shapes broke. A decorated method (`// comment` then `@Post(...)` then `@HttpCode(200)` then the name) looked undocumented because the line above the name is a decorator. A split-line signature (`export async function` then `publicApi()`) looked undocumented because the line above the name is the modifier run. Measured on the `nest` corpus: 15 false `docs.missing-internal-function-doc` findings, every one a controller method carrying real documentation above its decorators.
+
+Resolved 2026-08-12 by adding `declarationLineIndex` (`src/parsed-script.ts`, search: `declarationLineIndex`), derived from the visibility node's `getStart`, which skips leading documentation but includes modifiers and decorators. It is clamped with `Math.min` against `lineIndex` so the anchor can only move earlier, never later, and `startLine` is untouched so no fingerprint churns. Tests: `src/false-positive-fixes.test.ts`, search: `FP-#49`.
+
+When a rule asks a question about the DECLARATION (does it have docs, is it exported, what modifiers does it carry), use the declaration anchor. Reserve the name-line index for the reported finding location, where the legacy contract requires it.
+
+## Footgun: "contains a literal" is not "is a literal" when grading command vectors
+
+**Status:** resolved | **Created:** 2026-08-12 | **Evidence:** ACTUAL_MEASURED
+**Resolved:** 2026-08-12
+
+`hasConstLiteralCommandDeclaration` (`src/process-exec-metadata.ts`) classified a `const` command as a fixed vector when its initializer matched `/["'][^"']+["']/` and contained none of `` `$()[]{} ``. `const command = "echo " + input` satisfies both: it contains a quoted fragment, and `+` was not in the rejection set. ADR-018 grades shell-enabled DYNAMIC commands as warning and fixed vectors as advisory, so a genuine command-injection candidate emitted at advisory and a `--fail-on=warning` gate passed it.
+
+**Evidence:** a probe with `const command = "echo " + input; exec(command)` produced `security.process-exec` at advisory with `argumentSource: "local-const"`, `shellEnabled: true`.
+
+Resolved 2026-08-12 by requiring the whole trimmed initializer to be one quoted literal (search: `hasConstLiteralCommandDeclaration`). Tests: `src/process-exec-rules.test.ts`, search: `a concatenated const command stays dynamic`.
+
+Generalise this: any predicate that downgrades severity on "evidence of safety" must match the WHOLE expression, never a substring of it. A blacklist of dangerous characters will always miss an operator someone did not think of; an allowlist of the exact safe shape will not.

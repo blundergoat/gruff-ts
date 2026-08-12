@@ -751,6 +751,11 @@ function isLocallyBoundParameterOwner(block: FunctionBlock): boolean {
   if (block.isTest) {
     return true;
   }
+  // An exported binding is the cross-file API this exemption exists to keep covered, so
+  // `export const transform = (x) => ...` is judged like `export function transform(x)`.
+  if (block.isExported) {
+    return false;
+  }
   const declarationOffset = block.declarationLine - block.startLine;
   const declarationLine = block.codeBody.split(/\r?\n/)[declarationOffset] ?? "";
   const bindingName = declarationLine.match(/\b(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/)?.[1];

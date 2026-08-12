@@ -468,6 +468,8 @@ export function functionBlocks(source: string, codeSource = source, parsed?: Par
 // Empty optional fields mean the caller deliberately supplied no shared parse.
 interface BlockMatchPoint {
   lineIndex: number;
+  // AST-known first line of the declaration; regex points leave it absent and keep the name line.
+  declarationLineIndex?: number;
   // AST-known end line; regex points keep the legacy brace walk instead.
   endLineIndex?: number;
   name: string;
@@ -488,6 +490,7 @@ function matchPointsFor(scan: FunctionBlockScan, parsed: ParsedScript | undefine
   if (parsed) {
     return callableMatchPoints(parsed).map((point) => ({
       lineIndex: point.lineIndex,
+      declarationLineIndex: point.declarationLineIndex,
       endLineIndex: point.endLineIndex,
       name: point.name,
       params: point.params,
@@ -612,7 +615,9 @@ function functionBlockFromPoint(scan: FunctionBlockScan, point: BlockMatchPoint,
     isExported: (point.isDirectlyExported ?? /^\s*export\b/.test(scan.codeLines[index] ?? ""))
       || point.isModuleScoped !== false && scan.reExportedNames.has(point.name),
     isTest: isTestInvocationLine(scan.codeLines[index] ?? ""),
-    hasLeadingComment: hasLeadingCommentBeforeLines(scan.lines, index + 1),
+    // Look upward from the declaration, not the name: a split-line `export async function` header
+    // would otherwise hide the declaration's own docblock behind its modifier line.
+    hasLeadingComment: hasLeadingCommentBeforeLines(scan.lines, (point.declarationLineIndex ?? index) + 1),
     declarationLine: index + 1,
   };
 }

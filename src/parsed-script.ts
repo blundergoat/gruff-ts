@@ -170,6 +170,11 @@ function summarizeParseErrors(file: ParsedScriptInput, sourceFile: TsSourceFile,
  */
 export interface CallableMatchPoint extends IdentifierOwner {
   lineIndex: number;
+  // Zero-based first line of the declaration itself, modifiers included but leading documentation
+  // excluded. Equals `lineIndex` for every single-line declaration; it moves earlier only when a
+  // declaration splits its modifiers onto their own line, where the line above the name is
+  // `export async function` rather than the docblock a reader can plainly see.
+  declarationLineIndex: number;
   // Zero-based line of the callable's final token. The block parser prefers this over its legacy
   // brace walk: a `{}` inside a multi-line parameter default would otherwise close the walk early
   // and slice an empty body.
@@ -462,9 +467,14 @@ function matchPointFor(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoi
 function declarationPoint(sourceFile: TsSourceFile, position: number, callableNode: TsNode, name: string, parameters: readonly TsNode[]): CallableMatchPoint {
   const visibilityNode = callableVisibilityNode(callableNode);
   const isDirectlyExported = hasNodeModifier(visibilityNode, typescriptSyntax.SyntaxKind.ExportKeyword);
+  const lineIndex = sourceFile.getLineAndCharacterOfPosition(position).line;
+  // `getStart` skips leading documentation, so this lands on the first modifier or keyword. Clamped
+  // to `lineIndex` so the declaration anchor can only ever move earlier than the reported name line.
+  const declarationStartLine = sourceFile.getLineAndCharacterOfPosition(visibilityNode.getStart(sourceFile)).line;
   return {
     ...callableIdentifierOwner(sourceFile, callableNode),
-    lineIndex: sourceFile.getLineAndCharacterOfPosition(position).line,
+    lineIndex,
+    declarationLineIndex: Math.min(declarationStartLine, lineIndex),
     endLineIndex: sourceFile.getLineAndCharacterOfPosition(callableNode.getEnd()).line,
     name,
     params: parametersText(sourceFile, parameters),
@@ -535,9 +545,12 @@ function testCallbackPoint(sourceFile: TsSourceFile, node: import("typescript").
   if (!typescriptSyntax.isArrowFunction(callback) && !typescriptSyntax.isFunctionExpression(callback)) {
     return undefined;
   }
+  const lineIndex = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line;
   return {
     ...callableIdentifierOwner(sourceFile, callback),
-    lineIndex: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line,
+    lineIndex,
+    // A test callback is anchored at its call expression, which is already the declaration line.
+    declarationLineIndex: lineIndex,
     endLineIndex: sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line,
     name: title.text,
     params: parametersText(sourceFile, callback.parameters),

@@ -2,10 +2,13 @@
 
 ## v0.5.0 - 2026-08-04
 
+- **Concatenated commands stay dynamic** - `const command = "echo " + input` keeps process-exec at warning when the shell is enabled.
+- **Comments above decorators count as documentation** - a comment over `@Post(...)` documents the method, as does one above a split-line signature.
+- **Aliased sole-class exports match their file** - `export { Foo as Bar }` in `bar.ts` no longer draws a class/file mismatch.
 - **Lockfiles leave sensitive-data scans** - package-manager lockfiles no longer emit secret findings; source files still use error severity.
 - **Baseline impact** - NodeGoat entropy findings drop 1,292→0 and nodejs-goof 833→1; zod stays 47 and juice-shop 97.
 - **Known scoring limitation** - composite scores remain volume-sensitive: vulnerable nodejs-goof scores 80.4 (B), NodeGoat 52.2 and clean zod 18.8.
-- **Short variables skip local callable parameters** - findings fall 879→856 on zod, 5,405→5,269 on angular and 492→483 on typeorm.
+- **Short variables skip local callable parameters** - module-local arrows and test callbacks are exempt; exported bindings stay covered.
 - **Parser errors collapse per file** - reports retain the first message plus raw count; angular drops 1,854 diagnostics to 476 affected files.
 - **Non-text scripts skip parsing** - invalid UTF-8 or NUL-bearing files produce a non-fatal `non-text-file` note instead of a parse error.
 - **BREAKING: External finding paths** - outside-root scans emit absolute paths; regenerate baselines made from a different working directory.
@@ -17,7 +20,7 @@
 - **Codex runs the post-turn safety scan** - goat-flow 1.15.1 registers a Stop hook beside the Bash deny hook. (`.codex/hooks.json`)
 - **`.env.example` is editable again** - the blanket `Edit(**/.env*)` deny is gone; real env variants stay denied. (`.claude/settings.json`)
 - **Hook coverage evidence expires** - re-run `goat-flow hooks verify . --agent <id> --scenario <name>` or the audit reports coverage unverified.
-- **file-length raised to error at 1000 (family ratification)** - substantive counting unchanged; `--fail-on` consumers see exit-code changes.
+- **file-length raised to error at 1000 (family ratification)** - only the threshold and severity moved; `--fail-on` consumers see exit-code changes.
 - **Composite counts clean pillars as 100** - the mean spans all 11 pillars; fixing a pillar's last finding cannot lower it (ADR-019).
 - **Docblock rules require the shared parse** - AST signatures only, so paren types cannot fake stale @param tags; bounded files skip the pack.
 - **Labeled data-driven loops opt out of loop-in-test** - per-case messages opt out; destructured bodies now analysed. (`src/test-block-rules.ts`)

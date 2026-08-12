@@ -461,8 +461,11 @@ function pushClassFileMismatchFinding(file: SourceFile, publicDeclarations: Publ
   if (config.acceptedClassFilePairs.has(acceptedPair)) {
     return;
   }
-  // A normalized name match already lets a report user locate the class from the file name.
-  if (normalizedIdentifier(declaration.name) === normalizedIdentifier(fileName)) {
+  // A normalized name match already lets a report user locate the class from the file name. An
+  // alias counts too: `export { Foo as Bar }` in `bar.ts` already advertises the matching name, so
+  // telling the reader to rename would undo an alignment they have made.
+  const publicNames = declaration.exportedName === undefined ? [declaration.name] : [declaration.name, declaration.exportedName];
+  if (publicNames.some((publicName) => normalizedIdentifier(publicName) === normalizedIdentifier(fileName))) {
     return;
   }
   findings.push(
