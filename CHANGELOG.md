@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.0 - 2026-08-04
+## v0.5.0 - 2026-08-13
 
 - **Concatenated commands stay dynamic** - `const command = "echo " + input` keeps process-exec at warning when the shell is enabled.
 - **Comments above decorators count as documentation** - a comment over `@Post(...)` documents the method, as does one above a split-line signature.
