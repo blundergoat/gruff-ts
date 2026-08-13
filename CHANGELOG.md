@@ -7,7 +7,7 @@
 - **Aliased sole-class exports match their file** - `export { Foo as Bar }` in `bar.ts` no longer draws a class/file mismatch.
 - **Lockfiles drop only the entropy detector** - integrity digests stop reporting; a credential in a `resolved` URL still reports at error severity.
 - **Baseline impact** - NodeGoat entropy findings drop 1,292→0 and nodejs-goof 833→1; zod stays 47 and juice-shop 97.
-- **Known scoring limitation** - composite scores remain volume-sensitive: vulnerable nodejs-goof scores 80.4 (B), NodeGoat 52.2 and clean zod 18.8.
+- **Known scoring limitation** - composite scores remain volume-sensitive: vulnerable nodejs-goof scores 77.9 (C), NodeGoat 52.2 and clean zod 18.8.
 - **Short variables skip local callable parameters** - module-local arrows and test callbacks are exempt; exported bindings stay covered.
 - **Parser errors collapse per file** - reports retain the first message plus raw count; angular drops 1,854 diagnostics to 476 affected files.
 - **Non-text scripts skip parsing** - invalid UTF-8 or NUL-bearing files produce a non-fatal `non-text-file` note instead of a parse error.

@@ -400,6 +400,17 @@ const SENSITIVE_DATA_RULE_IDS = ruleIdsForPillar("sensitive-data");
 const SIZE_RULE_IDS = ruleIdsForPillar("size");
 const TEST_QUALITY_RULE_IDS = ruleIdsForPillar("test-quality");
 
+/*
+ * Sensitive-data rules that infer a secret from shape rather than value, so generated
+ * dependency metadata defeats them: every integrity digest looks high-entropy, and a package
+ * named `gtoken` turns `gtoken: 8.0.0(supports-color@11.0.0)` into a credential assignment.
+ * Suppressed for lockfiles only. Every value-shaped detector still runs there.
+ */
+const LOCKFILE_SUPPRESSED_SENSITIVE_RULE_IDS = new Set([
+  "sensitive-data.high-entropy-string",
+  "sensitive-data.hardcoded-env-value",
+]);
+
 const GITHUB_ACTIONS_RULE_IDS = [
   "security.github-actions-broad-permissions",
   "security.github-actions-pull-request-target",
@@ -564,13 +575,13 @@ function analyseTextRules(file: SourceFile, source: string, comments: CommentRec
   if (isAnyRuleEnabled(config, SENSITIVE_DATA_RULE_IDS)) {
     const sensitiveFindings: Finding[] = [];
     analyseSensitiveData(file, source, config, sensitiveFindings);
-    // A lockfile's published integrity digests read as high-entropy noise, so that one
-    // detector is dropped for generated lockfiles. The rest of the pillar still runs: a
-    // credential embedded in a `resolved` URL is the documented lockfile leak vector, and
-    // silencing the whole pillar would hide it from reports and the CI gate alike.
+    // Generated dependency metadata defeats the two shape-based detectors: integrity digests
+    // look high-entropy, and a package whose name contains `token`/`key`/`secret` makes its
+    // version spec look like a credential assignment. The value-shaped detectors still run,
+    // because a credential in a `resolved` URL is the real leak vector for this file family.
     const isLockfile = isGeneratedLockfile(file.displayPath);
     for (const sensitiveFinding of sensitiveFindings) {
-      if (!isLockfile || sensitiveFinding.ruleId !== "sensitive-data.high-entropy-string") {
+      if (!isLockfile || !LOCKFILE_SUPPRESSED_SENSITIVE_RULE_IDS.has(sensitiveFinding.ruleId)) {
         findings.push(sensitiveFinding);
       }
     }

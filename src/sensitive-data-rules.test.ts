@@ -266,11 +266,23 @@ test("package-manager lockfiles drop entropy digests but keep credential finding
     sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string" && finding.filePath === "source.ts" && finding.severity === "error"),
     true,
   );
-  // A credential-shaped assignment is not digest noise, so the lockfile still reports it.
+  // Key-name inference also misreads lockfiles: a package named `gtoken` makes its version
+  // spec look like a credential assignment, so that detector is suppressed here too.
   assert.equal(
-    sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value" && finding.filePath === "pnpm-lock.yaml"),
-    true,
+    sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value" && lockfilePaths.includes(finding.filePath)),
+    false,
   );
+});
+
+// Regression from the 0.5.0 corpus scan: `gtoken: 8.0.0(supports-color@11.0.0)` in angular's
+// pnpm-lock.yaml reported an error-severity hardcoded credential because the package name
+// contains `token`. Contract: a generated dependency line must never read as a credential.
+test("a lockfile dependency whose name contains token is not a credential", () => {
+  const report = analyseProject({
+    "pnpm-lock.yaml": "      gtoken: 8.0.0(supports-color@11.0.0)\n      gtoken: 7.1.0(encoding@0.1.13)(supports-color@11.0.0)\n",
+  });
+
+  assert.deepEqual(report.findings.filter((finding) => finding.pillar === "sensitive-data"), []);
 });
 
 // Contract: a lockfile may drop only the digest detector. A credential pasted into a resolved
