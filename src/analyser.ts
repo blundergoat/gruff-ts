@@ -561,9 +561,19 @@ function analyseTextRules(file: SourceFile, source: string, comments: CommentRec
     }
   }
 
-  // Published lockfile digests are not credentials; authored text keeps the full sensitive-data scan.
-  if (isAnyRuleEnabled(config, SENSITIVE_DATA_RULE_IDS) && !isGeneratedLockfile(file.displayPath)) {
-    analyseSensitiveData(file, source, config, findings);
+  if (isAnyRuleEnabled(config, SENSITIVE_DATA_RULE_IDS)) {
+    const sensitiveFindings: Finding[] = [];
+    analyseSensitiveData(file, source, config, sensitiveFindings);
+    // A lockfile's published integrity digests read as high-entropy noise, so that one
+    // detector is dropped for generated lockfiles. The rest of the pillar still runs: a
+    // credential embedded in a `resolved` URL is the documented lockfile leak vector, and
+    // silencing the whole pillar would hide it from reports and the CI gate alike.
+    const isLockfile = isGeneratedLockfile(file.displayPath);
+    for (const sensitiveFinding of sensitiveFindings) {
+      if (!isLockfile || sensitiveFinding.ruleId !== "sensitive-data.high-entropy-string") {
+        findings.push(sensitiveFinding);
+      }
+    }
   }
   if (isAnyRuleEnabled(config, GITHUB_ACTIONS_RULE_IDS)) {
     analyseGithubActionsRules(file, source, findings);
@@ -638,7 +648,8 @@ function lineCount(source: string): number {
 }
 
 // Package-manager lockfiles contain generated dependency metadata, including public integrity digests.
-// Discovery retains them; size and sensitive-data rules use this predicate to avoid generated-content findings.
+// Discovery retains them; `size.file-length` skips them outright and the sensitive-data pass uses this
+// predicate to drop only `sensitive-data.high-entropy-string`, so lockfile credentials still report.
 function isGeneratedLockfile(filePath: string): boolean {
   const fileName = basename(filePath);
   return fileName === "package-lock.json" || fileName === "npm-shrinkwrap.json" || fileName === "yarn.lock" || fileName === "pnpm-lock.yaml" || fileName === "bun.lockb";

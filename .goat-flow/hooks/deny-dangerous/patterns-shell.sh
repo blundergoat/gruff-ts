@@ -537,6 +537,25 @@ check_command_chain_policy() {
   fi
 }
 
+# Drop the `&` that Bash's `|&` operator leaves at the head of the following stage.
+# Splitting a pipeline on `|` turns `nc host 80 |& bash` into the stage `& bash`, which no
+# consumer check below recognizes as a shell, so the remote bytes reached it unread.
+strip_pipeline_stage_stderr_markers() {
+  local -n __goat_pipeline_stages__="$1"
+  local stage_index
+  local stage
+
+  for ((stage_index = 0; stage_index < ${#__goat_pipeline_stages__[@]}; stage_index++)); do
+    stage="${__goat_pipeline_stages__[$stage_index]}"
+    stage="${stage#"${stage%%[![:space:]]*}"}"
+    # Only the stderr-merging operator can leave a stage starting with `&`; a background
+    # `&` trails its own command, and `&&` never survives top-level segment splitting.
+    if [[ "$stage" == "&"* ]]; then
+      __goat_pipeline_stages__["$stage_index"]="${stage#&}"
+    fi
+  done
+}
+
 # Inspect every pipeline stage so downloaded code cannot reach an executable consumer.
 # Local data may still feed visible inline code or an explicit checked-in script file.
 check_pipeline_shell_consumers() {
@@ -548,11 +567,16 @@ check_pipeline_shell_consumers() {
   local saw_downloader_pipe_source=0
   local all_upstream_pipe_sources_local=1
   IFS='|' read -ra pipeline_parts <<< "$pipe_scan"
+  strip_pipeline_stage_stderr_markers pipeline_parts
   # Each downstream stage inherits whether any earlier stage downloaded its input.
   for ((pipe_index = 1; pipe_index < ${#pipeline_parts[@]}; pipe_index++)); do
     previous_part="${pipeline_parts[$((pipe_index - 1))]}"
     current_part="${pipeline_parts[$pipe_index]}"
-    # Once a downloader appears, later filters cannot erase the remote origin.
+    # Once a downloader is a stage's own command, later filters cannot erase the remote
+    # origin. A download hidden inside a substitution, as in printf "%s" "$(curl url)",
+    # is not seen here: first-word classification reads that stage as a local producer.
+    # That shape stays reachable as node -e "$(curl url)" with no pipe at all, so it is a
+    # scope limit of command-shaped classification rather than a hole this stage can close.
     if is_downloader_pipe_source "$previous_part"; then
       saw_downloader_pipe_source=1
     fi
@@ -600,6 +624,7 @@ check_pipeline_xargs_destructive_payloads() {
   local -a pipeline_parts
   local pipe_index
   IFS='|' read -ra pipeline_parts <<< "$pipe_scan"
+  strip_pipeline_stage_stderr_markers pipeline_parts
   for ((pipe_index = 0; pipe_index < ${#pipeline_parts[@]}; pipe_index++)); do
     check_xargs_destructive_payload "${pipeline_parts[$pipe_index]}" || return $?
   done

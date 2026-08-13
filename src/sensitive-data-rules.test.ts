@@ -246,7 +246,7 @@ const SHA512_INTEGRITY_FIXTURE_VALUE = [
   "zA9bC2dE5fG8h==",
 ].join("");
 
-test("package-manager lockfiles are excluded from sensitive-data scanning", () => {
+test("package-manager lockfiles drop entropy digests but keep credential findings", () => {
   const report = analyseProject({
     "package-lock.json": JSON.stringify({ integrity: SHA1_INTEGRITY_FIXTURE_VALUE, token: HIGH_ENTROPY_FIXTURE_VALUE }),
     "npm-shrinkwrap.json": JSON.stringify({ integrity: SHA512_INTEGRITY_FIXTURE_VALUE, token: HIGH_ENTROPY_FIXTURE_VALUE }),
@@ -254,9 +254,40 @@ test("package-manager lockfiles are excluded from sensitive-data scanning", () =
     "source.ts": `const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";\nvoid embeddedToken;\n`,
   });
   const sensitiveDataFindings = report.findings.filter((finding) => finding.pillar === "sensitive-data");
+  const lockfilePaths = ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml"];
 
-  assert.deepEqual([...new Set(sensitiveDataFindings.map((finding) => finding.filePath))], ["source.ts"]);
-  assert.equal(sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string" && finding.severity === "error"), true);
+  // A lockfile's integrity digests are published metadata, so no lockfile may raise entropy.
+  assert.equal(
+    sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string" && lockfilePaths.includes(finding.filePath)),
+    false,
+  );
+  // The identical value in authored source stays an error-severity finding.
+  assert.equal(
+    sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string" && finding.filePath === "source.ts" && finding.severity === "error"),
+    true,
+  );
+  // A credential-shaped assignment is not digest noise, so the lockfile still reports it.
+  assert.equal(
+    sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value" && finding.filePath === "pnpm-lock.yaml"),
+    true,
+  );
+});
+
+// Contract: a lockfile may drop only the digest detector. A credential pasted into a resolved
+// URL is the documented leak vector for this file family, so it must still reach the report and
+// the CI gate; silencing the whole pillar hid it from both.
+test("a credential inside a lockfile is still reported", () => {
+  const resolvedUrl = `  "resolved": "${DATABASE_URL_FIXTURE_VALUE}/pkg.tgz"\n`;
+  const report = analyseProject({
+    "package-lock.json": `{\n${resolvedUrl}}\n`,
+    "pnpm-lock.yaml": `resolved: ${DATABASE_URL_FIXTURE_VALUE}/pkg.tgz\n`,
+  });
+  const credentialFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.database-url-password");
+
+  assert.deepEqual(
+    [...new Set(credentialFindings.map((finding) => finding.filePath))].sort(),
+    ["package-lock.json", "pnpm-lock.yaml"],
+  );
 });
 
 test("integrity hashes outside lockfiles do not become high-entropy findings", () => {
