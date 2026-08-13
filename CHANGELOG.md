@@ -46,7 +46,7 @@
 - **Actions write-permission coverage updated** - artifact, code-quality, discussions, and Pages named by scope; `id-token`/`attestations` stay quiet.
 - **Naming separates local edits from contract decisions** - APPLY vs CONFIGURE remediation; class/file mismatch needs a sole public class.
 - **Casing consistency follows owners** - variants compare within one module/function/interface owner; DTO vs UI fields no longer conflict.
-- **Complexity follows control flow** - syntax nodes drive cyclomatic/cognitive; punctuation adds nothing; identities and thresholds unchanged.
+- **Complexity follows control flow** - syntax nodes drive cyclomatic/cognitive; findings gain a per-kind `breakdown`; identities and thresholds unchanged.
 - **Markdown reports escape repo text** - fenced labels/paths and escaped messages block injection into PR comments. (`src/report-renderers.ts`)
 - **Filtered scans cannot record history** - `--history-file` with diff/since/ranges exits 2 before any write; full scans still append.
 - **Short secret previews fully masked** - under 24 chars shows mask+length; longer keeps first/last 4; hook identities churn once (ADR-017).
