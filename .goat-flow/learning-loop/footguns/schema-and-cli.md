@@ -1,6 +1,6 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-08-11
+last_reviewed: 2026-08-14
 ---
 
 # Schema + CLI surface footguns
@@ -83,9 +83,16 @@ Three string literals are part of the public output contract: `gruff.analysis.v2
 
 ## Footgun: rule count and scanned-file-types are mirrored across many docs with no consistency test
 
-**Status:** active | **Created:** 2026-05-30 | **Evidence:** OBSERVED
+**Status:** active | **Created:** 2026-05-30 | **Evidence:** ACTUAL_MEASURED
+**Evidence context:** scanned-types half re-measured against HEAD on 2026-08-14; the rule-count half is still ungated.
 
 Removing `size.stylesheet-length` (the CSS-scan removal) required hand-editing the rule count in `package.json` description, `README.md` (catalogue row + the "contains N rules" line + the `size` pillar table row), `docs/rules.md` (header count + `## Pillar Counts` + the per-rule bullet), `.goat-flow/architecture.md`, plus the scanned-types sentence in `README.md` and `.goat-flow/glossary.md`. No test asserts any of these agree with `RULE_DESCRIPTORS`; `scripts/bump-version.sh --check` only checks the version string, not the rule count. Adding/removing a rule, or changing the discovery extension allowlist, silently drifts these unless you grep every surface - before claiming a rule add/remove is done, `grep -rn "<N> rules\|<N-1> rules" package.json README.md docs/ .goat-flow/` and reconcile. Separately: the discovery extension allowlist (`src/discovery.ts`, search: `function pushSourceFile`) is a DISTINCT surface from the catalogue - a file-type-gated rule goes dead when its type leaves the allowlist (`size.stylesheet-length` only ever fired on `.css` via `isCssPath`, so dropping `css` from discovery made the rule dead and it was deleted with it).
+
+Second occurrence, measured 2026-08-14, and the reason this entry now names a gate. The 0.3.0 sweep listed above covers user-facing docs only. It never reached `CLAUDE.md`, `AGENTS.md`, or `.github/copilot-instructions.md`, so all three went on telling every agent "It scans TypeScript, JavaScript, CSS, and common config files" from 0.3.0 through 0.5.0 - two minor releases of a hot-path claim that was false the day it was written. Measured: a temp project holding only `style.css` reports `paths.analysedFiles: 0`, and an explicit `analyse style.css` operand also reports `0` without listing the file under `skipped` or `missingPaths`, so the failure is silent in both discovery entry paths. The agent-facing cost is worse than a stale number: an agent that believes the claim wires gruff into a stylesheet pipeline and reads the resulting zero findings as a clean bill.
+
+Gate added: `src/release-truth.test.ts` (search: `discovery allowlist matches the documented scan surface`) writes one fixture per accepted extension and one per rejected extension, then asserts both counts. Widening or narrowing `pushSourceFile` now fails `npm run check`, and the assertion message carries the prose sweep list (search: `SCAN_SURFACE_SWEEP_NOTE`). Verified load-bearing by re-adding `"css"` to the allowlist and watching the test fail, then reverting. When a doc sweep touches scanned types or rule counts, the sweep MUST include the three agent instruction files; no bucket-scoped or `docs/`-scoped grep reaches them.
+
+Rule-count half gated 2026-08-14 by `documented rule counts match the live catalogue` in the same file (search: `RULE_COUNT_SWEEP_NOTE`). It reads every `N rules` claim in `package.json`, `README.md`, `docs/rules.md`, and `.goat-flow/architecture.md`, plus both per-pillar tables (`docs/rules.md` `## Pillar Counts` and README's duplicate table), and compares all of them to `ruleDescriptors()`. Verified load-bearing against a wrong total and a wrong pillar row, each reverted. Two traps this exposed and closed: `README.md` publishes THREE separate count claims including its own pillar table, and the rule-removal pattern in `patterns/rule-catalogue.md` had listed only `docs/rules.md`, so its "grep the rule id first" hedge could never reach `README.md` or `package.json` - neither names a rule id. This entry stays active because the general class - a durable doc asserting a fact with no gate re-checking it - is only gated for these two specific claims; the same pattern file was simultaneously found asserting `gruff.analysis.v1` years after the v2 bump.
 
 ## Footgun: discovery has two entry paths - the walk and the explicit-file short-circuit
 

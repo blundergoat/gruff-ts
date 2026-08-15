@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.0 - 2026-08-13
+## v0.5.0 - 2026-08-16
 
 - **Concatenated commands stay dynamic** - `const command = "echo " + input` keeps process-exec at warning when the shell is enabled.
 - **Comments above decorators count as documentation** - a comment over `@Post(...)` documents the method, as does one above a split-line signature.
@@ -14,7 +14,7 @@
 - **BREAKING: External finding paths** - outside-root scans emit absolute paths; regenerate baselines made from a different working directory.
 - **React Router redirects are open-redirect sinks** - `react-router` and `react-router-dom` join next/navigation and remix; local helpers stay quiet.
 - **Bodyless signatures skip implementation rules** - multi-line interface and overload signatures no longer draw empty-function or unused-parameter.
-- **Parameter defaults keep names** - Comparison expressions and generic arrow defaults no longer swallow or invent parameters in naming findings.
+- **Parameter defaults keep names** - comparison expressions and generic arrow defaults no longer swallow or invent parameters in naming findings.
 - **Claude agent surface synced to goat-flow 1.15.1** - deny and Stop hooks route through `run-with-bash.mjs`. (`.claude/settings.json`)
 - **Copilot agent surface lifted from goat-flow 1.12.1 to 1.15.1** - skill pack and deny hook match Claude's. (`.github/hooks/hooks.json`)
 - **Codex runs the post-turn safety scan** - goat-flow 1.15.1 registers a Stop hook beside the Bash deny hook. (`.codex/hooks.json`)
@@ -28,6 +28,12 @@
 - **`secrets` counts as a path, not a word** - `npm run secrets` and `ls secrets` work again, while `secrets/api.key`, `./secrets`, and `~/secrets` stay blocked. (`.goat-flow/hooks/deny-dangerous/patterns-paths.sh`)
 - **CI reads the guardrails it ships** - a hooks job runs shellcheck plus the deny-dangerous and post-turn-safety self-tests, which the Node matrix and the self-scan both skip. (`.github/workflows/ci.yml`)
 - **Preflight lints and exercises the hooks** - shellcheck covers `.goat-flow/hooks`, and a safety hook policy step runs both hook self-tests locally. (`scripts/preflight-checks.sh`)
+- **Agent instruction files stop claiming CSS is scanned** - `.css` left discovery in 0.3.0; each file now names the live allowlist and cites `src/discovery.ts`:`pushSourceFile`. (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`)
+- **Documented counts and the scan surface are tested** - the discovery allowlist and every published rule total are compared against the live source, so a change fails `npm run check` naming the prose surfaces to sweep. (`src/release-truth.test.ts`)
+- **Code map points at the real hook location** - the deny hook is registered from `.goat-flow/hooks/`, not a `.claude/hooks/` directory that never existed; the `docs/`, `.github/`, and `scripts/` subtrees now list every file. (`.goat-flow/code-map.md`)
+- **Architecture doc lists all nine scripts** - and describes `preflight-checks.sh` as the six-check gate it is, including the hook policy self-tests. (`.goat-flow/architecture.md`)
+- **Rule-removal checklist names every count surface** - it covered `docs/rules.md` alone, leaving the `README.md` claims, the `package.json` description, and `.goat-flow/architecture.md` unswept. (`.goat-flow/learning-loop/patterns/rule-catalogue.md`)
+- **Glossary lists the real scan surface** - it now includes the `.npmrc`/`.pypirc`/`.envrc`/`.netrc` credential files the sensitive-data pillar reads. (`.goat-flow/glossary.md`)
 - **file-length raised to error at 1000 (family ratification)** - only the threshold and severity moved; `--fail-on` consumers see exit-code changes.
 - **Composite counts clean pillars as 100** - the mean spans all 11 pillars; fixing a pillar's last finding cannot lower it (ADR-019).
 - **Docblock rules require the shared parse** - AST signatures only, so paren types cannot fake stale @param tags; bounded files skip the pack.
@@ -43,18 +49,19 @@
 - **Tarball smoke gate** - packs in isolation, rejects dev files, installs fresh, runs the binary against a known finding. (`scripts/pack-smoke.sh`)
 - **Executable release drift guards** - 120 descriptors pinned; repeated scans byte-identical after stripping `run.generatedAt`.
 - **BREAKING: Family abbreviations** - `cb`/`fn` now trigger `naming.short-variable`; add them to `allowlists.acceptedAbbreviations` to retain them.
-- **Actions write-permission coverage updated** - artifact, code-quality, discussions, and Pages named by scope; `id-token`/`attestations` stay quiet.
+- **Actions write-permission scopes follow GitHub's 2026-07-12 table** - `artifact-metadata`, `code-quality`, `discussions`, and `pages` now count as write-capable.
+  - `id-token` and `attestations` mint tokens rather than granting repository writes, so they no longer report as over-permissioned outside `pull_request_target`.
 - **Naming separates local edits from contract decisions** - APPLY vs CONFIGURE remediation; class/file mismatch needs a sole public class.
 - **Casing consistency follows owners** - variants compare within one module/function/interface owner; DTO vs UI fields no longer conflict.
 - **Complexity follows control flow** - syntax nodes drive cyclomatic/cognitive; findings gain a per-kind `breakdown`; identities and thresholds unchanged.
 - **Markdown reports escape repo text** - fenced labels/paths and escaped messages block injection into PR comments. (`src/report-renderers.ts`)
 - **Filtered scans cannot record history** - `--history-file` with diff/since/ranges exits 2 before any write; full scans still append.
 - **Short secret previews fully masked** - under 24 chars shows mask+length; longer keeps first/last 4; hook identities churn once (ADR-017).
-- **Short preview allowlists cannot hide same-length secrets** - Values under 24 characters remain reportable even when the mask is configured.
+- **Short preview allowlists cannot hide same-length secrets** - values under 24 characters remain reportable even when the mask is configured.
 - **Open-redirect needs a real sink** - name-only `redirect` helpers stay quiet; tainted input to response/location sinks still reports.
 - **Quoted env secrets keep embedded hashes** - quoted values read whole so `#` cannot truncate a credential; unquoted still stop at `#`.
 - **Shared AST discovery (one parse per script)** - generics, multi-line, and parenless arrows analysed; anchors and fingerprints preserved.
-- **Symbol-scoped scans cover generic callables** - Generic and multi-line functions retain findings when another line in the same callable changes.
+- **Symbol-scoped scans cover generic callables** - generic and multi-line functions retain findings when another line in the same callable changes.
 - **Config validation fails loudly** - unknown rules, non-boolean enabled, bad option keys exit 2 naming accepted forms; compat tightening.
 - **Severity overrides reach every scanner** - one central pass applies rules.<id>.severity everywhere; fingerprints stay severity-free.
 - **Invalid CLI values fail fast** - format/fail-on/changed-scope validated at parse as usage errors; compat tightening. (`src/cli-program.ts`)

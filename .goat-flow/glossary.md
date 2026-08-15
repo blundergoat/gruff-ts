@@ -1,6 +1,6 @@
 # Glossary - gruff-ts
 
-Last reviewed 2026-05-24.
+Last reviewed 2026-08-14.
 
 This glossary defines terms used by `gruff-ts`, its public reports, and local project memory. Keep shared gruff-family terms aligned with the sibling implementations; keep TypeScript/JavaScript-specific differences explicit rather than making them look identical.
 
@@ -102,7 +102,7 @@ Default scans are local source inspections. `gruff-ts` parses supported files an
 
 ### Supported File Type
 
-`gruff-ts` scans TypeScript, JavaScript, JSON, YAML, TOML, INI, XML, and `.env*` files when they are discoverable and not ignored.
+`gruff-ts` scans TypeScript and JavaScript (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`) plus config and text assets (`conf`, `config`, `env`, `ini`, `json`, `toml`, `xml`, `yaml`, `yml`), any `.env*` name, and the exact credential files `.npmrc`, `.pypirc`, `.envrc`, and `.netrc`, when they are discoverable and not ignored. The credential filenames matter because the sensitive-data pillar exists to read them. CSS left the allowlist in 0.3.0. The allowlist in `src/discovery.ts`:`pushSourceFile` is the only authority; `src/release-truth.test.ts` (search: `discovery allowlist matches the documented scan surface`) fails if this sentence and that function disagree.
 
 ### Function Block
 

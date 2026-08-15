@@ -15,12 +15,24 @@ gruff-ts/
 ├── .gitignore                     = ignores node_modules, dist, .gruff-history.json, gruff-baseline.json, local agent settings
 ├── .npmignore                     = secondary npm ignore list; package.json files allowlist remains authoritative
 ├── docs/
+│   ├── README.md                  = docs index; pairs with the top-level README as the user-facing surface
+│   ├── agent-hook.md              = coding-agent hook contract and diff-scoped gating (cited by architecture.md)
+│   ├── ci-integration.md          = wiring the self-scan and exit codes into CI
 │   ├── configuration.md           = config shape, ignored paths, allowlists, thresholds/options
+│   ├── dashboard.md               = local dashboard usage and routes
+│   ├── output-formats.md          = text/json/html/markdown/github/hotspot/sarif rendering
+│   ├── philosophy.md              = product framing: governing AI-generated code (cited by architecture.md)
+│   ├── releasing.md               = 0.5.0 release gates, package review, and installed-tarball smoke
 │   ├── reports-and-ci.md          = output formats, exit codes, baselines, SARIF/GitHub, dashboard
-│   └── releasing.md               = 0.5.0 release gates, package review, and installed-tarball smoke
+│   ├── rules.md                   = per-rule catalogue with pillar counts
+│   └── coding-standards/
+│       └── git-commit-message.md  = commit-message reference the agent instruction files cite as authority
 │
 ├── .github/
+│   ├── copilot-instructions.md    = Copilot instruction file (peer-agent surface; sweep with CLAUDE.md + AGENTS.md)
 │   ├── git-commit-instructions.md = project commit-message policy
+│   ├── hooks/hooks.json           = Copilot hook registration (scripts shared in .goat-flow/hooks/)
+│   ├── skills/                    = installed Copilot skill copies (goat, goat-plan/debug/review/critique/security/qa)
 │   └── workflows/ci.yml           = npm ci → npm run check → gruff-ts self-scan on main/dev push/PR
 │
 ├── bin/
@@ -78,19 +90,22 @@ gruff-ts/
 ├── scripts/
 │   ├── bump-version.sh            = semver bump/check for package.json + src/constants.ts
 │   ├── check.sh                   = wrapper for `npm run check` (tsc --noEmit && npm test)
+│   ├── dependency-install.sh      = pinned dependency install helper
+│   ├── dependency-update.sh       = dependency bump helper
+│   ├── npm-publish.sh             = publish helper run after the release gates pass
 │   ├── pack-smoke.sh              = pack, manifest, fresh-install, output, and exit-semantics release gate
-│   ├── preflight-checks.sh        = release gate: npm run check, self-scan, optional shellcheck
+│   ├── preflight-checks.sh        = 6-check local gate: version consistency, npm audit, npm run check,
+│   │                                gruff self-scan, shellcheck, and the deny/post-turn hook policy self-tests
 │   ├── start-dev.sh               = wrapper for `npm run start-dev` with env host/port/project-root overrides
 │   └── test-performance.sh        = gruff-perf.v1 performance matrix/baseline helper
 │
 ├── fixtures/
 │   └── sample.ts                  = sample source used by manual smoke tests / dashboard
 │
-├── .claude/                       = Claude Code agent surface
-│   ├── settings.json              = harness settings (committed)
+├── .claude/                       = Claude Code agent surface (no hooks/ dir; the scripts live in .goat-flow/hooks/)
+│   ├── settings.json              = harness settings (committed); registers the PreToolUse deny hook and the
+│   │                                Stop post-turn hook, both pointing at .goat-flow/hooks/*.sh
 │   ├── settings.local.json        = local-only overrides (gitignored)
-│   ├── hooks/
-│   │   └── deny-dangerous.sh      = PreToolUse hook blocking risky bash patterns
 │   └── skills/
 │       ├── goat/                  = dispatcher skill
 │       ├── goat-plan/             = milestone planner
@@ -116,7 +131,8 @@ gruff-ts/
 │   ├── skill-docs/                = meta references (skill-preamble, skill-conventions, README)
 │   └── skill-docs/playbooks/      = browser-use.md, changelog.md, code-comments.md, gruff-code-quality.md, hook-policy-testing.md, observability.md, page-capture.md, release-notes.md, skill-playbook-authoring-sync.md, writing-style.md
 │
-├── node_modules/                  = goat-flow's manifest-backed views/ HTML view inventory is (about, home, hooks, plans, projects, prompts, quality, settings, setup, skills, workspace); other npm dependencies are vendored and must not be edited
+├── node_modules/                  = vendored npm dependencies; never edit. Holds the goat-flow package whose
+│                                    workflow/hooks/ templates the installed .goat-flow/hooks/ scripts diff against
 └── .idea/                         = JetBrains IDE config (gitignored, do not edit)
 ```
 

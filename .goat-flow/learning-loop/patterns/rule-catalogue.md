@@ -1,6 +1,6 @@
 ---
 category: rule-catalogue
-last_reviewed: 2026-05-24
+last_reviewed: 2026-08-14
 ---
 
 # Rule catalogue patterns
@@ -42,9 +42,14 @@ last_reviewed: 2026-05-24
 
 9. **`.goat-flow/glossary.md`** — replace any prose example that uses the rule id (the rule-id glossary entry lists examples; substitute another extant rule).
 
-**Verification:** `grep -rn "<rule-id>" src/ docs/ .gruff-ts.yaml .goat-flow/` should return ONLY incidental string matches (historical milestone filenames, comment context). Run `npm run check` — both descriptor-coverage and YAML-parity tests in `src/rule-catalogue.test.ts` and `src/init-config.test.ts` cross-check that the YAML, registry, and implementation agree. Watch for `tests N pass N fail 0`.
+10. **The other three count surfaces** — `docs/rules.md` is not the only place the catalogue size is published, and none of these mention the rule id, so the id grep below cannot find them:
+   - `README.md` — the summary-table row ("X rules across 11 pillars"), the catalogue intro ("The current catalogue contains X rules:"), AND its own per-pillar table, which duplicates `## Pillar Counts`.
+   - `package.json` — the `description` field names the total.
+   - `.goat-flow/architecture.md` — the System Overview sentence names the total.
 
-**Footgun reminder:** removing a rule is a stealth breaking change for consumers (orphans `gruff.baseline.v1` entries, no-ops user-side `.gruff-ts.yaml` overrides, breaks CI grep checks). Schema version `gruff.analysis.v1` is NOT bumped — the user has to explicitly ask, per CLAUDE.md Hard Rules.
+**Verification:** `grep -rn "<rule-id>" src/ docs/ .gruff-ts.yaml .goat-flow/learning-loop/` should return ONLY incidental string matches (comment context). Root the `.goat-flow/` half at `learning-loop/` or deeper: a recursive grep started at `.goat-flow/` silently returns zero hits because its `.gitignore` opens with `*`. That grep searches for the rule ID, so it cannot see a stale COUNT - `npm run check` is what catches those, via `documented rule counts match the live catalogue` (`src/release-truth.test.ts`), which compares every published total and per-pillar table against `ruleDescriptors()` and names the surfaces to sweep on failure. The descriptor-coverage and YAML-parity tests in `src/rule-catalogue.test.ts` and `src/init-config.test.ts` cross-check that the YAML, registry, and implementation agree. Watch for `tests N pass N fail 0`.
+
+**Footgun reminder:** removing a rule is a stealth breaking change for consumers (orphans `gruff.baseline.v1` entries, no-ops user-side `.gruff-ts.yaml` overrides, breaks CI grep checks). The analysis schema is `gruff.analysis.v2` and is NOT bumped — the user has to explicitly ask, per CLAUDE.md Hard Rules. Read the live literal from `src/types.ts` rather than trusting any doc, this line included: an earlier revision of this pattern still said `gruff.analysis.v1` long after the v2 bump shipped.
 
 ## Pattern: preserving user customisations across config regeneration
 **Created:** 2026-05-24
