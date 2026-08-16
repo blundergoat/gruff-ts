@@ -88,6 +88,28 @@ test("keeps lexically shadowed framework redirect imports quiet", () => {
   );
 });
 
+// Fixture purpose: a method or accessor name is a property key, not a binding in its own body, so
+// naming one after the import must not hide the sink a reviewer is being asked to sign off.
+// Stable contract: only a function declaration or named function expression shadows by its name.
+test("still reports framework redirects inside a method named after the import", () => {
+  const methodFindings = analyseSecurityFixture(
+    'import { redirect } from "next/navigation";\nclass Controller {\n  redirect(req) {\n    return redirect(req.query.next);\n  }\n}\n',
+  );
+  const objectMethodFindings = analyseSecurityFixture(
+    'import { redirect } from "next/navigation";\nconst handlers = {\n  redirect(req) {\n    return redirect(req.query.next);\n  },\n};\n',
+  );
+  const namedExpressionFindings = analyseSecurityFixture(
+    'import { redirect } from "next/navigation";\nconst login = function redirect(req) {\n  return redirect(req.query.next);\n};\n',
+  );
+
+  assert.deepEqual(
+    [methodFindings, objectMethodFindings, namedExpressionFindings].map((findings) =>
+      findings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length,
+    ),
+    [1, 1, 0],
+  );
+});
+
 // Fixture purpose: local redirect functions and router methods are not response sinks.
 // Stable contract: names alone never turn these helpers into open-redirect findings.
 test("keeps local redirect functions and router methods quiet", () => {

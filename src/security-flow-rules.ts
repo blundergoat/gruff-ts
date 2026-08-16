@@ -484,7 +484,9 @@ function isFrameworkRedirectShadowed(call: TsCallLikeExpression, callee: string)
   return false;
 }
 
-// Function parameters and named function expressions bind identifiers throughout their body.
+// Function parameters bind identifiers throughout their body. Only a declaration or a named
+// function expression also binds its own name there - a method or accessor name is a property key
+// reached through the object, so a method called `redirect` still sees the imported `redirect`.
 function functionLikeBindsName(node: TsNode, name: string): boolean {
   if (!isFunctionLike(node)) {
     return false;
@@ -493,7 +495,8 @@ function functionLikeBindsName(node: TsNode, name: string): boolean {
     name?: import("typescript").PropertyName;
     parameters: readonly import("typescript").ParameterDeclaration[];
   };
-  if (functionNode.name && typescriptSyntax.isIdentifier(functionNode.name) && functionNode.name.text === name) {
+  const bindsOwnName = typescriptSyntax.isFunctionDeclaration(node) || typescriptSyntax.isFunctionExpression(node);
+  if (bindsOwnName && functionNode.name && typescriptSyntax.isIdentifier(functionNode.name) && functionNode.name.text === name) {
     return true;
   }
   return functionNode.parameters.some((parameter) => bindingNameContains(parameter.name, name));

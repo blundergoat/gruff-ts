@@ -349,3 +349,13 @@ The pre-1.14 policy blocked every pipe into `python3 -c` or `node -e`, so local-
 **Recurrence, 2026-08-05:** The same external report gained two new items (composite scoring, stale-param paren types) after the first remediation pass shipped. Re-running the repros against HEAD split them cleanly: the stale-param defect no longer reproduced (fixed structurally by the 0.5.0 shared AST parameter discovery, pinned with both-direction tests), while the composite defect reproduced exactly as measured and was fixed (ADR-019). Treat an amended report as a fresh report: re-verify every new item before touching code.
 
 **Recurrence, 2026-08-05 (vocabulary plurals):** context-doc vocabulary is matched with word boundaries, so plural forms fail: a comment saying "keeps fingerprints unique" does not satisfy `\bfingerprint\b` and `docs.missing-invariant-doc` fired on the new scoring test helper until the comment said "each fingerprint". When writing marker vocabulary, use the singular form the regex lists.
+
+## Lesson: prove a gate fails in every direction it claims to cover
+
+**Created:** 2026-08-16
+
+**What happened:** `src/release-truth.test.ts` claimed in both its own `Invariant:` comment and `footguns/schema-and-cli.md` that "adding or removing an extension in `pushSourceFile` fails one of these two counts". It was verified load-bearing by re-adding `"css"` and watching the test fail. That proof only covered one direction. `css` was already in `UNSCANNED_FIXTURE_FILES`, so re-adding it moved a count; a genuinely new extension moved neither. A PR review reported the gap and it reproduced: appending `"properties"` to the text allowlist left `npm run check` green at `# pass 3 # fail 0`.
+
+**Evidence:** Pre-fix tree with `"properties"` added - `# pass 3 # fail 0`. Post-fix same edit - `not ok 2 - discovery allowlist matches the documented scan surface`.
+
+**Prevention:** When a gate claims to cover N directions, run N experiments, one per direction, and pick each probe so it is NOT already named in the fixture data - a probe drawn from the fixture set proves only that the fixture set is wired up. More generally, a behavioural assertion over an enumerated fixture set gates the fixtures, not the enumeration: to gate a list, assert the list.

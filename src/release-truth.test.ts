@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import test from "node:test";
+import { EXACT_SECRET_TEXT_FILES, SCRIPT_FILE_EXTENSIONS, TEXT_FILE_EXTENSIONS } from "./discovery.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { analyseProjectInCurrentDirectory, setupAnalyseProjectDirectory } from "./test-fixtures.ts";
 import type { AnalysisReport } from "./types.ts";
@@ -125,13 +126,21 @@ function analysedFileCount(files: Record<string, string>): number {
 }
 
 /*
- * Pins both directions of the discovery allowlist so a widened or narrowed scan surface cannot ship
- * while the documentation still describes the old one.
- * Invariant: adding or removing an extension in `pushSourceFile` fails one of these two counts.
+ * Pins the discovery allowlist so a widened or narrowed scan surface cannot ship while the
+ * documentation still describes the old one. The literal lists are what make widening fail: a
+ * fixture headcount only moves for an extension somebody already thought to write a fixture for,
+ * so adding an unlisted kind such as `properties` used to leave both counts green.
+ * Invariant: any edit to the three allowlists in `src/discovery.ts` fails one of these assertions.
  */
 test("discovery allowlist matches the documented scan surface", () => {
   const expectedScannedCount = Object.keys(SCANNED_FIXTURE_FILES).length;
 
+  assert.deepEqual([...SCRIPT_FILE_EXTENSIONS], ["ts", "tsx", "js", "jsx", "mjs", "cjs"], SCAN_SURFACE_SWEEP_NOTE);
+  assert.deepEqual([...TEXT_FILE_EXTENSIONS], ["conf", "config", "env", "ini", "json", "toml", "xml", "yaml", "yml"], SCAN_SURFACE_SWEEP_NOTE);
+  assert.deepEqual([...EXACT_SECRET_TEXT_FILES], [".npmrc", ".pypirc", ".envrc", ".netrc"], SCAN_SURFACE_SWEEP_NOTE);
+
+  // The counts stay because the lists alone do not prove discovery honours them - the `.env` prefix
+  // rule and the extensionless names reach a scanned file through a different branch than an extension.
   assert.equal(analysedFileCount(SCANNED_FIXTURE_FILES), expectedScannedCount, SCAN_SURFACE_SWEEP_NOTE);
   assert.equal(analysedFileCount(UNSCANNED_FIXTURE_FILES), 0, SCAN_SURFACE_SWEEP_NOTE);
 });

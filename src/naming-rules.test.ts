@@ -525,6 +525,67 @@ interface NoteView {
   });
 });
 
+// Stable fixture contract: re-opening a namespace extends one declaration space, so drift between
+// its blocks is drift inside a single published interface and carries that namespace's owner id.
+test("naming inconsistent-casing merges contracts across re-opened namespace blocks", () => {
+  const reopenedNamespaceFinding = inconsistentCasingFindings(`namespace Api {
+  export interface Result {
+    item_id: string;
+  }
+}
+namespace Api {
+  export interface Result {
+    itemId: string;
+  }
+}
+`)[0];
+  assert.equal(reopenedNamespaceFinding?.symbol, "itemId");
+  assert.deepEqual(reopenedNamespaceFinding?.metadata, {
+    variants: ["itemId", "item_id"],
+    ownerId: "interface:module-block:Api:Result",
+    ownerKind: "interface",
+    ownerName: "Result",
+  });
+});
+
+// Stable fixture contract: the two spellings of a nested namespace are one declaration space to
+// TypeScript, so a reviewer must not be shown different owners for the same published contract.
+test("naming inconsistent-casing treats dotted and nested namespace paths as one scope", () => {
+  const dottedPathFinding = inconsistentCasingFindings(`namespace Api.Inner {
+  export interface Result {
+    item_id: string;
+  }
+}
+namespace Api {
+  export namespace Inner {
+    export interface Result {
+      itemId: string;
+    }
+  }
+}
+`)[0];
+  assert.equal(dottedPathFinding?.metadata?.ownerId, "interface:module-block:Api.Inner:Result");
+});
+
+// Stable fixture contract: unrelated namespaces keep separate contract scopes, so one contract
+// name declared in each is never compared and no cross-namespace diagnostic reaches the user.
+test("naming inconsistent-casing keeps same-name contracts in different namespaces apart", () => {
+  assert.deepEqual(
+    inconsistentCasingFindings(`namespace Alpha {
+  export interface Result {
+    item_id: string;
+  }
+}
+namespace Beta {
+  export interface Result {
+    itemId: string;
+  }
+}
+`),
+    [],
+  );
+});
+
 // Stable fixture contract: acronym diagnostics remain file-wide across separate function owners.
 test("naming acronym-case remains file-wide across declaration owners", () => {
   const acronymFinding = analyseFixture(`function readRaw(): void {

@@ -136,24 +136,26 @@ function walk(
   }
 }
 
-// Single source of truth for which extensions count as scannable. Adding a new file kind here will
-// expand the rule set's reach across an entire project - coordinate with rule descriptors before changing.
+/** Extensions parsed as code. Widening this reaches every rule that inspects script syntax. */
+export const SCRIPT_FILE_EXTENSIONS: readonly string[] = ["ts", "tsx", "js", "jsx", "mjs", "cjs"];
+
+/** Extensions read as config or text assets, which only the text-oriented rules inspect. */
+export const TEXT_FILE_EXTENSIONS: readonly string[] = ["conf", "config", "env", "ini", "json", "toml", "xml", "yaml", "yml"];
+
+/** Extensionless credential files that stay scannable without admitting every dotfile. */
+export const EXACT_SECRET_TEXT_FILES: readonly string[] = [".npmrc", ".pypirc", ".envrc", ".netrc"];
+
+// Single source of truth for which extensions count as scannable. Adding a new file kind to the
+// lists above will expand the rule set's reach across an entire project - the scan surface is also
+// stated in prose across seven documents, so `release-truth.test.ts` pins these lists literally.
 function pushSourceFile(projectRoot: string, absolutePath: string, files: SourceFile[]): void {
   const extension = extname(absolutePath).slice(1).toLowerCase();
   const name = basename(absolutePath);
-  const isScript = ["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(extension);
-  const isText =
-    ["conf", "config", "env", "ini", "json", "toml", "xml", "yaml", "yml"].includes(extension) ||
-    name.startsWith(".env") ||
-    isExactSecretTextFile(name);
+  const isScript = SCRIPT_FILE_EXTENSIONS.includes(extension);
+  const isText = TEXT_FILE_EXTENSIONS.includes(extension) || name.startsWith(".env") || EXACT_SECRET_TEXT_FILES.includes(name);
   if (isScript || isText) {
     files.push({ absolutePath, displayPath: displayPath(projectRoot, absolutePath), isScript });
   }
-}
-
-// Exact extensionless secret files stay scannable without opening the door to every dotfile.
-function isExactSecretTextFile(name: string): boolean {
-  return [".npmrc", ".pypirc", ".envrc", ".netrc"].includes(name);
 }
 
 // The default-ignore list is part of the documented schema contract: callers can override with

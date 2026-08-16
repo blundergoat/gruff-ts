@@ -429,14 +429,29 @@ function nestedContractScopeId(sourceFile: TsSourceFile, node: TsNode, callableO
     return callableOwner.ownerId;
   }
   // Namespace bodies can contain same-name interfaces that must not merge with module contracts.
+  // TypeScript merges every block of one namespace into a single declaration space, so the scope
+  // is keyed on the namespace path - byte offsets would split a re-opened namespace in two.
   if (typescriptSyntax.isModuleBlock(node)) {
-    return `module-block:${node.getStart(sourceFile)}:${node.getEnd()}`;
+    return `module-block:${namespaceDeclarationPath(node)}`;
   }
   // A nested statement block is a distinct type-declaration scope; the function body itself is not.
   if (typescriptSyntax.isBlock(node) && !typescriptSyntax.isFunctionLike(node.parent)) {
     return `block:${node.getStart(sourceFile)}:${node.getEnd()}`;
   }
   return currentScopeId;
+}
+
+// Joins every enclosing namespace name so the two spellings a user can write for one declaration
+// space - `namespace A.B` and `namespace A { namespace B }` - land on the same contract scope.
+function namespaceDeclarationPath(moduleBlock: TsNode): string {
+  const names: string[] = [];
+  for (let ancestor = moduleBlock.parent; ancestor && !typescriptSyntax.isSourceFile(ancestor); ancestor = ancestor.parent) {
+    // Only the namespace headers carry a name; intervening blocks are walked through, not recorded.
+    if (typescriptSyntax.isModuleDeclaration(ancestor)) {
+      names.push(ancestor.name.text);
+    }
+  }
+  return names.reverse().join(".");
 }
 
 // Classifies one AST node into a callable match point, or undefined for non-callable nodes.
