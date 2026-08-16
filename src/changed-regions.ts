@@ -3,8 +3,9 @@
 import { execFileSync } from "node:child_process";
 import { functionBlocks } from "./blocks.ts";
 import type { SourceFile } from "./discovery.ts";
+import type { ParsedScript } from "./parsed-script.ts";
 import { maskNonCode } from "./source-text.ts";
-import type { AnalysisOptions, ChangedScopeMode, Finding } from "./types.ts";
+import type { AnalysisOptions, ChangedScopeMode, Finding, RunDiagnostic } from "./types.ts";
 
 // Inclusive line range from a changed hunk or explicit `--changed-ranges` input.
 export interface ChangedRange {
@@ -27,6 +28,7 @@ export interface ChangedRegionScope {
 interface SourceSnapshot {
   file: SourceFile;
   source: string;
+  parsed?: ParsedScript;
 }
 
 // Named source span used to keep symbol-scope findings when their declaration overlaps a hunk.
@@ -69,7 +71,33 @@ export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope
   return undefined;
 }
 
+// Diagnostic types that describe one analysed file's content or readability. Only these are
+// file-scoped under diff filtering; operational diagnostics (missing paths, history errors) always
+// stay, because they describe the request rather than an unchanged context file.
+const FILE_CONTENT_DIAGNOSTIC_TYPES = new Set(["parse-error", "read-error"]);
+
+/*
+ * Applies the file-scoped diagnostics policy to a changed-region run: a full scan keeps every
+ * diagnostic; explicit `--changed-ranges` keeps every diagnostic of each requested file (a syntax
+ * error breaks parsing of the whole file, so ranges never filter diagnostics); `--diff`/`--since`
+ * keeps only diagnostics from changed target files, so a pre-existing broken context file no
+ * longer fails a clean diff. Operational diagnostics are never dropped.
+ */
+export function filterScopedDiagnostics(diagnostics: RunDiagnostic[], scope: ChangedRegionScope | undefined): RunDiagnostic[] {
+  if (!scope || scope.explicitRanges !== undefined) {
+    return diagnostics;
+  }
+  return diagnostics.filter((diagnostic) => {
+    // Operational diagnostics (missing-path, history-error) describe the request, not file content.
+    if (!diagnostic.filePath || !FILE_CONTENT_DIAGNOSTIC_TYPES.has(diagnostic.diagnosticType)) {
+      return true;
+    }
+    return scope.changedFiles.has(diagnostic.filePath) || scope.wholeFiles.has(diagnostic.filePath);
+  });
+}
+
 // Applies changed-region filtering to findings and reports how many pre-existing findings dropped.
+// Invariant: kept plus suppressedCount always equals the pre-filter total - the hook's arithmetic contract.
 export function filterChangedFindings(
   findings: Finding[],
   scope: ChangedRegionScope | undefined,
@@ -91,7 +119,8 @@ export function filterChangedFindings(
   return { findings: kept, suppressedCount };
 }
 
-// Keeps a finding when its own line, enclosing declaration, or changed-file scope intersects the change.
+// Keeps a finding when its own line, enclosing declaration, or changed-file scope intersects the
+// change. Invariant: findings outside the requested change must stay suppressed - the agent-gate contract.
 function isFindingInChangedScope(
   finding: Finding,
   scope: ChangedRegionScope,
@@ -117,6 +146,18 @@ function isFindingInChangedScope(
   if (overlapsAny(findingRange, changedRanges)) {
     return true;
   }
+  return symbolScopeWidensFinding(finding, scope, sources, declarationsByFile, changedRanges);
+}
+
+// Symbol scope widens a finding through its enclosing declaration: an edit anywhere inside a
+// callable keeps that callable's findings. Invariant: file-wide findings must never widen this way.
+function symbolScopeWidensFinding(
+  finding: Finding,
+  scope: ChangedRegionScope,
+  sources: Map<string, SourceSnapshot>,
+  declarationsByFile: Map<string, DeclarationRegion[]>,
+  changedRanges: ChangedRange[],
+): boolean {
   if (scope.mode !== "symbol" || isFileWideFinding(finding)) {
     return false;
   }
@@ -149,6 +190,7 @@ function rangesForFindingFile(scope: ChangedRegionScope, filePath: string): Chan
 }
 
 // Resolves the narrowest declaration around a finding so symbol-scope mode can keep whole callables.
+// Invariant: the smallest enclosing span wins, so sibling declarations never widen each other's findings.
 function enclosingDeclaration(
   finding: Finding,
   sources: Map<string, SourceSnapshot>,
@@ -160,7 +202,7 @@ function enclosingDeclaration(
   }
   let declarations = declarationsByFile.get(finding.filePath);
   if (!declarations) {
-    declarations = declarationRegions(source.source);
+    declarations = declarationRegions(source.source, source.parsed);
     declarationsByFile.set(finding.filePath, declarations);
   }
   const line = finding.line ?? 1;
@@ -172,10 +214,10 @@ function enclosingDeclaration(
 }
 
 // Combines function and class/interface spans into one declaration inventory per source file.
-function declarationRegions(source: string): DeclarationRegion[] {
+function declarationRegions(source: string, parsed?: ParsedScript): DeclarationRegion[] {
   const codeSource = maskNonCode(source);
   return [
-    ...functionBlocks(source, codeSource).map((block) => ({
+    ...functionBlocks(source, codeSource, parsed).map((block) => ({
       name: block.name,
       start: block.startLine,
       end: block.startLine + block.lineCount - 1,
@@ -255,25 +297,31 @@ function parseChangedRange(rawRange: string): ChangedRange {
   return { start, end };
 }
 
-// Produces a changed-region scope from a named git diff mode or arbitrary git ref.
+/*
+ * Produces a changed-region scope from a named git diff mode or arbitrary git ref. Every git diff
+ * runs in git's relative-path mode, so paths arrive relative to the analysis root (the process
+ * cwd) and match finding display paths even when the scan starts from a nested package directory
+ * inside the repository. Invariant: from the repo root that mode is a no-op, so root-run diffs
+ * are byte-identical to the previous behavior.
+ */
 function gitDiffScope(mode: string, changedScope: ChangedScopeMode): ChangedRegionScope {
   if (mode === "staged") {
-    return parseUnifiedDiff(gitOutput(["diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff"]), changedScope);
+    return parseUnifiedDiff(gitOutput(["diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff", "--relative"]), changedScope);
   }
   if (mode === "unstaged") {
-    return parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff"]), changedScope);
+    return parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", "--relative"]), changedScope);
   }
   if (mode === "working-tree") {
     return mergeScopes(
       [
-        parseUnifiedDiff(gitOutput(["diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff"]), changedScope),
-        parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff"]), changedScope),
+        parseUnifiedDiff(gitOutput(["diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff", "--relative"]), changedScope),
+        parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", "--relative"]), changedScope),
         untrackedFileScope(changedScope),
       ],
       changedScope,
     );
   }
-  return parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", "--end-of-options", mode]), changedScope);
+  return parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", "--relative", "--end-of-options", mode]), changedScope);
 }
 
 // Parses a unified diff into file-level and hunk-level scope.

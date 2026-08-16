@@ -1,9 +1,35 @@
 ---
 category: workflow
-last_reviewed: 2026-05-27
+last_reviewed: 2026-08-12
 ---
 
 # Workflow lessons
+
+## Lesson: preview managed setup conflicts before choosing force
+
+**Created:** 2026-08-07
+**Decision changed:** Run the plain managed dry run first, inspect its conflicts, then invoke a separate force command only when the requested upgrade authorizes those replacements.
+**Trigger phase:** READ
+
+**What happened:** During the goat-flow 1.14.0 upgrade preflight, I tried to combine `--dry-run` and `--force` to preview the force result. The CLI rejected the combination because force is the post-review write decision, not a second preview mode.
+
+**Prevention:** Use `goat-flow install . --agent <agent> --dry-run` to resolve exact targets and content conflicts. If the preview is blocked only by reviewed content conflicts and the upgrade authorizes replacement, run `goat-flow install . --agent <agent> --force` as a separate command; never claim the force path was previewed.
+
+## Lesson: run strict plan validation before presenting the human gate
+
+**Created:** 2026-08-08
+**Incident count:** 3
+**Latest occurrence:** 2026-08-09
+**Decision changed:** Run strict validation before activating or presenting any milestone, inventory every active status including legacy syntax, and rerun after approved lifecycle transitions.
+**Trigger phase:** VERIFY
+
+**What happened:** The goat-flow setup milestone first reached `human-verification-pending` before its legacy shape was checked against the 1.15.0 strict contract. The same mistake recurred when M26-M30 were refreshed with `Effort: small|medium`, `## Plan`, and `## Testing Gate` still in place. Those labels described complexity but supplied no agent-time forecast, task/proof arithmetic, or current recovery grammar. The implementation evidence remained valid; the written milestones were not ready to present as current goat-plan artifacts.
+
+**M26 execution recurrence, 2026-08-09:** Strict validation was deferred until proof closeout and found legacy M25 still `in-progress` while M26 was in its testing gate. M26's implementation evidence remained green, but its lifecycle paused until the operator classified M25 as blocked and operator-owned.
+
+**Evidence:** `.agents/skills/goat-plan/SKILL.md` (search: `Always include outcome, Status, agent-time estimate`) requires the estimate on every milestone; `.agents/skills/goat-plan/references/milestone-examples.md` (search: `must exactly reproduce each category`) requires task, proof, mid-proof, and admin arithmetic to match the headline.
+
+**Prevention:** Before changing a milestone to `in-progress` or `testing-gate`, run strict validation and inspect every active-status error across the whole active plan, including legacy `Status:` fields. For plan writes, also use derived current-format estimates and honest Actual provenance; if legacy siblings keep the directory red, prove the named milestone has zero format errors and report the remaining scope.
 
 ## Lesson: milestone close-out must compare self-scan delta, not just `npm run check` pass count
 
@@ -109,3 +135,13 @@ Standing rule: every commit-message-or-diff-description response begins with rea
 **Evidence:** the 0.1 task files M38-css-metrics-and-todo-density-calibration.md line 3 (`Status: proposed`) and ISSUE-related-project-study.md line 3 (`Status: human-verification-pending` at the time), both since archived under `.goat-flow/plans/_archive/0.1/`. CLAUDE.md's Router Table explicitly lists `.goat-flow/plans/` under workspace notes, and the SCOPE rule "MUST read relevant files before changes" - release-readiness is a project-state question, so the project's own task folder is relevant by definition.
 
 **Prevention:** For any "is X ready / are we done / can we ship" question, before invoking build/test/lint/self-scan signals, list and grep status lines in `.goat-flow/plans/<active-milestone>/`. Concretely: `grep -m1 -iE "^(status|state):" .goat-flow/plans/<version>/*.md` and surface anything that is not `complete`, `superseded`, `shipped`, or explicitly deferred. Green CI is a necessary signal, not a sufficient one - the task ledger encodes intent that CI cannot see (proposed scope, human-pending signoffs, deliberately deferred work). Treat unaudited task folders as a red-flag the same way you'd treat untested code paths.
+
+## Lesson: a plan's own invalidation tests are load-bearing, and both fired on first execution
+
+**Created:** 2026-08-12
+
+**What happened:** The `0.5.0-go-live` plan was written on 2026-08-11 at `7bec5932` and executed on 2026-08-12 at `d2eb6fe6`, three commits later. Each of its milestones carried a written invalidation test. Running them before starting produced two failures and one expired premise. M31 asserted six substantially-changed analyser files; its own test (`git diff --numstat`, over 100 changed lines) selected **ten** - `src/analyser.ts`, `src/blocks.ts`, `src/test-block-rules.ts`, and `src/findings-helpers.ts` were missing. M32 asserted 61 PR comments with 24 against `src/`; a fresh fetch returned **66 and 27**, including two new codex P1s. M33's first item had been fixed upstream by `9eb2531` thirteen hours after the plan was written.
+
+**Evidence:** the four files M31 missed were not marginal. `src/analyser.ts` owns the rule-group pass gates, and it had since drawn both a P1 and a P2 automated-review comment. The next file below the 100-line cut was `src/hook-contract.ts` at 99, so the boundary was clean rather than arbitrary. Of the three defects this milestone confirmed and fixed, two lived in files the original six-file table did not cover.
+
+**Prevention:** run every invalidation test a plan writes for itself as the first act of execution, before reading any source, and rescope in the plan file rather than in your head. A plan built from a point-in-time snapshot decays against a branch that is still moving, and the decay is silent: the milestone text reads equally plausible whether or not its numbers still hold. Treat "planned at SHA X, executing at SHA Y" as a prompt to re-derive every count, file set, and external-state claim.

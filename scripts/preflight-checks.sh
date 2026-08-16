@@ -303,12 +303,14 @@ shellcheck_check() {
   local output
   local status
 
+  # The guardrail hooks decide what an agent is allowed to run, so lint them here too:
+  # no other local gate reads them, which is how a policy bypass once reached review.
   while IFS= read -r -d '' script_path; do
     scripts+=("$script_path")
-  done < <(find scripts -maxdepth 1 -type f -name '*.sh' -print0 | sort -z)
+  done < <(find scripts .goat-flow/hooks -maxdepth 2 -type f -name '*.sh' -print0 2>/dev/null | sort -z)
 
   if [[ "${#scripts[@]}" -eq 0 ]]; then
-    printf 'no scripts/*.sh files found'
+    printf 'no shell scripts found'
     return 0
   fi
 
@@ -322,6 +324,50 @@ shellcheck_check() {
   fi
 
   return "$status"
+}
+
+# Runs the guardrail corpus that decides which agent commands are blocked or allowed.
+# Without it a policy change ships on the strength of tests that never read the policy.
+hook_policy_check() {
+  local deny_self_test=".goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh"
+  local post_turn_hook=".goat-flow/hooks/post-turn-safety.sh"
+  local summaries=()
+  local output
+  local status
+
+  if [[ -f "$deny_self_test" ]]; then
+    output=$(bash "$deny_self_test" 2>&1)
+    status=$?
+    if ((status != 0)); then
+      printf '%s\n' "$output"
+      return "$status"
+    fi
+    summaries+=("${output##*$'\n'}")
+  fi
+
+  # The Stop hook is the last thing standing between a leaked credential and the
+  # user's next commit, so prove it still blocks before calling a release ready.
+  if [[ -f "$post_turn_hook" ]]; then
+    output=$(bash "$post_turn_hook" --self-test 2>&1)
+    status=$?
+    if ((status != 0)); then
+      printf '%s\n' "$output"
+      return "$status"
+    fi
+    summaries+=("${output##*$'\n'}")
+  fi
+
+  if [[ "${#summaries[@]}" -eq 0 ]]; then
+    printf 'no hook self-tests found'
+    return 0
+  fi
+
+  local joined="${summaries[0]}"
+  local index
+  for ((index = 1; index < ${#summaries[@]}; index++)); do
+    joined+="; ${summaries[$index]}"
+  done
+  printf '%s' "$joined"
 }
 
 summary() {
@@ -388,6 +434,8 @@ main() {
     step "Shell scripts (shellcheck)"
     skip "shellcheck not found"
   fi
+
+  run_step "Safety hook policy" hook_policy_check
 
   summary
 }

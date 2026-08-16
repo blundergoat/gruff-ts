@@ -50,6 +50,7 @@ per-pillar counts, top rules, and top file offenders.
 Schema strings:
 
 - `gruff.analysis.v2` for full analysis reports.
+- `gruff.summary.v2` for `summary --format=json`.
 - `gruff.baseline.v1` for baselines.
 - `gruff.hotspot.v1` for hotspot output.
 
@@ -128,6 +129,16 @@ gruff-ts analyse . --no-baseline --fail-on=none
 Review baseline diffs carefully. A baseline suppresses matching fingerprints, so
 unexpected additions can hide findings.
 
+Known `gruff.baseline.v1` limitation: entries match on `(fingerprint, ruleId,
+filePath)`, and the fingerprint hashes the line, not the column. Two distinct
+same-line findings from one rule (for example two secrets on one line) are
+reported separately since 0.5.0, but they still share a fingerprint and a
+baseline matches them as one identity. Pure code movement changes the
+fingerprint and resurfaces baselined findings as new. Both are addressed by
+the count-based `gruff.baseline.v2` planned for the coordinated cross-analyser
+schema release (ADR-013, ADR-017); until then, regenerate the baseline after
+moves instead of hand-editing entries.
+
 `report` intentionally renders raw scan results and does not accept a
 `--baseline` option. Use `analyse` for baseline-aware machine output.
 
@@ -175,6 +186,10 @@ Append score history to a JSON file:
 ```bash
 gruff-ts analyse . --history-file .gruff-history.json --fail-on=none
 ```
+
+`--history-file` requires a full scan. Combining it with `--diff`, `--since`, or
+`--changed-ranges` exits `2` before anything is written, so a filtered scan can
+never append a partial trend point.
 
 History files are local artifacts. Commit them only if your project explicitly
 wants trend data in version control.

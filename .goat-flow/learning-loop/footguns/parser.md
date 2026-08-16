@@ -1,6 +1,6 @@
 ---
 category: parser
-last_reviewed: 2026-06-10
+last_reviewed: 2026-08-09
 hallucination-risk: high
 ---
 
@@ -8,20 +8,18 @@ hallucination-risk: high
 
 Static-analysis surfaces that look like a real TS parser may still be regex/character heuristics, syntax-only parser passes, or single-file text scans. Agents reading the code from names alone (`functionBlocks`, `parseDiagnostics`, `analyseDeadCode`) tend to over-trust them - that is the trap.
 
-## Footgun: `functionBlocks` is regex-based, not a TS AST
+## Footgun: `functionBlocks` is AST-backed only when its caller supplies the shared parse
 
-**Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
+**Status:** active | **Created:** 2026-05-10 | **Updated:** 2026-08-09 | **Evidence:** OBSERVED
+**Decision changed:** Thread the run-owned `ParsedScript` into every analysis-path `functionBlocks` call; never reparse locally, and treat parse-less callers as the legacy compatibility path.
 
-`functionBlocks` (search: `function functionBlocks`) walks lines and matches one of four hand-rolled patterns. It does NOT understand:
+`functionBlocks(source, codeSource, parsed?)` has two discovery modes. A caller that supplies the run's shared `ParsedScript` uses syntax-backed callable points, including generic and multi-line signatures. A caller that omits it falls back to the four hand-written line patterns. Over-budget scripts intentionally omit the parse, so their fallback does not gain AST-only callable coverage.
 
-- Generics in parameter lists (`<T>(...)`) - the param regex `\(([^)]*)\)` stops at the first `)`.
-- Multi-line parameter lists - only the first line of the signature is captured for `params`.
-- Decorators or overload signatures - `functionStartIndex` walks back over `@`/`/**`/`*`/blank lines but not over multiple overload declarations.
-- Object-method shorthand inside object literals - matches anything with `name(args):` pattern, so config-like literals can be mistaken for methods.
-- The "test" classifier (`block.isTest`) trips on any function whose name `startsWith("test")`, not only Node-test/Vitest/Mocha calls.
-- `FunctionBlock.startLine` intentionally points at the leading comment/decorator prefix when one exists. Declaration-anchored rules need a separate declaration-line value from the raw match index.
+The legacy fallback does not understand generic or multi-line parameter lists, decorators and overload groups, or every object-method shape. Both modes preserve the historical `FunctionBlock.startLine` contract for leading comments and decorators; declaration-anchored rules must still use the separate declaration line.
 
-If you change a per-block rule (size/complexity/cyclomatic/cognitive/test-quality), do not assume blocks are clean function units. Add a fixture exercising the edge case to `src/cli.test.ts` before changing thresholds.
+**Evidence:** `src/blocks.ts` (search: `function matchPointsFor`) selects AST points only when `parsed` exists; `src/analyser.ts` (search: `sources.set(file.displayPath`) retains the budget-gated parse; `src/changed-regions.ts` (search: `function declarationRegions`) passes that same parse into symbol-scope discovery.
+
+When changing a per-block rule, test the relevant callable shape. When adding an analysis-path caller, thread the existing parse through instead of calling `parseScript` again; retain the fallback only for utilities that do not own an analysis-run parse.
 
 ## Footgun: `parseDiagnostics` is syntax-only TypeScript parsing, not typechecking
 

@@ -170,6 +170,11 @@ allowlists:
     - "abcd...wxyz (redacted, 32 chars)"
 ```
 
+Only previews for values of at least 24 characters can be allowlisted. Shorter
+previews are fully masked and identify only the value length, so gruff continues
+to report them even if the same mask appears in `secretPreviews`. This prevents
+one entry from hiding unrelated secrets of the same length.
+
 Prefer fixing false positives with a narrow config entry instead of disabling an
 entire sensitive-data rule.
 
@@ -179,7 +184,9 @@ fingerprints:
 | Key | Used by | Default behavior |
 | --- | --- | --- |
 | `acceptedAbbreviations` | `naming.short-variable` | Adds short names that should not be flagged. |
-| `acceptedBooleanNames` | `naming.boolean-prefix` | Replaces exact public/CLI/DTO boolean names such as `verbose`, `enabled`, `ok`, and `force`. |
+| `acceptedBooleanNames` | `naming.boolean-prefix` | Replaces the complete set of exact interface/type contract-field names, such as `verbose`, `enabled`, `ok`, and `force`. |
+| `acceptedClassFilePairs` | `naming.class-file-mismatch` | Replaces the exact case-insensitive `fileBase:ClassName` pairs that may use feature-file and class-role naming. Defaults to empty. |
+| `acceptedCasingPairs` | `naming.inconsistent-casing` | Replaces the exact case-insensitive `wire_name:internalName` pairs allowed within one declaration or lexical owner. Either pair order matches. Defaults to empty. |
 | `bannedGenericNames` | `naming.generic-function` | Replaces the built-in generic function-name denylist. |
 | `booleanPrefixes` | `naming.boolean-prefix` | Replaces the accepted boolean-name prefixes such as `is`, `has`, `should`, `may`, `supports`, and `requires`. |
 | `hungarianPrefixes` | `naming.hungarian-notation` | Replaces type-style prefixes to flag. |
@@ -189,6 +196,25 @@ fingerprints:
 
 For replace-style allowlists, use an empty list (`[]`) when you intentionally
 want no entries.
+
+When a boolean-prefix finding names `allowlists.acceptedBooleanNames`, copy any
+defaults the project still needs into the configured list before adding the
+external key - the configured list replaces defaults rather than extending
+them. If renaming a JSON, CLI, or DTO key would break consumers, keep a clearer
+internal field and map the external key explicitly at the serialization boundary.
+
+Use exact pair allowlists when both names must coexist:
+
+```yaml
+allowlists:
+  acceptedClassFilePairs: ["focusModeTranscript:TranscriptFocusController"]
+  acceptedCasingPairs: ["note_id:noteId"]
+```
+
+The class/file entry uses the extensionless file base before the colon. Casing
+pairs may be written in either order. Both lists are case-insensitive, replace
+the complete configured list, and suppress only the exact pair rather than every
+name sharing the same canonical form.
 
 ## Rule Controls
 
@@ -236,7 +262,12 @@ See [Rules](./rules.md) for the full rule catalogue grouped by pillar.
 
 ## Example Project Config
 
+A complete file. The shorter snippets above omit `schemaVersion` because they
+show a single key in isolation; every real `.gruff-ts.yaml` needs it.
+
 ```yaml
+schemaVersion: gruff-ts.config.v0.1
+
 paths:
   ignore:
     - "generated/**"

@@ -34,6 +34,8 @@ last_reviewed: 2026-05-25
 
 **Why this works:** the typed field and the JSON key are two different surfaces. The TypeScript field exists for compile-time clarity; the JSON key exists for cross-port wire compatibility. Renaming one without the other - via an explicit map at the boundary - keeps both surfaces clean. The reverse is also true for tests parsing the JSON: treat `payload` as `Record<string, unknown>` and access `row.applicable` at runtime to avoid declaring a typed interface whose field name fights the lint (see `assertPillarRowShape` in `src/cli-surfaces.test.ts`).
 
+**Reinforced (M28, 2026-08-09):** Typing process-exec metadata exposed the report key `shellEnabled` to the boolean-name rule. `ProcessExecMetadata` now uses `isShellEnabled`, and the finding emitter maps it back to `shellEnabled`; the focused grading test and zero-finding self-scan preserve both contracts. Evidence: `src/process-exec-metadata.ts` (search: `export type ProcessExecMetadata`) and `src/line-rules.ts` (search: `shellEnabled: metadata.isShellEnabled`).
+
 **When NOT to use:** if the field is consumed by your own TypeScript code (not just at a serialization boundary), the mapping cost spreads everywhere and the dual surface becomes confusing. Bump the schema instead.
 
 ## Pattern: "version consistency" check verifies internal surfaces, not registry state
@@ -43,7 +45,7 @@ last_reviewed: 2026-05-25
 
 **Approach:**
 1. Reframe the step as "Version consistency" (`scripts/preflight-checks.sh`, search: `Version consistency`). Drop the `npm view` call entirely; drop `NPM_REGISTRY_URL` from environment docs.
-2. Extend `scripts/bump-version.sh --check` (search: `function check_version_lockstep`) to ALSO verify that `CHANGELOG.md`'s most-recent `## [version]` heading matches `package.json`. Two failure modes are both inconsistency: (a) package bumped without changelog entry, (b) changelog bumped without package bumped. The error message names both remediations - "run `scripts/bump-version.sh <changelog-version>` or add a CHANGELOG.md entry for <package-version>".
+2. Extend `scripts/bump-version.sh --check` (search: `check_version_lockstep()`) to ALSO verify that `CHANGELOG.md`'s most-recent `## [version]` heading matches `package.json`. Two failure modes are both inconsistency: (a) package bumped without changelog entry, (b) changelog bumped without package bumped. The error message names both remediations - "run `scripts/bump-version.sh <changelog-version>` or add a CHANGELOG.md entry for <package-version>".
 3. The "should we bump?" question moves out of the preflight - either it lives in the release process, or the user runs `npm view` ad-hoc. Local development never hits the noisy "already published" failure.
 
 **Evidence:** `scripts/preflight-checks.sh` `version_consistency_check`; `scripts/bump-version.sh` `check_version_lockstep` (reads `CHANGELOG.md` via `read_changelog_latest_version`). After the rework, `scripts/preflight-checks.sh` ran 5/5 green at 0.1.2 with the CHANGELOG, package files, and `src/constants.ts` all in agreement; a deliberately desynced CHANGELOG triggers a clear failure that names both fix paths.

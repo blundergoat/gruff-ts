@@ -1,25 +1,38 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-06-11
+last_reviewed: 2026-08-14
 ---
 
 # Schema + CLI surface footguns
 
 ## Footgun: score value semantics and JSON field shape are different contracts
 
-**Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED (M06 score clustering)
+**Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED
+**Evidence context:** M06 score clustering.
 
-`scoreReport` (`src/scoring.ts`, search: `function scoreReport`) owns both the public `gruff.analysis.v2` score object shape and the numeric semantics inside that shape. M06 added correlated-complexity clustering (`src/scoring.ts`, search: `function scoringPenaltyMap`) so `score.composite`, `score.pillars[].penalty`, and `score.topOffenders[].score` can change while the JSON field names stay unchanged. It is valid to keep `schemaVersion: "gruff.analysis.v2"` when only score values change, but comments/docs must not say "score semantics unchanged" or "composite score byte-stable" unless the math is actually untouched. When editing scoring or report wording, grep for `score semantics`, `field shape`, `byte-stable`, `gruff.analysis.v2`, and `schema unchanged`; then verify against `src/m06-rubric-refinements.test.ts` (search: `clusters correlated complexity penalties by symbol`) and ADR-009 (search: `score field names and detailed finding array stay unchanged`).
+`scoreReport` (`src/scoring.ts`, search: `function scoreReport`) owns both the public `gruff.analysis.v2` score object shape and the numeric semantics inside that shape. M06 added correlated-complexity clustering (`src/scoring.ts`, search: `function scoringPenaltyMap`) so `score.composite`, `score.pillars[].penalty`, and `score.topOffenders[].score` can change while the JSON field names stay unchanged. It is valid to keep `schemaVersion: "gruff.analysis.v2"` when only score values change, but comments/docs must not say "score semantics unchanged" or "composite score byte-stable" unless the math is actually untouched. When editing scoring or report wording, grep for `score semantics`, `field shape`, `byte-stable`, `gruff.analysis.v2`, and `schema unchanged`; then verify against `src/m06-rubric-refinements.test.ts` (search: `clusters correlated complexity penalties by symbol`) and `.goat-flow/learning-loop/decisions/ADR-009-cluster-correlated-complexity-score-penalties.md` (search: `score field names and detailed finding array stay unchanged`).
 
-## Footgun: docs, milestone plans, and these footguns still point at the pre-split `src/cli.ts`
+## Footgun: durable docs keep stale claims because no gate re-checks paths, anchors, or `Status` against live source
 
-**Status:** active | **Created:** 2026-05-30 | **Evidence:** OBSERVED (0.3.0 plan audit)
+**Status:** active | **Created:** 2026-05-30 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** After any module split or landed fix, grep every `search:` anchor against current source AND re-read every `Status:` in the touched bucket in the same change; never trust a green `stats --check` as proof that a durable claim still holds.
+**Trigger phase:** VERIFY
+**Incident count:** 3
+**Latest occurrence:** 2026-08-11
+**hallucination-risk:** high
 
-`src/cli.ts` was split into focused modules and is now a ~22-line shell, but many durable docs were never refreshed: they still say "in `src/cli.ts`" for symbols that moved, and still cite `gruff.analysis.v1` (the v1->v2 analysis bump shipped in 0.2.0). Verified relocations: `exitFor` -> `src/scoring.ts` (search: `function exitFor`); `analyse` -> `src/analyser.ts`; `buildProgram` / `normalizeOptions` -> `src/cli-program.ts`; `changedFiles` -> `src/findings-helpers.ts`; `writeBaseline` / `applyBaseline` -> `src/baseline.ts`; `makeFinding` -> `src/findings.ts`; `RULE_DESCRIPTORS` / `ruleDescriptors` -> `src/rules.ts`; `isDefaultIgnoredDir` -> `src/discovery.ts`. Stale carriers include `.goat-flow/architecture.md` (it said `exitFor` was in `cli-program.ts`), every `.goat-flow/tasks/0.3.0/M0x`-`M2x` plan's "Read first" list and `rg ... src/cli.ts` gates, and the entries in this very file. Always grep the `search:` anchor against current source; treat any file path or schema version stated in a doc or plan as advisory until confirmed. A `rg ... src/cli.ts` static-check gate now matches nothing and silently "passes."
+`src/cli.ts` was split into focused modules and is now a 24-line shell, but durable docs kept naming it as the home of symbols that moved. Verified relocations: `exitFor` -> `src/scoring.ts` (search: `function exitFor`); `analyse` -> `src/analyser.ts`; `buildProgram` / `normalizeOptions` -> `src/cli-program.ts`; `changedFiles` -> `src/findings-helpers.ts`; `writeBaseline` / `applyBaseline` -> `src/baseline.ts`; `makeFinding` -> `src/findings.ts`; `RULE_DESCRIPTORS` / `ruleDescriptors` -> `src/rules.ts`; `isDefaultIgnoredDir` -> `src/discovery.ts`; `startDashboard` -> `src/dashboard.ts`; `renderHtml` / `escapeHtml` -> `src/report-html.ts`; `analyseSensitiveData` -> `src/sensitive-data-rules.ts`.
+
+The reason this survived two audits is mechanical: no shipped gate resolves an anchor. `goat-flow stats --check` exited 0 with empty findings and warnings on 2026-08-08 while 13 citations across four footgun buckets still pointed at `src/cli.ts` for symbols living elsewhere, because the check confirms the cited *path* exists and `src/cli.ts` does exist. A `grep ... src/cli.ts` static gate has the same shape of blind spot: it matches nothing and silently passes. Only comparing `search:` anchors against live source finds this.
+
+Repointed on 2026-08-08 across `dashboard.md`, `schema-and-cli.md`, and `sensitive-data.md`. One survivor is correct and must stay: `src/cli.ts` (search: `buildProgram().parseAsync(argv)`) genuinely lives in the entrypoint. Treat any file path or schema version stated in a doc or plan as advisory until re-grepped.
+
+Third occurrence, 2026-08-11, in two shapes the 2026-08-08 sweep did not cover. First, the sweep repointed only learning-loop buckets, so the hot-path instruction files kept the same drift: the `CLAUDE.md` router table still listed `src/cli.ts` plus its test as the project's Source row. A doc sweep MUST include `CLAUDE.md`, `AGENTS.md`, and `.github/copilot-instructions.md`, which no bucket-scoped grep reaches. Second, the decay is not limited to paths: two entries in this bucket still read `Status: active` after their defects shipped fixes (`--format` argParser wiring, `shouldPromptForInit` stdout gating), and one cited `buildInitPromptContext`, a symbol that has never existed here. `stats --check` passed both because it validates cited paths and frontmatter dates, never the claim. The cheap detector is to re-run an entry's own stated reproduction: both stale entries collapsed in one command each.
 
 ## Footgun: routing migration-path reads through the strict schema validator silently clobbers user state
 
-**Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED (PR #4 review, codex P1)
+**Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED
+**Evidence context:** PR #4 review, Codex P1.
 
 `readExistingPreservedConfig` (`src/init-config.ts`, search: `function readExistingPreservedConfig`) originally called `loadConfig` to recover `paths.ignore` and `minimumSeverity` from the existing file before `init --force` regenerates it. `loadConfig` runs `applySchemaVersionConfig` (`src/config.ts`, search: `function applySchemaVersionConfig`), which throws `ConfigLoadError` on any config without `schemaVersion: gruff-ts.config.v0.1` - exactly the shape of every pre-0.1.2 config in the wild. The `try { ... } catch { return EMPTY }` swallowed the throw and the regenerated file lost the user's curated entries. The CHANGELOG simultaneously promised "init --force preserves … paths.ignore"; the implementation delivered the opposite for the migration cohort.
 
@@ -29,9 +42,10 @@ When introducing a strict validator for a new required field, audit every code p
 
 ## Footgun: catching only ConfigLoadError lets raw IO/parse errors escape the formatted error path
 
-**Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED (PR #4 review, codex P2)
+**Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED
+**Evidence context:** PR #4 review, Codex P2.
 
-`runWithConfigErrorHandling` (`src/cli-program.ts`, search: `async function runWithConfigErrorHandling`) catches `ConfigLoadError` and rethrows everything else. The catch is correct as written; the gap was upstream. `parseConfigFile` (`src/config.ts`, search: `function parseConfigFile`) called `readFileSync` and `JSON.parse` directly: `--config <missing>` produced raw `ENOENT`, malformed `.gruff.json` produced raw `SyntaxError`, both bypassed the "gruff-ts: config error\n  ..." stderr template and the documented exit-2 contract by dumping a Node stack.
+`runWithConfigErrorHandling` (`src/cli-program.ts`, search: `async function runWithConfigErrorHandling`) catches `ConfigLoadError` and rethrows everything else. The catch is correct as written; the gap was upstream. `parseConfigFile` (`src/config-parse.ts`, search: `function parseConfigFile`) called `readFileSync` and `JSON.parse` directly: `--config <missing>` produced raw `ENOENT`, malformed `.gruff.json` produced raw `SyntaxError`, both bypassed the "gruff-ts: config error\n  ..." stderr template and the documented exit-2 contract by dumping a Node stack.
 
 The fix wraps both producers (`readConfigSource` search: `function readConfigSource`, and `parseConfigSource` search: `function parseConfigSource`) so the IO and parse errors are rewrapped as `ConfigLoadError` at the boundary. The catch site stays unchanged.
 
@@ -47,19 +61,19 @@ Three string literals are part of the public output contract: `gruff.analysis.v2
 
 **Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
 
-`exitFor` (`src/cli.ts`, search: `function exitFor`) returns `2` if `report.diagnostics.length > 0` before it ever consults `failOn`. That means a single `read-error`, `missing-path`, `parse-error`, or `history-error` fails the run even with `--fail-on none`. Tests and CI users sometimes assume `--fail-on none` is "always exit 0" - it is not. If you add a new diagnostic type, that diagnostic alone will start failing every consumer's CI on first appearance.
+`exitFor` (`src/scoring.ts`, search: `function exitFor`) returns `2` if `report.diagnostics.length > 0` before it ever consults `failOn`. That means a single `read-error`, `missing-path`, `parse-error`, or `history-error` fails the run even with `--fail-on none`. Tests and CI users sometimes assume `--fail-on none` is "always exit 0" - it is not. If you add a new diagnostic type, that diagnostic alone will start failing every consumer's CI on first appearance.
 
 ## Footgun: `--no-baseline` and `--no-config` are CommanderJS auto-negations, not custom flags
 
 **Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
 
-`normalizeOptions` (`src/cli.ts`, search: `function normalizeOptions`) reads `rawOptions.config === false` and `rawOptions.noConfig === true` to decide whether to load the default `.gruff-ts.yaml`; same pattern for baseline (`baselineValue === false || rawOptions.noBaseline === true`). These come from Commander's `--no-config`/`--no-baseline` automatic negations, which set the *positive* option to `false`. If you migrate to a different CLI framework or change the option declaration, both branches must be reviewed together - testing only `noConfig` will leave silent gaps.
+`normalizeOptions` (`src/cli-program.ts`, search: `function normalizeOptions`) reads `rawOptions.config === false` and `rawOptions.noConfig === true` to decide whether to load the default `.gruff-ts.yaml`; same pattern for baseline (`baselineValue === false || rawOptions.noBaseline === true`). These come from Commander's `--no-config`/`--no-baseline` automatic negations, which set the *positive* option to `false`. If you migrate to a different CLI framework or change the option declaration, both branches must be reviewed together - testing only `noConfig` will leave silent gaps.
 
 ## Footgun: default-ignored directories are hardcoded and lowercase-only
 
 **Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
 
-`isDefaultIgnoredDir` (`src/cli.ts`, search: `function isDefaultIgnoredDir`) checks the FIRST path segment against a fixed lowercase list (`.git`, `.hg`, `.svn`, `.idea`, `.vscode`, `build`, `cache`, `coverage`, `dist`, `generated`, `node_modules`, `target`, `tmp`, `vendor`). Project conventions like `Build/`, `out/`, `__pycache__/`, `.next/`, `.turbo/`, `.venv/` are NOT ignored by default - they get walked, scanned, and reported. Adding to the list is one line, but every addition is a behavioural change for users who had findings inside those dirs accepted into their baseline.
+`isDefaultIgnoredDir` (`src/discovery.ts`, search: `function isDefaultIgnoredDir`) checks the FIRST path segment against a fixed lowercase list (`.git`, `.hg`, `.svn`, `.idea`, `.vscode`, `build`, `cache`, `coverage`, `dist`, `generated`, `node_modules`, `target`, `tmp`, `vendor`). Project conventions like `Build/`, `out/`, `__pycache__/`, `.next/`, `.turbo/`, `.venv/` are NOT ignored by default - they get walked, scanned, and reported. Adding to the list is one line, but every addition is a behavioural change for users who had findings inside those dirs accepted into their baseline.
 
 ## Footgun: `gruff-ts init --force` regenerates the whole YAML and can wipe user customisations
 
@@ -69,9 +83,18 @@ Three string literals are part of the public output contract: `gruff.analysis.v2
 
 ## Footgun: rule count and scanned-file-types are mirrored across many docs with no consistency test
 
-**Status:** active | **Created:** 2026-05-30 | **Evidence:** OBSERVED
+**Status:** active | **Created:** 2026-05-30 | **Evidence:** ACTUAL_MEASURED
+**Evidence context:** scanned-types half re-measured against HEAD on 2026-08-14; the rule-count half is still ungated.
 
 Removing `size.stylesheet-length` (the CSS-scan removal) required hand-editing the rule count in `package.json` description, `README.md` (catalogue row + the "contains N rules" line + the `size` pillar table row), `docs/rules.md` (header count + `## Pillar Counts` + the per-rule bullet), `.goat-flow/architecture.md`, plus the scanned-types sentence in `README.md` and `.goat-flow/glossary.md`. No test asserts any of these agree with `RULE_DESCRIPTORS`; `scripts/bump-version.sh --check` only checks the version string, not the rule count. Adding/removing a rule, or changing the discovery extension allowlist, silently drifts these unless you grep every surface - before claiming a rule add/remove is done, `grep -rn "<N> rules\|<N-1> rules" package.json README.md docs/ .goat-flow/` and reconcile. Separately: the discovery extension allowlist (`src/discovery.ts`, search: `function pushSourceFile`) is a DISTINCT surface from the catalogue - a file-type-gated rule goes dead when its type leaves the allowlist (`size.stylesheet-length` only ever fired on `.css` via `isCssPath`, so dropping `css` from discovery made the rule dead and it was deleted with it).
+
+Second occurrence, measured 2026-08-14, and the reason this entry now names a gate. The 0.3.0 sweep listed above covers user-facing docs only. It never reached `CLAUDE.md`, `AGENTS.md`, or `.github/copilot-instructions.md`, so all three went on telling every agent "It scans TypeScript, JavaScript, CSS, and common config files" from 0.3.0 through 0.5.0 - two minor releases of a hot-path claim that was false the day it was written. Measured: a temp project holding only `style.css` reports `paths.analysedFiles: 0`, and an explicit `analyse style.css` operand also reports `0` without listing the file under `skipped` or `missingPaths`, so the failure is silent in both discovery entry paths. The agent-facing cost is worse than a stale number: an agent that believes the claim wires gruff into a stylesheet pipeline and reads the resulting zero findings as a clean bill.
+
+Gate added: `src/release-truth.test.ts` (search: `discovery allowlist matches the documented scan surface`) writes one fixture per accepted extension and one per rejected extension, then asserts both counts. The assertion message carries the prose sweep list (search: `SCAN_SURFACE_SWEEP_NOTE`). Verified load-bearing by re-adding `"css"` to the allowlist and watching the test fail, then reverting.
+
+Corrected 2026-08-16 after a PR review reported the gate was weaker than this entry claimed. The counts alone caught **removals** and **re-adds of the five listed rejects** only. Adding an extension absent from `UNSCANNED_FIXTURE_FILES` moved neither count, because a fixture headcount can only move for a file kind somebody already wrote a fixture for. Measured on the pre-fix tree: appending `"properties"` to the text allowlist left `npm run check` fully green (`# pass 3 # fail 0`) - the exact widening this entry promised would fail. The counts were re-checking the fixtures, not the allowlist. Fixed by exporting the three lists from `src/discovery.ts` (search: `export const SCRIPT_FILE_EXTENSIONS`) and asserting them with `deepEqual`; the same `"properties"` edit now fails (`not ok 2`) and the counts stay to prove discovery honours the lists through the `.env` prefix and extensionless-name branches. General class: **a behavioural gate over an enumerated fixture set tests the fixtures, not the enumeration** - to gate a list, assert the list. When a doc sweep touches scanned types or rule counts, the sweep MUST include the three agent instruction files; no bucket-scoped or `docs/`-scoped grep reaches them.
+
+Rule-count half gated 2026-08-14 by `documented rule counts match the live catalogue` in the same file (search: `RULE_COUNT_SWEEP_NOTE`). It reads every `N rules` claim in `package.json`, `README.md`, `docs/rules.md`, and `.goat-flow/architecture.md`, plus both per-pillar tables (`docs/rules.md` `## Pillar Counts` and README's duplicate table), and compares all of them to `ruleDescriptors()`. Verified load-bearing against a wrong total and a wrong pillar row, each reverted. Two traps this exposed and closed: `README.md` publishes THREE separate count claims including its own pillar table, and the rule-removal pattern in `patterns/rule-catalogue.md` had listed only `docs/rules.md`, so its "grep the rule id first" hedge could never reach `README.md` or `package.json` - neither names a rule id. This entry stays active because the general class - a durable doc asserting a fact with no gate re-checking it - is only gated for these two specific claims; the same pattern file was simultaneously found asserting `gruff.analysis.v1` years after the v2 bump.
 
 ## Footgun: discovery has two entry paths - the walk and the explicit-file short-circuit
 
@@ -81,7 +104,8 @@ Removing `size.stylesheet-length` (the CSS-scan removal) required hand-editing t
 
 ## Footgun: changed-region diff scope is not the same as project context
 
-**Status:** active | **Created:** 2026-06-01 | **Updated:** 2026-06-11 | **Evidence:** OBSERVED (review feedback + focused regression tests + runtime repro)
+**Status:** active | **Created:** 2026-06-01 | **Updated:** 2026-06-11 | **Evidence:** ACTUAL_MEASURED
+**Evidence context:** review feedback, focused regression tests, and runtime reproduction.
 
 `analyse` (`src/analyser.ts`, search: `function analyse`) originally filtered `discovery.files` before scanning whenever `--diff` / `--since` produced a file/range scope. That made per-file work cheaper, but it also built `ProjectIndex` from a partial project. Cross-file rules then lied: a changed exported source covered only by an unchanged central test could get `test-quality.missing-nearby-test`, and graph rules could miss unchanged nodes that complete a cycle. The correct split is "scan with whole-project context, then filter emitted findings"; `suppressedCount` becomes the count of full-scan findings dropped by region filtering, so tests must not expect zero simply because only one changed file remains visible.
 
@@ -93,7 +117,8 @@ Tests: `src/changed-regions.test.ts` (search: `parses added target lines`, `skip
 
 ## Footgun: `check-ignore` answers both explicit-file and changed-file prefilter questions
 
-**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED (review feedback + ignore-authority tests)
+**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED
+**Evidence context:** review feedback plus ignore-authority tests.
 
 `check-ignore` (`src/check-ignore.ts`, search: `function checkIgnore`) calls `classifyPathIgnore` (`src/discovery.ts`) without knowing whether the caller is asking "would `analyse this-file.ts` scan it?" or "would `analyse . --diff ...` later skip this changed path during the walk?" Those are not identical for default/git ignores: explicit file operands bypass `.gitignore` by design, while a directory walk stops at built-in ignored parent dirs like `dist/` and `node_modules/`.
 
@@ -117,26 +142,32 @@ If a session starts with `M .gruff-ts.yaml` (or any other user-curated config) a
 
 `writeDefaultConfig` (search: `function writeDefaultConfig`) calls `existsSync(join(projectRoot, DEFAULT_CONFIG_FILE_NAME))` to decide whether to refuse a write. But config resolution treats four names as interchangeable defaults via `DEFAULT_CONFIG_FILES` (search: `const DEFAULT_CONFIG_FILES`): `.gruff-ts.yaml`, `.gruff.json`, `.gruff.yaml`, `.gruff.yml`, with `.gruff-ts.yaml` first (highest precedence). Reproduced in `/tmp/init-clobber-test/`: with only `.gruff.yaml` present, `gruff-ts init` printed `Wrote .gruff-ts.yaml` with no warning and the project's effective config silently switched to the registry-derived default. Use `defaultConfigPath(projectRoot)` (already exported from `src/config.ts`) when deciding to refuse, and treat `--force` as the explicit override. Same precedence list governs every other code path that "the default config" means - adding a fifth name without updating both `DEFAULT_CONFIG_FILES` and the init guard repeats this trap.
 
-## Footgun: `--format` argParser wiring is inconsistent across commands
-
-**Status:** active | **Created:** 2026-05-24 | **Evidence:** OBSERVED
-
-`src/cli-program.ts` defines `parseSummaryFormat` (search: `function parseSummaryFormat`) as a Commander argParser that throws `InvalidArgumentError` on anything other than `text` or `json`. `registerListRulesCommand` wires it in; `registerSummaryCommand` does not (search: `Output format: text or json.`). Instead, `summary` declares the option with no parser, forces `format: "text"` for the analyser run via `normalizeOptions`, and then coerces the *summary render* format with `rawOptions.format === "json" ? "json" : "text"` (search: `const summaryFormat`). Reproduced: `gruff-ts summary fixtures --format=garbage --no-config --no-baseline` prints normal text output with exit 0; `gruff-ts list-rules --format=garbage` errors with `argument 'garbage' is invalid`. Silent coercion breaks CI jobs that expect JSON - a typo like `--format=jsno` exits zero with text and downstream parsing fails on an unrelated line. When adding a `--format` flag to another command, decide explicitly: argParser everywhere, or silent fallback everywhere. The current half-and-half is the trap.
-
-## Footgun: `shouldPromptForInit` gates on stdin/stderr TTY but not stdout
-
-**Status:** active | **Created:** 2026-05-24 | **Evidence:** OBSERVED
-
-`shouldPromptForInit` (search: `function shouldPromptForInit`) checks `context.isStdinTty` and `context.isStderrTty`, but `InitPromptContext` (search: `interface InitPromptContext`) has no `isStdoutTty` field and `buildInitPromptContext` (search: `function buildInitPromptContext`) never reads `process.stdout.isTTY`. The pipeline-from-TTY-parent case stays unguarded: `gruff-ts analyse . --format=json | jq ...` invoked from an interactive shell still has both stdin and stderr as TTYs while stdout is a pipe, so the prompt fires on stderr and the pipeline blocks waiting for input the user is not expecting to provide. Add `isStdoutTty` to the context and require it true before prompting (or invert: require none of the three streams to be a pipe). Any future expansion of "is this run interactive?" must reason about all three streams, not just two.
-
 ## Footgun: the finding fingerprint embeds `line`, so a baseline keyed on it churns on pure code movement
 
-**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED (0.4.0 baseline plan audit)
+**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED
+**Evidence context:** 0.4.0 baseline plan audit.
 
 `makeFinding` (`src/findings.ts`, search: `const fingerprint = createHash`) hashes `[ruleId, filePath, line, symbol]` into the 16-hex fingerprint, and `applyBaseline` (`src/baseline.ts`, search: `function applyBaseline`) keys suppression on `(fingerprint, ruleId, filePath)`. Because `line` is inside the hash, inserting code above a baselined finding changes its line, changes its fingerprint, and resurfaces the finding as "new" even though the defect is unchanged - churn-by-design for any committed `gruff-baseline.json` that real code drifts under. The 0.4.0 M24 plan assumed the opposite ("a line-moved entry that still matches the same fingerprint"); that assumption is false against the current `makeFinding` and was the trigger for ADR-013, which moves the persistent baseline to PHPStan-style `(filePath, ruleId)` + `count` identity (no line). Keep the fingerprint for SARIF `partialFingerprints.gruffFingerprint` (search: `gruffFingerprint`) and report dedupe (`src/baseline.ts`, search: `function dedupeFindings`) - those WANT per-line identity - but never reintroduce `line` or `fingerprint` as the persistent-baseline match key. When editing baseline matching, grep `gruff.baseline.v`, `applyBaseline`, and `ADR-013`.
 
+## Resolved Entries
+
+## Footgun: `--format` argParser wiring is inconsistent across commands
+
+**Status:** resolved | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
+**Evidence context:** original reproduction re-run against HEAD on 2026-08-11.
+
+`summary` once declared `--format` with no Commander argParser and coerced the render format with `rawOptions.format === "json" ? "json" : "text"`, so a typo like `--format=jsno` exited 0 with text output and broke downstream JSON consumers, while `list-rules --format=garbage` failed loudly. Resolved by taking the "argParser everywhere" branch: every `--format` option in `src/cli-program.ts` now passes an explicit parser (`parseAnalyseFormat`, `parseSummaryFormat`, `parseHookFormat`, `parseReportFormat`), including `registerSummaryCommand` (search: `function registerSummaryCommand`). The original reproduction, `gruff-ts summary fixtures --format=garbage --no-config --no-baseline`, now exits 1 with `argument 'garbage' is invalid. must be text or json`. The surviving `const summaryFormat` coercion (search: `const summaryFormat`) is only type narrowing now, because Commander rejects out-of-range values before the action body runs. When adding a `--format` flag to another command, keep the parser; do not reintroduce the silent-fallback half.
+
+## Footgun: `shouldPromptForInit` gates on stdin/stderr TTY but not stdout
+
+**Status:** resolved | **Created:** 2026-05-24 | **Evidence:** OBSERVED
+**Evidence context:** re-verified at both the predicate and the caller on 2026-08-11.
+
+The interactive-init prompt originally tested only stdin and stderr, so `gruff-ts analyse . --format=json | jq ...` launched from an interactive shell still saw two TTYs and blocked the pipeline on a prompt the user never asked for. Resolved: `shouldPromptForInit` (`src/init-config.ts`, search: `function shouldPromptForInit`) now refuses to prompt unless all three streams are TTYs, `InitPromptContext` (search: `interface InitPromptContext`) carries `isStdoutTty`, and the caller reads the real handle (`src/cli-program.ts`, search: `isStdoutTty: process.stdout.isTTY === true`). Per-gate coverage is pinned in `src/init-config.test.ts` (search: `shouldPromptForInit suppresses on every individual opt-out gate`). Any future widening of "is this run interactive?" must still reason about all three streams. Note for anchor hygiene: the earlier text of this entry cited a `buildInitPromptContext` helper that has never existed in this repo, which is why the entry outlived its fix.
+
 ## Footgun: diff-base replay reconstructs only materialized files
 
-**Status:** resolved | **Created:** 2026-06-11 | **Evidence:** OBSERVED (runtime repro + regression test)
+**Status:** resolved | **Created:** 2026-06-11 | **Evidence:** ACTUAL_MEASURED
+**Evidence context:** runtime reproduction plus regression test.
 
 `stableIdentitiesFromDiffBase` (`src/hook-contract.ts`, search: `function stableIdentitiesFromDiffBase`) replays the base ref inside a temp tree built only from materialized paths. It originally materialized just current finding anchor paths, so a multi-file finding (`design.circular-import` anchors one SCC member) could not be reconstructed at the base whenever the other members anchored no findings: the base scan saw a partial import graph, the cycle identity never entered the base set, and a pre-existing cycle was reported as new - false blame in the agent hook. Resolved 2026-06-11 by materializing `metadata.files` members alongside anchors (search: `findingBasePaths`); regression pinned in `src/hook-contract.test.ts` (search: `materializes SCC members`). When adding any finding whose stable identity depends on files beyond its anchor, extend `findingBasePaths` - a partial replay silently breaks the new-only comparison, and a member missing at the base ref is the correct "this cycle is new" signal, not an error.

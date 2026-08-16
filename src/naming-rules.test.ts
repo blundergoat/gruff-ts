@@ -1,10 +1,47 @@
-// Naming-rule tests for blacklist config, boolean names, acronym casing, and overlap boundaries.
+// Naming-rule regression suite for configured blacklists, boolean names, casing, and overlaps.
+// Full-pipeline fixtures prove the findings a CLI or report user receives, including stable
+// identity and declaration-owner metadata at contract and lexical boundaries.
 import assert from "node:assert/strict";
 import { cwd } from "node:process";
 import test from "node:test";
 import { ruleDescriptors } from "./cli.ts";
 import { loadConfig, ruleEnabled } from "./config.ts";
+import { parameterNames } from "./findings-helpers.ts";
 import { analyseFixture, analyseProject } from "./test-fixtures.ts";
+
+// Returns only casing-drift diagnostics so these tests model what a CLI user sees without noise.
+// Stable contract: owner-boundary assertions stay independent of other rule families.
+function inconsistentCasingFindings(source: string) {
+  return analyseFixture(source).findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
+}
+
+// Both fixtures place their second spelling on line six because the assertion pins report identity.
+const MERGED_CONTRACT_DRIFT_LINE = 6;
+const FILE_WIDE_ACRONYM_DRIFT_LINE = 6;
+
+test("parameter parsing keeps commas inside defaults and type expressions", () => {
+  assert.deepEqual(
+    parameterNames("opts = { a: 1, b: 2 }, public readonly name: string, handler: (left: string, right: number) => void, values: Map<string, number>"),
+    [
+      { name: "opts", raw: "opts = { a: 1, b: 2 }" },
+      { name: "name", raw: "name: string" },
+      { name: "handler", raw: "handler: (left: string, right: number) => void" },
+      { name: "values", raw: "values: Map<string, number>" },
+    ],
+  );
+});
+
+test("parameter parsing keeps commas between comparison defaults", () => {
+  assert.deepEqual(parameterNames("lo = min<max, hi = max>min, tag: string").map(({ name }) => name), ["lo", "hi", "tag"]);
+});
+
+test("parameter parsing keeps commas inside generic call defaults", () => {
+  assert.deepEqual(parameterNames("fn = factory<T, U>(x), next = 1").map(({ name }) => name), ["fn", "next"]);
+});
+
+test("parameter parsing keeps commas inside generic arrow defaults", () => {
+  assert.deepEqual(parameterNames("fn = <T, U = string>(value: T) => value, tag: string").map(({ name }) => name), ["fn", "tag"]);
+});
 
 test("naming blacklists default to current behavior", () => {
   const report = analyseFixture(`function process(): void {}
@@ -72,6 +109,24 @@ test("naming short-variable flags single-letter parameter", () => {
   assert.equal(shorts.length, 1);
   assert.equal(shorts[0]?.symbol, "x");
   assert.equal(shorts[0]?.metadata?.surface, "parameter");
+});
+
+test("naming short-variable skips locally bound callable parameters", () => {
+  const report = analyseFixture(`const transform = (x: number): number => x + 1;
+const predicate = function (y: number): boolean {
+  return y > 0;
+};
+test("uses a callback", (t) => {
+  console.log(t);
+});
+function declared(z: number): number {
+  return z + 1;
+}
+`);
+  const parameters = report.findings
+    .filter((finding) => finding.ruleId === "naming.short-variable" && finding.metadata?.surface === "parameter")
+    .map((finding) => finding.symbol);
+  assert.deepEqual(parameters, ["z"]);
 });
 
 test("naming short-variable flags destructured single-letter", () => {
@@ -308,21 +363,266 @@ function adapt(row: UserRow): string {
   assert.deepEqual(findings[0]?.metadata?.variants, ["userID", "userId"]);
 });
 
+// A raw API contract and its normalized UI model are separate user-facing ownership boundaries.
+test("naming inconsistent-casing scopes fields to their interface owner", () => {
+  const separateContractFindings = inconsistentCasingFindings(`interface RawNote {
+  note_id: string;
+}
+
+interface NoteView {
+  noteId: string;
+}
+`);
+  assert.deepEqual(separateContractFindings, []);
+
+  const sharedContractFinding = inconsistentCasingFindings(`interface NoteView {
+  note_id: string;
+  noteId: string;
+}
+`)[0];
+  assert.equal(sharedContractFinding?.fingerprint, "931dd174033c0466");
+  assert.equal(sharedContractFinding?.stableIdentity, "1fae3dcbce266b17");
+  assert.equal(sharedContractFinding?.line, 3);
+  assert.equal(sharedContractFinding?.symbol, "noteId");
+  assert.deepEqual(sharedContractFinding?.metadata, {
+    variants: ["noteId", "note_id"],
+    ownerId: "interface:module:NoteView",
+    ownerKind: "interface",
+    ownerName: "NoteView",
+  });
+
+  const acceptedAliasFindings = analyseFixture(`interface NoteView {
+  note_id: string;
+  noteId: string;
+}
+`, { config: { allowlists: { acceptedCasingPairs: ["note_id:noteId"] } } }).findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
+  assert.deepEqual(acceptedAliasFindings, []);
+
+  const unlistedThirdVariant = analyseFixture(`interface NoteView {
+  note_id: string;
+  noteId: string;
+  noteID: string;
+}
+`, { config: { allowlists: { acceptedCasingPairs: ["note_id:noteId"] } } }).findings.filter((finding) => finding.ruleId === "naming.inconsistent-casing");
+  assert.equal(unlistedThirdVariant.length, 1);
+  assert.equal(unlistedThirdVariant[0]?.symbol, "noteID");
+});
+
+// Unrelated request handlers should not ask a CLI user to unify private local conventions.
+test("naming inconsistent-casing scopes locals to their nearest function", () => {
+  const separateFunctionFindings = inconsistentCasingFindings(`function readRaw(): void {
+  const note_id = "raw";
+  console.log(note_id);
+}
+
+function readView(): void {
+  const noteId = "view";
+  console.log(noteId);
+}
+`);
+  assert.deepEqual(separateFunctionFindings, []);
+});
+
+// Two lexical owners can share a source line and public fingerprint without being the same finding.
+test("naming inconsistent-casing keeps owner-distinct same-line findings", () => {
+  const findings = inconsistentCasingFindings(
+    'function first(note_id: string, noteId: string): void {} function second(): void { const note_id = "x"; const noteId = note_id; console.log(noteId); }\n',
+  );
+
+  assert.equal(findings.length, 2);
+  assert.equal(new Set(findings.map((finding) => finding.metadata.ownerId)).size, 2);
+  assert.equal(new Set(findings.map((finding) => finding.fingerprint)).size, 1);
+});
+
+// Stable fixture contract: two forms inside one handler retain the original identity tuple.
+test("naming inconsistent-casing keeps same-function drift reportable", () => {
+  const sharedFunctionSource = `function normalizeNote(): void {
+  const note_id = "raw";
+  const noteId = note_id;
+  console.log(noteId);
+}
+`;
+  const sharedFunctionFinding = inconsistentCasingFindings(sharedFunctionSource)[0];
+  const repeatedFunctionFinding = inconsistentCasingFindings(sharedFunctionSource)[0];
+  assert.equal(sharedFunctionFinding?.fingerprint, "931dd174033c0466");
+  assert.equal(sharedFunctionFinding?.stableIdentity, "1fae3dcbce266b17");
+  assert.equal(sharedFunctionFinding?.line, 3);
+  assert.equal(sharedFunctionFinding?.symbol, "noteId");
+  assert.equal(sharedFunctionFinding?.metadata?.ownerKind, "function");
+  assert.equal(sharedFunctionFinding?.metadata?.ownerName, "normalizeNote");
+  assert.match(String(sharedFunctionFinding?.metadata?.ownerId), /^function:\d+:\d+$/);
+  assert.deepEqual(repeatedFunctionFinding?.metadata, sharedFunctionFinding?.metadata);
+  assert.equal(String(sharedFunctionFinding?.metadata?.ownerId).includes("/"), false);
+});
+
+// Stable fixture contract: module declarations share one surface because users review them together.
+test("naming inconsistent-casing keeps module declarations grouped", () => {
+  const moduleFinding = inconsistentCasingFindings(`const note_id = "raw";
+const noteId = note_id;
+console.log(noteId);
+`)[0];
+  assert.equal(moduleFinding?.fingerprint, "d2d4bb3b30732a27");
+  assert.equal(moduleFinding?.metadata?.ownerId, "module");
+  assert.equal(moduleFinding?.metadata?.ownerKind, "module");
+  assert.equal(moduleFinding?.metadata?.ownerName, undefined);
+});
+
+// Type contracts and function parameters reach the same owner policy as existing inventory rows.
+test("naming inconsistent-casing owns type-literal fields and parameters", () => {
+  const typeLiteralFinding = inconsistentCasingFindings(`type NoteShape = {
+  note_id: string;
+  noteId: string;
+};
+`)[0];
+  assert.deepEqual(typeLiteralFinding?.metadata, {
+    variants: ["noteId", "note_id"],
+    ownerId: "type-literal:module:NoteShape",
+    ownerKind: "type-literal",
+    ownerName: "NoteShape",
+  });
+
+  const parameterFinding = inconsistentCasingFindings(`function normalizeNote(note_id: string): string {
+  const noteId = note_id;
+  return noteId;
+}
+`)[0];
+  assert.equal(parameterFinding?.metadata?.ownerKind, "function");
+  assert.equal(parameterFinding?.metadata?.ownerName, "normalizeNote");
+  assert.deepEqual(parameterFinding?.metadata?.variants, ["noteId", "note_id"]);
+});
+
+// A nested callback owns its locals, so its spelling does not create an outer-handler warning.
+test("naming inconsistent-casing isolates nested function locals", () => {
+  const nestedFunctionFindings = inconsistentCasingFindings(`function normalizeNote(): string {
+  const note_id = "raw";
+  function presentNote(): string {
+    const noteId = "view";
+    return noteId;
+  }
+  return note_id + presentNote();
+}
+`);
+  assert.deepEqual(nestedFunctionFindings, []);
+});
+
+// Stable fixture contract: TypeScript merges same-name interface blocks into one user surface.
+test("naming inconsistent-casing merges same-name interface declarations", () => {
+  const mergedContractFinding = inconsistentCasingFindings(`interface NoteView {
+  note_id: string;
+}
+
+interface NoteView {
+  noteId: string;
+}
+`)[0];
+  assert.equal(mergedContractFinding?.line, MERGED_CONTRACT_DRIFT_LINE);
+  assert.equal(mergedContractFinding?.symbol, "noteId");
+  assert.deepEqual(mergedContractFinding?.metadata, {
+    variants: ["noteId", "note_id"],
+    ownerId: "interface:module:NoteView",
+    ownerKind: "interface",
+    ownerName: "NoteView",
+  });
+});
+
+// Stable fixture contract: re-opening a namespace extends one declaration space, so drift between
+// its blocks is drift inside a single published interface and carries that namespace's owner id.
+test("naming inconsistent-casing merges contracts across re-opened namespace blocks", () => {
+  const reopenedNamespaceFinding = inconsistentCasingFindings(`namespace Api {
+  export interface Result {
+    item_id: string;
+  }
+}
+namespace Api {
+  export interface Result {
+    itemId: string;
+  }
+}
+`)[0];
+  assert.equal(reopenedNamespaceFinding?.symbol, "itemId");
+  assert.deepEqual(reopenedNamespaceFinding?.metadata, {
+    variants: ["itemId", "item_id"],
+    ownerId: "interface:module-block:Api:Result",
+    ownerKind: "interface",
+    ownerName: "Result",
+  });
+});
+
+// Stable fixture contract: the two spellings of a nested namespace are one declaration space to
+// TypeScript, so a reviewer must not be shown different owners for the same published contract.
+test("naming inconsistent-casing treats dotted and nested namespace paths as one scope", () => {
+  const dottedPathFinding = inconsistentCasingFindings(`namespace Api.Inner {
+  export interface Result {
+    item_id: string;
+  }
+}
+namespace Api {
+  export namespace Inner {
+    export interface Result {
+      itemId: string;
+    }
+  }
+}
+`)[0];
+  assert.equal(dottedPathFinding?.metadata?.ownerId, "interface:module-block:Api.Inner:Result");
+});
+
+// Stable fixture contract: unrelated namespaces keep separate contract scopes, so one contract
+// name declared in each is never compared and no cross-namespace diagnostic reaches the user.
+test("naming inconsistent-casing keeps same-name contracts in different namespaces apart", () => {
+  assert.deepEqual(
+    inconsistentCasingFindings(`namespace Alpha {
+  export interface Result {
+    item_id: string;
+  }
+}
+namespace Beta {
+  export interface Result {
+    itemId: string;
+  }
+}
+`),
+    [],
+  );
+});
+
+// Stable fixture contract: acronym diagnostics remain file-wide across separate function owners.
+test("naming acronym-case remains file-wide across declaration owners", () => {
+  const acronymFinding = analyseFixture(`function readRaw(): void {
+  const serviceURL = "raw";
+  console.log(serviceURL);
+}
+function readView(): void {
+  const serviceUrl = "view";
+  console.log(serviceUrl);
+}
+`).findings.find((finding) => finding.ruleId === "naming.acronym-case");
+  assert.equal(acronymFinding?.line, FILE_WIDE_ACRONYM_DRIFT_LINE);
+  assert.equal(acronymFinding?.symbol, "serviceUrl");
+  assert.equal(acronymFinding?.fingerprint, "47d338275a661d6e");
+  assert.equal(acronymFinding?.stableIdentity, "a482b06b398e16d4");
+  assert.deepEqual(acronymFinding?.metadata, { acronym: "URL", variants: ["title", "upper"] });
+});
+
 test("naming acronym-case flags URL next to Url in identifiers", () => {
+  // Both names choose their casing (camelCase), so URL beside Url is real drift; a SCREAMING
+  // constant in the same file is a convention-forced surface and carries no drift signal.
   const report = analyseFixture(`const databaseUrl = "/a";
-const SERVICE_URL = "/b";
-console.log(databaseUrl, SERVICE_URL);
+const rawURL = "/b";
+const SERVICE_URL = "/c";
+console.log(databaseUrl, rawURL, SERVICE_URL);
 `);
   const findings = report.findings.filter((finding) => finding.ruleId === "naming.acronym-case");
   assert.equal(findings.length, 1);
   assert.equal(findings[0]?.metadata?.acronym, "URL");
+  assert.equal(findings[0]?.symbol, "rawURL");
 });
 
 test("naming acronym-case respects custom knownAcronyms", () => {
   const report = analyseFixture(
     `const grpcChannel = "/a";
-const GRPC_HOST = "/b";
-console.log(grpcChannel, GRPC_HOST);
+const fastGRPCHost = "/b";
+console.log(grpcChannel, fastGRPCHost);
 `,
     { config: { allowlists: { knownAcronyms: ["grpc"] } } },
   );
@@ -429,11 +729,13 @@ test("naming rule pack catalogue coverage", () => {
 });
 
 test("naming rule pack config disable independence", () => {
+  // rawURL supplies the chosen upper-case acronym observation; a SCREAMING constant would be a
+  // convention-forced surface and keep the acronym rule quiet.
   const source = `const url_path = "/a";
 const urlPath = "/b";
 const databaseUrl = "/c";
-const DATABASE_URL = "/d";
-console.log(url_path, urlPath, databaseUrl, DATABASE_URL);
+const rawURL = "/d";
+console.log(url_path, urlPath, databaseUrl, rawURL);
 `;
   const both = analyseFixture(source);
   assert.equal(both.findings.some((finding) => finding.ruleId === "naming.inconsistent-casing"), true);
@@ -503,4 +805,76 @@ test("naming short-variable still flags for-in binding", () => {
 `);
   const findings = report.findings.filter((entry) => entry.ruleId === "naming.short-variable" && entry.symbol === "x");
   assert.equal(findings.length, 1);
+});
+
+// Proves reports distinguish safe local boolean renames from contract keys a user may map or configure.
+test("naming boolean-prefix emits contract-aware remediation actions without widening acceptance", () => {
+  const contractFindings = analyseFixture(`type BookingState = {
+  onlineBookableOnly: boolean;
+  selectedOnlineBookableOnly: boolean;
+  frontendLogging: boolean;
+  status: boolean;
+  label: string;
+};
+`).findings.filter((finding) => finding.ruleId === "naming.boolean-prefix");
+  assert.deepEqual(contractFindings.map((finding) => [finding.symbol, finding.metadata.remediationAction, finding.metadata.configurationKey]), [
+    ["onlineBookableOnly", "CONFIGURE", "allowlists.acceptedBooleanNames"],
+    ["selectedOnlineBookableOnly", "CONFIGURE", "allowlists.acceptedBooleanNames"],
+    ["frontendLogging", "CONFIGURE", "allowlists.acceptedBooleanNames"],
+    ["status", "CONFIGURE", "allowlists.acceptedBooleanNames"],
+  ]);
+  assert.equal(contractFindings.every((finding) => /complete replacement list|serialization boundary/.test(finding.remediation ?? "")), true);
+  assert.equal(contractFindings.some((finding) => "suggestedAction" in finding.metadata), false);
+  assert.equal(contractFindings[0]?.fingerprint, "b748b11095d15a5a");
+
+  const configuredContractFindings = analyseFixture(`interface BookingState {
+  onlineBookableOnly: boolean;
+  selectedOnlineBookableOnly: boolean;
+  frontendLogging: boolean;
+  status: boolean;
+  onlineBookableOnlyLabel: string;
+}
+`, { config: { allowlists: { acceptedBooleanNames: ["onlineBookableOnly", "selectedOnlineBookableOnly", "frontendLogging"] } } }).findings.filter((finding) => finding.ruleId === "naming.boolean-prefix");
+  assert.deepEqual(configuredContractFindings.map((finding) => finding.symbol), ["status"]);
+
+  const localFindings = analyseFixture(`const frontendLogging = true;
+function configure(status: boolean): void {
+  console.log(frontendLogging, status);
+}
+`, { config: { allowlists: { acceptedBooleanNames: ["frontendLogging", "status"] } } }).findings.filter((finding) => finding.ruleId === "naming.boolean-prefix");
+  assert.deepEqual(localFindings.map((finding) => [finding.metadata.surface, finding.metadata.remediationAction]), [["declaration", "APPLY"], ["parameter", "APPLY"]]);
+  assert.equal(localFindings.every((finding) => /Rename this boolean/.test(finding.remediation ?? "")), true);
+  assert.deepEqual(localFindings.map((finding) => finding.fingerprint), ["34b1bedb856c4634", "624fecfb81983768"]);
+});
+
+// Contract fixture proves class/file advice reaches only one-primary-export modules across export syntax.
+test("naming class-file mismatch requires one public declaration across export forms", () => {
+  // This fixture covers every supported public-declaration kind plus default and re-export spelling.
+  const exportScenarios = [
+    { fileName: "helpers.ts", source: "export class PaymentController {}\n", expected: 1 },
+    { fileName: "with-interface.ts", source: "export class PaymentController {}\nexport interface PaymentContract {}\n", expected: 0 },
+    { fileName: "focusModeTranscript.ts", source: "export type TranscriptState = { label: string };\nexport class TranscriptFocusController {}\n", expected: 0 },
+    { fileName: "with-enum.ts", source: "export class PaymentController {}\nexport enum PaymentStatus { Ready }\n", expected: 0 },
+    { fileName: "with-function.ts", source: "export class PaymentController {}\nexport function createPayment(): void {}\n", expected: 0 },
+    { fileName: "with-default.ts", source: "export class PaymentController {}\nexport default function createPayment(): void {}\n", expected: 0 },
+    { fileName: "with-reexport.ts", source: "export class PaymentController {}\nclass PaymentHelper {}\nexport { PaymentHelper };\n", expected: 0 },
+    { fileName: "default-helper.ts", source: "export default class PaymentController {}\n", expected: 1 },
+    { fileName: "reexport-helper.ts", source: "class PaymentController {}\nexport { PaymentController };\n", expected: 1 },
+    { fileName: "merged-helper.ts", source: "interface PaymentController { id: string; }\nclass PaymentController { id = \"payment\"; }\nexport { PaymentController };\n", expected: 1 },
+  ] as const;
+  const findingsByFile = new Map(exportScenarios.map((scenario) => [
+    scenario.fileName,
+    analyseFixture(scenario.source, { fileName: scenario.fileName }).findings.filter((finding) => finding.ruleId === "naming.class-file-mismatch"),
+  ] as const));
+  assert.deepEqual(exportScenarios.map((scenario) => findingsByFile.get(scenario.fileName)?.length), exportScenarios.map((scenario) => scenario.expected));
+  const retainedFinding = findingsByFile.get("helpers.ts")?.[0];
+  assert.equal(retainedFinding?.fingerprint, "41a529f0d00d2fcd");
+  assert.equal(retainedFinding?.stableIdentity, "ec592eb253c6c1b3");
+  assert.deepEqual(retainedFinding?.metadata, { className: "PaymentController", fileName: "helpers", candidatePrimaryExport: true, publicExports: ["class:PaymentController"] });
+
+  const acceptedPairFindings = analyseFixture("export class TranscriptFocusController {}\n", {
+    fileName: "focusModeTranscript.ts",
+    config: { allowlists: { acceptedClassFilePairs: ["focusModeTranscript:TranscriptFocusController"] } },
+  }).findings.filter((finding) => finding.ruleId === "naming.class-file-mismatch");
+  assert.deepEqual(acceptedPairFindings, []);
 });

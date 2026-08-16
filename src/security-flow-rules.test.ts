@@ -2,12 +2,13 @@
 // Broader same-line behavioural cases also live in security-and-config.test.ts.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyseSecurityFlow } from "./security-flow-rules.ts";
+import { analyseSecurityFlow, analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import type { SourceFile } from "./discovery.ts";
 import type { Finding } from "./types.ts";
 
 const fileStub = { displayPath: "sample.ts", absolutePath: "/sample.ts", isScript: true } as SourceFile;
 const expectedUnsafeDeserializationFindings = 4;
+const expectedResponseRedirectAliases = 3;
 const unsafeDeserializationSource = [
   "function inflate(req) {",
   "  const serialized = req.body.serialized;",
@@ -26,6 +27,14 @@ const unsafeDeserializationSource = [
 function analyseSecurityFixture(source: string): Finding[] {
   const findings: Finding[] = [];
   analyseSecurityFlow(fileStub, source, findings);
+  return findings;
+}
+
+// Analyse one executable line through the legacy same-line path used by full scans.
+// Invariant: tests can compare its sink precision independently from AST flow.
+function analyseSecurityLineFixture(sourceLine: string): Finding[] {
+  const findings: Finding[] = [];
+  analyseSecurityFlowLine(fileStub, sourceLine, 1, findings);
   return findings;
 }
 
@@ -48,6 +57,105 @@ test("flags external input reaching an open redirect sink across lines", () => {
     "function login(req, res) {\n  const next = req.query.next;\n  res.redirect(next);\n}\n",
   );
   assert.ok(findings.some((finding) => finding.ruleId === "security.open-redirect-candidate"));
+});
+
+test("flags imported framework redirect functions without widening local helper matching", () => {
+  const directFindings = analyseSecurityFixture('import { redirect } from "next/navigation";\nredirect(req.query.next);\n');
+  const aliasedFindings = analyseSecurityFixture(
+    'import { redirect as remixRedirect } from "@remix-run/node";\nfunction login(req) {\n  const next = req.query.next;\n  return remixRedirect(next);\n}\n',
+  );
+
+  assert.equal(directFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length, 1);
+  assert.equal(aliasedFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length, 1);
+});
+
+test("keeps lexically shadowed framework redirect imports quiet", () => {
+  const parameterFindings = analyseSecurityFixture(
+    'import { redirect } from "next/navigation";\nfunction login(req, redirect) {\n  return redirect(req.query.next);\n}\n',
+  );
+  const functionFindings = analyseSecurityFixture(
+    'import { redirect } from "next/navigation";\nfunction login(req) {\n  const next = req.query.next;\n  function redirect(target) { return target; }\n  return redirect(next);\n}\n',
+  );
+  const namespaceFindings = analyseSecurityFixture(
+    'import * as navigation from "next/navigation";\nfunction login(req) {\n  const navigation = { redirect: (target) => target };\n  return navigation.redirect(req.query.next);\n}\n',
+  );
+
+  assert.deepEqual(
+    [parameterFindings, functionFindings, namespaceFindings].map((findings) =>
+      findings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length,
+    ),
+    [0, 0, 0],
+  );
+});
+
+// Fixture purpose: a method or accessor name is a property key, not a binding in its own body, so
+// naming one after the import must not hide the sink a reviewer is being asked to sign off.
+// Stable contract: only a function declaration or named function expression shadows by its name.
+test("still reports framework redirects inside a method named after the import", () => {
+  const methodFindings = analyseSecurityFixture(
+    'import { redirect } from "next/navigation";\nclass Controller {\n  redirect(req) {\n    return redirect(req.query.next);\n  }\n}\n',
+  );
+  const objectMethodFindings = analyseSecurityFixture(
+    'import { redirect } from "next/navigation";\nconst handlers = {\n  redirect(req) {\n    return redirect(req.query.next);\n  },\n};\n',
+  );
+  const namedExpressionFindings = analyseSecurityFixture(
+    'import { redirect } from "next/navigation";\nconst login = function redirect(req) {\n  return redirect(req.query.next);\n};\n',
+  );
+
+  assert.deepEqual(
+    [methodFindings, objectMethodFindings, namedExpressionFindings].map((findings) =>
+      findings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length,
+    ),
+    [1, 1, 0],
+  );
+});
+
+// Fixture purpose: local redirect functions and router methods are not response sinks.
+// Stable contract: names alone never turn these helpers into open-redirect findings.
+test("keeps local redirect functions and router methods quiet", () => {
+  const routerFindings = analyseSecurityLineFixture("myRouter.redirect(req.query.next);");
+  const localFunctionFindings = analyseSecurityFixture(
+    [
+      "function handler(req) {",
+      "  const next = req.query.next;",
+      "  function redirect(target) { return target; }",
+      "  return redirect(next);",
+      "}",
+      "",
+    ].join("\n"),
+  );
+
+  assert.deepEqual(
+    {
+      router: routerFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length,
+      localFunction: localFunctionFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length,
+    },
+    { router: 0, localFunction: 0 },
+  );
+});
+
+// Fixture purpose: Express and Fastify response aliases cover same-line and cross-line paths.
+// Stable fixture contract: all three response-object redirects remain security sinks.
+test("keeps response redirect aliases as open-redirect sinks", () => {
+  const sameLineFindings = [
+    ...analyseSecurityLineFixture("res.redirect(req.query.next);"),
+    ...analyseSecurityLineFixture("reply.redirect(req.query.next);"),
+    ...analyseSecurityLineFixture("response.redirect(req.query.next);"),
+  ].filter((finding) => finding.ruleId === "security.open-redirect-candidate");
+  const flowFindings = analyseSecurityFixture(
+    [
+      "function handler(req, res, reply, response) {",
+      "  const next = req.query.next;",
+      "  res.redirect(next);",
+      "  reply.redirect(next);",
+      "  response.redirect(next);",
+      "}",
+      "",
+    ].join("\n"),
+  ).filter((finding) => finding.ruleId === "security.open-redirect-candidate");
+
+  assert.equal(sameLineFindings.length, expectedResponseRedirectAliases);
+  assert.equal(flowFindings.length, expectedResponseRedirectAliases);
 });
 
 test("flags external input assigned to location.href across lines", () => {
@@ -209,4 +317,23 @@ test("keeps taint intra-procedural across nested functions", () => {
 test("returns an array and does not throw on unparseable input", () => {
   const findings = analyseSecurityFixture("function ( { this is not valid <<< ts");
   assert.ok(Array.isArray(findings));
+});
+
+// Fixture purpose: React Router ships the same data-router `redirect` from its core and DOM
+// packages, and both were missing from the framework module allowlist.
+// Stable contract: recognised framework redirects fire; a locally declared helper stays quiet.
+test("flags React Router redirect imports without widening local helper matching", () => {
+  const coreFindings = analyseSecurityFixture(
+    'import { redirect } from "react-router";\nfunction login(req) {\n  const next = req.query.next;\n  return redirect(next);\n}\n',
+  );
+  const domFindings = analyseSecurityFixture(
+    'import { redirect as routerRedirect } from "react-router-dom";\nfunction login(req) {\n  const next = req.query.next;\n  return routerRedirect(next);\n}\n',
+  );
+  const localFindings = analyseSecurityFixture(
+    'function redirect(target) {\n  return target;\n}\nfunction login(req) {\n  const next = req.query.next;\n  return redirect(next);\n}\n',
+  );
+
+  assert.equal(coreFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length, 1);
+  assert.equal(domFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length, 1);
+  assert.equal(localFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length, 0);
 });

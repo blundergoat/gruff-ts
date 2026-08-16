@@ -2,6 +2,7 @@
 // report only when an external-input token is visibly inside a known risky sink expression.
 import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
+import { parseScript } from "./parsed-script.ts";
 import type { Finding } from "./types.ts";
 import { createRequire } from "node:module";
 
@@ -14,25 +15,19 @@ const typescriptSyntax = require("typescript") as typeof import("typescript");
 type TsSourceFile = import("typescript").SourceFile;
 type TsNode = import("typescript").Node;
 type TsCallLikeExpression = import("typescript").CallExpression | import("typescript").NewExpression;
+type TsNamedImportBindings = import("typescript").NamedImportBindings;
 
 // Parse a discovered script to a syntax-only AST; null on non-parseable input so
 // callers use the same-line scan. Parser exceptions recover to null as fallback.
+// Routed through the shared parse boundary rather than calling `createSourceFile` here, so this
+// fallback is counted: an analysis-path caller that stopped threading the run's parse would double
+// the measured parse count instead of re-parsing every script undetected.
 function getSourceFile(file: SourceFile, source: string): TsSourceFile | null {
   try {
-    return typescriptSyntax.createSourceFile(file.displayPath, source, typescriptSyntax.ScriptTarget.Latest, true, scriptKindFor(file.displayPath));
+    return parseScript(file, source)?.sourceFile ?? null;
   } catch {
     return null;
   }
-}
-
-// Maps file extensions to TypeScript parser script kind so JSX files parse with JSX grammar.
-function scriptKindFor(path: string) {
-  if (path.endsWith(".tsx")) return typescriptSyntax.ScriptKind.TSX;
-  if (path.endsWith(".jsx")) return typescriptSyntax.ScriptKind.JSX;
-  if (path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs")) {
-    return typescriptSyntax.ScriptKind.JS;
-  }
-  return typescriptSyntax.ScriptKind.TS;
 }
 
 // Depth-first walk; return false from visit to skip a node's children.
@@ -92,7 +87,7 @@ const SECURITY_FLOW_RULES: readonly SecurityFlowRule[] = [
     message: "External input reaches a redirect or browser navigation sink.",
     sinkKind: "redirect",
     remediation: "Redirect only to relative paths or destinations from an allowlist.",
-    callPattern: /\b(?:(?:res|reply|response)\.redirect|redirect|(?:location|window\.location)\.(?:assign|replace))\s*\(|\b(?:location|window\.location)\.href\s*=/g,
+    callPattern: /\b(?:(?:res|reply|response)\.redirect|(?:location|window\.location)\.(?:assign|replace))\s*\(|\b(?:location|window\.location)\.href\s*=/g,
   },
   {
     ruleId: "security.dynamic-regexp",
@@ -179,6 +174,7 @@ interface AstSinkInput {
   call: TsCallLikeExpression;
   sourceFile: TsSourceFile;
   unsafeXmlParsers: ReadonlySet<string>;
+  isFrameworkRedirectCallee: boolean;
 }
 
 // Describes one AST sink candidate. Some AST-only rules report same-line direct-source
@@ -213,10 +209,10 @@ const AST_FLOW_SINKS: readonly AstFlowSink[] = [
   {
     ruleId: "security.open-redirect-candidate",
     sinkKind: "redirect",
-    isSink: ({ callee }) =>
+    isSink: ({ callee, isFrameworkRedirectCallee }) =>
       /^(?:res|reply|response)\.redirect$/.test(callee) ||
-      /^redirect$/.test(callee) ||
-      /^(?:location|window\.location)\.(?:assign|replace)$/.test(callee),
+      /^(?:location|window\.location)\.(?:assign|replace)$/.test(callee) ||
+      isFrameworkRedirectCallee,
   },
   {
     ruleId: "security.dynamic-regexp",
@@ -240,6 +236,50 @@ const AST_FLOW_SINKS: readonly AstFlowSink[] = [
 const MAX_ALIAS_DEPTH = 2;
 const MAX_SCOPE_NODES = 4000;
 
+// Framework redirects are plain imported functions, so their local alias is the syntax-only
+// evidence that distinguishes them from unrelated helpers named `redirect`.
+function importedFrameworkRedirectCallees(parsedSource: TsSourceFile): ReadonlySet<string> {
+  const callees = new Set<string>();
+  for (const statement of parsedSource.statements) {
+    if (!typescriptSyntax.isImportDeclaration(statement) || !typescriptSyntax.isStringLiteral(statement.moduleSpecifier)) {
+      continue;
+    }
+    if (!isFrameworkRedirectModule(statement.moduleSpecifier.text)) {
+      continue;
+    }
+    const importClause = statement.importClause;
+    if (!importClause || importClause.isTypeOnly || !importClause.namedBindings) {
+      continue;
+    }
+    collectRedirectAliases(importClause.namedBindings, callees);
+  }
+  return callees;
+}
+
+// Only these framework modules export a throw-to-navigate redirect; matching the module first
+// avoids treating every imported `redirect` helper as a navigation sink. React Router ships the
+// same data-router `redirect` from both its core and DOM packages.
+function isFrameworkRedirectModule(moduleName: string): boolean {
+  return moduleName === "next/navigation" ||
+    /^react-router(?:-dom)?$/.test(moduleName) ||
+    /^@remix-run\/(?:node|cloudflare|deno|server-runtime)$/.test(moduleName);
+}
+
+// Records the local alias each binding style gives the framework `redirect` export: the member
+// path for a namespace import, the (possibly renamed) local name for named imports.
+function collectRedirectAliases(namedBindings: TsNamedImportBindings, callees: Set<string>): void {
+  if (typescriptSyntax.isNamespaceImport(namedBindings)) {
+    callees.add(`${namedBindings.name.text}.redirect`);
+    return;
+  }
+  for (const element of namedBindings.elements) {
+    const importedName = element.propertyName?.text ?? element.name.text;
+    if (!element.isTypeOnly && importedName === "redirect") {
+      callees.add(element.name.text);
+    }
+  }
+}
+
 /**
  * Per-file AST pass. Parses the file once (syntax-only) and reports cross-line
  * source-to-sink flows for the existing security-flow rule ids. Does nothing
@@ -249,9 +289,12 @@ const MAX_SCOPE_NODES = 4000;
  * @param file - discovered script file whose display path anchors emitted fingerprints
  * @param source - full source text to parse with syntax-only TypeScript APIs
  * @param findings - accumulator that receives additional AST flow findings
+ * @param sharedSourceFile - the run's shared parse result; null/undefined falls back to a local parse
  */
-export function analyseSecurityFlow(file: SourceFile, source: string, findings: Finding[]): void {
-  const parsedSource = getSourceFile(file, source);
+export function analyseSecurityFlow(file: SourceFile, source: string, findings: Finding[], sharedSourceFile?: TsSourceFile | null): void {
+  // Prefer the shared per-run parse (one parse per script); the local parse remains only as the
+  // fallback for direct callers that have no boundary result, such as focused unit tests.
+  const parsedSource = sharedSourceFile ?? getSourceFile(file, source);
   if (!parsedSource) {
     return;
   }
@@ -260,6 +303,7 @@ export function analyseSecurityFlow(file: SourceFile, source: string, findings: 
   // partial result. The same-line scan remains the fallback for such files.
   const flowFindings: Finding[] = [];
   try {
+    const frameworkRedirectCallees = importedFrameworkRedirectCallees(parsedSource);
     const scopes: TsNode[] = [parsedSource];
     walk(parsedSource, (node) => {
       if (isFunctionLike(node)) {
@@ -267,7 +311,7 @@ export function analyseSecurityFlow(file: SourceFile, source: string, findings: 
       }
     });
     for (const scope of scopes) {
-      analyseFlowScope(parsedSource, scope, file, flowFindings);
+      analyseFlowScope(parsedSource, scope, frameworkRedirectCallees, file, flowFindings);
     }
   } catch {
     return;
@@ -286,7 +330,13 @@ export function analyseSecurityFlow(file: SourceFile, source: string, findings: 
  * @param file - discovered file used for stable finding locations
  * @param findings - accumulator that receives sink findings for this scope
  */
-function analyseFlowScope(parsedSource: TsSourceFile, scopeOwner: TsNode, file: SourceFile, findings: Finding[]): void {
+function analyseFlowScope(
+  parsedSource: TsSourceFile,
+  scopeOwner: TsNode,
+  frameworkRedirectCallees: ReadonlySet<string>,
+  file: SourceFile,
+  findings: Finding[],
+): void {
   const tainted = new Map<string, TaintRecord>();
   const unsafeXmlParsers = new Set<string>();
   let budget = MAX_SCOPE_NODES;
@@ -300,7 +350,7 @@ function analyseFlowScope(parsedSource: TsSourceFile, scopeOwner: TsNode, file: 
     }
     recordUnsafeXmlParser(parsedSource, node, unsafeXmlParsers);
     recordTaint(parsedSource, node, tainted);
-    reportSink(parsedSource, node, tainted, unsafeXmlParsers, file, findings);
+    reportSink(parsedSource, node, tainted, unsafeXmlParsers, frameworkRedirectCallees, file, findings);
     return;
   });
 }
@@ -385,13 +435,14 @@ function recordUnsafeXmlParser(parsedSource: TsSourceFile, node: TsNode, unsafeX
   }
 }
 
-// Emits a finding when a sink call consumes a tainted local. Because legacy same-line
-// scanners own existing rule ids, same-line AST reports are limited to AST-only rules.
+// Reports a finding when a sink call consumes a tainted local. Invariant: legacy scanners retain
+// same-line ownership except for imported framework redirects, which have no safe line-regex equivalent.
 function reportSink(
   parsedSource: TsSourceFile,
   node: TsNode,
   tainted: Map<string, TaintRecord>,
   unsafeXmlParsers: ReadonlySet<string>,
+  frameworkRedirectCallees: ReadonlySet<string>,
   file: SourceFile,
   findings: Finding[],
 ): void {
@@ -401,7 +452,8 @@ function reportSink(
     return;
   }
   const callee = call.expression.getText(parsedSource);
-  const sink = AST_FLOW_SINKS.find((candidate) => candidate.isSink({ callee, call, sourceFile: parsedSource, unsafeXmlParsers }));
+  const isFrameworkRedirectCallee = frameworkRedirectCallees.has(callee) && !isFrameworkRedirectShadowed(call, callee);
+  const sink = AST_FLOW_SINKS.find((candidate) => candidate.isSink({ callee, call, sourceFile: parsedSource, unsafeXmlParsers, isFrameworkRedirectCallee }));
   if (!sink) {
     return;
   }
@@ -410,10 +462,103 @@ function reportSink(
     return;
   }
   const sinkLine = lineIndexOf(parsedSource, call);
-  if (sinkLine === hit.line && sink.shouldReportSameLine !== true) {
+  const reportsSameLine = sink.shouldReportSameLine === true || isFrameworkRedirectCallee;
+  if (sinkLine === hit.line && !reportsSameLine) {
     return;
   }
   findings.push(flowFinding(file, sinkLine, sink.ruleId, sink.sinkKind, hit.kind, hit.depth));
+}
+
+// Imported redirect aliases stop being sink evidence inside a lexical scope that declares the
+// alias again. Syntax-only binding checks cover parameters and local value declarations.
+function isFrameworkRedirectShadowed(call: TsCallLikeExpression, callee: string): boolean {
+  const rootName = callee.split(".", 1)[0];
+  if (!rootName) {
+    return false;
+  }
+  for (let ancestor = call.parent; ancestor && !typescriptSyntax.isSourceFile(ancestor); ancestor = ancestor.parent) {
+    if (functionLikeBindsName(ancestor, rootName) || lexicalStatementsBindName(ancestor, rootName) || loopOrCatchBindsName(ancestor, rootName)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Function parameters bind identifiers throughout their body. Only a declaration or a named
+// function expression also binds its own name there - a method or accessor name is a property key
+// reached through the object, so a method called `redirect` still sees the imported `redirect`.
+function functionLikeBindsName(node: TsNode, name: string): boolean {
+  if (!isFunctionLike(node)) {
+    return false;
+  }
+  const functionNode = node as TsNode & {
+    name?: import("typescript").PropertyName;
+    parameters: readonly import("typescript").ParameterDeclaration[];
+  };
+  const bindsOwnName = typescriptSyntax.isFunctionDeclaration(node) || typescriptSyntax.isFunctionExpression(node);
+  if (bindsOwnName && functionNode.name && typescriptSyntax.isIdentifier(functionNode.name) && functionNode.name.text === name) {
+    return true;
+  }
+  return functionNode.parameters.some((parameter) => bindingNameContains(parameter.name, name));
+}
+
+// Block-level value declarations shadow an import across the whole lexical block, including its
+// temporal-dead-zone prefix. Case clauses carry their own direct statement list.
+function lexicalStatementsBindName(node: TsNode, name: string): boolean {
+  if (typescriptSyntax.isBlock(node) || typescriptSyntax.isModuleBlock(node) || typescriptSyntax.isCaseClause(node) || typescriptSyntax.isDefaultClause(node)) {
+    return node.statements.some((statement) => statementBindsName(statement, name));
+  }
+  return false;
+}
+
+// Loops and catch clauses introduce bindings outside a nested statement list.
+function loopOrCatchBindsName(node: TsNode, name: string): boolean {
+  if (typescriptSyntax.isCatchClause(node)) {
+    return node.variableDeclaration ? bindingNameContains(node.variableDeclaration.name, name) : false;
+  }
+  if (typescriptSyntax.isForStatement(node)) {
+    return node.initializer && typescriptSyntax.isVariableDeclarationList(node.initializer)
+      ? variableDeclarationListBindsName(node.initializer, name)
+      : false;
+  }
+  if (typescriptSyntax.isForInStatement(node) || typescriptSyntax.isForOfStatement(node)) {
+    return typescriptSyntax.isVariableDeclarationList(node.initializer)
+      ? variableDeclarationListBindsName(node.initializer, name)
+      : false;
+  }
+  return false;
+}
+
+// Only runtime declarations count: type-only declarations do not shadow an imported value.
+function statementBindsName(statement: import("typescript").Statement, name: string): boolean {
+  if (typescriptSyntax.isVariableStatement(statement)) {
+    return variableDeclarationListBindsName(statement.declarationList, name);
+  }
+  if (typescriptSyntax.isFunctionDeclaration(statement) || typescriptSyntax.isClassDeclaration(statement) || typescriptSyntax.isEnumDeclaration(statement)) {
+    return statement.name?.text === name;
+  }
+  if (typescriptSyntax.isImportEqualsDeclaration(statement)) {
+    return statement.name.text === name;
+  }
+  if (typescriptSyntax.isModuleDeclaration(statement) && typescriptSyntax.isIdentifier(statement.name)) {
+    return statement.name.text === name;
+  }
+  return false;
+}
+
+// Variable declaration lists may contain identifier or destructuring bindings.
+function variableDeclarationListBindsName(list: import("typescript").VariableDeclarationList, name: string): boolean {
+  return list.declarations.some((declaration) => bindingNameContains(declaration.name, name));
+}
+
+// Recurses through object and array binding patterns without inspecting property names.
+function bindingNameContains(bindingName: import("typescript").BindingName, name: string): boolean {
+  if (typescriptSyntax.isIdentifier(bindingName)) {
+    return bindingName.text === name;
+  }
+  return bindingName.elements.some((element) =>
+    !typescriptSyntax.isOmittedExpression(element) && bindingNameContains(element.name, name),
+  );
 }
 
 // Reports redirect assignment flows; invariant: same-line cases stay with the legacy scanner.

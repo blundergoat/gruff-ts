@@ -9,7 +9,7 @@ import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts";
 import { type NamingSurface, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
-import { processExecMetadata } from "./process-exec-metadata.ts";
+import { processExecMetadata, type ProcessExecArgumentSource, type ProcessExecMetadata } from "./process-exec-metadata.ts";
 import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
@@ -571,20 +571,69 @@ function analyseProcessExecCalls(file: SourceFile, rawSource: string, codeSource
     if (isSafeProcessExecCall(file, callName, rawSource, start, rawSegment, codeSegment)) {
       continue;
     }
+    const metadata = processExecMetadata(callName, rawSource, start, rawSegment, codeSegment);
+    const grade = processExecGrade(metadata);
     findings.push(
       makeFinding({
         ruleId: "security.process-exec",
-        message: "Child-process execution is used; validate arguments are not user-controlled.",
+        message: grade.message,
         filePath: file.displayPath,
         line: byteLine(codeSource, start),
-        severity: "warning",
+        severity: grade.severity,
         pillar: "security",
         confidence: "high",
-        remediation: "Review the command source and shell mode; prefer fixed command vectors with shell disabled.",
-        metadata: processExecMetadata(callName, rawSource, start, rawSegment, codeSegment),
+        remediation: grade.remediation,
+        metadata: {
+          callName: metadata.callName,
+          argumentSource: metadata.argumentSource,
+          shellEnabled: metadata.isShellEnabled,
+        },
       }),
     );
   }
+}
+
+// Every command-source shape has one compile-time class, so adding a metadata variant cannot fall
+// through to a quieter grade until its security posture is chosen explicitly.
+const PROCESS_EXEC_SOURCE_CLASSES = {
+  literal: "fixed",
+  "process-exec-path": "fixed",
+  "local-const": "fixed",
+  "local-builder": "dynamic",
+  parameter: "dynamic",
+  member: "dynamic",
+  template: "dynamic",
+  unknown: "dynamic",
+} as const satisfies Record<ProcessExecArgumentSource, "dynamic" | "fixed">;
+
+/*
+ * Severity follows the evidence the metadata already carries: only a shell-enabled call with a
+ * dynamic command keeps the warning. A fixed vector with the shell disabled becomes advisory and
+ * its message says what would make it dangerous instead of implying it already is; everything in
+ * between stays advisory with the review prompt, so the security pillar is not permanently
+ * occupied by calls the reviewer cannot change.
+ */
+function processExecGrade(metadata: ProcessExecMetadata): { severity: Severity; message: string; remediation: string } {
+  const sourceClass = PROCESS_EXEC_SOURCE_CLASSES[metadata.argumentSource];
+  if (metadata.isShellEnabled && sourceClass === "dynamic") {
+    return {
+      severity: "warning",
+      message: "Child-process execution is used; validate arguments are not user-controlled.",
+      remediation: "Review the command source and shell mode; prefer fixed command vectors with shell disabled.",
+    };
+  }
+  if (!metadata.isShellEnabled && sourceClass === "fixed") {
+    return {
+      severity: "advisory",
+      message: "Child-process execution uses a fixed command with shell disabled.",
+      remediation: "No action needed while the command stays fixed; revisit if the command or its arguments start deriving from user input or a shell gets enabled.",
+    };
+  }
+  return {
+    severity: "advisory",
+    message: "Child-process execution is used; validate arguments are not user-controlled.",
+    remediation: "Review the command source and shell mode; prefer fixed command vectors with shell disabled.",
+  };
 }
 
 // Excludes ordinary member calls such as `pattern.exec(...)`; module receivers like `cp.exec(...)`

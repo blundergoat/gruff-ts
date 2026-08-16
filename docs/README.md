@@ -18,7 +18,4 @@ Use these docs with the top-level README for the stable user-facing surface.
 
 ## Shared Contract
 
-Cross-language naming and CLI expectations live in
-[`../../CONTRACT.md`](../../CONTRACT.md). TypeScript keeps `summary` analysis
-flags as documented extensions while also supporting the common `--format` and
-`--top` summary surface.
+`gruff-ts` follows the cross-language naming and CLI expectations shared across the gruff family (`gruff-go`, `gruff-php`, `gruff-py`, `gruff-rs`). It keeps its `summary` analysis flags as documented extensions while also supporting the common `--format` and `--top` summary surface.

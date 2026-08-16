@@ -26,6 +26,7 @@ test("profile minimal enables only the security and sensitive-data pillars", () 
 });
 
 test("profile recommended reproduces the zero-config rule mix", () => {
+  // Sorted rule-id list: the profile parity contract compares which rules fired, not counts.
   const ruleMix = (report: AnalysisReport): string[] => report.findings.map((finding) => finding.ruleId).sort();
   const recommended = analyseProject(PROFILE_PILLAR_FIXTURE, { profile: "gruff.recommended" });
   const zeroConfig = analyseProject(PROFILE_PILLAR_FIXTURE, { shouldSkipConfig: true });

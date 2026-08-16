@@ -10,6 +10,9 @@ interface FindingInput {
   filePath: string;
   line?: number;
   endLine?: number;
+  // One-based match column. Deliberately NOT part of the fingerprint hash (ADR-017): it only
+  // discriminates same-line occurrences in report dedupe and enriches SARIF/JSON locations.
+  column?: number;
   severity: Severity;
   pillar: Pillar;
   confidence: Confidence;
@@ -32,6 +35,7 @@ function makeFinding(input: FindingInput): Finding {
     filePath: input.filePath,
     ...(input.line ? { line: input.line } : {}),
     ...(input.endLine ? { endLine: input.endLine } : {}),
+    ...(input.column ? { column: input.column } : {}),
     severity: input.severity,
     pillar: input.pillar,
     secondaryPillars: [],

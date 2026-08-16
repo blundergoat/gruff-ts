@@ -41,8 +41,10 @@ itself suppress any rule family.
 
 ## Complexity
 
-- `complexity.cognitive` (warning; high confidence; threshold 15): Flags functions with high combined branch and nesting complexity.
-- `complexity.cyclomatic` (warning; high confidence; threshold 15): Flags functions with many independent branch paths.
+- `complexity.cognitive` (warning; high confidence; threshold 15): Flags syntax-aware decisions plus nested `if`, loop, `switch`, `catch`, and ternary depth. Object literals, callback wrappers, classes, and ordinary blocks do not add nesting; `else if` remains at peer depth and switch cases do not stack.
+- `complexity.cyclomatic` (warning; high confidence; threshold 15): Starts at one, then counts each `if`, loop, `catch`, non-default `case`, ternary, `&&`, and `||` syntax node once. The `switch` wrapper, `default`, `??`, optional property/element/call chains, and non-null assertions add zero.
+
+Both rules consume the same parsed callable measurement as `docs.missing-why-for-complex-code`. A nested callable already reported as its own block is measured separately; an anonymous callback without its own block stays part of the nearest reported owner. Complexity findings retain `metadata.complexity` and `metadata.threshold` and add a fixed `metadata.breakdown` object with `if`, `loop`, `catch`, `case`, `ternary`, `logicalAnd`, `logicalOr`, and `maxNesting` counts.
 
 ## Dead Code
 
@@ -58,7 +60,7 @@ itself suppress any rule family.
 
 ## Documentation
 
-- `docs.fixture-purpose-missing` (advisory; medium confidence): Flags large or scanner-relevant fixtures without a nearby purpose comment.
+- `docs.fixture-purpose-missing` (advisory; medium confidence): Flags large or scanner-relevant fixtures without a nearby purpose comment. A comment on or directly above the fixture (or above the test declaration for setup findings) clears it when it uses the purpose vocabulary or is a substantive explanation of eight or more words; stacked `//` headers count as one comment.
 - `docs.magic-threshold-without-rationale` (advisory; medium confidence): Flags threshold-like numeric values without a nearby rationale comment.
 - `docs.missing-error-behavior-doc` (advisory; medium confidence): Flags commented functions whose error behavior is not described.
 - `docs.missing-exported-function-doc` (warning; medium confidence): Flags exported functions without a leading maintainer comment.
@@ -70,12 +72,33 @@ itself suppress any rule family.
 - `docs.missing-public-doc` (advisory; medium confidence): Flags exported class, type, and enum APIs without a nearby doc comment.
 - `docs.missing-return-tag` (advisory; medium confidence): Flags documented non-void exports without @returns.
 - `docs.missing-side-effect-doc` (advisory; medium confidence): Flags commented functions that perform observable side effects without naming them.
-- `docs.missing-why-for-complex-code` (advisory; medium confidence): Flags comments on complex functions that do not explain why the shape exists.
+- `docs.missing-why-for-complex-code` (advisory; medium confidence): Flags comments on complex functions that do not explain why the shape exists. Accepted rationale vocabulary includes `because`, `why`, `intentional`, `tradeoff`/`trade-off`, `compat`/`compatible`/`compatibility`, `avoid`, and `preserve`, plus the phrases `due to`, `so that`, `in order to`, and `required by`. A contiguous run of leading `//` lines is evaluated as one comment; block comments are already evaluated as one body.
 - `docs.stale-comment` (advisory; medium confidence): Flags comments that reference missing files, unknown rules, stale CLI flags, or the wrong declaration.
 - `docs.stale-param-tag` (advisory; medium confidence): Flags @param tags for parameters no longer in the signature.
 - `docs.suppression-without-rationale` (advisory; medium confidence): Flags lint, formatter, coverage, or tool suppressions without a maintainer rationale.
-- `docs.todo-without-tracking` (advisory; high confidence): Flags TODO, FIXME, HACK, and XXX comments without tracking context.
+- `docs.todo-without-tracking` (advisory; high confidence): Flags comments introduced by a TODO, FIXME, HACK, or XXX marker without tracking context. The marker must start a comment body line (followed by `:`, `(`, `-`, whitespace, or end of line); quoted, backticked, mid-sentence, and fenced-example mentions are prose and stay quiet.
 - `docs.useless-docblock` (advisory; medium confidence): Flags comments or docblocks that only restate the symbol name.
+
+## Maintainability
+
+Rule IDs in this pillar keep the `waste.` prefix. The pillar was renamed from
+`waste` to `maintainability` in 0.1.1 and the IDs deliberately stayed put, so
+existing config overrides and baselines keep matching.
+
+- `waste.any-type` (warning; high confidence): Flags any type usage.
+- `waste.broad-runtime-version` (advisory; medium confidence): Flags broad runtime dependency version ranges.
+- `waste.commented-out-code` (advisory; high confidence): Flags comments that appear to contain disabled code.
+- `waste.console-log` (advisory; high confidence): Flags console log/debug calls in source.
+- `waste.empty-function` (advisory; high confidence): Flags functions with no executable body.
+- `waste.exported-any` (warning; medium confidence): Flags exported APIs exposing any.
+- `waste.redundant-boolean-cast` (advisory; medium confidence): Flags redundant boolean casts in condition expressions.
+- `waste.redundant-variable` (advisory; medium confidence): Flags variables returned immediately after assignment.
+- `waste.swallowed-catch` (warning; medium confidence): Flags empty catch blocks.
+- `waste.unreachable-code` (warning; high confidence): Flags statements after terminating statements.
+- `waste.unused-import` (advisory; medium confidence): Flags named imports with no apparent usage.
+- `waste.unused-parameter` (advisory; medium confidence): Flags parameters with no apparent usage.
+- `waste.useless-catch` (advisory; high confidence): Flags catch blocks that only rethrow the caught value.
+- `waste.useless-return` (advisory; medium confidence): Flags terminal bare return statements in void functions.
 
 ## Modernisation
 
@@ -96,14 +119,14 @@ itself suppress any rule family.
 
 ## Naming
 
-- `naming.acronym-case` (advisory; medium confidence): Flags mixed casings of a known acronym in one file.
-- `naming.boolean-prefix` (advisory; medium confidence; allowlists: booleanPrefixes, acceptedBooleanNames): Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields.
-- `naming.class-file-mismatch` (advisory; medium confidence): Flags exported classes whose name differs from the file name.
+- `naming.acronym-case` (advisory; medium confidence): Flags a known acronym cased inconsistently across a file's chosen-case names (camelCase/PascalCase and other mixed-case forms). SCREAMING_SNAKE constants and all-lower names are convention-forced surfaces and do not count.
+- `naming.boolean-prefix` (advisory; medium confidence; allowlists: booleanPrefixes, acceptedBooleanNames): Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields. Local and parameter findings recommend a safe rename (`remediationAction: APPLY`). Contract-field findings use `CONFIGURE` with `configurationKey: allowlists.acceptedBooleanNames` and explain that users may instead preserve an external key through explicit serialization mapping; configuration replaces the complete accepted-name list rather than merging one entry into the defaults.
+- `naming.class-file-mismatch` (advisory; medium confidence; allowlist: acceptedClassFilePairs): Flags a named class whose normalized name differs from the file only when it is the module's sole supported public declaration. Direct exports, named default exports, and bottom re-exports share one syntax inventory; a public class beside an interface, type, enum, function, default value, or external re-export stays quiet. Exact case-insensitive `fileBase:ClassName` entries preserve intentional feature-file/class-role conventions. Retained findings include `candidatePrimaryExport: true` and sorted `publicExports` metadata.
 - `naming.generic-function` (advisory; high confidence): Flags generic function names that hide intent.
 - `naming.generic-parameter` (advisory; medium confidence; options: minCyclomatic, minLineCount, minParameters): Flags placeholder parameter names in multi-parameter, long, exported, or complex functions.
 - `naming.hungarian-notation` (advisory; medium confidence): Flags identifiers named after storage type prefixes.
 - `naming.identifier-quality` (advisory; medium confidence): Flags placeholder or numbered identifiers on declarations, function parameters, and destructured locals.
-- `naming.inconsistent-casing` (advisory; medium confidence): Flags the same canonical identifier appearing in two different surface forms (for example CONSTANT_CASE and camelCase) in one file.
+- `naming.inconsistent-casing` (advisory; medium confidence; allowlist: acceptedCasingPairs): Flags one canonical identifier appearing in different forms within the same module, function, interface, or named type-literal owner. Separate raw DTO and normalized UI model contracts may keep their own conventions; same-name interface declaration blocks in one lexical scope are treated as one merged owner. Exact case-insensitive pairs such as `note_id:noteId` preserve documented wire aliases inside one owner without hiding other variants.
 - `naming.negative-boolean` (advisory; medium confidence): Flags boolean identifiers framed as a negation on declarations, parameters, and interface fields.
 - `naming.short-variable` (advisory; medium confidence): Flags very short variable names outside common loop counters; covers declarations, function parameters, and destructured locals.
 
@@ -126,7 +149,7 @@ itself suppress any rule family.
 - `security.new-function` (error; high confidence): Flags Function constructor dynamic code execution.
 - `security.open-redirect-candidate` (warning; medium confidence): Flags external input sent to redirect or navigation sinks.
 - `security.path-traversal-candidate` (warning; medium confidence): Flags external input sent to filesystem path sinks.
-- `security.process-exec` (warning; high confidence): Flags child-process execution calls and annotates emitted findings with command-source and shell-mode hints.
+- `security.process-exec` (warning; high confidence): Flags child-process execution calls, grading severity from command-source and shell-mode evidence: warning only when a shell-enabled call takes a dynamic command.
 - `security.proto-access` (warning; medium confidence): Flags direct __proto__ access that can enable prototype pollution.
 - `security.remote-install-script` (error; medium confidence): Flags package scripts that pipe remote content to a shell.
 - `security.risky-lifecycle-script` (warning; medium confidence): Flags install-time and side-effectful publish lifecycle scripts while allowing validation-only publish gates.
@@ -156,7 +179,7 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 
 ## Size
 
-- `size.file-length` (warning; high confidence; threshold 750): Flags files longer than the configured threshold.
+- `size.file-length` (error; high confidence; threshold 1000): Flags files with more than 1000 substantive lines by default. Blank lines and comment-only lines (`//`, `/* */`, XML comments, and the leading comment markers used by supported YAML/TOML/env/INI/npmrc files) do not count; lines containing code or data still count. `metadata.lines` is the substantive count.
 - `size.function-length` (warning; high confidence; threshold 200): Flags functions longer than the configured threshold.
 - `size.parameter-count` (warning; high confidence; threshold 7): Flags functions with too many parameters.
 
@@ -165,7 +188,7 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 - `test-quality.conditional-logic` (advisory; high confidence): Flags tests with conditional logic.
 - `test-quality.exception-type-only` (advisory; high confidence): Flags tests that only assert exception type.
 - `test-quality.global-state-mutation` (warning; high confidence): Flags tests mutating process or global runtime state.
-- `test-quality.loop-in-test` (advisory; high confidence): Flags loops inside test bodies.
+- `test-quality.loop-in-test` (advisory; medium confidence): Flags test-body loops whose assertions do not identify the failing iteration.
 - `test-quality.magic-number-assertion` (advisory; medium confidence): Flags assertions against unexplained numeric literals.
 - `test-quality.mock-only-test` (advisory; high confidence): Flags tests that only verify mock interaction.
 - `test-quality.no-assertions` (warning; high confidence): Flags tests without apparent assertions.
@@ -176,20 +199,3 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 - `test-quality.static-analysis-redundant-test` (advisory; high confidence): Flags tests that primarily assert code shape rather than behavior, with review guidance for importability sentinels.
 - `test-quality.trivial-assertion` (warning; high confidence): Flags tautological assertions.
 - `test-quality.unused-mock` (advisory; medium confidence): Flags mocks created but not used.
-
-## Maintainability
-
-- `waste.any-type` (warning; high confidence): Flags any type usage.
-- `waste.broad-runtime-version` (advisory; medium confidence): Flags broad runtime dependency version ranges.
-- `waste.commented-out-code` (advisory; high confidence): Flags comments that appear to contain disabled code.
-- `waste.console-log` (advisory; high confidence): Flags console log/debug calls in source.
-- `waste.empty-function` (advisory; high confidence): Flags functions with no executable body.
-- `waste.exported-any` (warning; medium confidence): Flags exported APIs exposing any.
-- `waste.redundant-boolean-cast` (advisory; medium confidence): Flags redundant boolean casts in condition expressions.
-- `waste.redundant-variable` (advisory; medium confidence): Flags variables returned immediately after assignment.
-- `waste.swallowed-catch` (warning; medium confidence): Flags empty catch blocks.
-- `waste.unreachable-code` (warning; high confidence): Flags statements after terminating statements.
-- `waste.unused-import` (advisory; medium confidence): Flags named imports with no apparent usage.
-- `waste.unused-parameter` (advisory; medium confidence): Flags parameters with no apparent usage.
-- `waste.useless-catch` (advisory; high confidence): Flags catch blocks that only rethrow the caught value.
-- `waste.useless-return` (advisory; medium confidence): Flags terminal bare return statements in void functions.

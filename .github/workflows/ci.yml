@@ -1,3 +1,6 @@
+# Verifies every supported Node release before users receive a package or report contract change.
+# Contributors reach this workflow on pushes and pull requests to the maintained branches.
+# Read-only repository permission is sufficient for checkout, tests, audit, and the self-scan.
 name: CI
 
 on:
@@ -6,10 +9,17 @@ on:
   pull_request:
     branches: [main, dev]
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    name: Test and analyse
+    name: Test and analyse (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24, 26]
 
     steps:
       - name: Checkout
@@ -18,7 +28,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
       - name: Install dependencies
@@ -32,3 +42,28 @@ jobs:
 
       - name: gruff-ts analyse
         run: ./bin/gruff-ts analyse . --fail-on=advisory
+
+  hooks:
+    name: Safety hook policy
+    runs-on: ubuntu-latest
+
+    # The analyse step above skips .goat-flow, and npm run check only globs src,
+    # so nothing else in CI reads the guardrails that decide what an agent may run.
+    # The policy is the same on every Node release, so check it once.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Lint hook scripts
+        run: shellcheck .goat-flow/hooks/*.sh .goat-flow/hooks/deny-dangerous/*.sh
+
+      - name: Deny-dangerous policy self-test
+        run: bash .goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh
+
+      - name: Post-turn safety self-test
+        run: bash .goat-flow/hooks/post-turn-safety.sh --self-test

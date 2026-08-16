@@ -2,7 +2,7 @@
 // pass - template-literal fixtures, generated array fixtures, and high-setup test blocks - then
 // reports `docs.fixture-purpose-missing` for each candidate without a nearby explanation comment.
 import { type FunctionBlock, setupLineCount } from "./blocks.ts";
-import { type CommentRecord } from "./comment-scanner.ts";
+import { combinedContextLineComment, type CommentRecord } from "./comment-scanner.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { isFixtureLikePath, isTestPath } from "./project-rules.ts";
@@ -50,14 +50,14 @@ export function pushFixturePurposeFindings(input: FixturePurposeInput): void {
     findings.push(
       makeFinding({
         ruleId: "docs.fixture-purpose-missing",
-        message: `Large fixture source near \`${candidate.symbol}\` is missing a purpose comment.`,
+        message: fixturePurposeMessage(candidate),
         filePath: file.displayPath,
         line: candidate.line,
         severity: "advisory",
         pillar: "documentation",
         confidence: "medium",
         symbol: candidate.symbol,
-        remediation: "Add a nearby comment explaining what scanner path, regression, or fixture behavior this source covers.",
+        remediation: fixturePurposeRemediation(candidate),
         metadata: {
           targetKind: candidate.targetKind,
           fixtureLines: candidate.lineCount,
@@ -65,6 +65,24 @@ export function pushFixturePurposeFindings(input: FixturePurposeInput): void {
       }),
     );
   }
+}
+
+// The finding is anchored where the accepted comment position is, so the message must name the
+// construct at that anchor: the test declaration for setup candidates, the fixture otherwise.
+function fixturePurposeMessage(candidate: FixturePurposeCandidate): string {
+  if (candidate.targetKind === "test-setup") {
+    return `Test \`${candidate.symbol}\` builds a large fixture setup without a purpose comment above the test.`;
+  }
+  return `Large fixture source near \`${candidate.symbol}\` is missing a purpose comment.`;
+}
+
+// The stated fix must be the fix that clears the finding: both texts name the accepted comment
+// positions that `hasFixturePurposeComment` checks.
+function fixturePurposeRemediation(candidate: FixturePurposeCandidate): string {
+  if (candidate.targetKind === "test-setup") {
+    return "Add a comment directly above the test declaration explaining what scanner path, regression, or fixture behavior this setup covers.";
+  }
+  return "Add a comment on or directly above the fixture explaining what scanner path, regression, or fixture behavior this source covers.";
 }
 
 // Three candidate kinds collected in one pass: template-literal fixtures, generated array fixtures,
@@ -289,13 +307,29 @@ function closingTemplateLiteralIndex(source: string, startIndex: number): number
 
 // Two acceptable positions: a comment on the candidate line itself, or one directly above with
 // nothing but blank lines in between. Anything farther away cannot be claimed as documentation.
+// A stacked `//` header counts as one comment, so a purpose statement on an earlier line clears.
 function hasFixturePurposeComment(lines: string[], comments: CommentRecord[], line: number): boolean {
   const sameLine = comments.find((comment) => comment.line <= line && comment.endLine >= line);
-  if (sameLine && hasFixturePurposeMarker(sameLine.text)) {
+  if (sameLine && isFixturePurposeComment(sameLine.text)) {
     return true;
   }
   const leading = leadingFixturePurposeComment(lines, comments, line);
-  return Boolean(leading && hasFixturePurposeMarker(leading.text));
+  return Boolean(leading && isFixturePurposeComment(combinedContextLineComment(comments, leading).text));
+}
+
+// This word-count threshold accepts a comment as a purpose statement even without the vocabulary
+// fast path, because grading wording by keyword list sent maintainers into rewrite loops when a
+// genuine explanation missed the exact words. Shorter comments still need a vocabulary word.
+const FIXTURE_PURPOSE_MIN_WORDS = 8;
+
+// Either acceptance path used by `hasFixturePurposeComment`: vocabulary or substantive prose.
+function isFixturePurposeComment(text: string): boolean {
+  return hasFixturePurposeMarker(text) || fixtureCommentWordCount(text) >= FIXTURE_PURPOSE_MIN_WORDS;
+}
+
+// Counts word-like tokens; punctuation-only fragments do not make a comment substantive.
+function fixtureCommentWordCount(text: string): number {
+  return text.split(/\s+/).filter((token) => /[A-Za-z0-9]/.test(token)).length;
 }
 
 // Like `leadingCommentForLine` but with the fixture-specific blank-gap predicate that allows for

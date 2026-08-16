@@ -313,6 +313,9 @@ function catalogueCoverageFiles(): Record<string, string> {
       "src/catalogue.ts": catalogueRuntimeCoverageSource(),
       "src/dep.ts": `export const usedThing = "used";
 `,
+      "src/helpers.ts": `/** Handles payment requests in the catalogue coverage project. */
+export class PaymentController {}
+`,
       "src/catalogue.test.ts": catalogueTestCoverageSource(),
       "src/app/feature/controller.ts": `import { sharedHelper } from "../../../shared/helper";
 
@@ -417,7 +420,7 @@ const active = true;
 const xx = 1;
 const ctx = { request: 1 };
 const disableCache = true;
-const DATABASE_URL = "/health";
+const rawURL = "/health";
 const databaseUrl = "/healthz";
 const project_path = "src";
 const projectPath = "src/index.ts";

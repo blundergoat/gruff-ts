@@ -1,4 +1,6 @@
-// Rule catalogue tests that keep descriptors, fixture coverage, and rule-quality doctrine aligned.
+// Rule catalogue tests keep scanner descriptors, fixtures, and review doctrine aligned.
+// Maintainers reach these guards when a rule changes what users see in scans or configuration.
+// Release checks also use them to stop published catalogue facts from drifting silently.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -10,6 +12,7 @@ import { ruleCatalogueCoverageRuleIds } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
 
 const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "missing-invalid"] as const;
+const EXPECTED_RELEASE_RULE_COUNT = 120;
 
 // Asserts the descriptor's optionKeys list is sorted and unique. Factored out of the descriptor
 // catalogue test body to preserve a stable sort invariant without an inline `if` branch.
@@ -92,7 +95,7 @@ const riskyRuleQualityDoctrine = [
     invalidFixture: "large inline source fixture, generated fixture source, or fixture-heavy test setup without a nearby purpose comment",
     noisyValidFixture: "ordinary prose strings, UI text, markdown snippets, snapshots, short code examples, and purpose-commented fixtures",
     missingInvalidFixture: "large scanner-relevant fixture remains reported when unrelated strings and documented fixtures are present",
-    falsePositiveEscapeHatch: "scope to test/fixture-like files, require large source-like content or fixture setup signals, and accept bounded purpose markers",
+    falsePositiveEscapeHatch: "scope to test/fixture-like files, require large source-like content or fixture setup signals, and accept purpose vocabulary or a substantive leading explanation with stacked // headers read as one comment",
     fingerprintStability: "anchor to the fixture declaration, helper call, or test invocation line rather than fixture body text",
   },
   {
@@ -194,7 +197,7 @@ const riskyRuleQualityDoctrine = [
     expectedConfidence: "high",
     fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
     invalidFixture: "TODO, FIXME, HACK, or XXX comment with no tracking context",
-    noisyValidFixture: "marker words inside strings/templates/regexes plus comments with explicit tracking markers",
+    noisyValidFixture: "marker words inside strings/templates/regexes, quoted or mid-sentence prose mentions, plus comments with explicit tracking markers",
     missingInvalidFixture: "untracked marker remains reported when tracked marker examples are present",
     falsePositiveEscapeHatch: "scan extracted comments only and accept bounded tracking patterns",
     fingerprintStability: "anchor to the marker comment line and keep raw TODO text out of the fingerprint",
@@ -408,6 +411,13 @@ test("documentation catalogue covers comment rule pack", () => {
   riskyRuleIdsRequiringNoisyValidProof.filter((ruleId) => ruleId.startsWith("docs.")).forEach((ruleId) => {
     assert.equal(doctrineIds.has(ruleId), true, `missing documentation doctrine for ${ruleId}`);
   });
+});
+
+// Pins the public release count so adding or removing a user-visible rule requires an intentional
+// catalogue and documentation update instead of silently changing the published scanner surface.
+test("release catalogue contains exactly 120 rule descriptors", () => {
+  const currentRuleCount = ruleDescriptors().length;
+  assert.equal(currentRuleCount, EXPECTED_RELEASE_RULE_COUNT);
 });
 
 test("rule descriptors cover emitted rules and fixture-backed coverage", () => {

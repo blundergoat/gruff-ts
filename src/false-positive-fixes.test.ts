@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { renderReport } from "./cli.ts";
 import { renderSummary } from "./report-renderers.ts";
-import { analyseFixture, HIGH_ENTROPY_FIXTURE_VALUE } from "./test-fixtures.ts";
+import { analyseFixture, analyseProject, HIGH_ENTROPY_FIXTURE_VALUE } from "./test-fixtures.ts";
 import { countMatches } from "./text-scans.ts";
 
 test("FP-#10 security.inner-html ignores empty-string DOM clearing", () => {
@@ -359,19 +359,24 @@ test("FP-#21 naming.boolean-prefix accepts imperative-flag verbs", () => {
   assert.deepEqual(findings, []);
 });
 
-test("FP-#22 naming.short-variable accepts fn and cb abbreviations", () => {
-  // §2.8(a): `fn` and `cb` are universal conventions for "function parameter" and "callback
-  // parameter" and are now in the default acceptedAbbreviations set.
-  const report = analyseFixture(`export function bind(fn: (n: number) => number, cb: () => void): (n: number) => number {
-  return (n: number) => {
-    const result = fn(n);
+test("family abbreviation defaults require projects to opt in to fn and cb", () => {
+  const abbreviatedParameterSource = `export function bind(fn: (value: number) => number, cb: () => void): (value: number) => number {
+  return (value: number) => {
+    const result = fn(value);
     cb();
     return result;
   };
 }
-`);
-  const findings = report.findings.filter((entry) => entry.ruleId === "naming.short-variable");
-  assert.deepEqual(findings, []);
+`;
+  const defaultShortVariableSymbols = analyseFixture(abbreviatedParameterSource).findings
+    .filter((entry) => entry.ruleId === "naming.short-variable")
+    .map((entry) => entry.symbol)
+    .sort();
+  const configuredShortVariableFindings = analyseFixture(abbreviatedParameterSource, { config: { allowlists: { acceptedAbbreviations: ["cb", "fn"] } } }).findings
+    .filter((entry) => entry.ruleId === "naming.short-variable");
+
+  assert.deepEqual(defaultShortVariableSymbols, ["cb", "fn"]);
+  assert.deepEqual(configuredShortVariableFindings, []);
 });
 
 test("FP-#23 naming.short-variable accepts for-of binding in short body", () => {
@@ -736,4 +741,170 @@ test("FP-#20 waste.swallowed-catch still flags /* silent */ and empty catch", ()
 }
 `);
   assert.equal(emptyReport.findings.some((entry) => entry.ruleId === "waste.swallowed-catch"), true);
+});
+
+// Fixture purpose: a multi-line signature's first line stops at the open paren, so the legacy
+// text heuristic read it as an implementation. The shared parse now answers body presence.
+// Stable contract: bodyless declarations never draw implementation-only findings.
+test("FP-#46 bodyless multi-line signatures skip empty-function and unused-parameter", () => {
+  const signatureReport = analyseFixture(`export interface Repository {
+  findMany(
+    filter: string,
+    limit: number,
+  ): Promise<string[]>;
+}
+`);
+  const implementationOnlyRules = ["waste.empty-function", "waste.unused-parameter"];
+  assert.equal(signatureReport.findings.some((entry) => implementationOnlyRules.includes(entry.ruleId)), false);
+
+  // A real implementation with an empty body and an unused parameter must still fire.
+  const implementationReport = analyseFixture(`export function reallyEmpty(
+  unusedThing: string,
+): void {
+}
+`);
+  assert.equal(implementationReport.findings.some((entry) => entry.ruleId === "waste.empty-function"), true);
+  assert.equal(implementationReport.findings.some((entry) => entry.ruleId === "waste.unused-parameter"), true);
+});
+
+// Fixture purpose: the public-export inventory resolved `export { Foo as Bar }` to the local
+// declaration and kept the local name, so the class/file rule compared `Foo` against `bar.ts`.
+// Stable contract: the rule judges the module's public name, because that is what it advertises.
+test("FP-#47 an aliased sole-class export matching its file name stays quiet", () => {
+  const aliasedReport = analyseProject({
+    "bar.ts": `// File overview: aliased sole-class export.
+
+/** Does a thing. */
+class Foo {
+  /** Runs the thing. */
+  runThing(): number {
+    return 1;
+  }
+}
+
+export { Foo as Bar };
+`,
+  });
+  assert.equal(aliasedReport.findings.some((entry) => entry.ruleId === "naming.class-file-mismatch"), false);
+
+  // An alias that genuinely matches neither the class nor the file must still fire.
+  const mismatchedReport = analyseProject({
+    "bar.ts": `// File overview: aliased sole-class export with a real mismatch.
+
+/** Does a thing. */
+class Foo {
+  /** Runs the thing. */
+  runThing(): number {
+    return 1;
+  }
+}
+
+export { Foo as Widget };
+`,
+  });
+  assert.equal(mismatchedReport.findings.some((entry) => entry.ruleId === "naming.class-file-mismatch"), true);
+});
+
+// Fixture purpose: the callable match point anchors on the name line, so a declaration whose
+// modifiers sit on the previous line hid its own docblock from the leading-comment check.
+// Stable contract: documentation findings follow the declaration, not the name's line number.
+test("FP-#48 a documented split-line declaration keeps its docblock", () => {
+  const documentedReport = analyseFixture(`// File overview: split-line documented export.
+
+/**
+ * Returns the configured limit.
+ *
+ * @returns the limit value
+ */
+export async function
+publicApi(): Promise<number> {
+  return 1;
+}
+`);
+  assert.equal(documentedReport.findings.some((entry) => entry.ruleId === "docs.missing-exported-function-doc"), false);
+
+  // The same split-line shape without a docblock must still fire. The intervening statement keeps
+  // the file-overview comment from reading as this declaration's own leading comment.
+  const undocumentedReport = analyseFixture(`// File overview: split-line undocumented export.
+
+const configuredLimit = 1;
+
+export async function
+publicApi(): Promise<number> {
+  return configuredLimit;
+}
+`);
+  assert.equal(undocumentedReport.findings.some((entry) => entry.ruleId === "docs.missing-exported-function-doc"), true);
+});
+
+// Fixture purpose: decorated methods are the common form of the same anchor bug. A comment sits
+// above the decorators, but the check started at the name line and saw only `@HttpCode(200)`.
+// Stable contract: decorators belong to the declaration, so documentation above them counts.
+test("FP-#49 a comment above a method's decorators counts as its documentation", () => {
+  const documentedReport = analyseFixture(`// File overview: decorated controller methods.
+
+export class OrderController {
+  // Sums the supplied values and returns the total.
+  @Post("sum")
+  @HttpCode(200)
+  sumValues(values: number[]): number {
+    return values.reduce((total, value) => total + value, 0);
+  }
+}
+`);
+  const missingDocRules = ["docs.missing-internal-function-doc", "docs.missing-exported-function-doc"];
+  assert.equal(documentedReport.findings.some((entry) => missingDocRules.includes(entry.ruleId)), false);
+
+  // A decorated method with nothing above it must still report missing documentation.
+  const undocumentedReport = analyseFixture(`// File overview: decorated controller methods.
+
+export class OrderController {
+  private readonly auditTrail: string[] = [];
+
+  @Post("sum")
+  @HttpCode(200)
+  sumValues(values: number[]): number {
+    return values.reduce((total, value) => total + value, 0);
+  }
+}
+`);
+  assert.equal(undocumentedReport.findings.some((entry) => missingDocRules.includes(entry.ruleId)), true);
+});
+
+// Fixture purpose: the local-callable exemption reads the binding line, so an exported arrow was
+// treated as local. Its rationale is that parameters sit beside their implementation, which is not
+// true of a cross-file export. Stable contract: equally public shapes are judged equally.
+test("FP-#50 short parameters stay reported on exported variable-bound callables", () => {
+  const exportedReport = analyseFixture(`// File overview: exported callables with short parameters.
+
+/**
+ * Transforms a value for the public API.
+ *
+ * @param x - the value to transform
+ * @returns the transformed value
+ */
+export const transform = (x: number): number => {
+  return x * 2;
+};
+`);
+  assert.equal(exportedReport.findings.some((entry) => entry.ruleId === "naming.short-variable"), true);
+
+  // A module-local arrow keeps the exemption the rule was introduced to provide.
+  const localReport = analyseFixture(`// File overview: local callable with a short parameter.
+
+const transform = (x: number): number => {
+  return x * 2;
+};
+
+/**
+ * Doubles the supplied total.
+ *
+ * @param total - value to double
+ * @returns the doubled value
+ */
+export function doubleTotal(total: number): number {
+  return transform(total);
+}
+`);
+  assert.equal(localReport.findings.some((entry) => entry.ruleId === "naming.short-variable"), false);
 });

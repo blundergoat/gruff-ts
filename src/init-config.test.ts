@@ -1,5 +1,6 @@
-// Behavioural coverage for `gruff-ts init`: registry parity, enabled-state handling, option-default drift
-// guard, parser round-trip, and the CLI overwrite-guard contract.
+// Behavioural coverage for `gruff-ts init`: registry parity, enabled-state handling, and option defaults.
+// These tests exercise the generated starter config a CLI user reviews before adopting the analyser.
+// They also protect parser round-trips and the command's no-clobber contract for existing projects.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -28,6 +29,43 @@ test("renderDefaultConfig emits threshold and severity only for rules with descr
   assertDefaultConfigThresholdFields(yaml);
 });
 
+// A newly initialized project should see the shared family vocabulary and understand how this
+// allowlist affects naming findings before it edits the generated YAML.
+test("renderDefaultConfig explains and seeds the family abbreviation allowlist", () => {
+  const generatedConfig = renderDefaultConfig();
+  const expectedFamilyAbbreviationBlock = [
+    "allowlists:",
+    "  # Abbreviations listed here are accepted in identifiers without a naming finding.",
+    "  # Replace this list with the short terms reviewers accept in this project.",
+    "  acceptedAbbreviations:",
+    "    - age",
+    "    - app",
+    "    - db",
+    "    - fs",
+    "    - id",
+    "    - io",
+    "    - key",
+    "    - log",
+    "    - max",
+    "    - min",
+    "    - now",
+    "    - raw",
+    "    - rx",
+    "    - tx",
+    "    - ui",
+    "    - url",
+    "  secretPreviews: []",
+  ].join("\n");
+
+  assert.equal(generatedConfig.includes(expectedFamilyAbbreviationBlock), true);
+});
+
+test("renderDefaultConfig documents exact naming-pair allowlists", () => {
+  const generatedConfig = renderDefaultConfig();
+  assert.match(generatedConfig, /acceptedClassFilePairs: \[focusModeTranscript:TranscriptFocusController\]/);
+  assert.match(generatedConfig, /acceptedCasingPairs: \[note_id:noteId\]/);
+});
+
 test("RULE_OPTION_DEFAULTS mirrors live optionNumber call-site defaults", () => {
   // The init renderer hardcodes option defaults because RuleDescriptor only carries optionKeys,
   // not values. Drift between this table and the rule implementations would make `gruff-ts init`
@@ -35,6 +73,28 @@ test("RULE_OPTION_DEFAULTS mirrors live optionNumber call-site defaults", () => 
   const implementationSources = ["src/analyser.ts", "src/project-rules.ts"].map((path) => readFileSync(join(REPO_ROOT, path), "utf8")).join("\n");
   const implementationDefaults = parseOptionNumberDefaults(implementationSources);
   assert.deepEqual(normalizeOptionDefaults(RULE_OPTION_DEFAULTS), implementationDefaults);
+});
+
+// Guards the init contract: the generated allowlist must mirror the runtime defaults, so a fresh
+// init cannot silently make a project stricter or looser than a zero-config scan. Reads the
+// defaults through a throwaway filesystem directory that is removed afterward.
+test("renderDefaultConfig seeds the same abbreviations as the runtime defaults", () => {
+  const abbreviationsBlock = renderDefaultConfig().split("acceptedAbbreviations:")[1] ?? "";
+  const generatedAbbreviations: string[] = [];
+  for (const line of abbreviationsBlock.split("\n").slice(1)) {
+    const entry = line.match(/^    - ([a-z0-9]+)$/)?.[1];
+    if (!entry) {
+      break;
+    }
+    generatedAbbreviations.push(entry);
+  }
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-init-defaults-"));
+  try {
+    const defaults = loadConfig(projectRoot, { ...baseOptions(), shouldSkipConfig: true });
+    assert.deepEqual([...generatedAbbreviations].sort(), [...defaults.acceptedAbbreviations].sort());
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
 });
 
 test("renderDefaultConfig round-trips through loadConfig with every rule registered", () => {

@@ -74,11 +74,14 @@ function recordHistory(projectRoot: string, historyFile: string, findings: Findi
 
 // `docs.missing-public-doc` is keyed by (ruleId, filePath, symbol) instead of fingerprint because one
 // file can legitimately surface multiple undocumented public symbols and they must each survive dedupe.
-// All other rules collapse on their fingerprint, which already encodes the unique anchor.
+// All other rules collapse on their fingerprint, extended by the match column when one is present
+// (ADR-017): two distinct secrets on one line share a line-keyed fingerprint, and without the column
+// discriminator the second occurrence would be silently dropped from every report and the hook.
+// The extended key is in-memory only - fingerprint values and `gruff.baseline.v1` matching are unchanged.
 function dedupeFindings(findings: Finding[]): Finding[] {
   const seen = new Set<string>();
   return findings.filter((finding) => {
-    const key = finding.ruleId === "docs.missing-public-doc" && finding.symbol ? [finding.ruleId, finding.filePath, finding.symbol].join("\0") : finding.fingerprint;
+    const key = dedupeKey(finding);
     if (seen.has(key)) {
       return false;
     }
@@ -87,4 +90,37 @@ function dedupeFindings(findings: Finding[]): Finding[] {
   });
 }
 
-export { DEFAULT_BASELINE, writeBaseline, applyBaseline, recordHistory, dedupeFindings };
+// Derives the in-memory dedupe key for one finding, so same-line occurrences with distinct
+// columns survive dedupe as separate findings (ADR-017). Invariant: the key is never serialized
+// and never feeds `applyBaseline` - fingerprint values and baseline matching stay byte-identical.
+function dedupeKey(finding: Finding): string {
+  // One file legitimately surfaces many undocumented public symbols; keep each per-symbol entry.
+  if (finding.ruleId === "docs.missing-public-doc" && finding.symbol) {
+    return [finding.ruleId, finding.filePath, finding.symbol].join("\0");
+  }
+  // Casing drift is scoped to a lexical owner. Preserve owner-distinct diagnostics in memory
+  // without changing their public line-keyed fingerprints or baseline matching contract.
+  if (finding.ruleId === "naming.inconsistent-casing" && typeof finding.metadata.ownerId === "string") {
+    return [finding.fingerprint, finding.metadata.ownerId].join("\0");
+  }
+  // A column means the scanner pinpointed the occurrence; same-line occurrences stay distinct.
+  if (finding.column !== undefined) {
+    return [finding.fingerprint, String(finding.column)].join("\0");
+  }
+  return finding.fingerprint;
+}
+
+// Canonical finding ordering: (filePath, line, ruleId, message). The same tuple is part of the
+// stable baseline matching contract, so changing the comparator would churn every existing baseline.
+function sortedUniqueFindings(findings: Finding[]): Finding[] {
+  findings.sort(
+    (left, right) =>
+      left.filePath.localeCompare(right.filePath) ||
+      (left.line ?? 0) - (right.line ?? 0) ||
+      left.ruleId.localeCompare(right.ruleId) ||
+      left.message.localeCompare(right.message),
+  );
+  return dedupeFindings(findings);
+}
+
+export { DEFAULT_BASELINE, writeBaseline, applyBaseline, recordHistory, dedupeFindings, sortedUniqueFindings };

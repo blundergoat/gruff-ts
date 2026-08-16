@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { dirname as dirnamePath, resolve } from "node:path";
 import { cwd } from "node:process";
 import { type FunctionBlock } from "./blocks.ts";
-import { type CommentRecord } from "./comment-scanner.ts";
+import { combinedContextLineComment, type CommentRecord } from "./comment-scanner.ts";
 import { type SourceFile } from "./discovery.ts";
 import { type ExportedDeclaration, interfaceDeclarations } from "./doc-rules.ts";
 import { type CommentedDeclaration, pushDeclarationContextFindings, pushFunctionContextFindings } from "./context-doc-rules.ts";
@@ -55,7 +55,7 @@ export function analyseCommentQualityRules(input: CommentQualityRuleInput): void
   const lines = source.split(/\r?\n/);
   const declarations = commentedDeclarations(blocks, interfaceDeclarations(source, codeSource));
 
-  analyseStandaloneCommentQuality(file, comments, DESCRIPTOR_IDS, CLI_FLAGS, findings);
+  analyseStandaloneCommentQuality(file, source, comments, DESCRIPTOR_IDS, CLI_FLAGS, findings);
   analyseCommentedDeclarationQuality(file, lines, comments, declarations, findings);
   analyseFunctionContextCommentQuality({ file, lines, comments, blocks, config, findings });
   pushMagicThresholdFindings(file, lines, codeSource, comments, findings);
@@ -67,9 +67,9 @@ export function analyseCommentQualityRules(input: CommentQualityRuleInput): void
  * stale CLI flag refs) that run on every comment regardless of whether it documents a declaration.
  * Stable, deterministic emission order across the five sub-checks.
  */
-function analyseStandaloneCommentQuality(file: SourceFile, comments: CommentRecord[], ruleIdSet: Set<string>, optionFlagSet: Set<string>, findings: Finding[]): void {
+function analyseStandaloneCommentQuality(file: SourceFile, source: string, comments: CommentRecord[], ruleIdSet: Set<string>, optionFlagSet: Set<string>, findings: Finding[]): void {
   for (const comment of comments) {
-    pushTodoWithoutTrackingFinding(file, comment, findings);
+    pushTodoWithoutTrackingFinding(file, source, comment, findings);
     pushSuppressionWithoutRationaleFinding(file, comment, findings);
     pushStaleFileReferenceFindings(file, comment, findings);
     pushStaleRuleReferenceFindings(file, comment, ruleIdSet, findings);
@@ -91,7 +91,7 @@ function analyseCommentedDeclarationQuality(file: SourceFile, lines: string[], c
     pushStaleDeclarationCommentFinding(file, comment, declaration, findings);
     pushRestatingSignatureCommentFinding(file, comment, declaration, findings);
     if (!isRestatingSignatureComment(comment.text, declaration.name, declaration.kind)) {
-      pushDeclarationContextFindings(file, lines, declaration, comment, findings);
+      pushDeclarationContextFindings(file, lines, declaration, combinedContextLineComment(comments, comment), findings);
     }
   }
 }
@@ -105,7 +105,7 @@ function analyseFunctionContextCommentQuality(input: FunctionContextCommentQuali
     if (!comment || isRestatingSignatureComment(comment.text, block.name, "function")) {
       continue;
     }
-    pushFunctionContextFindings(file, block, comment, config, findings);
+    pushFunctionContextFindings(file, block, combinedContextLineComment(comments, comment), config, findings);
   }
 }
 
@@ -125,8 +125,8 @@ function commentedDeclarations(blocks: FunctionBlock[], interfaces: ExportedDecl
  * preserved in stable metadata so consumers can group by marker kind. Reports the stable
  * untracked-task-marker finding when no tracking reference is attached.
  */
-function pushTodoWithoutTrackingFinding(file: SourceFile, comment: CommentRecord, findings: Finding[]): void {
-  const marker = todoMarker(comment.text);
+function pushTodoWithoutTrackingFinding(file: SourceFile, source: string, comment: CommentRecord, findings: Finding[]): void {
+  const marker = todoMarker(source, comment);
   if (!marker || hasTodoTracking(comment.text)) {
     return;
   }
@@ -146,9 +146,52 @@ function pushTodoWithoutTrackingFinding(file: SourceFile, comment: CommentRecord
 }
 
 // Four canonical task-marker words, returned in uppercase so the finding message reads consistently
-// regardless of how the maintainer wrote them.
-function todoMarker(text: string): string | undefined {
-  return text.match(/\b(TODO|FIXME|HACK|XXX)\b/i)?.[1]?.toUpperCase();
+// regardless of how the maintainer wrote them. A marker must INTRODUCE a comment body line - prose
+// that merely mentions a marker word (quoted, backticked, or mid-sentence) stays quiet.
+function todoMarker(source: string, comment: CommentRecord): string | undefined {
+  for (const line of commentBodyLines(source, comment)) {
+    const marker = leadingTodoMarker(line);
+    if (marker) {
+      return marker;
+    }
+  }
+  return undefined;
+}
+
+// One body line per physical comment line: the trimmed `//` text, or each block-comment line with
+// its `*` decoration stripped. Lines inside ``` fences are dropped so marker examples shown in
+// doc comments cannot become findings.
+function commentBodyLines(source: string, comment: CommentRecord): string[] {
+  if (comment.kind === "line") {
+    return [comment.text];
+  }
+  const body = source.slice(comment.startIndex + 2, Math.max(comment.startIndex + 2, comment.endIndex - 1));
+  const lines: string[] = [];
+  let isInsideFence = false;
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = rawLine.replace(/^[ \t]*\*[ \t]?/, "").trim();
+    if (line.startsWith("```")) {
+      isInsideFence = !isInsideFence;
+      continue;
+    }
+    if (!isInsideFence) {
+      lines.push(line);
+    }
+  }
+  return lines;
+}
+
+// Leading-marker grammar: optional list bullet, the marker word, then a delimiter real markers use
+// (":", "(", "-", whitespace, or end of line). Any other next character - a quote, slash, or
+// backtick - means the line talks ABOUT a marker instead of being one.
+function leadingTodoMarker(line: string): string | undefined {
+  const match = line.match(/^(?:(?:[-*>]|\d+[.)])\s+)?(TODO|FIXME|HACK|XXX)\b(.*)$/i);
+  const marker = match?.[1];
+  if (!marker) {
+    return undefined;
+  }
+  const rest = match?.[2] ?? "";
+  return rest === "" || /^[\s:(-]/.test(rest) ? marker.toUpperCase() : undefined;
 }
 
 const TODO_TRACKING_PATTERNS = [
@@ -296,6 +339,7 @@ function knownCliFlags(): Set<string> {
     "--changed-ranges",
     "--changed-scope",
     "--fail-on",
+    "--fail-on-diagnostics",
     "--force",
     "--format",
     "--generate-baseline",
@@ -487,14 +531,15 @@ function isCommonSafeNumber(numericLiteral: string): boolean {
 }
 
 // Two acceptable positions for the explanatory comment: same line as the constant, or directly
-// above with a blank-line gap. Mirrors `hasFixturePurposeComment` adjacency rules.
+// above with a blank-line gap. Mirrors `hasFixturePurposeComment` adjacency rules, including
+// reading a stacked `//` header as one comment so rationale on an earlier line counts.
 function hasNearbyThresholdRationale(lines: string[], comments: CommentRecord[], line: number): boolean {
   const sameLine = comments.find((comment) => comment.line <= line && comment.endLine >= line);
   if (sameLine && hasThresholdRationaleMarker(sameLine.text)) {
     return true;
   }
   const leading = leadingCommentForLine(lines, comments, line);
-  return Boolean(leading && hasThresholdRationaleMarker(leading.text));
+  return Boolean(leading && hasThresholdRationaleMarker(combinedContextLineComment(comments, leading).text));
 }
 
 // Vocabulary used by the magic-threshold rule. A numeric constant followed by a comment containing

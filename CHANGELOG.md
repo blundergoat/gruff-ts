@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.5.0 - 2026-08-16
+
+120 rules across 11 pillars on Node 22+. Every script rule now reads one shared syntax-only AST parse instead of walking lines, scoring changes shape, config and CLI validation fail instead of coercing, and the release gains gates that fail the build when a documented count or the scan surface drifts from the source.
+
+**Analysis.** Complexity, naming, docblock, and redirect rules read the shared parse, so generic, multi-line, and parenless-arrow declarations are analysed for the first time and complexity findings carry a per-kind `breakdown`. Findings narrow to real evidence: name-only `redirect` helpers, lockfile integrity digests, and bodyless overload signatures stop reporting, while tainted input reaching a response sink and a credential in a `resolved` URL still do. A false-positive sweep took the analyser's own scan to zero findings, which CI now enforces.
+**Scoring.** The composite averages all 11 rule-backed pillars and counts a clean pillar as 100 (ADR-019), so fixing a pillar's last finding cannot lower the score. It stays volume-sensitive and is not yet a cross-project grade: vulnerable nodejs-goof scores 77.9 against clean zod at 18.8.
+**Guardrails and release.** The Claude, Codex, and Copilot agent surfaces move to goat-flow 1.15.1, and three deny-hook bypasses are fixed locally ahead of the upstream template. Packaging is gated by a tarball smoke test that installs the pack fresh and runs the binary, with read-only CI across Node 22, 24, and 26.
+**Needs action before upgrading.** Outside-root scans emit absolute paths, so regenerate any baseline built from a different working directory. `cb` and `fn` now trigger `naming.short-variable` unless listed in `allowlists.acceptedAbbreviations`. `size.file-length` is an error at 1000 substantive lines, which moves `--fail-on` exit codes.
+
+- **BREAKING: External finding paths** - outside-root scans emit absolute paths; regenerate baselines made from a different working directory.
+- **BREAKING: Family abbreviations** - `cb`/`fn` now trigger `naming.short-variable`; add them to `allowlists.acceptedAbbreviations` to retain them.
+- **file-length raised to error at 1000 (family ratification)** - only the threshold and severity moved; `--fail-on` consumers see exit-code changes.
+- **Shared AST discovery (one parse per script)** - generics, multi-line, and parenless arrows analysed; anchors and fingerprints preserved.
+- **Complexity follows control flow** - syntax nodes drive cyclomatic/cognitive; findings gain a `breakdown`; thresholds and identities unchanged.
+- **Docblock rules require the shared parse** - AST signatures only, so paren types cannot fake stale @param tags; bounded files skip the pack.
+- **Composite counts clean pillars as 100** - the mean spans all 11 pillars; fixing a pillar's last finding cannot lower it (ADR-019).
+- **Known scoring limitation** - composite scores remain volume-sensitive: vulnerable nodejs-goof scores 77.9 (C), NodeGoat 52.2 and clean zod 18.8.
+- **Casing consistency follows owners** - variants compare within one module/function/interface owner; DTO vs UI fields no longer conflict.
+- **Re-opened namespaces are one contract** - the merge scope keys on the namespace path, so casing drift between `namespace Api` blocks now reports.
+- **Open-redirect needs a real sink** - name-only `redirect` helpers stay quiet; tainted input to response/location sinks still reports.
+- **React Router redirects are open-redirect sinks** - `react-router` and `react-router-dom` join next/navigation and remix; local helpers stay quiet.
+- **A method named after a redirect import cannot hide it** - only declarations and named function expressions shadow by name; a method name is a key.
+- **process-exec severity follows evidence** - warning only for shell-enabled dynamic commands; fixed vectors advisory; ids churn once (ADR-018).
+- **Lockfiles drop only the entropy detector** - integrity digests stop reporting (NodeGoat 1,292 to 0); a credential in `resolved` still errors.
+- **Short secret previews masked** - under 24 chars shows mask+length; an allowlist cannot hide a same-length secret; hook ids churn once (ADR-017).
+- **Quoted env secrets keep embedded hashes** - quoted values read whole so `#` cannot truncate a credential; unquoted still stop at `#`.
+- **Same-line secrets stay distinct** - column discriminates same-line findings and ships in the hook payload (ADR-017); fingerprints unchanged.
+- **Markdown reports escape repo text** - fenced labels/paths and escaped messages block injection into PR comments. (`src/report-renderers.ts`)
+- **Actions write-permission scopes match GitHub's 2026-07-12 table** - `discussions` and `pages` count as write; `id-token` mints tokens, not writes.
+- **Config validation fails loudly** - unknown rules, non-boolean enabled, bad option keys exit 2 naming accepted forms; compat tightening.
+- **Invalid CLI values fail fast** - format/fail-on/changed-scope validated at parse as usage errors; compat tightening. (`src/cli-program.ts`)
+- **Severity overrides reach every scanner** - one central pass applies rules.<id>.severity everywhere; fingerprints stay severity-free.
+- **Filtered scans cannot record history** - `--history-file` with diff/since/ranges exits 2 before any write; full scans still append.
+- **Diff scoping works from nested directories** - relative-path git diffs; nested runs cannot match siblings; root runs byte-identical.
+- **Parser errors collapse per file** - reports retain the first message plus raw count; angular drops 1,854 diagnostics to 476 affected files.
+- **Non-text scripts skip parsing** - invalid UTF-8 or NUL-bearing files produce a non-fatal `non-text-file` note instead of a parse error.
+- **Guardrail hooks deliberately diverge from the goat-flow template** - `install`/`hooks sync` reverts them; re-apply after any upgrade.
+- **Naming and size false positives cut** - aliased class exports, parameter defaults, short locals, acronym pairs, and bodyless signatures go quiet.
+- **Docs and test false positives cut** - decorator comments, stacked fixture-purpose headers, quoted task markers, and labeled data loops stay quiet.
+
 ## v0.4.0 - 2026-06-11
 
 - **Circular imports group by SCC** - `design.circular-import` reports one finding per strongly connected component (member list in `metadata.files`); circular-import fingerprints and hook identities intentionally churn (ADR-015). OpenUI dropped from 108 findings to 3.
@@ -15,7 +55,7 @@
 
 ## v0.3.2 - 2026-06-09
 
-- **Agent-hook contract v1** - adds `gruff-ts hook` and `gruff-ts hook --capabilities --format=json`, advertising `gruff.hook.v1` with `flagOrder:"any"`. Hook JSON uses the cross-analyzer contract fields (`file`, `scope`, `suppressed.count`, `ignored.paths`, `config.error`) with non-null remediation, stable hook identities, and machine-readable threshold metadata. Hook mode exits `0` when analysis runs, omits file/project-scope findings under changed-region attribution, and uses stable identity for baseline/diff new-only filtering (`--diff unstaged` compares against the index, `suppressed.count` never double-counts a re-emitted finding, and distinct project-scope findings such as separate import cycles anchored to one file keep distinct identities so baselining one never suppresses another). Operational failures (missing/malformed baseline, `--diff`/`--since` outside a git repo) report in-band as `config.error` with exit `2` rather than crashing. The conformance tests cover capabilities, scopes/enums, remediation, threshold metadata, stable identity across line/value changes (including multiple same-rule findings in one file and distinct import cycles sharing an anchor file), baseline and diff new-only, operational-failure JSON, flag ordering, advisory exit, ignored paths, and config-error JSON. Existing `analyse` / `summary` / `report` schema versions and exit semantics are unchanged. (`src/hook-contract.ts`, `src/cli-program.ts`, `src/hook-contract.test.ts`)
+- **Agent-hook contract v1** - adds `gruff-ts hook` and `gruff-ts hook --capabilities --format=json`, advertising `gruff.hook.v1` with `flagOrder:"any"`. Hook JSON uses the cross-analyser contract fields (`file`, `scope`, `suppressed.count`, `ignored.paths`, `config.error`) with non-null remediation, stable hook identities, and machine-readable threshold metadata. Hook mode exits `0` when analysis runs, omits file/project-scope findings under changed-region attribution, and uses stable identity for baseline/diff new-only filtering (`--diff unstaged` compares against the index, `suppressed.count` never double-counts a re-emitted finding, and distinct project-scope findings such as separate import cycles anchored to one file keep distinct identities so baselining one never suppresses another). Operational failures (missing/malformed baseline, `--diff`/`--since` outside a git repo) report in-band as `config.error` with exit `2` rather than crashing. The conformance tests cover capabilities, scopes/enums, remediation, threshold metadata, stable identity across line/value changes (including multiple same-rule findings in one file and distinct import cycles sharing an anchor file), baseline and diff new-only, operational-failure JSON, flag ordering, advisory exit, ignored paths, and config-error JSON. Existing `analyse` / `summary` / `report` schema versions and exit semantics are unchanged. (`src/hook-contract.ts`, `src/cli-program.ts`, `src/hook-contract.test.ts`)
 - **Changed-region symbol scope drops inherited file-wide findings** - `--changed-scope symbol` now suppresses file-wide and file-aggregate findings when the changed range does not touch their anchor/span, so inherited debt such as `size.file-length` is counted in `suppressedCount` instead of reported on unrelated edits. Use `--changed-scope file` for CI workflows that intentionally want every finding from a touched file, including deletion-only edits. Full scans still report every file-wide finding. No severity, threshold, rule-id, or pillar change. (`src/changed-regions.ts`, `src/changed-region-scope.test.ts`, `src/changed-region-contract.test.ts`)
 - **Threshold findings expose reviewable measurements** - `size.file-length`, `size.function-length`, `size.parameter-count`, `complexity.cyclomatic`, `complexity.cognitive`, `sensitive-data.high-entropy-string`, and `sensitive-data.hardcoded-env-value` now carry additive `measured`/`threshold` measurement metadata, and block-anchored findings carry `endLine` spans so hook output can attribute symbol-scope findings without message parsing. `size.file-length` also gets finding-level remediation from the descriptor text. Existing fingerprints stay stable. (`src/analyser.ts`, `src/blocks.ts`, `src/findings.ts`, `src/sensitive-data-rules.ts`)
 

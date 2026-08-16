@@ -11,6 +11,38 @@ const LARGE_MODULE_PROJECT = {
   "src/small-b.ts": "export const smallB = 1;\n",
   "src/small-c.ts": "export const smallC = 1;\n",
 };
+const PLAIN_SYMBOL_PROJECT = {
+  "src/plain.ts": `// File overview: plain symbol-scope fixture.
+const script = "reviewed";
+export function plain(value: string): void {
+  const touched = value;
+  eval(script);
+}
+`,
+};
+const GENERIC_SYMBOL_PROJECT = {
+  "src/generic.ts": `// File overview: generic symbol-scope fixture.
+const script = "reviewed";
+export function generic<T extends string>(
+  value: T,
+): void {
+  const touched = value;
+  eval(script);
+}
+export function sibling(): void {
+  eval(script);
+}
+`,
+};
+
+test("symbol scope keeps eval findings inside generic multi-line callables", () => {
+  const plain = analyseProject(PLAIN_SYMBOL_PROJECT, { paths: ["src/plain.ts"], changedRanges: "4-4" });
+  const generic = analyseProject(GENERIC_SYMBOL_PROJECT, { paths: ["src/generic.ts"], changedRanges: "6-6" });
+
+  assert.equal(plain.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.line === 5), true);
+  assert.equal(generic.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.line === 7), true);
+  assert.equal(generic.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.line === 10), false);
+});
 
 test("symbol changed-region filtering drops file-wide findings away from their anchor", () => {
   const report = analyseProject(FILE_WIDE_PROJECT, {
@@ -43,7 +75,7 @@ test("symbol changed-region filtering keeps file-wide findings when the anchor i
 
   const fileLength = report.findings.find((finding) => finding.ruleId === "size.file-length");
   assert.ok(fileLength);
-  assert.deepEqual(fileLength.metadata, { lines: 8, threshold: 3 });
+  assert.deepEqual(fileLength.metadata, { lines: 7, threshold: 3 });
   assert.equal(typeof fileLength.remediation, "string");
 });
 

@@ -72,6 +72,8 @@ export interface Config {
   secretPreviews: Set<string>;
   bannedGenericNames: Set<string>;
   acceptedBooleanNames: Set<string>;
+  acceptedClassFilePairs: Set<string>;
+  acceptedCasingPairs: Set<string>;
   booleanPrefixes: Set<string>;
   hungarianPrefixes: Set<string>;
   placeholderNames: Set<string>;
@@ -173,11 +175,11 @@ export interface SkippedPath {
  * Non-fatal scan-surface note (additive in 0.4.0, owner-approved): explains a scan whose surface
  * differs from what the caller likely expected - a requested input that produced no analysable
  * files (`no-analysable-files`), or a file whose deep script analysis was bounded by the scan
- * budget (`bounded-deep-scan`). Notes never affect exit codes; `diagnostics` stays the surface
- * that drives exit 2.
+ * budget (`bounded-deep-scan`), or bytes that are not parseable text (`non-text-file`). Notes never
+ * affect exit codes; `diagnostics` stays the surface that drives exit 2.
  */
 export interface ScanSurfaceNote {
-  noteType: "no-analysable-files" | "bounded-deep-scan";
+  noteType: "no-analysable-files" | "bounded-deep-scan" | "non-text-file";
   path: string;
   message: string;
 }

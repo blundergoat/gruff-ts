@@ -1,7 +1,7 @@
 // CLI and dashboard surface tests covering command help, render formats, SARIF, and HTML controls.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -698,6 +698,51 @@ test("report command ignores default baselines", () => {
     const report = JSON.parse(output) as AnalysisReport;
     assert.equal(report.baseline, undefined);
     assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call"), true);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+// Governance controls must reject misspelled values before analysis starts, not silently default.
+// Spawns the CLI once per case and asserts the usage error names the accepted set.
+function assertConstrainedValueRejected(label: string, args: string[]): void {
+  const result = spawnSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), ...args], { encoding: "utf8" });
+  assert.notEqual(result.status, 0, `${label} must fail fast`);
+  assert.equal(result.stderr.includes("must be one of:"), true, `${label} must name the accepted values`);
+}
+
+test("constrained option values fail fast as usage errors naming the accepted set", () => {
+  assertConstrainedValueRejected("analyse --format", ["analyse", "--format", "bogus", "--no-config", "--no-baseline"]);
+  assertConstrainedValueRejected("analyse --fail-on", ["analyse", "--fail-on", "bogus", "--no-config", "--no-baseline"]);
+  assertConstrainedValueRejected("analyse --changed-scope", ["analyse", "--changed-scope", "bogus", "--no-config", "--no-baseline"]);
+  assertConstrainedValueRejected("report --format", ["report", "--format", "bogus", "--no-config"]);
+  assertConstrainedValueRejected("report --fail-on", ["report", "--fail-on", "bogus", "--no-config"]);
+  assertConstrainedValueRejected("summary --fail-on", ["summary", "--fail-on", "bogus", "--no-config"]);
+});
+
+test("valid constrained values and bare directory arguments keep working", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-valid-values-"));
+  try {
+    writeFileSync(join(projectRoot, "clean.ts"), "// File overview: valid-values fixture.\nexport const fine = 1;\n");
+    const valid = spawnSync(
+      "bash",
+      [join(REPO_ROOT, "bin/gruff-ts"), "analyse", ".", "--format", "json", "--fail-on", "none", "--changed-scope", "file", "--no-config", "--no-baseline"],
+      { cwd: projectRoot, encoding: "utf8" },
+    );
+    assert.equal(valid.status, 0);
+    assert.equal(JSON.parse(valid.stdout).schemaVersion, "gruff.analysis.v2");
+
+    // Family CLI contract: a bare directory operand means the whole subtree (dir equals dir/**).
+    mkdirSync(join(projectRoot, "sub"), { recursive: true });
+    writeFileSync(join(projectRoot, "sub", "nested.ts"), "// File overview: bare-directory fixture.\nexport function risky(input: string): unknown {\n  return eval(input);\n}\n");
+    const bareDirRun = spawnSync(
+      "bash",
+      [join(REPO_ROOT, "bin/gruff-ts"), "analyse", "sub", "--format", "json", "--fail-on", "none", "--no-config", "--no-baseline"],
+      { cwd: projectRoot, encoding: "utf8" },
+    );
+    assert.equal(bareDirRun.status, 0);
+    const bareDirReport = JSON.parse(bareDirRun.stdout) as AnalysisReport;
+    assert.equal(bareDirReport.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.filePath === "sub/nested.ts"), true);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
   }

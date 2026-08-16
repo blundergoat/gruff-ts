@@ -1,12 +1,12 @@
 // Context-doc rules: emit findings when a function or interface comment exists but does not
 // describe the WHY (complex control flow), side effects, error behavior, or public-contract
 // invariants the implementation carries. Each rule reports a stable, deterministic finding.
-import { type FunctionBlock, maxNestingDepth } from "./blocks.ts";
+import { type FunctionBlock } from "./blocks.ts";
 import { type CommentRecord } from "./comment-scanner.ts";
+import { baseComplexityMetrics } from "./complexity-metrics.ts";
 import { threshold } from "./config.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { countMatches } from "./text-scans.ts";
 import type { Config, Finding } from "./types.ts";
 
 // Generic declaration shape used by both function and interface comment-quality rules so they can
@@ -147,23 +147,22 @@ function contextDocFinding(input: ContextDocFindingInput): Finding {
   });
 }
 
-// Composite gate: any one of size, cyclomatic, cognitive, or nesting depth crossing the
-// configured stable threshold qualifies a callable as "complex enough to need WHY context".
+// Uses the same syntax measurement as complexity findings so a reviewer sees one consistent gate.
 function isComplexContextCandidate(block: FunctionBlock, config: Config): boolean {
-  const cyclomatic = countMatches(block.codeBody, /\b(if|else if|switch|case|for|while|catch)\b|\?|&&|\|\|/g) + 1;
-  const cognitive = cyclomatic + maxNestingDepth(block.codeBody);
+  // A legacy span-only caller cannot reparse here, so it receives the same neutral fallback as block rules.
+  const sharedComplexityMetrics = block.complexityMetrics ?? baseComplexityMetrics();
   return (
     block.lineCount > threshold(config, "size.function-length", 200) ||
-    cyclomatic > threshold(config, "complexity.cyclomatic", 15) ||
-    cognitive > threshold(config, "complexity.cognitive", 15) ||
-    maxNestingDepth(block.codeBody) > 3
+    sharedComplexityMetrics.cyclomatic > threshold(config, "complexity.cyclomatic", 15) ||
+    sharedComplexityMetrics.cognitive > threshold(config, "complexity.cognitive", 15) ||
+    sharedComplexityMetrics.maximumControlFlowNesting > 3
   );
 }
 
 // Vocabulary list signalling "the comment explains why" - the missing-why rule passes when any
 // listed word appears. Adding entries here loosens the rule; removing them tightens it.
 function hasComplexWhyMarker(text: string): boolean {
-  return /\b(?:because|why|intentional|tradeoff|compat|avoid|preserve)\b/i.test(text);
+  return /\b(?:because|why|intentional|trade-?off|compat(?:ibility|ible)?|avoid|preserve)\b|\b(?:due to|so that|in order to|required by)\b/i.test(text);
 }
 
 // Vocabulary for "comment names a side effect". Pairs with `SIDE_EFFECT_BODY_PATTERNS` - if the

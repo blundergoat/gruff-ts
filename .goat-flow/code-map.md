@@ -5,81 +5,107 @@ gruff-ts/
 ├── AGENTS.md                      = Codex instruction file (hot path; do not edit peer Claude surfaces)
 ├── CLAUDE.md                      = Claude instruction file (peer-agent surface; do not edit during Codex turns)
 ├── README.md                      = user-facing CLI overview, workflows, config, safety notes, and development commands
-├── CHANGELOG.md                   = public release notes; 0.3.0 rule/catalogue surface
+├── CHANGELOG.md                   = dated public release notes; current 0.5.0 behavior and compatibility changes
 ├── CONTRIBUTING.md                = contributor setup, rule-change checklist, docs expectations
 ├── SECURITY.md                    = public vulnerability reporting and security boundaries
-├── package.json                   = npm manifest; declares bin "gruff-ts" → bin/gruff-ts; deps: commander, tsx
+├── package.json                   = npm manifest; declares bin "gruff-ts" -> bin/gruff-ts; runtime deps: commander, tsx, typescript
 ├── package-lock.json              = npm lockfile
 ├── tsconfig.json                  = strict + noUncheckedIndexedAccess + exactOptionalPropertyTypes
 ├── .gruff-ts.yaml                 = repo-level gruff-ts YAML config
 ├── .gitignore                     = ignores node_modules, dist, .gruff-history.json, gruff-baseline.json, local agent settings
-├── .npmignore                     = npm publish ignore list
+├── .npmignore                     = secondary npm ignore list; package.json files allowlist remains authoritative
 ├── docs/
-│   ├── CONFIGURATION.md           = config shape, ignored paths, allowlists, thresholds/options
-│   ├── REPORTS_AND_CI.md          = output formats, exit codes, baselines, SARIF/GitHub, dashboard
-│   └── RELEASING.md               = 0.3.0 / 0.3.x release checklist and package review
+│   ├── README.md                  = docs index; pairs with the top-level README as the user-facing surface
+│   ├── agent-hook.md              = coding-agent hook contract and diff-scoped gating (cited by architecture.md)
+│   ├── ci-integration.md          = wiring the self-scan and exit codes into CI
+│   ├── configuration.md           = config shape, ignored paths, allowlists, thresholds/options
+│   ├── dashboard.md               = local dashboard usage and routes
+│   ├── output-formats.md          = text/json/html/markdown/github/hotspot/sarif rendering
+│   ├── philosophy.md              = product framing: governing AI-generated code (cited by architecture.md)
+│   ├── releasing.md               = 0.5.0 release gates, package review, and installed-tarball smoke
+│   ├── reports-and-ci.md          = output formats, exit codes, baselines, SARIF/GitHub, dashboard
+│   ├── rules.md                   = per-rule catalogue with pillar counts
+│   └── coding-standards/
+│       └── git-commit-message.md  = commit-message reference the agent instruction files cite as authority
 │
 ├── .github/
+│   ├── copilot-instructions.md    = Copilot instruction file (peer-agent surface; sweep with CLAUDE.md + AGENTS.md)
 │   ├── git-commit-instructions.md = project commit-message policy
+│   ├── hooks/hooks.json           = Copilot hook registration (scripts shared in .goat-flow/hooks/)
+│   ├── skills/                    = installed Copilot skill copies (goat, goat-plan/debug/review/critique/security/qa)
 │   └── workflows/ci.yml           = npm ci → npm run check → gruff-ts self-scan on main/dev push/PR
 │
 ├── bin/
 │   └── gruff-ts                   = POSIX shell shim; resolves tsx loader and execs node --import <loader> src/cli.ts
 │
-├── src/                              = modular runtime plus focused node --test coverage
-│   ├── cli.ts (19 lines)             = thin CLI shell: bootstrap + entrypoint guard + public re-exports; delegates to analyser.ts
-│   ├── cli-program.ts (325)          = commander wiring; buildProgram(analyseFn) takes analyse() as a callback (avoids cli.ts ↔ cli-program.ts cycle)
-│   ├── analyser.ts (459)             = analyse() orchestrator: load config → discover → per-file scan → project index → baseline apply → AnalysisReport
-│   ├── discovery.ts (415)            = source walk, gitignore handling, scannable file extensions, default-ignored directory list
-│   ├── project-rules.ts (500)        = cross-file rules: circular imports, deep relative imports, large-module concentration, missing-nearby-tests, import graph
-│   ├── blocks.ts (687)               = functionBlocks regex lexer + block-scoped size/complexity/waste/naming/doc rules
-│   ├── line-rules.ts (538)           = per-line modernisation, naming, security, and waste pattern rules
-│   ├── class-rules.ts (326)          = class/interface rules plus per-file identifier inventory for casing/acronym checks
-│   ├── dead-code-rules.ts (181)      = analyseDeadCode, analyseUnreachable, analyseUnusedImports
-│   ├── doc-rules.ts (369)            = file overview, public docs, JSDoc tag, and interface documentation rules
-│   ├── comment-rules.ts (605)        = comment quality rules: stale comments, TODO tracking, suppressions, rationale checks
-│   ├── comment-scanner.ts (357)      = commentRecords (extracts JS comment records consumed by comment-rules.ts)
-│   ├── context-doc-rules.ts (241)    = maintainer-context doc rubrics
-│   ├── fixture-purpose-rules.ts (334)= fixture-purpose rubric pack
-│   ├── test-block-rules.ts (347)     = analyseTestBlock: setup-bloat, assertion, mock, sleep, loop, and structural test rules
-│   ├── safety-rules.ts (355)         = type-safety + reliability pushers: ts directives, non-null, double-cast, async/reliability, catch/throw rules
-│   ├── security-flow-rules.ts (112)  = source-to-sink candidates: open redirect, path traversal, SSRF, dynamic RegExp
-│   ├── github-actions-rules.ts (353) = GitHub Actions workflow security rules
-│   ├── process-exec-rules.test.ts    = focused process-exec rule regression coverage
-│   ├── naming-pushers.ts (191)       = shared naming-finding emitters
-│   ├── project-config-rules.ts (425) = package.json, tsconfig, workflow, dependency, and config-health rules
-│   ├── sensitive-data-rules.ts (288) = secret-like detectors with redacted previews
-│   ├── source-text.ts (691)          = maskNonCode, parseDiagnostics, and source-text helpers
-│   ├── text-scans.ts (196)           = todoMarkerSummary, byteLine, and generic text scans
-│   ├── baseline.ts (90)              = applyBaseline, dedupeFindings, writeBaseline, recordHistory, DEFAULT_BASELINE
-│   ├── scoring.ts (74)               = scoreReport, summarize, exitFor
-│   ├── rules.ts (135)                = RULE_DESCRIPTORS catalogue: 119 rule descriptors across 11 pillars
-│   ├── rule-list.ts (179)            = list-rules command renderer + shell-completion script generator
-│   ├── dashboard.ts (105)            = local HTTP dashboard server (127.0.0.1:8767); iframe shell + /scan endpoint
-│   ├── report-renderers.ts (659)     = text/json/html/markdown/github/hotspot/SARIF renderers plus summary output
-│   ├── config.ts (618)               = loadConfig YAML subset parser, ruleEnabled, ruleSeverity, threshold, optionNumber
-│   ├── findings.ts (45)              = makeFinding (sha256 fingerprint sliced to 16 chars; stable identity tuple for baselines)
-│   ├── findings-helpers.ts (98)      = finding() thin wrapper, changedFiles() git-diff bridge
-│   ├── types.ts (113)                = public surface types: Finding, AnalysisReport, AnalysisOptions, Pillar, Severity, RuleDescriptor, OutputFormat, Config, RunDiagnostic
-│   ├── constants.ts (4)              = VERSION
-│   ├── test-fixtures.ts (621)        = shared noisy/clean fixture strings used by rule tests
-│   └── *.test.ts                     = focused Node test files for rule packs, fixtures, CLI surfaces, reports, contracts, and false-positive tuning
+├── src/                           = modular runtime plus focused Node test coverage
+│   ├── cli.ts                     = thin CLI bootstrap and public re-exports; delegates to analyser.ts
+│   ├── cli-program.ts             = Commander wiring for the eleven registered commands and shared option normalization
+│   ├── analyser.ts                = scan orchestrator: config -> discovery -> shared parse -> rules -> baseline -> report
+│   ├── parsed-script.ts           = one TypeScript syntax parse per script, shared by callable, docs, flow, owner, and complexity consumers
+│   ├── complexity-metrics.ts      = syntax-aware cyclomatic, cognitive, and nesting measurements with deterministic breakdowns
+│   ├── discovery.ts               = source walk, gitignore handling, supported extensions, and default ignored directories
+│   ├── project-rules.ts           = cross-file imports, cycles, module concentration, and nearby-test analysis
+│   ├── blocks.ts                  = callable-owned size, complexity, waste, naming, and documentation rules
+│   ├── line-rules.ts              = per-line modernisation, naming, security, and waste patterns
+│   ├── class-rules.ts             = declaration rules plus owner-scoped casing and file-wide acronym checks
+│   ├── public-exports.ts          = supported public declaration inventory for class/file contract checks
+│   ├── dead-code-rules.ts         = unreachable code, unused imports, and unused private methods
+│   ├── doc-rules.ts               = file overview, public docs, JSDoc tag, and interface rules
+│   ├── comment-rules.ts           = stale comment, tracking, suppression, and rationale rules
+│   ├── comment-scanner.ts         = JavaScript and TypeScript comment records consumed by comment rules
+│   ├── context-doc-rules.ts       = maintainer-context documentation rubrics
+│   ├── fixture-purpose-rules.ts   = fixture-purpose rubric pack
+│   ├── test-block-rules.ts        = setup, assertion, mock, sleep, loop, and structural test rules
+│   ├── safety-rules.ts            = type-safety, async reliability, catch, and throw rules
+│   ├── security-flow-rules.ts     = syntax-aware source-to-sink candidates and unsafe parser/execution checks
+│   ├── github-actions-rules.ts    = GitHub Actions workflow and permission rules
+│   ├── process-exec-metadata.ts   = safe process-call metadata shared by execution findings
+│   ├── naming-pushers.ts          = shared naming finding emitters and remediation metadata
+│   ├── project-config-rules.ts    = package, TypeScript, workflow, dependency, and config-health rules
+│   ├── sensitive-data-rules.ts    = secret-like detectors with allowlisted redacted previews
+│   ├── source-text.ts             = non-code masking and source-text helpers
+│   ├── text-scans.ts              = tracking-marker summaries, byte lines, and generic text scans
+│   ├── baseline-options.ts        = baseline option resolution shared by CLI commands
+│   ├── baseline.ts                = baseline apply/write, finding dedupe, and history recording
+│   ├── scoring.ts                 = report scoring, summaries, and finding exit semantics
+│   ├── pillar-summary.ts          = canonical summary pillar rows and ordering
+│   ├── rules.ts                   = catalogue of exactly 120 descriptors across 11 pillars
+│   ├── rule-list.ts               = list-rules, profile list, and shell completion rendering
+│   ├── dashboard.ts               = loopback dashboard server and scan endpoint
+│   ├── report-html.ts             = escaped self-contained HTML and dashboard report rendering
+│   ├── report-renderers.ts        = text, JSON, Markdown, GitHub, hotspot, SARIF, and summary rendering
+│   ├── config.ts                  = config loading and effective rule settings
+│   ├── config-parse.ts            = dependency-free YAML subset parsing and value narrowing
+│   ├── config-preservation.ts     = fields retained across init --force regeneration
+│   ├── config-load-error.ts       = user-facing config error and remediation context
+│   ├── findings.ts                = stable finding construction and fingerprint identity
+│   ├── findings-helpers.ts        = shared finding helpers and centralized severity overrides
+│   ├── static-analysis-redundant-rules.ts = low-signal static-analysis test detection
+│   ├── types.ts                   = public Finding, report, option, config, and descriptor types
+│   ├── constants.ts               = package version constant
+│   ├── test-fixtures.ts           = shared synthetic projects and fixture helpers for tests
+│   └── *.test.ts                  = focused Node suites for rules, CLI, reports, contracts, and release truth
 │
 ├── scripts/
 │   ├── bump-version.sh            = semver bump/check for package.json + src/constants.ts
 │   ├── check.sh                   = wrapper for `npm run check` (tsc --noEmit && npm test)
-│   ├── preflight-checks.sh        = release gate: npm run check, self-scan, optional shellcheck
+│   ├── dependency-install.sh      = pinned dependency install helper
+│   ├── dependency-update.sh       = dependency bump helper
+│   ├── npm-publish.sh             = publish helper run after the release gates pass
+│   ├── pack-smoke.sh              = pack, manifest, fresh-install, output, and exit-semantics release gate
+│   ├── preflight-checks.sh        = 6-check local gate: version consistency, npm audit, npm run check,
+│   │                                gruff self-scan, shellcheck, and the deny/post-turn hook policy self-tests
 │   ├── start-dev.sh               = wrapper for `npm run start-dev` with env host/port/project-root overrides
 │   └── test-performance.sh        = gruff-perf.v1 performance matrix/baseline helper
 │
 ├── fixtures/
 │   └── sample.ts                  = sample source used by manual smoke tests / dashboard
 │
-├── .claude/                       = Claude Code agent surface
-│   ├── settings.json              = harness settings (committed)
+├── .claude/                       = Claude Code agent surface (no hooks/ dir; the scripts live in .goat-flow/hooks/)
+│   ├── settings.json              = harness settings (committed); registers the PreToolUse deny hook and the
+│   │                                Stop post-turn hook, both pointing at .goat-flow/hooks/*.sh
 │   ├── settings.local.json        = local-only overrides (gitignored)
-│   ├── hooks/
-│   │   └── deny-dangerous.sh      = PreToolUse hook blocking risky bash patterns
 │   └── skills/
 │       ├── goat/                  = dispatcher skill
 │       ├── goat-plan/             = milestone planner
@@ -93,7 +119,7 @@ gruff-ts/
 ├── .codex/                        = Codex config and permission profile (deny hook shared in .goat-flow/hooks/)
 │
 ├── .goat-flow/                    = shared learning loop + skill packs (see .goat-flow/README files inline)
-│   ├── config.yaml                = goat-flow version (1.10.1) and skill install policy
+│   ├── config.yaml                = goat-flow version (1.15.1) and skill install policy
 │   ├── architecture.md            = system overview (this companion file)
 │   ├── code-map.md                = this file
 │   ├── glossary.md                = domain term definitions
@@ -103,14 +129,14 @@ gruff-ts/
 │   ├── plans/, scratchpad/        = milestone plans + ephemeral work (gitignored contents)
 │   ├── logs/sessions/, logs/quality/, logs/critiques/, logs/security/    = local continuity + skill output
 │   ├── skill-docs/                = meta references (skill-preamble, skill-conventions, README)
-│   └── skill-docs/playbooks/      = tool availability checks (browser-use, page-capture, skill-quality-testing)
+│   └── skill-docs/playbooks/      = browser-use.md, changelog.md, code-comments.md, gruff-code-quality.md, hook-policy-testing.md, observability.md, page-capture.md, release-notes.md, skill-playbook-authoring-sync.md, writing-style.md
 │
-├── node_modules/                  = npm dependencies (vendored, do not edit)
+├── node_modules/                  = vendored npm dependencies; never edit. Holds the goat-flow package whose
+│                                    workflow/hooks/ templates the installed .goat-flow/hooks/ scripts diff against
 └── .idea/                         = JetBrains IDE config (gitignored, do not edit)
 ```
 
 Generated/gitignored at runtime (paths exist only after the user runs them):
 - `gruff-baseline.json` - written by `analyse --generate-baseline`
 - `.gruff-history.json` - written by `analyse --history-file <path>`
-- `.goat-flow/scratchpad/gruff-ts-extended-baseline.json` - local close-out smoke baseline
-- `dist/` - reserved; project ships TS directly via tsx, no compiled output today
+- `dist/` - reserved; project ships TypeScript directly via tsx, with typescript used for syntax-only parsing

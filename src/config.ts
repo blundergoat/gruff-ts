@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { arrayValue, isString, objectValue, parseConfigFile, SUGGEST_EDIT_CONFIG, SUGGEST_INIT_FORCE } from "./config-parse.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
-import { BUILT_IN_PROFILES, builtInProfileNames, DEFAULT_PROFILE_NAME, isKnownRuleId } from "./profiles.ts";
+import { BUILT_IN_PROFILES, builtInProfileNames, DEFAULT_PROFILE_NAME, isKnownRuleId, ruleOptionKeys } from "./profiles.ts";
 import type { AnalysisOptions, Config, FailThreshold, InlineProfileSpec, MinimumSeverityCommand, ProfileDefinition, ProfileRuleSetting, ProfileSpec, Severity } from "./types.ts";
 
 type RuleOverride = Config["rules"] extends Map<string, infer RuleOverrideValue> ? RuleOverrideValue : never;
@@ -19,10 +19,12 @@ function defaultConfig(): Config {
   return {
     schemaVersion: "gruff-ts.config.v0.1",
     ignoredPaths: [],
-    acceptedAbbreviations: new Set(["age", "app", "cb", "db", "fn", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url"]),
+    acceptedAbbreviations: new Set(["age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url"]),
     secretPreviews: new Set(),
     bannedGenericNames: new Set(["process", "handle", "doit", "run", "execute", "manage"]),
     acceptedBooleanNames: new Set(["all", "apply", "check", "dev", "enabled", "force", "fresh", "harness", "json", "ok", "verbose", "yes"]),
+    acceptedClassFilePairs: new Set(),
+    acceptedCasingPairs: new Set(),
     booleanPrefixes: new Set(["is", "has", "can", "should", "does", "did", "was", "will", "may", "in", "scan", "supports", "requires", "allow", "check", "enable", "exclude", "include", "omit", "skip", "with", "without"]),
     hungarianPrefixes: new Set(["str", "obj", "arr", "bool", "int", "num"]),
     placeholderNames: new Set(["foo", "bar", "baz", "tmp", "temp", "thing", "stuff", "data", "value", "item"]),
@@ -240,13 +242,14 @@ function inlineSpecFromObject(block: Record<string, unknown>): InlineProfileSpec
 }
 
 // Builds the per-rule settings map for an inline profile, reusing the same validation as the
-// top-level `rules:` block (`ruleConfigValue` throws on a non-numeric threshold or bad severity).
+// top-level `rules:` block (`ruleConfigValue` throws on unknown/malformed fields; rule ids are
+// validated by the profile resolver so direct and profile rules reject identically).
 function profileRulesFromBlock(rulesBlock: Record<string, unknown>): Record<string, ProfileRuleSetting> {
   const rules: Record<string, ProfileRuleSetting> = {};
   for (const [ruleId, value] of Object.entries(rulesBlock)) {
     const rule = objectValue(value);
     if (rule) {
-      rules[ruleId] = ruleConfigValue(rule);
+      rules[ruleId] = ruleConfigValue(ruleId, rule);
     }
   }
   return rules;
@@ -347,7 +350,7 @@ function applyPathConfig(config: Config, raw: Record<string, unknown>): void {
 }
 
 // The allowlist section is the main lever users have for tuning gruff to their conventions.
-// `acceptedAbbreviations` and the seven naming lists are lowercased on import so case-insensitive
+// `acceptedAbbreviations` and the naming lists are lowercased on import so case-insensitive
 // matching is the stable behaviour regardless of how users write entries.
 function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): void {
   const allowlists = objectValue(raw.allowlists);
@@ -358,6 +361,8 @@ function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): voi
   config.secretPreviews = new Set(arrayValue(allowlists?.secretPreviews).filter(isString));
   applyNamingAllowlist(config, allowlists, "bannedGenericNames");
   applyNamingAllowlist(config, allowlists, "acceptedBooleanNames");
+  applyNamingAllowlist(config, allowlists, "acceptedClassFilePairs");
+  applyNamingAllowlist(config, allowlists, "acceptedCasingPairs");
   applyNamingAllowlist(config, allowlists, "booleanPrefixes");
   applyNamingAllowlist(config, allowlists, "hungarianPrefixes");
   applyNamingAllowlist(config, allowlists, "placeholderNames");
@@ -367,7 +372,7 @@ function applyAllowlistConfig(config: Config, raw: Record<string, unknown>): voi
 
 // Replaces the entire list when the user provides that key - there is no merge with defaults.
 // The "set the whole list" semantic is intentional so users can deliberately empty a list.
-function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "bannedGenericNames" | "acceptedBooleanNames" | "booleanPrefixes" | "hungarianPrefixes" | "placeholderNames" | "negativeBooleanAllowed" | "knownAcronyms"): void {
+function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "bannedGenericNames" | "acceptedBooleanNames" | "acceptedClassFilePairs" | "acceptedCasingPairs" | "booleanPrefixes" | "hungarianPrefixes" | "placeholderNames" | "negativeBooleanAllowed" | "knownAcronyms"): void {
   if (!allowlists || !(key in allowlists)) {
     return;
   }
@@ -375,7 +380,8 @@ function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown
 }
 
 // Per-rule overrides under the `rules:` key. Each entry can carry enabled / threshold / severity /
-// options - only the keys the user actually sets become overrides; unset keys fall through to defaults.
+// options - only the keys the user actually sets become overrides; unset keys fall through to
+// defaults. Throws ConfigLoadError on rule ids outside the catalogue and on malformed field values.
 function applyRuleConfig(config: Config, raw: Record<string, unknown>): void {
   const rules = objectValue(raw.rules);
   if (!rules) {
@@ -386,19 +392,42 @@ function applyRuleConfig(config: Config, raw: Record<string, unknown>): void {
     if (!rule) {
       continue;
     }
-    config.rules.set(ruleId, ruleConfigValue(rule));
+    // A misspelled id would otherwise sit in the map as a silent no-op the user believes is policy.
+    if (!isKnownRuleId(ruleId)) {
+      throw new ConfigLoadError(
+        `Unknown rule id: ${JSON.stringify(ruleId)}.`,
+        "Use a rule id from `gruff-ts list-rules`; `rules:` keys must match the catalogue exactly.",
+      );
+    }
+    config.rules.set(ruleId, ruleConfigValue(ruleId, rule));
   }
 }
 
-// Builds one rule's override entry after `assertRuleThresholdConfig` has thrown on malformed input.
+// Builds one rule's override entry after the field asserts have thrown on malformed input.
 // Validation happens before extraction so users see a useful error rather than a silently dropped key.
-function ruleConfigValue(rule: Record<string, unknown>): RuleOverride {
+function ruleConfigValue(ruleId: string, rule: Record<string, unknown>): RuleOverride {
   assertRuleThresholdConfig(rule);
-  const ruleOverride: RuleOverride = { options: numericConfigMap(rule.options) };
+  assertRuleEnabledConfig(rule);
+  const ruleOverride: RuleOverride = { options: validatedRuleOptions(ruleId, rule.options) };
   applyRuleEnabledConfig(ruleOverride, rule);
   applyRuleThresholdConfig(ruleOverride, rule);
   applyRuleSeverityConfig(ruleOverride, rule);
   return ruleOverride;
+}
+
+/*
+ * Rejects non-boolean `enabled` values loudly. YAML 1.2 core scalars keep `no`/`off`/`yes`/`on` as
+ * strings (only `true`/`false` parse as booleans), so a user writing `enabled: no` previously got a
+ * silent no-op while believing the rule was off. Throws ConfigLoadError naming the offending value
+ * and the accepted forms; returns silently when the key is absent.
+ */
+function assertRuleEnabledConfig(rule: Record<string, unknown>): void {
+  if ("enabled" in rule && typeof rule.enabled !== "boolean") {
+    throw new ConfigLoadError(
+      `Rule config key "enabled" must be true or false; got ${JSON.stringify(rule.enabled)}.`,
+      "YAML 1.2 treats `no`/`off`/`yes`/`on` as strings - write `enabled: true` or `enabled: false`.",
+    );
+  }
 }
 
 /*
@@ -442,18 +471,29 @@ function applyRuleSeverityConfig(ruleOverride: RuleOverride, rule: Record<string
   }
 }
 
-// Rule options are typed as numeric (thresholds, line counts, etc.). Non-numeric entries are
-// silently dropped rather than thrown because allowing malformed YAML to abort a scan is too aggressive.
-function numericConfigMap(optionsValue: unknown): Map<string, number> {
+/*
+ * Validates `rules.<id>.options` against the rule descriptor's declared option keys - a dropped
+ * option would otherwise convince the user a tuning applied when it did not. Rules without declared
+ * options reject every entry. Throws ConfigLoadError naming the rule and its accepted keys for
+ * unknown keys, and the offending value for non-numeric declared options.
+ */
+function validatedRuleOptions(ruleId: string, optionsValue: unknown): Map<string, number> {
   const options = new Map<string, number>();
   const rawOptions = objectValue(optionsValue);
   if (!rawOptions) {
     return options;
   }
+  const acceptedKeys = ruleOptionKeys(ruleId);
   for (const [name, option] of Object.entries(rawOptions)) {
-    if (typeof option === "number") {
-      options.set(name, option);
+    // Reject unknown keys first so a typo is reported as the typo, not as a type error.
+    if (!acceptedKeys.includes(name)) {
+      const accepted = acceptedKeys.length > 0 ? `accepts options: ${acceptedKeys.join(", ")}` : "accepts no options";
+      throw new ConfigLoadError(`Unknown option ${JSON.stringify(name)} for rule ${ruleId}; the rule ${accepted}.`, SUGGEST_EDIT_CONFIG);
     }
+    if (typeof option !== "number") {
+      throw new ConfigLoadError(`Rule config option ${JSON.stringify(name)} for ${ruleId} must be numeric; got ${JSON.stringify(option)}.`, SUGGEST_EDIT_CONFIG);
+    }
+    options.set(name, option);
   }
   return options;
 }

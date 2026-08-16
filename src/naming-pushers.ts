@@ -12,6 +12,27 @@ import type { Config, Finding } from "./types.ts";
  */
 export type NamingSurface = "declaration" | "parameter" | "destructure" | "interface-field";
 
+/**
+ * Selects the report guidance for a boolean's source surface. Contract fields point users to the
+ * complete replacement allowlist or a serialization map; local code receives a safe rename action.
+ * @param surface Naming origin shown in finding metadata; interface-field means a contract surface.
+ * @returns Remediation text and action metadata for the finding emitter.
+ */
+export function booleanPrefixGuidance(surface: NamingSurface): { remediation: string; remediationAction: "APPLY" | "CONFIGURE"; configurationKey?: "allowlists.acceptedBooleanNames" } {
+  // Interface and named type-literal fields may be external keys that a rename would break.
+  if (surface === "interface-field") {
+    return {
+      remediation: "If this is an external contract key, include it in the complete replacement list at `allowlists.acceptedBooleanNames` or map it at the serialization boundary; otherwise rename the field with an intent-revealing prefix.",
+      remediationAction: "CONFIGURE",
+      configurationKey: "allowlists.acceptedBooleanNames",
+    };
+  }
+  return {
+    remediation: "Rename this boolean with an intent-revealing prefix such as is, has, can, should, or will.",
+    remediationAction: "APPLY",
+  };
+}
+
 /*
  * Negative-framed booleans (disableX, noX, preventX, …) read as double negations at call sites.
  * `negativeBooleanAllowed` is the user-curated exemption list. Reports the stable
@@ -41,14 +62,14 @@ export function pushNegativeBooleanAt(file: SourceFile, line: number, name: stri
 }
 
 /*
- * Booleans should announce their boolean-ness with an `is`/`has`/`can`/… prefix. The accepted set
- * lives in `config.booleanPrefixes` so projects can tune it. Reports the stable
- * `naming.boolean-prefix` finding.
+ * Reports typed booleans without an accepted prefix or exact contract name. The finding keeps its
+ * stable identity while its surface selects safe local-rename or contract configuration guidance.
  */
 export function pushBooleanPrefixAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
   if (hasBooleanPrefix(name, config.booleanPrefixes) || isAcceptedBooleanStateName(name) || isAcceptedContractBooleanName(name, config, surface)) {
     return;
   }
+  const { remediation, ...remediationMetadata } = booleanPrefixGuidance(surface);
   findings.push(
     makeFinding({
       ruleId: "naming.boolean-prefix",
@@ -59,8 +80,8 @@ export function pushBooleanPrefixAt(file: SourceFile, line: number, name: string
       pillar: "naming",
       confidence: "medium",
       symbol: name,
-      remediation: "Use a prefix such as is, has, can, should, or will.",
-      metadata: { identifierName: name, surface },
+      remediation,
+      metadata: { identifierName: name, surface, ...remediationMetadata },
     }),
   );
 }

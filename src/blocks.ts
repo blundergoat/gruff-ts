@@ -3,10 +3,11 @@
 // finding factories. Pulls the parser and the rules that operate on parsed blocks out of cli.ts.
 import { ruleSeverity, threshold } from "./config.ts";
 import { hasLeadingCommentBeforeLines } from "./comment-scanner.ts";
+import { baseComplexityMetrics, complexityMetrics as measureComplexity, type ComplexityMetrics } from "./complexity-metrics.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { escapeRegex, isGenericName, lineOffset } from "./findings-helpers.ts";
-import { countMatches } from "./text-scans.ts";
+import { escapeRegex, isGenericName, lineOffset, parameterNames } from "./findings-helpers.ts";
+import { callableMatchPoints, type ParsedScript } from "./parsed-script.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
 // Parsed callable body shared by every block-level rule (size, complexity, naming, docs). The
@@ -15,27 +16,28 @@ import type { Config, Finding, Pillar, Severity } from "./types.ts";
 export interface FunctionBlock {
   name: string;
   params: string;
+  // AST parameter count; absent only for legacy regex-derived blocks.
+  parameterCount?: number;
+  // Shared syntax metric; absent only for legacy regex span probes.
+  complexityMetrics?: ComplexityMetrics;
+  // AST-known body presence; absent only for legacy regex-derived blocks.
+  hasBody?: boolean;
   startLine: number;
   lineCount: number;
   body: string;
   codeBody: string;
   isPublic: boolean;
-  // True when the function declaration line itself starts with `export`. Distinct from `isPublic`,
-  // which also matches class `public` modifiers - exports are the top-level API surface, while a
-  // public class method is internal to an exported (or unexported) class. The doc rule splits
-  // severity on this distinction: exported functions warrant warning-tier doc requirements,
-  // internal helpers stay advisory.
+  // True for exported/re-exported module APIs; unlike `isPublic`, class modifiers do not qualify.
+  // This selects warning-tier API docs while internal helpers remain advisory.
   isExported: boolean;
   isTest: boolean;
   hasLeadingComment: boolean;
   declarationLine: number;
 }
 
-// Working state for the function-block parser. Patterns are precompiled once per file so each
-// callable detection doesn't re-instantiate the same RegExp objects. `reExportedNames` carries
-// the file-level scan of `export { foo }` / `export default foo` so a declaration like
-// `function foo() {}` later re-exported via `export { foo }` is still classified as exported
-// (the line-local `^export` check alone would miss this common pattern).
+// Working state for one file's block discovery. Patterns are precompiled once, while
+// `reExportedNames` carries the file-level module API classification that a declaration-line
+// check would miss. CLI users reach this state whenever script block rules run.
 interface FunctionBlockScan {
   lines: string[];
   codeLines: string[];
@@ -59,6 +61,8 @@ export interface BlockRuleContext {
   block: FunctionBlock;
   config: Config;
   findings: Finding[];
+  complexityMetrics: ComplexityMetrics;
+  // Retained alias used by the generic-parameter naming gate.
   cyclomatic: number;
   functionBody: string;
 }
@@ -109,16 +113,18 @@ export function blockFindingWithMetadata(args: BlockFindingWithMetadataArgs): Fi
   });
 }
 
-// Computes cyclomatic and function-body once and threads them through the per-block rule pipeline.
-// Pre-computing here keeps each rule's per-block work to a single threshold comparison; the
-// resulting struct is part of the stable rule-context contract every per-block helper consumes.
+// Threads one parsed complexity result and body through each block rule. Legacy span-only callers
+// receive base complexity because no extra parse is allowed; this preserves the report invariant.
 export function blockRuleContext(file: SourceFile, block: FunctionBlock, config: Config, findings: Finding[]): BlockRuleContext {
+  // A regex-only caller has no shared syntax node, so it receives the neutral base measurement.
+  const sharedComplexityMetrics = block.complexityMetrics ?? baseComplexityMetrics();
   return {
     file,
     block,
     config,
     findings,
-    cyclomatic: countMatches(block.codeBody, /\b(if|else if|switch|case|for|while|catch)\b|\?|&&|\|\|/g) + 1,
+    complexityMetrics: sharedComplexityMetrics,
+    cyclomatic: sharedComplexityMetrics.cyclomatic,
     functionBody: functionBodyContent(block.codeBody),
   };
 }
@@ -158,10 +164,11 @@ function pushFunctionLengthFinding(context: BlockRuleContext): void {
   }
 }
 
-// Default threshold 7. Comma-counts on `block.params` rather than parsing because the parser
-// already validated the signature shape upstream. Reports `size.parameter-count` when exceeded.
+// Default threshold 7. Uses the actual AST parameter count from the shared parse; the comma split
+// only remains as the fallback for regex-discovered blocks in non-script text, where commas inside
+// generics, tuples, or defaults cannot occur. Reports `size.parameter-count` when exceeded.
 function pushParameterCountFinding(context: BlockRuleContext): void {
-  const params = context.block.params.split(",").map((value) => value.trim()).filter(Boolean).length;
+  const params = context.block.parameterCount ?? context.block.params.split(",").map((value) => value.trim()).filter(Boolean).length;
   const parameterCountThreshold = threshold(context.config, "size.parameter-count", 7);
   if (params > parameterCountThreshold) {
     context.findings.push(blockFindingWithMetadata({
@@ -176,8 +183,7 @@ function pushParameterCountFinding(context: BlockRuleContext): void {
   }
 }
 
-// Default threshold 15. Counts conditional keywords + boolean operators in the code body - see
-// `blockRuleContext` for the pre-computed value. Reports `complexity.cyclomatic` when exceeded.
+// Default threshold 15. Reports the shared syntax-node decision count to CLI and JSON users.
 function pushCyclomaticFinding(context: BlockRuleContext): void {
   const cyclomaticThreshold = threshold(context.config, "complexity.cyclomatic", 15);
   if (context.cyclomatic > cyclomaticThreshold) {
@@ -188,15 +194,14 @@ function pushCyclomaticFinding(context: BlockRuleContext): void {
       block: context.block,
       severity: ruleSeverity(context.config, "complexity.cyclomatic", "warning"),
       pillar: "complexity",
-      metadata: { complexity: context.cyclomatic, threshold: cyclomaticThreshold },
+      metadata: { complexity: context.cyclomatic, threshold: cyclomaticThreshold, breakdown: context.complexityMetrics.breakdown },
     }));
   }
 }
 
-// Default threshold 15. Cognitive complexity is cyclomatic + max nesting depth - captures the
-// "deeply nested" intuition pure cyclomatic misses. Reports `complexity.cognitive` when exceeded.
+// Default threshold 15. Reports decisions plus shared control-flow nesting to CLI and JSON users.
 function pushCognitiveFinding(context: BlockRuleContext): void {
-  const cognitive = context.cyclomatic + maxNestingDepth(context.block.codeBody);
+  const cognitive = context.complexityMetrics.cognitive;
   const cognitiveThreshold = threshold(context.config, "complexity.cognitive", 15);
   if (cognitive > cognitiveThreshold) {
     context.findings.push(blockFindingWithMetadata({
@@ -206,7 +211,7 @@ function pushCognitiveFinding(context: BlockRuleContext): void {
       block: context.block,
       severity: ruleSeverity(context.config, "complexity.cognitive", "warning"),
       pillar: "complexity",
-      metadata: { complexity: cognitive, threshold: cognitiveThreshold },
+      metadata: { complexity: cognitive, threshold: cognitiveThreshold, breakdown: context.complexityMetrics.breakdown },
     }));
   }
 }
@@ -282,6 +287,11 @@ function pushUnusedParameterFindings(context: BlockRuleContext): void {
 // overload signatures - all of which look like a function declaration ending in `;` rather than `{`,
 // and have no real body to check for emptiness or parameter usage.
 function isBodyLessDeclaration(block: FunctionBlock): boolean {
+  // The shared parse already knows; the text walk below only covers legacy regex-derived blocks,
+  // and it misreads a multi-line signature whose first line stops at the open paren.
+  if (block.hasBody !== undefined) {
+    return !block.hasBody;
+  }
   for (const rawLine of block.codeBody.split("\n")) {
     const trimmed = rawLine.trim();
     if (trimmed === "" || trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
@@ -413,21 +423,6 @@ function terminalBareReturnLines(source: string): number[] {
   return [];
 }
 
-// Splits on `,` then strips visibility modifiers, `...rest`, default values, and type annotations
-// in that order. Final filter rejects entries whose name isn't a plain identifier - destructured
-// parameters land in that bucket and are intentionally invisible to per-parameter rules.
-export function parameterNames(params: string): Array<{ name: string; raw: string }> {
-  return params
-    .split(",")
-    .map((parameter) => parameter.trim())
-    .filter(Boolean)
-    .map((raw) => {
-      const stripped = raw.replace(/^(?:public|private|protected|readonly)\s+/, "").replace(/^\.\.\./, "");
-      const name = stripped.split(/[?:=]/)[0]?.trim() ?? "";
-      return { name, raw: stripped };
-    })
-    .filter((parameter) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(parameter.name));
-}
 
 // Detects the `const x = expr; return x;` pattern. The regex backreference `\1` enforces that the
 // returned identifier matches the declared one - used by `waste.redundant-variable` to surface
@@ -440,48 +435,83 @@ function redundantVariableReturns(source: string): Array<{ name: string; lineOff
   return results.filter((result) => result.name !== "");
 }
 
-// Deepest `{` / `}` nesting reached across the body, minus one so the body's own outer braces
-// don't count. The `Math.max(0, …)` clamp protects against unbalanced inputs - feeds the nesting
-// component of `complexity.cognitive` and must stay deterministic across runs.
-export function maxNestingDepth(source: string): number {
-  let depth = 0;
-  let maxDepth = 0;
-  for (const character of source) {
-    if (character === "{") {
-      depth += 1;
-      maxDepth = Math.max(maxDepth, depth);
-    } else if (character === "}") {
-      depth = Math.max(0, depth - 1);
-    }
-  }
-  return Math.max(0, maxDepth - 1);
-}
-
 // Matches `test("…", …)` and `it("…", …)` openers. Used both by the function-block parser to
 // pick the right pattern and by setup detection to skip the test wrapper line itself.
 function isTestInvocationLine(line: string): boolean {
   return /^\s*(?:test|it)\s*\(/.test(line);
 }
 
-// Top-level driver: precompiles patterns once, then walks the masked code lines so commented-out
-// declarations don't fire. The two-source split (`source` / `codeSource`) keeps raw line text
-// available for body extraction while preserving stable, comment-masked matching.
-export function functionBlocks(source: string, codeSource = source): FunctionBlock[] {
+// Builds report blocks from the shared syntax tree while preserving anchors and fingerprints.
+// Span-only utilities without a parse retain the legacy regex walk.
+export function functionBlocks(source: string, codeSource = source, parsed?: ParsedScript): FunctionBlock[] {
   const scan: FunctionBlockScan = {
     lines: source.split(/\r?\n/),
     codeLines: codeSource.split(/\r?\n/),
     patterns: FUNCTION_BLOCK_PATTERNS,
     reExportedNames: collectReExportedNames(codeSource),
   };
-  const blocks: FunctionBlock[] = [];
+  const matchPoints = matchPointsFor(scan, parsed);
+  const ownedCallableNodes = new Set<import("typescript").Node>();
+  // Every AST-backed block owns one callable body; regex-only span probes have no syntax node.
+  for (const point of matchPoints) {
+    // A missing node means a caller requested the legacy regex discovery path without reparsing.
+    if (point.callableNode) {
+      ownedCallableNodes.add(point.callableNode);
+    }
+  }
+  // Each stable block receives one metric result based on the final one-block-per-line ownership set.
+  return matchPoints.map((point) => functionBlockFromPoint(scan, point, ownedCallableNodes));
+}
+
+// One callable hit used to build the block that report rules inspect.
+// Parsed hits carry their node and exact range; legacy span probes carry only text coordinates.
+// Empty optional fields mean the caller deliberately supplied no shared parse.
+interface BlockMatchPoint {
+  lineIndex: number;
+  // AST-known first line of the declaration; regex points leave it absent and keep the name line.
+  declarationLineIndex?: number;
+  // AST-known end line; regex points keep the legacy brace walk instead.
+  endLineIndex?: number;
+  name: string;
+  params: string;
+  parameterCount?: number;
+  // AST-known body presence; regex points leave it absent and fall back to the text heuristic.
+  hasBody?: boolean;
+  // AST-backed visibility; regex points leave these absent and retain the text fallback.
+  isDirectlyExported?: boolean;
+  isExplicitlyPublic?: boolean;
+  isModuleScoped?: boolean;
+  callableNode?: import("typescript").Node;
+}
+
+// Chooses the discovery mode: AST points from the shared parse, or the legacy regex line walk.
+function matchPointsFor(scan: FunctionBlockScan, parsed: ParsedScript | undefined): BlockMatchPoint[] {
+  // A normal script scan already owns one ParsedScript and must reuse its callable points here.
+  if (parsed) {
+    return callableMatchPoints(parsed).map((point) => ({
+      lineIndex: point.lineIndex,
+      declarationLineIndex: point.declarationLineIndex,
+      endLineIndex: point.endLineIndex,
+      name: point.name,
+      params: point.params,
+      parameterCount: point.parameterCount,
+      hasBody: point.hasBody,
+      isDirectlyExported: point.isDirectlyExported,
+      isExplicitlyPublic: point.isExplicitlyPublic,
+      isModuleScoped: point.isModuleScoped,
+      callableNode: point.callableNode,
+    }));
+  }
+  const points: BlockMatchPoint[] = [];
+  // Span-only utilities still use the legacy masked-line inventory without triggering a parse.
   scan.codeLines.forEach((line, index) => {
     const match = functionBlockMatch(scan, line, index);
-    if (!match) {
-      return;
+    // Only lines that contain a supported callable shape become legacy block points.
+    if (match) {
+      points.push({ lineIndex: index, name: match[1] ?? "", params: match[2] ?? "" });
     }
-    blocks.push(functionBlockFromMatch(scan, match, index));
   });
-  return blocks;
+  return points;
 }
 
 /*
@@ -560,25 +590,34 @@ function functionPatternMatch(pattern: RegExp, patternIndex: number, line: strin
   return match;
 }
 
-// Promotes a regex match into a `FunctionBlock`. `start` walks up to capture leading docblock /
-// decorator lines so size and documentation rules see the full declaration footprint; the
-// `isPublic` check scans that same range so `export` / `public` modifiers above the line count.
-function functionBlockFromMatch(scan: FunctionBlockScan, match: RegExpMatchArray, index: number): FunctionBlock {
+// Promotes a discovery point into the shared block used by report rules and context documentation.
+// Parsed points receive one syntax metric; legacy span-only points keep that field absent.
+function functionBlockFromPoint(scan: FunctionBlockScan, point: BlockMatchPoint, ownedCallableNodes: ReadonlySet<import("typescript").Node>): FunctionBlock {
+  const index = point.lineIndex;
   const start = functionStartIndex(scan.lines, index);
-  const end = functionEndIndex(scan, index);
+  const end = point.endLineIndex ?? functionEndIndex(scan, index);
   const body = scan.lines.slice(start, end + 1).join("\n");
   const codeBody = scan.codeLines.slice(start, end + 1).join("\n");
+  // A missing callable node identifies a legacy range probe, where base metrics are chosen later.
+  const sharedComplexityMetrics = point.callableNode ? measureComplexity(point.callableNode, ownedCallableNodes) : undefined;
+  // Parsed blocks expose metrics to both consumers; absent values stay omitted for exact optionals.
   return {
-    name: match[1] ?? "",
-    params: match[2] ?? "",
+    name: point.name,
+    params: point.params,
+    ...(point.parameterCount === undefined ? {} : { parameterCount: point.parameterCount }),
+    ...(point.hasBody === undefined ? {} : { hasBody: point.hasBody }),
+    ...(sharedComplexityMetrics === undefined ? {} : { complexityMetrics: sharedComplexityMetrics }),
     startLine: start + 1,
     lineCount: end - start + 1,
     body,
     codeBody,
-    isPublic: /\bexport\b|\bpublic\b/.test(scan.codeLines.slice(start, index + 1).join("\n")),
-    isExported: /^\s*export\b/.test(scan.codeLines[index] ?? "") || scan.reExportedNames.has(match[1] ?? ""),
+    isPublic: point.isExplicitlyPublic ?? /\bexport\b|\bpublic\b/.test(scan.codeLines.slice(start, index + 1).join("\n")),
+    isExported: (point.isDirectlyExported ?? /^\s*export\b/.test(scan.codeLines[index] ?? ""))
+      || point.isModuleScoped !== false && scan.reExportedNames.has(point.name),
     isTest: isTestInvocationLine(scan.codeLines[index] ?? ""),
-    hasLeadingComment: hasLeadingCommentBeforeLines(scan.lines, index + 1),
+    // Look upward from the declaration, not the name: a split-line `export async function` header
+    // would otherwise hide the declaration's own docblock behind its modifier line.
+    hasLeadingComment: hasLeadingCommentBeforeLines(scan.lines, (point.declarationLineIndex ?? index) + 1),
     declarationLine: index + 1,
   };
 }

@@ -1,11 +1,18 @@
 // Score, grade, and fail-on helpers derived from finding severities for reports and CLI exits.
 import { grade } from "./pillar-summary.ts";
+import { ruleDescriptors } from "./rules.ts";
 import type { AnalysisReport, FailThreshold, Finding, Pillar, Severity } from "./types.ts";
 
+// Every pillar that has at least one rule behind it. The composite averages over this whole set,
+// because averaging only finding-bearing pillars let a pillar vanish from the mean the moment its
+// last finding was fixed - lowering the headline score for finishing a pillar.
+const SCOREABLE_PILLARS: readonly Pillar[] = [...new Set(ruleDescriptors().map((descriptor) => descriptor.pillar))];
+
 // Builds the per-pillar and per-file score breakdown that ships in `gruff.analysis.v2`. The composite
-// score is the mean of pillar scores so adding a pillar shifts the headline number. `topOffenders` is
-// the full file list sorted worst-first; renderers cap it themselves (HTML/hotspot keep their 10-row
-// UX, summary honours `--top`). The field shape is part of the `gruff.analysis.v2` schema contract.
+// is the mean over every rule-backed pillar, with a clean pillar counting as 100, so removing a
+// finding can never decrease it. The `pillars` array still lists only finding-bearing pillars -
+// its shape is part of the `gruff.analysis.v2` schema contract. `topOffenders` is the full file
+// list sorted worst-first; renderers cap it themselves (HTML/hotspot 10 rows, summary `--top`).
 function scoreReport(findings: Finding[]): AnalysisReport["score"] {
   const byPillar = new Map<Pillar, Finding[]>();
   const byFile = new Map<string, Finding[]>();
@@ -18,7 +25,9 @@ function scoreReport(findings: Finding[]): AnalysisReport["score"] {
     const penalty = pillarFindings.reduce((sum, finding) => sum + findingPenalty(penalties, finding), 0);
     return { pillar, score: Math.max(0, 100 - penalty), penalty, findings: pillarFindings.length };
   });
-  const composite = pillars.length === 0 ? 100 : pillars.reduce((sum, pillar) => sum + pillar.score, 0) / pillars.length;
+  const scoredPillarTotal = pillars.reduce((sum, pillar) => sum + pillar.score, 0);
+  const cleanPillarCount = Math.max(0, SCOREABLE_PILLARS.length - pillars.length);
+  const composite = SCOREABLE_PILLARS.length === 0 ? 100 : (scoredPillarTotal + 100 * cleanPillarCount) / SCOREABLE_PILLARS.length;
   const topOffenders = [...byFile.entries()]
     .map(([filePath, fileFindings]) => ({
       filePath,

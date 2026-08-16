@@ -25,9 +25,22 @@ const THRESHOLD_RULE_IDS = new Set([
   "size.function-length",
   "size.parameter-count",
 ]);
-const FIXTURE_FILE_LINES = 760;
-const FILE_LENGTH_THRESHOLD = 750;
+const FIXTURE_FILE_LINES = 1010;
+const FIXTURE_SUBSTANTIVE_LINES = FIXTURE_FILE_LINES - 1;
+const FILE_LENGTH_THRESHOLD = 1000;
 const FIXTURE_EVAL_LINE = 500;
+const GENERIC_SYMBOL_HOOK_SOURCE = `// File overview: generic hook symbol-scope fixture.
+const script = "reviewed";
+export function generic<T extends string>(
+  value: T,
+): void {
+  const touched = value;
+  eval(script);
+}
+export function sibling(): void {
+  eval(script);
+}
+`;
 
 // Parsed gruff.hook.v1 payload as the conformance tests read it; mirrors the analyzer output contract.
 interface HookPayload {
@@ -37,6 +50,7 @@ interface HookPayload {
   flags?: Record<string, string>;
   flagOrder?: string;
   findings: HookFinding[];
+  diagnostics?: Array<{ type: string; message: string; file?: string; line?: number }>;
   suppressed: { count: number };
   ignored: { paths: Array<{ path: string; source: string; pattern: string }> };
   config: { schemaOk: boolean; error: string | null };
@@ -49,7 +63,9 @@ interface HookFinding {
   scope: string;
   file: string;
   line?: number;
+  column?: number;
   symbol: string | null;
+  message: string;
   remediation: string;
   metadata: Record<string, unknown>;
   stableIdentity: string;
@@ -69,8 +85,35 @@ test("hook capabilities advertises gruff.hook.v1", () => {
   assert.equal(capabilities.supports?.stableIdentity, true);
   assert.equal(capabilities.supports?.ignoreReport, true);
   assert.equal(capabilities.supports?.newOnly, true);
-  assert.deepEqual(capabilities.flags, { changedRanges: "--changed-ranges", diff: "--diff", baseline: "--baseline" });
+  assert.equal(capabilities.supports?.diagnostics, true);
+  assert.deepEqual(capabilities.flags, { changedRanges: "--changed-ranges", diff: "--diff", baseline: "--baseline", failOnDiagnostics: "--fail-on-diagnostics" });
   assert.equal(capabilities.flagOrder, "any");
+});
+
+test("hook reports diagnostics in-band with exit 0 and honors --fail-on-diagnostics", () => {
+  // A lone unterminated brace is a real parse diagnostic; the default hook contract still exits 0
+  // and surfaces it in the additive diagnostics field, so non-opting consumers keep old semantics.
+  withProject({ "broken.ts": "// File overview: diagnostics fixture.\nexport const dangling = {\n" }, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "broken.ts"]);
+    assert.equal(payload.diagnostics?.length, 1);
+    assert.equal(payload.diagnostics?.[0]?.type, "parse-error");
+    assert.equal(payload.diagnostics?.[0]?.file, "broken.ts");
+    assert.equal(typeof payload.diagnostics?.[0]?.message, "string");
+
+    // The explicit consumer request flips the same run to exit 2 while keeping identical JSON.
+    const requested = spawnSync("bash", [BIN, "hook", "--format", "json", "--no-config", "--fail-on-diagnostics", "broken.ts"], { cwd: dir, encoding: "utf8" });
+    assert.equal(requested.status, 2);
+    const requestedPayload = JSON.parse(requested.stdout) as HookPayload;
+    assert.equal(requestedPayload.diagnostics?.length, 1);
+  });
+
+  // No relevant diagnostics: the flag must not change the exit code of a clean run.
+  withProject({ "clean.ts": "// File overview: diagnostics fixture.\nexport const fine = 1;\n" }, (dir) => {
+    const clean = spawnSync("bash", [BIN, "hook", "--format", "json", "--no-config", "--fail-on-diagnostics", "clean.ts"], { cwd: dir, encoding: "utf8" });
+    assert.equal(clean.status, 0);
+    const cleanPayload = JSON.parse(clean.stdout) as HookPayload;
+    assert.equal(cleanPayload.diagnostics?.length, 0);
+  });
 });
 
 test("hook changed-region scope omits inherited file findings but keeps changed line findings", () => {
@@ -80,7 +123,7 @@ test("hook changed-region scope omits inherited file findings but keeps changed 
     const fullEval = requiredFinding(full, "security.eval-call");
 
     assert.equal(fullFileLength.scope, "file");
-    assert.equal(fullFileLength.metadata.measured, FIXTURE_FILE_LINES);
+    assert.equal(fullFileLength.metadata.measured, FIXTURE_SUBSTANTIVE_LINES);
     assert.equal(fullFileLength.metadata.threshold, FILE_LENGTH_THRESHOLD);
     assert.equal(fullEval.scope, "line");
 
@@ -91,6 +134,16 @@ test("hook changed-region scope omits inherited file findings but keeps changed 
 
     const anchorChanged = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "1-1", "long.ts"]);
     assert.equal(anchorChanged.findings.some((finding) => finding.ruleId === "size.file-length"), false);
+  });
+});
+
+test("hook symbol scope keeps eval findings inside generic multi-line callables", () => {
+  withProject({ "generic.ts": GENERIC_SYMBOL_HOOK_SOURCE }, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "6-6", "generic.ts"]);
+
+    assert.equal(payload.contractVersion, "gruff.hook.v1");
+    assert.deepEqual(Object.keys(payload).sort(), ["analyzer", "config", "contractVersion", "diagnostics", "findings", "ignored", "suppressed"]);
+    assert.deepEqual(payload.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.line), [7]);
   });
 });
 
@@ -138,7 +191,7 @@ test("hook render reuses one analysis for changed-region views", () => {
 });
 
 test("hook findings carry remediation, enum values, and threshold metadata", () => {
-  withProject({ "long.ts": longSource(760, 500) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 500) }, (dir) => {
     const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]);
 
     assert.equal(payload.findings.length > 0, true);
@@ -161,9 +214,9 @@ test("hook stableIdentity survives line shifts and measured-value changes", () =
     assert.notEqual(first.fingerprint, shifted.fingerprint);
   });
 
-  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 0) }, (dir) => {
     const first = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]), "size.file-length");
-    writeProjectFile(dir, "long.ts", longSource(820, 0));
+    writeProjectFile(dir, "long.ts", longSource(1070, 0));
     const grown = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]), "size.file-length");
 
     assert.equal(first.stableIdentity, grown.stableIdentity);
@@ -195,6 +248,58 @@ test("hook stableIdentity distinguishes multiple same-rule line findings in one 
     const remaining = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
     assert.equal(remaining.length, 1);
     assert.equal(remaining[0]?.stableIdentity, secrets[1]?.stableIdentity);
+  });
+});
+
+test("hook keeps two same-line secrets independently classifiable", () => {
+  // Same sub-24-char assembly as above so this test file never trips the high-entropy rule itself;
+  // both secrets sit on ONE line, so their fingerprints collide and only the ADR-017 column
+  // discriminator keeps the second finding alive through dedupe for the hook to classify.
+  const firstSecret = "aB3xY7kLmN9pQ2rS5" + "tU8vW1zC4dE6fG0hJ2kQ8w";
+  const secondSecret = "zX9wV3uT6sR1qP8oN5" + "mL2kJ4iH7gF0eD3cB6aZ1y";
+  const sameLine = [
+    "// File overview: hook same-line contract fixture.",
+    `export const firstSecret = "${firstSecret}"; export const secondSecret = "${secondSecret}";`,
+  ].join("\n");
+  withProject({ "secrets.ts": sameLine }, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "secrets.ts"]);
+    const secrets = payload.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+    assert.equal(secrets.length, 2);
+    assert.notEqual(secrets[0]?.stableIdentity, secrets[1]?.stableIdentity);
+
+    // Baseline only the first same-line secret; the second must survive new-only filtering on its
+    // own message-keyed identity instead of vanishing with the suppressed first occurrence.
+    writeBaseline(dir, secrets.slice(0, 1));
+    const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "secrets.ts"]);
+    const remaining = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0]?.stableIdentity, secrets[1]?.stableIdentity);
+  });
+});
+
+// Fixture purpose: models a hook user carrying a baseline entry with the former short preview.
+// Stable contract: presentation churn resurfaces the credential once for fail-safe review.
+test("hook resurfaces a finding after its redaction preview policy changes", () => {
+  const previewPolicySecret = ["a1B2c3D4", "e5F6g7H8"].join("");
+  const legacyPreview = `${previewPolicySecret.slice(0, 4)}...${previewPolicySecret.slice(-4)} (redacted, ${previewPolicySecret.length} chars)`;
+  const legacyMessage = `Environment-style value \`API_TOKEN\` appears to be hardcoded with secret-like content. Redacted preview: ${legacyPreview}.`;
+  withProject({ ".env": `API_TOKEN=${previewPolicySecret}\n` }, (dir) => {
+    const currentFinding = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", ".env"]), "sensitive-data.hardcoded-env-value");
+    // A baseline without a stored identity recomputes the old message-derived hook identity.
+    writeProjectFile(dir, "legacy-preview-baseline.json", JSON.stringify({
+      schemaVersion: "gruff.baseline.v1",
+      entries: [{
+        ruleId: currentFinding.ruleId,
+        filePath: currentFinding.file,
+        line: currentFinding.line,
+        message: legacyMessage,
+      }],
+    }));
+
+    const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "legacy-preview-baseline.json", ".env"]);
+    // The hook user must see the changed preview again instead of silently retaining suppression.
+    assert.equal(filtered.findings.some((finding) => finding.ruleId === currentFinding.ruleId), true);
+    assert.equal(filtered.suppressed.count, 0);
   });
 });
 
@@ -260,7 +365,7 @@ test("hook changed-ranges keeps a circular import when the range misses the cano
 });
 
 test("hook reports operational failures as in-band JSON with exit 2", () => {
-  withProject({ "long.ts": longSource(760, 500) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 500) }, (dir) => {
     const result = spawnSync("bash", [BIN, "hook", "--format", "json", "--no-config", "--baseline", "missing-baseline.json", "long.ts"], { cwd: dir, encoding: "utf8" });
     const payload = JSON.parse(result.stdout) as HookPayload;
 
@@ -272,18 +377,18 @@ test("hook reports operational failures as in-band JSON with exit 2", () => {
 });
 
 test("hook baseline new-only uses stableIdentity for file-scope findings", () => {
-  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 0) }, (dir) => {
     const first = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]), "size.file-length");
     writeBaseline(dir, [first]);
-    writeProjectFile(dir, "long.ts", longSource(820, 0));
+    writeProjectFile(dir, "long.ts", longSource(1070, 0));
 
     const grown = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "long.ts"]);
     assert.equal(grown.findings.some((finding) => finding.ruleId === "size.file-length"), false);
   });
 
-  withProject({ "long.ts": longSource(740, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(990, 0) }, (dir) => {
     writeBaseline(dir, []);
-    writeProjectFile(dir, "long.ts", longSource(760, 0));
+    writeProjectFile(dir, "long.ts", longSource(1010, 0));
 
     const crossed = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "long.ts"]);
     assert.equal(crossed.findings.some((finding) => finding.ruleId === "size.file-length"), true);
@@ -294,17 +399,17 @@ test("hook diff new-only uses stableIdentity for file-scope findings", () => {
   if (!gitAvailable()) {
     return;
   }
-  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 0) }, (dir) => {
     initGitCommit(dir);
-    writeProjectFile(dir, "long.ts", longSource(820, 0));
+    writeProjectFile(dir, "long.ts", longSource(1070, 0));
 
     const grown = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "working-tree", "long.ts"]);
     assert.equal(grown.findings.some((finding) => finding.ruleId === "size.file-length"), false);
   });
 
-  withProject({ "long.ts": longSource(740, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(990, 0) }, (dir) => {
     initGitCommit(dir);
-    writeProjectFile(dir, "long.ts", longSource(760, 0));
+    writeProjectFile(dir, "long.ts", longSource(1010, 0));
 
     const crossed = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "working-tree", "long.ts"]);
     assert.equal(crossed.findings.some((finding) => finding.ruleId === "size.file-length"), true);
@@ -315,17 +420,17 @@ test("hook unstaged new-only compares against the index", () => {
   if (!gitAvailable()) {
     return;
   }
-  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 0) }, (dir) => {
     initGitAdd(dir);
-    writeProjectFile(dir, "long.ts", longSource(820, 0));
+    writeProjectFile(dir, "long.ts", longSource(1070, 0));
 
     const grown = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "unstaged", "long.ts"]);
     assert.equal(grown.findings.some((finding) => finding.ruleId === "size.file-length"), false);
   });
 
-  withProject({ "long.ts": longSource(740, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(990, 0) }, (dir) => {
     initGitAdd(dir);
-    writeProjectFile(dir, "long.ts", longSource(760, 0));
+    writeProjectFile(dir, "long.ts", longSource(1010, 0));
 
     const crossed = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "unstaged", "long.ts"]);
     assert.equal(crossed.findings.some((finding) => finding.ruleId === "size.file-length"), true);
@@ -421,7 +526,7 @@ test("hook diff new-only materializes SCC members so pre-existing cycles stay su
 });
 
 test("hook does not double-count a re-emitted file finding as suppressed", () => {
-  withProject({ "long.ts": longSource(760, 0) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 0) }, (dir) => {
     writeBaseline(dir, []);
     const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "--changed-ranges", "1-1", "long.ts"]);
 
@@ -431,7 +536,7 @@ test("hook does not double-count a re-emitted file finding as suppressed", () =>
 });
 
 test("hook flags parse before and after paths", () => {
-  withProject({ "long.ts": longSource(760, 500) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 500) }, (dir) => {
     const before = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "500-500", "long.ts"]);
     const after = runHook(dir, ["hook", "long.ts", "--format", "json", "--no-config", "--changed-ranges", "500-500"]);
 
@@ -441,7 +546,7 @@ test("hook flags parse before and after paths", () => {
 });
 
 test("hook exits zero with findings", () => {
-  withProject({ "long.ts": longSource(760, 500) }, (dir) => {
+  withProject({ "long.ts": longSource(1010, 500) }, (dir) => {
     const result = spawnSync("bash", [BIN, "hook", "--format", "json", "--no-config", "long.ts"], { cwd: dir, encoding: "utf8" });
     const payload = JSON.parse(result.stdout) as HookPayload;
 
@@ -472,6 +577,49 @@ test("hook reports ignored paths and config errors in-band", () => {
     assert.equal(payload.config.schemaOk, false);
     assert.match(String(payload.config.error), /schemaVersion/);
     assert.match(String(payload.config.error), /gruff-ts init/);
+  });
+});
+
+test("two secrets on one line reach the hook as separately trackable findings", () => {
+  // Split so this test file carries no scannable key of its own; the written fixture holds both.
+  const firstKey = ["AKIAJ7SVBRXYZ", "Q2KLMNP"].join("");
+  const secondKey = ["AKIAQ4TWMZPLK", "D8RVNXC"].join("");
+  withProject({
+    "keys.ts": `const first = "${firstKey}"; const second = "${secondKey}";\n`,
+  }, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json"]);
+    const secrets = payload.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
+
+    assert.equal(secrets.length, 2);
+    const [first, second] = secrets;
+    assert.ok(first && second);
+    // Both keys are 20 characters, so redaction masks them fully and the previews are identical.
+    assert.equal(first.message, second.message);
+    // gruff.baseline.v1 keys on line, so the pair deliberately shares one fingerprint.
+    assert.equal(first.fingerprint, second.fingerprint);
+    // Column and identity are what let a consumer act on the second key instead of collapsing it.
+    assert.notEqual(first.column, second.column);
+    assert.notEqual(first.stableIdentity, second.stableIdentity);
+  });
+});
+
+// Fixture purpose: models a baseline produced by `analyse --generate-baseline`, which stores no
+// stableIdentity and no column. Stable contract: a column-bearing finding still matches it, so
+// adding a column to the wire identity cannot silently un-suppress every accepted secret.
+test("hook suppression survives a baseline written in the on-disk format", () => {
+  const secret = "aB3xY7kLmN9pQ2rS5" + "tU8vW1zC4dE6fG0hJ2kQ8w";
+  const source = ["// File overview: hook baseline-format fixture.", `export const token = "${secret}";`].join("\n");
+  withProject({ "secret.ts": source }, (dir) => {
+    const before = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "secret.ts"]), "sensitive-data.high-entropy-string");
+    assert.equal(typeof before.column, "number");
+    // Exactly the entry shape `writeBaseline` persists: no stableIdentity, no column.
+    writeProjectFile(dir, "on-disk-baseline.json", JSON.stringify({
+      schemaVersion: "gruff.baseline.v1",
+      entries: [{ fingerprint: before.fingerprint, ruleId: before.ruleId, filePath: before.file, line: before.line, message: before.message }],
+    }));
+
+    const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "on-disk-baseline.json", "secret.ts"]);
+    assert.equal(filtered.findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), false);
   });
 });
 

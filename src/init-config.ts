@@ -1,5 +1,6 @@
-// Renders the default .gruff-ts.yaml file from the rule descriptor registry so `gruff-ts init`
-// can drop a config into a fresh project that mirrors the analyser's effective defaults.
+// Renders the default .gruff-ts.yaml file from the rule descriptor registry.
+// `gruff-ts init` uses it to give a new project the analyser's effective defaults.
+// Users reach this file through the generated config they review before their first scan.
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -24,7 +25,7 @@ const RULE_OPTION_DEFAULTS: Readonly<Record<string, Readonly<Record<string, numb
 // Universal-programming abbreviations that earn their place across nearly any codebase; project-specific
 // vocabulary (domain acronyms) should be appended in the user's config rather than added here.
 const DEFAULT_ACCEPTED_ABBREVIATIONS: readonly string[] = [
-  "age", "app", "cb", "db", "fn", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url",
+  "age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url",
 ];
 
 // Result of an init write attempt, including the no-clobber branch for existing config files.
@@ -192,12 +193,15 @@ function renderPathsSection(ignoredPaths: readonly string[]): string {
   ].join("\n");
 }
 
-// `acceptedAbbreviations` is emitted as a block sequence for reviewability; the seven naming
-// allowlists below it stay commented out so users see the override knobs without changing defaults.
+// Shows users which short identifier terms avoid naming findings in a newly initialized project.
+// The other naming allowlists stay commented so users can discover them without changing defaults.
 function renderAllowlistsSection(): string {
   return [
     "allowlists:",
+    "  # Abbreviations listed here are accepted in identifiers without a naming finding.",
+    "  # Replace this list with the short terms reviewers accept in this project.",
     "  acceptedAbbreviations:",
+    // Each family term is visible so a user can review or replace the complete list in generated YAML.
     ...DEFAULT_ACCEPTED_ABBREVIATIONS.map((abbreviation) => `    - ${abbreviation}`),
     "  secretPreviews: []",
     "  # Names that trigger naming.generic-function. Each key replaces the built-in",
@@ -207,6 +211,12 @@ function renderAllowlistsSection(): string {
     "  # Exact public/CLI/DTO boolean names accepted by naming.boolean-prefix.",
     "  # Default: [all, apply, check, dev, enabled, force, fresh, harness, json, ok, verbose, yes]",
     "  # acceptedBooleanNames: [all, apply, check, dev, enabled, force, fresh, harness, json, ok, verbose, yes]",
+    "  # Exact fileBase:ClassName pairs accepted by naming.class-file-mismatch.",
+    "  # Default: []",
+    "  # acceptedClassFilePairs: [focusModeTranscript:TranscriptFocusController]",
+    "  # Exact wire_name:internalName alias pairs accepted within one naming owner.",
+    "  # Default: []",
+    "  # acceptedCasingPairs: [note_id:noteId]",
     "  # Accepted prefixes for boolean identifiers. Names without one of these",
     "  # prefixes trigger naming.boolean-prefix.",
     "  # Default: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires, allow, check, enable, exclude, include, omit, skip, with, without]",

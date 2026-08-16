@@ -3,8 +3,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
 import type { AnalysisOptions, Config, IgnoreSource, ScanSurfaceNote, SkippedPath } from "./types.ts";
 
-// `absolutePath` is what `node:fs` operates on; `displayPath` is the project-relative POSIX form
-// embedded in findings and baselines. They must stay aligned - diverging them breaks fingerprint stability.
+// `absolutePath` is what `node:fs` operates on; `displayPath` is project-relative inside the run
+// root and absolute outside it. They must stay aligned - diverging them breaks fingerprint stability.
 export interface SourceFile {
   absolutePath: string;
   displayPath: string;
@@ -107,6 +107,8 @@ function discoverSourceInput(projectRoot: string, input: string, options: Analys
   walk(projectRoot, absolute, options, config, discovery.skipped, discovery.files, gitIgnoreRules);
 }
 
+// Depth-first directory walk that applies ignore rules before recursing, because descending into
+// an excluded subtree would waste reads; skips record source and pattern to avoid silent exclusions.
 function walk(
   projectRoot: string,
   directory: string,
@@ -134,24 +136,26 @@ function walk(
   }
 }
 
-// Single source of truth for which extensions count as scannable. Adding a new file kind here will
-// expand the rule set's reach across an entire project - coordinate with rule descriptors before changing.
+/** Extensions parsed as code. Widening this reaches every rule that inspects script syntax. */
+export const SCRIPT_FILE_EXTENSIONS: readonly string[] = ["ts", "tsx", "js", "jsx", "mjs", "cjs"];
+
+/** Extensions read as config or text assets, which only the text-oriented rules inspect. */
+export const TEXT_FILE_EXTENSIONS: readonly string[] = ["conf", "config", "env", "ini", "json", "toml", "xml", "yaml", "yml"];
+
+/** Extensionless credential files that stay scannable without admitting every dotfile. */
+export const EXACT_SECRET_TEXT_FILES: readonly string[] = [".npmrc", ".pypirc", ".envrc", ".netrc"];
+
+// Single source of truth for which extensions count as scannable. Adding a new file kind to the
+// lists above will expand the rule set's reach across an entire project - the scan surface is also
+// stated in prose across seven documents, so `release-truth.test.ts` pins these lists literally.
 function pushSourceFile(projectRoot: string, absolutePath: string, files: SourceFile[]): void {
   const extension = extname(absolutePath).slice(1).toLowerCase();
   const name = basename(absolutePath);
-  const isScript = ["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(extension);
-  const isText =
-    ["conf", "config", "env", "ini", "json", "toml", "xml", "yaml", "yml"].includes(extension) ||
-    name.startsWith(".env") ||
-    isExactSecretTextFile(name);
+  const isScript = SCRIPT_FILE_EXTENSIONS.includes(extension);
+  const isText = TEXT_FILE_EXTENSIONS.includes(extension) || name.startsWith(".env") || EXACT_SECRET_TEXT_FILES.includes(name);
   if (isScript || isText) {
     files.push({ absolutePath, displayPath: displayPath(projectRoot, absolutePath), isScript });
   }
-}
-
-// Exact extensionless secret files stay scannable without opening the door to every dotfile.
-function isExactSecretTextFile(name: string): boolean {
-  return [".npmrc", ".pypirc", ".envrc", ".netrc"].includes(name);
 }
 
 // The default-ignore list is part of the documented schema contract: callers can override with
@@ -575,11 +579,27 @@ export function absolutize(projectRoot: string, path: string): string {
   return isAbsolute(path) ? path : join(projectRoot, path);
 }
 
-// Project-relative form with forward slashes - the report contract uses POSIX-style display paths
-// on every platform. "" collapses to "." so the root has a stable label in findings.
-export function displayPath(projectRoot: string, path: string): string {
-  const relativePath = relative(projectRoot, path).replaceAll("\\", "/");
-  return relativePath === "" ? "." : relativePath;
+/**
+ * Formats a scanned path for findings, diagnostics, and baselines.
+ * Paths inside the run root stay relative; outside paths are absolute so editor and CI links remain usable.
+ *
+ * @param projectRoot - working directory that anchors relative report paths
+ * @param inputPath - scanned path; an empty path addresses the run root itself
+ * @returns POSIX report path; `.` means the input is the run root
+ */
+export function displayPath(projectRoot: string, inputPath: string): string {
+  // Relative CLI inputs are resolved from the run root before report formatting.
+  const absoluteInputPath = isAbsolute(inputPath) ? inputPath : join(projectRoot, inputPath);
+  const projectRelativePath = relative(projectRoot, absoluteInputPath).replaceAll("\\", "/");
+  // The run root itself needs a non-empty label in reports.
+  if (projectRelativePath === "") {
+    return ".";
+  }
+  // A relative escape cannot serve as an editor or CI link from the run root.
+  if (projectRelativePath === ".." || projectRelativePath.startsWith("../") || isAbsolute(projectRelativePath)) {
+    return absoluteInputPath.replaceAll("\\", "/");
+  }
+  return projectRelativePath;
 }
 
 // Escapes the standard regex metacharacters so untrusted patterns can be embedded literally.
