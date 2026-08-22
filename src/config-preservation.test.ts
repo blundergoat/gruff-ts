@@ -56,3 +56,38 @@ test("extractPreservedConfigFields returns empty fields for an empty config file
     assert.equal(preserved.minimumSeverity.size, 0);
   });
 });
+
+// Proves the carry-over bundle keeps every well-formed reviewed suppression, including the optional
+// symbol, and drops an entry missing a required field so the strict parser reports it at load time.
+// Writes a `.gruff-ts.yaml` into a temporary project root and removes that root afterwards.
+test("extractPreservedConfigFields carries reviewed sensitive exclusions through regeneration", () => {
+  withTempProjectRoot((projectRoot) => {
+    const configPath = join(projectRoot, ".gruff-ts.yaml");
+    writeFileSync(
+      configPath,
+      [
+        "sensitiveExclusions:",
+        "  - rule: sensitive-data.aws-access-key",
+        "    path: src/fixtures/sample.ts",
+        "    reason: Synthetic key used by the loader fixture.",
+        "  - rule: sensitive-data.jwt-token",
+        "    path: src/fixtures/token.ts",
+        "    symbol: Fixtures.sessionToken",
+        "    reason: Synthetic token used by the session fixture.",
+        "  - rule: sensitive-data.private-key",
+        "    path: src/fixtures/key.ts",
+        "",
+      ].join("\n"),
+    );
+
+    const preserved = extractPreservedConfigFields(configPath);
+
+    assert.equal(preserved.sensitiveExclusions.length, 2);
+    assert.deepEqual(preserved.sensitiveExclusions[0], {
+      rule: "sensitive-data.aws-access-key",
+      path: "src/fixtures/sample.ts",
+      reason: "Synthetic key used by the loader fixture.",
+    });
+    assert.equal(preserved.sensitiveExclusions[1]?.symbol, "Fixtures.sessionToken");
+  });
+});

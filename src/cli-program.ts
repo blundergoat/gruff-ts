@@ -15,7 +15,7 @@ import { promptYesNo, shouldPromptForInit, writeDefaultConfig } from "./init-con
 import { renderReport, renderSummary, renderSummaryJson } from "./report-renderers.ts";
 import { completionShell, getRuleDescriptor, renderCompletionScript, renderConsoleList, renderProfileList, renderRuleDetail, renderRuleList, type RuleListFormat } from "./rule-list.ts";
 import { exitFor } from "./scoring.ts";
-import type { AnalysisOptions, AnalysisReport, MinimumSeverityCommand } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport, DeepScanBudgetOverride, MinimumSeverityCommand } from "./types.ts";
 
 type HookAnalysisViews = { currentReport: AnalysisReport; scopedReport: AnalysisReport };
 type AnalyseRunner = ((options: AnalysisOptions) => AnalysisReport) & {
@@ -183,6 +183,7 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
+    .option("--deep-scan-budget <lines:bytes|off>", "Override both deep-scan bounds as LINES:BYTES, or disable the budget with off.", parseDeepScanBudget)
     .option("--format <format>", "Output format: text, json, html, markdown, github, hotspot, or sarif.", parseAnalyseFormat, "text")
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "advisory")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
@@ -241,6 +242,7 @@ function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void 
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
+    .option("--deep-scan-budget <lines:bytes|off>", "Override both deep-scan bounds as LINES:BYTES, or disable the budget with off.", parseDeepScanBudget)
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--changed-ranges <ranges>", "Filter hook findings to changed regions, for example 3-3,8-10.")
     .option("--since <ref>", "Filter hook findings to regions changed against a git base ref and compare against that ref.")
@@ -324,12 +326,14 @@ function registerDashboardCommand(program: Command, runAnalyse: AnalyseRunner): 
     .option("--port <port>", "Port to bind.", "8767")
     .option("--project-root <path>", "Default project root.", ".")
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
+    .option("--deep-scan-budget <lines:bytes|off>", "Override both deep-scan bounds as LINES:BYTES, or disable the budget with off.", parseDeepScanBudget)
     .option("--scan-timeout <seconds>", "Accepted for cross-port compatibility; not implemented in gruff-ts.")
     .action(async (rawOptions: Record<string, unknown>) => {
       const projectRoot = resolve(String(rawOptions.projectRoot ?? "."));
       await maybePromptInitConfig(program, projectRoot, { shouldSkipConfig: false, hasExplicitConfig: false });
       const profile = typeof rawOptions.profile === "string" ? rawOptions.profile : undefined;
-      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), projectRoot, runAnalyse, !outputSuppressed(program), profile);
+      const deepScanBudget = deepScanBudgetOption(rawOptions).deepScanBudget;
+      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), projectRoot, runAnalyse, !outputSuppressed(program), profile, deepScanBudget);
     });
 }
 
@@ -428,6 +432,7 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
+    .option("--deep-scan-budget <lines:bytes|off>", "Override both deep-scan bounds as LINES:BYTES, or disable the budget with off.", parseDeepScanBudget)
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "none")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
@@ -460,6 +465,7 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
+    .option("--deep-scan-budget <lines:bytes|off>", "Override both deep-scan bounds as LINES:BYTES, or disable the budget with off.", parseDeepScanBudget)
     .option("--format <format>", "Output format: text or json.", parseSummaryFormat, "text")
     .option("--top <n>", "How many top rules and file offenders to list.", parseNonNegativeInteger, 10)
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "advisory")
@@ -531,6 +537,22 @@ const parseReportFormat = parseChoiceOf(["html", "json"]);
 const parseFailOn = parseChoiceOf(["none", "advisory", "warning", "error"]);
 const parseChangedScope = parseChoiceOf(["symbol", "hunk", "file"]);
 
+// Parses the atomic CLI override. Keeping both numeric limits in one value prevents a half-updated
+// budget, while `off` explicitly disables degradation for the current invocation.
+// Throws InvalidArgumentError when the value is neither `off` nor two positive integer limits.
+function parseDeepScanBudget(rawBudget: string): DeepScanBudgetOverride {
+  if (rawBudget === "off") {
+    return { enabled: false };
+  }
+  const match = rawBudget.match(/^(\d+):(\d+)$/);
+  const maxLines = match ? Number(match[1]) : Number.NaN;
+  const maxBytes = match ? Number(match[2]) : Number.NaN;
+  if (!Number.isSafeInteger(maxLines) || maxLines <= 0 || !Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new InvalidArgumentError("must be two positive integers as LINES:BYTES, or off");
+  }
+  return { enabled: true, maxLines, maxBytes };
+}
+
 /*
  * Commander argParser for `--top`-style numeric flags. Throws `InvalidArgumentError` on non-integer
  * or negative input so commander reports a usage error and exits non-zero before the command runs.
@@ -569,6 +591,7 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
     paths: diffInput.paths,
     ...configOption(rawOptions),
     ...profileOption(rawOptions),
+    ...deepScanBudgetOption(rawOptions),
     shouldSkipConfig:
       rawOptions.config === false ||
       rawOptions.noConfig === true,
@@ -646,6 +669,25 @@ function configOption(rawOptions: Record<string, unknown>): Partial<Pick<Analysi
 // so `loadConfig` falls back to the config-file `profile:` block rather than seeing an explicit CLI value.
 function profileOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "profile">> {
   return typeof rawOptions.profile === "string" ? { profile: rawOptions.profile } : {};
+}
+
+// Reconstructs the parser result so direct programmatic option bags cannot smuggle malformed
+// values into the analyser's effective budget.
+// Throws ConfigLoadError when a supplied override is present but violates the parser contract.
+function deepScanBudgetOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "deepScanBudget">> {
+  const budgetOverride = rawOptions.deepScanBudget;
+  if (typeof budgetOverride !== "object" || budgetOverride === null || !("enabled" in budgetOverride)) {
+    return {};
+  }
+  if (budgetOverride.enabled === false) {
+    return { deepScanBudget: { enabled: false } };
+  }
+  if (budgetOverride.enabled === true && "maxLines" in budgetOverride && "maxBytes" in budgetOverride
+    && typeof budgetOverride.maxLines === "number" && Number.isSafeInteger(budgetOverride.maxLines) && budgetOverride.maxLines > 0
+    && typeof budgetOverride.maxBytes === "number" && Number.isSafeInteger(budgetOverride.maxBytes) && budgetOverride.maxBytes > 0) {
+    return { deepScanBudget: { enabled: true, maxLines: budgetOverride.maxLines, maxBytes: budgetOverride.maxBytes } };
+  }
+  throw new ConfigLoadError("Invalid deep-scan budget override.", "Pass `--deep-scan-budget LINES:BYTES` with positive integers, or `--deep-scan-budget off`.");
 }
 
 // `--diff` without an argument means "working-tree". `--diff -` is accepted even when Commander

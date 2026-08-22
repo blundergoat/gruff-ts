@@ -55,7 +55,7 @@ State is filesystem-only - there is no database, queue, or external API.
 
 `.goat-flow/logs/`, `.goat-flow/plans/`, and `.goat-flow/scratchpad/` are checkout-local continuity surfaces. They can orient work but cannot prove current behaviour or authorize an external action. Promote only a verified durable conclusion into the committed learning loop, and re-run live checks before relying on any stored receipt.
 
-The installed top-level workflow playbooks are browser-use.md, changelog.md, code-comments.md, gruff-code-quality.md, hook-policy-testing.md, observability.md, page-capture.md, release-notes.md, skill-playbook-authoring-sync.md, and writing-style.md. Skill-authoring references remain under the separate `skill-quality-testing/` directory.
+The installed top-level workflow playbooks are browser-use.md, changelog.md, code-comments.md, gruff-code-quality.md, hook-policy-testing.md, naming-and-placement.md, observability.md, page-capture.md, release-notes.md, skill-playbook-authoring-sync.md, test-selection.md, writing-sentence-diagnostics.md, writing-structure-diagnostics.md, and writing-style.md. Skill-authoring references remain under the separate `skill-quality-testing/` directory.
 
 ## Deployment / Operations
 

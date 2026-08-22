@@ -119,6 +119,24 @@ test("config schemaVersion is required and must match the supported value", () =
   );
 });
 
+test("deepScanBudget rejects malformed mappings, unknown keys, and non-positive limits", () => {
+  const invalidConfigs = [
+    "deepScanBudget: true\n",
+    "deepScanBudget:\n  maximum: 10\n",
+    "deepScanBudget:\n  enabled: yes\n",
+    "deepScanBudget:\n  maxLines: 0\n",
+    "deepScanBudget:\n  maxBytes: 1.5\n",
+  ];
+  for (const invalidConfig of invalidConfigs) {
+    // Runs the current malformed mapping so the labeled assertion identifies the failing case.
+    const analyseInvalidConfig = () => analyseProject({
+      "bad.ts": "export const value = 1;\n",
+      ".gruff-ts.yaml": `schemaVersion: gruff-ts.config.v0.1\n${invalidConfig}`,
+    }, { shouldSkipConfig: false });
+    assert.throws(analyseInvalidConfig, /deepScanBudget/, `invalid config was accepted: ${invalidConfig}`);
+  }
+});
+
 test("minimumSeverity rejects dashboard, unknown commands, and unknown values including never", () => {
   // Fixture covers the validator's rejection paths: dashboard is a reserved key (no --fail-on flag
   // exists for it); unknown commands raise an error with the canonical-keys hint; unknown values

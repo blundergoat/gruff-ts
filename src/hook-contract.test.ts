@@ -1,4 +1,7 @@
-// Conformance tests for the gruff.hook.v1 agent-hook contract.
+// Hook conformance tests cover the JSON findings and outcomes coding agents receive from `gruff-ts hook`.
+//
+// Fixtures protect changed-scope filtering, stable identities, baselines, and diagnostics.
+// Sensitive findings must reach hook users with fixed markers and no matched text or length metadata.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -14,13 +17,11 @@ import type { AnalysisOptions, AnalysisReport } from "./types.ts";
 const BIN = join(REPO_ROOT, "bin/gruff-ts");
 const SEVERITIES = new Set(["advisory", "warning", "error"]);
 const SCOPES = new Set(["line", "symbol", "file", "project"]);
-const THRESHOLD_RULE_IDS = new Set([
+const HOOK_MEASUREMENT_RULE_IDS = new Set([
   "complexity.cognitive",
   "complexity.cyclomatic",
   "design.deep-relative-import",
   "design.large-module-concentration",
-  "sensitive-data.hardcoded-env-value",
-  "sensitive-data.high-entropy-string",
   "size.file-length",
   "size.function-length",
   "size.parameter-count",
@@ -50,7 +51,7 @@ interface HookPayload {
   flags?: Record<string, string>;
   flagOrder?: string;
   findings: HookFinding[];
-  diagnostics?: Array<{ type: string; message: string; file?: string; line?: number }>;
+  diagnostics?: Array<{ type: string; message: string; file?: string; line?: number; invalidatesRun?: false }>;
   suppressed: { count: number };
   ignored: { paths: Array<{ path: string; source: string; pattern: string }> };
   config: { schemaOk: boolean; error: string | null };
@@ -147,16 +148,20 @@ test("hook symbol scope keeps eval findings inside generic multi-line callables"
   });
 });
 
-test("hook projects bounded deep-scan files without adding notes to gruff.hook.v1", () => {
+test("hook projects bounded deep-scan diagnostics without making them fatal", () => {
   const filler = Array.from({ length: 20_001 }, (_, index) => `export const filler${index} = ${index};`).join("\n");
   withProject({ "huge.ts": `${filler}\neval("payload");\n` }, (dir) => {
     const full = runHook(dir, ["hook", "--format", "json", "--no-config", "huge.ts"]);
     assert.equal("notes" in full, false);
+    assert.deepEqual(full.diagnostics?.map((diagnostic) => ({ type: diagnostic.type, file: diagnostic.file, invalidatesRun: diagnostic.invalidatesRun })), [
+      { type: "bounded-deep-scan", file: "huge.ts", invalidatesRun: false },
+    ]);
     assert.equal(full.findings.some((finding) => finding.ruleId === "size.file-length"), true);
     assert.equal(full.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
 
     const changed = runHook(dir, ["hook", "--format", "json", "--no-config", "--changed-ranges", "1-1", "huge.ts"]);
     assert.equal("notes" in changed, false);
+    assert.equal(changed.diagnostics?.[0]?.type, "bounded-deep-scan");
     assert.equal(changed.findings.some((finding) => finding.ruleId === "size.file-length"), false);
     assert.equal(changed.suppressed.count, 1);
   });
@@ -199,7 +204,7 @@ test("hook findings carry remediation, enum values, and threshold metadata", () 
     assert.equal(payload.findings.every((finding) => SCOPES.has(finding.scope)), true);
     assert.equal(payload.findings.every((finding) => typeof finding.remediation === "string" && finding.remediation.length > 0), true);
     assert.equal(payload.findings.every((finding) => /^[0-9a-f]{16}$/.test(finding.stableIdentity)), true);
-    const thresholdFindings = payload.findings.filter((finding) => THRESHOLD_RULE_IDS.has(finding.ruleId));
+    const thresholdFindings = payload.findings.filter((finding) => HOOK_MEASUREMENT_RULE_IDS.has(finding.ruleId));
     assert.equal(thresholdFindings.every((finding) => typeof finding.metadata.measured === "number" && typeof finding.metadata.threshold === "number"), true);
   });
 });
@@ -238,8 +243,10 @@ test("hook stableIdentity distinguishes multiple same-rule line findings in one 
     const secrets = payload.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
     assert.equal(secrets.length, 2);
     assert.notEqual(secrets[0]?.stableIdentity, secrets[1]?.stableIdentity);
-    assert.equal(typeof secrets[0]?.metadata.measured, "number");
+    assert.equal(secrets[0]?.metadata.measured, undefined);
     assert.equal(typeof secrets[0]?.metadata.threshold, "number");
+    assert.equal(secrets[0]?.metadata.preview, "[redacted]");
+    assert.equal("length" in (secrets[0]?.metadata ?? {}), false);
 
     // Baseline only the first secret; the second is new and must survive new-only filtering rather
     // than collapsing onto the first secret's identity.
@@ -252,9 +259,8 @@ test("hook stableIdentity distinguishes multiple same-rule line findings in one 
 });
 
 test("hook keeps two same-line secrets independently classifiable", () => {
-  // Same sub-24-char assembly as above so this test file never trips the high-entropy rule itself;
-  // both secrets sit on ONE line, so their fingerprints collide and only the ADR-017 column
-  // discriminator keeps the second finding alive through dedupe for the hook to classify.
+  // Sub-threshold fragments keep this fixture safe; both assembled values sit on one line and share a fingerprint.
+  // The ADR-017 column discriminator keeps the second finding alive for hook classification.
   const firstSecret = "aB3xY7kLmN9pQ2rS5" + "tU8vW1zC4dE6fG0hJ2kQ8w";
   const secondSecret = "zX9wV3uT6sR1qP8oN5" + "mL2kJ4iH7gF0eD3cB6aZ1y";
   const sameLine = [
@@ -267,8 +273,7 @@ test("hook keeps two same-line secrets independently classifiable", () => {
     assert.equal(secrets.length, 2);
     assert.notEqual(secrets[0]?.stableIdentity, secrets[1]?.stableIdentity);
 
-    // Baseline only the first same-line secret; the second must survive new-only filtering on its
-    // own message-keyed identity instead of vanishing with the suppressed first occurrence.
+    // Baseline only the first same-line secret; the second must survive through its column-aware identity.
     writeBaseline(dir, secrets.slice(0, 1));
     const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "secrets.ts"]);
     const remaining = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
@@ -348,9 +353,8 @@ test("hook changed-ranges reports a circular import through the requested file",
 });
 
 test("hook changed-ranges keeps a circular import when the range misses the canonical anchor line", () => {
-  // The agent edits line 3 of the non-anchor member; the SCC anchor file's import sits on line 1
-  // and never overlaps the range, so attribution must come from SCC membership, not from a
-  // coincidental anchor-line overlap.
+  // The agent edits line 3 of a non-anchor member while the SCC anchor import remains on line 1.
+  // Attribution must therefore come from component membership rather than an accidental line overlap.
   const cycleProject = {
     "src/cycle/a.ts": ['import { fromB } from "./sub/b";', "export function fromA(): string {", "  return fromB();", "}", ""].join("\n"),
     "src/cycle/sub/b.ts": ['import { fromA } from "../a";', "export function fromB(): string {", "  return fromA();", "}", ""].join("\n"),
@@ -593,7 +597,7 @@ test("two secrets on one line reach the hook as separately trackable findings", 
     assert.equal(secrets.length, 2);
     const [first, second] = secrets;
     assert.ok(first && second);
-    // Both keys are 20 characters, so redaction masks them fully and the previews are identical.
+    // Both keys use the same fixed category marker, so no matched characters or lengths distinguish them.
     assert.equal(first.message, second.message);
     // gruff.baseline.v1 keys on line, so the pair deliberately shares one fingerprint.
     assert.equal(first.fingerprint, second.fingerprint);
@@ -603,9 +607,8 @@ test("two secrets on one line reach the hook as separately trackable findings", 
   });
 });
 
-// Fixture purpose: models a baseline produced by `analyse --generate-baseline`, which stores no
-// stableIdentity and no column. Stable contract: a column-bearing finding still matches it, so
-// adding a column to the wire identity cannot silently un-suppress every accepted secret.
+// Models an on-disk baseline with no stable identity or column.
+// A column-bearing finding must still match, preventing identity enrichment from resurfacing every accepted finding.
 test("hook suppression survives a baseline written in the on-disk format", () => {
   const secret = "aB3xY7kLmN9pQ2rS5" + "tU8vW1zC4dE6fG0hJ2kQ8w";
   const source = ["// File overview: hook baseline-format fixture.", `export const token = "${secret}";`].join("\n");

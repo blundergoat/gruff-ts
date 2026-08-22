@@ -53,7 +53,7 @@ function summarize(findings: Finding[]) {
 // 1 when any finding crosses `failOn`, 0 otherwise. CI scripts and the dashboard runner depend on
 // this three-value invariant; reshuffling the precedence is a stable-contract regression.
 function exitFor(report: AnalysisReport, failOn: FailThreshold): number {
-  if (report.diagnostics.length > 0) {
+  if (report.diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false)) {
     return 2;
   }
   return report.findings.some((finding) => thresholdTriggered(failOn, finding.severity)) ? 1 : 0;

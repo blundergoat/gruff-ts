@@ -74,7 +74,7 @@ export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope
 // Diagnostic types that describe one analysed file's content or readability. Only these are
 // file-scoped under diff filtering; operational diagnostics (missing paths, history errors) always
 // stay, because they describe the request rather than an unchanged context file.
-const FILE_CONTENT_DIAGNOSTIC_TYPES = new Set(["parse-error", "read-error"]);
+const FILE_CONTENT_DIAGNOSTIC_TYPES = new Set(["bounded-deep-scan", "parse-error", "read-error"]);
 
 /*
  * Applies the file-scoped diagnostics policy to a changed-region run: a full scan keeps every

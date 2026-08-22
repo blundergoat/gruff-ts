@@ -13,6 +13,7 @@ const MARKDOWN_SAFETY_REPORT: AnalysisReport = {
   summary: { advisory: 1, warning: 2, error: 0, total: 3 },
   paths: { analysedFiles: 2, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
+  suppressions: [],
   findings: [
     {
       ruleId: "docs.rule`label",

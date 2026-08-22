@@ -31,6 +31,7 @@ const COMPLEXITY_CLUSTER_REPORT: AnalysisReport = {
   summary: { advisory: 0, warning: CLUSTER_FINDINGS.length, error: 0, total: CLUSTER_FINDINGS.length },
   paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
+  suppressions: [],
   findings: CLUSTER_FINDINGS,
   score: {
     composite: EXPECTED_CLUSTER_FILE_SCORE,

@@ -9,6 +9,7 @@ import { recordHistory, sortedUniqueFindings } from "./baseline.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { changedRegionScope, filterChangedFindings, filterScopedDiagnostics } from "./changed-regions.ts";
 import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
+import { partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
@@ -31,7 +32,7 @@ import { scoreReport, summarize } from "./scoring.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
 import { parseScript, type ParsedScript } from "./parsed-script.ts";
 import { maskNonCode, maskTemplateLiteralBodies } from "./source-text.ts";
-import type { AnalysisOptions, AnalysisReport, Config, Finding, Pillar, RunDiagnostic, ScanSurfaceNote, SkippedPath } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport, Config, Finding, Pillar, RunDiagnostic, ScanSurfaceNote, SkippedPath, SuppressionSummary } from "./types.ts";
 
 /*
  * Internal hook view contract: both reports come from one current-tree scan so full-file and
@@ -96,45 +97,41 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
     ...scanned.findings,
     ...analyseProjectIndex(projectRoot, options, discovery.files, scanned.projectSources, config).filter((finding) => ruleEnabled(config, finding.ruleId)),
   ].map((finding) => applyConfiguredSeverity(config, finding)));
-  const baselineResult = applyBaselineOptions(projectRoot, options, allFindings);
+  // Reviewed sensitive exclusions apply before the baseline so a suppressed finding never reaches
+  // the report, the score, or the exit code, and each entry's count covers the whole scan.
+  const excluded = partitionSensitiveExclusions(allFindings, config.sensitiveExclusions);
+  const baselineResult = applyBaselineOptions(projectRoot, options, excluded.findings);
   const notes = [...discovery.notes, ...scanned.notes];
-  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes };
+  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes, suppressions: excluded.suppressions };
 }
 
-// Converts a completed run into a stable report contract or changed-region projection.
+/*
+ * Converts a completed run into a stable report contract or changed-region projection. The field
+ * shape assembled here is the stable gruff.analysis.v2 schema contract. `suppressions` carries one
+ * audit row per configured sensitive exclusion and is counted across the whole scan, so a
+ * changed-region projection never understates what a suppression hid.
+ */
 function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResult: BaselineApplication, suppressedCount?: number): AnalysisReport {
-  return buildAnalysisReport(run.projectRoot, options, run.discovery, run.diagnostics, baselineResult, run.notes, suppressedCount);
-}
-
-// Assembles the run's payload; the field shape is the stable gruff.analysis.v2 schema contract.
-function buildAnalysisReport(
-  projectRoot: string,
-  options: AnalysisOptions,
-  discovery: DiscoverySummary,
-  diagnostics: RunDiagnostic[],
-  baselineResult: BaselineApplication,
-  notes: ScanSurfaceNote[],
-  suppressedCount?: number,
-): AnalysisReport {
   const findings = baselineResult.findings;
   return {
     schemaVersion: "gruff.analysis.v2",
     tool: { name: "gruff-ts", version: VERSION },
     run: {
-      projectRoot,
+      projectRoot: run.projectRoot,
       format: options.format,
       failOn: options.failOn,
       generatedAt: new Date().toISOString(),
     },
     summary: summarize(findings),
     paths: {
-      analysedFiles: discovery.files.length,
-      ignoredPaths: discovery.ignoredPaths,
-      skipped: discovery.skipped,
-      missingPaths: discovery.missingPaths,
+      analysedFiles: run.discovery.files.length,
+      ignoredPaths: run.discovery.ignoredPaths,
+      skipped: run.discovery.skipped,
+      missingPaths: run.discovery.missingPaths,
     },
-    diagnostics,
-    ...(notes.length === 0 ? {} : { notes }),
+    diagnostics: run.diagnostics,
+    ...(run.notes.length === 0 ? {} : { notes: run.notes }),
+    suppressions: run.suppressions,
     findings,
     ...(suppressedCount === undefined ? {} : { suppressedCount }),
     score: scoreReport(findings),
@@ -154,7 +151,7 @@ interface DiscoverySummary {
 
 // Output of the per-file scan pass - both the findings produced and the cached source bodies that
 // later project-level rules need to operate against the deterministic stable shape used by baselines.
-// Contract invariant: `notes` records bounded deep scans without changing finding order.
+// Contract invariant: `notes` records non-text scan-surface changes without changing finding order.
 interface SourceScanResult {
   findings: Finding[];
   projectSources: ProjectSource[];
@@ -171,8 +168,9 @@ interface AnalysisPreparation {
   discovery: DiscoverySummary;
 }
 
-// Completed scan state before final report rendering. The baseline result is carried separately so
-// changed-region filtering can project findings without losing baseline metadata.
+// Completed scan state before final report rendering. Stable contract: the baseline result is
+// carried separately so changed-region filtering can project findings without losing baseline
+// metadata, and the suppression rows stay whole-scan counts rather than a projection of them.
 interface AnalysisRun {
   projectRoot: string;
   discovery: DiscoverySummary;
@@ -180,6 +178,9 @@ interface AnalysisRun {
   scanned: SourceScanResult;
   baselineResult: BaselineApplication;
   notes: ScanSurfaceNote[];
+  // One audit row per configured sensitive exclusion, counted over every finding the scan produced
+  // so a changed-region projection cannot understate what a suppression actually hid.
+  suppressions: SuppressionSummary[];
 }
 
 // Emits a `missing-path` diagnostic per path that the user requested but discovery could not
@@ -217,19 +218,19 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
         continue;
       }
       const source = fileBytes.toString("utf8");
-      const budgetNote = deepScanBudgetNote(file, source);
+      const budgetDiagnostic = deepScanBudgetDiagnostic(file, source, config);
       // One parse per script per run: every deep consumer shares this result; over-budget files skip it.
-      const parsed = budgetNote ? undefined : parseScript(file, source);
+      const parsed = budgetDiagnostic ? undefined : parseScript(file, source);
       sources.set(file.displayPath, { file, source, ...(parsed ? { parsed } : {}) });
-      if (budgetNote) {
-        notes.push(budgetNote);
+      if (budgetDiagnostic) {
+        diagnostics.push(budgetDiagnostic);
       } else {
         if (shouldRetainProjectSource(file, source)) {
           projectSources.push(projectSource(file, source));
         }
         diagnostics.push(...(parsed?.diagnostics ?? []));
       }
-      findings.push(...analyseSource(file, source, config, budgetNote === undefined, parsed));
+      findings.push(...analyseSource(file, source, config, budgetDiagnostic === undefined, parsed));
     } catch (error) {
       diagnostics.push({
         diagnosticType: "read-error",
@@ -242,26 +243,24 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
   return { findings, projectSources, sources, notes };
 }
 
-// Scan budget for deep (masking, block-parsing, AST-walking) script analysis. Copied perf-test
-// fixtures of 100k+ lines time out whole scans, so files above either bound keep text-level rules.
-const DEEP_SCAN_MAX_LINES = 20_000; // Budget limit: bounds copied perf fixtures before deep passes.
-const DEEP_SCAN_MAX_BYTES = 2_000_000; // Budget limit: catches minified/long-line scripts too.
-
-// Returns the bounded-deep-scan note when a script file exceeds the budget, undefined otherwise.
-// The file still counts as analysed - silence is the failure mode this guard exists to remove.
-function deepScanBudgetNote(file: SourceFile, source: string): ScanSurfaceNote | undefined {
-  if (!file.isScript) {
+// Returns diagnostic metadata for a visible, non-fatal breach of either effective deep-scan bound.
+// Source classification happens first, so config and other non-code text files never enter this guard.
+function deepScanBudgetDiagnostic(file: SourceFile, source: string, config: Config): RunDiagnostic | undefined {
+  const budget = config.deepScanBudget;
+  if (!file.isScript || !budget.enabled) {
     return undefined;
   }
   const lines = lineCount(source);
   const bytes = Buffer.byteLength(source, "utf8");
-  if (lines <= DEEP_SCAN_MAX_LINES && bytes <= DEEP_SCAN_MAX_BYTES) {
+  if (lines <= budget.maxLines && bytes <= budget.maxBytes) {
     return undefined;
   }
   return {
-    noteType: "bounded-deep-scan",
-    path: file.displayPath,
-    message: `File exceeds the deep-scan budget (${lines} lines, ${bytes} bytes; limits ${DEEP_SCAN_MAX_LINES} lines / ${DEEP_SCAN_MAX_BYTES} bytes). Text-level rules (size, sensitive-data, config) still ran; deep script analysis was skipped.`,
+    diagnosticType: "bounded-deep-scan",
+    filePath: file.displayPath,
+    line: 1,
+    invalidatesRun: false,
+    message: `path=${file.displayPath}; lines=${lines}; bytes=${bytes}; maxLines=${budget.maxLines}; maxBytes=${budget.maxBytes}; override=${budget.override}. Text-level rules (size, sensitive-data, config) still ran; masking, block parsing, AST walking, and other deep script analysis were skipped.`,
   };
 }
 
@@ -360,19 +359,19 @@ function shouldBuildRootCircularContext(projectRoot: string, options: AnalysisOp
 function rootCircularImportFindings(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[], config: Config): Finding[] {
   const requestedFiles = new Set(scopedFiles.map((file) => file.displayPath));
   const rootDiscovery = discoverSources(projectRoot, { ...options, paths: [] }, config);
-  const rootProjectSources = graphProjectSources(rootDiscovery.files);
+  const rootProjectSources = graphProjectSources(rootDiscovery.files, config);
   const findings: Finding[] = [];
   analyseCircularImportRule(buildProjectIndex(rootProjectSources), findings);
   return findings.filter((finding) => circularImportFindingTouchesRequestedFile(finding, requestedFiles));
 }
 
 // Reads just the root files needed for import graph context and swallows unrelated read failures.
-function graphProjectSources(files: SourceFile[]): ProjectSource[] {
+function graphProjectSources(files: SourceFile[], config: Config): ProjectSource[] {
   const projectSources: ProjectSource[] = [];
   for (const file of files) {
     try {
       const source = readFileSync(file.absolutePath, "utf8");
-      if (!deepScanBudgetNote(file, source) && shouldRetainProjectSource(file, source)) {
+      if (!deepScanBudgetDiagnostic(file, source, config) && shouldRetainProjectSource(file, source)) {
         projectSources.push(projectSource(file, source));
       }
     } catch {

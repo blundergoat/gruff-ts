@@ -186,6 +186,29 @@ export function isKnownRuleId(ruleId: string): boolean {
   return KNOWN_RULE_IDS.has(ruleId);
 }
 
+/**
+ * Returns the pillar a rule id belongs to, for config sections that accept only one pillar's rules.
+ * Reuses the preset-validation map so pillar-scoped config checks read the same canonical catalogue.
+ *
+ * @param ruleId Candidate rule id from a user's configuration.
+ * @returns The rule's pillar, or undefined when the id is outside the catalogue.
+ */
+export function rulePillar(ruleId: string): Pillar | undefined {
+  return RULE_PILLARS.get(ruleId);
+}
+
+/**
+ * Reports whether a configured value is a pillar name rather than a rule id.
+ * Config sections that suppress findings use this to reject a whole-pillar selector written where
+ * one exact rule id belongs, because a pillar name would silently widen the user's declared scope.
+ *
+ * @param candidate Value the user wrote where a rule id is required.
+ * @returns True when the value names one of gruff's pillars.
+ */
+export function isPillarName(candidate: string): boolean {
+  return ALL_PILLARS.some((pillar) => pillar === candidate);
+}
+
 // Option keys a rule descriptor declares for `rules.<id>.options`, empty when the rule has none.
 // Exported for config validation so `config.ts` keeps depending on this module, not `rules.ts`.
 const RULE_OPTION_KEYS: ReadonlyMap<string, readonly string[]> = new Map(DESCRIPTORS.map((descriptor) => [descriptor.ruleId, descriptor.optionKeys ?? []]));

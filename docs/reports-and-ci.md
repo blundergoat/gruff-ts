@@ -58,6 +58,12 @@ Schema strings:
 they explain scan-surface limits without changing exit codes. `diagnostics`
 still owns exit `2`.
 
+`gruff.analysis.v2` always carries a `suppressions` array: one row per
+configured `sensitiveExclusions:` entry, empty when none are configured. A
+suppressed finding leaves `findings`, the score, and the `--fail-on` exit code,
+but its count is always reported. A malformed entry exits `2` before the scan
+starts. See [Configuration](./configuration.md).
+
 Current note types:
 
 - `no-analysable-files` - a requested path existed but contributed no supported

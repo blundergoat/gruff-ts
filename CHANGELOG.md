@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **BREAKING: default scans use the family fallback policy** - Non-VCS fallbacks now defer to any governing `.gitignore` and match at any depth, committed control metadata stays scannable, and explicit supported files bypass Git and fallback exclusions. VCS internals remain blocked even with `--include-ignored`.
+- **New `sensitiveExclusions:` config section** - suppress one reviewed sensitive-data finding by exact rule id plus project-relative path, with an optional `symbol:` to narrow further and a mandatory `reason:`. The same rule in another file and a different rule in the same file both keep reporting. See [Configuration](./docs/configuration.md).
+- **Suppressions are counted, never silent** - each entry publishes a `{index, rule, paths, symbol, reason, suppressed}` row in the new `suppressions` array on every `gruff.analysis.v2` report, and text output prints `Suppressed findings: N via ...` when the total is non-zero. Only the configured rule, path, and reason are printed; no detected value reaches any output.
+- **`summary` reports what it suppressed** - the text digest already applied `sensitiveExclusions:` but published no count; it now prints the same `Suppressed findings: N via ...` line `analyse` prints, below the canonical `Composite:`/`Findings:` block. `summary --format=json` still filters without a count: the `gruff.summary.v2` envelope has no suppression field and gaining one is a separate envelope change.
+- **Exclusions are authored by hand** - gruff never converts a detected value, a preview, or a finding message into an exclusion. An entry carrying `message_contains`, `messageContains`, `value`, or `preview` exits 2 naming that key, as does a wildcard or pillar in `rule:`, an unknown or non-sensitive rule id, an absolute/`..`/glob `path:`, a blank `reason:`, or a second entry claiming a scope another already claims. An entry matching no finding reports `suppressed: 0` instead of failing.
+- **YAML config accepts multi-key list items** - the bundled parser previously rejected a `- key: value` item whose remaining keys sat on following lines, so no config section could use a list of mappings.
+- `gruff-ts init` writes the new section as a commented example; existing configs need no change.
+
 ## v0.5.0 - 2026-08-16
 
 120 rules across 11 pillars on Node 22+. Every script rule now reads one shared syntax-only AST parse instead of walking lines, scoring changes shape, config and CLI validation fail instead of coercing, and the release gains gates that fail the build when a documented count or the scan surface drifts from the source.

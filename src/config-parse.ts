@@ -177,14 +177,39 @@ function parseYamlArrayItem(parser: YamlParser, indent: number, line: YamlLine):
   return pair ? parseYamlArrayMappingItem(parser, indent, pair) : parseYamlScalar(itemText);
 }
 
-// `- key: value` form: the first key is on the dash line, subsequent keys live as a nested object.
-// Mirrors the inline-vs-nested split of `addYamlObjectEntry`.
+// `- key: value` form: the first key is on the dash line, the item's remaining keys follow it at a
+// deeper indent. Mirrors the inline-vs-nested split of `addYamlObjectEntry`.
 function parseYamlArrayMappingItem(parser: YamlParser, indent: number, pair: [string, string]): Record<string, unknown> {
   const [rawKey, rawValue] = pair;
   const scalarText = rawValue.trim();
-  return {
+  const mappingItem: Record<string, unknown> = {
     [unquoteYaml(rawKey.trim())]: scalarText.length > 0 ? parseYamlScalar(scalarText) : parseNestedYamlValue(parser, indent, {}),
   };
+  addYamlArrayItemSiblingKeys(parser, indent, mappingItem);
+  return mappingItem;
+}
+
+/*
+ * Consumes the sibling keys of a `- key: value` item, which YAML writes at a deeper indent than the
+ * dash line. Without this pass, `sensitiveExclusions:` entries (rule/path/symbol/reason on separate
+ * lines) reached `parseYamlObject`, which rejected the continuation lines as unexpected indentation
+ * - a multi-key sequence item was unrepresentable in the supported subset. The first continuation
+ * line fixes the item's key column so a deeper line still fails rather than silently nesting.
+ */
+function addYamlArrayItemSiblingKeys(parser: YamlParser, indent: number, mappingItem: Record<string, unknown>): void {
+  const keyIndent = parser.lines[parser.index]?.indent;
+  // Nothing deeper than the dash line means the item ended with its first key.
+  if (keyIndent === undefined || keyIndent <= indent) {
+    return;
+  }
+  while (parser.index < parser.lines.length) {
+    const line = parser.lines[parser.index];
+    // A dedent, a further indent, or a new `- ` opener all end this item's key list.
+    if (!line || line.indent !== keyIndent || isYamlArrayLine(line)) {
+      break;
+    }
+    addYamlObjectEntry(parser, keyIndent, line, mappingItem);
+  }
 }
 
 // Returns the nested block if the next line indents further, otherwise the caller's `fallback`.

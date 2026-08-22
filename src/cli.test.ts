@@ -399,10 +399,10 @@ const INCLUDE_IGNORED_FIXTURE = {
 
 test("include ignored scans default and Git ignored paths but keeps config policy ignores", () => {
   const normalReport = analyseProject(INCLUDE_IGNORED_FIXTURE, { shouldSkipConfig: false });
-  assert.deepEqual([...evalFindingFiles(normalReport)].sort(), ["visible.ts"]);
+  assert.deepEqual([...evalFindingFiles(normalReport)].sort(), ["node_modules/pkg/index.ts", "visible.ts"]);
   assert.deepEqual(
     normalReport.paths.ignoredPaths.filter((path) => ["ignored.ts", "node_modules", "policy"].includes(path)).sort(),
-    ["ignored.ts", "node_modules", "policy"],
+    ["ignored.ts", "policy"],
   );
 
   const includeReport = analyseProject(INCLUDE_IGNORED_FIXTURE, { shouldIncludeIgnored: true, shouldSkipConfig: false });

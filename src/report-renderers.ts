@@ -9,6 +9,7 @@ import { buildPillarRows, type PillarRow } from "./pillar-summary.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { renderHtml } from "./report-html.ts";
 import { severityGradeBreakdown } from "./scoring.ts";
+import { totalSuppressedFindings } from "./sensitive-exclusions.ts";
 
 /*
  * Format dispatcher. `hotspot` is emitted inline (smallest schema) while every other format has a
@@ -26,7 +27,7 @@ function renderReport(report: AnalysisReport, format: OutputFormat): string {
     case "github":
       return renderGithub(report);
     case "hotspot":
-      return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders.slice(0, 10) }, null, 2);
+      return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders.slice(0, 10), diagnostics: report.diagnostics }, null, 2);
     case "sarif":
       return renderSarif(report);
     case "text":
@@ -103,6 +104,12 @@ function renderSarif(report: AnalysisReport): string {
             rules,
           },
         },
+        invocations: [
+          {
+            executionSuccessful: !report.diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false),
+            toolExecutionNotifications: report.diagnostics.map(sarifDiagnostic),
+          },
+        ],
         results: report.findings.map((finding) => sarifResult(finding, ruleIndices)),
         properties: {
           gruffSchemaVersion: report.schemaVersion,
@@ -114,6 +121,27 @@ function renderSarif(report: AnalysisReport): string {
     ],
   };
   return `${JSON.stringify(sarif, null, 2)}\n`;
+}
+
+// Contract invariant: analysis diagnostics become SARIF invocation notifications, including their
+// file anchor when one exists, while non-fatal bounded scans retain SARIF's note level.
+function sarifDiagnostic(diagnostic: AnalysisReport["diagnostics"][number]): Record<string, unknown> {
+  return {
+    descriptor: { id: diagnostic.diagnosticType },
+    level: diagnostic.invalidatesRun === false ? "note" : "error",
+    message: { text: diagnostic.message },
+    ...(diagnostic.filePath
+      ? {
+          locations: [{
+            physicalLocation: {
+              artifactLocation: { uri: sarifUri(diagnostic.filePath) },
+              ...(diagnostic.line === undefined ? {} : { region: { startLine: diagnostic.line } }),
+            },
+          }],
+        }
+      : {}),
+    properties: { invalidatesRun: diagnostic.invalidatesRun !== false },
+  };
 }
 
 /*
@@ -243,6 +271,11 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
         : report.score.topOffenders.slice(0, top).map((offender) => `- ${offender.filePath}: ${offender.findings} findings, quality ${offender.score.toFixed(1)}/100`)
     ),
   );
+  // The digest filters through the same analyse-side partition, so it owes the same audit row: a
+  // surface that applies a sensitive exclusion reports its count on that surface (FAMILY-CONTRACT.md
+  // section 13a, search: `Where the audit must appear`). It is an extension line below the canonical
+  // block, which section 1 permits; the `gruff.summary.v2` envelope is untouched.
+  lines.push(...renderTextSuppressionLines(report));
   return `${lines.join("\n")}\n`;
 }
 
@@ -271,6 +304,7 @@ function renderSummaryJson(report: AnalysisReport, elapsedMs?: number, pathLabel
     },
     score: report.score,
     findings: report.summary,
+    diagnostics: report.diagnostics,
     baseline: report.baseline,
     pillars: pillarRows.map((row) => ({
       pillar: row.pillar,
@@ -439,7 +473,29 @@ function renderText(report: AnalysisReport): string {
   if (report.findings.length >= OUTPUT_VOLUME_HINT_THRESHOLD) {
     lines.push("", `Tip: ${report.findings.length} findings is more than a flat list usefully shows. Try \`gruff-ts summary --top=20\` for a per-rule digest.`);
   }
+  lines.push(...renderTextSuppressionLines(report));
   return `${lines.join("\n")}\n`;
+}
+
+/*
+ * One human-readable total for the reviewed sensitive exclusions, so a suppressed finding is never
+ * silently invisible on the surface most users read. The line is a stable cross-port contract whose
+ * shape follows the family reference renderer (gruff-rs/src/render/text.rs, search:
+ * `Suppressed findings:`). Entries that matched nothing are
+ * omitted from the detail list but still publish their zero row in `report.suppressions`. Only the
+ * configured rule id, count, and rationale are printed - never any matched value material.
+ */
+function renderTextSuppressionLines(report: AnalysisReport): string[] {
+  const total = totalSuppressedFindings(report.suppressions);
+  // Nothing suppressed means no line at all, matching the reference renderer.
+  if (total === 0) {
+    return [];
+  }
+  const details = report.suppressions
+    .filter((summary) => summary.suppressed > 0)
+    .map((summary) => `sensitiveExclusions[${summary.index}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`)
+    .join("; ");
+  return ["", `Suppressed findings: ${total} via ${details}`];
 }
 
 /*
@@ -456,6 +512,19 @@ function renderMarkdown(report: AnalysisReport): string {
   const findingRows = report.findings
     .slice(0, 50)
     .map((finding) => `- ${markdownInlineCode(finding.ruleId)} ${markdownInlineCode(finding.filePath)}:${finding.line ?? 1} - ${escapeMarkdownFindingMessage(finding.message)}`);
+  const diagnosticRows = report.diagnostics.length === 0
+    ? []
+    : [
+        "## Diagnostics",
+        "",
+        ...report.diagnostics.map((diagnostic) => {
+          const diagnosticLocation = diagnostic.filePath
+            ? `${markdownInlineCode(diagnostic.filePath)}:${diagnostic.line ?? 1} `
+            : "";
+          return `- ${markdownInlineCode(diagnostic.diagnosticType)} ${diagnosticLocation}- ${escapeMarkdownFindingMessage(diagnostic.message)}`;
+        }),
+        "",
+      ];
   return [
     "# gruff-ts report",
     "",
@@ -467,6 +536,7 @@ function renderMarkdown(report: AnalysisReport): string {
     "",
     `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     "",
+    ...diagnosticRows,
     ...renderMarkdownPillarsTable(buildPillarRows(report)),
     "",
     ...findingRows,
@@ -608,9 +678,21 @@ function complexityClusters(findings: Finding[]): ComplexityCluster[] {
 // GitHub Actions `::workflow command` syntax. Public contract invariant: file/title properties
 // must be normalized and command-escaped before interpolation because commas and colons delimit the property list.
 function renderGithub(report: AnalysisReport): string {
-  return report.findings
-    .map((finding) => `::${githubLevel(finding.severity)} file=${escapeCommandProperty(githubAnnotationPath(finding.filePath))},line=${finding.line ?? 1},title=${escapeCommandProperty(finding.ruleId)}::${escapeCommand(finding.message)}`)
+  return [
+    ...report.diagnostics.map(githubDiagnostic),
+    ...report.findings.map((finding) => `::${githubLevel(finding.severity)} file=${escapeCommandProperty(githubAnnotationPath(finding.filePath))},line=${finding.line ?? 1},title=${escapeCommandProperty(finding.ruleId)}::${escapeCommand(finding.message)}`),
+  ]
     .join("\n");
+}
+
+// Contract invariant: runtime diagnostics become Actions annotations; bounded deep scans stay
+// notices and all fatal diagnostics remain errors, including file-less diagnostics.
+function githubDiagnostic(diagnostic: AnalysisReport["diagnostics"][number]): string {
+  const level = diagnostic.invalidatesRun === false ? "notice" : "error";
+  const location = diagnostic.filePath
+    ? ` file=${escapeCommandProperty(githubAnnotationPath(diagnostic.filePath))},line=${diagnostic.line ?? 1},`
+    : " ";
+  return `::${level}${location}title=${escapeCommandProperty(diagnostic.diagnosticType)}::${escapeCommand(diagnostic.message)}`;
 }
 
 // GitHub annotation paths are repository-relative POSIX paths. Leading `./` and Windows

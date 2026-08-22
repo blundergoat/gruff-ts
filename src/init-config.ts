@@ -57,9 +57,18 @@ interface InitPromptContext {
 interface PreservedInitConfig {
   ignoredPaths: readonly string[];
   minimumSeverity: ReadonlyMap<MinimumSeverityCommand, FailThreshold>;
+  sensitiveExclusions: readonly PreservedSensitiveExclusionEntry[];
 }
 
-const EMPTY_PRESERVED_CONFIG: PreservedInitConfig = { ignoredPaths: [], minimumSeverity: new Map() };
+// One reviewed suppression carried through regeneration, in the ratified key order.
+interface PreservedSensitiveExclusionEntry {
+  rule: string;
+  path: string;
+  symbol?: string;
+  reason: string;
+}
+
+const EMPTY_PRESERVED_CONFIG: PreservedInitConfig = { ignoredPaths: [], minimumSeverity: new Map(), sensitiveExclusions: [] };
 
 /**
  * Render the default .gruff-ts.yaml content from the rule descriptor registry. Output order is
@@ -74,7 +83,11 @@ const EMPTY_PRESERVED_CONFIG: PreservedInitConfig = { ignoredPaths: [], minimumS
  *   block. Empty Map falls back to canonical defaults (advisory / advisory / none).
  * @returns A YAML document string terminated by a trailing newline.
  */
-function renderDefaultConfig(ignoredPaths: readonly string[] = [], preservedMinimumSeverity: ReadonlyMap<MinimumSeverityCommand, FailThreshold> = new Map()): string {
+function renderDefaultConfig(
+  ignoredPaths: readonly string[] = [],
+  preservedMinimumSeverity: ReadonlyMap<MinimumSeverityCommand, FailThreshold> = new Map(),
+  preservedSensitiveExclusions: readonly PreservedSensitiveExclusionEntry[] = [],
+): string {
   return [
     renderSchemaVersionSection(),
     "",
@@ -84,8 +97,52 @@ function renderDefaultConfig(ignoredPaths: readonly string[] = [], preservedMini
     "",
     renderAllowlistsSection(),
     "",
+    renderSensitiveExclusionsSection(preservedSensitiveExclusions),
+    "",
     renderRulesSection(),
   ].join("\n") + "\n";
+}
+
+/*
+ * Reviewed sensitive-data suppressions, emitted entirely as comments so a fresh project suppresses
+ * nothing until someone writes an entry by hand. The section is deliberately separate from
+ * `rules:` and `paths.ignore` because it is the only surface that can hide a sensitive finding, and
+ * a commented example is how a user discovers it (FAMILY-CONTRACT.md, search:
+ * `### 13a. Sensitive exclusions`). Nothing generates an entry: gruff never converts a detected
+ * value, a preview, or a message into a suppression.
+ */
+function renderSensitiveExclusionsSection(preservedEntries: readonly PreservedSensitiveExclusionEntry[]): string {
+  const guidance = [
+    "# Reviewed suppressions for sensitive-data findings. Written by hand only - gruff never",
+    "# converts a detected value, a preview, or a finding message into an exclusion.",
+    "#",
+    "# Each entry names exactly one rule id and one project-relative path, and must carry a",
+    "# non-empty reason. `symbol:` narrows further where a rule stamps one. Nothing else is",
+    "# suppressed: the same rule in another file and another rule in the same file keep reporting.",
+    "# Every entry reports its own count in the report's `suppressions` array and in the text",
+    "# `Suppressed findings:` line, so a suppression is always visible in review.",
+    "#",
+    "# sensitiveExclusions:",
+    "#   - rule: sensitive-data.aws-access-key",
+    "#     path: tests/fixtures/aws-sample.env",
+    "#     reason: Synthetic key used by the loader fixture; not a live credential.",
+  ];
+  // Regeneration must never silently re-enable a finding a reviewer accepted in writing, so any
+  // existing entries are re-emitted verbatim below the guidance comment.
+  if (preservedEntries.length === 0) {
+    return guidance.join("\n");
+  }
+  return [...guidance, "sensitiveExclusions:", ...preservedEntries.flatMap(renderPreservedExclusionEntry)].join("\n");
+}
+
+// One preserved entry as block-sequence YAML lines, keeping the ratified key order.
+function renderPreservedExclusionEntry(entry: PreservedSensitiveExclusionEntry): string[] {
+  const lines = [`  - rule: ${JSON.stringify(entry.rule)}`, `    path: ${JSON.stringify(entry.path)}`];
+  if (entry.symbol !== undefined) {
+    lines.push(`    symbol: ${JSON.stringify(entry.symbol)}`);
+  }
+  lines.push(`    reason: ${JSON.stringify(entry.reason)}`);
+  return lines;
 }
 
 // Required top-level schema-version field. Documented in ADR-004 because the introduction itself
@@ -148,7 +205,7 @@ function writeDefaultConfig(projectRoot: string, shouldOverwrite: boolean): Init
   // `.gruff.yaml`/`.yml`/`.json` would silently drop user-curated exclusions and command-specific
   // gating thresholds when generating the new canonical file.
   const preserved = existingConfigPath !== undefined ? readExistingPreservedConfig(existingConfigPath) : EMPTY_PRESERVED_CONFIG;
-  writeFileSync(targetPath, renderDefaultConfig(preserved.ignoredPaths, preserved.minimumSeverity));
+  writeFileSync(targetPath, renderDefaultConfig(preserved.ignoredPaths, preserved.minimumSeverity, preserved.sensitiveExclusions));
   return { path: targetPath, status: targetExists ? "overwritten" : "written" };
 }
 

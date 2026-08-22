@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import test from "node:test";
+import { renderReport, renderSummary, renderSummaryJson } from "./report-renderers.ts";
 import { analyseFixture, analyseProject, analyseProjectInCurrentDirectory, HIGH_ENTROPY_FIXTURE_VALUE, PRIVATE_KEY_HEADER_FIXTURE_VALUE } from "./test-fixtures.ts";
 
 test("requested directory hidden by parent gitignore reports a no-analysable-files note", () => {
@@ -104,7 +105,7 @@ test("non-text script bytes are noted and skipped before parser diagnostics", ()
   ]);
 });
 
-test("a script file over the deep-scan budget keeps text rules and reports a bounded note", () => {
+test("a script file over the default line budget keeps text rules and reports a non-fatal diagnostic", () => {
   // The 146k-line copied perf fixture timed out whole scans. Over-budget files still count as
   // analysed, still run size/sensitive-data/text rules, but skip deep script passes (the eval
   // call below would otherwise produce security.eval-call).
@@ -116,10 +117,11 @@ test("a script file over the deep-scan budget keeps text rules and reports a bou
   );
 
   assert.equal(report.paths.analysedFiles, 1);
-  const notes = report.notes ?? [];
-  assert.equal(notes.length, 1);
-  assert.equal(notes[0]?.noteType, "bounded-deep-scan");
-  assert.equal(notes[0]?.path, "huge.ts");
+  const diagnostic = report.diagnostics.find((entry) => entry.diagnosticType === "bounded-deep-scan");
+  assert.ok(diagnostic);
+  assert.equal(diagnostic.filePath, "huge.ts");
+  assert.equal(diagnostic.invalidatesRun, false);
+  assert.match(diagnostic.message, /path=huge\.ts; lines=20004; bytes=\d+; maxLines=20000; maxBytes=2000000; override=default/);
   assert.equal(report.findings.some((finding) => finding.ruleId === "size.file-length"), true);
   assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), true);
   assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
@@ -134,7 +136,54 @@ test("a smaller sibling file still receives full deep analysis next to a bounded
   });
   const evalFindings = report.findings.filter((finding) => finding.ruleId === "security.eval-call");
   assert.deepEqual(evalFindings.map((finding) => finding.filePath), ["small.ts"]);
-  assert.deepEqual((report.notes ?? []).map((note) => note.path), ["huge.ts"]);
+  assert.deepEqual(report.diagnostics.filter((entry) => entry.diagnosticType === "bounded-deep-scan").map((entry) => entry.filePath), ["huge.ts"]);
+});
+
+test("config can trigger the byte bound and CLI settings take precedence or disable it", () => {
+  const source = `/** Small fixture. */\nexport function run(input: string): void { eval(input); }\n`;
+  const configured = analyseProject(
+    { "small.ts": source },
+    { config: { deepScanBudget: { enabled: true, maxLines: 100, maxBytes: 20 } } },
+  );
+  assert.match(configured.diagnostics[0]?.message ?? "", /maxLines=100; maxBytes=20; override=config/);
+  assert.equal(configured.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
+
+  const overridden = analyseProject(
+    { "small.ts": source },
+    {
+      config: { deepScanBudget: { enabled: true, maxLines: 1, maxBytes: 1 } },
+      deepScanBudget: { enabled: true, maxLines: 100, maxBytes: 10_000 },
+    },
+  );
+  assert.equal(overridden.diagnostics.some((entry) => entry.diagnosticType === "bounded-deep-scan"), false);
+  assert.equal(overridden.findings.some((finding) => finding.ruleId === "security.eval-call"), true);
+
+  const disabled = analyseProject(
+    { "small.ts": source },
+    { config: { deepScanBudget: { enabled: true, maxLines: 1, maxBytes: 1 } }, deepScanBudget: { enabled: false } },
+  );
+  assert.equal(disabled.diagnostics.some((entry) => entry.diagnosticType === "bounded-deep-scan"), false);
+  assert.equal(disabled.findings.some((finding) => finding.ruleId === "security.eval-call"), true);
+});
+
+test("the deep-scan budget never applies to non-code text", () => {
+  const report = analyseProject(
+    { "notes.md": "secret prose\n".repeat(20) },
+    { config: { deepScanBudget: { enabled: true, maxLines: 1, maxBytes: 1 } } },
+  );
+  assert.equal(report.diagnostics.some((entry) => entry.diagnosticType === "bounded-deep-scan"), false);
+});
+
+test("bounded deep-scan diagnostics are visible in every supported report surface", () => {
+  const report = analyseProject(
+    { "small.ts": "export const value = 1;\n" },
+    { config: { deepScanBudget: { enabled: true, maxLines: 1, maxBytes: 1 } } },
+  );
+  for (const format of ["text", "json", "html", "markdown", "github", "hotspot", "sarif"] as const) {
+    assert.match(renderReport(report, format), /bounded-deep-scan/, format);
+  }
+  assert.match(renderSummary(report), /bounded-deep-scan/);
+  assert.match(renderSummaryJson(report), /bounded-deep-scan/);
 });
 
 test("generated files skip docs/naming findings but keep sensitive-data findings", () => {

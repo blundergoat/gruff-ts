@@ -1,6 +1,6 @@
 ---
 category: sensitive-data
-last_reviewed: 2026-08-13
+last_reviewed: 2026-08-22
 hallucination-risk: high
 ---
 
@@ -40,3 +40,19 @@ The coupling crosses milestone boundaries, so the assumption that justified the 
 **Evidence:** package-manager lockfiles were excluded from the pillar to stop published integrity digests raising `sensitive-data.high-entropy-string`. Scanning one byte-identical file twice measured the cost: as `appconfig.json` it reported `sensitive-data.api-key-pattern`, `sensitive-data.database-url-password`, and `sensitive-data.high-entropy-string`; as `package-lock.json` it reported nothing. A credential in a `resolved` URL is the documented real-world leak vector for that exact file family, so the silenced siblings were the ones that mattered.
 
 **Prevention:** filter the produced findings by `ruleId` instead of skipping the dispatch, and lock it in with a two-way test: the noisy rule must stay silent on the family and a credential in the same family must still report. `isSubresourceIntegrityHash` (search: `function isSubresourceIntegrityHash`) already existed to exempt digest shapes, so the targeted mechanism usually exists before the blanket one is reached for.
+
+## Footgun: hook metadata can rename and re-expose sensitive measurements
+
+**Status:** active | **Created:** 2026-08-22 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** When removing secret-derived metadata, inspect the hook normalization layer and prove both finding and hook payloads omit the value.
+**Trigger phase:** VERIFY
+
+`pushSensitiveFinding` (`src/sensitive-data-rules.ts`, search: `function pushSensitiveFinding`) builds the safe finding metadata, but
+`thresholdMetadataFor` (`src/hook-contract.ts`, search: `function thresholdMetadataFor`) can translate it into the hook's `measured` field.
+A detector field can therefore disappear from the direct report yet remain part of the hook contract under a different name.
+
+During M00, removing secret `length` metadata caused the focused hook test to fail because it still expected a numeric `metadata.measured`.
+The current absence of `length` makes hook normalization fall back to fixed-marker metadata, but the sensitive rule cases remain coupled.
+
+For any sensitive metadata change, verify JSON report and `gruff.hook.v1` output separately.
+Assert that `length`, `digits`, and `measured` are absent and only the fixed marker plus detector-owned public metadata remain.

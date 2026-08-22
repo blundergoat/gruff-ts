@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { absolutize } from "./discovery.ts";
 import { VERSION } from "./constants.ts";
 import { ruleDescriptors } from "./rules.ts";
-import type { AnalysisOptions, AnalysisReport, Finding, Severity, SkippedPath } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport, Finding, RunDiagnostic, Severity, SkippedPath } from "./types.ts";
 
 type HookScope = "line" | "symbol" | "file" | "project";
 type FlagOrder = "any" | "flags-before-path";
@@ -47,6 +47,7 @@ interface HookDiagnostic {
   message: string;
   file?: string;
   line?: number;
+  invalidatesRun?: false;
 }
 
 // A finding projected into the hook contract, with enum scope and non-null remediation, keyed for
@@ -152,20 +153,23 @@ function hookReport(report: AnalysisReport | undefined, findings: HookFinding[],
 }
 
 // Projects one run diagnostic into the hook contract's shape; never throws - absent anchors are omitted.
-function toHookDiagnostic(diagnostic: { diagnosticType: string; message: string; filePath?: string; line?: number }): HookDiagnostic {
+function toHookDiagnostic(diagnostic: RunDiagnostic): HookDiagnostic {
   return {
     type: diagnostic.diagnosticType,
     message: diagnostic.message,
     ...(diagnostic.filePath === undefined ? {} : { file: diagnostic.filePath }),
     ...(diagnostic.line === undefined ? {} : { line: diagnostic.line }),
+    ...(diagnostic.invalidatesRun === false ? { invalidatesRun: false as const } : {}),
   };
 }
 
 // Counts the diagnostics in a rendered gruff.hook.v1 envelope so the CLI can apply the explicit
 // --fail-on-diagnostics exit policy without re-running analysis or duplicating envelope knowledge.
 export function hookRenderedDiagnosticsCount(renderedEnvelope: string): number {
-  const payload = JSON.parse(renderedEnvelope) as { diagnostics?: unknown[] };
-  return Array.isArray(payload.diagnostics) ? payload.diagnostics.length : 0;
+  const payload = JSON.parse(renderedEnvelope) as { diagnostics?: HookDiagnostic[] };
+  return Array.isArray(payload.diagnostics)
+    ? payload.diagnostics.filter((diagnostic) => diagnostic.invalidatesRun !== false).length
+    : 0;
 }
 
 // Analyzer identity block shared by the capability and report envelopes.

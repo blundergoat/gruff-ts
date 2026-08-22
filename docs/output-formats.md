@@ -20,6 +20,13 @@ Use `json` for automation. JSON reports use `gruff.analysis.v2`.
 ./bin/gruff-ts analyse src --format=json --fail-on=none > gruff-ts.json
 ```
 
+`suppressions` carries one row per configured `sensitiveExclusions:` entry, in
+declaration order, shaped
+`{index, rule, paths, symbol, reason, suppressed}`. The array is always present
+and is empty when nothing is configured. Text output prints the total as
+`Suppressed findings: N via ...` when it is non-zero. See
+[Configuration](./configuration.md).
+
 `paths.skipped` (added in 0.3.0) lists every excluded path with its ignore
 `source` (`config` / `gitignore` / `default`) and the matching `pattern`;
 `paths.ignoredPaths` remains as the back-compatible `string[]` of the same paths.

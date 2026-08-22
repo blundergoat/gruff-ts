@@ -11,6 +11,16 @@ import type { FailThreshold, MinimumSeverityCommand } from "./types.ts";
 interface PreservedConfigFields {
   ignoredPaths: string[];
   minimumSeverity: Map<MinimumSeverityCommand, FailThreshold>;
+  sensitiveExclusions: PreservedSensitiveExclusion[];
+}
+
+// One carried-over `sensitiveExclusions:` entry. Kept as plain strings because regeneration only
+// needs to re-emit what the user wrote; the strict parser validates it at the next analyser load.
+interface PreservedSensitiveExclusion {
+  rule: string;
+  path: string;
+  symbol?: string;
+  reason: string;
 }
 
 /*
@@ -26,7 +36,48 @@ export function extractPreservedConfigFields(configPath: string): PreservedConfi
   return {
     ignoredPaths: extractIgnoredPaths(raw),
     minimumSeverity: extractMinimumSeverity(raw),
+    sensitiveExclusions: extractSensitiveExclusions(raw),
   };
+}
+
+/*
+ * Carries `sensitiveExclusions:` through regeneration. Dropping these would silently re-enable
+ * findings a reviewer had deliberately accepted with a written rationale, which is the opposite of
+ * what a reason-bearing suppression is for - the user would have no signal that their exclusions
+ * were gone. Entries missing a required field are dropped here and re-reported by the strict
+ * parser at the next analyser load, where the diagnostic belongs.
+ */
+function extractSensitiveExclusions(raw: Record<string, unknown>): PreservedSensitiveExclusion[] {
+  const entries = raw.sensitiveExclusions;
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  const preserved: PreservedSensitiveExclusion[] = [];
+  for (const entry of entries) {
+    const candidate = preservedSensitiveExclusion(entry);
+    if (candidate !== undefined) {
+      preserved.push(candidate);
+    }
+  }
+  return preserved;
+}
+
+// Per-entry filter, extracted so the outer loop stays linear. Only the four ratified keys survive;
+// anything else the user wrote is a rejection case the strict parser must report, not a value to
+// carry forward into a regenerated file.
+function preservedSensitiveExclusion(entry: unknown): PreservedSensitiveExclusion | undefined {
+  const block = objectValue(entry);
+  if (!block) {
+    return undefined;
+  }
+  const rule = block.rule;
+  const path = block.path;
+  const reason = block.reason;
+  const symbol = block.symbol;
+  if (typeof rule !== "string" || typeof path !== "string" || typeof reason !== "string") {
+    return undefined;
+  }
+  return typeof symbol === "string" ? { rule, path, symbol, reason } : { rule, path, reason };
 }
 
 // `paths.ignore` is a free-form list of glob strings. Non-string entries are dropped silently -

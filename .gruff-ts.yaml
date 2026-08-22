@@ -83,6 +83,20 @@ allowlists:
   # Default: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]
   # knownAcronyms: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]
 
+# Reviewed suppressions for sensitive-data findings. Written by hand only - gruff never
+# converts a detected value, a preview, or a finding message into an exclusion.
+#
+# Each entry names exactly one rule id and one project-relative path, and must carry a
+# non-empty reason. `symbol:` narrows further where a rule stamps one. Nothing else is
+# suppressed: the same rule in another file and another rule in the same file keep reporting.
+# Every entry reports its own count in the report's `suppressions` array and in the text
+# `Suppressed findings:` line, so a suppression is always visible in review.
+#
+# sensitiveExclusions:
+#   - rule: sensitive-data.aws-access-key
+#     path: tests/fixtures/aws-sample.env
+#     reason: Synthetic key used by the loader fixture; not a live credential.
+
 rules:
   # complexity/warning: Flags functions with high combined branch and nesting complexity.
   complexity.cognitive:

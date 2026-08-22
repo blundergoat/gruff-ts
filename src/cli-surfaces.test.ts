@@ -291,6 +291,7 @@ const SARIF_FIXTURE_REPORT: AnalysisReport = {
   summary: { advisory: 1, warning: 1, error: 1, total: 3 },
   paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
+  suppressions: [],
   findings: [
     { ruleId: "security.eval-call", message: "Avoid eval().", filePath: "./src\\bad.ts", line: 7, endLine: 10, column: 3, severity: "error", pillar: "security", secondaryPillars: ["sensitive-data"], tier: "v0.1", confidence: "high", symbol: "run", remediation: "Use a dispatch table.", metadata: { target: "eval" }, fingerprint: "abc123", stableIdentity: "stable-abc123" },
     { ruleId: "waste.console-log", message: "Avoid console logging.", filePath: "src\\warn.ts", line: 8, severity: "warning", pillar: "maintainability", secondaryPillars: [], tier: "v0.1", confidence: "high", metadata: {}, fingerprint: "def456", stableIdentity: "stable-def456" },
@@ -475,6 +476,7 @@ const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
   summary: { advisory: 0, warning: 1, error: 1, total: 2 },
   paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
+  suppressions: [],
   findings: [
     { ruleId: "docs.<script>", message: "Message with <script>alert(1)</script>", filePath: "src/<bad>.ts", line: 7, severity: "warning", pillar: "documentation", secondaryPillars: [], tier: "v0.1", confidence: "high", symbol: "badSymbol", metadata: {}, fingerprint: "abc123", stableIdentity: "stable-abc123" },
     { ruleId: "complexity.cyclomatic", message: "Function has cyclomatic complexity 12.", filePath: "src/Complex.ts", line: 11, severity: "error", pillar: "complexity", secondaryPillars: [], tier: "v0.1", confidence: "high", symbol: "run", metadata: {}, fingerprint: "def456", stableIdentity: "stable-def456" },
@@ -718,6 +720,14 @@ test("constrained option values fail fast as usage errors naming the accepted se
   assertConstrainedValueRejected("report --format", ["report", "--format", "bogus", "--no-config"]);
   assertConstrainedValueRejected("report --fail-on", ["report", "--fail-on", "bogus", "--no-config"]);
   assertConstrainedValueRejected("summary --fail-on", ["summary", "--fail-on", "bogus", "--no-config"]);
+});
+
+test("deep-scan CLI override accepts paired limits or off and rejects partial values", () => {
+  for (const command of ["analyse", "hook", "report", "summary"]) {
+    const invalid = spawnSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), command, "--deep-scan-budget", "100", "--no-config"], { encoding: "utf8" });
+    assert.notEqual(invalid.status, 0, `${command} must reject an unpaired budget`);
+    assert.match(invalid.stderr, /LINES:BYTES, or off/);
+  }
 });
 
 test("valid constrained values and bare directory arguments keep working", () => {
