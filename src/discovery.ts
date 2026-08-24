@@ -94,7 +94,16 @@ function discoverSourceInput(projectRoot: string, input: string, options: Analys
   const stats = statSync(absolute);
   if (stats.isFile()) {
     const display = displayPath(projectRoot, absolute);
-    const match = classifyIgnore(projectRoot, absolute, display, false, options, config, [], true);
+    const match = classifyIgnore({
+      projectRoot,
+      absolute,
+      display,
+      isDirectory: false,
+      options,
+      config,
+      gitIgnoreRules: [],
+      isExplicitFile: true,
+    });
     if (match) {
       discovery.skipped.set(display, { path: display, source: match.source, pattern: match.pattern });
       return;
@@ -121,7 +130,16 @@ function walk(
     const absolute = join(directory, entry.name);
     const display = displayPath(projectRoot, absolute);
     if (entry.isDirectory() || entry.isFile()) {
-      const match = classifyIgnore(projectRoot, absolute, display, entry.isDirectory(), options, config, gitIgnoreRules, false);
+      const match = classifyIgnore({
+        projectRoot,
+        absolute,
+        display,
+        isDirectory: entry.isDirectory(),
+        options,
+        config,
+        gitIgnoreRules,
+        isExplicitFile: false,
+      });
       if (match) {
         skipped.set(display, { path: display, source: match.source, pattern: match.pattern });
         continue;
@@ -166,20 +184,24 @@ interface IgnoreMatch {
   pattern: string;
 }
 
+// Bundles one ignore decision so adding policy context does not expand the helper's parameter list.
+interface IgnoreClassificationInput {
+  projectRoot: string;
+  absolute: string;
+  display: string;
+  isDirectory: boolean;
+  options: AnalysisOptions;
+  config: Config;
+  gitIgnoreRules: GitIgnoreRule[];
+  isExplicitFile: boolean;
+}
+
 // Single ignore decision shared by the directory walk, explicit-file handling, and `check-ignore`,
 // so there is exactly one glob/ignore implementation. Returns the first matching source with its
 // pattern, or undefined. Config and VCS internals are authoritative; explicit files and
 // `--include-ignored` bypass Git and the no-gitignore fallback only.
-function classifyIgnore(
-  projectRoot: string,
-  absolute: string,
-  display: string,
-  isDirectory: boolean,
-  options: AnalysisOptions,
-  config: Config,
-  gitIgnoreRules: GitIgnoreRule[],
-  isExplicitFile: boolean,
-): IgnoreMatch | undefined {
+function classifyIgnore(input: IgnoreClassificationInput): IgnoreMatch | undefined {
+  const { projectRoot, absolute, display, isDirectory, options, config, gitIgnoreRules, isExplicitFile } = input;
   const configPattern = config.ignoredPaths.find((pattern) => pathMatches(pattern, display));
   if (configPattern !== undefined) {
     return { source: "config", pattern: configPattern };
@@ -222,7 +244,7 @@ export function classifyPathIgnore(projectRoot: string, input: string, options: 
   const gitIgnoreRules = options.shouldIncludeIgnored || isExplicitFile
     ? []
     : gitIgnoreRulesForDirectory(projectRoot, dirname(absolute));
-  const match = classifyIgnore(
+  const match = classifyIgnore({
     projectRoot,
     absolute,
     display,
@@ -231,14 +253,16 @@ export function classifyPathIgnore(projectRoot: string, input: string, options: 
     config,
     gitIgnoreRules,
     isExplicitFile,
-  );
+  });
   return match ? { path: display, isIgnored: true, source: match.source, pattern: match.pattern } : { path: display, isIgnored: false };
 }
 
+// Finds the first path component owned by one directory-policy set.
 function matchedDirectoryComponent(path: string, candidates: readonly string[]): string | undefined {
   return path.split("/").find((component) => candidates.includes(component));
 }
 
+// Applies fallback exclusions only where no governing `.gitignore` exists from root to parent.
 function fallbackAppliesAt(projectRoot: string, absolute: string): boolean {
   if (!isInsideProject(projectRoot, absolute)) {
     return true;
@@ -258,6 +282,7 @@ function fallbackAppliesAt(projectRoot: string, absolute: string): boolean {
   return true;
 }
 
+// Distinguishes a regular `.gitignore` file from a missing path or directory.
 function isGitIgnoreFile(path: string): boolean {
   return existsSync(path) && statSync(path).isFile();
 }
