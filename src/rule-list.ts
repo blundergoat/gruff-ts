@@ -106,6 +106,9 @@ function renderRuleDetail(descriptor: RuleDescriptor, format: RuleListFormat): s
     ...ruleConfigKeyLines(descriptor),
     ...(descriptor.optionKeys && descriptor.optionKeys.length > 0 ? ["", "Options:", ...descriptor.optionKeys.map((key) => `  rules.${descriptor.ruleId}.options.${key}`)] : []),
     ...(descriptor.allowlistKeys && descriptor.allowlistKeys.length > 0 ? ["", "Allowlists:", ...descriptor.allowlistKeys.map((key) => `  allowlists.${key}`)] : []),
+    ...(descriptor.falsePositiveShapes && descriptor.falsePositiveShapes.length > 0
+      ? ["", "Known false positives:", ...descriptor.falsePositiveShapes.flatMap(({ shape, mitigation }) => [`  ${shape}`, `    -> ${mitigation}`])]
+      : []),
   ];
   return `${lines.join("\n")}\n`;
 }

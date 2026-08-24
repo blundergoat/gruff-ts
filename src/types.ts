@@ -271,6 +271,24 @@ export interface AnalysisReport {
  *
  * Missing thresholds, options, allowlists, or fixture exemptions mean the rule does not expose that user-facing control.
  */
+/**
+ * One reviewed class of code that trips a rule without being the defect it looks for.
+ *
+ * `shape` names the pattern a reader would recognise in their own source; `mitigation` says what to
+ * do about it, naming a real config key or code change. Guidance is reviewed evidence rather than
+ * apology: a rule with no entry has had none recorded, which is why the field is omitted rather
+ * than published as an empty array.
+ */
+export interface FalsePositiveShape {
+  shape: string;
+  mitigation: string;
+}
+
+/**
+ * The public metadata for one rule: what `list-rules` prints, what reports carry, and what the
+ * generated config comments describe. Every optional member is omitted rather than emitted empty,
+ * so an absent key means the rule has no such control rather than an unset one.
+ */
 export interface RuleDescriptor {
   ruleId: string;
   pillar: Pillar;
@@ -283,4 +301,6 @@ export interface RuleDescriptor {
   /** Allowlist keys shown to users for this rule; missing means the rule has no allowlist control. */
   allowlistKeys?: readonly string[];
   fixtureExemption?: string;
+  /** Reviewed false-positive guidance; missing means no shape has been reviewed for this rule. */
+  falsePositiveShapes?: readonly FalsePositiveShape[];
 }

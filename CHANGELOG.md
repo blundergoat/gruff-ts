@@ -9,6 +9,7 @@
 - **Exclusions are authored by hand** - gruff never converts a detected value, a preview, or a finding message into an exclusion. An entry carrying `message_contains`, `messageContains`, `value`, or `preview` exits 2 naming that key, as does a wildcard or pillar in `rule:`, an unknown or non-sensitive rule id, an absolute/`..`/glob `path:`, a blank `reason:`, or a second entry claiming a scope another already claims. An entry matching no finding reports `suppressed: 0` instead of failing.
 - **YAML config accepts multi-key list items** - the bundled parser previously rejected a `- key: value` item whose remaining keys sat on following lines, so no config section could use a list of mappings.
 - `gruff-ts init` writes the new section as a commented example; existing configs need no change.
+- **Reviewed false-positive guidance on every medium- and low-confidence rule** - all 69 of them now publish `falsePositiveShapes`, each entry naming one code shape that trips the rule without being the defect and what to do about it. `list-rules <rule-id>` prints them under `Known false positives:` and `--format=json` carries them per rule. The 51 high-confidence rules omit the field, so an absent field means no shape has been reviewed rather than none existing. No rule id, severity, confidence, threshold, default, or detector behaviour changed.
 
 ## v0.5.0 - 2026-08-16
 

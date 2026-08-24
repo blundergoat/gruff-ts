@@ -13,6 +13,9 @@ import type { AnalysisOptions } from "./types.ts";
 
 const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "missing-invalid"] as const;
 const EXPECTED_RELEASE_RULE_COUNT = 120;
+// Every medium- and low-confidence rule carries reviewed false-positive guidance; the high-confidence
+// remainder omits the field. Naming both counts keeps the two guards below arithmetically linked.
+const EXPECTED_GUIDED_RULE_COUNT = 69;
 
 // Asserts the descriptor's optionKeys list is sorted and unique. Factored out of the descriptor
 // catalogue test body to preserve a stable sort invariant without an inline `if` branch.
@@ -418,6 +421,46 @@ test("documentation catalogue covers comment rule pack", () => {
 test("release catalogue contains exactly 120 rule descriptors", () => {
   const currentRuleCount = ruleDescriptors().length;
   assert.equal(currentRuleCount, EXPECTED_RELEASE_RULE_COUNT);
+});
+
+// A rule a user is told to trust less than the others owes them the shapes it gets wrong. This is
+// the metadata floor: every medium- and low-confidence rule carries at least one reviewed shape,
+// and each entry names both the pattern and what to do about it.
+test("every medium and low confidence rule carries reviewed false-positive guidance", () => {
+  const unguided = ruleDescriptors()
+    .filter((descriptor) => descriptor.confidence !== "high")
+    .filter((descriptor) => (descriptor.falsePositiveShapes ?? []).length === 0)
+    .map((descriptor) => descriptor.ruleId);
+
+  assert.deepEqual(unguided, []);
+
+  // Reported as one list rather than asserted in a loop, so a failure names every offending rule
+  // at once instead of stopping at the first.
+  const blankEntries = ruleDescriptors()
+    .flatMap((descriptor) => (descriptor.falsePositiveShapes ?? []).map((entry) => ({ descriptor, entry })))
+    .filter(({ entry }) => entry.shape.trim().length === 0 || entry.mitigation.trim().length === 0)
+    .map(({ descriptor }) => descriptor.ruleId);
+
+  assert.deepEqual(blankEntries, []);
+});
+
+// Omission is the contract, not an accident. A high-confidence rule leaves the field off entirely
+// so an absent field reads as "no shape reviewed" rather than "reviewed and found none" - an empty
+// array would publish the second claim, which no one has made.
+test("high confidence rules omit falsePositiveShapes rather than publishing an empty array", () => {
+  const highConfidence = ruleDescriptors().filter((descriptor) => descriptor.confidence === "high");
+
+  // The 51 high-confidence rules are the complement of the 69 medium/low rules that carry guidance.
+  assert.equal(highConfidence.length, EXPECTED_RELEASE_RULE_COUNT - EXPECTED_GUIDED_RULE_COUNT);
+
+  const publishingShapes = highConfidence
+    .filter((descriptor) => descriptor.falsePositiveShapes !== undefined)
+    .map((descriptor) => descriptor.ruleId);
+  assert.deepEqual(publishingShapes, []);
+
+  const exported = JSON.parse(JSON.stringify(ruleDescriptors())) as Array<Record<string, unknown>>;
+  const emptyArrays = exported.filter((rule) => Array.isArray(rule["falsePositiveShapes"]) && (rule["falsePositiveShapes"] as unknown[]).length === 0);
+  assert.deepEqual(emptyArrays, []);
 });
 
 test("rule descriptors cover emitted rules and fixture-backed coverage", () => {

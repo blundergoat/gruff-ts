@@ -77,6 +77,26 @@ test("list-rules <ruleId> renders JSON envelope with tool + rule + configKeys", 
   assert.equal(enabledKey?.type, "bool");
 });
 
+test("list-rules <ruleId> prints reviewed false-positive guidance in both formats", () => {
+  // M04: guidance reaches users only if the surfaces carry it. The JSON branch spreads the
+  // descriptor so it gains the field for free, but both text renderers hand-format each field and
+  // would drop it silently, which is what this guard exists to catch.
+  const text = execFileSync("./bin/gruff-ts", ["list-rules", "security.async-foreach"], { encoding: "utf8" });
+  assert.match(text, /Known false positives:/);
+  assert.match(text, /\n {4}-> /);
+
+  const payload = JSON.parse(execFileSync("./bin/gruff-ts", ["list-rules", "security.async-foreach", "--format=json"], { encoding: "utf8" }));
+  assert.equal(Array.isArray(payload.rule?.falsePositiveShapes), true);
+  assert.ok(payload.rule.falsePositiveShapes.length > 0);
+  const malformed = payload.rule.falsePositiveShapes
+    .filter((entry: { shape: unknown; mitigation: unknown }) => typeof entry.shape !== "string" || typeof entry.mitigation !== "string");
+  assert.deepEqual(malformed, []);
+
+  // A high-confidence rule omits the field, so its detail card shows no guidance heading at all.
+  const highConfidence = execFileSync("./bin/gruff-ts", ["list-rules", "security.eval-call"], { encoding: "utf8" });
+  assert.equal(highConfidence.includes("Known false positives:"), false);
+});
+
 test("list-rules unknown id exits 2 with the documented stderr message", () => {
   // Commander's `program.error({ exitCode: 2 })` is the canonical "usage error" code in this CLI;
   // hoisting it into a named constant keeps the assertion intent explicit.
