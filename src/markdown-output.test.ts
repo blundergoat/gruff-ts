@@ -7,7 +7,7 @@ import { renderReport } from "./cli.ts";
 import type { AnalysisReport } from "./cli.ts";
 
 const MARKDOWN_SAFETY_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v2",
+  schemaVersion: "gruff.analysis.v3",
   tool: { name: "gruff-ts", version: "0.5.0-test" },
   run: { projectRoot: "/tmp/markdown-project", format: "markdown", failOn: "none", generatedAt: "2026-07-12T00:00:00.000Z" },
   summary: { advisory: 1, warning: 2, error: 0, total: 3 },

@@ -477,9 +477,9 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
       await runWithConfigErrorHandling(async () => {
-        const baseOptions = normalizeOptions(paths, { ...rawOptions, format: "text" }, { shouldAllowBaselineFlag: true });
-        const options = applyMinimumSeverityPrecedence(baseOptions, "summary", command);
         const summaryFormat = rawOptions.format === "json" ? "json" : "text";
+        const baseOptions = normalizeOptions(paths, { ...rawOptions, format: summaryFormat }, { shouldAllowBaselineFlag: true });
+        const options = applyMinimumSeverityPrecedence(baseOptions, "summary", command);
         const top = typeof rawOptions.top === "number" ? rawOptions.top : 10;
         await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
         const startedAt = performance.now();
@@ -487,7 +487,7 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
         const elapsedMs = performance.now() - startedAt;
         const pathLabel = summaryPathLabel(options.paths, report.run.projectRoot);
         const rendered = summaryFormat === "json"
-          ? renderSummaryJson(report, elapsedMs, pathLabel, top)
+          ? renderSummaryJson(report)
           : renderSummary(report, elapsedMs, pathLabel, top);
         writeCommandOutput(program, rendered);
         process.exitCode = exitFor(report, options.failOn);

@@ -25,7 +25,7 @@ const EXPECTED_CLUSTER_COMPOSITE_SCORE = (FULL_SCORE - CLUSTERED_COMPLEXITY_PENA
 const SEPARATE_COMPLEXITY_SCORE = FULL_SCORE - WARNING_PENALTY * 2;
 
 const COMPLEXITY_CLUSTER_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v2",
+  schemaVersion: "gruff.analysis.v3",
   tool: { name: "gruff-ts", version: "0.3.0-test" },
   run: { projectRoot: "/tmp/project", format: "text", failOn: "none", generatedAt: "2026-05-31T00:00:00.000Z" },
   summary: { advisory: 0, warning: CLUSTER_FINDINGS.length, error: 0, total: CLUSTER_FINDINGS.length },
@@ -86,14 +86,14 @@ function parseConfig(input: unknown): ParsedConfig {
   );
 });
 
-test("M06 text reports correlated complexity cluster contract without changing JSON score shape", () => {
+test("M06 text reports correlated complexity while v3 preserves its score values", () => {
   const text = renderReport(COMPLEXITY_CLUSTER_REPORT, "text");
   assert.match(text, /Correlated complexity clusters:/);
   assert.match(text, /bad\.ts#tangled: \d linked findings/);
 
   const json = JSON.parse(renderReport(COMPLEXITY_CLUSTER_REPORT, "json"));
-  assert.deepEqual(Object.keys(json.score).sort(), ["composite", "grade", "pillars", "topOffenders"]);
-  assert.equal(json.score.composite, EXPECTED_CLUSTER_FILE_SCORE);
+  assert.deepEqual(Object.keys(json.score).sort(), ["composite", "pillars", "topOffenders"]);
+  assert.deepEqual(json.score.composite, { grade: COMPLEXITY_CLUSTER_REPORT.score.grade, score: EXPECTED_CLUSTER_FILE_SCORE });
 });
 
 // P5 (DESIGN-PRINCIPLES): a function that is both long (size.function-length) and complex

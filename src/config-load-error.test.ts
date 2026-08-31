@@ -57,7 +57,7 @@ test("rule config rejects unknown ids, alias booleans, and malformed options lou
   assert.throws(() => analyseProject(files, { config: { rules: { "security.eval-call": { options: { anything: 1 } } } } }), /accepts no options/);
   // Valid overrides still round-trip: boolean enabled plus a declared numeric option.
   const valid = analyseProject(files, { config: { rules: { "naming.generic-parameter": { enabled: true, options: { minCyclomatic: 3 } } } } });
-  assert.equal(valid.schemaVersion, "gruff.analysis.v2");
+  assert.equal(valid.schemaVersion, "gruff.analysis.v3");
 });
 
 test("an invalid config rule value exits 2 with a concise error and no stack trace", () => {

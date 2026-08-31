@@ -240,14 +240,25 @@ export interface ScanSurfaceNote {
 }
 
 /**
- * Defines the stable `gruff.analysis.v2` report contract returned to users and integrations.
+ * Defines the native analysis state consumed by renderers and integrations.
  *
- * Empty findings or diagnostics mean none occurred; optional notes, suppression, and baseline fields appear only when that feature participated.
+ * JSON renderers project this state into `gruff.analysis.v3`; optional machine-run inputs retain
+ * the user's original scan request without changing finding, baseline, or hook identities.
+ * Invariant: native identities and score values remain stable; only machine renderers reshape this
+ * state into the `gruff.analysis.v3` family envelope.
  */
 export interface AnalysisReport {
-  schemaVersion: "gruff.analysis.v2";
+  schemaVersion: "gruff.analysis.v3";
   tool: { name: "gruff-ts"; version: string };
-  run: { projectRoot: string; format: OutputFormat; failOn: FailThreshold; generatedAt: string };
+  run: {
+    projectRoot: string;
+    format: OutputFormat;
+    failOn: FailThreshold;
+    generatedAt: string;
+    inputs?: string[];
+    config?: string;
+    includeIgnored?: true;
+  };
   summary: { advisory: number; warning: number; error: number; total: number };
   paths: { analysedFiles: number; ignoredPaths: string[]; skipped: SkippedPath[]; missingPaths: string[] };
   diagnostics: RunDiagnostic[];

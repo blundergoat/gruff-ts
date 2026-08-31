@@ -184,5 +184,5 @@ test("minimumSeverity accepts the four canonical values per command", () => {
     "bad.ts": "export const value = 1;\n",
     ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity:\n  analyse: error\n  summary: warning\n  report: none\n",
   }, { shouldSkipConfig: false });
-  assert.equal(report.schemaVersion, "gruff.analysis.v2");
+  assert.equal(report.schemaVersion, "gruff.analysis.v3");
 });

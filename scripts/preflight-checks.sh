@@ -251,16 +251,18 @@ import { readFileSync } from "node:fs";
 const report = JSON.parse(readFileSync(process.argv[1], "utf8"));
 const summary = report.summary ?? {};
 const score = report.score ?? {};
+const findings = summary.findings ?? {};
+const composite = score.composite ?? {};
 const paths = report.paths ?? {};
-const total = Number(summary.total ?? 0);
-const advisory = Number(summary.advisory ?? 0);
-const warning = Number(summary.warning ?? 0);
-const error = Number(summary.error ?? 0);
-const grade = String(score.grade ?? "n/a");
-const composite = Number(score.composite ?? 0).toFixed(1);
+const total = Number(findings.total ?? 0);
+const advisory = Number(findings.advisory ?? 0);
+const warning = Number(findings.warning ?? 0);
+const error = Number(findings.error ?? 0);
+const grade = String(composite.grade ?? "n/a");
+const scoreValue = Number(composite.score ?? 0).toFixed(1);
 const analysedFiles = Number(paths.analysedFiles ?? 0);
 
-console.log(`${total} findings (advisory=${advisory}, warning=${warning}, error=${error}), ${grade} ${composite}/100, ${analysedFiles} files`);
+console.log(`${total} findings (advisory=${advisory}, warning=${warning}, error=${error}), ${grade} ${scoreValue}/100, ${analysedFiles} files`);
 ' "$report_path"
 }
 

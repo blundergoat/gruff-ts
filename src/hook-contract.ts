@@ -1,4 +1,4 @@
-// gruff.hook.v1 adapter: owns the agent-hook JSON shape without changing gruff.analysis.v2.
+// `gruff.hook.v1` adapter: owns the agent-hook JSON shape independently of the analysis v3 envelope.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

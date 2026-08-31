@@ -205,22 +205,33 @@ test("summary CLI prints compact scan digest without per-finding spam", () => {
   assert.equal(output.includes("Findings:\n- ["), false);
 });
 
-test("summary CLI supports json format and top limit", () => {
+test("summary JSON is the exact v3 analysis projection", () => {
   const output = execFileSync(
     "./bin/gruff-ts",
     ["summary", "fixtures/sample.ts", "--format=json", "--top=1", "--fail-on=none", "--no-config", "--no-baseline"],
     { encoding: "utf8" },
   );
   const payload = JSON.parse(output) as Record<string, unknown>;
-  assert.equal(payload.schemaVersion, "gruff.summary.v2");
-  assert.equal((payload.topRules as unknown[] | undefined)?.length, 1);
-  assert.ok(((payload.topOffenders as unknown[] | undefined)?.length ?? 0) <= 1);
-  const pillars = payload.pillars as unknown[] | undefined;
+  const analysis = JSON.parse(execFileSync(
+    "./bin/gruff-ts",
+    ["analyse", "fixtures/sample.ts", "--format=json", "--fail-on=none", "--no-config", "--no-baseline"],
+    { encoding: "utf8" },
+  )) as Record<string, unknown>;
+  delete analysis.findings;
+  analysis.schemaVersion = "gruff.summary.v3";
+
+  assert.equal(payload.schemaVersion, "gruff.summary.v3");
+  assert.equal("findings" in payload, false);
+  assert.equal("topRules" in payload, false);
+  assert.equal("topOffenders" in payload, false);
+  assert.deepEqual(payload, analysis);
+  const score = payload.score as Record<string, unknown>;
+  const pillars = score.pillars as unknown[] | undefined;
   assert.ok(Array.isArray(pillars) && pillars.length > 0);
   pillars.forEach(assertPillarRowShape);
 });
 
-/** Validates one pillar row from the `gruff.summary.v2` JSON output. Accepts the raw parsed
+/** Validates one pillar row from the `gruff.summary.v3` JSON output. Accepts the raw parsed
  * value so the test does not need a typed interface mirroring the wire schema - the schema
  * contract lives in `renderSummaryJson`, this helper just confirms the row carries the
  * documented keys with the documented value types. */
@@ -228,14 +239,9 @@ function assertPillarRowShape(rawRow: unknown): void {
   assert.ok(rawRow && typeof rawRow === "object");
   const row = rawRow as Record<string, unknown>;
   assert.equal(typeof row.pillar, "string");
-  assert.match(String(row.grade), /^[A-F]$/);
   assert.equal(typeof row.score, "number");
   assert.equal(typeof row.penalty, "number");
-  assert.equal(row.applicable, true);
   assert.equal(typeof row.findings, "number");
-  assert.equal(typeof row.advisory, "number");
-  assert.equal(typeof row.warning, "number");
-  assert.equal(typeof row.error, "number");
 }
 
 test("summary CLI reports generated and applied baseline metadata", () => {
@@ -275,27 +281,30 @@ test("json report uses schema version", () => {
     shouldSkipBaseline: true,
   });
   const rendered = renderReport(report, "json");
-  assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v2"/);
+  assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v3"/);
 });
 
-test("json report emits canonical file alias without mutating findings", () => {
+test("json report emits only canonical v3 paths without mutating findings", () => {
   const report = analyseFixture(`function run(value: string): void {
   eval(value);
 }
 `);
   const before = JSON.stringify(report);
   const payload = JSON.parse(renderReport(report, "json")) as {
-    findings: Array<{ file: string; filePath: string; stableIdentity: string }>;
-    score: { topOffenders: Array<{ file: string; filePath: string }> };
+    findings: Array<{ file: string; stableIdentity: string; metadata: { locationPrecision: string } }>;
+    score: { topOffenders: Array<{ file: string }> };
   };
   const [finding] = payload.findings;
   const [offender] = payload.score.topOffenders;
   const [nativeFinding] = report.findings;
   assert.ok(finding);
-  assert.equal(finding.file, finding.filePath);
+  assert.equal(finding.file, nativeFinding?.filePath);
+  assert.equal("filePath" in finding, false);
   assert.match(finding.stableIdentity, /^[0-9a-f]{16}$/);
+  assert.equal(finding.metadata.locationPrecision, "line-only");
   assert.ok(offender);
-  assert.equal(offender.file, offender.filePath);
+  assert.equal(offender.file, report.score.topOffenders[0]?.filePath);
+  assert.equal("filePath" in offender, false);
   assert.ok(nativeFinding);
   assert.equal(JSON.stringify(report), before);
   assert.equal("file" in nativeFinding, false);
@@ -305,7 +314,7 @@ test("json report emits canonical file alias without mutating findings", () => {
 // assertion within the setup-bloat threshold; the fixture data itself is non-trivial because it
 // encodes the cross-pillar coverage SARIF must round-trip.
 const SARIF_FIXTURE_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v2",
+  schemaVersion: "gruff.analysis.v3",
   tool: { name: "gruff-ts", version: "0.1.0-test" },
   run: { projectRoot: "/tmp/project", format: "sarif", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 1, warning: 1, error: 1, total: 3 },
@@ -395,12 +404,12 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(results[2].level, "note");
   assert.equal(results[2].locations[0].physicalLocation.artifactLocation.uri, "src/docs.ts");
   assert.equal(results[2].properties.severity, "advisory");
-  assert.equal(payload.runs[0].properties.gruffSchemaVersion, "gruff.analysis.v2");
+  assert.equal(payload.runs[0].properties.gruffSchemaVersion, "gruff.analysis.v3");
   assert.equal(payload.runs[0].properties.generatedAt, "2026-05-15T00:00:00.000Z");
   const expectedScore = 91;
   assert.equal(payload.runs[0].properties.score, expectedScore);
   assert.equal(payload.runs[0].properties.grade, "A");
-  assert.equal(JSON.parse(renderReport(report, "json")).schemaVersion, "gruff.analysis.v2");
+  assert.equal(JSON.parse(renderReport(report, "json")).schemaVersion, "gruff.analysis.v3");
   assert.equal(JSON.stringify(report), beforeSarif);
 });
 
@@ -490,7 +499,7 @@ test("sarif fail-on preserves error exit behavior", () => {
 // Fixture for the HTML render test. Hoisted out of the test body to keep setup-bloat under
 // threshold; the fixture intentionally embeds HTML metacharacters that the renderer must escape.
 const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v2",
+  schemaVersion: "gruff.analysis.v3",
   tool: { name: "gruff-ts", version: "0.1.0-test<script>" },
   run: { projectRoot: "/tmp/project", format: "html", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 0, warning: 1, error: 1, total: 2 },
@@ -702,7 +711,7 @@ test("html report rendering does not mutate json report output", () => {
   renderReport(report, "html");
 
   assert.equal(renderReport(report, "json"), before);
-  assert.match(before, /"schemaVersion": "gruff\.analysis\.v2"/);
+  assert.match(before, /"schemaVersion": "gruff\.analysis\.v3"/);
 });
 
 test("report command ignores default baselines", () => {
@@ -760,7 +769,7 @@ test("valid constrained values and bare directory arguments keep working", () =>
       { cwd: projectRoot, encoding: "utf8" },
     );
     assert.equal(valid.status, 0);
-    assert.equal(JSON.parse(valid.stdout).schemaVersion, "gruff.analysis.v2");
+    assert.equal(JSON.parse(valid.stdout).schemaVersion, "gruff.analysis.v3");
 
     // Family CLI contract: a bare directory operand means the whole subtree (dir equals dir/**).
     mkdirSync(join(projectRoot, "sub"), { recursive: true });
@@ -771,8 +780,8 @@ test("valid constrained values and bare directory arguments keep working", () =>
       { cwd: projectRoot, encoding: "utf8" },
     );
     assert.equal(bareDirRun.status, 0);
-    const bareDirReport = JSON.parse(bareDirRun.stdout) as AnalysisReport;
-    assert.equal(bareDirReport.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.filePath === "sub/nested.ts"), true);
+    const bareDirReport = JSON.parse(bareDirRun.stdout) as { findings: Array<{ ruleId: string; file: string }> };
+    assert.equal(bareDirReport.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.file === "sub/nested.ts"), true);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
   }

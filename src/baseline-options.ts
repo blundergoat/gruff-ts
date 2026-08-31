@@ -8,8 +8,9 @@ import type { AnalysisOptions, AnalysisReport, Finding } from "./types.ts";
 
 /*
  * Result of applying a baseline (suppression) or generating a new one. The optional `baseline`
- * matches the `gruff.analysis.v2` schema's baseline metadata - present only when a baseline file
- * was actually used or generated, so the report stays stable across baseline-disabled runs.
+ * matches native baseline metadata and is present only when a baseline file was used or generated.
+ * Invariant: `baseline` is absent unless a file was used or generated; the v3 adapter renames only
+ * `suppressed` to `suppressedFindings` at the JSON boundary.
  */
 export interface BaselineApplication {
   findings: Finding[];

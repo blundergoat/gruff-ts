@@ -1,6 +1,7 @@
 // Analyser pipeline: walks discovered sources, runs every rule pass (complexity, dead-code, design,
 // documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality),
-// aggregates findings into the `gruff.analysis.v2` schema, and exposes `analyse` to the CLI shell.
+// aggregates findings into native report state for the `gruff.analysis.v3` machine adapter, and
+// exposes `analyse` to the CLI shell.
 import { Buffer, isUtf8 } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { cwd } from "node:process";
@@ -44,7 +45,7 @@ export interface HookAnalysisReports {
 }
 
 /**
- * Analyse the configured paths and return the stable gruff.analysis.v2 report contract.
+ * Analyse the configured paths and return the stable gruff.analysis.v3 report state.
  *
  * @param options Normalised analysis options from the CLI or direct callers.
  * @returns Versioned report with fingerprinted findings, diagnostics, paths, and score data.
@@ -106,21 +107,24 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
 }
 
 /*
- * Converts a completed run into a stable report contract or changed-region projection. The field
- * shape assembled here is the stable gruff.analysis.v2 schema contract. `suppressions` carries one
+ * Converts a completed run into native report state or a changed-region projection. The JSON
+ * adapter owns the stable gruff.analysis.v3 wire shape. `suppressions` carries one
  * audit row per configured sensitive exclusion and is counted across the whole scan, so a
  * changed-region projection never understates what a suppression hid.
  */
 function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResult: BaselineApplication, suppressedCount?: number): AnalysisReport {
   const findings = baselineResult.findings;
   return {
-    schemaVersion: "gruff.analysis.v2",
+    schemaVersion: "gruff.analysis.v3",
     tool: { name: "gruff-ts", version: VERSION },
     run: {
       projectRoot: run.projectRoot,
       format: options.format,
       failOn: options.failOn,
       generatedAt: new Date().toISOString(),
+      inputs: options.paths.length === 0 ? ["."] : [...options.paths],
+      ...(options.config === undefined ? {} : { config: options.config }),
+      ...(options.shouldIncludeIgnored ? { includeIgnored: true as const } : {}),
     },
     summary: summarize(findings),
     paths: {

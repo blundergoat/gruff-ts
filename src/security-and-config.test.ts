@@ -163,7 +163,8 @@ test("security line-rule severity honours config overrides", () => {
 
 /*
  * Regression fixture covers the config contract, temp-project filesystem writes, and a fixed CLI
- * process. It proves configured `security.new-function` severity controls `--fail-on=error`.
+ * process. It proves configured `security.new-function` severity controls `--fail-on=error` through
+ * the v3 JSON envelope.
  */
 test("CLI severity override keeps new Function below fail-on error", () => {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-new-function-config-"));
@@ -193,11 +194,15 @@ module.exports = { loadHelper };
       [join(REPO_ROOT, "bin/gruff-ts"), "analyse", ".", "--format=json", "--fail-on=error"],
       { cwd: dir, encoding: "utf8" },
     );
-    const report = JSON.parse(output) as AnalysisReport;
+    const report = JSON.parse(output) as {
+      run: AnalysisReport["run"];
+      summary: { findings: AnalysisReport["summary"] };
+      findings: AnalysisReport["findings"];
+    };
     const dynamicExecutionFinding = report.findings.find((finding) => finding.ruleId === "security.new-function");
 
     assert.equal(report.run.failOn, "error");
-    assert.equal(report.summary.error, 0);
+    assert.equal(report.summary.findings.error, 0);
     assert.equal(dynamicExecutionFinding?.severity, "warning");
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -89,8 +89,8 @@ test("size file-length counts substantive lines instead of documentation padding
 });
 
 test("a normally analysable scan carries no notes field", () => {
-  // The additive field is present only when at least one note exists, so existing gruff.analysis.v2
-  // consumers and golden outputs see byte-identical reports for ordinary scans.
+  // The native field is absent when there are no notes, so the v3 adapter also omits
+  // `extensions.ts.topLevel.notes` for an ordinary scan.
   const report = analyseFixture("export const value = 1;\n");
   assert.equal(report.notes, undefined);
 });

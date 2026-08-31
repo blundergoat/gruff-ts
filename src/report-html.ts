@@ -1,7 +1,7 @@
-// HTML renderer for `gruff.analysis.v2` plus the dashboard chrome (home shell + error page) that
-// serves the same report inside a control panel. Extracted from `report-renderers.ts` so the
-// renderer module stays under the `size.file-length` threshold; the HTML output is part of the
-// stable archived-report contract so the shape of every helper here is invariant.
+// HTML renderer for native `AnalysisReport` state plus the dashboard chrome (home shell + error
+// page) that serves the same report inside a control panel. JSON uses the separate v3 machine adapter.
+// Extracted from `report-renderers.ts` so the renderer module stays under the `size.file-length`
+// threshold; the HTML output is part of the stable archived-report contract.
 import type { AnalysisReport, Finding, Severity } from "./types.ts";
 import { buildPillarRows, grade } from "./pillar-summary.ts";
 import { severityGradeBreakdown } from "./scoring.ts";

@@ -8,11 +8,13 @@ import type { AnalysisReport, FailThreshold, Finding, Pillar, Severity } from ".
 // last finding was fixed - lowering the headline score for finishing a pillar.
 const SCOREABLE_PILLARS: readonly Pillar[] = [...new Set(ruleDescriptors().map((descriptor) => descriptor.pillar))];
 
-// Builds the per-pillar and per-file score breakdown that ships in `gruff.analysis.v2`. The composite
+// Builds the native per-pillar and per-file score breakdown. The v3 JSON adapter preserves these
+// values while reshaping the composite and offender paths for the family envelope. The composite
 // is the mean over every rule-backed pillar, with a clean pillar counting as 100, so removing a
-// finding can never decrease it. The `pillars` array still lists only finding-bearing pillars -
-// its shape is part of the `gruff.analysis.v2` schema contract. `topOffenders` is the full file
-// list sorted worst-first; renderers cap it themselves (HTML/hotspot 10 rows, summary `--top`).
+// finding can never decrease it. The `pillars` array lists only finding-bearing pillars.
+// `topOffenders` is the full file list sorted worst-first; renderers cap it themselves.
+// Invariant: clean pillars count as 100, removing a finding cannot lower the composite, and values
+// remain unchanged when the v3 adapter reshapes them.
 function scoreReport(findings: Finding[]): AnalysisReport["score"] {
   const byPillar = new Map<Pillar, Finding[]>();
   const byFile = new Map<string, Finding[]>();
@@ -38,8 +40,9 @@ function scoreReport(findings: Finding[]): AnalysisReport["score"] {
   return { composite, grade: grade(composite), pillars, topOffenders };
 }
 
-// Severity tallies emitted in the report summary. The four-key shape (advisory/warning/error/total)
-// is part of the `gruff.analysis.v2` schema and consumers rely on `total` matching the array length.
+// Severity tallies emitted in native analysis state. The four-key shape
+// (advisory/warning/error/total) is nested under `summary.findings` by the v3 machine adapter, and
+// `total` must match the findings array length.
 function summarize(findings: Finding[]) {
   return {
     advisory: findings.filter((finding) => finding.severity === "advisory").length,
@@ -123,8 +126,8 @@ function findingPenalty(penalties: ReadonlyMap<Finding, number>, finding: Findin
  * fact that an F can be driven entirely by advisories (goat-flow scan: F at 12.9 with 0 errors / 276
  * warnings / 1367 advisories). Mirrors the existing pillar formula `100 - count * severityPenalty`
  * so the math stays consistent with how a single-rule pillar would score. The report-shape
- * invariant matters: severity breakdowns and correlated complexity clustering must not add
- * `gruff.analysis.v2` JSON fields, even when score values change.
+ * invariant matters: severity breakdowns and correlated complexity clustering must not add native
+ * score fields or change the `gruff.analysis.v3` machine envelope.
  */
 function severityGradeBreakdown(findings: Finding[]): {
   error: { grade: string; score: number; count: number };

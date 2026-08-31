@@ -14,23 +14,44 @@ Use `text` for local terminal scans:
 
 ## JSON
 
-Use `json` for automation. JSON reports use `gruff.analysis.v2`.
+Use `json` for automation. Analysis reports use `gruff.analysis.v3`:
 
 ```sh
 ./bin/gruff-ts analyse src --format=json --fail-on=none > gruff-ts.json
 ```
 
+Version 3 is a coordinated family contract and a hard break from the TypeScript
+v2 envelope. Machine paths are project-relative POSIX paths, `run.projectRoot`
+is `.`, and volatile generation timestamps are omitted. Migrate these fields
+before accepting v3:
+
+| v2 | v3 |
+|---|---|
+| `findings[].filePath` and `findings[].file` | `findings[].file` |
+| `score.composite` plus `score.grade` | `score.composite.score` plus `score.composite.grade` |
+| `score.topOffenders[].filePath` | `score.topOffenders[].file` |
+| `paths.skipped` | `paths.details` |
+| top-level `notes` | `extensions.ts.topLevel.notes` |
+| `baseline.suppressed` | `baseline.suppressedFindings` |
+| top-level `suppressedCount` | `diff.filteredFindings` and `summary.suppressedFindings` |
+| `generatedAt` | omitted |
+
+Optional `column`, `endLine`, and `symbol` fields are omitted when unavailable;
+they are never `null`. Finding metadata includes `locationPrecision` as
+`scanner-pinpointed` or `line-only`. Fingerprints and `stableIdentity` values do
+not change.
+
 `suppressions` carries one row per configured `sensitiveExclusions:` entry, in
 declaration order, shaped
-`{index, rule, paths, symbol, reason, suppressed}`. The array is always present
+`{index, rule, paths, symbol?, reason, suppressed}`. The array is always present
 and is empty when nothing is configured. Text output prints the total as
 `Suppressed findings: N via ...` when it is non-zero. See
 [Configuration](./configuration.md).
 
-`paths.skipped` (added in 0.3.0) lists every excluded path with its ignore
-`source` (`config` / `gitignore` / `default`) and the matching `pattern`;
-`paths.ignoredPaths` remains as the back-compatible `string[]` of the same paths.
-The field is additive, so existing `gruff.analysis.v2` consumers are unaffected.
+`paths.details` lists every excluded path with a canonical `reason` and its
+`source` (`config`, `gitignore`, or `default`). Only `config` entries include the
+matching `pattern`. `paths.ignoredPaths` is the exact ordered path projection of
+those detail rows.
 
 Score math clusters correlated `complexity.cognitive`,
 `complexity.cyclomatic`, and `size.function-length` findings once per function
@@ -65,16 +86,22 @@ Use `sarif` for GitHub code scanning or other SARIF consumers:
 ./bin/gruff-ts analyse src --format=sarif --fail-on=none > gruff-ts.sarif
 ```
 
+The SARIF document remains version 2.1.0. Its
+`runs[0].properties.gruffSchemaVersion` value mirrors `gruff.analysis.v3`.
+
 ## Summary
 
-`summary` has its own compact text/JSON contract:
+JSON summary is the analysis v3 envelope with only the top-level `findings`
+array removed and the schema changed to `gruff.summary.v3`:
 
 ```sh
-./bin/gruff-ts summary src --format=json --top=5 --fail-on=none
+./bin/gruff-ts summary src --format=json --fail-on=none
 ```
 
-TypeScript keeps the existing `summary` analysis flags such as `--diff`,
-`--baseline`, and `--generate-baseline` as extensions.
+The same inputs and flags therefore produce the same `run`, counts, scores,
+diagnostics, paths, suppressions, baseline, diff, and extensions fields.
+`--top` affects text summary only. Existing analysis flags such as `--diff`,
+`--baseline`, and `--generate-baseline` remain available.
 
 ## Exit Codes
 
