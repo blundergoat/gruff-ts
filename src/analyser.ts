@@ -1,11 +1,11 @@
-// Analyser pipeline: walks discovered sources, runs every rule pass (complexity, dead-code, design,
-// documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality),
-// aggregates findings into native report state for the `gruff.analysis.v3` machine adapter, and
-// exposes `analyse` to the CLI shell.
+// Analyser pipeline behind `gruff-ts analyse`, and the module the CLI shell calls into.
+//
+// It walks the discovered sources, runs every rule pass across the eleven pillars, and aggregates the
+// results into native report state for the `gruff.analysis.v3` machine adapter to serialise.
 import { Buffer, isUtf8 } from "node:buffer";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { cwd } from "node:process";
-import { basename, extname } from "node:path";
+import { basename, dirname, extname, resolve } from "node:path";
 import { recordHistory, sortedUniqueFindings } from "./baseline.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { changedRegionScope, filterChangedFindings, filterScopedDiagnostics } from "./changed-regions.ts";
@@ -79,9 +79,78 @@ export function analyseHookReports(currentOptions: AnalysisOptions, scopedOption
   return { currentReport, scopedReport };
 }
 
+/**
+ * Pick the directory that every reported path is written relative to.
+ *
+ * Run `gruff-ts analyse .` inside a project and the answer is that directory. Run `gruff-ts analyse /srv/checkout` from a
+ * home directory, as CI and scripted scans do, and the answer is /srv/checkout, so findings still read `src/api/handler.ts`.
+ *
+ * @param paths Scan targets as typed on the command line; empty means no target was named, so the launch directory is the project.
+ * @returns Directory to treat as the project root; never empty.
+ * @throws When targets sit under different filesystem roots, such as `analyse /srv/api /opt/tools`, leaving no single project.
+ */
+function projectRootFromTargets(paths: string[]): string {
+  const launchDirectory = cwd();
+
+  // No target was named, so the directory the command ran from is the project.
+  if (paths.length === 0) {
+    return launchDirectory;
+  }
+
+  let common: string | null = null;
+  // Each target narrows the answer: the root must be a directory that contains all of them.
+  for (const path of paths) {
+    const absolute = resolve(launchDirectory, path);
+    let directory = absolute;
+    try {
+      // Naming one file means the project is the folder holding it, not the file itself.
+      if (!statSync(absolute).isDirectory()) {
+        directory = dirname(absolute);
+      }
+    } catch {
+      // The caller named a path that does not exist, such as a typo; discovery reports it as missing instead.
+      continue;
+    }
+
+    // The first target sets the starting answer; later ones can only widen it.
+    if (common === null) {
+      common = directory;
+      continue;
+    }
+    while (!isSameOrDescendant(directory, common)) {
+      const parent = dirname(common);
+      // Walking up hit the filesystem root, so these targets live in unrelated projects.
+      if (parent === common) {
+        throw new Error("scan targets do not share a filesystem root");
+      }
+      common = parent;
+    }
+  }
+
+  // Targets sit inside the launch directory, so it stays the root. Moving the root down to a target's own folder would
+  // re-anchor config discovery, ignore patterns, and baseline paths.
+  if (common === null || isSameOrDescendant(common, launchDirectory)) {
+    return launchDirectory;
+  }
+  return common;
+}
+
+/**
+ * Report whether one directory is another or sits inside it.
+ *
+ * Comparison is by whole path segment, so a sibling folder such as /work/apidocs is never mistaken for something inside /work/api.
+ *
+ * @param candidate Directory being tested.
+ * @param ancestor Directory that may contain it.
+ * @returns True when candidate is the ancestor or sits inside it.
+ */
+function isSameOrDescendant(candidate: string, ancestor: string): boolean {
+  return candidate === ancestor || candidate.startsWith(ancestor.replace(/\/+$/u, "") + "/");
+}
+
 // Loads config and discovers inputs once so direct analysis and hook reuse share the same setup.
 function prepareAnalysis(options: AnalysisOptions): AnalysisPreparation {
-  const projectRoot = cwd();
+  const projectRoot = projectRootFromTargets(options.paths);
   const config = loadConfig(projectRoot, options);
   const diagnostics: RunDiagnostic[] = [];
   const discovery = discoverSources(projectRoot, options, config);
@@ -107,10 +176,11 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
 }
 
 /*
- * Converts a completed run into native report state or a changed-region projection. The JSON
- * adapter owns the stable gruff.analysis.v3 wire shape. `suppressions` carries one
- * audit row per configured sensitive exclusion and is counted across the whole scan, so a
- * changed-region projection never understates what a suppression hid.
+ * Converts a completed run into native report state, or into a changed-region projection when the caller passed `--diff`.
+ *
+ * The JSON adapter owns the stable `gruff.analysis.v3` wire shape.
+ * `suppressions` carries one audit row per configured sensitive exclusion and is counted across the whole scan, so a
+ * changed-region view never understates what a suppression hid.
  */
 function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResult: BaselineApplication, suppressedCount?: number): AnalysisReport {
   const findings = baselineResult.findings;
@@ -288,12 +358,14 @@ function hasImportSyntaxCandidate(source: string): boolean {
   return source.includes("import") || source.includes("from");
 }
 
-// Per-file rule pipeline. Text rules run on every file (including config/yaml); TypeScript rules
-// run only on scripts within the deep-scan budget. Fixed order is part of the stable fingerprint
-// contract. Generated/copied files keep every security and sensitive-data finding but drop
-// documentation and naming findings - generated code is not maintainer-authored source, so pushing
-// doc/naming work at a human reviewer is unactionable noise.
-// Contract invariant: doc/naming skips must not suppress safety pillars or change rule order.
+// Per-file rule pipeline, run once for every discovered file.
+//
+// - Text rules run on every file, including config and YAML; TypeScript rules run only on scripts inside the deep-scan budget.
+// - The fixed rule order is part of the stable fingerprint contract, so baselines keep matching across runs.
+// - Generated and copied files keep every security and sensitive-data finding, but drop documentation and naming ones:
+//   nobody hand-wrote that code, so asking a reviewer to fix its docstrings is noise.
+//
+// Contract invariant: skipping docs and naming must never suppress a safety pillar or reorder rules.
 function analyseSource(file: SourceFile, source: string, config: Config, isWithinDeepScanBudget: boolean, parsed?: ParsedScript): Finding[] {
   const findings: Finding[] = [];
   // Size and documentation rules share one comment scan so code-only line counts do not add a second pass.
@@ -319,10 +391,13 @@ function isGeneratedSource(source: string): boolean {
 }
 
 /*
- * Cross-file rule pipeline. Contract invariant: scoped runs keep `paths.analysedFiles` scoped while
- * circular-import may build root graph context so cycles through requested files stay visible. It
- * swallows hidden root-context read failures in `graphProjectSources` so unrelated unreadable files
- * do not break a narrow scan.
+ * Cross-file rule pipeline, run once after every file has been analysed on its own.
+ *
+ * Contract invariant: a scoped run keeps `paths.analysedFiles` scoped, while circular-import may still build root graph
+ * context so a cycle passing through the requested files stays visible.
+ *
+ * Read failures for unrelated root files are swallowed in `graphProjectSources`, so one unreadable file elsewhere in the
+ * project cannot break a narrow scan.
  */
 function analyseProjectIndex(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[], projectSources: ProjectSource[], config: Config): Finding[] {
   const shouldUseRootCircularContext = ruleEnabled(config, CIRCULAR_IMPORT_RULE_ID) && shouldBuildRootCircularContext(projectRoot, options, scopedFiles);
@@ -404,10 +479,11 @@ const SIZE_RULE_IDS = ruleIdsForPillar("size");
 const TEST_QUALITY_RULE_IDS = ruleIdsForPillar("test-quality");
 
 /*
- * Sensitive-data rules that infer a secret from shape rather than value, so generated
- * dependency metadata defeats them: every integrity digest looks high-entropy, and a package
- * named `gtoken` turns `gtoken: 8.0.0(supports-color@11.0.0)` into a credential assignment.
- * Suppressed for lockfiles only. Every value-shaped detector still runs there.
+ * Sensitive-data rules that infer a secret from shape rather than value, which generated dependency metadata defeats.
+ *
+ * Every integrity digest looks high-entropy, and a package named `gtoken` turns `gtoken: 8.0.0(supports-color@11.0.0)`
+ * into what reads as a credential assignment.
+ * These are suppressed for lockfiles only; every value-shaped detector still runs there.
  */
 const LOCKFILE_SUPPRESSED_SENSITIVE_RULE_IDS = new Set([
   "sensitive-data.high-entropy-string",
@@ -578,10 +654,8 @@ function analyseTextRules(file: SourceFile, source: string, comments: CommentRec
   if (isAnyRuleEnabled(config, SENSITIVE_DATA_RULE_IDS)) {
     const sensitiveFindings: Finding[] = [];
     analyseSensitiveData(file, source, config, sensitiveFindings);
-    // Generated dependency metadata defeats the two shape-based detectors: integrity digests
-    // look high-entropy, and a package whose name contains `token`/`key`/`secret` makes its
-    // version spec look like a credential assignment. The value-shaped detectors still run,
-    // because a credential in a `resolved` URL is the real leak vector for this file family.
+    // Generated dependency metadata defeats the two shape-based detectors, so they are dropped for lockfiles only.
+    // The value-shaped detectors still run, because a credential inside a `resolved` URL is the real leak risk here.
     const isLockfile = isGeneratedLockfile(file.displayPath);
     for (const sensitiveFinding of sensitiveFindings) {
       if (!isLockfile || !LOCKFILE_SUPPRESSED_SENSITIVE_RULE_IDS.has(sensitiveFinding.ruleId)) {
@@ -722,10 +796,11 @@ function runRuleGroupPass(config: Config, ruleIds: readonly string[], action: ()
   }
 }
 
-// One pass over the file's parsed callables. The naming and test-block fanouts are dispatched
-// separately so blocks.ts can stay independent of the naming-pusher and test-block-rule modules;
-// the per-rule emission order from `analyseBlockRules` is the stable fingerprint contract every
-// Finding depends on for deterministic baseline matching.
+// One pass over the file's parsed callables.
+//
+// Naming and test-block fanouts are dispatched separately so `blocks.ts` stays independent of the naming-pusher and
+// test-block-rule modules. The per-rule emission order from `analyseBlockRules` is the stable fingerprint contract every
+// finding depends on for deterministic baseline matching.
 function analyseBlocks(file: SourceFile, source: string, codeSource: string, blocks: FunctionBlock[], config: Config, findings: Finding[]): void {
   const shouldAnalyseBlockRules = isAnyRuleEnabled(config, BLOCK_RULE_IDS);
   const shouldAnalyseParameterNaming = isAnyRuleEnabled(config, PARAMETER_NAMING_RULE_IDS);

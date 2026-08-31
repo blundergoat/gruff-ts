@@ -45,7 +45,11 @@ test("one ignored input plus one analysed input notes only the ignored input", (
   assert.deepEqual(notes.map((note) => note.path), ["nested"]);
 });
 
-test("findings outside the run root use absolute paths", () => {
+// A target outside the launch directory anchors the project root to that target, so its findings stay
+// project-relative. Before M34 the launch directory stayed the root and this finding carried an
+// absolute path, which the gruff.analysis.v3 contract rejects: the ratified `absolute-posix-path`
+// negative control requires `file` to be project-relative, so the report could not serialise at all.
+test("findings outside the launch directory are project-relative to the scanned root", () => {
   const scanWorkingDirectory = mkdtempSync(join(tmpdir(), "gruff-run-root-"));
   const externalProjectDirectory = mkdtempSync(join(tmpdir(), "gruff-external-root-"));
   const originalWorkingDirectory = cwd();
@@ -56,8 +60,9 @@ test("findings outside the run root use absolute paths", () => {
     const report = analyseProjectInCurrentDirectory({ paths: [externalProjectDirectory] });
     const evalFinding = report.findings.find((entry) => entry.ruleId === "security.eval-call");
 
-    assert.equal(evalFinding?.filePath, externalSourcePath.replaceAll("\\", "/"));
+    assert.equal(evalFinding?.filePath, "external.ts");
     assert.equal(evalFinding?.filePath.startsWith("../"), false);
+    assert.equal(evalFinding?.filePath.startsWith("/"), false);
   } finally {
     chdir(originalWorkingDirectory);
     rmSync(scanWorkingDirectory, { recursive: true, force: true });
