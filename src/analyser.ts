@@ -83,7 +83,8 @@ export function analyseHookReports(currentOptions: AnalysisOptions, scopedOption
  * Pick the directory that every reported path is written relative to.
  *
  * Run `gruff-ts analyse .` inside a project and the answer is that directory. Run `gruff-ts analyse /srv/checkout` from a
- * home directory, as CI and scripted scans do, and the answer is /srv/checkout, so findings still read `src/api/handler.ts`.
+ * home directory, as CI and scripted scans do, and the answer is /srv/checkout, so findings still read as short project-relative
+ * paths rather than absolute ones.
  *
  * @param paths Scan targets as typed on the command line; empty means no target was named, so the launch directory is the project.
  * @returns Directory to treat as the project root; never empty.
@@ -396,8 +397,8 @@ function isGeneratedSource(source: string): boolean {
  * Contract invariant: a scoped run keeps `paths.analysedFiles` scoped, while circular-import may still build root graph
  * context so a cycle passing through the requested files stays visible.
  *
- * Read failures for unrelated root files are swallowed in `graphProjectSources`, so one unreadable file elsewhere in the
- * project cannot break a narrow scan.
+ * Errors: `graphProjectSources` swallows a read failure on an unrelated root file, so one unreadable file elsewhere in the
+ * project cannot fail a narrow scan. No other error is handled here.
  */
 function analyseProjectIndex(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[], projectSources: ProjectSource[], config: Config): Finding[] {
   const shouldUseRootCircularContext = ruleEnabled(config, CIRCULAR_IMPORT_RULE_ID) && shouldBuildRootCircularContext(projectRoot, options, scopedFiles);

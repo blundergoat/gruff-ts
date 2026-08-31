@@ -45,10 +45,12 @@ test("one ignored input plus one analysed input notes only the ignored input", (
   assert.deepEqual(notes.map((note) => note.path), ["nested"]);
 });
 
-// A target outside the launch directory anchors the project root to that target, so its findings stay
-// project-relative. Before M34 the launch directory stayed the root and this finding carried an
-// absolute path, which the gruff.analysis.v3 contract rejects: the ratified `absolute-posix-path`
-// negative control requires `file` to be project-relative, so the report could not serialise at all.
+// A target outside the launch directory anchors the project root to that target, so its findings stay project-relative.
+// Before M34 the launch directory stayed the root and this finding carried an absolute path, which the
+// `gruff.analysis.v3` contract rejects, so the report could not serialise at all.
+//
+// Side effects: creates two temporary directories, writes a source file into one, changes the process working directory
+// to the other for the duration of the scan, then restores the original directory and removes both trees.
 test("findings outside the launch directory are project-relative to the scanned root", () => {
   const scanWorkingDirectory = mkdtempSync(join(tmpdir(), "gruff-run-root-"));
   const externalProjectDirectory = mkdtempSync(join(tmpdir(), "gruff-external-root-"));
