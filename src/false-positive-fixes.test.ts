@@ -496,7 +496,7 @@ test("FP-#45 v3 analysis omits retired topRules while preserving score values", 
 `);
   const json = JSON.parse(renderReport(report, "json"));
   const scoreKeys = Object.keys(json.score).sort();
-  assert.deepEqual(scoreKeys, ["composite", "pillars", "topOffenders"]);
+  assert.deepEqual(scoreKeys, ["clusters", "composite", "evaluatedFiles", "pillars", "ruleAttribution", "scoredPillars", "topOffenders"]);
   assert.deepEqual(json.score.composite, { grade: report.score.grade, score: report.score.composite });
 });
 
@@ -546,7 +546,7 @@ test("FP-#40 v3 adapter preserves score values while changing only their contain
   const json = JSON.parse(renderReport(report, "json"));
   assert.equal(json.schemaVersion, "gruff.analysis.v3");
   const scoreKeys = Object.keys(json.score).sort();
-  assert.deepEqual(scoreKeys, ["composite", "pillars", "topOffenders"]);
+  assert.deepEqual(scoreKeys, ["clusters", "composite", "evaluatedFiles", "pillars", "ruleAttribution", "scoredPillars", "topOffenders"]);
   assert.deepEqual(json.score.composite, { grade: report.score.grade, score: report.score.composite });
 });
 

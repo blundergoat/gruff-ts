@@ -269,10 +269,20 @@ export interface AnalysisReport {
   findings: Finding[];
   suppressedCount?: number;
   score: {
-    composite: number;
-    grade: string;
-    pillars: Array<{ pillar: Pillar; score: number; penalty: number; findings: number }>;
-    topOffenders: Array<{ filePath: string; score: number; findings: number }>;
+    /** Mean of the applicable pillar scores; null when nothing applicable was evaluated. */
+    composite: number | null;
+    /** Letter grade derived from `composite`; null whenever `composite` is. */
+    grade: string | null;
+    /** Ratified scoring denominator: script files that survived discovery. */
+    evaluatedFiles: number;
+    /** Every pillar this run could reach, so the composite's denominator is visible. */
+    scoredPillars: Pillar[];
+    /** Correlated concepts that billed one shared weight, so a reader can see what the grade counted once. */
+    clusters: Array<{ file: string; symbol: string; ruleIds: string[]; findings: number; weight: number }>;
+    /** How much weight each native rule removed from the score; the native ruleId is the attribution key. */
+    ruleAttribution: Array<{ ruleId: string; findings: number; weight: number }>;
+    pillars: Array<{ pillar: Pillar; applicable: boolean; score: number | null; grade: string | null; penalty: number; findings: number }>;
+    topOffenders: Array<{ filePath: string; score: number | null; penalty: number; findings: number }>;
   };
   baseline?: { path: string; source: string; suppressed: number; generated: boolean };
 }

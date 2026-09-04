@@ -329,8 +329,12 @@ const SARIF_FIXTURE_REPORT: AnalysisReport = {
   score: {
     composite: 91,
     grade: "A",
-    pillars: [{ pillar: "security", score: 91, penalty: 9, findings: 1 }],
-    topOffenders: [{ filePath: "src/bad.ts", score: 91, findings: 1 }],
+    evaluatedFiles: 10,
+    clusters: [],
+    ruleAttribution: [],
+    scoredPillars: ["security"],
+    pillars: [{ pillar: "security", applicable: true, score: 91, grade: "A", penalty: 9, findings: 1 }],
+    topOffenders: [{ filePath: "src/bad.ts", score: 91, penalty: 9, findings: 1 }],
   },
 };
 
@@ -513,8 +517,12 @@ const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
   score: {
     composite: 82.5,
     grade: "B",
-    pillars: [{ pillar: "documentation", score: 84, penalty: 16, findings: 1 }],
-    topOffenders: [{ filePath: "src/<bad>.ts", score: 88, findings: 1 }],
+    evaluatedFiles: 10,
+    clusters: [],
+    ruleAttribution: [],
+    scoredPillars: ["documentation"],
+    pillars: [{ pillar: "documentation", applicable: true, score: 84, grade: "B", penalty: 16, findings: 1 }],
+    topOffenders: [{ filePath: "src/<bad>.ts", score: 88, penalty: 16, findings: 1 }],
   },
 };
 

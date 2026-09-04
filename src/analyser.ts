@@ -57,7 +57,15 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
   const changedResult = filterChangedFindings(run.baselineResult.findings, changedScope, run.scanned.sources);
 
   if (options.historyFile) {
-    recordHistory(run.projectRoot, options.historyFile, changedResult.findings, run.diagnostics);
+    // The history row is scored on the run's own denominator, so a later delta measures findings
+    // rather than the difference between two project sizes.
+    recordHistory(
+      run.projectRoot,
+      options.historyFile,
+      changedResult.findings,
+      run.discovery.files.filter((file) => file.isScript).length,
+      run.diagnostics,
+    );
   }
 
   // File-scoped policy: diff runs report and fail on diagnostics from changed target files only.
@@ -209,7 +217,9 @@ function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResul
     suppressions: run.suppressions,
     findings,
     ...(suppressedCount === undefined ? {} : { suppressedCount }),
-    score: scoreReport(findings),
+    // Only script files carry code to score, so the ratified denominator is narrower than
+    // paths.analysedFiles, which also counts the text inputs the raw-text rules read.
+    score: scoreReport(findings, run.discovery.files.filter((file) => file.isScript).length),
     ...(baselineResult.baseline ? { baseline: baselineResult.baseline } : {}),
   };
 }

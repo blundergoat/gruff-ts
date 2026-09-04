@@ -61,11 +61,11 @@ function applyBaseline(path: string, findings: Finding[]): Finding[] {
  * persistence failure it reports a `history-error` diagnostic and recovers - a flaky history file
  * must not fail the analysis run.
  */
-function recordHistory(projectRoot: string, historyFile: string, findings: Finding[], diagnostics: RunDiagnostic[]): void {
+function recordHistory(projectRoot: string, historyFile: string, findings: Finding[], evaluatedFiles: number, diagnostics: RunDiagnostic[]): void {
   const path = absolutize(projectRoot, historyFile);
   try {
     const entries = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as unknown[]) : [];
-    entries.push({ recordedAt: new Date().toISOString(), findings: findings.length, score: scoreReport(findings).composite });
+    entries.push({ recordedAt: new Date().toISOString(), findings: findings.length, score: scoreReport(findings, evaluatedFiles).composite });
     writeFileSync(path, JSON.stringify(entries.slice(-100), null, 2));
   } catch (error) {
     diagnostics.push({ diagnosticType: "history-error", message: `Unable to write history file: ${String(error)}`, filePath: displayPath(projectRoot, path) });

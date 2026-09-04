@@ -9,7 +9,7 @@ import { countRuleSeverities } from "./findings-helpers.ts";
 import { buildPillarRows, type PillarRow } from "./pillar-summary.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { renderHtml } from "./report-html.ts";
-import { exitFor, severityGradeBreakdown } from "./scoring.ts";
+import { compositeLine, exitFor, severityGradeBreakdown } from "./scoring.ts";
 import { totalSuppressedFindings } from "./sensitive-exclusions.ts";
 
 /*
@@ -103,9 +103,14 @@ interface MachineEnvelopeCore {
     suppressedFindings?: number;
   };
   score: {
-    composite: { grade: string; score: number };
+    composite: { grade: string | null; score: number | null };
+    /** Ratified scoring denominator and the pillar set the composite averaged over. */
+    evaluatedFiles: number;
+    scoredPillars: AnalysisReport["score"]["scoredPillars"];
+    clusters: AnalysisReport["score"]["clusters"];
+    ruleAttribution: AnalysisReport["score"]["ruleAttribution"];
     pillars: AnalysisReport["score"]["pillars"];
-    topOffenders: Array<{ file: string; score: number; findings: number }>;
+    topOffenders: Array<{ file: string; score: number | null; penalty: number; findings: number }>;
   };
   diagnostics: MachineDiagnostic[];
   paths: { analysedFiles: number; details: MachinePathDetail[]; ignoredPaths: string[]; missingPaths: string[] };
@@ -143,10 +148,15 @@ function machineEnvelopeCore(report: AnalysisReport): MachineEnvelopeCore {
     summary: machineSummary(report, details.length),
     score: {
       composite: { grade: report.score.grade, score: report.score.composite },
+      evaluatedFiles: report.score.evaluatedFiles,
+      scoredPillars: report.score.scoredPillars,
+      clusters: report.score.clusters,
+      ruleAttribution: report.score.ruleAttribution,
       pillars: report.score.pillars,
       topOffenders: report.score.topOffenders.map((offender) => ({
         file: machinePath(offender.filePath, report.run.projectRoot),
         score: offender.score,
+        penalty: offender.penalty,
         findings: offender.findings,
       })),
     },
@@ -521,12 +531,15 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
   const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
   const pillarRows = buildPillarRows(report);
   const breakdown = severityGradeBreakdown(report.findings);
+  // FAMILY-CONTRACT section 1: masthead, then the two-line composite block, then this port's own
+  // lines. The scan card used to sit between the masthead and the composite, which put the number a
+  // reader came for two lines further down than the contract allows.
   const lines = [
     `gruff-ts ${report.tool.version} summary`,
+    compositeLine(report.score.composite, report.score.grade),
+    `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     `Path: ${pathLabel ?? report.run.projectRoot}`,
     ...(typeof elapsedMs === "number" ? [`Duration: ${formatSummaryDuration(elapsedMs)}`] : []),
-    `Composite: ${report.score.grade} (${report.score.composite.toFixed(2)} / 100)`,
-    `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     `  Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `  Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
     `  Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
@@ -545,7 +558,10 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
     ...(
       report.score.topOffenders.length === 0
         ? ["- No file offenders."]
-        : report.score.topOffenders.slice(0, top).map((offender) => `- ${offender.filePath}: ${offender.findings} findings, quality ${offender.score.toFixed(1)}/100`)
+        : report.score.topOffenders.slice(0, top).map((offender) => {
+            const quality = offender.score === null ? "n/a" : `${offender.score.toFixed(1)}/100`;
+            return `- ${offender.filePath}: ${offender.findings} findings, quality ${quality}`;
+          })
     ),
   );
   // The digest filters through the same analyse-side partition, so it owes the same audit row: a
@@ -694,7 +710,7 @@ function renderText(report: AnalysisReport): string {
   const breakdown = severityGradeBreakdown(report.findings);
   const lines = [
     `gruff-ts ${report.tool.version} analyse`,
-    `Composite: ${report.score.grade} (${report.score.composite.toFixed(2)} / 100)`,
+    compositeLine(report.score.composite, report.score.grade),
     `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     `  Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `  Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
@@ -769,7 +785,10 @@ function renderMarkdown(report: AnalysisReport): string {
   return [
     "# gruff-ts report",
     "",
-    `Composite: **${report.score.grade} (${report.score.composite.toFixed(2)} / 100)**`,
+    // Markdown bolds the value, not the label; the canonical line shape is the text view's contract.
+    report.score.composite === null || report.score.grade === null
+      ? "Composite: **n/a (nothing evaluated)**"
+      : `Composite: **${report.score.grade} (${report.score.composite.toFixed(2)} / 100)**`,
     `- Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `- Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
     `- Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,

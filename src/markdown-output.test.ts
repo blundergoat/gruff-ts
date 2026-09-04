@@ -63,11 +63,15 @@ const MARKDOWN_SAFETY_REPORT: AnalysisReport = {
   score: {
     composite: 82,
     grade: "B",
+    evaluatedFiles: 10,
+    clusters: [],
+    ruleAttribution: [],
+    scoredPillars: ["complexity", "documentation"],
     pillars: [
-      { pillar: "complexity", score: 70, penalty: 30, findings: 2 },
-      { pillar: "documentation", score: 94, penalty: 6, findings: 1 },
+      { pillar: "complexity", applicable: true, score: 70, grade: "C", penalty: 30, findings: 2 },
+      { pillar: "documentation", applicable: true, score: 94, grade: "A", penalty: 6, findings: 1 },
     ],
-    topOffenders: [{ filePath: "src/cluster`path.ts", score: 70, findings: 2 }],
+    topOffenders: [{ filePath: "src/cluster`path.ts", score: 70, penalty: 30, findings: 2 }],
   },
 };
 

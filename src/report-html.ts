@@ -43,7 +43,7 @@ function renderHtml(report: AnalysisReport, dashboardContext?: DashboardRenderCo
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>gruff-ts report - ${escapeHtml(report.score.grade)}</title>
+<title>gruff-ts report - ${escapeHtml(report.score.grade ?? "n/a")}</title>
 <style>${htmlReportCss(report.diagnostics.length > 0)}</style>
 </head>
 <body>
@@ -103,9 +103,10 @@ function htmlDashboardContext(context: DashboardRenderContext): string {
  * the dashboard relies on for parity with static reports.
  */
 function htmlVerdict(report: AnalysisReport): string {
-  const gradeCssClass = gradeClass(report.score.grade);
-  const escapedGrade = escapeHtml(report.score.grade);
-  const scoreText = report.score.composite.toFixed(1);
+  // A run that evaluated nothing shows no number in the stamp, so an empty scan cannot read as perfect.
+  const gradeCssClass = gradeClass(report.score.grade ?? "n/a");
+  const escapedGrade = escapeHtml(report.score.grade ?? "n/a");
+  const scoreText = report.score.composite === null ? "not evaluated" : report.score.composite.toFixed(1);
   const escapedSummary = escapeHtml(verdictSummary(report));
   const breakdown = severityGradeBreakdown(report.findings);
   const severityPills = htmlSeverityPills(breakdown);
@@ -181,8 +182,9 @@ function htmlOffenders(report: AnalysisReport): string {
       : report.score.topOffenders
           .slice(0, 10)
           .map((file) => {
-            const letter = grade(file.score);
-            return `<tr><td class="file-path">${htmlLocation(file.filePath)}</td><td class="num">${file.score.toFixed(1)}</td><td class="num">${file.findings}</td><td class="num"><span class="grade-pill ${gradeClass(letter)}">${letter}</span></td></tr>`;
+            const letter = file.score === null ? "n/a" : grade(file.score);
+            const scoreCell = file.score === null ? "n/a" : file.score.toFixed(1);
+            return `<tr><td class="file-path">${htmlLocation(file.filePath)}</td><td class="num">${scoreCell}</td><td class="num">${file.findings}</td><td class="num"><span class="grade-pill ${gradeClass(letter)}">${letter}</span></td></tr>`;
           })
           .join("");
   return `<section class="offenders"><h2 class="section-head">top offenders <span class="aside">sorted by score</span></h2><table class="offender-list"><thead><tr><th scope="col">file</th><th scope="col" class="num">score</th><th scope="col" class="num">findings</th><th scope="col" class="num">grade</th></tr></thead><tbody>${rows}</tbody></table></section>`;

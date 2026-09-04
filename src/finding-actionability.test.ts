@@ -29,10 +29,17 @@ test("composite counts clean pillars as perfect instead of dropping them", () =>
   const score = scoreReport([
     scoredFinding("docs.missing-file-overview", "documentation", "advisory", 1),
     scoredFinding("security.process-exec", "security", "warning", 2),
-  ]);
-  const documentationScore = 100 - 1.5;
-  const securityScore = 100 - 4;
-  assert.equal(score.composite, (documentationScore + securityScore + 100 * (pillarUniverseCount - 2)) / pillarUniverseCount);
+  ], 10);
+  // Both findings are medium confidence, which now weighs 0.75x: gruff-ts had no confidence
+  // dimension before M06, so a low-confidence heuristic used to weigh exactly as much as a certain
+  // defect. Over ten evaluated files documentation weighs 0.75 (density 0.075, score 78.57) and
+  // security 3.00 (density 0.30, score 62.50).
+  const documentationScore = 78.57;
+  const securityScore = 62.5;
+  const expectedComposite = (documentationScore + securityScore + 100 * (pillarUniverseCount - 2)) / pillarUniverseCount;
+  assert.equal(score.composite, Math.round(expectedComposite * 100) / 100);
+  assert.equal(score.pillars.find((pillar) => pillar.pillar === "documentation")?.score, documentationScore);
+  assert.equal(score.pillars.find((pillar) => pillar.pillar === "security")?.score, securityScore);
 });
 
 test("removing any single finding never decreases the composite", () => {
@@ -43,10 +50,10 @@ test("removing any single finding never decreases the composite", () => {
     scoredFinding("security.eval-usage", "security", "error", 3),
     scoredFinding("size.file-length", "size", "warning", 4),
   ];
-  const fullComposite = scoreReport(findings).composite;
+  const fullComposite = scoreReport(findings, 10).composite;
   findings.forEach((_finding, index) => {
-    const reducedComposite = scoreReport(findings.filter((_entry, entryIndex) => entryIndex !== index)).composite;
-    assert.equal(reducedComposite >= fullComposite, true, `removing finding ${index} lowered the composite`);
+    const reducedComposite = scoreReport(findings.filter((_entry, entryIndex) => entryIndex !== index), 10).composite;
+    assert.equal((reducedComposite ?? 0) >= (fullComposite ?? 0), true, `removing finding ${index} lowered the composite`);
   });
 });
 
