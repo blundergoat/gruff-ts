@@ -66,7 +66,9 @@ test("sleeps without assertion", async () => {
   const fingerprints = new Map(report.findings.map((finding) => [finding.ruleId, finding.fingerprint]));
   assert.equal(fingerprints.get("security.eval-call"), "9597745a32e48f52");
   assert.equal(fingerprints.get("size.parameter-count"), "d616356804967e11");
-  assert.equal(fingerprints.get("test-quality.no-assertions"), "abc482609c475b4f");
+  // M07 moved this anchor off the blank line between the class and the test onto the test's own
+  // declaration line, so its line-bearing fingerprint moved once with the 0.6.0 identity break.
+  assert.equal(fingerprints.get("test-quality.no-assertions"), "6428e95a0033f64f");
   assert.equal(fingerprints.get("modernisation.public-property"), "c80058bf4fd46024");
 });
 

@@ -906,3 +906,43 @@ export function doubleTotal(total: number): number {
 `);
   assert.equal(localReport.findings.some((entry) => entry.ruleId === "naming.short-variable"), false);
 });
+
+test("M07 block anchors land on the declaration, never on the blank line above it", () => {
+  // The prefix walk absorbs decorators, docblocks and blank lines so a block includes its leading
+  // documentation. Before M07 it also STOPPED on the blank separator, so a finding pointed at empty
+  // space belonging to the declaration above - un-triageable, and un-suppressible by line.
+  const source = `export function first(): number {
+  return 1;
+}
+
+/** Doc line for second. */
+export function second(alpha: number, beta: number): number {
+  return alpha + beta;
+}
+
+test("sleeps without assertion", async () => {
+  await new Promise((resolve) => setTimeout(resolve, 1));
+});
+`;
+  const report = analyseFixture(source);
+  const lines = source.split("\n");
+
+  assert.ok(report.findings.length > 0, "the anchor fixture produced no findings, so it proved nothing");
+
+  // The claim is about the source text at the reported line, not about which rules happened to fire.
+  for (const finding of report.findings) {
+    const text = finding.line === undefined ? "x" : (lines[finding.line - 1] ?? "");
+    assert.equal(text.trim() === "", false, `${finding.ruleId} anchors on blank line ${String(finding.line)}`);
+  }
+
+  const byRule = new Map(report.findings.map((finding) => [finding.ruleId, finding.line]));
+  // Named so the assertions below read as source positions rather than bare numbers: `second` is preceded
+  // by a blank line and a docblock, and the test callable is preceded by a blank line only.
+  const docblockLineOfSecond = 5;
+  const declarationLineOfTestCallable = 10;
+
+  // The anchor is the docblock, never the blank line 4 that separates it from `first`.
+  assert.equal(byRule.get("docs.missing-param-tag"), docblockLineOfSecond);
+  // The anchor is the callable's own declaration line, never the blank line 9 above it.
+  assert.equal(byRule.get("test-quality.sleep-in-test"), declarationLineOfTestCallable);
+});

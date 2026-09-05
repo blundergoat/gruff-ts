@@ -71,6 +71,15 @@ interface HookFinding {
   fingerprint: string;
 }
 
+// One v3 reviewed row as the hook reads it: the identity matching uses, plus the descriptive fields that let
+// the hook rebuild its own scope-aware identity for the rows it can.
+interface BaselineOccurrence {
+  identity?: string;
+  ruleId?: string;
+  path?: string;
+  subject?: string;
+}
+
 // A gruff.baseline.v1 entry as read for new-only comparison; every field is optional because older
 // baselines predate stableIdentity.
 interface BaselineEntry {
@@ -372,15 +381,40 @@ function hookBaseIdentities(runAnalyse: HookAnalysisRunner, input: HookReportInp
   return identities.size > 0 || input.baselinePath || input.diffBase ? identities : undefined;
 }
 
-// Reads stable identities from a gruff.baseline.v1 file; the schema is the gruff.baseline.v1
-// contract and the reader throws on any schemaVersion mismatch.
+// Reads hook identities from a baseline file: the 0.5 layout it has always read, or a v3 file written by
+// `analyse --generate-baseline`. Any other schemaVersion throws, so a user sees the reason in-band.
+// Stable contract: an unknown schema throws rather than silently suppressing nothing, and a row the hook cannot rebuild resurfaces for review.
 function stableIdentitiesFromBaseline(path: string): Set<string> {
   const baselinePath = absolutize(cwd(), path);
-  const baseline = JSON.parse(readFileSync(baselinePath, "utf8")) as { schemaVersion?: string; entries?: BaselineEntry[] };
+  const baseline = JSON.parse(readFileSync(baselinePath, "utf8")) as { schemaVersion?: string; entries?: BaselineEntry[]; occurrences?: BaselineOccurrence[] };
+  // A v3 file names its rows by identity, so the hook rebuilds what it can and leaves the rest to resurface.
+  if (baseline.schemaVersion === "gruff.baseline.v3") {
+    return new Set((baseline.occurrences ?? []).flatMap(hookIdentitiesFromOccurrence));
+  }
   if (baseline.schemaVersion !== "gruff.baseline.v1") {
     throw new Error(`unsupported baseline schema in ${path}`);
   }
   return new Set((baseline.entries ?? []).flatMap(stableIdentityFromBaselineEntry));
+}
+
+/*
+ * Rebuilds the hook identities a v3 row can still answer to.
+ *
+ * A row's subject is `symbol#ordinal` for a declaration and a measurement-free message otherwise, while the hook
+ * keys on the symbol or on the scope token. A symbol row and a file- or project-scope row both rebuild exactly; a
+ * line-scope row keyed on message text does not, so that finding resurfaces for review rather than being hidden
+ * by a value the hook cannot reproduce. Reconciling the two identity layers is M08's.
+ */
+function hookIdentitiesFromOccurrence(occurrence: BaselineOccurrence): string[] {
+  if (typeof occurrence.ruleId !== "string" || typeof occurrence.path !== "string") {
+    return [];
+  }
+  const scope = baselineScopeForRule(occurrence.ruleId);
+  if (scope === "file" || scope === "project") {
+    return [identityHash(occurrence.ruleId, occurrence.path, scope)];
+  }
+  const symbol = typeof occurrence.subject === "string" ? occurrence.subject.replace(/#\d+$/u, "") : "";
+  return symbol === occurrence.subject || symbol === "" ? [] : [identityHash(occurrence.ruleId, occurrence.path, `symbol:${symbol}`)];
 }
 
 // Resolves one baseline entry to hook identities: its stored identity, or a recomputed one from

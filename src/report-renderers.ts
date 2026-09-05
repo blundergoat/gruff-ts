@@ -2,6 +2,7 @@
 // HTML output and dashboard chrome live in `report-html.ts` so this module stays under the
 // `size.file-length` threshold; both files source `buildPillarRows` + `grade` from
 // `pillar-summary.ts` so the cross-format Pillars table stays byte-aligned.
+import { findingIdentities } from "./baseline-identity.ts";
 import { isAbsolute, relative } from "node:path";
 import type { AnalysisReport, Finding, OutputFormat, ScanSurfaceNote, Severity, SkippedPath, SuppressionSummary } from "./types.ts";
 import { OUTPUT_VOLUME_HINT_THRESHOLD } from "./constants.ts";
@@ -115,7 +116,7 @@ interface MachineEnvelopeCore {
   diagnostics: MachineDiagnostic[];
   paths: { analysedFiles: number; details: MachinePathDetail[]; ignoredPaths: string[]; missingPaths: string[] };
   suppressions: MachineSuppression[];
-  baseline?: { applied: boolean; generated: boolean; path: string; source: string; suppressedFindings: number };
+  baseline?: { applied: boolean; generated: boolean; path: string; source: string; suppressedFindings: number; entries: number; newFindings: number; unchangedFindings: number; resolvedFindings: number };
   diff?: { enabled: true; filteredFindings: number; mode: "changed-regions" };
   extensions?: { ts: { topLevel: { notes: ScanSurfaceNote[] } } };
 }
@@ -175,6 +176,12 @@ function machineEnvelopeCore(report: AnalysisReport): MachineEnvelopeCore {
         path: machinePath(report.baseline.path, report.run.projectRoot),
         source: report.baseline.source,
         suppressedFindings: report.baseline.suppressed,
+        // Every port publishes the same nine keys. A generate run compared against nothing, so its movement counts
+        // are zero rather than absent: a reader must never have to tell an absent key from a zero.
+        entries: report.baseline.entries ?? 0,
+        newFindings: report.baseline.newFindings ?? 0,
+        unchangedFindings: report.baseline.unchangedFindings ?? 0,
+        resolvedFindings: report.baseline.resolvedFindings ?? 0,
       },
     }),
     ...(report.suppressedCount === undefined ? {} : {
@@ -432,8 +439,26 @@ function sarifDiagnostic(diagnostic: AnalysisReport["diagnostics"][number]): Rec
 }
 
 /*
- * Maps one Finding into a SARIF result row. The stable, deterministic fingerprint in
- * `partialFingerprints` is the public contract - GitHub code-scanning keys alerts off it.
+ * Projects one finding into the fingerprints GitHub code scanning groups its alerts by.
+ *
+ * `gruffFingerprint` is the ratified durable identity and nothing else, so an alert survives a line move while a
+ * second declaration of one name opens its own alert. A sensitive finding has none, and carries no key at all:
+ * publishing one would give a secret a stable name in a system gruff does not control.
+ *
+ * The analyser names every finding before the baseline filters any; a finding built outside it is named here,
+ * ranked by its own line, so an ordinary result is never published without a fingerprint.
+ */
+function sarifPartialFingerprints(finding: Finding): Record<string, string> | undefined {
+  if (finding.baselineIdentity !== undefined) {
+    return { gruffFingerprint: finding.baselineIdentity };
+  }
+  const named = findingIdentities([finding])[0];
+  return named === undefined ? undefined : { gruffFingerprint: named.identity };
+}
+
+/*
+ * Maps one Finding into a SARIF result row.
+ * Stable contract: the durable identity in `partialFingerprints` is what GitHub code scanning keys alerts off.
  */
 function sarifResult(finding: Finding, ruleIndices: Map<string, number>): Record<string, unknown> {
   const result: Record<string, unknown> = {
@@ -445,10 +470,12 @@ function sarifResult(finding: Finding, ruleIndices: Map<string, number>): Record
         physicalLocation: sarifPhysicalLocation(finding),
       },
     ],
-    partialFingerprints: {
-      gruffFingerprint: finding.fingerprint,
-    },
   };
+  const fingerprints = sarifPartialFingerprints(finding);
+  // A sensitive finding carries no fingerprints at all, so no secret gets a durable name in code scanning.
+  if (fingerprints !== undefined) {
+    result.partialFingerprints = fingerprints;
+  }
   const ruleIndex = ruleIndices.get(finding.ruleId);
   if (ruleIndex !== undefined) {
     result.ruleIndex = ruleIndex;

@@ -1,20 +1,27 @@
-// Baseline option handling for `analyse`: chooses explicit/default baselines, applies
-// suppression, and writes generated baselines while preserving the report metadata shape.
+// Baseline option handling for `analyse`: chooses the explicit or default baseline, hides the debt the user
+// already reviewed, carries a 0.5 file forward on request, and writes a generated baseline.
+//
+// The matching rules live in `baseline-file.ts`; this module is the part a user's flags reach, so it owns which
+// action a run takes and what the report says about it.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { applyBaseline, DEFAULT_BASELINE, writeBaseline } from "./baseline.ts";
+import { applyBaseline, migrateBaseline, requireOverwritableDefaultPath, sensitiveCountOf, writeBaseline, type BaselineCollision } from "./baseline-file.ts";
+import { declarationPositionFromSpans, type DeclarationSpan } from "./baseline-identity.ts";
+import { DEFAULT_BASELINE } from "./baseline.ts";
 import { absolutize, displayPath } from "./discovery.ts";
-import type { AnalysisOptions, AnalysisReport, Finding } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport, Finding, RunDiagnostic } from "./types.ts";
 
 /*
- * Result of applying a baseline (suppression) or generating a new one. The optional `baseline`
- * matches native baseline metadata and is present only when a baseline file was used or generated.
- * Invariant: `baseline` is absent unless a file was used or generated; the v3 adapter renames only
- * `suppressed` to `suppressedFindings` at the JSON boundary.
+ * Result of applying, migrating, or generating a baseline. The optional `baseline` matches native baseline
+ * metadata and is present only when a file was used or written.
+ *
+ * Invariant: `baseline` is absent unless a file was used or written; `diagnostics` carries one entry per collision
+ * the run could not tell apart, and one entry when the baseline could not be read at all.
  */
 export interface BaselineApplication {
   findings: Finding[];
   baseline?: NonNullable<AnalysisReport["baseline"]>;
+  diagnostics: RunDiagnostic[];
 }
 
 // Resolved baseline path plus the provenance string emitted in the report. `source` distinguishes
@@ -25,58 +32,97 @@ interface BaselineSelection {
 }
 
 /*
- * Three-way baseline dispatcher. `--generate-baseline` wins (writes a new file, returns findings
- * unchanged); `--no-baseline` skips entirely; otherwise look for an explicit or default baseline.
- * The stable identity tuple (fingerprint, ruleId, filePath) drives suppression matching.
+ * Three-way baseline dispatcher. `--generate-baseline` wins (writes a new file, returns findings unchanged);
+ * `--no-baseline` skips entirely; otherwise look for an explicit or default baseline and hide the reviewed debt.
+ *
+ * `declarationSpans` names the declarations this run parsed, so two findings inside one function share an
+ * identity while a second same-named function takes its own; an empty map ranks by line instead.
+ * Stable contract: generation wins over application, and a run with no baseline returns the findings untouched.
  */
-export function applyBaselineOptions(projectRoot: string, options: AnalysisOptions, findings: Finding[]): BaselineApplication {
+export function applyBaselineOptions(projectRoot: string, options: AnalysisOptions, findings: Finding[], declarationSpans = new Map<string, DeclarationSpan[]>()): BaselineApplication {
+  const declarationPosition = declarationPositionFromSpans(declarationSpans);
   if (options.generateBaseline) {
-    return generateBaselineResult(projectRoot, options.generateBaseline, findings);
+    return generateBaselineResult(projectRoot, options, findings, declarationPosition);
   }
 
   if (options.shouldSkipBaseline) {
-    return { findings };
+    return { findings, diagnostics: [] };
   }
 
   const selected = selectedBaseline(projectRoot, options);
   if (!selected) {
-    return { findings };
+    return { findings, diagnostics: [] };
   }
 
-  return applySelectedBaseline(projectRoot, selected, findings);
+  return applySelectedBaseline(projectRoot, selected, findings, declarationPosition);
 }
 
 /*
- * Writes the baseline file via writeBaseline and returns the report-shaped metadata. `suppressed: 0`
- * because generation does not filter findings - every current finding is captured in the stable baseline.
+ * Writes the baseline file and returns the report-shaped metadata. `suppressed: 0` because generation does not
+ * hide anything: every current finding is captured and still shown, so the user sees what they just accepted.
+ * With `--migrate-baseline` the reviews of a 0.5 file are carried across instead, leaving that file untouched.
+ * Stable contract: generation hides nothing, so the user sees every finding they have just accepted.
  */
-function generateBaselineResult(projectRoot: string, baselineFile: string, findings: Finding[]): BaselineApplication {
-  const baselinePath = absolutize(projectRoot, baselineFile);
-  writeBaseline(baselinePath, findings);
+function generateBaselineResult(projectRoot: string, options: AnalysisOptions, findings: Finding[], declarationPosition: (finding: Finding) => number): BaselineApplication {
+  const baselinePath = absolutize(projectRoot, options.generateBaseline ?? DEFAULT_BASELINE);
+  // A generate at the shared default path never destroys a 0.5 baseline by accident; --force is the way to mean it.
+  requireOverwritableDefaultPath(baselinePath, options.shouldForceBaselineOverwrite === true);
+  const migratePath = options.migrateBaseline;
+  const written = migratePath
+    ? migrateBaseline(absolutize(projectRoot, migratePath), baselinePath, findings, declarationPosition)
+    : { entries: writeBaseline(baselinePath, findings, declarationPosition), sensitiveCounted: sensitiveCountOf(findings, declarationPosition) };
+
   return {
     findings,
     baseline: {
       path: displayPath(projectRoot, baselinePath),
-      source: "generated",
+      source: migratePath ? "migrated" : "generated",
       suppressed: 0,
       generated: true,
+      entries: written.entries,
+      sensitiveCounted: written.sensitiveCounted,
     },
+    diagnostics: [],
   };
 }
 
-// Loads the baseline file and filters findings whose identity tuple matches. `suppressed` is
-// computed from the size delta so the stable baseline report metadata stays accurate.
-function applySelectedBaseline(projectRoot: string, selected: BaselineSelection, findings: Finding[]): BaselineApplication {
-  const before = findings.length;
-  const filteredFindings = applyBaseline(selected.path, findings);
+/*
+ * Loads the baseline and hides the occurrences the user already reviewed.
+ *
+ * A collision becomes a non-fatal diagnostic rather than a suppression, and a file that cannot be read at all
+ * becomes a baseline-error diagnostic so the run reports the reason instead of silently showing every finding.
+ * Stable contract: the reported counts come from the same application that filtered the findings, so they cannot disagree.
+ */
+function applySelectedBaseline(projectRoot: string, selected: BaselineSelection, findings: Finding[], declarationPosition: (finding: Finding) => number): BaselineApplication {
+  const application = applyBaseline(selected.path, findings, declarationPosition);
   return {
-    findings: filteredFindings,
+    findings: application.findings,
     baseline: {
       path: displayPath(projectRoot, selected.path),
       source: selected.source,
-      suppressed: before - filteredFindings.length,
+      suppressed: application.counts.unchanged,
       generated: false,
+      entries: application.entries,
+      newFindings: application.counts.new + application.counts.collision + application.counts.notEligible,
+      unchangedFindings: application.counts.unchanged,
+      resolvedFindings: application.counts.absent,
     },
+    diagnostics: application.collisions.map(collisionDiagnostic),
+  };
+}
+
+/*
+ * Names one identity that covered two declarations, so the user can see which review would have covered the
+ * wrong finding. Neither finding is suppressed and the run is not invalidated.
+ * The run reports the collision rather than throwing, and the diagnostic is non-fatal, so a collision alone
+ * never fails a run.
+ */
+function collisionDiagnostic(collision: BaselineCollision): RunDiagnostic {
+  return {
+    diagnosticType: "baseline-collision",
+    message: `collision: identity ${collision.identity} covers ${collision.subjects.length} declarations of ${collision.subjects.join(", ")} for rule ${collision.ruleId} in ${collision.path}; none is suppressed`,
+    filePath: collision.path,
+    invalidatesRun: false,
   };
 }
 

@@ -7,6 +7,7 @@ import { readFileSync, statSync } from "node:fs";
 import { cwd } from "node:process";
 import { basename, dirname, extname, resolve } from "node:path";
 import { recordHistory, sortedUniqueFindings } from "./baseline.ts";
+import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan } from "./baseline-identity.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { changedRegionScope, filterChangedFindings, filterScopedDiagnostics } from "./changed-regions.ts";
 import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
@@ -167,6 +168,7 @@ function prepareAnalysis(options: AnalysisOptions): AnalysisPreparation {
 }
 
 // Runs per-file and project-level rules before applying baseline suppression; finding order remains stable.
+// A baseline that cannot be read, or that another port wrote, throws out of the run so the CLI reports the reason instead of a clean scan.
 function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOptions): AnalysisRun {
   const { projectRoot, config, diagnostics, discovery } = preparation;
   pushMissingPathDiagnostics(discovery.missingPaths, diagnostics);
@@ -179,7 +181,13 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
   // Reviewed sensitive exclusions apply before the baseline so a suppressed finding never reaches
   // the report, the score, or the exit code, and each entry's count covers the whole scan.
   const excluded = partitionSensitiveExclusions(allFindings, config.sensitiveExclusions);
-  const baselineResult = applyBaselineOptions(projectRoot, options, excluded.findings);
+  // Naming every finding before the baseline filters any of them keeps one alert one alert: code scanning reads the
+  // same identity the baseline does, and a finding hidden from this report keeps the ordinal it was ranked with.
+  const spans = declarationSpans(scanned);
+  const namedFindings = withBaselineIdentities(excluded.findings, spans);
+  const baselineResult = applyBaselineOptions(projectRoot, options, namedFindings, spans);
+  // A collision names two declarations one identity could not tell apart; it suppresses nothing and fails no run.
+  diagnostics.push(...baselineResult.diagnostics);
   const notes = [...discovery.notes, ...scanned.notes];
   return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes, suppressions: excluded.suppressions };
 }
@@ -326,6 +334,38 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
     }
   }
   return { findings, projectSources, sources, notes };
+}
+
+/*
+ * Attaches each ordinary finding's durable identity, which SARIF publishes as its code-scanning fingerprint.
+ *
+ * A sensitive finding is left unnamed, because it has no durable identity at all; the field is native-only and
+ * never reaches the JSON envelope, which publishes the identity through SARIF alone.
+ */
+function withBaselineIdentities(findings: Finding[], spansByFile: Map<string, DeclarationSpan[]>): Finding[] {
+  const identities = findingIdentities(findings, declarationPositionFromSpans(spansByFile));
+  return findings.map((finding, index) => {
+    const named = identities[index];
+    return named === undefined ? finding : { ...finding, baselineIdentity: named.identity };
+  });
+}
+
+/*
+ * Names every function this run parsed, per file, so a baseline identity can count declarations rather than lines.
+ *
+ * Inserting code above a function moves its line and not its ordinal, which is what keeps a reviewed finding
+ * hidden through an ordinary edit; a file that never parsed contributes nothing and its findings rank by line.
+ */
+function declarationSpans(scanned: SourceScanResult): Map<string, DeclarationSpan[]> {
+  const spansByFile = new Map<string, DeclarationSpan[]>();
+  for (const [displayPath, entry] of scanned.sources) {
+    const blocks = functionBlocks(entry.source, entry.source, entry.parsed);
+    spansByFile.set(
+      displayPath,
+      blocks.map((block) => ({ name: block.name, startLine: block.startLine, endLine: block.startLine + block.lineCount - 1 })),
+    );
+  }
+  return spansByFile;
 }
 
 // Returns diagnostic metadata for a visible, non-fatal breach of either effective deep-scan bound.

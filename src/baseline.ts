@@ -1,4 +1,7 @@
-// Baseline persistence helpers for stable suppression files and score history side effects.
+// Score-history side effects and the canonical finding order every report and baseline is built from.
+//
+// Baseline reading, writing, and matching live in `baseline-file.ts`; this module keeps the ordering and dedupe
+// rules that decide which findings a run reports at all, and the history file the dashboard sparkline reads.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { scoreReport } from "./scoring.ts";
@@ -16,43 +19,6 @@ function absolutize(projectRoot: string, path: string): string {
 function displayPath(projectRoot: string, path: string): string {
   const relativePath = relative(projectRoot, path).replaceAll("\\", "/");
   return relativePath === "" ? "." : relativePath;
-}
-
-// `gruff.baseline.v1`: writes the fingerprint plus the identity tuple used by `applyBaseline`.
-// `message` is persisted for human review; `applyBaseline` ignores it so cosmetic message changes
-// do not invalidate baselines. Bump schema before adding required fields; persists to disk via writeFileSync.
-function writeBaseline(path: string, findings: Finding[]): void {
-  writeFileSync(
-    path,
-    JSON.stringify(
-      {
-        schemaVersion: "gruff.baseline.v1",
-        generatedAt: new Date().toISOString(),
-        entries: findings.map((finding) => ({
-          fingerprint: finding.fingerprint,
-          ruleId: finding.ruleId,
-          filePath: finding.filePath,
-          line: finding.line,
-          symbol: finding.symbol,
-          message: finding.message,
-        })),
-      },
-      null,
-      2,
-    ),
-  );
-}
-
-// Suppresses any finding whose (fingerprint, ruleId, filePath) tuple appears in the baseline.
-// Drift between versions would let stale suppressions leak in, so the operator must regenerate
-// against the current CLI; reads the baseline file and throws on an unknown schema version.
-function applyBaseline(path: string, findings: Finding[]): Finding[] {
-  const baselineFile = JSON.parse(readFileSync(path, "utf8")) as { schemaVersion?: string; entries?: Array<{ fingerprint: string; ruleId: string; filePath: string }> };
-  if (baselineFile.schemaVersion !== "gruff.baseline.v1") {
-    throw new Error(`unsupported baseline schema in ${path}`);
-  }
-  const keys = new Set((baselineFile.entries ?? []).map((entry) => [entry.fingerprint, entry.ruleId, entry.filePath].join("\0")));
-  return findings.filter((finding) => !keys.has([finding.fingerprint, finding.ruleId, finding.filePath].join("\0")));
 }
 
 /*
@@ -123,4 +89,4 @@ function sortedUniqueFindings(findings: Finding[]): Finding[] {
   return dedupeFindings(findings);
 }
 
-export { DEFAULT_BASELINE, writeBaseline, applyBaseline, recordHistory, dedupeFindings, sortedUniqueFindings };
+export { DEFAULT_BASELINE, recordHistory, dedupeFindings, sortedUniqueFindings };

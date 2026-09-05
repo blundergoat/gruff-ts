@@ -69,6 +69,10 @@ export interface AnalysisOptions {
   historyFile?: string;
   baseline?: string;
   generateBaseline?: string;
+  /** 0.5 baseline whose reviews are carried into `generateBaseline`; absent means nothing is carried across. */
+  migrateBaseline?: string;
+  /** Overwrite a 0.5 baseline at the shared default path instead of refusing, which is what `--force` means. */
+  shouldForceBaselineOverwrite?: boolean;
   shouldSkipBaseline: boolean;
   deepScanBudget?: DeepScanBudgetOverride;
 }
@@ -194,6 +198,11 @@ export interface Finding {
   metadata: Record<string, unknown>;
   fingerprint: string;
   stableIdentity: string;
+  /**
+   * The ratified durable identity this run computed, which SARIF publishes as the code-scanning fingerprint.
+   * Absent for a sensitive finding, which has no durable name, and for a finding built outside the analyser.
+   */
+  baselineIdentity?: string;
 }
 
 /**
@@ -284,7 +293,21 @@ export interface AnalysisReport {
     pillars: Array<{ pillar: Pillar; applicable: boolean; score: number | null; grade: string | null; penalty: number; findings: number }>;
     topOffenders: Array<{ filePath: string; score: number | null; penalty: number; findings: number }>;
   };
-  baseline?: { path: string; source: string; suppressed: number; generated: boolean };
+  /**
+   * Present only when a baseline was used or written. `suppressed` counts the reviewed debt this run hid;
+   * `newFindings` is the gated count the user must still act on, and is absent on a generate run, which hides nothing.
+   */
+  baseline?: {
+    path: string;
+    source: string;
+    suppressed: number;
+    generated: boolean;
+    entries?: number;
+    newFindings?: number;
+    unchangedFindings?: number;
+    resolvedFindings?: number;
+    sensitiveCounted?: number;
+  };
 }
 
 /**

@@ -194,6 +194,8 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--history-file <path>", "Append score trend history to this JSON file (full scans only; incompatible with --diff, --since, and --changed-ranges).")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
+    .option("--migrate-baseline <path>", "Carry a 0.5 baseline's reviews into --generate-baseline; the original file is left untouched.")
+    .option("--force", "Overwrite a 0.5 baseline at the default path; without it a generate that would destroy the retreat path is refused.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
       await runWithConfigErrorHandling(async () => {
@@ -474,6 +476,8 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--history-file <path>", "Append score trend history to this JSON file (full scans only; incompatible with --diff).")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
+    .option("--migrate-baseline <path>", "Carry a 0.5 baseline's reviews into --generate-baseline; the original file is left untouched.")
+    .option("--force", "Overwrite a 0.5 baseline at the default path; without it a generate that would destroy the retreat path is refused.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
       await runWithConfigErrorHandling(async () => {
@@ -605,6 +609,8 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
     ...historyFileOption(rawOptions),
     ...baselineOption(baselineValue, context),
     ...generateBaselineOption(rawOptions),
+    ...migrateBaselineOption(rawOptions),
+    ...(rawOptions.force === true ? { shouldForceBaselineOverwrite: true } : {}),
     shouldSkipBaseline,
   };
 }
@@ -739,6 +745,14 @@ function generateBaselineOption(rawOptions: Record<string, unknown>): Partial<Pi
     return { generateBaseline: rawOptions.generateBaseline };
   }
   return rawOptions.generateBaseline === true ? { generateBaseline: DEFAULT_BASELINE } : {};
+}
+
+/*
+ * Reads `--migrate-baseline`: the 0.5 file whose reviews are carried into the generated baseline.
+ * Absent means an ordinary generate run, which records the current findings and carries nothing across.
+ */
+function migrateBaselineOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "migrateBaseline">> {
+  return typeof rawOptions.migrateBaseline === "string" ? { migrateBaseline: rawOptions.migrateBaseline } : {};
 }
 
 // Last-resort choice normalizer for programmatic option bags; the CLI surfaces validate the same

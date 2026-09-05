@@ -1,4 +1,5 @@
 // CLI and dashboard surface tests covering command help, render formats, SARIF, and HTML controls.
+import { findingIdentities } from "./baseline-identity.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -375,8 +376,8 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(evalRule.properties.defaultEnabled, true);
   results.forEach((sarifResult: SarifResult) => {
     assert.equal(rules[sarifResult.ruleIndex ?? -1]?.id ?? sarifResult.ruleId, sarifResult.ruleId);
-    assert.equal(typeof sarifResult.partialFingerprints.gruffFingerprint, "string");
-    assert.equal("primary" in sarifResult.partialFingerprints, false);
+    assert.equal(typeof sarifResult.partialFingerprints?.gruffFingerprint, "string");
+    assert.equal("primary" in (sarifResult.partialFingerprints ?? {}), false);
     assert.equal("codeFlows" in sarifResult, false);
     assert.equal("threadFlows" in sarifResult, false);
     assert.equal("fixes" in sarifResult, false);
@@ -394,7 +395,8 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(result.locations[0].physicalLocation.region.startLine, expectedStartLine);
   assert.equal(result.locations[0].physicalLocation.region.startColumn, expectedStartColumn);
   assert.equal(result.locations[0].physicalLocation.region.endLine, expectedEndLine);
-  assert.equal(result.partialFingerprints.gruffFingerprint, "abc123");
+  // Code scanning groups alerts by the ratified durable identity, not by the line-bearing fingerprint.
+  assert.equal(result.partialFingerprints.gruffFingerprint, findingIdentities(SARIF_FIXTURE_REPORT.findings.slice(0, 1))[0]?.identity);
   assert.equal(result.properties.severity, "error");
   assert.equal(result.properties.pillar, "security");
   assert.deepEqual(result.properties.secondaryPillars, ["sensitive-data"]);
@@ -440,7 +442,9 @@ test("machine renderers escape SARIF URIs and GitHub annotation properties", () 
 type SarifResult = {
   ruleId: string;
   ruleIndex?: number;
-  partialFingerprints: { gruffFingerprint: unknown } & Record<string, unknown>;
+  // Absent for a sensitive result, which has no durable identity to publish.
+  partialFingerprints?: { gruffFingerprint: unknown } & Record<string, unknown>;
+  properties?: { pillar?: string };
   locations: Array<{ physicalLocation: { artifactLocation: { uri: string } } }>;
 };
 
@@ -448,7 +452,9 @@ type SarifResult = {
 // presence, and POSIX-style normalised URI. Factored out of the test body so the loop carries no
 // inline conditional branches.
 function assertSarifResultShape(rules: Array<{ id: string }>, sarifResult: SarifResult): void {
-  assert.equal(typeof sarifResult.partialFingerprints.gruffFingerprint, "string");
+  // An ordinary result carries the ratified identity; a secret carries no fingerprints at all.
+  const isSensitive = sarifResult.ruleId.startsWith("sensitive-data.") || sarifResult.properties?.pillar === "sensitive-data";
+  assert.equal(typeof sarifResult.partialFingerprints?.gruffFingerprint, isSensitive ? "undefined" : "string");
   const indexedRule = typeof sarifResult.ruleIndex === "number" ? rules[sarifResult.ruleIndex] : undefined;
   assert.equal(indexedRule?.id ?? sarifResult.ruleId, sarifResult.ruleId);
   const uri = sarifResult.locations[0]?.physicalLocation.artifactLocation.uri ?? "";
