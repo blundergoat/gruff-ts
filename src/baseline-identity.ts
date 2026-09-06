@@ -75,23 +75,26 @@ export function normaliseMeasuredValues(message: string): string {
 /*
  * Builds the identity subject: `symbol#ordinal` for a symbol-bearing finding, otherwise the normalised message.
  * The ordinal keeps two same-named functions apart; without it, reviewing one silently baselines the other.
- * Throws BaselineIdentityError when the symbol carries the separator or its ordinal is missing, so no ambiguous
- * subject is ever hashed.
+ *
+ * Returns undefined when the finding's own text makes it unnameable, which is a property of the scanned code and
+ * not an error: a symbol already carrying the separator could pose as another symbol's ordinal, and a finding with
+ * neither symbol nor message has nothing to be named by. Such a finding is reported without an identity, exactly as
+ * a sensitive finding already is, rather than costing the caller its whole run.
+ *
+ * Still throws BaselineIdentityError for a missing or non-positive ordinal, because that is this module failing to
+ * rank a symbol it accepted, not anything the scanned project did.
  *
  * Stable contract: one declaration always produces one subject, which is what a stored review is matched on.
  */
-export function baselineSubject(finding: Finding, ordinal: number): string {
+export function baselineSubject(finding: Finding, ordinal: number): string | undefined {
   const symbol = finding.symbol && finding.symbol.length > 0 ? finding.symbol : undefined;
   // A file-level finding has nothing but its message to name it, so its measurement is stripped before hashing.
   if (symbol === undefined) {
-    if (finding.message.length === 0) {
-      throw new BaselineIdentityError(`finding ${finding.ruleId} in ${finding.filePath} names neither a symbol nor a message`);
-    }
-    return normaliseMeasuredValues(finding.message);
+    return finding.message.length === 0 ? undefined : normaliseMeasuredValues(finding.message);
   }
-  // A symbol carrying the separator could pose as another symbol's ordinal, so it is refused rather than hashed ambiguously.
+  // A symbol carrying the separator could pose as another symbol's ordinal, so it is left unnamed rather than hashed ambiguously.
   if (symbol.includes(ORDINAL_SEPARATOR)) {
-    throw new BaselineIdentityError(`finding ${finding.ruleId} in ${finding.filePath} has symbol "${symbol}" containing "${ORDINAL_SEPARATOR}"`);
+    return undefined;
   }
   // Defaulting a missing ordinal to 1 would merge namesakes back together, the collision the ordinal exists to prevent.
   if (!Number.isInteger(ordinal) || ordinal < 1) {
@@ -124,6 +127,11 @@ export function findingIdentities(findings: Finding[], declarationPosition: (fin
       return undefined;
     }
     const subject = baselineSubject(finding, ordinals[index] ?? 0);
+    // A finding whose own text cannot name it joins a sensitive finding in carrying no identity: it is still
+    // reported and scored, it simply can never be baselined, because there is nothing stable to match it on.
+    if (subject === undefined) {
+      return undefined;
+    }
     return {
       identity: computeIdentityFor(TOOL_LANGUAGE, finding.ruleId, finding.filePath, subject),
       subject,

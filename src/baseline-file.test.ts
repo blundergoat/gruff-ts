@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { applyBaseline, migrateBaseline, requireOverwritableDefaultPath, writeBaseline } from "./baseline-file.ts";
-import { computeIdentityFor, normaliseMeasuredValues } from "./baseline-identity.ts";
+import { baselineSubject, computeIdentityFor, findingIdentities, normaliseMeasuredValues } from "./baseline-identity.ts";
 import type { Finding } from "./types.ts";
 
 // The digests the family case file pins for other ports; reproducing them is the only proof the rule is one rule.
@@ -31,6 +31,34 @@ test("measured values never enter a symbol-less identity", () => {
   assert.equal(normaliseMeasuredValues("File has 1010 lines (limit 1000)"), "File has # lines (limit #)");
   assert.equal(normaliseMeasuredValues("12.5% over 1,234 lines in v0.5.2"), "#% over # lines in v#");
   assert.equal(normaliseMeasuredValues("File has no module documentation"), "File has no module documentation");
+});
+
+// A symbol the ordinal separator makes ambiguous is a property of the scanned code, not a failure of the tool.
+// gruff-ts used to throw here, uncaught, so one Angular test named after a GitHub issue ended the whole run with
+// no output at all. The finding must survive without an identity, exactly as a sensitive finding does.
+test("a finding whose own text cannot name it is reported without an identity, and does not end the run", () => {
+  const unnameableSymbol = finding({ symbol: "should allow lookahead binding on second pass #35118" });
+  const noSymbolNoMessage = finding({ symbol: "", message: "" });
+
+  assert.deepEqual(findingIdentities([unnameableSymbol]), [undefined]);
+  assert.deepEqual(findingIdentities([noSymbolNoMessage]), [undefined]);
+
+  // The unnameable finding must not cost its neighbours their identities either.
+  const named = finding({ symbol: "process" });
+  const identities = findingIdentities([unnameableSymbol, named]);
+
+  assert.equal(identities[0], undefined);
+  assert.equal(identities[1]?.subject, "process#1");
+});
+
+// The declaration ordinal is this module's own invariant: it ranks a symbol this module already accepted, so
+// losing it is a defect here rather than anything the scanned project did. Keeping that one case fatal is why the
+// repair above is a narrow return rather than a blanket catch, which would have hidden this contract breaking.
+test("a symbol accepted without a declaration ordinal still throws, because that is this module's own defect", () => {
+  assert.throws(
+    () => baselineSubject(finding({ symbol: "process" }), 0),
+    /without a declaration ordinal/u,
+  );
 });
 
 test("a generated baseline stores one line-free row per identity", () => {
