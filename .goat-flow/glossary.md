@@ -52,7 +52,7 @@ A stable 16-character SHA-256 prefix of the finding identity. Baselines and down
 
 ### Gruff Config
 
-Project configuration that tunes discovery, allowlists, naming lists, and per-rule thresholds/severity/options. Shared keys include `paths.ignore`, `allowlists.acceptedAbbreviations`, `allowlists.secretPreviews`, and `rules.<id>`.
+Project configuration that tunes discovery, allowlists, naming lists, and per-rule thresholds/severity/options. Shared keys include `paths.ignore`, `allowlists.acceptedAbbreviations`, and `rules.<id>`.
 
 ### Hotspot Output
 

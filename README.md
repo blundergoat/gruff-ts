@@ -178,7 +178,6 @@ allowlists:
   acceptedBooleanNames:
     - verbose
     - enabled
-  secretPreviews: []
 
 rules:
   complexity.cyclomatic:

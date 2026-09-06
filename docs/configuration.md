@@ -74,7 +74,6 @@ allowlists:
   acceptedAbbreviations:
     - api
     - cli
-  secretPreviews: []
   bannedGenericNames: [process, handle, doit, run, execute, manage]
   acceptedBooleanNames: [all, apply, check, dev, enabled, force, fresh, harness, json, ok, verbose, yes]
   booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires, allow, check, enable, exclude, include, omit, skip, with, without]
@@ -173,14 +172,7 @@ allowlists:
     - env
 ```
 
-`allowlists.secretPreviews` is a retired compatibility key. `gruff-ts init` still writes the only accepted value:
-
-```yaml
-allowlists:
-  secretPreviews: []
-```
-
-A missing key and exact `[]` are inert. Any other value stops the command before analysis with guidance to restore the empty list.
+The 0.5 key `allowlists.secretPreviews` is removed: FAMILY-CONTRACT.md section 5 makes every sensitive-data marker unconditional and zero-payload, so the key authorised nothing. `gruff-ts init` no longer writes it, a configuration carrying it (even as an empty list) is refused with that explanation, and `gruff-ts migrate-config` deletes it.
 
 The key never suppresses a sensitive finding. Reports use fixed category markers without matched characters or secret-derived lengths.
 
@@ -352,7 +344,6 @@ allowlists:
   acceptedBooleanNames:
     - verbose
     - enabled
-  secretPreviews: []
 
 rules:
   complexity.cognitive:
