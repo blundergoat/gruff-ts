@@ -70,6 +70,8 @@ export interface BaselineCounts {
 // Stable contract: `findings` is the gated set the user must act on, and every collision here suppressed nothing.
 export interface BaselineApplication {
   findings: Finding[];
+  /** What the baseline made of each finding handed in, in that order, so a caller can report a status per finding. */
+  statuses: string[];
   counts: BaselineCounts;
   collisions: BaselineCollision[];
   resolved: BaselineEntry[];
@@ -128,6 +130,7 @@ export function applyBaseline(path: string, findings: Finding[], declarationPosi
 
   return {
     findings: findings.filter((_, index) => statuses[index] !== "unchanged"),
+    statuses,
     counts: {
       new: statuses.filter((status) => status === "new").length,
       unchanged: statuses.filter((status) => status === "unchanged").length,

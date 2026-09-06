@@ -20,6 +20,7 @@ const ANSI_RESET_FG = "\x1b[39m";
 
 const CONSOLE_COMMANDS = [
   { name: "analyse", description: "Run gruff analysis." },
+  { name: "check-ignore", description: "Report whether gruff would ignore each path, with the matching source and pattern. Runs no analysis." },
   { name: "completion", description: "Dump the shell completion script" },
   { name: "dashboard", description: "Serve the local gruff dashboard." },
   { name: "help", description: "Display help for a command" },
@@ -28,6 +29,7 @@ const CONSOLE_COMMANDS = [
   { name: "list", description: "List commands" },
   { name: "list-profiles", description: "List the built-in gruff profiles." },
   { name: "list-rules", description: "List gruff rule metadata." },
+  { name: "migrate-config", description: "Rewrite a 0.5 config for the current schema, writing the result to a different file." },
   { name: "report", description: "Render a gruff report to stdout or a file." },
   {
     name: "summary",

@@ -137,7 +137,7 @@ test("deepScanBudget rejects malformed mappings, unknown keys, and non-positive 
   }
 });
 
-test("minimumSeverity rejects dashboard, unknown commands, and unknown values including never", () => {
+test("failOn rejects dashboard, unknown commands, and unknown values including never", () => {
   // Fixture covers the validator's rejection paths: dashboard is a reserved key (no --fail-on flag
   // exists for it); unknown commands raise an error with the canonical-keys hint; unknown values
   // raise an error citing the four canonical values; `never` is explicitly rejected because it was
@@ -145,7 +145,7 @@ test("minimumSeverity rejects dashboard, unknown commands, and unknown values in
   assert.throws(
     () => analyseProject({
       "bad.ts": "export const value = 1;\n",
-      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity:\n  dashboard: advisory\n",
+      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nfailOn:\n  dashboard: advisory\n",
     }, { shouldSkipConfig: false }),
     /dashboard subcommand does not currently expose a --fail-on flag/,
   );
@@ -153,15 +153,15 @@ test("minimumSeverity rejects dashboard, unknown commands, and unknown values in
   assert.throws(
     () => analyseProject({
       "bad.ts": "export const value = 1;\n",
-      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity:\n  unknown: advisory\n",
+      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nfailOn:\n  unknown: advisory\n",
     }, { shouldSkipConfig: false }),
-    /Unknown command in minimumSeverity/,
+    /Unknown command in failOn/,
   );
 
   assert.throws(
     () => analyseProject({
       "bad.ts": "export const value = 1;\n",
-      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity:\n  analyse: never\n",
+      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nfailOn:\n  analyse: never\n",
     }, { shouldSkipConfig: false }),
     /FailThreshold must be one of/,
   );
@@ -169,20 +169,47 @@ test("minimumSeverity rejects dashboard, unknown commands, and unknown values in
   assert.throws(
     () => analyseProject({
       "bad.ts": "export const value = 1;\n",
-      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity:\n  analyse: critical\n",
+      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nfailOn:\n  analyse: critical\n",
     }, { shouldSkipConfig: false }),
     /FailThreshold must be one of/,
   );
 });
 
-test("minimumSeverity accepts the four canonical values per command", () => {
+test("minimumSeverity is the display floor and refuses the per-command map that used to gate", () => {
+  // The map form is valid YAML that used to gate a build, so reading it as a display floor would change what a
+  // committed file does without changing what it says. It is refused and told where the gate moved to.
+  assert.throws(
+    () => analyseProject({
+      "bad.ts": "export const value = 1;\n",
+      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity:\n  analyse: error\n",
+    }, { shouldSkipConfig: false }),
+    /move the per-command exit gate to "failOn"/,
+  );
+
+  assert.throws(
+    () => analyseProject({
+      "bad.ts": "export const value = 1;\n",
+      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity: critical\n",
+    }, { shouldSkipConfig: false }),
+    /must be one of: advisory, warning, error/,
+  );
+
+  const report = analyseProject({
+    "bad.ts": "export const value = 1;\n",
+    ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity: warning\n",
+  }, { shouldSkipConfig: false });
+  // The floor hides findings from the report at render time; the run itself still produces every one of them.
+  assert.equal(report.schemaVersion, "gruff.analysis.v3");
+});
+
+test("failOn accepts the four canonical values per command", () => {
   // Fixture covers the happy path: each canonical value parses for each supported command, and
   // the config-load completes without throwing. The actual precedence behaviour is exercised in
   // cli-surfaces.test.ts where Commander's option-source signal is available. Asserting on the
   // report shape (and not on specific finding counts) keeps this test focused on the parser.
   const report = analyseProject({
     "bad.ts": "export const value = 1;\n",
-    ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity:\n  analyse: error\n  summary: warning\n  report: none\n",
+    ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nfailOn:\n  analyse: error\n  summary: warning\n  report: none\n",
   }, { shouldSkipConfig: false });
   assert.equal(report.schemaVersion, "gruff.analysis.v3");
 });

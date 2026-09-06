@@ -346,7 +346,8 @@ function withBaselineIdentities(findings: Finding[], spansByFile: Map<string, De
   const identities = findingIdentities(findings, declarationPositionFromSpans(spansByFile));
   return findings.map((finding, index) => {
     const named = identities[index];
-    return named === undefined ? finding : { ...finding, baselineIdentity: named.identity };
+    // Publishing the subject beside the identity is what lets the hook state the ordinal instead of re-deriving it.
+    return named === undefined ? finding : { ...finding, baselineIdentity: named.identity, baselineSubject: named.subject };
   });
 }
 

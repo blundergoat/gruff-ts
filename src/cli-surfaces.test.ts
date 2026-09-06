@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { analyse, renderReport, ruleDescriptors } from "./cli.ts";
+import { analyse, buildProgram, renderReport, ruleDescriptors } from "./cli.ts";
 import { VERSION } from "./constants.ts";
 import type { AnalysisReport } from "./cli.ts";
 import { analyseFixture, REPO_ROOT } from "./test-fixtures.ts";
@@ -182,7 +182,7 @@ test("console globals suppress normal output and completion emits a script", () 
 
   const completion = execFileSync("./bin/gruff-ts", ["completion"], { encoding: "utf8" });
   assert.match(completion, /complete -F _gruff_ts_completion gruff-ts/);
-  assert.match(completion, /commands="analyse completion dashboard hook init list list-profiles list-rules report summary"/);
+  assert.match(completion, /commands="analyse check-ignore completion dashboard hook init list list-profiles list-rules migrate-config report summary"/);
   assert.match(completion, /text json html markdown github hotspot sarif/);
 
   const analyseHelp = execFileSync("./bin/gruff-ts", ["analyse", "--help"], { encoding: "utf8" });
@@ -798,5 +798,36 @@ test("valid constrained values and bare directory arguments keep working", () =>
     assert.equal(bareDirReport.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.file === "sub/nested.ts"), true);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+/*
+ * Fixture purpose: the console catalogue is hand-written and the completion script is rendered from it, so a
+ * command registered on the program and forgotten in the catalogue is invisible in both.
+ * Stable contract: every registered command appears in the catalogue and in every shell completion script, so a
+ * user who runs `gruff-ts` or presses tab sees the whole command surface.
+ * Spawns the built binary four times to read what a user would actually see; it writes nothing and needs no fixture.
+ */
+test("every registered command appears in the catalogue and in every completion script", () => {
+  // Commander keeps its own help command out of `commands`, so the catalogue's `help` row is added back here.
+  const registered = [...buildProgram().commands.map((command) => command.name()), "help"].sort();
+  const catalogue = execFileSync("./bin/gruff-ts", [], { encoding: "utf8", cwd: REPO_ROOT });
+  const listed = catalogue
+    .split("Available commands:")[1]
+    ?.split("\n")
+    .map((line) => line.trim().split(/\s+/u)[0])
+    .filter((name) => name !== undefined && name.length > 0)
+    .sort() ?? [];
+
+  // check-ignore was registered and absent from this list until M08 task 9, so nothing surfaced it to a user.
+  assert.deepEqual(listed, registered);
+
+  for (const shell of ["bash", "zsh", "fish"]) {
+    const completion = execFileSync("./bin/gruff-ts", ["completion", shell], { encoding: "utf8", cwd: REPO_ROOT });
+
+    // `help` is deliberately absent from completions; every other registered command must be offered.
+    for (const command of registered.filter((name) => name !== "help")) {
+      assert.equal(completion.includes(command), true, `${shell} completion omits ${command}`);
+    }
   }
 });

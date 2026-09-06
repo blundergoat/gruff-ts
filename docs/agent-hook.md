@@ -19,7 +19,7 @@ gruff-ts hook --format json --changed-ranges "12-40,88-90" src/foo.ts
 gruff-ts hook --capabilities --format json
 ```
 
-`hook` emits `gruff.hook.v1` JSON with normalized `file`, `scope`, `suppressed.count`,
+`hook` emits `gruff.hook.v2` JSON with normalized `file`, `scope`, `suppressed.count`,
 `ignored.paths`, non-null `remediation`, stable identities, and machine-readable threshold
 metadata. Hook mode is advisory: findings exit `0`; config failures are returned in
 `config.error` and exit `2`.

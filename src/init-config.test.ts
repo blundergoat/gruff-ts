@@ -54,7 +54,6 @@ test("renderDefaultConfig explains and seeds the family abbreviation allowlist",
     "    - tx",
     "    - ui",
     "    - url",
-    "  secretPreviews: []",
   ].join("\n");
 
   assert.equal(generatedConfig.includes(expectedFamilyAbbreviationBlock), true);

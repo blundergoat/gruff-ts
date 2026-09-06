@@ -10,10 +10,11 @@ import { join } from "node:path";
 import test from "node:test";
 import { loadConfig } from "./config.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
+import { writeDefaultConfig } from "./init-config.ts";
 import { analyseProject, REPO_ROOT } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
 
-const LEGACY_SECRET_PREVIEWS_ERROR = 'Config key "allowlists.secretPreviews" only accepts an empty list; remove all configured entries because secret previews no longer suppress findings.';
+const LEGACY_SECRET_PREVIEWS_ERROR = 'Config key "allowlists.secretPreviews" is removed in 0.6.0: FAMILY-CONTRACT.md section 5 makes category markers unconditional, so the key authorises nothing; delete it from the configuration.';
 const CONFIG_LOAD_OPTIONS = {
   paths: ["."],
   shouldSkipConfig: false,
@@ -23,8 +24,10 @@ const CONFIG_LOAD_OPTIONS = {
   changedScope: "symbol",
   shouldSkipBaseline: true,
 } satisfies AnalysisOptions;
+// Every shape the key can take, including the empty list a 0.5 config was told to keep: presence is the rejection.
 const INVALID_LEGACY_SECRET_PREVIEW_CASES = [
   ["non-empty-list", "[known-fixture-preview]"],
+  ["empty-list", "[]"],
   ["scalar", "known-fixture-preview"],
   ["empty-object", "{}"],
   ["null", "null"],
@@ -74,7 +77,50 @@ test("an invalid config rule value exits 2 with a concise error and no stack tra
   }
 });
 
-// Each invalid shape becomes a separately named test so users can identify the exact failed compatibility case.
+/*
+ * Fixture purpose: a key gruff-ts does not act on is a setting the user believes is in force and is not, which is
+ * the one configuration failure a reader cannot see by looking at their own file. Every other port already refuses
+ * one; gruff-ts accepted all three of these shapes with exit 0 until 0.6.0.
+ */
+for (const [blockName, configuredBlock, offendingKey] of [
+  ["root", "notAKeyAnyPortKnows: true", "notAKeyAnyPortKnows"],
+  ["allowlists", "allowlists:\n  notAnAllowlist: []", "allowlists.notAnAllowlist"],
+  ["paths", "paths:\n  includeEverything: []", "paths.includeEverything"],
+] as const) {
+  test(`an unrecognised ${blockName} config key is refused by name`, () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-unknown-key-"));
+    try {
+      writeFileSync(join(projectRoot, ".gruff-ts.yaml"), `schemaVersion: gruff-ts.config.v0.1\n${configuredBlock}\n`);
+      assert.throws(
+        () => loadConfig(projectRoot, CONFIG_LOAD_OPTIONS),
+        (error: unknown) => {
+          assert.equal(error instanceof ConfigLoadError, true, blockName);
+          // The message names the key the user wrote, not merely that something was wrong.
+          assert.equal((error as ConfigLoadError).message.includes(offendingKey), true, blockName);
+          return true;
+        },
+      );
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+}
+
+test("every key the generated config writes is a key the loader accepts", () => {
+  // The seed and the loader are two lists of the same names; a key init writes and loadConfig refuses is a config
+  // gruff-ts generates and then refuses to read.
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-seed-roundtrip-"));
+  try {
+    writeDefaultConfig(projectRoot, false);
+    const config = loadConfig(projectRoot, CONFIG_LOAD_OPTIONS);
+    assert.equal(config.schemaVersion, "gruff-ts.config.v0.1");
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+// Each configured shape becomes a separately named test so users can identify the exact failed compatibility case.
+// An empty list is refused with the rest: the key reads as configured redaction whether or not anything is in it.
 for (const [caseName, configuredValue] of INVALID_LEGACY_SECRET_PREVIEW_CASES) {
   // Fixture purpose: prove this retired value shape fails with the same safe diagnostic and never echoes the configured content.
   test(`legacy secret previews reject ${caseName} with one safe diagnostic`, () => {

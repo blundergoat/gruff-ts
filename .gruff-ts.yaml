@@ -9,7 +9,7 @@ schemaVersion: gruff-ts.config.v0.1
 #   warning  - exit non-zero on warning or error findings (advisory findings pass).
 #   advisory - exit non-zero on any finding at all (advisory, warning, or error).
 #   none     - never exit non-zero from findings (use for raw reporting / baseline generation).
-minimumSeverity:
+failOn:
   analyse: advisory
   summary: advisory
   report: none
@@ -55,7 +55,6 @@ allowlists:
     - tx
     - ui
     - url
-  secretPreviews: []
   # Names that trigger naming.generic-function. Each key replaces the built-in
   # default when present; an empty list disables that rule's blacklist branch.
   # Default: [process, handle, doit, run, execute, manage]

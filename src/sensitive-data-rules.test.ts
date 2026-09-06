@@ -165,36 +165,31 @@ INVALID_CARD=${INVALID_CREDIT_CARD_FIXTURE_VALUE}
   assert.equal(JSON.stringify(report).includes(INVALID_CREDIT_CARD_FIXTURE_VALUE), false);
 });
 
-// Fixture purpose: missing and generated-empty compatibility keys must yield the same user-visible findings and markers.
-test("missing and empty legacy preview config preserve every sensitive finding", () => {
+// Fixture purpose: every category marker is produced without configuration, and the key that claimed to govern them is gone.
+// Stable contract: markers are unconditional, so no configuration can widen, narrow, or silence them.
+test("category markers stand on their own and any configured preview key is refused", () => {
   const source = `REMOTE_CONTROL_URL=${URL_CREDENTIAL_FIXTURE_VALUE}
 PAYMENT_CARD=${CREDIT_CARD_FIXTURE_VALUE}
 `;
-  const missingKeyReport = analyseFixture(source, { fileName: ".env" });
-  const emptyListReport = analyseFixture(source, {
-    fileName: ".env",
-    config: { allowlists: { secretPreviews: [] } },
-  });
-  const missingKeyFindings = missingKeyReport.findings
-    .filter((finding) => ["sensitive-data.database-url-password", "sensitive-data.pii-pattern"].includes(finding.ruleId))
-    .map((finding) => [finding.ruleId, finding.metadata.preview]);
-  const emptyListFindings = emptyListReport.findings
+  const report = analyseFixture(source, { fileName: ".env" });
+  const findings = report.findings
     .filter((finding) => ["sensitive-data.database-url-password", "sensitive-data.pii-pattern"].includes(finding.ruleId))
     .map((finding) => [finding.ruleId, finding.metadata.preview]);
 
-  assert.equal(missingKeyFindings.length, EXPECTED_NEW_DETECTOR_FINDINGS);
-  assert.deepEqual(emptyListFindings, missingKeyFindings);
+  assert.equal(findings.length, EXPECTED_NEW_DETECTOR_FINDINGS);
+  // An empty list reads as configured redaction just as a populated one does, so presence alone is the rejection.
+  assert.throws(
+    () => analyseFixture(source, { fileName: ".env", config: { allowlists: { secretPreviews: [] } } }),
+    /section 5/,
+  );
 });
 
-test("empty legacy preview config keeps same-category occurrences separate", () => {
+test("same-category occurrences stay separate without any preview configuration", () => {
   const firstShortSecret = ["a1B2c3D4", "e5F6g7H8"].join("");
   const secondShortSecret = ["j9K0m1N2", "p3Q4r5S6"].join("");
   assert.equal(firstShortSecret.length, secondShortSecret.length);
 
-  const report = analyseFixture(`FIRST_TOKEN=${firstShortSecret}\nSECOND_TOKEN=${secondShortSecret}\n`, {
-    fileName: ".env",
-    config: { allowlists: { secretPreviews: [] } },
-  });
+  const report = analyseFixture(`FIRST_TOKEN=${firstShortSecret}\nSECOND_TOKEN=${secondShortSecret}\n`, { fileName: ".env" });
   const findings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value");
 
   assert.deepEqual(findings.map((finding) => finding.metadata.keyName), ["FIRST_TOKEN", "SECOND_TOKEN"]);

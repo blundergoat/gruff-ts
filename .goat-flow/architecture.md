@@ -14,7 +14,7 @@ Eleven command surfaces are registered in `src/cli-program.ts`:`buildProgram`:
 - **`check-ignore`** - explain whether config, gitignore, or built-in policy excludes each path without running analysis.
 - **`completion`** - emit lightweight shell completion scripts for bash, zsh, or fish.
 - **`dashboard`** - boot a local HTTP server (`src/dashboard.ts`:`startDashboard`) with a report shell and controls that re-run `analyse` on demand.
-- **`hook`** - emit the stable `gruff.hook.v1` coding-agent contract or its capability metadata.
+- **`hook`** - emit the stable `gruff.hook.v2` coding-agent contract or its capability metadata.
 - **`init`** - write a reviewable starter `.gruff-ts.yaml`, preserving supported user fields on `--force`.
 - **`list`** - print the Symfony-style command catalogue used when no command is supplied.
 - **`list-profiles`** - print bundled profile names, descriptions, and enabled-rule counts.
@@ -48,7 +48,7 @@ State is filesystem-only - there is no database, queue, or external API.
 
 - **Inputs:** source files matched by `src/discovery.ts`:`discoverSources` with hardcoded ignore set in `src/discovery.ts`:`isDefaultIgnoredDir`; optional `.gruff-ts.yaml` config; optional baseline JSON; optional history JSON.
 - **Outputs:** stdout (`text`/`json`/`html`/`markdown`/`github`/`hotspot`/`sarif`), self-contained dark HTML reports (also stdout unless `report --output`), compact summary text, shell completion scripts, the local dashboard shell/scan HTML, `list-rules` text or unversioned JSON catalogue output, `gruff-baseline.json` when `--generate-baseline` is set, `.gruff-history.json` when `--history-file` is passed.
-- **Schemas (public contract):** `gruff.analysis.v2`, `gruff.summary.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`, `gruff.hook.v1`, and the input schema `gruff-ts.config.v0.1`. Bumping any of these is a breaking change for downstream consumers.
+- **Schemas (public contract):** `gruff.analysis.v2`, `gruff.summary.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`, `gruff.hook.v2`, and the input schema `gruff-ts.config.v0.1`. Bumping any of these is a breaking change for downstream consumers.
 - **Determinism:** `Finding.fingerprint` (sha256 of `ruleId\0filePath\0line\0symbol`, sliced to 16 chars in `src/findings.ts`:`makeFinding`) is the dedupe and baseline-match key. Findings are sorted by `(filePath, line, ruleId, message)` before dedupe. Repeated report bytes match after removing only `run.generatedAt`; ordered fingerprints match without normalization.
 
 ## Local Data and Evidence Budget

@@ -133,15 +133,30 @@ function summarize(findings: Finding[]) {
   };
 }
 
-// Process exit contract: 2 when diagnostics were emitted (parse/IO failures the user must know about),
-// 1 when any finding crosses `failOn`, 0 otherwise. CI scripts and the dashboard runner depend on
-// this three-value invariant; reshuffling the precedence is a stable-contract regression.
-function exitFor(report: AnalysisReport, failOn: FailThreshold): number {
+/*
+ * Process exit contract: 2 when diagnostics were emitted (parse/IO failures the user must know about),
+ * 1 when any finding crosses both `failOn` and `minConfidence`, 0 otherwise. CI scripts and the dashboard
+ * runner depend on this three-value invariant; reshuffling the precedence is a stable-contract regression.
+ *
+ * The two floors are independent: severity says how much a finding matters, confidence says how sure the
+ * analyser is, and either one alone can keep a finding away from the gate. `minConfidence` defaults to `low`,
+ * which admits everything and leaves a caller that never asked for a confidence floor unaffected.
+ */
+function exitFor(report: AnalysisReport, failOn: FailThreshold, minConfidence: Confidence = "low"): number {
   if (report.diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false)) {
     return 2;
   }
-  return report.findings.some((finding) => thresholdTriggered(failOn, finding.severity)) ? 1 : 0;
+  return report.findings.some((finding) => reachesGate(finding, failOn, minConfidence)) ? 1 : 0;
 }
+
+// True when one finding clears both floors, which is the only way a run fails on findings.
+// Stable contract: severity and confidence are independent, so either floor alone can keep a finding away from the gate.
+function reachesGate(finding: Finding, failOn: FailThreshold, minConfidence: Confidence): boolean {
+  return thresholdTriggered(failOn, finding.severity) && CONFIDENCE_GATE_RANK[finding.confidence] >= CONFIDENCE_GATE_RANK[minConfidence];
+}
+
+// Confidence ladder for the gate; a finding at or above the requested rank can reach it.
+const CONFIDENCE_GATE_RANK: Record<Confidence, number> = { low: 0, medium: 1, high: 2 };
 
 // Severity ladder: "none" never triggers, "advisory" triggers on anything, "warning" needs at least
 // warning, "error" needs error. Order is intentional - `failOn=warning` must still trigger on errors.

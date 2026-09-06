@@ -31,7 +31,7 @@ Used as a hook on an agent's output, gruff-ts is a forcing function rather than 
 | Summary schema | `gruff.summary.v2` |
 | Baseline schema | `gruff.baseline.v1` |
 | Hotspot schema | `gruff.hotspot.v1` |
-| Agent-hook schema | `gruff.hook.v1` |
+| Agent-hook schema | `gruff.hook.v2` |
 | Config schema | `gruff-ts.config.v0.1` |
 | Severity gate | `--fail-on` with `none`, `advisory`, `warning`, `error` |
 | Dashboard | `127.0.0.1:8767` by default |
@@ -96,13 +96,14 @@ Open `http://127.0.0.1:8767/` for the dashboard.
 | `summary [paths...]` | Print compact score, pillar, rule, and file summaries. |
 | `report [paths...]` | Render an HTML or JSON report to stdout or `--output`. |
 | `init` | Write the default `.gruff-ts.yaml` to the current directory (`--force` to overwrite). |
+| `migrate-config` | Rewrite a 0.5 config for the current schema, writing the result to a different file. |
 | `list-rules` | Print rule metadata as text or JSON. |
 | `list-profiles` | Print the built-in profiles (`gruff.minimal`, `gruff.recommended`, `gruff.strict`) with their rule-count summary, as text or JSON. |
 | `check-ignore <paths...>` | Report whether each path is ignored (config, gitignore, or default) with the matching source and pattern; runs no analysis. |
-| `hook [paths...]` | Emit the `gruff.hook.v1` coding-agent contract and capability metadata. |
+| `hook [paths...]` | Emit the `gruff.hook.v2` coding-agent contract and capability metadata. |
 | `dashboard` | Serve the local browser dashboard. |
 | `completion [shell]` | Print a shell completion script for `bash`, `zsh`, or `fish`. |
-| `list` | Show the registered command catalogue. Use `--help` on the root or a command for detailed help. |
+| `list`, `help` | Show the registered command catalogue, and per-command help. Use `--help` on the root or a command for the same detail. |
 
 Global console options match the broader gruff CLI surface: `--silent`, `--quiet`, `--ansi` / `--no-ansi`, `--no-interaction`, and `-v` / `-vv` / `-vvv`.
 
@@ -258,7 +259,7 @@ npx gruff-ts hook --format=json --changed-ranges "3-3,8-10" src/foo.ts
 npx gruff-ts hook --capabilities --format=json
 ```
 
-`hook` emits `gruff.hook.v1` JSON with normalized `file`, `scope`, `suppressed.count`,
+`hook` emits `gruff.hook.v2` JSON with normalized `file`, `scope`, `suppressed.count`,
 `ignored.paths`, non-null `remediation`, stable identities, and threshold metadata. Hook mode is
 advisory: findings exit `0`; operational failures such as invalid config exit `2` and are reported
 in `config.error`.
@@ -310,7 +311,7 @@ Default scans are local source inspections. `gruff-ts` parses supported source, 
 
 ## Stability Contract
 
-The `0.5.x` line treats rule IDs, finding fingerprints, baseline identity, `gruff.analysis.v2`, `gruff.summary.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`, `gruff.hook.v1`, `gruff-ts.config.v0.1`, SARIF rendering, and CLI exit semantics as compatibility-sensitive. Breaking changes belong in a coordinated future release and must be recorded in [`CHANGELOG.md`](CHANGELOG.md).
+The `0.5.x` line treats rule IDs, finding fingerprints, baseline identity, `gruff.analysis.v2`, `gruff.summary.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`, `gruff.hook.v2`, `gruff-ts.config.v0.1`, SARIF rendering, and CLI exit semantics as compatibility-sensitive. Breaking changes belong in a coordinated future release and must be recorded in [`CHANGELOG.md`](CHANGELOG.md).
 
 Analysis JSON continues to emit canonical `file` alongside legacy `filePath` for findings and top offenders. The v0.3.1 plan to remove `filePath` in the next release was superseded when v0.4.0 retained the alias. Consumers should read `file` now; removing `filePath` waits for the coordinated family JSON unification instead of happening in this port alone.
 

@@ -75,9 +75,28 @@ export interface AnalysisOptions {
   shouldForceBaselineOverwrite?: boolean;
   shouldSkipBaseline: boolean;
   deepScanBudget?: DeepScanBudgetOverride;
+  /**
+   * Which rules this run executes, from `--include-rule` and its three siblings.
+   *
+   * Absent means the whole catalogue runs. It belongs here, and the presentation selectors do not, because these
+   * change what is found and therefore the score.
+   */
+  execution?: ExecutionSelectors;
 }
 
-/** Commands that support `minimumSeverity`; dashboard is absent because it has no `--fail-on` behavior (ADR-004). */
+/**
+ * Which rules one run executes, chosen by `--include-rule`, `--exclude-rule`, `--include-pillar` and `--exclude-pillar`.
+ *
+ * Every list is empty when the user asked for nothing, which leaves the full catalogue running.
+ */
+export interface ExecutionSelectors {
+  includeRules: string[];
+  excludeRules: string[];
+  includePillars: string[];
+  excludePillars: string[];
+}
+
+/** Commands that support a configured `failOn` gate; dashboard is absent because it has no `--fail-on` behavior (ADR-004). */
 export type MinimumSeverityCommand = "analyse" | "summary" | "report";
 
 /**
@@ -99,8 +118,10 @@ export interface Config {
   placeholderNames: Set<string>;
   negativeBooleanAllowed: Set<string>;
   knownAcronyms: Set<string>;
-  /** Per-command `--fail-on` defaults; an empty map means each command continues to its binary default (ADR-004). */
+  /** Per-command `--fail-on` defaults from `failOn:`; an empty map means each command keeps its binary default (ADR-004). */
   minimumSeverity: Map<MinimumSeverityCommand, FailThreshold>;
+  /** The `minimumSeverity:` display floor: findings below it are hidden from the report and still scored and gated. */
+  displayFloor?: Severity;
   rules: Map<string, { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> }>;
   deepScanBudget: DeepScanBudget;
   /** Reviewed sensitive-data suppressions in declaration order; an empty list means nothing is suppressed. */
@@ -203,6 +224,11 @@ export interface Finding {
    * Absent for a sensitive finding, which has no durable name, and for a finding built outside the analyser.
    */
   baselineIdentity?: string;
+  /**
+   * The subject that identity hashed, which carries the declaration ordinal a consumer needs to recompute it.
+   * Absent wherever `baselineIdentity` is, because the two are computed together or not at all.
+   */
+  baselineSubject?: string;
 }
 
 /**

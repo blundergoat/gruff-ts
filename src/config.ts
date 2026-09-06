@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { arrayValue, isString, objectValue, parseConfigFile, SUGGEST_EDIT_CONFIG, SUGGEST_INIT_FORCE } from "./config-parse.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
 import { BUILT_IN_PROFILES, builtInProfileNames, DEFAULT_PROFILE_NAME, isKnownRuleId, ruleOptionKeys } from "./profiles.ts";
+import { applyExecutionSelectors } from "./selectors.ts";
 import { parseSensitiveExclusions } from "./sensitive-exclusions.ts";
 import type { AnalysisOptions, Config, DeepScanBudgetOverride, FailThreshold, InlineProfileSpec, MinimumSeverityCommand, ProfileDefinition, ProfileRuleSetting, ProfileSpec, Severity } from "./types.ts";
 
@@ -15,7 +16,26 @@ import type { AnalysisOptions, Config, DeepScanBudgetOverride, FailThreshold, In
 type RuleOverride = Config["rules"] extends Map<string, infer RuleOverrideValue> ? RuleOverrideValue : never;
 
 const DEFAULT_CONFIG_FILES = [".gruff-ts.yaml", ".gruff.json", ".gruff.yaml", ".gruff.yml"] as const;
-const LEGACY_SECRET_PREVIEWS_ERROR = 'Config key "allowlists.secretPreviews" only accepts an empty list; remove all configured entries because secret previews no longer suppress findings.';
+
+/*
+ * Every key a `.gruff-ts.yaml` may carry, at the root and inside the two blocks that take a fixed set.
+ *
+ * A key outside these sets is refused rather than ignored: a misspelled `sensitivExclusions:` or `minimumSeverty:`
+ * that loads silently is a setting the user believes is in force and is not, which is the one configuration failure
+ * a reader cannot see by looking at their own file.
+ */
+const KNOWN_ROOT_KEYS: ReadonlySet<string> = new Set([
+  "schemaVersion", "profile", "deepScanBudget", "minimumSeverity", "failOn", "paths", "allowlists", "rules", "sensitiveExclusions",
+]);
+const KNOWN_PATHS_KEYS: ReadonlySet<string> = new Set(["ignore"]);
+const KNOWN_ALLOWLISTS_KEYS: ReadonlySet<string> = new Set([
+  "acceptedAbbreviations", "bannedGenericNames", "acceptedBooleanNames", "acceptedClassFilePairs", "acceptedCasingPairs",
+  "booleanPrefixes", "hungarianPrefixes", "placeholderNames", "negativeBooleanAllowed", "knownAcronyms",
+  // Recognised only so the loader can refuse it by name with section 5's explanation, rather than as an unknown key.
+  "secretPreviews",
+]);
+const LEGACY_SECRET_PREVIEWS_ERROR = 'Config key "allowlists.secretPreviews" is removed in 0.6.0: FAMILY-CONTRACT.md section 5 makes category markers unconditional, so the key authorises nothing; delete it from the configuration.';
+const LEGACY_MINIMUM_SEVERITY_ERROR = 'Config key "minimumSeverity" is the display floor in 0.6.0 and takes one severity, not a per-command map; move the per-command exit gate to "failOn", which is the key that gates the exit code.';
 // Pinned-corpus size and scan-cost measurements set these paired defaults because either line count
 // or byte count can make deep parsing disproportionately expensive while ordinary source stays below both.
 export const DEEP_SCAN_DEFAULT_MAX_LINES = 20_000;
@@ -67,6 +87,8 @@ function loadConfig(projectRoot: string, options: AnalysisOptions): Config {
   }
   applyProfile(config, options, parsedConfig, projectRoot);
   applyDeepScanBudgetOverride(config, options.deepScanBudget);
+  // The execution selectors choose which rules run, so they narrow the catalogue last, after every other source.
+  applyExecutionSelectors(config, options.execution);
   return config;
 }
 
@@ -267,12 +289,39 @@ function selectedConfigPath(projectRoot: string, options: AnalysisOptions): stri
 // Schema validation runs first, then user thresholds, paths, allowlists, rule overrides, and reviewed sensitive exclusions become available to downstream commands.
 function applyConfigValues(config: Config, parsedConfig: Record<string, unknown>): void {
   applySchemaVersionConfig(parsedConfig);
+  assertKnownKeys(parsedConfig, KNOWN_ROOT_KEYS, "");
+  assertKnownKeys(objectValue(parsedConfig.paths), KNOWN_PATHS_KEYS, "paths.");
+  assertKnownKeys(objectValue(parsedConfig.allowlists), KNOWN_ALLOWLISTS_KEYS, "allowlists.");
   applyDeepScanBudgetConfig(config, parsedConfig);
-  applyMinimumSeverityConfig(config, parsedConfig);
+  applyDisplayFloorConfig(config, parsedConfig);
+  applyFailOnConfig(config, parsedConfig);
   applyPathConfig(config, parsedConfig);
   applyAllowlistConfig(config, parsedConfig);
   applyRuleConfig(config, parsedConfig);
   config.sensitiveExclusions = parseSensitiveExclusions(parsedConfig);
+}
+
+/*
+ * Refuses the first key of one block that gruff-ts does not recognise, naming it and listing what is accepted.
+ *
+ * Throws ConfigLoadError so the run stops before analysis, because a silently ignored key is a setting the user
+ * believes is in force; a block the file never wrote is skipped entirely.
+ *
+ * Stable contract: the message names the key the user wrote and lists what is accepted, so the fix is in the error.
+ */
+function assertKnownKeys(block: Record<string, unknown> | undefined, known: ReadonlySet<string>, prefix: string): void {
+  // A block the user did not write cannot carry a wrong key.
+  if (!block) {
+    return;
+  }
+  const unknownKey = Object.keys(block).find((key) => !known.has(key));
+  // Everything the file wrote in this block is a key gruff-ts acts on.
+  if (unknownKey === undefined) {
+    return;
+  }
+  const rejected = JSON.stringify(prefix + unknownKey);
+  const accepted = [...known].sort().map((key) => prefix + key).join(", ");
+  throw new ConfigLoadError(`Unknown config key ${rejected}. Valid keys: ${accepted}.`, SUGGEST_EDIT_CONFIG);
 }
 
 // Loads the optional paired line/byte budget. Either bound can trigger degradation, so both limits
@@ -337,32 +386,57 @@ function applySchemaVersionConfig(parsedConfig: Record<string, unknown>): void {
   }
 }
 
+/*
+ * Loads the `minimumSeverity:` display floor, which hides findings below it from the report and changes nothing else.
+ *
+ * The per-command mapping this key used to take is refused rather than reinterpreted: it is valid YAML that used to
+ * gate a build, and reading it as a display floor would change what a committed file does without changing what it
+ * says. The gate moved to `failOn:` (FAMILY-CONTRACT.md, search: `## 7. CLI surface`).
+ *
+ * Throws ConfigLoadError for the per-command mapping and for any value outside the three severities, so the run
+ * stops before a misread floor can hide a finding the user expected to see.
+ */
+function applyDisplayFloorConfig(config: Config, parsedConfig: Record<string, unknown>): void {
+  const configuredFloor = parsedConfig.minimumSeverity;
+  // An omitted key leaves every finding the run produced on screen.
+  if (configuredFloor === undefined) {
+    return;
+  }
+  if (objectValue(configuredFloor)) {
+    throw new ConfigLoadError(LEGACY_MINIMUM_SEVERITY_ERROR, "Rename the `minimumSeverity:` mapping to `failOn:`, and set `minimumSeverity:` to one severity if you also want a display floor.");
+  }
+  if (configuredFloor !== "advisory" && configuredFloor !== "warning" && configuredFloor !== "error") {
+    throw new ConfigLoadError(`Config key "minimumSeverity" must be one of: advisory, warning, error. Got: ${JSON.stringify(configuredFloor)}.`, SUGGEST_EDIT_CONFIG);
+  }
+  config.displayFloor = configuredFloor;
+}
+
 // Loads per-command failure thresholds so users can set consistent CI behavior in configuration.
 // An omitted block preserves CLI or binary defaults; invalid command names and values fail before analysis.
-function applyMinimumSeverityConfig(config: Config, parsedConfig: Record<string, unknown>): void {
-  const block = objectValue(parsedConfig.minimumSeverity);
+function applyFailOnConfig(config: Config, parsedConfig: Record<string, unknown>): void {
+  const block = objectValue(parsedConfig.failOn);
   // No mapping means the user did not set command-specific failure thresholds.
   if (!block) {
     return;
   }
   // Each configured command receives its validated threshold for later CLI precedence handling.
   for (const [commandName, value] of Object.entries(block)) {
-    config.minimumSeverity.set(assertMinimumSeverityCommand(commandName), parseFailThresholdConfig(value));
+    config.minimumSeverity.set(assertGatedCommand(commandName), parseFailThresholdConfig(value));
   }
 }
 
-// Validates one `minimumSeverity` command name before it can define the user's exit behavior.
+// Validates one `failOn` command name before it can define the user's exit behavior.
 // Throws for dashboard and unknown names because they cannot provide the gate the configuration implies.
-function assertMinimumSeverityCommand(commandName: string): MinimumSeverityCommand {
+function assertGatedCommand(commandName: string): MinimumSeverityCommand {
   // Dashboard has no `--fail-on` behavior, so accepting it would promise users a gate that cannot run.
   if (commandName === "dashboard") {
-    throw new ConfigLoadError('Unknown command in minimumSeverity: "dashboard". The dashboard subcommand does not currently expose a --fail-on flag; configuring its threshold is not supported.', "Remove the `dashboard:` line from `minimumSeverity:` in `.gruff-ts.yaml`, or open an issue if dashboard should gate.");
+    throw new ConfigLoadError('Unknown command in failOn: "dashboard". The dashboard subcommand does not currently expose a --fail-on flag; configuring its threshold is not supported.', "Remove the `dashboard:` line from `failOn:` in `.gruff-ts.yaml`, or open an issue if dashboard should gate.");
   }
   // These are the only commands whose user-facing exit status supports a configured minimum severity.
   if (commandName === "analyse" || commandName === "summary" || commandName === "report") {
     return commandName;
   }
-  throw new ConfigLoadError(`Unknown command in minimumSeverity: ${JSON.stringify(commandName)}. Valid keys: analyse, summary, report.`, SUGGEST_EDIT_CONFIG);
+  throw new ConfigLoadError(`Unknown command in failOn: ${JSON.stringify(commandName)}. Valid keys: analyse, summary, report.`, SUGGEST_EDIT_CONFIG);
 }
 
 // Converts one configured failure threshold into the family vocabulary used by CLI exits.
@@ -388,8 +462,9 @@ function applyPathConfig(config: Config, parsedConfig: Record<string, unknown>):
   config.ignoredPaths = arrayValue(paths?.ignore).filter(isString);
 }
 
-// Loads naming exceptions and the inert legacy secret-preview key before rules run.
-// Naming values become lowercase for stable matching; non-empty secret previews fail because they can no longer hide findings.
+// Loads naming exceptions before rules run; naming values become lowercase for stable matching.
+// Throws ConfigLoadError when the removed `secretPreviews` key is present at all, because section 5 makes category
+// markers unconditional and a key that authorises nothing must not look as though it does.
 function applyAllowlistConfig(config: Config, parsedConfig: Record<string, unknown>): void {
   const allowlists = objectValue(parsedConfig.allowlists);
   const abbreviations = arrayValue(allowlists?.acceptedAbbreviations).filter(isString);
@@ -397,9 +472,9 @@ function applyAllowlistConfig(config: Config, parsedConfig: Record<string, unkno
   if (allowlists && "acceptedAbbreviations" in allowlists) {
     config.acceptedAbbreviations = new Set(abbreviations.map((value) => value.toLowerCase()));
   }
-  // Users may retain the generated empty key, but any legacy value must fail before it can hide a finding.
+  // Presence is the test, not content: an empty list reads as configured redaction just as a populated one does.
   if (allowlists && "secretPreviews" in allowlists) {
-    assertLegacySecretPreviewsAreEmpty(allowlists.secretPreviews);
+    throw new ConfigLoadError(LEGACY_SECRET_PREVIEWS_ERROR, "Delete the `allowlists.secretPreviews:` entry from `.gruff-ts.yaml`; nothing replaces it.");
   }
   applyNamingAllowlist(config, allowlists, "bannedGenericNames");
   applyNamingAllowlist(config, allowlists, "acceptedBooleanNames");
@@ -410,19 +485,6 @@ function applyAllowlistConfig(config: Config, parsedConfig: Record<string, unkno
   applyNamingAllowlist(config, allowlists, "placeholderNames");
   applyNamingAllowlist(config, allowlists, "negativeBooleanAllowed");
   applyNamingAllowlist(config, allowlists, "knownAcronyms");
-}
-
-// Validates the obsolete secret-preview key while generated configs still include it.
-// Missing is handled by the caller and exact `[]` is inert; every supplied alternative throws the same value-independent config error.
-function assertLegacySecretPreviewsAreEmpty(configuredSecretPreviews: unknown): void {
-  // An exact empty array means the retired setting cannot change the user's findings.
-  if (Array.isArray(configuredSecretPreviews) && configuredSecretPreviews.length === 0) {
-    return;
-  }
-  throw new ConfigLoadError(
-    LEGACY_SECRET_PREVIEWS_ERROR,
-    "Keep `allowlists.secretPreviews: []` until a future release removes the obsolete key.",
-  );
 }
 
 // Applies one naming allowlist as a complete replacement for its built-in values.

@@ -51,12 +51,12 @@ interface InitPromptContext {
 
 /**
  * Bundle of values that survive an `init --force` regeneration. `paths.ignore` is preserved
- * verbatim, `minimumSeverity` is replayed entry-by-entry; the schemaVersion field is fixed for now
+ * verbatim, the per-command `failOn` gate is replayed entry-by-entry; the schemaVersion field is fixed for now
  * because there is only one supported version.
  */
 interface PreservedInitConfig {
   ignoredPaths: readonly string[];
-  minimumSeverity: ReadonlyMap<MinimumSeverityCommand, FailThreshold>;
+  failOn: ReadonlyMap<MinimumSeverityCommand, FailThreshold>;
   sensitiveExclusions: readonly PreservedSensitiveExclusionEntry[];
 }
 
@@ -68,30 +68,30 @@ interface PreservedSensitiveExclusionEntry {
   reason: string;
 }
 
-const EMPTY_PRESERVED_CONFIG: PreservedInitConfig = { ignoredPaths: [], minimumSeverity: new Map(), sensitiveExclusions: [] };
+const EMPTY_PRESERVED_CONFIG: PreservedInitConfig = { ignoredPaths: [], failOn: new Map(), sensitiveExclusions: [] };
 
 /**
  * Render the default .gruff-ts.yaml content from the rule descriptor registry. Output order is
- * schemaVersion → minimumSeverity → paths → allowlists → rules so the highest-impact CI behaviour
+ * schemaVersion → failOn → paths → allowlists → rules so the highest-impact CI behaviour
  * (gating threshold per command) sits near the top of the file. Sections are separated by blank
  * lines for readability.
  *
  * @param ignoredPaths Optional `paths.ignore` entries to inject verbatim (block-sequence form).
  *   The `gruff-ts init --force` flow forwards the existing file's entries so user-curated
  *   exclusions survive regeneration; an empty list emits `ignore: []` for fresh projects.
- * @param preservedMinimumSeverity Optional carry-over of the existing config's `minimumSeverity:`
- *   block. Empty Map falls back to canonical defaults (advisory / advisory / none).
+ * @param preservedFailOn Optional carry-over of the existing config's `failOn:` block.
+ *   Empty Map falls back to canonical defaults (advisory / advisory / none).
  * @returns A YAML document string terminated by a trailing newline.
  */
 function renderDefaultConfig(
   ignoredPaths: readonly string[] = [],
-  preservedMinimumSeverity: ReadonlyMap<MinimumSeverityCommand, FailThreshold> = new Map(),
+  preservedFailOn: ReadonlyMap<MinimumSeverityCommand, FailThreshold> = new Map(),
   preservedSensitiveExclusions: readonly PreservedSensitiveExclusionEntry[] = [],
 ): string {
   return [
     renderSchemaVersionSection(),
     "",
-    renderMinimumSeveritySection(preservedMinimumSeverity),
+    renderFailOnSection(preservedFailOn),
     "",
     renderPathsSection(ignoredPaths),
     "",
@@ -157,17 +157,19 @@ function renderSchemaVersionSection(): string {
 // Per-command --fail-on defaults. The canonical out-of-the-box values match the operator's "show
 // everything, fail on anything" philosophy. `dashboard` is intentionally NOT a valid key because
 // the dashboard subcommand has no --fail-on flag and accepting it would be a silent CI footgun.
-function renderMinimumSeveritySection(preserved: ReadonlyMap<MinimumSeverityCommand, FailThreshold>): string {
+function renderFailOnSection(preserved: ReadonlyMap<MinimumSeverityCommand, FailThreshold>): string {
   const header = [
     "# Per-command default for `--fail-on`. CLI flag > this block > binary default.",
     "# `dashboard` is intentionally NOT a valid key - it has no --fail-on flag. See ADR-004.",
+    "# `minimumSeverity:` is a different setting: one severity that hides quieter findings from the",
+    "# report without changing the score or the exit code.",
     "#",
     "# Values:",
     "#   error    - exit non-zero only when an error-severity finding fires (strictest gate).",
     "#   warning  - exit non-zero on warning or error findings (advisory findings pass).",
     "#   advisory - exit non-zero on any finding at all (advisory, warning, or error).",
     "#   none     - never exit non-zero from findings (use for raw reporting / baseline generation).",
-    "minimumSeverity:",
+    "failOn:",
   ];
   const entries: Array<[MinimumSeverityCommand, FailThreshold]> = [
     ["analyse", preserved.get("analyse") ?? "advisory"],
@@ -200,17 +202,17 @@ function writeDefaultConfig(projectRoot: string, shouldOverwrite: boolean): Init
     return { path: existingConfigPath, status: "exists" };
   }
   const targetExists = existsSync(targetPath);
-  // Preserve paths.ignore + minimumSeverity from whichever supported config exists, not just
+  // Preserve paths.ignore + the per-command failOn gate from whichever supported config exists, not just
   // `.gruff-ts.yaml` - otherwise `init --force` against a project with only
   // `.gruff.yaml`/`.yml`/`.json` would silently drop user-curated exclusions and command-specific
   // gating thresholds when generating the new canonical file.
   const preserved = existingConfigPath !== undefined ? readExistingPreservedConfig(existingConfigPath) : EMPTY_PRESERVED_CONFIG;
-  writeFileSync(targetPath, renderDefaultConfig(preserved.ignoredPaths, preserved.minimumSeverity, preserved.sensitiveExclusions));
+  writeFileSync(targetPath, renderDefaultConfig(preserved.ignoredPaths, preserved.failOn, preserved.sensitiveExclusions));
   return { path: targetPath, status: targetExists ? "overwritten" : "written" };
 }
 
 /*
- * Recover the existing file's `paths.ignore` and `minimumSeverity` blocks before `init --force`
+ * Recover the existing file's `paths.ignore` and per-command gate blocks before `init --force`
  * overwrites it. Uses the permissive extractor (not the strict validator) so a pre-0.2.0 config
  * without `schemaVersion` still hands its curated entries to the regenerated file - the strict
  * gate would throw on the missing field and silently drop the user's `paths.ignore`. The
@@ -260,7 +262,6 @@ function renderAllowlistsSection(): string {
     "  acceptedAbbreviations:",
     // Each family term is visible so a user can review or replace the complete list in generated YAML.
     ...DEFAULT_ACCEPTED_ABBREVIATIONS.map((abbreviation) => `    - ${abbreviation}`),
-    "  secretPreviews: []",
     "  # Names that trigger naming.generic-function. Each key replaces the built-in",
     "  # default when present; an empty list disables that rule's blacklist branch.",
     "  # Default: [process, handle, doit, run, execute, manage]",
