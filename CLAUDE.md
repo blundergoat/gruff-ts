@@ -2,7 +2,7 @@
 
 `gruff-ts` - TypeScript project quality analyser. Modular Node.js/ESM CLI: a thin `src/cli.ts` shell (24 lines) delegates to `src/analyser.ts` and its focused sibling modules under `src/` (`blocks.ts`, `line-rules.ts`, `project-rules.ts`, `class-rules.ts`, `dead-code-rules.ts`, `safety-rules.ts`, `naming-pushers.ts`, `comment-rules.ts`, `doc-rules.ts`, `report-renderers.ts`, etc.). It scans TypeScript and JavaScript (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`) plus config and text assets (`conf`, `config`, `env`, `ini`, `json`, `toml`, `xml`, `yaml`, `yml`, any `.env*` name, and `.npmrc`/`.pypirc`/`.envrc`/`.netrc`); CSS left the allowlist in 0.3.0, and `src/discovery.ts`:`pushSourceFile` is the only authority. It emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable identity so baselines (`gruff.baseline.v3`, which matches on that identity and a count) and report snapshots (`gruff.analysis.v3`) round-trip without churn.
 
-goat-flow version: 1.15.1
+goat-flow version: 1.16.0
 
 ## Workspace Boundary
 

@@ -543,7 +543,6 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     .option("--deep-scan-budget <lines:bytes|off>", "Override both deep-scan bounds as LINES:BYTES, or disable the budget with off.", parseDeepScanBudget)
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "none")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
-    .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
       await runWithConfigErrorHandling(async () => {
         const format = rawOptions.format === "json" ? "json" : "html";

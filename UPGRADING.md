@@ -28,6 +28,8 @@ time, so a project using more than one of them moves once. This port's recorded 
 
 11. **the agent-hook contract moves from `gruff.hook.v1` to `gruff.hook.v2`** — The payload's `contractVersion` changes and the envelope gains two required keys, `run` and `suppressions`. `run` carries the audit data a consumer needs to trust the verdict — mode, scope, the operands as given, `analysedFiles`, and the applied baseline — and `suppressions` carries one row per configured sensitive exclusion the run applied, `[]` when none are configured. The exits are ratified as three and no others: `0` when nothing reached the gate, `1` when something did under an explicit consumer request (`--fail-on`, `--fail-on-new`, or `--fail-on-diagnostics`), and `2` when the run could not happen. Update any consumer that validates the payload's key set; one that reads only the keys it needs is unaffected. The contract is `gruff-spec/contracts/core/hook.v2.json`, ratified 2026-09-06.
 
+12. **`report` no longer accepts `--no-baseline`** — The option was registered on `report` and did nothing: `report` never applies a baseline, and its JSON carried `baseline: null` with or without the flag. `report --baseline` additionally suggested `--no-baseline` in its error, pointing at the no-op. The option is gone and `report --no-baseline` now exits `2`. Remove it from any `report` invocation. `analyse` and `summary` keep `--no-baseline`, where it does suppress the auto-discovered baseline.
+
 ## Upgrade workflow (`0.5.x` → `0.6.0`)
 
 1. Read the list above and decide which breaks touch your project. A project with no committed
