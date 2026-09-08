@@ -59,7 +59,8 @@ field table; this page does not restate them.
 
 `gruff.analysis.v3` may include an optional notes array at
 `extensions.ts.topLevel.notes`. Notes are non-fatal: they explain scan-surface
-limits without changing exit codes. `diagnostics` still owns exit `2`.
+limits without changing exit codes. A fatal `diagnostics` entry owns exit `2`; a
+non-fatal one leaves the exit code alone.
 
 `gruff.analysis.v3` always carries a `suppressions` array: one row per
 configured `sensitiveExclusions:` entry, empty when none are configured. A
@@ -101,7 +102,8 @@ gruff-ts analyse . --diff=staged --format=github --fail-on=warning
 gruff-ts analyse . --diff=origin/main --format=github --fail-on=warning
 ```
 
-`--diff` filters findings to changed files after analysis.
+`--diff` filters findings to changed regions after analysis. `--changed-scope`
+sets how wide a region is: `hunk`, `symbol` (the default), or `file`.
 
 For SARIF consumers, write SARIF output from `analyse` and upload the generated
 file with your platform's code-scanning upload step:

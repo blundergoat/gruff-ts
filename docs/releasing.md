@@ -1,6 +1,6 @@
 # Releasing
 
-This checklist prepares the public `@blundergoat/gruff-ts@0.5.0` release.
+This checklist prepares the public `@blundergoat/gruff-ts@0.6.0` release.
 Publishing, git tags, and public release creation are maintainer-owned actions.
 
 ## Bump The Version
@@ -8,7 +8,7 @@ Publishing, git tags, and public release creation are maintainer-owned actions.
 Run the coordinated bump only after the release version is approved:
 
 ```bash
-scripts/bump-version.sh 0.5.0
+scripts/bump-version.sh 0.6.0
 scripts/bump-version.sh --check
 ```
 
