@@ -131,7 +131,7 @@ Global console options match the broader gruff CLI surface: `--silent`, `--quiet
 | `1` | At least one finding met `--fail-on`. |
 | `2` | Fatal diagnostic such as missing input, parse error, config error, diff failure, baseline failure, or invalid input. |
 
-`analyse` and `summary` default to `--fail-on advisory`; `report` defaults to `--fail-on none`. The defaults can be overridden per-project by a `failOn:` block in `.gruff-ts.yaml`. CLI flag wins over config; config wins over the binary default. See ADR-004 and the Configuration section.
+`analyse` and `summary` default to `--fail-on advisory`; `report` and `hook` default to `--fail-on none`. This table covers `analyse`, `summary` and `report`; `hook` gates only on an explicit consumer request and has its own table in the Baselines And Changed-Code Scans section. The defaults can be overridden per-project by a `failOn:` block in `.gruff-ts.yaml`. CLI flag wins over config; config wins over the binary default. See ADR-004 and the Configuration section.
 
 ## CI Usage
 
@@ -258,12 +258,18 @@ npx gruff-ts hook --format=json --changed-ranges "3-3,8-10" src/foo.ts
 npx gruff-ts hook --capabilities --format=json
 ```
 
-`hook` emits `gruff.hook.v2` JSON with normalized `file`, `scope`, `suppressed.count`,
-`ignored.paths`, non-null `remediation`, stable identities, and threshold metadata. Hook mode is
-advisory: findings exit `0`; operational failures such as invalid config exit `2` and are reported
-in `config.error`. Parse and read diagnostics are reported in-band at exit `0` unless the
-consumer passes `--fail-on-diagnostics`, which makes a diagnostic that touches the analysed
-change exit `1`.
+`hook` emits `gruff.hook.v2` JSON: a nine-key envelope of `contractVersion`, `analyzer`, `run`,
+`findings`, `diagnostics`, `suppressed`, `suppressions`, `ignored`, and `config`, carrying
+normalized `file` and `scope` per finding, non-null `remediation`, stable identities, and
+threshold metadata. Hook mode is advisory at its default `--fail-on none`: findings are published
+and the run exits `0`. Only an explicit consumer request blocks the edit, so `hook` has its own
+exit codes rather than the `analyse` ones above:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Nothing reached a gate the caller asked for. The default `--fail-on none` lands here however severe the findings are. |
+| `1` | Something did: a published finding met `--fail-on`, `--fail-on-new` saw a finding the applied baseline calls new, or `--fail-on-diagnostics` saw a diagnostic that touches the analysed change. |
+| `2` | The run could not happen. An invalid config also fills `config.error`; an unusable baseline or changed range is a fatal entry in `diagnostics`. |
 
 Baselines suppress reviewed findings by a line-free identity and the count each row accepts, so an
 unrelated edit that shifts line numbers does not re-open reviewed debt:

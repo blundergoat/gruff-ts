@@ -19,10 +19,20 @@ gruff-ts hook --format json --changed-ranges "12-40,88-90" src/foo.ts
 gruff-ts hook --capabilities --format json
 ```
 
-`hook` emits `gruff.hook.v2` JSON with normalized `file`, `scope`, `suppressed.count`,
-`ignored.paths`, non-null `remediation`, stable identities, and machine-readable threshold
-metadata. Hook mode is advisory: findings exit `0`; config failures are returned in
-`config.error` and exit `2`.
+`hook` emits `gruff.hook.v2` JSON: a nine-key envelope of `contractVersion`, `analyzer`, `run`,
+`findings`, `diagnostics`, `suppressed`, `suppressions`, `ignored`, and `config`, carrying
+normalized `file` and `scope` per finding, non-null `remediation`, stable identities, and
+machine-readable threshold metadata.
+
+Hook mode is advisory at its default `--fail-on none`: findings are published and the run exits
+`0`. Only an explicit consumer request blocks the edit, so `hook` has its own exit codes rather
+than the `analyse` ones above:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Nothing reached a gate the caller asked for. The default `--fail-on none` lands here however severe the findings are. |
+| `1` | Something did: a published finding met `--fail-on`, `--fail-on-new` saw a finding the applied baseline calls new, or `--fail-on-diagnostics` saw a relevant diagnostic. |
+| `2` | The run could not happen. A config failure also fills `config.error`; an unusable baseline or changed range is a fatal entry in `diagnostics`. |
 
 Parse and read diagnostics are file-scoped and reported in-band via the additive
 `diagnostics` array (`{ type, message, file, line }`): a full scan carries every
@@ -75,7 +85,7 @@ gruff-ts check-ignore $CHANGED_FILES --format json
 
 ## Picking the gate level
 
-`--fail-on` sets the bar the agent must clear. Built-in defaults are `advisory` for `analyse` and `summary`, `none` for `report`; raise or lower per surface:
+`--fail-on` sets the bar the agent must clear. Built-in defaults are `advisory` for `analyse` and `summary`, `none` for `report` and `hook`; raise or lower per surface:
 
 | Level | Use it as the agent gate when |
 | --- | --- |
