@@ -9,7 +9,7 @@ import { ConfigLoadError } from "./config-load-error.ts";
 
 // Two common suggestion strings reused across the validators. Hoisted out so a future doc-link
 // or wording tweak lands in one place instead of N throw sites.
-const SUGGEST_INIT_FORCE = "Run `gruff-ts init --force` to regenerate the config from current defaults (preserves your `paths.ignore` and `minimumSeverity:` entries).";
+const SUGGEST_INIT_FORCE = "Run `gruff-ts init --force` to regenerate the config from current defaults (preserves your `paths.ignore` and `failOn:` entries).";
 const SUGGEST_EDIT_CONFIG = "Edit `.gruff-ts.yaml` to use a valid value, or run `gruff-ts init --force` to regenerate from defaults.";
 
 const YAML_KEYWORD_SCALARS = new Map<string, boolean | null>([

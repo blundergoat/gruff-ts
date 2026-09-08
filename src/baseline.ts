@@ -43,7 +43,8 @@ function recordHistory(projectRoot: string, historyFile: string, findings: Findi
 // All other rules collapse on their fingerprint, extended by the match column when one is present
 // (ADR-017): two distinct secrets on one line share a line-keyed fingerprint, and without the column
 // discriminator the second occurrence would be silently dropped from every report and the hook.
-// The extended key is in-memory only - fingerprint values and `gruff.baseline.v1` matching are unchanged.
+// The extended key is in-memory only - fingerprint values are unchanged, and `gruff.baseline.v3` matching
+// reads the line-free identity rather than this key.
 function dedupeFindings(findings: Finding[]): Finding[] {
   const seen = new Set<string>();
   return findings.filter((finding) => {

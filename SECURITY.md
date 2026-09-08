@@ -36,8 +36,9 @@ Please include:
   must be escaped.
 - The scanner is heuristic and is not a vulnerability scanner or dependency
   advisory database.
-- Baselines suppress matching fingerprints. For security-focused CI, prefer
-  `gruff-ts analyse . --no-baseline --fail-on=error`.
+- Baselines suppress reviewed findings by a line-free identity and the count each row
+  accepts, and a sensitive-data finding can never be baselined. For security-focused CI,
+  prefer `gruff-ts analyse . --no-baseline --fail-on=error`.
 
 ## Disclosure Expectations
 

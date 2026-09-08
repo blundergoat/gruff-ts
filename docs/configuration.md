@@ -29,18 +29,18 @@ gruff-ts analyse . --no-config
 
 Every `.gruff-ts.yaml` must declare `schemaVersion: gruff-ts.config.v0.1` at the
 top. Loading throws if the field is missing or carries a different value. The
-field is in a different namespace from the output schemas (`gruff.analysis.v2`,
-`gruff.summary.v2`, etc.) - the config-input version travels independently of
+field is in a different namespace from the output schemas (`gruff.analysis.v3`,
+`gruff.summary.v3`, etc.) - the config-input version travels independently of
 the output-payload versions. See ADR-004.
 
-## minimumSeverity (per-command gating defaults)
+## failOn (per-command gating defaults)
 
-A top-level `minimumSeverity:` block sets the default `--fail-on` value per
-command. The precedence chain is **CLI flag > config > binary default**.
+A top-level `failOn:` block sets the default `--fail-on` value per command.
+The precedence chain is **CLI flag > config > binary default**.
 
 ```yaml
 schemaVersion: gruff-ts.config.v0.1
-minimumSeverity:
+failOn:
   analyse: advisory
   summary: advisory
   report: none
@@ -51,17 +51,22 @@ other value (including `never`, which was an early cross-port draft for the
 off-switch before the family converged on `none`).
 
 `dashboard` is intentionally **not** a valid key in this block. The dashboard
-subcommand has no `--fail-on` flag today; setting `minimumSeverity.dashboard:`
-would be a silent no-op CI footgun, so the validator rejects it with a clear
-error.
+subcommand has no `--fail-on` flag today; setting `failOn.dashboard:` would be
+a silent no-op CI footgun, so the validator rejects it with a clear error.
 
 Binary defaults are `analyse: advisory`, `summary: advisory`, `report: none`.
+
+`minimumSeverity:` is a different setting: one severity - `advisory`,
+`warning`, or `error` - that hides quieter findings from the report without
+changing the score or the exit code. A `minimumSeverity:` carrying the
+per-command map above is refused at config load rather than read as a floor, so
+an existing 0.5 config cannot quietly change what it gates.
 
 ## Shape
 
 ```yaml
 schemaVersion: gruff-ts.config.v0.1
-minimumSeverity:
+failOn:
   analyse: advisory
   summary: advisory
   report: none
@@ -88,7 +93,7 @@ sensitiveExclusions:
     reason: Synthetic key used by the loader fixture; not a live credential.
 
 rules:
-  rule.id:
+  complexity.cyclomatic:
     enabled: true
     threshold: 10
     severity: warning
@@ -134,7 +139,8 @@ names add no exclusion; eligible forms such as `package-lock.json` are scanned.
 path is excluded and produces no findings whether it is reached by a directory
 walk, passed as an explicit file operand (`gruff-ts analyse src/generated-client.ts`),
 or touched by a diff/changed-region run. Excluded paths appear in the report's
-`paths.skipped` array with their `source` (`config` / `gitignore` / `default`) and
+`paths.details` array with their `source` (`config` / `gitignore` / `default`) and, for
+`config` entries only,
 the matching `pattern`. Query a path without scanning via `check-ignore`, which
 shares the same engine and mirrors `git check-ignore` exit codes (0 = at least
 one ignored, 1 = none, 2 = error):
@@ -304,11 +310,11 @@ names the entry index plus the offending key when an entry:
 An entry that matches no finding is not an error. It reports `suppressed: 0`, so
 fixing the underlying problem never breaks a build.
 
-Every entry is counted. The `suppressions` array in the `gruff.analysis.v2`
+Every entry is counted. The `suppressions` array in the `gruff.analysis.v3`
 report carries one row per entry in declaration order:
 
 ```json
-{ "index": 0, "rule": "sensitive-data.aws-access-key", "paths": ["tests/fixtures/aws-sample.env"], "symbol": null, "reason": "Synthetic key used by the loader fixture; not a live credential.", "suppressed": 2 }
+{ "index": 0, "rule": "sensitive-data.aws-access-key", "paths": ["tests/fixtures/aws-sample.env"], "reason": "Synthetic key used by the loader fixture; not a live credential.", "suppressed": 2 }
 ```
 
 Text output prints the total when it is non-zero:

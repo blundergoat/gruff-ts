@@ -31,7 +31,7 @@ from changed target files, and `--changed-ranges` carries every diagnostic of
 each requested file (a syntax error breaks parsing of the whole file, so ranges
 never filter diagnostics). The default hook exit stays `0` with diagnostics
 in-band; pass the explicit consumer request flag `--fail-on-diagnostics` to exit
-`2` when relevant diagnostics exist. The capability handshake advertises this via
+`1` when relevant diagnostics exist. The capability handshake advertises this via
 `supports.diagnostics` and `flags.failOnDiagnostics` - the capability is a
 producer advertisement only and never changes behavior by itself. Fatal failures
 (analysis could not run at all) keep operational-error exit `2` semantics.
@@ -63,7 +63,7 @@ Changed-region scans keep only findings attributable to the changed hunk, its en
 
 ## Respect the project's ignore policy
 
-A hook passes the agent's changed files directly, so the project's `paths.ignore` must hold for those explicit paths too - otherwise the agent burns loops "fixing" generated or vendored code the project deliberately excludes. Config `paths.ignore` is authoritative in every invocation (explicit operand, diff, changed-region): a matching path produces no findings and is listed in the report's `paths.skipped` with its `source` and `pattern`. `--include-ignored` opts into git/default ignores only and never overrides `paths.ignore`.
+A hook passes the agent's changed files directly, so the project's `paths.ignore` must hold for those explicit paths too - otherwise the agent burns loops "fixing" generated or vendored code the project deliberately excludes. Config `paths.ignore` is authoritative in every invocation (explicit operand, diff, changed-region): a matching path produces no findings and is listed in the report's `paths.details` with its `source` and `pattern`. `--include-ignored` opts into git/default ignores only and never overrides `paths.ignore`.
 
 To pre-filter a changed-file list before scanning, ask gruff which paths it would skip - it shares the same engine as `analyse` and runs no analysis:
 
@@ -83,7 +83,7 @@ gruff-ts check-ignore $CHANGED_FILES --format json
 | `warning` | Recommended default. Blocks the security and correctness tier plus the verifiability signals (complexity, missing exported-API docs, weak tests) while leaving advisories as nudges. |
 | `advisory` | Strictest. Every finding is friction the agent must clear. Best when you want maximum legibility pressure and can tolerate more agent rework. |
 
-Per-command levels can be pinned in `.gruff-ts.yaml` via the `minimumSeverity:` block (see [Configuration](configuration.md)); precedence is CLI flag > config > built-in default.
+Per-command levels can be pinned in `.gruff-ts.yaml` via the `failOn:` block (see [Configuration](configuration.md)); precedence is CLI flag > config > built-in default.
 
 ## Fix, do not suppress
 

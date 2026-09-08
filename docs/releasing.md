@@ -80,9 +80,11 @@ import runtime files from the development checkout.
 
 ## Publish And Verify
 
-This repository has no publish wrapper. After every gate above is green, the
-maintainer performs the registry publish, tag, and public release through the
-approved release process.
+`bash scripts/npm-publish.sh` is the publish wrapper. It reads the name and version from
+`package.json`, verifies npm authentication, checks version lockstep, runs the release preflight
+gate, prints a dry-run summary, and requires manual confirmation before it calls `npm publish`.
+The tag and the public release remain maintainer-owned actions performed through the approved
+release process after every gate above is green.
 
 After publication:
 
