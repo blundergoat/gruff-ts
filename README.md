@@ -251,7 +251,8 @@ Use `npx gruff-ts list-rules --format=json` for exact rule IDs, severities, conf
 
 ## Baselines And Changed-Code Scans
 
-For editor and coding-agent feedback, prefer the analyser-owned hook contract:
+For editor and coding-agent feedback, prefer the analyser-owned hook contract. Wiring it into an
+agent, gate levels, and CI use are covered in [Using gruff-ts As A Coding-Agent Hook](docs/agent-hook.md):
 
 ```bash
 npx gruff-ts hook --format=json --changed-ranges "3-3,8-10" src/foo.ts

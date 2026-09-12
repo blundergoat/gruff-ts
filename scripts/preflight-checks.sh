@@ -394,11 +394,109 @@ if (!rules || rules.length === 0) {
 }
 const ids = rules.map((rule) => rule.id).sort();
 const pillars = [...new Set(rules.map((rule) => rule.pillar))].sort();
+const pillarCounts = pillars.map((pillar) => pillar + ":" + rules.filter((rule) => rule.pillar === pillar).length);
+// One line per rule for the hand-maintained docs/rules.md list: id, severity, confidence, and the
+// threshold value or "-" when the rule has none.
+const ruleFacts = [...rules]
+  .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+  .map((rule) => {
+    const thresholds = rule.thresholds && typeof rule.thresholds === "object" ? Object.values(rule.thresholds) : [];
+    return rule.id + ":" + rule.defaultSeverity + ":" + rule.confidence + ":" + (thresholds.length === 1 ? String(thresholds[0]) : "-");
+  });
 console.log("count=" + rules.length);
 console.log("pillars=" + pillars.length);
 console.log("pillarNames=" + pillars.join("|"));
+console.log("pillarCounts=" + pillarCounts.join("|"));
+console.log("ruleFacts=" + ruleFacts.join("|"));
 console.log("ids=" + ids.join(" "));
 NODE
+}
+
+# Compare every per-pillar table row in the README with the live catalogue. A row that names a count
+# the catalogue does not have, or a table shorter than the catalogue's pillar list, is a stale claim.
+docs_drift_pillar_table() {
+  local readme="$1"
+  local facts="$2"
+  local backtick='`'
+  local pillar_counts row_pillar row_count live_count table_rows=0 pillars
+  pillars=$(docs_fact "$facts" pillars)
+  pillar_counts="|$(docs_fact "$facts" pillarCounts)|"
+
+  while IFS='|' read -r row_pillar row_count; do
+    table_rows=$((table_rows + 1))
+    live_count=$(sed -n "s/.*|${row_pillar}:\([0-9]*\)|.*/\1/p" <<<"$pillar_counts")
+    if [[ "$live_count" != "$row_count" ]]; then
+      printf 'docs drift: source-revision: README.md pillar table says %s has %s rules but list-rules has %s\n' \
+        "$row_pillar" "$row_count" "${live_count:-no such pillar}"
+      return 1
+    fi
+  done < <(grep -oE "^\| *${backtick}[a-z-]+${backtick} *\| *[0-9]+ *\|$" "$readme" \
+    | sed -E "s/^\| *${backtick}([a-z-]+)${backtick} *\| *([0-9]+) *\|$/\1|\2/")
+
+  if ((table_rows > 0 && table_rows != pillars)); then
+    printf 'docs drift: source-revision: README.md pillar table has %s rows but list-rules has %s pillars\n' \
+      "$table_rows" "$pillars"
+    return 1
+  fi
+
+  printf '%s' "$table_rows"
+}
+
+# docs/rules.md is maintained by hand, so every one of its rule lines is checked against list-rules:
+# the id must ship, and the severity, confidence and threshold in its parenthesis must be the live ones.
+# The list must also be complete, so a rule added to the catalogue without a line fails here.
+docs_drift_rule_list() {
+  local rules_doc="$1"
+  local facts="$2"
+  local backtick='`'
+  local rule_facts line rule_id rest severity confidence threshold live count lines=0 pillar_line pillar_name pillar_count live_count
+  count=$(docs_fact "$facts" count)
+  rule_facts="|$(docs_fact "$facts" ruleFacts)|"
+
+  while IFS= read -r line; do
+    lines=$((lines + 1))
+    rule_id=${line#- "$backtick"}
+    rule_id=${rule_id%%"$backtick"*}
+    rest=${line#*(}
+    rest=${rest%%)*}
+    severity=${rest%%;*}
+    confidence=$(sed -nE 's/^[a-z]+; ([a-z]+) confidence.*$/\1/p' <<<"$rest")
+    threshold=$(sed -nE 's/^.*; threshold ([0-9]+).*$/\1/p' <<<"$rest")
+    live=$(sed -n "s/.*|${rule_id}:\([^|]*\)|.*/\1/p" <<<"$rule_facts")
+    if [[ -z "$live" ]]; then
+      printf 'docs drift: rule list: docs/rules.md names %s, which list-rules does not ship\n' "$rule_id"
+      return 1
+    fi
+    if [[ "$live" != "$severity:$confidence:${threshold:--}" ]]; then
+      printf 'docs drift: rule list: docs/rules.md says %s is %s; %s confidence; threshold %s, but list-rules says %s\n' \
+        "$rule_id" "$severity" "${confidence:-?}" "${threshold:-none}" "$live"
+      return 1
+    fi
+  done < <(grep -E "^- ${backtick}[a-z-]+\.[a-z0-9-]+${backtick} \(" "$rules_doc")
+
+  if ((lines == 0)); then
+    printf 'docs drift: false-empty: docs/rules.md carries no rule lines\n'
+    return 1
+  fi
+  if ((lines != count)); then
+    printf 'docs drift: rule list: docs/rules.md carries %s rule lines but list-rules has %s rules\n' "$lines" "$count"
+    return 1
+  fi
+
+  # The Pillar Counts section is the same claim in list form.
+  while IFS= read -r pillar_line; do
+    pillar_name=${pillar_line#- }
+    pillar_name=${pillar_name%%:*}
+    pillar_count=${pillar_line##*: }
+    live_count=$(sed -n "s/.*|${pillar_name}:\([0-9]*\)|.*/\1/p" <<<"|$(docs_fact "$facts" pillarCounts)|")
+    if [[ "$live_count" != "$pillar_count" ]]; then
+      printf 'docs drift: rule list: docs/rules.md pillar counts say %s has %s but list-rules has %s\n' \
+        "$pillar_name" "$pillar_count" "${live_count:-no such pillar}"
+      return 1
+    fi
+  done < <(sed -n '/^## Pillar Counts$/,/^## /p' "$rules_doc" | grep -E '^- [a-z-]+: [0-9]+$')
+
+  printf '%s' "$lines"
 }
 
 # Read one fact from the extracted facts block.
@@ -464,6 +562,16 @@ docs_drift_check_root() {
       return 1
     fi
   done < <(grep -oE 'The current catalogue contains [0-9]+ rules' "$readme")
+  local table_rows rule_lines
+  table_rows=$(docs_drift_pillar_table "$readme" "$facts") || {
+    printf '%s\n' "$table_rows"
+    return 1
+  }
+  rule_lines=$(docs_drift_rule_list "$rules_doc" "$facts") || {
+    printf '%s\n' "$rule_lines"
+    return 1
+  }
+  claims=$((claims + table_rows + rule_lines))
   if ((claims == 0)); then
     printf 'docs drift: false-empty: README.md and docs/rules.md state no catalogue size\n'
     return 1
@@ -603,8 +711,19 @@ docs_drift_fixture_check() {
   printf '\n[Missing page](docs/missing-page.md)\n' >>"$root/README.md"
   expect_docs_drift_rejection dead-link 'entry-page link' "$root" "$facts" || { rm -rf -- "$harness"; return 1; }
 
+  root="$harness/stale-pillar-table"
+  cp -R "$valid" "$root"
+  sed -i -E "0,/^(\| *${backtick}[a-z-]+${backtick} *\| *)[0-9]+( *\|)$/s//\1999\2/" "$root/README.md"
+  expect_docs_drift_rejection stale-pillar-table 'pillar table' "$root" "$facts" || { rm -rf -- "$harness"; return 1; }
+
+  # A hand-maintained rule line whose severity no longer matches list-rules is a stale claim.
+  root="$harness/stale-rule-line"
+  cp -R "$valid" "$root"
+  sed -i -E "0,/^(- ${backtick}[a-z-]+\.[a-z0-9-]+${backtick} \()[a-z]+;/s//\1phantom-severity;/" "$root/docs/rules.md"
+  expect_docs_drift_rejection stale-rule-line 'rule list' "$root" "$facts" || { rm -rf -- "$harness"; return 1; }
+
   rm -rf -- "$harness"
-  printf '5 mutations rejected'
+  printf '7 mutations rejected'
 }
 
 summary() {
