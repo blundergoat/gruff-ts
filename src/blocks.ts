@@ -713,7 +713,9 @@ function isControlBlockName(name: string): boolean {
 
 // Walks upward from the declaration line absorbing decorator (`@`), docblock (`/**`, `*`), and
 // blank lines so the function block includes its leading documentation. Stops at the first real
-// code line above - that boundary becomes the block's start line.
+// code line above, then steps back down off any blank separator - that line belongs to the
+// declaration above this one, and reporting it gives the user a finding pointing at empty space
+// inside someone else's function, which is neither triageable nor suppressible by line.
 function functionStartIndex(lines: string[], index: number): number {
   let start = index;
   while (start > 0) {
@@ -723,6 +725,9 @@ function functionStartIndex(lines: string[], index: number): number {
       continue;
     }
     break;
+  }
+  while (start < index && (lines[start]?.trim() ?? "") === "") {
+    start += 1;
   }
   return start;
 }

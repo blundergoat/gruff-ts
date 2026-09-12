@@ -1,21 +1,24 @@
 // Commander CLI shell wiring that keeps option normalization and stdout behavior outside the analyzer.
 import { Command, Help, InvalidArgumentError } from "commander";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { cwd } from "node:process";
 import { DEFAULT_BASELINE } from "./baseline.ts";
 import { checkIgnore, checkIgnoreExitCode, renderCheckIgnore, type CheckIgnoreFormat } from "./check-ignore.ts";
+import { ChangedRegionError } from "./changed-regions.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
 import { loadConfig, minimumSeverityFor } from "./config.ts";
 import { VERSION } from "./constants.ts";
 import { startDashboard } from "./dashboard.ts";
-import { hookRenderedDiagnosticsCount, renderHookCapabilities, renderHookConfigError, renderHookReport } from "./hook-contract.ts";
+import { hookExitCode, renderHookCapabilities, renderHookConfigError, renderHookFatal, renderHookReport, type HookExitGate } from "./hook-contract.ts";
 import { promptYesNo, shouldPromptForInit, writeDefaultConfig } from "./init-config.ts";
+import { migrateConfigText } from "./migrate-config.ts";
 import { renderReport, renderSummary, renderSummaryJson } from "./report-renderers.ts";
 import { completionShell, getRuleDescriptor, renderCompletionScript, renderConsoleList, renderProfileList, renderRuleDetail, renderRuleList, type RuleListFormat } from "./rule-list.ts";
 import { exitFor } from "./scoring.ts";
-import type { AnalysisOptions, AnalysisReport, MinimumSeverityCommand } from "./types.ts";
+import { applyDisplaySelectors, type DisplaySelectors } from "./selectors.ts";
+import type { AnalysisOptions, AnalysisReport, Confidence, DeepScanBudgetOverride, ExecutionSelectors, MinimumSeverityCommand, Severity } from "./types.ts";
 
 type HookAnalysisViews = { currentReport: AnalysisReport; scopedReport: AnalysisReport };
 type AnalyseRunner = ((options: AnalysisOptions) => AnalysisReport) & {
@@ -27,6 +30,15 @@ type AnalyseRunner = ((options: AnalysisOptions) => AnalysisReport) & {
 interface NormalizeContext {
   shouldAllowBaselineFlag: boolean;
 }
+
+/*
+ * What a command reports when the user's invocation could not be understood: an unknown flag, a stray operand, a
+ * value outside a documented set. Distinct from 1, which means the scan ran and something reached the gate.
+ */
+const USAGE_EXIT_CODE = 2;
+
+// Help for the flag every port accepts and no port implements, so `--help` says so rather than implying it works.
+const SCAN_TIMEOUT_DESCRIPTION = "Parsed and accepted for cross-port compatibility; gruff-ts enforces no scan deadline on analyse.";
 
 // Shared `--profile` flag help for analyse/report/summary/dashboard. The value is a built-in profile
 // name or a profile file path; it overrides any config-file `profile:` block (CLI wins, per ADR-010).
@@ -115,6 +127,7 @@ export function buildProgram(runAnalyse: AnalyseRunner): Command {
   registerDashboardCommand(program, runAnalyse);
   registerHookCommand(program, runAnalyse);
   registerInitCommand(program);
+  registerMigrateConfigCommand(program);
   registerListCommand(program);
   registerListProfilesCommand(program);
   registerListRulesCommand(program);
@@ -126,6 +139,8 @@ export function buildProgram(runAnalyse: AnalyseRunner): Command {
 // Adds the Symfony-style global flags (`--silent`, `--quiet`, `--ansi`, `--no-interaction`, `-v`)
 // and replaces the default help formatter so the bare root command lists the catalogue instead of
 // Commander's auto-generated usage block.
+// A usage mistake exits 2 rather than commander's 1, and help and version still exit 0; the override is installed
+// before any subcommand so each one inherits it as it is built.
 function configureRootProgram(program: Command): void {
   program
     .name("gruff-ts")
@@ -140,6 +155,11 @@ function configureRootProgram(program: Command): void {
     .option("-v, --verbose", "Increase the verbosity of messages: 1 for normal output, 2 for more verbose output and 3 for debug", (_value, previous: number) => previous + 1, 0)
     .addHelpCommand("help [command]", "Display help for a command")
     .showHelpAfterError()
+    // Set before the subcommands are registered, because each one copies the root's exit behaviour as it is built.
+    .exitOverride((error) => {
+      // Help and version are successful output, so they keep the zero commander already chose for them.
+      process.exit(error.exitCode === 0 ? 0 : USAGE_EXIT_CODE);
+    })
     .configureHelp({
 
       // Custom root help: the bare `gruff-ts` invocation prints the Symfony-style command catalogue;
@@ -170,6 +190,73 @@ function rootHelpText(program: Command, command: Command, helper: Help): string 
   return defaultHelp.formatHelp(command, defaultHelp);
 }
 
+/*
+ * Carries a 0.5 configuration forward to the 0.6 schema, always into a different file.
+ *
+ * The input is only ever read: a user who regrets the migration still has the configuration they started with,
+ * which is what FAMILY-CONTRACT.md section 8's migration rule requires. `--dry-run` prints what would change and
+ * writes nothing.
+ */
+function registerMigrateConfigCommand(program: Command): void {
+  program
+    .command("migrate-config")
+    .description("Rewrite a 0.5 config for the current schema, writing the result to a different file.")
+    .requiredOption("--config <path>", "The 0.5 config to read. It is never modified.")
+    .option("--output <path>", "Where to write the migrated config. Required unless --dry-run.")
+    .option("--dry-run", "Print what would change and write nothing.")
+    .action((rawOptions: Record<string, unknown>) => {
+      runMigrateConfig(program, rawOptions);
+    });
+}
+
+/*
+ * Read the named config, rewrite it, and put the result where the user asked.
+ *
+ * Refuses rather than guessing when no destination was named, and refuses to write over the input, because the
+ * copy the user may want back is the whole point of migrating out of place.
+ *
+ * Reads the named config and writes one file: whatever `--output` names. Nothing else on disk is touched.
+ */
+function runMigrateConfig(program: Command, rawOptions: Record<string, unknown>): void {
+  const inputPath = resolve(String(rawOptions.config));
+
+  if (!existsSync(inputPath)) {
+    process.stderr.write(`gruff-ts: config to migrate does not exist: ${inputPath}\n`);
+    process.exitCode = USAGE_EXIT_CODE;
+    return;
+  }
+
+  const migration = migrateConfigText(readFileSync(inputPath, "utf8"));
+  const summary = migration.changes.length === 0
+    ? `${inputPath} is already current; no changes.`
+    : ["Migration changes:", ...migration.changes.map((change) => `  - line ${change.line}: ${change.description}`)].join("\n");
+
+  writeCommandOutput(program, summary);
+
+  if (rawOptions.dryRun === true) {
+    writeCommandOutput(program, `Dry run: nothing written.`);
+    return;
+  }
+
+  const outputPath = typeof rawOptions.output === "string" ? resolve(rawOptions.output) : "";
+
+  // Without a destination there is nowhere to put the result, and writing over the input is the one thing
+  // migration must never do; refusing is better than choosing a path the user did not name.
+  if (outputPath.length === 0) {
+    process.stderr.write("gruff-ts: migrate-config needs --output <path>, or --dry-run to print the changes.\n");
+    process.exitCode = USAGE_EXIT_CODE;
+    return;
+  }
+  if (outputPath === inputPath) {
+    process.stderr.write(`gruff-ts: --output must name a different file from --config; ${inputPath} is the copy you may want back.\n`);
+    process.exitCode = USAGE_EXIT_CODE;
+    return;
+  }
+
+  writeFileSync(outputPath, migration.text);
+  writeCommandOutput(program, `Wrote ${outputPath}; ${inputPath} is unchanged.`);
+}
+
 // The primary entry point. Sets `process.exitCode` (not `process.exit`) so async writers in the
 // renderer get a chance to flush before Node tears down. The default fail-on is `advisory` because
 // the project's gating philosophy is "show everything, fail on anything"; CI flows that want the
@@ -183,25 +270,44 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
+    .option("--deep-scan-budget <lines:bytes|off>", "Override both deep-scan bounds as LINES:BYTES, or disable the budget with off.", parseDeepScanBudget)
     .option("--format <format>", "Output format: text, json, html, markdown, github, hotspot, or sarif.", parseAnalyseFormat, "text")
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "advisory")
+    .option("--min-confidence <confidence>", "Lowest analyser confidence that may fail the run: low, medium, or high. Filters nothing.", parseConfidence, "low")
+    .option("--min-severity <severity>", "Hide findings below this severity from the report. The score and the exit code are unchanged.", parseMinSeverity)
+    .option("--include-rule <ids>", "Run only these rules, so the score reflects them alone. Repeatable, or comma-separated.", collectSelectorList, [])
+    .option("--exclude-rule <ids>", "Do not run these rules, so they cannot affect the score. Repeatable, or comma-separated.", collectSelectorList, [])
+    .option("--include-pillar <names>", "Run only these pillars, so the score reflects them alone. Repeatable, or comma-separated.", collectSelectorList, [])
+    .option("--exclude-pillar <names>", "Do not run these pillars, so they cannot affect the score. Repeatable, or comma-separated.", collectSelectorList, [])
+    .option("--show-rule <ids>", "Show only these rules in the report. Every rule still runs and still scores. Repeatable, or comma-separated.", collectSelectorList, [])
+    .option("--hide-rule <ids>", "Hide these rules from the report. They still run and still score. Repeatable, or comma-separated.", collectSelectorList, [])
+    .option("--show-pillar <names>", "Show only these pillars in the report. Every pillar still runs and still scores. Repeatable, or comma-separated.", collectSelectorList, [])
+    .option("--hide-pillar <names>", "Hide these pillars from the report. They still run and still score. Repeatable, or comma-separated.", collectSelectorList, [])
+    .option("--scan-timeout <duration>", SCAN_TIMEOUT_DESCRIPTION)
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--changed-ranges <ranges>", "Filter findings to changed regions, for example 3-3,8-10.")
     .option("--since <ref>", "Filter findings to regions changed against a git base ref.")
     .option("--diff [mode]", "Filter findings to changed regions. Use working-tree, staged, unstaged, a base ref, or - for unified diff on stdin.")
+    .option("--diff-base <ref>", "The ref a diff is taken against. Equivalent to passing the ref to --diff, and it wins when both are given.")
     .option("--changed-scope <scope>", "Changed-region scope: hunk, symbol, or file.", parseChangedScope, "symbol")
     .option("--history-file <path>", "Append score trend history to this JSON file (full scans only; incompatible with --diff, --since, and --changed-ranges).")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
+    .option("--migrate-baseline <path>", "Carry a 0.5 baseline's reviews into --generate-baseline; the original file is left untouched.")
+    .option("--force", "Overwrite a 0.5 baseline at the default path; without it a generate that would destroy the retreat path is refused.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
+    .option("--fail-on-new", "Exit 1 when the applied baseline leaves any finding the user has not reviewed, whatever its severity.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
       await runWithConfigErrorHandling(async () => {
         const baseOptions = normalizeOptions(paths, rawOptions, { shouldAllowBaselineFlag: true });
-        const options = applyMinimumSeverityPrecedence(baseOptions, "analyse", command);
+        const configured = configuredSeverities(baseOptions, "analyse", command);
+        const options = configured.options;
         await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
         const report = runAnalyse(options);
+        // The exit code is decided by everything that ran, before any presentation filter hides part of it.
+        process.exitCode = Math.max(exitFor(report, options.failOn, confidenceFloor(rawOptions)), newDebtExitCode(report, rawOptions));
+        report.findings = applyDisplaySelectors(report.findings, displaySelectorsFrom(rawOptions), configured.displayFloor);
         writeCommandOutput(program, renderReport(report, options.format));
-        process.exitCode = exitFor(report, options.failOn);
       });
     });
 }
@@ -229,24 +335,28 @@ function registerCheckIgnoreCommand(program: Command): void {
     });
 }
 
-// Dedicated agent-hook surface for gruff.hook.v1. It owns hook defaults (JSON, advisory exit, symbol
-// attribution, no analysis baseline) and reports config failures in-band as config.error, exits 2.
+// Dedicated agent-hook surface for gruff.hook.v2. It owns hook defaults (JSON, advisory gate, symbol
+// attribution, no analysis baseline) and reports a run that could not happen in-band as a fatal diagnostic, exit 2.
 function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("hook")
-    .description("Run the gruff agent-hook contract and emit gruff.hook.v1 JSON.")
+    .description("Run the gruff agent-hook contract and emit gruff.hook.v2 JSON.")
     .argument("[paths...]", "Files or directories to analyse.")
     .option("--format <format>", "Output format: json.", parseHookFormat, "json")
-    .option("--capabilities", "Print gruff.hook.v1 capability metadata and exit.")
+    .option("--capabilities", "Print gruff.hook.v2 capability metadata and exit.")
+    .option("--fail-on <severity>", "Finding severity that blocks the edit: advisory, warning, error, or none. The hook default of none keeps findings advisory.", parseFailOn, "none")
+    .option("--min-confidence <confidence>", "Lowest analyser confidence that may block the edit: low, medium, or high.", parseConfidence, "low")
+    .option("--fail-on-new", "Block the edit when a finding the applied baseline calls new is published.")
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
+    .option("--deep-scan-budget <lines:bytes|off>", "Override both deep-scan bounds as LINES:BYTES, or disable the budget with off.", parseDeepScanBudget)
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--changed-ranges <ranges>", "Filter hook findings to changed regions, for example 3-3,8-10.")
     .option("--since <ref>", "Filter hook findings to regions changed against a git base ref and compare against that ref.")
     .option("--diff [mode]", "Filter hook findings to changed regions. Use working-tree, staged, unstaged, a base ref, or - for unified diff on stdin.")
     .option("--baseline <path>", "Compare hook findings against a gruff baseline JSON file using stableIdentity.")
-    .option("--fail-on-diagnostics", "Exit 2 when parse/read diagnostics affect the analysed change; the default reports them in-band with exit 0.")
+    .option("--fail-on-diagnostics", "Exit 1 when parse/read diagnostics affect the analysed change; the default reports them in-band with exit 0.")
     .action((paths: string[], rawOptions: Record<string, unknown>) => {
       if (rawOptions.capabilities === true) {
         writeCommandOutput(program, renderHookCapabilities());
@@ -264,21 +374,21 @@ function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void 
           hasChangedRegion: hasHookChangedRegion(scopedOptions),
         });
         writeCommandOutput(program, rendered);
-        // Explicit consumer request (gruff.hook.v1): only --fail-on-diagnostics turns in-band
-        // diagnostics into exit 2; every other successful hook run keeps the documented exit 0.
-        process.exitCode = rawOptions.failOnDiagnostics === true && hookRenderedDiagnosticsCount(rendered) > 0 ? 2 : 0;
+        // What blocks the edit is exactly what the agent was just shown, read back from the published payload.
+        process.exitCode = hookExitCode(rendered, hookGateFrom(rawOptions));
       } catch (error) {
         if (error instanceof ConfigLoadError) {
           writeCommandOutput(program, renderHookConfigError(error.message, error.suggestion));
-          process.exitCode = 2;
+          process.exitCode = USAGE_EXIT_CODE;
           return;
         }
         if (error instanceof Error) {
-          // Keep gruff.hook.v1 machine-readable: baseline IO/parse/schema failures and git errors
-          // (--diff/--since outside a repo) report in-band as config.error with exit 2 instead of
-          // crashing with a raw stack and empty stdout, which would break the always-JSON contract.
-          writeCommandOutput(program, renderHookConfigError(error.message, "Check the --baseline path and schema, and run --diff/--since inside a git repository."));
-          process.exitCode = 2;
+          // Keep gruff.hook.v2 machine-readable: a malformed changed range, a baseline this port cannot read, and a
+          // git error (--diff/--since outside a repository) all publish a fatal diagnostic and exit 2, instead of
+          // crashing with a raw stack and an empty stdout that would break the always-JSON contract.
+          writeCommandOutput(program, renderHookFatal(hookFatalType(error, rawOptions), error.message));
+          process.stderr.write(`gruff-ts: ${error.message}\n`);
+          process.exitCode = USAGE_EXIT_CODE;
           return;
         }
         throw error;
@@ -324,12 +434,14 @@ function registerDashboardCommand(program: Command, runAnalyse: AnalyseRunner): 
     .option("--port <port>", "Port to bind.", "8767")
     .option("--project-root <path>", "Default project root.", ".")
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
+    .option("--deep-scan-budget <lines:bytes|off>", "Override both deep-scan bounds as LINES:BYTES, or disable the budget with off.", parseDeepScanBudget)
     .option("--scan-timeout <seconds>", "Accepted for cross-port compatibility; not implemented in gruff-ts.")
     .action(async (rawOptions: Record<string, unknown>) => {
       const projectRoot = resolve(String(rawOptions.projectRoot ?? "."));
       await maybePromptInitConfig(program, projectRoot, { shouldSkipConfig: false, hasExplicitConfig: false });
       const profile = typeof rawOptions.profile === "string" ? rawOptions.profile : undefined;
-      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), projectRoot, runAnalyse, !outputSuppressed(program), profile);
+      const deepScanBudget = deepScanBudgetOption(rawOptions).deepScanBudget;
+      startDashboard(String(rawOptions.host ?? "127.0.0.1"), Number(rawOptions.port ?? 8767), projectRoot, runAnalyse, !outputSuppressed(program), profile, deepScanBudget);
     });
 }
 
@@ -428,9 +540,9 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
+    .option("--deep-scan-budget <lines:bytes|off>", "Override both deep-scan bounds as LINES:BYTES, or disable the budget with off.", parseDeepScanBudget)
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "none")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
-    .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
       await runWithConfigErrorHandling(async () => {
         const format = rawOptions.format === "json" ? "json" : "html";
@@ -460,6 +572,7 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--config <path>", "Path to a gruff YAML config file.")
     .option("--no-config", "Skip auto-applying the default .gruff-ts.yaml file for this run.")
     .option("--profile <spec>", PROFILE_OPTION_DESCRIPTION)
+    .option("--deep-scan-budget <lines:bytes|off>", "Override both deep-scan bounds as LINES:BYTES, or disable the budget with off.", parseDeepScanBudget)
     .option("--format <format>", "Output format: text or json.", parseSummaryFormat, "text")
     .option("--top <n>", "How many top rules and file offenders to list.", parseNonNegativeInteger, 10)
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "advisory")
@@ -468,12 +581,14 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--history-file <path>", "Append score trend history to this JSON file (full scans only; incompatible with --diff).")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
+    .option("--migrate-baseline <path>", "Carry a 0.5 baseline's reviews into --generate-baseline; the original file is left untouched.")
+    .option("--force", "Overwrite a 0.5 baseline at the default path; without it a generate that would destroy the retreat path is refused.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
       await runWithConfigErrorHandling(async () => {
-        const baseOptions = normalizeOptions(paths, { ...rawOptions, format: "text" }, { shouldAllowBaselineFlag: true });
-        const options = applyMinimumSeverityPrecedence(baseOptions, "summary", command);
         const summaryFormat = rawOptions.format === "json" ? "json" : "text";
+        const baseOptions = normalizeOptions(paths, { ...rawOptions, format: summaryFormat }, { shouldAllowBaselineFlag: true });
+        const options = applyMinimumSeverityPrecedence(baseOptions, "summary", command);
         const top = typeof rawOptions.top === "number" ? rawOptions.top : 10;
         await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
         const startedAt = performance.now();
@@ -481,7 +596,7 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
         const elapsedMs = performance.now() - startedAt;
         const pathLabel = summaryPathLabel(options.paths, report.run.projectRoot);
         const rendered = summaryFormat === "json"
-          ? renderSummaryJson(report, elapsedMs, pathLabel, top)
+          ? renderSummaryJson(report)
           : renderSummary(report, elapsedMs, pathLabel, top);
         writeCommandOutput(program, rendered);
         process.exitCode = exitFor(report, options.failOn);
@@ -530,6 +645,89 @@ const parseAnalyseFormat = parseChoiceOf(["text", "json", "html", "markdown", "g
 const parseReportFormat = parseChoiceOf(["html", "json"]);
 const parseFailOn = parseChoiceOf(["none", "advisory", "warning", "error"]);
 const parseChangedScope = parseChoiceOf(["symbol", "hunk", "file"]);
+const parseConfidence = parseChoiceOf(["low", "medium", "high"]);
+const parseMinSeverity = parseChoiceOf(["advisory", "warning", "error"]);
+
+/*
+ * Commander argParser for a repeatable rule or pillar list.
+ *
+ * Both spellings a user reaches for are accepted - the flag repeated, and one flag with a comma-separated value -
+ * because a selector silently dropping half its argument would quietly change what runs.
+ */
+function collectSelectorList(rawValue: string, previous: string[]): string[] {
+  return [...previous, ...rawValue.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0)];
+}
+
+// Reads the four flags that decide which rules run, so the score moves with them.
+function executionSelectorsFrom(rawOptions: Record<string, unknown>): ExecutionSelectors {
+  return {
+    includeRules: selectorList(rawOptions.includeRule),
+    excludeRules: selectorList(rawOptions.excludeRule),
+    includePillars: selectorList(rawOptions.includePillar),
+    excludePillars: selectorList(rawOptions.excludePillar),
+  };
+}
+
+// Reads the five flags that decide what the report shows, none of which changes execution, the score, or the exit.
+function displaySelectorsFrom(rawOptions: Record<string, unknown>): DisplaySelectors {
+  const minSeverity = rawOptions.minSeverity;
+  return {
+    ...(minSeverity === "advisory" || minSeverity === "warning" || minSeverity === "error" ? { minSeverity } : {}),
+    showRules: selectorList(rawOptions.showRule),
+    hideRules: selectorList(rawOptions.hideRule),
+    showPillars: selectorList(rawOptions.showPillar),
+    hidePillars: selectorList(rawOptions.hidePillar),
+  };
+}
+
+// Reads one collected selector flag; a direct programmatic option bag may supply nothing at all.
+function selectorList(rawValue: unknown): string[] {
+  return Array.isArray(rawValue) ? rawValue.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+// Reads the confidence floor the gate applies; an unset flag admits every finding, which is the documented default.
+function confidenceFloor(rawOptions: Record<string, unknown>): Confidence {
+  const configured = rawOptions.minConfidence;
+  return configured === "medium" || configured === "high" ? configured : "low";
+}
+
+// Collects what the caller asked the hook to block on, which is read only after the payload is published.
+function hookGateFrom(rawOptions: Record<string, unknown>): HookExitGate {
+  const failOn = rawOptions.failOn;
+  return {
+    // The hook reports rather than blocks unless the caller asked otherwise, so an unset flag gates nothing.
+    failOn: failOn === "advisory" || failOn === "warning" || failOn === "error" ? failOn : "none",
+    minConfidence: confidenceFloor(rawOptions),
+    shouldFailOnNew: rawOptions.failOnNew === true,
+    shouldFailOnDiagnostics: rawOptions.failOnDiagnostics === true,
+  };
+}
+
+// Names the input a fatal hook failure could not use, so the diagnostic points at the flag to look at.
+// Stable contract: the answer comes from the error's own type and the flags the caller passed, never from parsing
+// the message text, so rewording a message can never change what a consumer reads.
+function hookFatalType(error: Error, rawOptions: Record<string, unknown>): string {
+  if (error instanceof ChangedRegionError) {
+    return "changed-region";
+  }
+  return typeof rawOptions.baseline === "string" ? "baseline" : "run";
+}
+
+// Parses the atomic CLI override. Keeping both numeric limits in one value prevents a half-updated
+// budget, while `off` explicitly disables degradation for the current invocation.
+// Throws InvalidArgumentError when the value is neither `off` nor two positive integer limits.
+function parseDeepScanBudget(rawBudget: string): DeepScanBudgetOverride {
+  if (rawBudget === "off") {
+    return { enabled: false };
+  }
+  const match = rawBudget.match(/^(\d+):(\d+)$/);
+  const maxLines = match ? Number(match[1]) : Number.NaN;
+  const maxBytes = match ? Number(match[2]) : Number.NaN;
+  if (!Number.isSafeInteger(maxLines) || maxLines <= 0 || !Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new InvalidArgumentError("must be two positive integers as LINES:BYTES, or off");
+  }
+  return { enabled: true, maxLines, maxBytes };
+}
 
 /*
  * Commander argParser for `--top`-style numeric flags. Throws `InvalidArgumentError` on non-integer
@@ -569,6 +767,7 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
     paths: diffInput.paths,
     ...configOption(rawOptions),
     ...profileOption(rawOptions),
+    ...deepScanBudgetOption(rawOptions),
     shouldSkipConfig:
       rawOptions.config === false ||
       rawOptions.noConfig === true,
@@ -582,7 +781,10 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
     ...historyFileOption(rawOptions),
     ...baselineOption(baselineValue, context),
     ...generateBaselineOption(rawOptions),
+    ...migrateBaselineOption(rawOptions),
+    ...(rawOptions.force === true ? { shouldForceBaselineOverwrite: true } : {}),
     shouldSkipBaseline,
+    execution: executionSelectorsFrom(rawOptions),
   };
 }
 
@@ -648,9 +850,68 @@ function profileOption(rawOptions: Record<string, unknown>): Partial<Pick<Analys
   return typeof rawOptions.profile === "string" ? { profile: rawOptions.profile } : {};
 }
 
+// Reconstructs the parser result so direct programmatic option bags cannot smuggle malformed
+// values into the analyser's effective budget.
+// Throws ConfigLoadError when a supplied override is present but violates the parser contract.
+function deepScanBudgetOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "deepScanBudget">> {
+  const budgetOverride = rawOptions.deepScanBudget;
+  if (typeof budgetOverride !== "object" || budgetOverride === null || !("enabled" in budgetOverride)) {
+    return {};
+  }
+  if (budgetOverride.enabled === false) {
+    return { deepScanBudget: { enabled: false } };
+  }
+  if (budgetOverride.enabled === true && "maxLines" in budgetOverride && "maxBytes" in budgetOverride
+    && typeof budgetOverride.maxLines === "number" && Number.isSafeInteger(budgetOverride.maxLines) && budgetOverride.maxLines > 0
+    && typeof budgetOverride.maxBytes === "number" && Number.isSafeInteger(budgetOverride.maxBytes) && budgetOverride.maxBytes > 0) {
+    return { deepScanBudget: { enabled: true, maxLines: budgetOverride.maxLines, maxBytes: budgetOverride.maxBytes } };
+  }
+  throw new ConfigLoadError("Invalid deep-scan budget override.", "Pass `--deep-scan-budget LINES:BYTES` with positive integers, or `--deep-scan-budget off`.");
+}
+
+/*
+ * Decide what `--fail-on-new` makes of this run.
+ *
+ * The flag blocks on debt the user has not reviewed, which is what an applied baseline leaves behind: findings it
+ * called new, findings whose identity covered two declarations, and sensitive findings a baseline may never hide.
+ * Throws ConfigLoadError when no baseline was applied, which the caller reports as exit 2: without a baseline there
+ * is nothing to be new against, and passing on a comparison that never happened is the one answer that misleads.
+ *
+ * Stable contract: this only ever raises the exit code, so a run already failing its severity gate stays failed.
+ *
+ * @param report - the run's report, whose baseline block is present only when a baseline was used or written
+ * @param rawOptions - the parsed options, read for the flag itself
+ * @returns 0 when the flag was not passed or nothing is unreviewed, 1 when something is, 2 when no baseline applied
+ */
+function newDebtExitCode(report: AnalysisReport, rawOptions: Record<string, unknown>): number {
+  // A run that did not ask to block on new debt is unaffected by everything below.
+  if (rawOptions.failOnNew !== true) {
+    return 0;
+  }
+
+  const baseline = report.baseline;
+
+  // A generate run writes a baseline rather than applying one, so it has nothing to call new either.
+  if (baseline === undefined || baseline.generated === true) {
+    throw new ConfigLoadError(
+      "`--fail-on-new` needs an applied baseline to compare against, and this run applied none.",
+      "Pass `--baseline <path>`, or generate one first with `--generate-baseline <path>`.",
+    );
+  }
+
+  return (baseline.newFindings ?? 0) > 0 ? 1 : 0;
+}
+
 // `--diff` without an argument means "working-tree". `--diff -` is accepted even when Commander
 // treats `-` as a positional path, so stdin-diff callers can use the documented spacing form.
+// `--diff-base <ref>` is the family's canonical spelling for the ref, and supplies it whichever way `--diff` was written.
 function diffOption(paths: string[], rawOptions: Record<string, unknown>): { paths: string[]; options: Partial<Pick<AnalysisOptions, "diff" | "diffPatch">> } {
+  const diffBase = rawOptions.diffBase;
+
+  // The canonical spelling names the ref outright, so it wins over whatever mode --diff carried.
+  if (typeof diffBase === "string" && diffBase.length > 0) {
+    return { paths, options: { diff: diffBase } };
+  }
   if (typeof rawOptions.diff === "string") {
     return rawOptions.diff === "-"
       ? { paths, options: { diff: "-", diffPatch: readFileSync(0, "utf8") } }
@@ -699,6 +960,14 @@ function generateBaselineOption(rawOptions: Record<string, unknown>): Partial<Pi
   return rawOptions.generateBaseline === true ? { generateBaseline: DEFAULT_BASELINE } : {};
 }
 
+/*
+ * Reads `--migrate-baseline`: the 0.5 file whose reviews are carried into the generated baseline.
+ * Absent means an ordinary generate run, which records the current findings and carries nothing across.
+ */
+function migrateBaselineOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "migrateBaseline">> {
+  return typeof rawOptions.migrateBaseline === "string" ? { migrateBaseline: rawOptions.migrateBaseline } : {};
+}
+
 // Last-resort choice normalizer for programmatic option bags; the CLI surfaces validate the same
 // sets at parse time, so this fallback only guards direct `normalizeOptions` callers.
 function stringChoice<T extends string>(rawValue: unknown, choices: readonly T[], fallback: T): T {
@@ -706,20 +975,37 @@ function stringChoice<T extends string>(rawValue: unknown, choices: readonly T[]
 }
 
 /*
- * Precedence wiring for `--fail-on`: when the user did NOT pass `--fail-on` explicitly, the
- * `.gruff-ts.yaml` `minimumSeverity.<cmd>` value wins over the binary default. CLI flag always
- * wins when explicitly set. Commander's `getOptionValueSource("failOn")` returns `"cli"` for
- * explicit invocations and `"default"` otherwise, so the source check drives the precedence
- * chain. Throws `ConfigLoadError` on malformed config; CLI action handlers catch and format that
- * cleanly via `runWithConfigErrorHandling`.
+ * What the project's config file says about one run's gate and its display floor, read in one pass.
+ *
+ * The two are deliberately separate keys: `failOn:` decides the exit code, `minimumSeverity:` decides what the
+ * report shows. Keeping them in one result means the command reads the config once and cannot apply a stale half
+ * of it (FAMILY-CONTRACT.md, search: `## 7. CLI surface`).
  */
-function applyMinimumSeverityPrecedence(options: AnalysisOptions, command: MinimumSeverityCommand, commanderCommand: Command): AnalysisOptions {
-  if (commanderCommand.getOptionValueSource("failOn") === "cli") {
-    return options;
-  }
+interface ConfiguredSeverities {
+  options: AnalysisOptions;
+  displayFloor?: Severity;
+}
+
+/*
+ * Precedence wiring for `--fail-on`: when the user did NOT pass `--fail-on` explicitly, the
+ * `.gruff-ts.yaml` `failOn.<cmd>` value wins over the binary default. CLI flag always wins when
+ * explicitly set. Commander's `getOptionValueSource("failOn")` returns `"cli"` for explicit
+ * invocations and `"default"` otherwise, so the source check drives the precedence chain.
+ * Throws `ConfigLoadError` on malformed config; CLI action handlers catch and format that cleanly
+ * via `runWithConfigErrorHandling`.
+ */
+function configuredSeverities(options: AnalysisOptions, command: MinimumSeverityCommand, commanderCommand: Command): ConfiguredSeverities {
   const config = loadConfig(cwd(), options);
-  const configuredFailOn = minimumSeverityFor(config, command);
-  return configuredFailOn === undefined ? options : { ...options, failOn: configuredFailOn };
+  const configuredFailOn = commanderCommand.getOptionValueSource("failOn") === "cli" ? undefined : minimumSeverityFor(config, command);
+  return {
+    options: configuredFailOn === undefined ? options : { ...options, failOn: configuredFailOn },
+    ...(config.displayFloor === undefined ? {} : { displayFloor: config.displayFloor }),
+  };
+}
+
+// Keeps `report` and `summary` on the gate half of the config; neither surface exposes a display floor flag.
+function applyMinimumSeverityPrecedence(options: AnalysisOptions, command: MinimumSeverityCommand, commanderCommand: Command): AnalysisOptions {
+  return configuredSeverities(options, command, commanderCommand).options;
 }
 
 /*

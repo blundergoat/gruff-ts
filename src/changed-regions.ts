@@ -7,6 +7,14 @@ import type { ParsedScript } from "./parsed-script.ts";
 import { maskNonCode } from "./source-text.ts";
 import type { AnalysisOptions, ChangedScopeMode, Finding, RunDiagnostic } from "./types.ts";
 
+/**
+ * Raised when the requested changed region cannot be read, so the caller reports which input was wrong.
+ *
+ * The hook publishes it as a fatal diagnostic naming `changed-region`, which is what tells an agent the run never
+ * happened rather than that the file was clean.
+ */
+export class ChangedRegionError extends Error {}
+
 // Inclusive line range from a changed hunk or explicit `--changed-ranges` input.
 export interface ChangedRange {
   start: number;
@@ -64,7 +72,7 @@ export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope
   }
   if (options.diff) {
     if (options.diff === "-") {
-      throw new Error("--diff - requires diffPatch input; the CLI reads stdin before analysis.");
+      throw new ChangedRegionError("--diff - requires diffPatch input; the CLI reads stdin before analysis.");
     }
     return gitDiffScope(options.diff, options.changedScope);
   }
@@ -74,7 +82,7 @@ export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope
 // Diagnostic types that describe one analysed file's content or readability. Only these are
 // file-scoped under diff filtering; operational diagnostics (missing paths, history errors) always
 // stay, because they describe the request rather than an unchanged context file.
-const FILE_CONTENT_DIAGNOSTIC_TYPES = new Set(["parse-error", "read-error"]);
+const FILE_CONTENT_DIAGNOSTIC_TYPES = new Set(["bounded-deep-scan", "parse-error", "read-error"]);
 
 /*
  * Applies the file-scoped diagnostics policy to a changed-region run: a full scan keeps every
@@ -278,7 +286,7 @@ function parseChangedRanges(rawRanges: string): ChangedRange[] {
     .filter(Boolean)
     .map(parseChangedRange);
   if (ranges.length === 0) {
-    throw new Error("--changed-ranges must include at least one range such as 3-3 or 8-10");
+    throw new ChangedRegionError("--changed-ranges must include at least one range such as 3-3 or 8-10");
   }
   return mergeRanges(ranges);
 }
@@ -287,12 +295,12 @@ function parseChangedRanges(rawRanges: string): ChangedRange[] {
 function parseChangedRange(rawRange: string): ChangedRange {
   const match = rawRange.match(/^(\d+)(?:-(\d+))?$/);
   if (!match?.[1]) {
-    throw new Error(`invalid --changed-ranges entry: ${rawRange}`);
+    throw new ChangedRegionError(`invalid --changed-ranges entry: ${rawRange}`);
   }
   const start = Number(match[1]);
   const end = Number(match[2] ?? match[1]);
   if (start < 1 || end < start) {
-    throw new Error(`invalid --changed-ranges entry: ${rawRange}`);
+    throw new ChangedRegionError(`invalid --changed-ranges entry: ${rawRange}`);
   }
   return { start, end };
 }

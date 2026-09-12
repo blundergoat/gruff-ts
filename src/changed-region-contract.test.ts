@@ -1,10 +1,9 @@
-// Hook-contract regression for the native changed-region trio (`--changed-ranges`, `--changed-scope`,
-// `--no-baseline`). Guards the exact JSON surface the downstream agent hook reads when it delegates
-// scoping to gruff-ts: in-region findings only, the canonical `file` alias on every finding, the
-// `advisory|warning|error` severity vocabulary, and the top-level `suppressedCount` whose arithmetic
-// invariant (kept + suppressedCount == full-scan total) lets the hook report the backlog it did not
-// show. The hook trusts this scoping and does not re-filter by line. See docs/agent-hook.md and
-// ADR-008 ("the changed-code gate is the agent gate").
+// Changed-region regression for the native filter and v3 machine adapter. Native analysis retains
+// `suppressedCount` for internal consumers; JSON publishes the same partition as
+// `diff.filteredFindings` and `summary.suppressedFindings`. The cases also guard in-region findings,
+// canonical `file` paths, and the `advisory|warning|error` vocabulary. The separate
+// `gruff.hook.v1` adapter remains unchanged. See docs/agent-hook.md and ADR-008 ("the changed-code
+// gate is the agent gate").
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -87,17 +86,20 @@ const CHANGED_EVAL_LINE = 6;
 
 // The hook's read surface over the rendered JSON: the canonical `file` alias (not the deprecated
 // `filePath`), the severity vocabulary, and the line used to confirm scoping.
-interface HookFinding {
+interface MachineFinding {
   ruleId: string;
   file: string;
   line?: number;
   severity: string;
 }
 
-// Top-level shape the hook parses: the findings array plus the `suppressedCount` it reads first.
-interface HookReport {
-  findings: HookFinding[];
-  suppressedCount?: number;
+// Machine v3 read surface for changed-region CLI assertions.
+// Invariant: `diff.filteredFindings` and `summary.suppressedFindings` describe the same partition.
+interface MachineAnalysisReport {
+  schemaVersion: "gruff.analysis.v3";
+  findings: MachineFinding[];
+  summary: { suppressedFindings?: number };
+  diff?: { enabled: true; filteredFindings: number; mode: "changed-regions" };
 }
 
 // Full-project scan of the region fixture with no changed-region scope, used as the invariant baseline.
@@ -216,7 +218,7 @@ test("--no-baseline re-surfaces a baselined finding inside the changed region", 
   }
 });
 
-test("delegated CLI invocation emits the file alias, severity vocabulary, and top-level suppressedCount", () => {
+test("delegated CLI invocation emits canonical v3 changed-region fields and finding vocabulary", () => {
   const projectDir = mkdtempSync(join(tmpdir(), "gruff-ts-hook-"));
   try {
     writeFixtureFiles(projectDir, { "dual.ts": DUAL_EVAL_FIXTURE });
@@ -228,11 +230,13 @@ test("delegated CLI invocation emits the file alias, severity vocabulary, and to
       [join(REPO_ROOT, "bin/gruff-ts"), "analyse", "--format", "json", "--fail-on", "none", "--no-baseline", "--changed-ranges", "6-6", "--changed-scope", "symbol", "dual.ts"],
       { cwd: projectDir, encoding: "utf8" },
     );
-    const payload = JSON.parse(output) as HookReport;
+    const payload = JSON.parse(output) as MachineAnalysisReport;
 
-    // Top-level suppressedCount is the field the hook reads first; it must be a present, positive number.
-    assert.equal(typeof payload.suppressedCount, "number");
-    assert.equal((payload.suppressedCount ?? 0) > 0, true);
+    // Both changed-region counters are present, positive, and equal.
+    assert.equal(payload.schemaVersion, "gruff.analysis.v3");
+    assert.equal(typeof payload.diff?.filteredFindings, "number");
+    assert.equal((payload.diff?.filteredFindings ?? 0) > 0, true);
+    assert.equal(payload.summary.suppressedFindings, payload.diff?.filteredFindings);
 
     // Only the in-region eval (changed, line 6) survives; the out-of-region eval (stale) is excluded.
     const evalLines = payload.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.line);
@@ -257,7 +261,7 @@ test("delegated CLI symbol scope keeps eval findings in plain and generic callab
         [join(REPO_ROOT, "bin/gruff-ts"), "analyse", "--format", "json", "--fail-on", "none", "--no-baseline", "--changed-ranges", `${fixture.changedLine}-${fixture.changedLine}`, "--changed-scope", "symbol", fixture.file],
         { cwd: projectDir, encoding: "utf8" },
       );
-      const payload = JSON.parse(output) as HookReport;
+      const payload = JSON.parse(output) as MachineAnalysisReport;
       const evalLines = payload.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.line);
       assert.deepEqual(evalLines, [fixture.findingLine]);
     }

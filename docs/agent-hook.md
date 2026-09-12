@@ -19,10 +19,20 @@ gruff-ts hook --format json --changed-ranges "12-40,88-90" src/foo.ts
 gruff-ts hook --capabilities --format json
 ```
 
-`hook` emits `gruff.hook.v1` JSON with normalized `file`, `scope`, `suppressed.count`,
-`ignored.paths`, non-null `remediation`, stable identities, and machine-readable threshold
-metadata. Hook mode is advisory: findings exit `0`; config failures are returned in
-`config.error` and exit `2`.
+`hook` emits `gruff.hook.v2` JSON: a nine-key envelope of `contractVersion`, `analyzer`, `run`,
+`findings`, `diagnostics`, `suppressed`, `suppressions`, `ignored`, and `config`, carrying
+normalized `file` and `scope` per finding, non-null `remediation`, stable identities, and
+machine-readable threshold metadata.
+
+Hook mode is advisory at its default `--fail-on none`: findings are published and the run exits
+`0`. Only an explicit consumer request blocks the edit, so `hook` has its own exit codes rather
+than the `analyse` ones above:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Nothing reached a gate the caller asked for. The default `--fail-on none` lands here however severe the findings are. |
+| `1` | Something did: a published finding met `--fail-on`, `--fail-on-new` saw a finding the applied baseline calls new, or `--fail-on-diagnostics` saw a relevant diagnostic. |
+| `2` | The run could not happen. A config failure also fills `config.error`; an unusable baseline or changed range is a fatal entry in `diagnostics`. |
 
 Parse and read diagnostics are file-scoped and reported in-band via the additive
 `diagnostics` array (`{ type, message, file, line }`): a full scan carries every
@@ -31,7 +41,7 @@ from changed target files, and `--changed-ranges` carries every diagnostic of
 each requested file (a syntax error breaks parsing of the whole file, so ranges
 never filter diagnostics). The default hook exit stays `0` with diagnostics
 in-band; pass the explicit consumer request flag `--fail-on-diagnostics` to exit
-`2` when relevant diagnostics exist. The capability handshake advertises this via
+`1` when relevant diagnostics exist. The capability handshake advertises this via
 `supports.diagnostics` and `flags.failOnDiagnostics` - the capability is a
 producer advertisement only and never changes behavior by itself. Fatal failures
 (analysis could not run at all) keep operational-error exit `2` semantics.
@@ -63,7 +73,7 @@ Changed-region scans keep only findings attributable to the changed hunk, its en
 
 ## Respect the project's ignore policy
 
-A hook passes the agent's changed files directly, so the project's `paths.ignore` must hold for those explicit paths too - otherwise the agent burns loops "fixing" generated or vendored code the project deliberately excludes. Config `paths.ignore` is authoritative in every invocation (explicit operand, diff, changed-region): a matching path produces no findings and is listed in the report's `paths.skipped` with its `source` and `pattern`. `--include-ignored` opts into git/default ignores only and never overrides `paths.ignore`.
+A hook passes the agent's changed files directly, so the project's `paths.ignore` must hold for those explicit paths too - otherwise the agent burns loops "fixing" generated or vendored code the project deliberately excludes. Config `paths.ignore` is authoritative in every invocation (explicit operand, diff, changed-region): a matching path produces no findings and is listed in the report's `paths.details` with its `source` and `pattern`. `--include-ignored` opts into git/default ignores only and never overrides `paths.ignore`.
 
 To pre-filter a changed-file list before scanning, ask gruff which paths it would skip - it shares the same engine as `analyse` and runs no analysis:
 
@@ -75,7 +85,7 @@ gruff-ts check-ignore $CHANGED_FILES --format json
 
 ## Picking the gate level
 
-`--fail-on` sets the bar the agent must clear. Built-in defaults are `advisory` for `analyse` and `summary`, `none` for `report`; raise or lower per surface:
+`--fail-on` sets the bar the agent must clear. Built-in defaults are `advisory` for `analyse` and `summary`, `none` for `report` and `hook`; raise or lower per surface:
 
 | Level | Use it as the agent gate when |
 | --- | --- |
@@ -83,7 +93,7 @@ gruff-ts check-ignore $CHANGED_FILES --format json
 | `warning` | Recommended default. Blocks the security and correctness tier plus the verifiability signals (complexity, missing exported-API docs, weak tests) while leaving advisories as nudges. |
 | `advisory` | Strictest. Every finding is friction the agent must clear. Best when you want maximum legibility pressure and can tolerate more agent rework. |
 
-Per-command levels can be pinned in `.gruff-ts.yaml` via the `minimumSeverity:` block (see [Configuration](configuration.md)); precedence is CLI flag > config > built-in default.
+Per-command levels can be pinned in `.gruff-ts.yaml` via the `failOn:` block (see [Configuration](configuration.md)); precedence is CLI flag > config > built-in default.
 
 ## Fix, do not suppress
 

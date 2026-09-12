@@ -2,13 +2,16 @@
 // HTML output and dashboard chrome live in `report-html.ts` so this module stays under the
 // `size.file-length` threshold; both files source `buildPillarRows` + `grade` from
 // `pillar-summary.ts` so the cross-format Pillars table stays byte-aligned.
-import type { AnalysisReport, Finding, OutputFormat, Severity } from "./types.ts";
+import { findingIdentities } from "./baseline-identity.ts";
+import { isAbsolute, relative } from "node:path";
+import type { AnalysisReport, Finding, OutputFormat, ScanSurfaceNote, Severity, SkippedPath, SuppressionSummary } from "./types.ts";
 import { OUTPUT_VOLUME_HINT_THRESHOLD } from "./constants.ts";
 import { countRuleSeverities } from "./findings-helpers.ts";
 import { buildPillarRows, type PillarRow } from "./pillar-summary.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { renderHtml } from "./report-html.ts";
-import { severityGradeBreakdown } from "./scoring.ts";
+import { compositeLine, exitFor, severityGradeBreakdown } from "./scoring.ts";
+import { totalSuppressedFindings } from "./sensitive-exclusions.ts";
 
 /*
  * Format dispatcher. `hotspot` is emitted inline (smallest schema) while every other format has a
@@ -26,7 +29,7 @@ function renderReport(report: AnalysisReport, format: OutputFormat): string {
     case "github":
       return renderGithub(report);
     case "hotspot":
-      return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders.slice(0, 10) }, null, 2);
+      return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders.slice(0, 10), diagnostics: report.diagnostics }, null, 2);
     case "sarif":
       return renderSarif(report);
     case "text":
@@ -34,37 +37,329 @@ function renderReport(report: AnalysisReport, format: OutputFormat): string {
   }
 }
 
-type JsonFinding = Finding & { file: string };
-type JsonTopOffender = AnalysisReport["score"]["topOffenders"][number] & { file: string };
-type JsonAnalysisReport = Omit<AnalysisReport, "findings" | "score"> & {
-  findings: JsonFinding[];
-  score: Omit<AnalysisReport["score"], "topOffenders"> & { topOffenders: JsonTopOffender[] };
+type MachineFinding = Omit<Finding, "filePath" | "line" | "endLine" | "column" | "symbol" | "remediation" | "metadata"> & {
+  file: string;
+  line: number;
+  endLine?: number;
+  column?: number;
+  symbol?: string;
+  remediation: string;
+  metadata: Record<string, unknown>;
 };
 
-// JSON boundary adapter: canonical `file` is emitted while legacy `filePath` remains until the
-// coordinated family JSON unification; a port-local removal would break existing report users.
-// Stable `gruff.analysis.v2` contract line kept adjacent to the function for the doc-context rule.
+/**
+ * Canonical machine record for one skipped path.
+ *
+ * Invariant: `pattern` is present only for a `config` source; reason values use the family vocabulary.
+ */
+interface MachinePathDetail {
+  path: string;
+  reason: "vcs" | "dependency" | "build-output" | "local-tooling" | "gitignored" | "config-ignore";
+  source: SkippedPath["source"];
+  pattern?: string;
+}
+
+/**
+ * Canonical machine diagnostic with omission-based optional location fields.
+ *
+ * Invariant: `invalidatesRun` is the schema-required field name and always carries an explicit boolean.
+ */
+interface MachineDiagnostic {
+  type: string;
+  message: string;
+  "invalidatesRun": boolean;
+  file?: string;
+  line?: number;
+}
+
+type MachineSuppression = Omit<SuppressionSummary, "paths" | "symbol"> & {
+  paths: string[];
+  symbol?: string;
+};
+
+/**
+ * Fields shared byte-for-byte by analysis and summary v3 envelopes.
+ *
+ * Invariant: summary changes only `schemaVersion` and omits the top-level findings array.
+ */
+interface MachineEnvelopeCore {
+  tool: AnalysisReport["tool"];
+  run: {
+    failOn: AnalysisReport["run"]["failOn"];
+    format: AnalysisReport["run"]["format"];
+    inputs: string[];
+    projectRoot: ".";
+    config?: string;
+    includeIgnored?: true;
+  };
+  summary: {
+    analysedFiles: number;
+    diagnostics: number;
+    exitCode: number;
+    findings: AnalysisReport["summary"];
+    findingsByPillar: Record<string, number>;
+    ignoredPaths: number;
+    missingPaths: number;
+    skippedFiles: number;
+    suppressedFindings?: number;
+  };
+  score: {
+    composite: { grade: string | null; score: number | null };
+    /** Ratified scoring denominator and the pillar set the composite averaged over. */
+    evaluatedFiles: number;
+    scoredPillars: AnalysisReport["score"]["scoredPillars"];
+    clusters: AnalysisReport["score"]["clusters"];
+    ruleAttribution: AnalysisReport["score"]["ruleAttribution"];
+    pillars: AnalysisReport["score"]["pillars"];
+    topOffenders: Array<{ file: string; score: number | null; penalty: number; findings: number }>;
+  };
+  diagnostics: MachineDiagnostic[];
+  paths: { analysedFiles: number; details: MachinePathDetail[]; ignoredPaths: string[]; missingPaths: string[] };
+  suppressions: MachineSuppression[];
+  baseline?: { applied: boolean; generated: boolean; path: string; source: string; suppressedFindings: number; entries: number; newFindings: number; unchangedFindings: number; resolvedFindings: number };
+  diff?: { enabled: true; filteredFindings: number; mode: "changed-regions" };
+  extensions?: { ts: { topLevel: { notes: ScanSurfaceNote[] } } };
+}
+
+type JsonAnalysisReport = MachineEnvelopeCore & { schemaVersion: "gruff.analysis.v3"; findings: MachineFinding[] };
+type JsonSummaryReport = MachineEnvelopeCore & { schemaVersion: "gruff.summary.v3" };
+
+// JSON boundary adapter for native report state.
+// Invariant: the result is the exact v3 envelope, without legacy aliases or volatile timestamps.
 function toJsonReport(report: AnalysisReport): JsonAnalysisReport {
   return {
-    ...report,
-    findings: report.findings.map(jsonFinding),
+    schemaVersion: "gruff.analysis.v3",
+    ...machineEnvelopeCore(report),
+    findings: report.findings.map((finding) => machineFinding(finding, report.run.projectRoot)),
+  };
+}
+
+// Invariant: summary v3 is the analysis envelope's exact common projection with findings removed.
+function toJsonSummary(report: AnalysisReport): JsonSummaryReport {
+  return { schemaVersion: "gruff.summary.v3", ...machineEnvelopeCore(report) };
+}
+
+// Builds every field shared by analysis and summary once.
+// Invariant: both writers receive the same run, counts, scores, diagnostics, paths, and optional sections.
+function machineEnvelopeCore(report: AnalysisReport): MachineEnvelopeCore {
+  const { details, ignoredPaths } = machinePathProjection(report);
+  return {
+    tool: report.tool,
+    run: machineRun(report),
+    summary: machineSummary(report, details.length),
     score: {
-      ...report.score,
-      topOffenders: report.score.topOffenders.map(jsonTopOffender),
+      composite: { grade: report.score.grade, score: report.score.composite },
+      evaluatedFiles: report.score.evaluatedFiles,
+      scoredPillars: report.score.scoredPillars,
+      clusters: report.score.clusters,
+      ruleAttribution: report.score.ruleAttribution,
+      pillars: report.score.pillars,
+      topOffenders: report.score.topOffenders.map((offender) => ({
+        file: machinePath(offender.filePath, report.run.projectRoot),
+        score: offender.score,
+        penalty: offender.penalty,
+        findings: offender.findings,
+      })),
+    },
+    diagnostics: report.diagnostics.map((diagnostic) => machineDiagnostic(diagnostic, report.run.projectRoot)),
+    paths: {
+      analysedFiles: report.paths.analysedFiles,
+      details,
+      ignoredPaths,
+      missingPaths: machinePaths(report.paths.missingPaths, report.run.projectRoot),
+    },
+    suppressions: report.suppressions.map((suppression) => machineSuppression(suppression, report.run.projectRoot)),
+    ...(report.baseline === undefined ? {} : {
+      baseline: {
+        applied: !report.baseline.generated,
+        generated: report.baseline.generated,
+        path: machinePath(report.baseline.path, report.run.projectRoot),
+        source: report.baseline.source,
+        suppressedFindings: report.baseline.suppressed,
+        // Every port publishes the same nine keys. A generate run compared against nothing, so its movement counts
+        // are zero rather than absent: a reader must never have to tell an absent key from a zero.
+        entries: report.baseline.entries ?? 0,
+        newFindings: report.baseline.newFindings ?? 0,
+        unchangedFindings: report.baseline.unchangedFindings ?? 0,
+        resolvedFindings: report.baseline.resolvedFindings ?? 0,
+      },
+    }),
+    ...(report.suppressedCount === undefined ? {} : {
+      diff: { enabled: true as const, filteredFindings: report.suppressedCount, mode: "changed-regions" as const },
+    }),
+    ...(report.notes === undefined ? {} : {
+      extensions: { ts: { topLevel: { notes: report.notes } } },
+    }),
+  };
+}
+
+// Projects stable run settings while replacing the host root with the portable `.` identity.
+function machineRun(report: AnalysisReport): MachineEnvelopeCore["run"] {
+  return {
+    failOn: report.run.failOn,
+    format: report.run.format,
+    inputs: machinePaths(report.run.inputs ?? ["."], report.run.projectRoot),
+    projectRoot: ".",
+    ...(report.run.config === undefined ? {} : { config: machinePath(report.run.config, report.run.projectRoot) }),
+    ...(report.run.includeIgnored === true ? { includeIgnored: true as const } : {}),
+  };
+}
+
+// Derives duplicated counts from canonical arrays and the existing fail-on algorithm.
+// Invariant: every published count equals its source array or finding partition.
+function machineSummary(report: AnalysisReport, skippedFiles: number): MachineEnvelopeCore["summary"] {
+  const pillarCounts = new Map<string, number>();
+  report.findings.forEach((finding) => pillarCounts.set(finding.pillar, (pillarCounts.get(finding.pillar) ?? 0) + 1));
+  return {
+    analysedFiles: report.paths.analysedFiles,
+    diagnostics: report.diagnostics.length,
+    exitCode: exitFor(report, report.run.failOn),
+    findings: report.summary,
+    findingsByPillar: Object.fromEntries([...pillarCounts.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    ignoredPaths: skippedFiles,
+    missingPaths: report.paths.missingPaths.length,
+    skippedFiles,
+    ...(report.suppressedCount === undefined ? {} : { suppressedFindings: report.suppressedCount }),
+  };
+}
+
+// Maps one finding without mutating the native identity-bearing object.
+// Invariant: fingerprints and stable identities are copied byte-for-byte; absent optionals stay omitted.
+function machineFinding(finding: Finding, projectRoot: string): MachineFinding {
+  const line = positiveInteger(finding.line) ?? 1;
+  const column = positiveInteger(finding.column);
+  const endLine = positiveInteger(finding.endLine);
+  return {
+    ruleId: finding.ruleId,
+    message: finding.message,
+    file: machinePath(finding.filePath, projectRoot),
+    line,
+    ...(endLine === undefined ? {} : { endLine }),
+    ...(column === undefined ? {} : { column }),
+    severity: finding.severity,
+    pillar: finding.pillar,
+    secondaryPillars: finding.secondaryPillars,
+    tier: finding.tier,
+    confidence: finding.confidence,
+    ...(finding.symbol === undefined || finding.symbol.length === 0 ? {} : { symbol: finding.symbol }),
+    remediation: finding.remediation ?? "",
+    fingerprint: finding.fingerprint,
+    stableIdentity: finding.stableIdentity,
+    metadata: {
+      ...finding.metadata,
+      locationPrecision: column === undefined ? "line-only" : "scanner-pinpointed",
     },
   };
 }
 
-// Maps one Finding into the JSON contract without mutating the native in-memory finding object.
-function jsonFinding(finding: Finding): JsonFinding {
-  const { ruleId, message, filePath, ...rest } = finding;
-  return { ruleId, message, file: filePath, filePath, ...rest };
+// Maps native diagnostic names and optional locations into the canonical vocabulary.
+// Invariant: every diagnostic publishes the required type, message, and invalidation decision.
+function machineDiagnostic(
+  diagnostic: AnalysisReport["diagnostics"][number],
+  projectRoot: string,
+): MachineDiagnostic {
+  const line = positiveInteger(diagnostic.line);
+  return {
+    type: diagnostic.diagnosticType,
+    message: diagnostic.message,
+    invalidatesRun: diagnostic.invalidatesRun !== false,
+    ...(diagnostic.filePath === undefined ? {} : { file: machinePath(diagnostic.filePath, projectRoot) }),
+    ...(line === undefined ? {} : { line }),
+  };
 }
 
-// Maps one top offender into the JSON contract while preserving the legacy filePath alias.
-function jsonTopOffender(offender: AnalysisReport["score"]["topOffenders"][number]): JsonTopOffender {
-  const { filePath, ...rest } = offender;
-  return { file: filePath, filePath, ...rest };
+// Keeps null native symbols out of the omission-based v3 suppression schema.
+function machineSuppression(suppression: SuppressionSummary, projectRoot: string): MachineSuppression {
+  return {
+    index: suppression.index,
+    rule: suppression.rule,
+    paths: machinePaths(suppression.paths, projectRoot),
+    ...(suppression.symbol === null || suppression.symbol.length === 0 ? {} : { symbol: suppression.symbol }),
+    reason: suppression.reason,
+    suppressed: suppression.suppressed,
+  };
+}
+
+// Normalizes M15 skip reasons and proves the bare list is the exact detail projection.
+// Invariant: `ignoredPaths` equals `details.map(({ path }) => path)` in the same order.
+// Throws: when native ignored paths and skip details do not describe the same sequence.
+function machinePathProjection(report: AnalysisReport): { details: MachinePathDetail[]; ignoredPaths: string[] } {
+  const details = report.paths.skipped.map((skipped) => machinePathDetail(skipped, report.run.projectRoot));
+  const ignoredPaths = machinePaths(report.paths.ignoredPaths, report.run.projectRoot);
+  if (ignoredPaths.length !== details.length || ignoredPaths.some((path, index) => path !== details[index]?.path)) {
+    throw new Error("Machine ignored paths must be the exact projection of path details.");
+  }
+  return { details, ignoredPaths };
+}
+
+// Converts one native skip record without publishing non-config matcher patterns.
+function machinePathDetail(skipped: SkippedPath, projectRoot: string): MachinePathDetail {
+  return {
+    path: machinePath(skipped.path, projectRoot),
+    reason: machineIgnoreReason(skipped),
+    source: skipped.source,
+    ...(skipped.source === "config" ? { pattern: skipped.pattern } : {}),
+  };
+}
+
+// Maps TypeScript's native ignore sources onto the ratified family reason vocabulary.
+// Throws: when a default ignore pattern has no canonical family reason.
+function machineIgnoreReason(skipped: SkippedPath): MachinePathDetail["reason"] {
+  if (skipped.source === "config") {
+    return "config-ignore";
+  }
+  if (skipped.source === "gitignore") {
+    return "gitignored";
+  }
+  const component = skipped.pattern.replace(/\/+$/u, "").split("/").at(-1);
+  if (component === ".git" || component === ".hg" || component === ".svn") {
+    return "vcs";
+  }
+  if (component === "node_modules" || component === "vendor") {
+    return "dependency";
+  }
+  if (component === "build" || component === "coverage" || component === "dist") {
+    return "build-output";
+  }
+  if (component === ".fleet" || component === ".idea" || component === ".vscode") {
+    return "local-tooling";
+  }
+  throw new Error(`Default ignored path has no canonical reason: ${skipped.pattern}`);
+}
+
+// Produces unique portable paths in producer order.
+function machinePaths(values: readonly string[], projectRoot: string): string[] {
+  return [...new Set(values.map((value) => machinePath(value, projectRoot)))];
+}
+
+// Converts a native path to project-relative POSIX form.
+// Throws: when the path is empty, absolute outside the project, drive-qualified, UNC, or escapes with `..`.
+function machinePath(pathValue: string, projectRoot: string): string {
+  const slashValue = pathValue.replaceAll("\\", "/");
+  if (slashValue.length === 0 || slashValue.startsWith("//") || /^[A-Za-z]:/u.test(slashValue)) {
+    throw new Error(`Machine path must be project-relative: ${JSON.stringify(pathValue)}`);
+  }
+  const relativeValue = isAbsolute(pathValue) ? relative(projectRoot, pathValue).replaceAll("\\", "/") : slashValue;
+  const parts: string[] = [];
+  for (const part of relativeValue.split("/")) {
+    if (part.length === 0 || part === ".") {
+      continue;
+    }
+    if (part === "..") {
+      if (parts.length === 0) {
+        throw new Error(`Machine path must stay inside the project root: ${JSON.stringify(pathValue)}`);
+      }
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return parts.length === 0 ? "." : parts.join("/");
+}
+
+// Optional source locations serialize only as positive integers.
+function positiveInteger(integerValue: number | undefined): number | undefined {
+  return integerValue !== undefined && Number.isInteger(integerValue) && integerValue > 0 ? integerValue : undefined;
 }
 
 /*
@@ -103,6 +398,12 @@ function renderSarif(report: AnalysisReport): string {
             rules,
           },
         },
+        invocations: [
+          {
+            executionSuccessful: !report.diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false),
+            toolExecutionNotifications: report.diagnostics.map(sarifDiagnostic),
+          },
+        ],
         results: report.findings.map((finding) => sarifResult(finding, ruleIndices)),
         properties: {
           gruffSchemaVersion: report.schemaVersion,
@@ -116,9 +417,48 @@ function renderSarif(report: AnalysisReport): string {
   return `${JSON.stringify(sarif, null, 2)}\n`;
 }
 
+// Contract invariant: analysis diagnostics become SARIF invocation notifications, including their
+// file anchor when one exists, while non-fatal bounded scans retain SARIF's note level.
+function sarifDiagnostic(diagnostic: AnalysisReport["diagnostics"][number]): Record<string, unknown> {
+  return {
+    descriptor: { id: diagnostic.diagnosticType },
+    level: diagnostic.invalidatesRun === false ? "note" : "error",
+    message: { text: diagnostic.message },
+    ...(diagnostic.filePath
+      ? {
+          locations: [{
+            physicalLocation: {
+              artifactLocation: { uri: sarifUri(diagnostic.filePath) },
+              ...(diagnostic.line === undefined ? {} : { region: { startLine: diagnostic.line } }),
+            },
+          }],
+        }
+      : {}),
+    properties: { invalidatesRun: diagnostic.invalidatesRun !== false },
+  };
+}
+
 /*
- * Maps one Finding into a SARIF result row. The stable, deterministic fingerprint in
- * `partialFingerprints` is the public contract - GitHub code-scanning keys alerts off it.
+ * Projects one finding into the fingerprints GitHub code scanning groups its alerts by.
+ *
+ * `gruffFingerprint` is the ratified durable identity and nothing else, so an alert survives a line move while a
+ * second declaration of one name opens its own alert. A sensitive finding has none, and carries no key at all:
+ * publishing one would give a secret a stable name in a system gruff does not control.
+ *
+ * The analyser names every finding before the baseline filters any; a finding built outside it is named here,
+ * ranked by its own line, so an ordinary result is never published without a fingerprint.
+ */
+function sarifPartialFingerprints(finding: Finding): Record<string, string> | undefined {
+  if (finding.baselineIdentity !== undefined) {
+    return { gruffFingerprint: finding.baselineIdentity };
+  }
+  const named = findingIdentities([finding])[0];
+  return named === undefined ? undefined : { gruffFingerprint: named.identity };
+}
+
+/*
+ * Maps one Finding into a SARIF result row.
+ * Stable contract: the durable identity in `partialFingerprints` is what GitHub code scanning keys alerts off.
  */
 function sarifResult(finding: Finding, ruleIndices: Map<string, number>): Record<string, unknown> {
   const result: Record<string, unknown> = {
@@ -130,10 +470,12 @@ function sarifResult(finding: Finding, ruleIndices: Map<string, number>): Record
         physicalLocation: sarifPhysicalLocation(finding),
       },
     ],
-    partialFingerprints: {
-      gruffFingerprint: finding.fingerprint,
-    },
   };
+  const fingerprints = sarifPartialFingerprints(finding);
+  // A sensitive finding carries no fingerprints at all, so no secret gets a durable name in code scanning.
+  if (fingerprints !== undefined) {
+    result.partialFingerprints = fingerprints;
+  }
   const ruleIndex = ruleIndices.get(finding.ruleId);
   if (ruleIndex !== undefined) {
     result.ruleIndex = ruleIndex;
@@ -216,12 +558,15 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
   const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
   const pillarRows = buildPillarRows(report);
   const breakdown = severityGradeBreakdown(report.findings);
+  // FAMILY-CONTRACT section 1: masthead, then the two-line composite block, then this port's own
+  // lines. The scan card used to sit between the masthead and the composite, which put the number a
+  // reader came for two lines further down than the contract allows.
   const lines = [
     `gruff-ts ${report.tool.version} summary`,
+    compositeLine(report.score.composite, report.score.grade),
+    `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     `Path: ${pathLabel ?? report.run.projectRoot}`,
     ...(typeof elapsedMs === "number" ? [`Duration: ${formatSummaryDuration(elapsedMs)}`] : []),
-    `Composite: ${report.score.grade} (${report.score.composite.toFixed(2)} / 100)`,
-    `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     `  Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `  Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
     `  Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
@@ -240,53 +585,26 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
     ...(
       report.score.topOffenders.length === 0
         ? ["- No file offenders."]
-        : report.score.topOffenders.slice(0, top).map((offender) => `- ${offender.filePath}: ${offender.findings} findings, quality ${offender.score.toFixed(1)}/100`)
+        : report.score.topOffenders.slice(0, top).map((offender) => {
+            const quality = offender.score === null ? "n/a" : `${offender.score.toFixed(1)}/100`;
+            return `- ${offender.filePath}: ${offender.findings} findings, quality ${quality}`;
+          })
     ),
   );
+  // The digest filters through the same analyse-side partition, so it owes the same audit row: a
+  // surface that applies a sensitive exclusion reports its count on that surface (FAMILY-CONTRACT.md
+  // section 13a, search: `Where the audit must appear`). It is an extension line below the canonical
+  // block, which section 1 permits; machine summary counts live in the v3 projection.
+  lines.push(...renderTextSuppressionLines(report));
   return `${lines.join("\n")}\n`;
 }
 
 /*
- * Renders the stable public `gruff.summary.v2` JSON contract for the `summary --format=json` flow.
- * Phase 2 of the cross-port harmonisation replaces the flat `{pillar, count}` shape with rich
- * per-pillar objects carrying grade, score, applicability, and per-severity counts (findings,
- * advisory, warning, error). The schema-version string is bumped because downstream CI consumers
- * parse this payload and the field-set is no longer compatible with v1; scope/score/topRules/
- * topOffenders remain unchanged.
+ * Renders `gruff.summary.v3` for `summary --format=json`.
+ * Invariant: findings alone are absent; every other field comes from the shared analysis adapter.
  */
-function renderSummaryJson(report: AnalysisReport, elapsedMs?: number, pathLabel?: string, top = 10): string {
-  const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
-  const pillarRows = buildPillarRows(report);
-  const payload = {
-    schemaVersion: "gruff.summary.v2",
-    tool: report.tool,
-    scope: {
-      paths: pathLabel ?? report.run.projectRoot,
-      projectRoot: report.run.projectRoot,
-      analysedFiles: report.paths.analysedFiles,
-      ignoredPaths: report.paths.ignoredPaths.length,
-      missingPaths: report.paths.missingPaths.length,
-      diagnostics: report.diagnostics.length,
-      elapsedSeconds: typeof elapsedMs === "number" ? Number((elapsedMs / 1000).toFixed(3)) : undefined,
-    },
-    score: report.score,
-    findings: report.summary,
-    baseline: report.baseline,
-    pillars: pillarRows.map((row) => ({
-      pillar: row.pillar,
-      grade: row.grade,
-      score: row.score,
-      penalty: row.penalty,
-      applicable: row.isApplicable,
-      findings: row.findings,
-      advisory: row.advisory,
-      warning: row.warning,
-      error: row.error,
-    })),
-    topRules: renderRankedCountRows(ruleCounts, top),
-    topOffenders: report.score.topOffenders.slice(0, top),
-  };
-  return `${JSON.stringify(payload, null, 2)}\n`;
+function renderSummaryJson(report: AnalysisReport): string {
+  return `${JSON.stringify(toJsonSummary(report), null, 2)}\n`;
 }
 
 // Shared text formatter for diagnostic rows in plain-text summaries and the `text` format. Stable
@@ -419,7 +737,7 @@ function renderText(report: AnalysisReport): string {
   const breakdown = severityGradeBreakdown(report.findings);
   const lines = [
     `gruff-ts ${report.tool.version} analyse`,
-    `Composite: ${report.score.grade} (${report.score.composite.toFixed(2)} / 100)`,
+    compositeLine(report.score.composite, report.score.grade),
     `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     `  Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `  Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
@@ -439,11 +757,33 @@ function renderText(report: AnalysisReport): string {
   if (report.findings.length >= OUTPUT_VOLUME_HINT_THRESHOLD) {
     lines.push("", `Tip: ${report.findings.length} findings is more than a flat list usefully shows. Try \`gruff-ts summary --top=20\` for a per-rule digest.`);
   }
+  lines.push(...renderTextSuppressionLines(report));
   return `${lines.join("\n")}\n`;
 }
 
 /*
- * Markdown renderer for the `gruff.analysis.v2` report. Truncates to 50 findings because Markdown
+ * One human-readable total for the reviewed sensitive exclusions, so a suppressed finding is never
+ * silently invisible on the surface most users read. The line is a stable cross-port contract whose
+ * shape follows the family reference renderer (gruff-rs/src/render/text.rs, search:
+ * `Suppressed findings:`). Entries that matched nothing are
+ * omitted from the detail list but still publish their zero row in `report.suppressions`. Only the
+ * configured rule id, count, and rationale are printed - never any matched value material.
+ */
+function renderTextSuppressionLines(report: AnalysisReport): string[] {
+  const total = totalSuppressedFindings(report.suppressions);
+  // Nothing suppressed means no line at all, matching the reference renderer.
+  if (total === 0) {
+    return [];
+  }
+  const details = report.suppressions
+    .filter((summary) => summary.suppressed > 0)
+    .map((summary) => `sensitiveExclusions[${summary.index}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`)
+    .join("; ");
+  return ["", `Suppressed findings: ${total} via ${details}`];
+}
+
+/*
+ * Markdown renderer for the native analysis report. Truncates to 50 findings because Markdown
  * previews (PR comments, READMEs) start mangling longer tables; the JSON and HTML renderers stay
  * the canonical full-fidelity output. Public contract / invariant: the Pillars table is inserted
  * between the severity counts and the per-finding list so CI logs and PR comment previews see it
@@ -456,10 +796,26 @@ function renderMarkdown(report: AnalysisReport): string {
   const findingRows = report.findings
     .slice(0, 50)
     .map((finding) => `- ${markdownInlineCode(finding.ruleId)} ${markdownInlineCode(finding.filePath)}:${finding.line ?? 1} - ${escapeMarkdownFindingMessage(finding.message)}`);
+  const diagnosticRows = report.diagnostics.length === 0
+    ? []
+    : [
+        "## Diagnostics",
+        "",
+        ...report.diagnostics.map((diagnostic) => {
+          const diagnosticLocation = diagnostic.filePath
+            ? `${markdownInlineCode(diagnostic.filePath)}:${diagnostic.line ?? 1} `
+            : "";
+          return `- ${markdownInlineCode(diagnostic.diagnosticType)} ${diagnosticLocation}- ${escapeMarkdownFindingMessage(diagnostic.message)}`;
+        }),
+        "",
+      ];
   return [
     "# gruff-ts report",
     "",
-    `Composite: **${report.score.grade} (${report.score.composite.toFixed(2)} / 100)**`,
+    // Markdown bolds the value, not the label; the canonical line shape is the text view's contract.
+    report.score.composite === null || report.score.grade === null
+      ? "Composite: **n/a (nothing evaluated)**"
+      : `Composite: **${report.score.grade} (${report.score.composite.toFixed(2)} / 100)**`,
     `- Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `- Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
     `- Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
@@ -467,6 +823,7 @@ function renderMarkdown(report: AnalysisReport): string {
     "",
     `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     "",
+    ...diagnosticRows,
     ...renderMarkdownPillarsTable(buildPillarRows(report)),
     "",
     ...findingRows,
@@ -608,9 +965,21 @@ function complexityClusters(findings: Finding[]): ComplexityCluster[] {
 // GitHub Actions `::workflow command` syntax. Public contract invariant: file/title properties
 // must be normalized and command-escaped before interpolation because commas and colons delimit the property list.
 function renderGithub(report: AnalysisReport): string {
-  return report.findings
-    .map((finding) => `::${githubLevel(finding.severity)} file=${escapeCommandProperty(githubAnnotationPath(finding.filePath))},line=${finding.line ?? 1},title=${escapeCommandProperty(finding.ruleId)}::${escapeCommand(finding.message)}`)
+  return [
+    ...report.diagnostics.map(githubDiagnostic),
+    ...report.findings.map((finding) => `::${githubLevel(finding.severity)} file=${escapeCommandProperty(githubAnnotationPath(finding.filePath))},line=${finding.line ?? 1},title=${escapeCommandProperty(finding.ruleId)}::${escapeCommand(finding.message)}`),
+  ]
     .join("\n");
+}
+
+// Contract invariant: runtime diagnostics become Actions annotations; bounded deep scans stay
+// notices and all fatal diagnostics remain errors, including file-less diagnostics.
+function githubDiagnostic(diagnostic: AnalysisReport["diagnostics"][number]): string {
+  const level = diagnostic.invalidatesRun === false ? "notice" : "error";
+  const location = diagnostic.filePath
+    ? ` file=${escapeCommandProperty(githubAnnotationPath(diagnostic.filePath))},line=${diagnostic.line ?? 1},`
+    : " ";
+  return `::${level}${location}title=${escapeCommandProperty(diagnostic.diagnosticType)}::${escapeCommand(diagnostic.message)}`;
 }
 
 // GitHub annotation paths are repository-relative POSIX paths. Leading `./` and Windows

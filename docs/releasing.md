@@ -1,6 +1,6 @@
 # Releasing
 
-This checklist prepares the public `@blundergoat/gruff-ts@0.5.0` release.
+This checklist prepares the public `@blundergoat/gruff-ts@0.6.0` release.
 Publishing, git tags, and public release creation are maintainer-owned actions.
 
 ## Bump The Version
@@ -8,7 +8,7 @@ Publishing, git tags, and public release creation are maintainer-owned actions.
 Run the coordinated bump only after the release version is approved:
 
 ```bash
-scripts/bump-version.sh 0.5.0
+scripts/bump-version.sh 0.6.0
 scripts/bump-version.sh --check
 ```
 
@@ -80,9 +80,11 @@ import runtime files from the development checkout.
 
 ## Publish And Verify
 
-This repository has no publish wrapper. After every gate above is green, the
-maintainer performs the registry publish, tag, and public release through the
-approved release process.
+`bash scripts/npm-publish.sh` is the publish wrapper. It reads the name and version from
+`package.json`, verifies npm authentication, checks version lockstep, runs the release preflight
+gate, prints a dry-run summary, and requires manual confirmation before it calls `npm publish`.
+The tag and the public release remain maintainer-owned actions performed through the approved
+release process after every gate above is green.
 
 After publication:
 

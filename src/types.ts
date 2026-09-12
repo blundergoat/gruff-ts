@@ -1,3 +1,7 @@
+// Shared analyzer types define the settings, findings, diagnostics, and reports exposed across the TypeScript port.
+//
+// CLI commands and rules use these shapes so users and integrations receive one stable interpretation of missing and present values.
+
 /** Finding impact level used for scoring, output, and fail-on thresholds. */
 export type Severity = "advisory" | "warning" | "error";
 
@@ -27,15 +31,31 @@ export type FailThreshold = "none" | "advisory" | "warning" | "error";
 /** Changed-region filter precision for diff-aware analysis. */
 export type ChangedScopeMode = "symbol" | "hunk" | "file";
 
-/** Public options contract consumed by the analyzer core and CLI. */
+/** Records which layer selected the effective bounded deep-scan settings. */
+export type DeepScanBudgetOverrideState = "default" | "config" | "cli";
+
+/** Effective per-source bounds for expensive script analysis. */
+export interface DeepScanBudget {
+  enabled: boolean;
+  maxLines: number;
+  maxBytes: number;
+  override: DeepScanBudgetOverrideState;
+}
+
+/** Atomic CLI override; disabling the budget intentionally carries no numeric limits. */
+export type DeepScanBudgetOverride =
+  | { enabled: false }
+  | { enabled: true; maxLines: number; maxBytes: number };
+
+/**
+ * Defines the stable options contract resolved from one user command before analysis starts.
+ *
+ * Optional paths and filters stay absent when the user did not select them, allowing downstream code to preserve default behavior.
+ */
 export interface AnalysisOptions {
   paths: string[];
   config?: string;
-  /**
-   * Named built-in profile (`gruff.minimal` / `gruff.recommended` / `gruff.strict`) or a path to a
-   * profile file, from the `--profile` CLI flag. Wins over a config-file `profile:` block. Absent
-   * means "fall back to the config-file profile, else the default `recommended` (a no-op delta)".
-   */
+  /** CLI profile name or file; missing means use the config-file profile or the recommended default. */
   profile?: string;
   shouldSkipConfig: boolean;
   format: OutputFormat;
@@ -49,27 +69,46 @@ export interface AnalysisOptions {
   historyFile?: string;
   baseline?: string;
   generateBaseline?: string;
+  /** 0.5 baseline whose reviews are carried into `generateBaseline`; absent means nothing is carried across. */
+  migrateBaseline?: string;
+  /** Overwrite a 0.5 baseline at the shared default path instead of refusing, which is what `--force` means. */
+  shouldForceBaselineOverwrite?: boolean;
   shouldSkipBaseline: boolean;
+  deepScanBudget?: DeepScanBudgetOverride;
+  /**
+   * Which rules this run executes, from `--include-rule` and its three siblings.
+   *
+   * Absent means the whole catalogue runs. It belongs here, and the presentation selectors do not, because these
+   * change what is found and therefore the score.
+   */
+  execution?: ExecutionSelectors;
 }
 
-/** Command keys that participate in the `minimumSeverity:` config block. `dashboard` is omitted on purpose - it has no `--fail-on` flag and accepting it as a key would silently no-op. See ADR-004. */
+/**
+ * Which rules one run executes, chosen by `--include-rule`, `--exclude-rule`, `--include-pillar` and `--exclude-pillar`.
+ *
+ * Every list is empty when the user asked for nothing, which leaves the full catalogue running.
+ */
+export interface ExecutionSelectors {
+  includeRules: string[];
+  excludeRules: string[];
+  includePillars: string[];
+  excludePillars: string[];
+}
+
+/** Commands that support a configured `failOn` gate; dashboard is absent because it has no `--fail-on` behavior (ADR-004). */
 export type MinimumSeverityCommand = "analyse" | "summary" | "report";
 
 /**
- * Loaded analyzer configuration derived from optional gruff config files. The schema invariant is
- * that `schemaVersion` is fixed at the supported version and every field has a defined default in
- * `defaultConfig()` so consumers can rely on the shape without per-field guards.
+ * Describes the complete settings used for one user scan after defaults, profiles, and config overlays.
+ *
+ * Every collection is present even when empty, while the fixed schema version lets consumers use the shape without field guards.
  */
 export interface Config {
-  /**
-   * Required top-level config-schema version. Pre-1.0 break: every `.gruff-ts.yaml` must declare
-   * `schemaVersion: gruff-ts.config.v0.1` or loading throws. Lives in the `gruff-ts.config.*`
-   * namespace, distinct from the output schemas (`gruff.analysis.v2`, etc.). See ADR-004.
-   */
+  /** Required config-schema version; missing or different values stop the user's command before analysis (ADR-004). */
   schemaVersion: "gruff-ts.config.v0.1";
   ignoredPaths: string[];
   acceptedAbbreviations: Set<string>;
-  secretPreviews: Set<string>;
   bannedGenericNames: Set<string>;
   acceptedBooleanNames: Set<string>;
   acceptedClassFilePairs: Set<string>;
@@ -79,19 +118,49 @@ export interface Config {
   placeholderNames: Set<string>;
   negativeBooleanAllowed: Set<string>;
   knownAcronyms: Set<string>;
-  /**
-   * Per-command default for `--fail-on`. Precedence: CLI flag > this map > binary default.
-   * `dashboard` is intentionally not a valid key (no `--fail-on` flag exists for it); the parser
-   * rejects `dashboard` with a documented error. See ADR-004.
-   */
+  /** Per-command `--fail-on` defaults from `failOn:`; an empty map means each command keeps its binary default (ADR-004). */
   minimumSeverity: Map<MinimumSeverityCommand, FailThreshold>;
+  /** The `minimumSeverity:` display floor: findings below it are hidden from the report and still scored and gated. */
+  displayFloor?: Severity;
   rules: Map<string, { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> }>;
+  deepScanBudget: DeepScanBudget;
+  /** Reviewed sensitive-data suppressions in declaration order; an empty list means nothing is suppressed. */
+  sensitiveExclusions: SensitiveExclusion[];
 }
 
 /**
- * One rule's settings inside a profile. Mirrors the per-rule knobs of the config `rules:` block
- * (`enabled` defaults to true when omitted). `options` is optional here - built-in presets never set
- * options - whereas the loaded `Config.rules` value always carries an (often empty) options map.
+ * Describes one reviewed suppression from the config file's `sensitiveExclusions:` section.
+ *
+ * The scope is exactly one rule id in exactly one project-relative file, narrowed further when the user supplies a symbol.
+ * Stable contract: nothing is matched against a finding's message or its detected value, so a suppression can never depend on secret material.
+ */
+export interface SensitiveExclusion {
+  rule: string;
+  path: string;
+  /** Present only when the user narrowed the scope; a finding without that exact symbol keeps reporting. */
+  symbol?: string;
+  reason: string;
+}
+
+/**
+ * Reports what one configured sensitive exclusion suppressed during the user's scan.
+ *
+ * Every configured entry publishes a row even when it matched nothing, so a suppression is counted rather than silently invisible.
+ * `symbol` is null when the entry did not narrow to one, and `paths` holds the entry's single configured path as the family-shaped list.
+ */
+export interface SuppressionSummary {
+  index: number;
+  rule: string;
+  paths: string[];
+  symbol: string | null;
+  reason: string;
+  suppressed: number;
+}
+
+/**
+ * Describes one rule override inside a profile before it joins the user's effective configuration.
+ *
+ * Missing fields inherit from the base profile or descriptor; a missing options map means the profile did not tune numeric options.
  */
 export interface ProfileRuleSetting {
   enabled?: boolean;
@@ -107,9 +176,9 @@ export interface ProfileRuleSetting {
 export type ProfileSpec = string | InlineProfileSpec;
 
 /**
- * The inline `profile:` object form. `extends` names the base (a built-in name or a relative file
- * path; defaults to `gruff.recommended` when omitted); `rules` and `ignoredPaths` override the base
- * with child-wins semantics - per-rule fields merge, and the `ignoredPaths` array replaces.
+ * Describes the inline profile form users can place in configuration.
+ *
+ * Missing `extends` selects recommended; missing rules or ignored paths inherit the base, while supplied values use child-wins behavior.
  */
 export interface InlineProfileSpec {
   extends?: string;
@@ -118,9 +187,9 @@ export interface InlineProfileSpec {
 }
 
 /**
- * A fully resolved and flattened profile: the effective rule settings and ignored paths after the
- * whole `extends:` chain has collapsed into one delta from the descriptor defaults. Enabled-at-default
- * rules are omitted from `rules`, so `gruff.recommended` flattens to an empty map (the parity contract).
+ * Describes a fully resolved profile ready to sit beneath the user's direct configuration.
+ *
+ * Empty rules or ignored paths mean the profile adds no values in that area; the recommended profile is therefore a no-op delta.
  */
 export interface ProfileDefinition {
   name: string;
@@ -128,7 +197,11 @@ export interface ProfileDefinition {
   ignoredPaths: string[];
 }
 
-/** Stable analysis finding emitted by a rule. */
+/**
+ * Defines the stable finding contract shown in user reports and machine integrations.
+ *
+ * Missing locations, symbols, or remediation mean the rule could not provide that context; metadata remains an object even when empty.
+ */
 export interface Finding {
   ruleId: string;
   message: string;
@@ -146,25 +219,44 @@ export interface Finding {
   metadata: Record<string, unknown>;
   fingerprint: string;
   stableIdentity: string;
+  /**
+   * The ratified durable identity this run computed, which SARIF publishes as the code-scanning fingerprint.
+   * Absent for a sensitive finding, which has no durable name, and for a finding built outside the analyser.
+   */
+  baselineIdentity?: string;
+  /**
+   * The subject that identity hashed, which carries the declaration ordinal a consumer needs to recompute it.
+   * Absent wherever `baselineIdentity` is, because the two are computed together or not at all.
+   */
+  baselineSubject?: string;
 }
 
-/** Non-finding runtime diagnostic emitted while preparing or reading inputs. */
+/**
+ * Describes a runtime problem encountered while preparing or reading the user's scan inputs.
+ *
+ * Missing file or line fields mean the problem applies to the command or input set rather than one precise source location.
+ */
 export interface RunDiagnostic {
   diagnosticType: string;
   message: string;
   filePath?: string;
   line?: number;
+  /** False marks a visible diagnostic that must not change an otherwise-successful exit status. */
+  invalidatesRun?: false;
 }
 
 /**
- * Source that excluded a path from analysis. `config` (`paths.ignore`) is authoritative in every
- * invocation mode - explicit file operands and diff/changed-region runs included - and is never
- * overridden by `--include-ignored`. `gitignore` and `default` are discovery-walk ignores: they are
- * suppressed by `--include-ignored` and bypassed for an explicitly supplied file operand (ADR-003).
+ * Names the policy source that excluded a path from the user's scan.
+ *
+ * Config ignores always apply; `--include-ignored` can bypass discovery ignores from Git or Gruff defaults (ADR-003).
  */
 export type IgnoreSource = "config" | "gitignore" | "default";
 
-/** One path excluded from analysis, with the ignore source and the exact pattern that matched. */
+/**
+ * Describes one path excluded from the user's analysis surface.
+ *
+ * The source and matching pattern explain why it was skipped, so no field is optional or empty for a recorded entry.
+ */
 export interface SkippedPath {
   path: string;
   source: IgnoreSource;
@@ -172,11 +264,9 @@ export interface SkippedPath {
 }
 
 /**
- * Non-fatal scan-surface note (additive in 0.4.0, owner-approved): explains a scan whose surface
- * differs from what the caller likely expected - a requested input that produced no analysable
- * files (`no-analysable-files`), or a file whose deep script analysis was bounded by the scan
- * budget (`bounded-deep-scan`), or bytes that are not parseable text (`non-text-file`). Notes never
- * affect exit codes; `diagnostics` stays the surface that drives exit 2.
+ * Describes a non-fatal difference between the scan surface requested by the user and the files Gruff could analyze.
+ *
+ * Notes explain empty, bounded, or non-text inputs without changing exit status; fatal preparation problems remain diagnostics.
  */
 export interface ScanSurfaceNote {
   noteType: "no-analysable-files" | "bounded-deep-scan" | "non-text-file";
@@ -185,33 +275,90 @@ export interface ScanSurfaceNote {
 }
 
 /**
- * Stable gruff.analysis.v2 report schema returned by analyse and JSON report commands.
+ * Defines the native analysis state consumed by renderers and integrations.
  *
- * `paths.skipped` (added in 0.3.0, ADR-007) is an additive field: each entry carries the excluded
- * `path`, the ignore `source`, and the matching `pattern`. `paths.ignoredPaths` is retained as the
- * back-compatible `string[]` of the same paths, so existing v2 consumers keep working without change.
+ * JSON renderers project this state into `gruff.analysis.v3`; optional machine-run inputs retain
+ * the user's original scan request without changing finding, baseline, or hook identities.
+ * Invariant: native identities and score values remain stable; only machine renderers reshape this
+ * state into the `gruff.analysis.v3` family envelope.
  */
 export interface AnalysisReport {
-  schemaVersion: "gruff.analysis.v2";
+  schemaVersion: "gruff.analysis.v3";
   tool: { name: "gruff-ts"; version: string };
-  run: { projectRoot: string; format: OutputFormat; failOn: FailThreshold; generatedAt: string };
+  run: {
+    projectRoot: string;
+    format: OutputFormat;
+    failOn: FailThreshold;
+    generatedAt: string;
+    inputs?: string[];
+    config?: string;
+    includeIgnored?: true;
+  };
   summary: { advisory: number; warning: number; error: number; total: number };
   paths: { analysedFiles: number; ignoredPaths: string[]; skipped: SkippedPath[]; missingPaths: string[] };
   diagnostics: RunDiagnostic[];
-  /** Additive in 0.4.0: present only when at least one scan-surface note was produced. */
+  /** Missing means the scan produced no non-fatal surface notes. */
   notes?: ScanSurfaceNote[];
+  /** One audit row per configured `sensitiveExclusions:` entry, in declaration order; empty when none are configured. */
+  suppressions: SuppressionSummary[];
   findings: Finding[];
   suppressedCount?: number;
   score: {
-    composite: number;
-    grade: string;
-    pillars: Array<{ pillar: Pillar; score: number; penalty: number; findings: number }>;
-    topOffenders: Array<{ filePath: string; score: number; findings: number }>;
+    /** Mean of the applicable pillar scores; null when nothing applicable was evaluated. */
+    composite: number | null;
+    /** Letter grade derived from `composite`; null whenever `composite` is. */
+    grade: string | null;
+    /** Ratified scoring denominator: script files that survived discovery. */
+    evaluatedFiles: number;
+    /** Every pillar this run could reach, so the composite's denominator is visible. */
+    scoredPillars: Pillar[];
+    /** Correlated concepts that billed one shared weight, so a reader can see what the grade counted once. */
+    clusters: Array<{ file: string; symbol: string; ruleIds: string[]; findings: number; weight: number }>;
+    /** How much weight each native rule removed from the score; the native ruleId is the attribution key. */
+    ruleAttribution: Array<{ ruleId: string; findings: number; weight: number }>;
+    pillars: Array<{ pillar: Pillar; applicable: boolean; score: number | null; grade: string | null; penalty: number; findings: number }>;
+    topOffenders: Array<{ filePath: string; score: number | null; penalty: number; findings: number }>;
   };
-  baseline?: { path: string; source: string; suppressed: number; generated: boolean };
+  /**
+   * Present only when a baseline was used or written. `suppressed` counts the reviewed debt this run hid;
+   * `newFindings` is the gated count the user must still act on, and is absent on a generate run, which hides nothing.
+   */
+  baseline?: {
+    path: string;
+    source: string;
+    suppressed: number;
+    generated: boolean;
+    entries?: number;
+    newFindings?: number;
+    unchangedFindings?: number;
+    resolvedFindings?: number;
+    sensitiveCounted?: number;
+  };
 }
 
-/** Static catalogue entry describing a rule's purpose and configuration knobs. */
+/**
+ * Describes one rule in the catalogue shown by `list-rules` and used during configuration validation.
+ *
+ * Missing thresholds, options, allowlists, or fixture exemptions mean the rule does not expose that user-facing control.
+ */
+/**
+ * One reviewed class of code that trips a rule without being the defect it looks for.
+ *
+ * `shape` names the pattern a reader would recognise in their own source; `mitigation` says what to
+ * do about it, naming a real config key or code change. Guidance is reviewed evidence rather than
+ * apology: a rule with no entry has had none recorded, which is why the field is omitted rather
+ * than published as an empty array.
+ */
+export interface FalsePositiveShape {
+  shape: string;
+  mitigation: string;
+}
+
+/**
+ * The public metadata for one rule: what `list-rules` prints, what reports carry, and what the
+ * generated config comments describe. Every optional member is omitted rather than emitted empty,
+ * so an absent key means the rule has no such control rather than an unset one.
+ */
 export interface RuleDescriptor {
   ruleId: string;
   pillar: Pillar;
@@ -221,13 +368,9 @@ export interface RuleDescriptor {
   remediation: string;
   threshold?: number;
   optionKeys?: readonly string[];
-  /**
-   * Names of `allowlists.*` keys in `.gruff-ts.yaml` that override or extend the rule's
-   * behaviour. Mirrors the `optionKeys` shape but targets the cross-pillar allowlist surface
-   * (e.g. `naming.boolean-prefix` consults `allowlists.booleanPrefixes`). Surfaced in the
-   * `list-rules --format=json` payload and the per-rule remediation text so operators don't
-   * have to grep `.gruff-ts.yaml` and `src/config.ts` to find the override knob.
-   */
+  /** Allowlist keys shown to users for this rule; missing means the rule has no allowlist control. */
   allowlistKeys?: readonly string[];
   fixtureExemption?: string;
+  /** Reviewed false-positive guidance; missing means no shape has been reviewed for this rule. */
+  falsePositiveShapes?: readonly FalsePositiveShape[];
 }

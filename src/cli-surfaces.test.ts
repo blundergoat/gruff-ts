@@ -1,11 +1,12 @@
 // CLI and dashboard surface tests covering command help, render formats, SARIF, and HTML controls.
+import { findingIdentities } from "./baseline-identity.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { analyse, renderReport, ruleDescriptors } from "./cli.ts";
+import { analyse, buildProgram, renderReport, ruleDescriptors } from "./cli.ts";
 import { VERSION } from "./constants.ts";
 import type { AnalysisReport } from "./cli.ts";
 import { analyseFixture, REPO_ROOT } from "./test-fixtures.ts";
@@ -66,15 +67,43 @@ test("list-rules <ruleId> prints labelled per-rule detail in text mode", () => {
 });
 
 test("list-rules <ruleId> renders JSON envelope with tool + rule + configKeys", () => {
-  // JSON variant for docs/integration consumers. Shape: `{ tool: {name, version}, rule: { …descriptor, configKeys: [...] } }`.
+  // JSON variant for docs/integration consumers. Shape: `{ tool: {name, version}, rule: { …listed record, configKeys: [...] } }`,
+  // where the listed record is the same family shape the catalogue publishes (`id`, `defaultSeverity`, `thresholds`).
   const text = execFileSync("./bin/gruff-ts", ["list-rules", "naming.generic-parameter", "--format=json"], { encoding: "utf8" });
   const payload = JSON.parse(text);
   assert.equal(payload.tool?.name, "gruff-ts");
-  assert.equal(payload.rule?.ruleId, "naming.generic-parameter");
+  assert.equal(payload.rule?.id, "naming.generic-parameter");
+  assert.equal(typeof payload.rule?.defaultSeverity, "string");
+  assert.equal("ruleId" in payload.rule, false);
+  assert.equal("severity" in payload.rule, false);
   assert.deepEqual(payload.rule?.optionKeys, ["minCyclomatic", "minLineCount", "minParameters"]);
+
+  const thresholded = JSON.parse(execFileSync("./bin/gruff-ts", ["list-rules", "complexity.cognitive", "--format=json"], { encoding: "utf8" }));
+  assert.deepEqual(thresholded.rule?.thresholds, { maxComplexity: 15 });
+  assert.equal("threshold" in thresholded.rule, false);
   assert.equal(Array.isArray(payload.rule?.configKeys), true);
   const enabledKey = payload.rule.configKeys.find((entry: { key: string }) => entry.key === "rules.naming.generic-parameter.enabled");
   assert.equal(enabledKey?.type, "bool");
+});
+
+test("list-rules <ruleId> prints reviewed false-positive guidance in both formats", () => {
+  // M04: guidance reaches users only if the surfaces carry it. The JSON branch spreads the
+  // descriptor so it gains the field for free, but both text renderers hand-format each field and
+  // would drop it silently, which is what this guard exists to catch.
+  const text = execFileSync("./bin/gruff-ts", ["list-rules", "security.async-foreach"], { encoding: "utf8" });
+  assert.match(text, /Known false positives:/);
+  assert.match(text, /\n {4}-> /);
+
+  const payload = JSON.parse(execFileSync("./bin/gruff-ts", ["list-rules", "security.async-foreach", "--format=json"], { encoding: "utf8" }));
+  assert.equal(Array.isArray(payload.rule?.falsePositiveShapes), true);
+  assert.ok(payload.rule.falsePositiveShapes.length > 0);
+  const malformed = payload.rule.falsePositiveShapes
+    .filter((entry: { shape: unknown; mitigation: unknown }) => typeof entry.shape !== "string" || typeof entry.mitigation !== "string");
+  assert.deepEqual(malformed, []);
+
+  // A high-confidence rule omits the field, so its detail card shows no guidance heading at all.
+  const highConfidence = execFileSync("./bin/gruff-ts", ["list-rules", "security.eval-call"], { encoding: "utf8" });
+  assert.equal(highConfidence.includes("Known false positives:"), false);
 });
 
 test("list-rules unknown id exits 2 with the documented stderr message", () => {
@@ -116,18 +145,26 @@ function assertRuleListJsonOutput(): boolean {
   const parsed = readDeterministicRuleListJson();
   assert.equal(parsed.schemaVersion, undefined);
   assert.equal(parsed.tool?.name, "gruff-ts");
-  assert.equal(ruleListJsonHasThreshold(parsed, "design.deep-relative-import", 2), true);
+  // The family listing shape: `id`, `defaultSeverity`, and a named threshold map under `thresholds`.
+  // A rule whose id has a gruff-go knob name borrows it; one with no knob name anywhere publishes
+  // the one-key `threshold` map; a rule with no threshold omits the key.
+  assert.equal(ruleListJsonHasThreshold(parsed, "complexity.cognitive", { maxComplexity: 15 }), true);
+  assert.equal(ruleListJsonHasThreshold(parsed, "design.deep-relative-import", { threshold: 2 }), true);
+  assert.equal(ruleListJsonHasThreshold(parsed, "sensitive-data.high-entropy-string", { minLength: 32 }), true);
+  assert.equal(parsed.rules?.find((rule) => rule.id === "security.eval-call")?.thresholds, undefined);
+  assert.equal(parsed.rules?.every((rule) => typeof rule.id === "string" && typeof rule.defaultSeverity === "string"), true);
+  assert.equal(parsed.rules?.some((rule) => "ruleId" in rule || "severity" in rule || "threshold" in rule), false);
   assert.equal(ruleListJsonHasOptionKey(parsed, "design.large-module-concentration", "minFiles"), true);
   return true;
 }
 
 type RuleListJsonRule = {
-  ruleId?: string;
+  id?: string;
   pillar?: string;
-  severity?: string;
+  defaultSeverity?: string;
   confidence?: string;
   description?: string;
-  threshold?: number;
+  thresholds?: Record<string, number>;
   optionKeys?: string[];
 };
 
@@ -145,14 +182,14 @@ function readDeterministicRuleListJson(): RuleListJsonPayload {
   return JSON.parse(firstJsonText) as RuleListJsonPayload;
 }
 
-/** Checks one rule threshold without making the catalogue test branch-heavy. */
-function ruleListJsonHasThreshold(payload: RuleListJsonPayload, ruleId: string, threshold: number): boolean {
-  return payload.rules?.some((rule) => rule.ruleId === ruleId && rule.threshold === threshold) ?? false;
+/** Checks one rule's threshold map without making the catalogue test branch-heavy. */
+function ruleListJsonHasThreshold(payload: RuleListJsonPayload, ruleId: string, thresholds: Record<string, number>): boolean {
+  return payload.rules?.some((rule) => rule.id === ruleId && JSON.stringify(rule.thresholds) === JSON.stringify(thresholds)) ?? false;
 }
 
 /** Checks one rule option key without making the catalogue test branch-heavy. */
 function ruleListJsonHasOptionKey(payload: RuleListJsonPayload, ruleId: string, optionKey: string): boolean {
-  return payload.rules?.some((rule) => rule.ruleId === ruleId && rule.optionKeys?.includes(optionKey)) ?? false;
+  return payload.rules?.some((rule) => rule.id === ruleId && rule.optionKeys?.includes(optionKey)) ?? false;
 }
 
 test("console globals suppress normal output and completion emits a script", () => {
@@ -161,7 +198,7 @@ test("console globals suppress normal output and completion emits a script", () 
 
   const completion = execFileSync("./bin/gruff-ts", ["completion"], { encoding: "utf8" });
   assert.match(completion, /complete -F _gruff_ts_completion gruff-ts/);
-  assert.match(completion, /commands="analyse completion dashboard hook init list list-profiles list-rules report summary"/);
+  assert.match(completion, /commands="analyse check-ignore completion dashboard hook init list list-profiles list-rules migrate-config report summary"/);
   assert.match(completion, /text json html markdown github hotspot sarif/);
 
   const analyseHelp = execFileSync("./bin/gruff-ts", ["analyse", "--help"], { encoding: "utf8" });
@@ -185,22 +222,33 @@ test("summary CLI prints compact scan digest without per-finding spam", () => {
   assert.equal(output.includes("Findings:\n- ["), false);
 });
 
-test("summary CLI supports json format and top limit", () => {
+test("summary JSON is the exact v3 analysis projection", () => {
   const output = execFileSync(
     "./bin/gruff-ts",
     ["summary", "fixtures/sample.ts", "--format=json", "--top=1", "--fail-on=none", "--no-config", "--no-baseline"],
     { encoding: "utf8" },
   );
   const payload = JSON.parse(output) as Record<string, unknown>;
-  assert.equal(payload.schemaVersion, "gruff.summary.v2");
-  assert.equal((payload.topRules as unknown[] | undefined)?.length, 1);
-  assert.ok(((payload.topOffenders as unknown[] | undefined)?.length ?? 0) <= 1);
-  const pillars = payload.pillars as unknown[] | undefined;
+  const analysis = JSON.parse(execFileSync(
+    "./bin/gruff-ts",
+    ["analyse", "fixtures/sample.ts", "--format=json", "--fail-on=none", "--no-config", "--no-baseline"],
+    { encoding: "utf8" },
+  )) as Record<string, unknown>;
+  delete analysis.findings;
+  analysis.schemaVersion = "gruff.summary.v3";
+
+  assert.equal(payload.schemaVersion, "gruff.summary.v3");
+  assert.equal("findings" in payload, false);
+  assert.equal("topRules" in payload, false);
+  assert.equal("topOffenders" in payload, false);
+  assert.deepEqual(payload, analysis);
+  const score = payload.score as Record<string, unknown>;
+  const pillars = score.pillars as unknown[] | undefined;
   assert.ok(Array.isArray(pillars) && pillars.length > 0);
   pillars.forEach(assertPillarRowShape);
 });
 
-/** Validates one pillar row from the `gruff.summary.v2` JSON output. Accepts the raw parsed
+/** Validates one pillar row from the `gruff.summary.v3` JSON output. Accepts the raw parsed
  * value so the test does not need a typed interface mirroring the wire schema - the schema
  * contract lives in `renderSummaryJson`, this helper just confirms the row carries the
  * documented keys with the documented value types. */
@@ -208,14 +256,9 @@ function assertPillarRowShape(rawRow: unknown): void {
   assert.ok(rawRow && typeof rawRow === "object");
   const row = rawRow as Record<string, unknown>;
   assert.equal(typeof row.pillar, "string");
-  assert.match(String(row.grade), /^[A-F]$/);
   assert.equal(typeof row.score, "number");
   assert.equal(typeof row.penalty, "number");
-  assert.equal(row.applicable, true);
   assert.equal(typeof row.findings, "number");
-  assert.equal(typeof row.advisory, "number");
-  assert.equal(typeof row.warning, "number");
-  assert.equal(typeof row.error, "number");
 }
 
 test("summary CLI reports generated and applied baseline metadata", () => {
@@ -255,27 +298,30 @@ test("json report uses schema version", () => {
     shouldSkipBaseline: true,
   });
   const rendered = renderReport(report, "json");
-  assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v2"/);
+  assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v3"/);
 });
 
-test("json report emits canonical file alias without mutating findings", () => {
+test("json report emits only canonical v3 paths without mutating findings", () => {
   const report = analyseFixture(`function run(value: string): void {
   eval(value);
 }
 `);
   const before = JSON.stringify(report);
   const payload = JSON.parse(renderReport(report, "json")) as {
-    findings: Array<{ file: string; filePath: string; stableIdentity: string }>;
-    score: { topOffenders: Array<{ file: string; filePath: string }> };
+    findings: Array<{ file: string; stableIdentity: string; metadata: { locationPrecision: string } }>;
+    score: { topOffenders: Array<{ file: string }> };
   };
   const [finding] = payload.findings;
   const [offender] = payload.score.topOffenders;
   const [nativeFinding] = report.findings;
   assert.ok(finding);
-  assert.equal(finding.file, finding.filePath);
+  assert.equal(finding.file, nativeFinding?.filePath);
+  assert.equal("filePath" in finding, false);
   assert.match(finding.stableIdentity, /^[0-9a-f]{16}$/);
+  assert.equal(finding.metadata.locationPrecision, "line-only");
   assert.ok(offender);
-  assert.equal(offender.file, offender.filePath);
+  assert.equal(offender.file, report.score.topOffenders[0]?.filePath);
+  assert.equal("filePath" in offender, false);
   assert.ok(nativeFinding);
   assert.equal(JSON.stringify(report), before);
   assert.equal("file" in nativeFinding, false);
@@ -285,12 +331,13 @@ test("json report emits canonical file alias without mutating findings", () => {
 // assertion within the setup-bloat threshold; the fixture data itself is non-trivial because it
 // encodes the cross-pillar coverage SARIF must round-trip.
 const SARIF_FIXTURE_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v2",
+  schemaVersion: "gruff.analysis.v3",
   tool: { name: "gruff-ts", version: "0.1.0-test" },
   run: { projectRoot: "/tmp/project", format: "sarif", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 1, warning: 1, error: 1, total: 3 },
   paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
+  suppressions: [],
   findings: [
     { ruleId: "security.eval-call", message: "Avoid eval().", filePath: "./src\\bad.ts", line: 7, endLine: 10, column: 3, severity: "error", pillar: "security", secondaryPillars: ["sensitive-data"], tier: "v0.1", confidence: "high", symbol: "run", remediation: "Use a dispatch table.", metadata: { target: "eval" }, fingerprint: "abc123", stableIdentity: "stable-abc123" },
     { ruleId: "waste.console-log", message: "Avoid console logging.", filePath: "src\\warn.ts", line: 8, severity: "warning", pillar: "maintainability", secondaryPillars: [], tier: "v0.1", confidence: "high", metadata: {}, fingerprint: "def456", stableIdentity: "stable-def456" },
@@ -299,8 +346,12 @@ const SARIF_FIXTURE_REPORT: AnalysisReport = {
   score: {
     composite: 91,
     grade: "A",
-    pillars: [{ pillar: "security", score: 91, penalty: 9, findings: 1 }],
-    topOffenders: [{ filePath: "src/bad.ts", score: 91, findings: 1 }],
+    evaluatedFiles: 10,
+    clusters: [],
+    ruleAttribution: [],
+    scoredPillars: ["security"],
+    pillars: [{ pillar: "security", applicable: true, score: 91, grade: "A", penalty: 9, findings: 1 }],
+    topOffenders: [{ filePath: "src/bad.ts", score: 91, penalty: 9, findings: 1 }],
   },
 };
 
@@ -341,8 +392,8 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(evalRule.properties.defaultEnabled, true);
   results.forEach((sarifResult: SarifResult) => {
     assert.equal(rules[sarifResult.ruleIndex ?? -1]?.id ?? sarifResult.ruleId, sarifResult.ruleId);
-    assert.equal(typeof sarifResult.partialFingerprints.gruffFingerprint, "string");
-    assert.equal("primary" in sarifResult.partialFingerprints, false);
+    assert.equal(typeof sarifResult.partialFingerprints?.gruffFingerprint, "string");
+    assert.equal("primary" in (sarifResult.partialFingerprints ?? {}), false);
     assert.equal("codeFlows" in sarifResult, false);
     assert.equal("threadFlows" in sarifResult, false);
     assert.equal("fixes" in sarifResult, false);
@@ -360,7 +411,8 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(result.locations[0].physicalLocation.region.startLine, expectedStartLine);
   assert.equal(result.locations[0].physicalLocation.region.startColumn, expectedStartColumn);
   assert.equal(result.locations[0].physicalLocation.region.endLine, expectedEndLine);
-  assert.equal(result.partialFingerprints.gruffFingerprint, "abc123");
+  // Code scanning groups alerts by the ratified durable identity, not by the line-bearing fingerprint.
+  assert.equal(result.partialFingerprints.gruffFingerprint, findingIdentities(SARIF_FIXTURE_REPORT.findings.slice(0, 1))[0]?.identity);
   assert.equal(result.properties.severity, "error");
   assert.equal(result.properties.pillar, "security");
   assert.deepEqual(result.properties.secondaryPillars, ["sensitive-data"]);
@@ -374,12 +426,12 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(results[2].level, "note");
   assert.equal(results[2].locations[0].physicalLocation.artifactLocation.uri, "src/docs.ts");
   assert.equal(results[2].properties.severity, "advisory");
-  assert.equal(payload.runs[0].properties.gruffSchemaVersion, "gruff.analysis.v2");
+  assert.equal(payload.runs[0].properties.gruffSchemaVersion, "gruff.analysis.v3");
   assert.equal(payload.runs[0].properties.generatedAt, "2026-05-15T00:00:00.000Z");
   const expectedScore = 91;
   assert.equal(payload.runs[0].properties.score, expectedScore);
   assert.equal(payload.runs[0].properties.grade, "A");
-  assert.equal(JSON.parse(renderReport(report, "json")).schemaVersion, "gruff.analysis.v2");
+  assert.equal(JSON.parse(renderReport(report, "json")).schemaVersion, "gruff.analysis.v3");
   assert.equal(JSON.stringify(report), beforeSarif);
 });
 
@@ -406,7 +458,9 @@ test("machine renderers escape SARIF URIs and GitHub annotation properties", () 
 type SarifResult = {
   ruleId: string;
   ruleIndex?: number;
-  partialFingerprints: { gruffFingerprint: unknown } & Record<string, unknown>;
+  // Absent for a sensitive result, which has no durable identity to publish.
+  partialFingerprints?: { gruffFingerprint: unknown } & Record<string, unknown>;
+  properties?: { pillar?: string };
   locations: Array<{ physicalLocation: { artifactLocation: { uri: string } } }>;
 };
 
@@ -414,7 +468,9 @@ type SarifResult = {
 // presence, and POSIX-style normalised URI. Factored out of the test body so the loop carries no
 // inline conditional branches.
 function assertSarifResultShape(rules: Array<{ id: string }>, sarifResult: SarifResult): void {
-  assert.equal(typeof sarifResult.partialFingerprints.gruffFingerprint, "string");
+  // An ordinary result carries the ratified identity; a secret carries no fingerprints at all.
+  const isSensitive = sarifResult.ruleId.startsWith("sensitive-data.") || sarifResult.properties?.pillar === "sensitive-data";
+  assert.equal(typeof sarifResult.partialFingerprints?.gruffFingerprint, isSensitive ? "undefined" : "string");
   const indexedRule = typeof sarifResult.ruleIndex === "number" ? rules[sarifResult.ruleIndex] : undefined;
   assert.equal(indexedRule?.id ?? sarifResult.ruleId, sarifResult.ruleId);
   const uri = sarifResult.locations[0]?.physicalLocation.artifactLocation.uri ?? "";
@@ -469,12 +525,13 @@ test("sarif fail-on preserves error exit behavior", () => {
 // Fixture for the HTML render test. Hoisted out of the test body to keep setup-bloat under
 // threshold; the fixture intentionally embeds HTML metacharacters that the renderer must escape.
 const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v2",
+  schemaVersion: "gruff.analysis.v3",
   tool: { name: "gruff-ts", version: "0.1.0-test<script>" },
   run: { projectRoot: "/tmp/project", format: "html", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 0, warning: 1, error: 1, total: 2 },
   paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
+  suppressions: [],
   findings: [
     { ruleId: "docs.<script>", message: "Message with <script>alert(1)</script>", filePath: "src/<bad>.ts", line: 7, severity: "warning", pillar: "documentation", secondaryPillars: [], tier: "v0.1", confidence: "high", symbol: "badSymbol", metadata: {}, fingerprint: "abc123", stableIdentity: "stable-abc123" },
     { ruleId: "complexity.cyclomatic", message: "Function has cyclomatic complexity 12.", filePath: "src/Complex.ts", line: 11, severity: "error", pillar: "complexity", secondaryPillars: [], tier: "v0.1", confidence: "high", symbol: "run", metadata: {}, fingerprint: "def456", stableIdentity: "stable-def456" },
@@ -482,8 +539,12 @@ const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
   score: {
     composite: 82.5,
     grade: "B",
-    pillars: [{ pillar: "documentation", score: 84, penalty: 16, findings: 1 }],
-    topOffenders: [{ filePath: "src/<bad>.ts", score: 88, findings: 1 }],
+    evaluatedFiles: 10,
+    clusters: [],
+    ruleAttribution: [],
+    scoredPillars: ["documentation"],
+    pillars: [{ pillar: "documentation", applicable: true, score: 84, grade: "B", penalty: 16, findings: 1 }],
+    topOffenders: [{ filePath: "src/<bad>.ts", score: 88, penalty: 16, findings: 1 }],
   },
 };
 
@@ -680,7 +741,7 @@ test("html report rendering does not mutate json report output", () => {
   renderReport(report, "html");
 
   assert.equal(renderReport(report, "json"), before);
-  assert.match(before, /"schemaVersion": "gruff\.analysis\.v2"/);
+  assert.match(before, /"schemaVersion": "gruff\.analysis\.v3"/);
 });
 
 test("report command ignores default baselines", () => {
@@ -720,6 +781,14 @@ test("constrained option values fail fast as usage errors naming the accepted se
   assertConstrainedValueRejected("summary --fail-on", ["summary", "--fail-on", "bogus", "--no-config"]);
 });
 
+test("deep-scan CLI override accepts paired limits or off and rejects partial values", () => {
+  for (const command of ["analyse", "hook", "report", "summary"]) {
+    const invalid = spawnSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), command, "--deep-scan-budget", "100", "--no-config"], { encoding: "utf8" });
+    assert.notEqual(invalid.status, 0, `${command} must reject an unpaired budget`);
+    assert.match(invalid.stderr, /LINES:BYTES, or off/);
+  }
+});
+
 test("valid constrained values and bare directory arguments keep working", () => {
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-valid-values-"));
   try {
@@ -730,7 +799,7 @@ test("valid constrained values and bare directory arguments keep working", () =>
       { cwd: projectRoot, encoding: "utf8" },
     );
     assert.equal(valid.status, 0);
-    assert.equal(JSON.parse(valid.stdout).schemaVersion, "gruff.analysis.v2");
+    assert.equal(JSON.parse(valid.stdout).schemaVersion, "gruff.analysis.v3");
 
     // Family CLI contract: a bare directory operand means the whole subtree (dir equals dir/**).
     mkdirSync(join(projectRoot, "sub"), { recursive: true });
@@ -741,9 +810,40 @@ test("valid constrained values and bare directory arguments keep working", () =>
       { cwd: projectRoot, encoding: "utf8" },
     );
     assert.equal(bareDirRun.status, 0);
-    const bareDirReport = JSON.parse(bareDirRun.stdout) as AnalysisReport;
-    assert.equal(bareDirReport.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.filePath === "sub/nested.ts"), true);
+    const bareDirReport = JSON.parse(bareDirRun.stdout) as { findings: Array<{ ruleId: string; file: string }> };
+    assert.equal(bareDirReport.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.file === "sub/nested.ts"), true);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+/*
+ * Fixture purpose: the console catalogue is hand-written and the completion script is rendered from it, so a
+ * command registered on the program and forgotten in the catalogue is invisible in both.
+ * Stable contract: every registered command appears in the catalogue and in every shell completion script, so a
+ * user who runs `gruff-ts` or presses tab sees the whole command surface.
+ * Spawns the built binary four times to read what a user would actually see; it writes nothing and needs no fixture.
+ */
+test("every registered command appears in the catalogue and in every completion script", () => {
+  // Commander keeps its own help command out of `commands`, so the catalogue's `help` row is added back here.
+  const registered = [...buildProgram().commands.map((command) => command.name()), "help"].sort();
+  const catalogue = execFileSync("./bin/gruff-ts", [], { encoding: "utf8", cwd: REPO_ROOT });
+  const listed = catalogue
+    .split("Available commands:")[1]
+    ?.split("\n")
+    .map((line) => line.trim().split(/\s+/u)[0])
+    .filter((name) => name !== undefined && name.length > 0)
+    .sort() ?? [];
+
+  // check-ignore was registered and absent from this list until M08 task 9, so nothing surfaced it to a user.
+  assert.deepEqual(listed, registered);
+
+  for (const shell of ["bash", "zsh", "fish"]) {
+    const completion = execFileSync("./bin/gruff-ts", ["completion", shell], { encoding: "utf8", cwd: REPO_ROOT });
+
+    // `help` is deliberately absent from completions; every other registered command must be offered.
+    for (const command of registered.filter((name) => name !== "help")) {
+      assert.equal(completion.includes(command), true, `${shell} completion omits ${command}`);
+    }
   }
 });

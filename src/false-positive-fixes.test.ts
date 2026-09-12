@@ -489,24 +489,22 @@ ${Array.from({ length: 55 }, () => "  if (x == y) return true;").join("\n")}
   assert.equal(/Tip: \d+ findings/.test(json), false);
 });
 
-test("FP-#45 summary topRules JSON shape is unchanged by M07", () => {
-  // Negative: the JSON output preserves the `{name, count}` shape for topRules. M07 enriches the
-  // text/summary rule row block but keeps the JSON contract byte-stable.
+test("FP-#45 v3 analysis omits retired topRules while preserving score values", () => {
+  // M05 removes the independent machine-summary ranking. Human summary rule rows remain, while
+  // analysis JSON carries the native score once in the canonical composite container.
   const report = analyseFixture(`function helperOne(): void { eval("noop"); }
 `);
   const json = JSON.parse(renderReport(report, "json"));
-  // Note: renderReport "json" uses the analysis schema; the summary JSON is renderSummaryJson which
-  // isn't directly callable from renderReport. The analyse JSON has no topRules block, so we only
-  // assert the analyse JSON's score block is unchanged here.
   const scoreKeys = Object.keys(json.score).sort();
-  assert.deepEqual(scoreKeys, ["composite", "grade", "pillars", "topOffenders"]);
+  assert.deepEqual(scoreKeys, ["clusters", "composite", "evaluatedFiles", "pillars", "ruleAttribution", "scoredPillars", "topOffenders"]);
+  assert.deepEqual(json.score.composite, { grade: report.score.grade, score: report.score.composite });
 });
 
 test("FP-#38 summary renderers include per-severity grade breakdown lines", () => {
   // §3.2(a): an F composite driven entirely by advisories reads identically to an F driven by
   // errors in the headline. The breakdown lines surface the difference. Text + markdown surfaces
-  // both render the three lines; HTML renders three grade pills. JSON stays unchanged (covered by
-  // FP-#40 below).
+  // both render the three lines; HTML renders three grade pills. M05's JSON adapter keeps those
+  // presentation rows out of the machine score (covered by FP-#40 below).
   const report = analyseFixture(`function helperOne(): void { eval("noop"); }
 function helperTwo(): void { eval("noop"); }
 `);
@@ -540,16 +538,16 @@ function helperTwo(): void { eval("noop"); }
   assert.equal(/findings, score \d+\.\d/.test(summary), false);
 });
 
-test("FP-#40 JSON output schema and shape unchanged by M05", () => {
-  // Negative coverage: M05 is renderer-only. JSON output must still be `gruff.analysis.v2`, no new
-  // severity-grade fields appear in the score block, and the existing keys (composite, grade,
-  // pillars, topOffenders) are the only top-level entries.
+test("FP-#40 v3 adapter preserves score values while changing only their container shape", () => {
+  // M05 owns the machine hard break, while M06 still owns score arithmetic. The adapter nests the
+  // existing composite value and grade without adding a second calculation or legacy score alias.
   const report = analyseFixture(`function helperOne(): void { eval("noop"); }
 `);
   const json = JSON.parse(renderReport(report, "json"));
-  assert.equal(json.schemaVersion, "gruff.analysis.v2");
+  assert.equal(json.schemaVersion, "gruff.analysis.v3");
   const scoreKeys = Object.keys(json.score).sort();
-  assert.deepEqual(scoreKeys, ["composite", "grade", "pillars", "topOffenders"]);
+  assert.deepEqual(scoreKeys, ["clusters", "composite", "evaluatedFiles", "pillars", "ruleAttribution", "scoredPillars", "topOffenders"]);
+  assert.deepEqual(json.score.composite, { grade: report.score.grade, score: report.score.composite });
 });
 
 test("FP-#32 docs.missing-exported-function-doc fires on export function", () => {
@@ -907,4 +905,44 @@ export function doubleTotal(total: number): number {
 }
 `);
   assert.equal(localReport.findings.some((entry) => entry.ruleId === "naming.short-variable"), false);
+});
+
+test("M07 block anchors land on the declaration, never on the blank line above it", () => {
+  // The prefix walk absorbs decorators, docblocks and blank lines so a block includes its leading
+  // documentation. Before M07 it also STOPPED on the blank separator, so a finding pointed at empty
+  // space belonging to the declaration above - un-triageable, and un-suppressible by line.
+  const source = `export function first(): number {
+  return 1;
+}
+
+/** Doc line for second. */
+export function second(alpha: number, beta: number): number {
+  return alpha + beta;
+}
+
+test("sleeps without assertion", async () => {
+  await new Promise((resolve) => setTimeout(resolve, 1));
+});
+`;
+  const report = analyseFixture(source);
+  const lines = source.split("\n");
+
+  assert.ok(report.findings.length > 0, "the anchor fixture produced no findings, so it proved nothing");
+
+  // The claim is about the source text at the reported line, not about which rules happened to fire.
+  for (const finding of report.findings) {
+    const text = finding.line === undefined ? "x" : (lines[finding.line - 1] ?? "");
+    assert.equal(text.trim() === "", false, `${finding.ruleId} anchors on blank line ${String(finding.line)}`);
+  }
+
+  const byRule = new Map(report.findings.map((finding) => [finding.ruleId, finding.line]));
+  // Named so the assertions below read as source positions rather than bare numbers: `second` is preceded
+  // by a blank line and a docblock, and the test callable is preceded by a blank line only.
+  const docblockLineOfSecond = 5;
+  const declarationLineOfTestCallable = 10;
+
+  // The anchor is the docblock, never the blank line 4 that separates it from `first`.
+  assert.equal(byRule.get("docs.missing-param-tag"), docblockLineOfSecond);
+  // The anchor is the callable's own declaration line, never the blank line 9 above it.
+  assert.equal(byRule.get("test-quality.sleep-in-test"), declarationLineOfTestCallable);
 });

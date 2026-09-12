@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { analyse } from "./cli.ts";
-import type { AnalysisReport, ChangedScopeMode } from "./types.ts";
+import type { AnalysisReport, ChangedScopeMode, DeepScanBudgetOverride } from "./types.ts";
 
 export const REPO_ROOT = cwd();
 export const HIGH_ENTROPY_FIXTURE_VALUE = ["Zx7pQ9vLm3N8sT2r", "Y6wK1dF4gH5jC0bR2"].join("");
@@ -51,6 +51,7 @@ export interface AnalyseProjectOptions {
   since?: string;
   changedRanges?: string;
   changedScope?: ChangedScopeMode;
+  deepScanBudget?: DeepScanBudgetOverride;
 }
 
 // Adds a fixture filename override for single-source test scans.
@@ -122,7 +123,7 @@ export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions)
 
 // Assembles the optional scan fields with conditional spreads so each stays omitted (not undefined)
 // under exactOptionalPropertyTypes, keeping analyseProjectInCurrentDirectory a flat literal.
-function optionalFixtureScanFields(options: AnalyseProjectOptions): Partial<Pick<Parameters<typeof analyse>[0], "config" | "profile" | "diff" | "diffPatch" | "since" | "changedRanges">> {
+function optionalFixtureScanFields(options: AnalyseProjectOptions): Partial<Pick<Parameters<typeof analyse>[0], "config" | "profile" | "diff" | "diffPatch" | "since" | "changedRanges" | "deepScanBudget">> {
   return {
     ...(typeof options.configPath === "string" ? { config: options.configPath } : {}),
     ...(typeof options.profile === "string" ? { profile: options.profile } : {}),
@@ -130,6 +131,7 @@ function optionalFixtureScanFields(options: AnalyseProjectOptions): Partial<Pick
     ...(typeof options.diffPatch === "string" ? { diffPatch: options.diffPatch } : {}),
     ...(typeof options.since === "string" ? { since: options.since } : {}),
     ...(typeof options.changedRanges === "string" ? { changedRanges: options.changedRanges } : {}),
+    ...(options.deepScanBudget !== undefined ? { deepScanBudget: options.deepScanBudget } : {}),
   };
 }
 

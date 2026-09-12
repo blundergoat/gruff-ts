@@ -1,9 +1,22 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-08-14
+last_reviewed: 2026-08-22
 ---
 
 # Schema + CLI surface footguns
+
+## Footgun: the bundled YAML subset could not express a list of multi-key mappings
+
+**Status:** active | **Created:** 2026-08-22 | **Evidence:** ACTUAL_MEASURED
+**Evidence context:** M02 `sensitiveExclusions:` construction in gruff-ts.
+**Decision changed:** Before designing any new config section, check whether its shape is expressible in `src/config-parse.ts`; a family-ratified shape is not automatically parseable here, and discovering that after the loader and matcher are written means reopening the parser under time pressure.
+**Trigger phase:** SCOPE
+
+ADR-012 keeps gruff-ts free of a YAML dependency, so `src/config-parse.ts` (search: `function parseYamlConfig`) hand-rolls a documented subset. Until M02 every config section was a mapping or a list of scalars, and the subset covered exactly that. `parseYamlArrayItem` (search: `function parseYamlArrayItem`) read `- key: value`, built a one-key object, and returned; the item's remaining keys, written at a deeper indent on the following lines, were never consumed. Control returned to `parseYamlObject`, whose `assertYamlIndent` (search: `function assertYamlIndent`) rejected them. A probe of the ratified section against the pre-M02 parser produced `Invalid YAML indentation near "path: secrets/aws.env"` - a list of multi-key mappings, the single most ordinary YAML shape, was unrepresentable.
+
+Nothing in the port revealed this. The rule catalogue, the allowlists, and `paths.ignore` all avoid the shape, so the gap survived four releases with no failing test and no documentation of the limit. The fix is `addYamlArrayItemSiblingKeys` (`src/config-parse.ts`, search: `function addYamlArrayItemSiblingKeys`), which fixes the item's key column from the first continuation line and consumes siblings at exactly that indent, so a deeper line still fails rather than silently nesting.
+
+**Portability question for the family (high-risk, M03 review):** gruff-ts is the only port whose configuration parser is project-owned, so it is the only port where a ratified config shape can be unrepresentable rather than merely unimplemented. rs, go, php and py all parse config through a library that already accepts arbitrary YAML or JSON, which means the family ratified `sensitiveExclusions:` without anyone checking that every port could parse it - the check only happened here, during implementation, because here it failed. The question M03 should answer: does contract ratification need an explicit parser-capability gate for the ports that own their parser, or does gruff-ts accept a standing obligation to extend `config-parse.ts` for whatever shape the family ratifies? The second answer has a cost the first does not - every extension widens what a malformed config can mean, and the subset is deliberately narrow because a silent misparse produces wrong findings and a stable but wrong baseline.
 
 ## Footgun: score value semantics and JSON field shape are different contracts
 

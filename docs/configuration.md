@@ -29,18 +29,18 @@ gruff-ts analyse . --no-config
 
 Every `.gruff-ts.yaml` must declare `schemaVersion: gruff-ts.config.v0.1` at the
 top. Loading throws if the field is missing or carries a different value. The
-field is in a different namespace from the output schemas (`gruff.analysis.v2`,
-`gruff.summary.v2`, etc.) - the config-input version travels independently of
+field is in a different namespace from the output schemas (`gruff.analysis.v3`,
+`gruff.summary.v3`, etc.) - the config-input version travels independently of
 the output-payload versions. See ADR-004.
 
-## minimumSeverity (per-command gating defaults)
+## failOn (per-command gating defaults)
 
-A top-level `minimumSeverity:` block sets the default `--fail-on` value per
-command. The precedence chain is **CLI flag > config > binary default**.
+A top-level `failOn:` block sets the default `--fail-on` value per command.
+The precedence chain is **CLI flag > config > binary default**.
 
 ```yaml
 schemaVersion: gruff-ts.config.v0.1
-minimumSeverity:
+failOn:
   analyse: advisory
   summary: advisory
   report: none
@@ -51,17 +51,28 @@ other value (including `never`, which was an early cross-port draft for the
 off-switch before the family converged on `none`).
 
 `dashboard` is intentionally **not** a valid key in this block. The dashboard
-subcommand has no `--fail-on` flag today; setting `minimumSeverity.dashboard:`
-would be a silent no-op CI footgun, so the validator rejects it with a clear
-error.
+subcommand has no `--fail-on` flag today; setting `failOn.dashboard:` would be
+a silent no-op CI footgun, so the validator rejects it with a clear error.
 
 Binary defaults are `analyse: advisory`, `summary: advisory`, `report: none`.
+
+Across the Gruff family only `analyse` and `report` are accepted by every port, so a
+polyglot repository that shares one `failOn` block should write only those two keys.
+`summary` is accepted by gruff-go and gruff-ts, and `dashboard` by gruff-go, gruff-php
+and gruff-py; each other port refuses the key with exit 2 rather than ignoring it,
+because it ships no gate for that command.
+
+`minimumSeverity:` is a different setting: one severity - `advisory`,
+`warning`, or `error` - that hides quieter findings from the report without
+changing the score or the exit code. A `minimumSeverity:` carrying the
+per-command map above is refused at config load rather than read as a floor, so
+an existing 0.5 config cannot quietly change what it gates.
 
 ## Shape
 
 ```yaml
 schemaVersion: gruff-ts.config.v0.1
-minimumSeverity:
+failOn:
   analyse: advisory
   summary: advisory
   report: none
@@ -74,7 +85,6 @@ allowlists:
   acceptedAbbreviations:
     - api
     - cli
-  secretPreviews: []
   bannedGenericNames: [process, handle, doit, run, execute, manage]
   acceptedBooleanNames: [all, apply, check, dev, enabled, force, fresh, harness, json, ok, verbose, yes]
   booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires, allow, check, enable, exclude, include, omit, skip, with, without]
@@ -83,8 +93,13 @@ allowlists:
   negativeBooleanAllowed: [nostore, nofollow, noreferrer, noscript, noindex]
   knownAcronyms: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]
 
+sensitiveExclusions:
+  - rule: sensitive-data.aws-access-key
+    path: tests/fixtures/aws-sample.env
+    reason: Synthetic key used by the loader fixture; not a live credential.
+
 rules:
-  rule.id:
+  complexity.cyclomatic:
     enabled: true
     threshold: 10
     severity: warning
@@ -108,22 +123,30 @@ paths:
     - "src/generated-client.ts"
 ```
 
-Default ignored directories are matched by first path segment:
+VCS internals are always blocked at any depth:
 
 ```text
-.git, .hg, .svn, .idea, .vscode, build, cache, coverage, dist,
-generated, node_modules, target, tmp, vendor
+.git, .hg, .svn
 ```
 
-Use `--include-ignored` when you intentionally want to scan default ignored
-directories and Git-ignored paths. Configured `paths.ignore` entries still
-apply - `--include-ignored` never overrides them.
+When no `.gitignore` exists from the project root through a candidate's parent,
+the family fallback skips `.fleet`, `.idea`, `.vscode`, `build`, `coverage`,
+`dist`, `node_modules`, and `vendor` at any depth. Once a `.gitignore` exists in
+that chain, it owns those names for the subtree. Committed control metadata such
+as `.agents`, `.claude`, `.codex`, `.github`, and `.goat-flow` stays scannable
+unless Git or config excludes it.
+
+Use `--include-ignored` when you intentionally want to scan fallback and
+Git-ignored paths. An explicit supported file also bypasses those two layers.
+Neither form overrides configured `paths.ignore` or the VCS boundary. Lockfile
+names add no exclusion; eligible forms such as `package-lock.json` are scanned.
 
 `paths.ignore` is authoritative in every invocation mode (ADR-007): a matching
 path is excluded and produces no findings whether it is reached by a directory
 walk, passed as an explicit file operand (`gruff-ts analyse src/generated-client.ts`),
 or touched by a diff/changed-region run. Excluded paths appear in the report's
-`paths.skipped` array with their `source` (`config` / `gitignore` / `default`) and
+`paths.details` array with their `source` (`config` / `gitignore` / `default`) and, for
+`config` entries only,
 the matching `pattern`. Query a path without scanning via `check-ignore`, which
 shares the same engine and mirrors `git check-ignore` exit codes (0 = at least
 one ignored, 1 = none, 2 = error):
@@ -161,22 +184,11 @@ allowlists:
     - env
 ```
 
-`allowlists.secretPreviews` accepts redacted secret previews that are known false
-positives:
+The 0.5 key `allowlists.secretPreviews` is removed: FAMILY-CONTRACT.md section 5 makes every sensitive-data marker unconditional and zero-payload, so the key authorised nothing. `gruff-ts init` no longer writes it, a configuration carrying it (even as an empty list) is refused with that explanation, and `gruff-ts migrate-config` deletes it.
 
-```yaml
-allowlists:
-  secretPreviews:
-    - "abcd...wxyz (redacted, 32 chars)"
-```
+The key never suppresses a sensitive finding. Reports use fixed category markers without matched characters or secret-derived lengths.
 
-Only previews for values of at least 24 characters can be allowlisted. Shorter
-previews are fully masked and identify only the value length, so gruff continues
-to report them even if the same mask appears in `secretPreviews`. This prevents
-one entry from hiding unrelated secrets of the same length.
-
-Prefer fixing false positives with a narrow config entry instead of disabling an
-entire sensitive-data rule.
+Tune a documented rule threshold or enabled setting when a sensitive-data detector does not fit the project; preview values cannot be used as exclusions.
 
 Naming allowlists tune the 0.2.0 naming pack without changing rule ids or
 fingerprints:
@@ -260,6 +272,68 @@ gruff-ts list-rules --format=json
 
 See [Rules](./rules.md) for the full rule catalogue grouped by pillar.
 
+## Sensitive Exclusions
+
+`sensitiveExclusions:` is the only way to suppress a sensitive-data finding. It
+is a separate top-level section, not part of `rules:` or `paths.ignore`, because
+it is the one surface that can hide a detected secret.
+
+You write every entry by hand. Gruff never converts a detected value, a preview,
+or a finding message into an exclusion, and no key on an entry matches against
+finding text.
+
+```yaml
+sensitiveExclusions:
+  - rule: sensitive-data.aws-access-key
+    path: tests/fixtures/aws-sample.env
+    symbol: Fixtures::awsSample
+    reason: Synthetic key used by the loader fixture; not a live credential.
+```
+
+An entry suppresses a finding only when all of the following match:
+
+- `rule` equals the finding's rule id exactly. One rule id per entry, from the
+  `sensitive-data` pillar only.
+- `path` equals the finding's project-relative path exactly. One file per entry.
+- `symbol`, when present, equals the finding's symbol exactly. It narrows the
+  scope. No sensitive-data rule stamps a symbol today, so an entry carrying one
+  currently matches nothing - that is the declared scope working, not a bug.
+
+Nothing else is suppressed: the same rule in another file, and a different rule
+in the same file, both keep reporting.
+
+`reason` is required and must be non-empty. Loading fails with exit code 2 and
+names the entry index plus the offending key when an entry:
+
+- omits `rule`, or gives a wildcard, glob, regular-expression character, pillar
+  name, unknown rule id, or a rule outside the `sensitive-data` pillar;
+- omits `path`, or gives an absolute path, a `..` traversal, or a glob;
+- carries any key outside `rule`, `path`, `symbol`, and `reason` - including
+  `message_contains`, `messageContains`, `value`, and `preview`;
+- omits `reason` or supplies only whitespace;
+- repeats a `rule` + `path` + `symbol` scope an earlier entry already claims.
+
+An entry that matches no finding is not an error. It reports `suppressed: 0`, so
+fixing the underlying problem never breaks a build.
+
+Every entry is counted. The `suppressions` array in the `gruff.analysis.v3`
+report carries one row per entry in declaration order:
+
+```json
+{ "index": 0, "rule": "sensitive-data.aws-access-key", "paths": ["tests/fixtures/aws-sample.env"], "reason": "Synthetic key used by the loader fixture; not a live credential.", "suppressed": 2 }
+```
+
+Text output prints the total when it is non-zero:
+
+```text
+Suppressed findings: 2 via sensitiveExclusions[0] sensitive-data.aws-access-key: 2 (Synthetic key used by the loader fixture; not a live credential.)
+```
+
+A suppressed finding leaves the finding list, the score, and the `--fail-on`
+exit code, but it is never invisible: its count is always reported. Only the
+configured rule id, path, and reason appear in output - never any part of the
+detected value.
+
 ## Example Project Config
 
 A complete file. The shorter snippets above omit `schemaVersion` because they
@@ -282,7 +356,6 @@ allowlists:
   acceptedBooleanNames:
     - verbose
     - enabled
-  secretPreviews: []
 
 rules:
   complexity.cognitive:

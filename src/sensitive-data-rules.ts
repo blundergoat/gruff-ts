@@ -1,17 +1,22 @@
-// Sensitive-data scanners and redaction helpers for secret-like raw text findings.
+// Sensitive-data analysis turns reportable secret-like source occurrences into safe findings.
+//
+// It runs each detector in a stable order so repeated scans remain comparable.
+// Users receive fixed category markers, actionable locations, and one report entry per occurrence without matched characters or lengths.
 import { ruleSeverity, threshold } from "./config.ts";
 import { makeFinding } from "./findings.ts";
 import { byteColumn, byteLine } from "./text-scans.ts";
 import type { Config, Finding } from "./types.ts";
 
-// Just the display path - sensitive-data rules anchor findings on file path + line and never need
-// the absolute path. Keeping this trimmed keeps the contract narrow for testability.
+// Describes the safe file context needed to locate a sensitive finding for the user.
+//
+// The report-facing path is sufficient for navigation.
+// Absolute filesystem details and source content stay outside this boundary.
 interface SensitiveSourceFile {
   displayPath: string;
 }
 
-// Pillar entry point. The pattern array order is the deterministic emission order for findings,
-// which the fingerprint contract depends on - reordering would churn baselines without behaviour change.
+// Runs every sensitive-data detector for one user file in deterministic report order.
+// Keeping pattern order stable prevents baseline churn when no source behavior changed.
 function analyseSensitiveData(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const patterns: Array<[string, RegExp, string]> = [
     ["sensitive-data.aws-access-key", /AKIA[0-9A-Z]{16}/g, "AWS access key pattern detected."],
@@ -27,238 +32,261 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
     ["sensitive-data.phi-pattern", /\b[1-9][ACDEFGHJKMNPQRTUVWXY][ACDEFGHJKMNPQRTUVWXY0-9]\d[ACDEFGHJKMNPQRTUVWXY][ACDEFGHJKMNPQRTUVWXY0-9]\d[ACDEFGHJKMNPQRTUVWXY][ACDEFGHJKMNPQRTUVWXY]\d\d\b/g, "Medicare Beneficiary Identifier (PHI) pattern detected."],
   ];
 
+  // Each detector family contributes findings in this documented order so users do not see unexplained report churn.
   for (const [ruleId, pattern, message] of patterns) {
+    // Every matched occurrence remains independently visible, including multiple findings on the same source line.
     for (const match of source.matchAll(pattern)) {
-      const raw = match[0] ?? "";
-      if (isExplicitExampleCredential(raw)) {
+      // A missing regex capture is treated as empty source evidence and will be ignored by the explicit-example guard.
+      const matchedSensitiveText = match[0] ?? "";
+      // Explicit placeholders are teaching material rather than credentials the user needs to rotate.
+      if (isExplicitExampleCredential(matchedSensitiveText)) {
         continue;
       }
-      pushSensitiveFinding({ config, findings, file, ruleId, message, line: byteLine(source, match.index ?? 0), column: byteColumn(source, match.index ?? 0), raw, confidence: "high" });
+      pushSensitiveFinding({
+        findings,
+        file,
+        ruleId,
+        message,
+        line: byteLine(source, match.index ?? 0),
+        column: byteColumn(source, match.index ?? 0),
+        matchedSensitiveText,
+        confidence: "high",
+      });
     }
   }
 
   analyseHardcodedEnvironmentValues(file, source, config, findings);
-  analyseNpmAuthTokens(file, source, config, findings);
+  analyseNpmAuthTokens(file, source, findings);
   analyseHighEntropyStrings(file, source, config, findings);
-  analysePhiLabelledIdentifiers(file, source, config, findings);
-  analysePaymentCardNumbers(file, source, config, findings);
-  analyseGcpServiceAccountKeys(file, source, config, findings);
+  analysePhiLabelledIdentifiers(file, source, findings);
+  analysePaymentCardNumbers(file, source, findings);
+  analyseGcpServiceAccountKeys(file, source, findings);
 }
 
-// Explicit fake-credential evidence inside the MATCHED value itself: the canonical AWS doc keys
-// end in EXAMPLE, and redaction fixtures embed REDACTED/PLACEHOLDER/CHANGEME or masked runs.
-// A file path or test location alone never suppresses a production-shaped secret - the marker
-// must be part of the value the pattern matched.
-function isExplicitExampleCredential(raw: string): boolean {
-  return /EXAMPLE|REDACTED|PLACEHOLDER|CHANGEME/i.test(raw) || /\*{4}|X{4}/.test(raw);
+// Recognizes explicit example markers inside the matched value, such as an AWS key ending in `EXAMPLE`.
+// File paths never make production-shaped credentials disappear from the user's report.
+function isExplicitExampleCredential(matchedSensitiveText: string): boolean {
+  return /EXAMPLE|REDACTED|PLACEHOLDER|CHANGEME/i.test(matchedSensitiveText) || /\*{4}|X{4}/.test(matchedSensitiveText);
 }
 
-// PHI beyond the MBI shape: medical-record-number assignments. Context-gated on an `MRN` / `medical
-// record` label so bare integers stay clean; stable contract is one redacted finding per label.
-function analysePhiLabelledIdentifiers(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
+// Finds medical-record numbers only when an MRN label gives users reliable health-data context.
+// Stable contract: bare numbers remain quiet, while each labelled identifier receives its own fixed-marker finding.
+function analysePhiLabelledIdentifiers(file: SensitiveSourceFile, source: string, findings: Finding[]): void {
   const lines = source.split(/\r?\n/);
+  // Each source line may represent a separate record the user accidentally embedded in code or a fixture.
   for (const [index, line] of lines.entries()) {
     const match = line.match(/\b(?:MRN|medical[\s_-]?record(?:[\s_-]?number)?)\b\s*[:=#]?\s*([0-9]{6,12})\b/i);
     const medicalRecordNumber = match?.[1];
+    // No labelled value means this line cannot produce an MRN finding for the user.
     if (!medicalRecordNumber) {
       continue;
     }
-    pushSensitiveFinding({ config, findings, file, ruleId: "sensitive-data.phi-pattern", message: "Medical record number (PHI) detected.", line: index + 1, column: (match.index ?? 0) + 1, raw: medicalRecordNumber, confidence: "high" });
+    pushSensitiveFinding({
+      findings,
+      file,
+      ruleId: "sensitive-data.phi-pattern",
+      message: "Medical record number (PHI) detected.",
+      line: index + 1,
+      column: (match.index ?? 0) + 1,
+      matchedSensitiveText: medicalRecordNumber,
+      confidence: "high",
+    });
   }
 }
 
-// GCP service-account key files carry `"type": "service_account"` next to a private key. Flag the file
-// once, anchored on the type line; stable contract keeps raw key bodies covered by private-key.
-function analyseGcpServiceAccountKeys(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
+// Finds a GCP service-account document only when its type and private-key evidence appear together.
+// Stable contract: users receive one marker at the type field, while matched identifiers and key material stay hidden.
+function analyseGcpServiceAccountKeys(file: SensitiveSourceFile, source: string, findings: Finding[]): void {
   const typeMatch = source.match(/"type"\s*:\s*"service_account"/);
+  // Users see a finding only when the document contains both the service-account type and private-key evidence.
   if (!typeMatch || !/"private_key"\s*:\s*"|BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY/.test(source)) {
     return;
   }
-  const identifier = source.match(/"private_key_id"\s*:\s*"([^"]+)"/)?.[1]
-    ?? source.match(/"client_email"\s*:\s*"([^"]+)"/)?.[1]
-    ?? "service_account";
-  pushSensitiveFinding({ config, findings, file, ruleId: "sensitive-data.gcp-service-account-key", message: "GCP service-account key file detected.", line: byteLine(source, typeMatch.index ?? 0), column: byteColumn(source, typeMatch.index ?? 0), raw: identifier, confidence: "high" });
+  pushSensitiveFinding({
+    findings,
+    file,
+    ruleId: "sensitive-data.gcp-service-account-key",
+    message: "GCP service-account key file detected.",
+    line: byteLine(source, typeMatch.index ?? 0),
+    column: byteColumn(source, typeMatch.index ?? 0),
+    matchedSensitiveText: "service_account",
+    confidence: "high",
+  });
 }
 
-/*
- * Payment-card PII detection contract: candidate shape, known issuer prefix, length, and Luhn
- * check must all pass before a stable redacted finding is emitted. A bare unseparated digit run
- * additionally needs card vocabulary on its line - large statistics can pass Luhn by coincidence,
- * while canonically grouped numbers provide formatting evidence on their own.
- */
-function analysePaymentCardNumbers(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
+// Finds payment-card values only after network shape, length, checksum, and context checks pass.
+// Stable contract: canonical grouping supplies context; bare digit runs need card vocabulary before users see a finding.
+function analysePaymentCardNumbers(file: SensitiveSourceFile, source: string, findings: Finding[]): void {
   const lines = source.split(/\r?\n/);
+  // Each digit run is checked independently because a user can paste more than one card-like value into a line or file.
   for (const match of source.matchAll(/\b(?:\d[ -]?){12,18}\d\b/g)) {
-    const rawCandidate = match[0] ?? "";
-    const cardNumber = normalizedPaymentCardNumber(rawCandidate);
+    // A missing regex capture becomes an empty candidate, which cannot pass the network and checksum gates.
+    const matchedDigitRun = match[0] ?? "";
+    const normalizedCardNumber = normalizedPaymentCardNumber(matchedDigitRun);
     const line = byteLine(source, match.index ?? 0);
     // The helper owns the shape/checksum/vocabulary gates; anything failing them is not a card.
-    if (!isReportablePaymentCardCandidate(rawCandidate, cardNumber, lines[line - 1] ?? "")) {
+    if (!isReportablePaymentCardCandidate(matchedDigitRun, normalizedCardNumber, lines[line - 1] ?? "")) {
       continue;
     }
     pushSensitiveFinding({
-      config,
       findings,
       file,
       ruleId: "sensitive-data.pii-pattern",
       message: "Credit card number (PII) pattern detected.",
       line,
       column: byteColumn(source, match.index ?? 0),
-      raw: rawCandidate,
+      matchedSensitiveText: matchedDigitRun,
       confidence: "high",
-      metadata: { piiKind: "credit-card", digits: cardNumber.length },
+      metadata: { piiKind: "credit-card" },
     });
   }
 }
 
-// Full reportability gate for one digit-run candidate: card shape and Luhn first, then the
-// context rule - canonical card grouping provides formatting evidence, while bare or irregularly
-// grouped digit runs need card vocabulary because large statistics can pass Luhn by coincidence.
-function isReportablePaymentCardCandidate(rawCandidate: string, cardNumber: string, contextLine: string): boolean {
-  if (!isPaymentCardNumber(cardNumber)) {
+// Decides whether one digit run is credible card data for the user's report.
+// Valid cards need canonical grouping or explicit card vocabulary because ordinary statistics can pass Luhn.
+function isReportablePaymentCardCandidate(matchedDigitRun: string, normalizedCardNumber: string, contextLine: string): boolean {
+  // Invalid network shape, length, or checksum means the user entered an ordinary number rather than reportable card data.
+  if (!isPaymentCardNumber(normalizedCardNumber)) {
     return false;
   }
-  return hasCanonicalPaymentCardGrouping(rawCandidate, cardNumber) || hasPaymentCardContext(contextLine);
+  return hasCanonicalPaymentCardGrouping(matchedDigitRun, normalizedCardNumber) || hasPaymentCardContext(contextLine);
 }
 
 // Accept one consistent separator and the display grouping used by the detected card network.
 // Arbitrary chunks such as 8-8 remain statistics unless their source line supplies card context.
-function hasCanonicalPaymentCardGrouping(rawCandidate: string, cardNumber: string): boolean {
-  const separators = rawCandidate.match(/[ -]/g) ?? [];
+function hasCanonicalPaymentCardGrouping(matchedDigitRun: string, normalizedCardNumber: string): boolean {
+  // Missing separators mean a bare number needs explicit card vocabulary elsewhere on the line.
+  const separators = matchedDigitRun.match(/[ -]/g) ?? [];
+  // Mixed or absent separators do not provide the canonical grouping users expect for a card number.
   if (separators.length === 0 || new Set(separators).size !== 1) {
     return false;
   }
-  const groupSizes = rawCandidate.split(separators[0] ?? " ").map((group) => group.length);
-  const expectedGroupSizes = isAmericanExpressPaymentCard(cardNumber)
+  const groupSizes = matchedDigitRun.split(separators[0] ?? " ").map((group) => group.length);
+  const expectedGroupSizes = isAmericanExpressPaymentCard(normalizedCardNumber)
     ? [4, 6, 5]
-    : isDinersPaymentCard(cardNumber)
+    : isDinersPaymentCard(normalizedCardNumber)
       ? [4, 6, 4]
-      : Array.from({ length: Math.ceil(cardNumber.length / 4) }, (_, index) => Math.min(4, cardNumber.length - index * 4));
+      : Array.from({ length: Math.ceil(normalizedCardNumber.length / 4) }, (_, index) => Math.min(4, normalizedCardNumber.length - index * 4));
   return groupSizes.length === expectedGroupSizes.length && groupSizes.every((size, index) => size === expectedGroupSizes[index]);
 }
 
-// Card vocabulary gate for bare digit runs. Substring matching is deliberate so identifier forms
-// (`cardNumber`, `creditCard`, `PAYMENT_CARD`) count as context; `pan` stays word-bounded because
-// it is a common substring of unrelated words.
+// Recognizes card vocabulary around an otherwise ambiguous digit run.
+// Identifier forms such as `cardNumber` count, while `pan` stays word-bounded to avoid unrelated UI text.
 function hasPaymentCardContext(lineText: string): boolean {
   return /(?:\bpan\b|card|payment|credit|debit|visa|master|amex|discover|jcb|diners)/i.test(lineText);
 }
 
-// Stable redaction contract: parses `_authToken=` config lines even when values lack an npm_ prefix.
-function analyseNpmAuthTokens(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
+// Finds npm auth values in user configuration even when the token lacks an `npm_` prefix.
+// Stable contract: scoped and registry `_authToken` lines remain reportable when the general provider pattern cannot classify their prefix.
+function analyseNpmAuthTokens(file: SensitiveSourceFile, source: string, findings: Finding[]): void {
   const lines = source.split(/\r?\n/);
+  // Each config line can contain a separate registry credential the user needs to rotate.
   for (const [index, line] of lines.entries()) {
     const token = npmAuthTokenValue(line);
+    // No supported `_authToken` value means this line contributes no npm credential finding.
     if (!token) {
       continue;
     }
     pushSensitiveFinding({
-      config,
       findings,
       file,
       ruleId: "sensitive-data.api-key-pattern",
       message: "npm auth token pattern detected.",
       line: index + 1,
-      raw: token,
+      matchedSensitiveText: token,
       confidence: "high",
       metadata: { keyName: "_authToken" },
     });
   }
 }
 
-// Extracts the token portion from scoped or registry-prefixed npm auth config lines.
+// Returns the token portion of a scoped or registry-prefixed npm auth line.
+// Missing output means the user's line has no supported literal token for this detector.
 function npmAuthTokenValue(line: string): string | undefined {
   const match = line.match(/(?:^|:)_authToken\s*=\s*([A-Za-z0-9_-]{20,})\b/);
   return match?.[1];
 }
 
-// Targets `KEY=value` and `KEY: value` assignments where the key name signals secrets (API_KEY,
-// TOKEN, PASSWORD…). The `minLength` threshold keeps short fixture values like `PLACEHOLDER`
-// from churning the baseline - it is part of the rule's stable, deterministic contract.
+// Finds literal assignments whose key tells users the value is secret-like, such as `API_KEY` or `PASSWORD`.
+// Stable contract: the configured minimum length keeps short examples out of reports without suppressing credible values.
 function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const minLength = threshold(config, "sensitive-data.hardcoded-env-value", 16);
   const requiresQuotedValue = isScriptSourcePath(file.displayPath);
   const lines = source.split(/\r?\n/);
+  // Each assignment is evaluated independently so users receive a location for every embedded value.
   for (const [index, line] of lines.entries()) {
-    const envValue = hardcodedEnvValue(line, minLength, requiresQuotedValue);
-    if (!envValue) {
+    const hardcodedValue = hardcodedEnvValue(line, minLength, requiresQuotedValue);
+    // A missing result means the line is empty, non-literal, placeholder-shaped, or below the user's threshold.
+    if (!hardcodedValue) {
       continue;
     }
     pushSensitiveFinding({
-      config,
       findings,
       file,
       ruleId: "sensitive-data.hardcoded-env-value",
-      message: `Environment-style value \`${envValue.keyName}\` appears to be hardcoded with secret-like content.`,
+      message: `Environment-style value \`${hardcodedValue.keyName}\` appears to be hardcoded with secret-like content.`,
       line: index + 1,
-      raw: envValue.value,
+      matchedSensitiveText: hardcodedValue.value,
       confidence: "medium",
-      metadata: { keyName: envValue.keyName, length: envValue.value.length, threshold: minLength },
+      metadata: { keyName: hardcodedValue.keyName, threshold: minLength },
       severity: ruleSeverity(config, "sensitive-data.hardcoded-env-value", "error"),
     });
   }
 }
 
-// Shannon-entropy detector with three guardrails (length, case diversity, distinct characters)
-// because plain entropy alone fires on package-lock SRI hashes; the layered checks keep findings
-// stable across runs and prevent noisy regressions in node_modules-heavy projects.
+// Finds generated-looking string literals after length, character-class, and distinct-character checks.
+// Stable contract: known integrity and public identifier shapes stay quiet so users can focus on credible secret material.
 function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const minLength = threshold(config, "sensitive-data.high-entropy-string", 32);
+  // Every long literal is checked separately so same-line secrets remain independently actionable in the report.
   for (const match of source.matchAll(/(["'`])([A-Za-z0-9_+=./-]{24,})\1/g)) {
-    const raw = match[2] ?? "";
-    if (!isHighEntropySecretCandidate(raw, minLength)) {
+    // A missing capture becomes empty text, which safely fails the configured length gate.
+    const candidateText = match[2] ?? "";
+    // Known public shapes or insufficient entropy mean the user does not need a secret finding for this literal.
+    if (!isHighEntropySecretCandidate(candidateText, minLength)) {
       continue;
     }
     pushSensitiveFinding({
-      config,
       findings,
       file,
       ruleId: "sensitive-data.high-entropy-string",
       message: "High-entropy string literal may be an embedded secret.",
       line: byteLine(source, match.index ?? 0),
       column: byteColumn(source, match.index ?? 0),
-      raw,
+      matchedSensitiveText: candidateText,
       confidence: "medium",
-      metadata: { length: raw.length, detector: "high-entropy-string", threshold: minLength },
+      metadata: { detector: "high-entropy-string", threshold: minLength },
       severity: ruleSeverity(config, "sensitive-data.high-entropy-string", "error"),
     });
   }
 }
 
-// Input bundle for `pushSensitiveFinding`: everything one sensitive occurrence needs to become a
-// redacted finding. `column` is the one-based match offset when the scanner pinpointed one and is
-// absent for line-shaped detectors; `metadata` and `severity` default inside the builder.
-// Stable contract: `raw` never reaches a finding unredacted.
+// Describes one reportable sensitive occurrence before the finding is built.
+//
+// Optional column, metadata, and severity enrich the user's report when available.
+// Contract: matched text is used only to choose a fixed public category and never reaches report output or identity.
 interface SensitiveFindingArgs {
-  config: Config;
   findings: Finding[];
   file: SensitiveSourceFile;
   ruleId: string;
   message: string;
   line: number;
   column?: number;
-  raw: string;
+  matchedSensitiveText: string;
   confidence: Finding["confidence"];
   metadata?: Record<string, unknown>;
   severity?: Finding["severity"];
 }
 
-// Central sensitive-finding emitter: redacts the raw value into the message preview and anchors
-// the finding at line plus, when provided, the match column that keeps two distinct same-line
-// secrets from collapsing into one report entry (ADR-017). Invariant: raw secret values never
-// leave this function unredacted, and the `secretPreviews` allowlist must run before any push.
-// Reports exactly one finding per occurrence and never throws.
+// Reports one user-visible finding with a detector-owned marker and an optional match column.
+// The matched value is used only to select a public category; every occurrence reaches the report.
 function pushSensitiveFinding(args: SensitiveFindingArgs): void {
-  const preview = redact(args.raw);
-  // Fully masked short previews identify only a length, so accepting one would suppress every
-  // unrelated secret of that length. Only previews with bounded edge context are distinct enough.
-  if (args.raw.length >= MINIMUM_SECRET_LENGTH_FOR_CONTEXT && args.config.secretPreviews.has(preview)) {
-    return;
-  }
+  const displayMarker = fixedMarkerForSensitiveFinding(args);
+  // Missing location and metadata fields remain absent or empty so report consumers can distinguish unavailable user context.
   args.findings.push(
     makeFinding({
       ruleId: args.ruleId,
-      message: `${args.message} Redacted preview: ${preview}.`,
+      message: `${args.message} Redacted preview: ${displayMarker}.`,
       filePath: args.file.displayPath,
       line: args.line,
       ...(args.column === undefined ? {} : { column: args.column }),
@@ -266,36 +294,106 @@ function pushSensitiveFinding(args: SensitiveFindingArgs): void {
       pillar: "sensitive-data",
       confidence: args.confidence,
       remediation: "Remove the sensitive value and load it from a secure runtime source.",
-      metadata: { ...(args.metadata ?? {}), preview },
+      metadata: { ...(args.metadata ?? {}), preview: displayMarker },
     }),
   );
 }
 
-// Two-stage filter: parse the line into a (key, value) pair, then apply the secret-shape filters.
-// Splitting them keeps the regex simple - the line shape is shared, only the value test changes.
-// In script files only quoted values count: an unquoted `TOKEN: expr` line in TS/JS is an
-// expression (schema builder, secret-provider plumbing), not an embedded string literal.
+// Selects the fixed category marker users see for one sensitive finding.
+// Detector-owned rule and metadata categories may classify the match, but no matched characters or lengths are returned.
+function fixedMarkerForSensitiveFinding(args: SensitiveFindingArgs): string {
+  switch (args.ruleId) {
+    case "sensitive-data.aws-access-key":
+      return "[redacted:aws-access-key]";
+    case "sensitive-data.private-key":
+      return "[redacted:private-key]";
+    case "sensitive-data.jwt-token":
+      return "[redacted:jwt]";
+    case "sensitive-data.database-url-password":
+      return fixedConnectionStringMarker(args.matchedSensitiveText);
+    case "sensitive-data.api-key-pattern":
+      return fixedApiKeyMarker(args.matchedSensitiveText, args.metadata);
+    case "sensitive-data.pii-pattern":
+      return args.metadata?.piiKind === "credit-card" ? "[redacted:payment-card]" : "[redacted:ssn]";
+    case "sensitive-data.phi-pattern":
+      return /^\d+$/.test(args.matchedSensitiveText) ? "[redacted:mrn]" : "[redacted:medicare]";
+    case "sensitive-data.gcp-service-account-key":
+      return "[redacted:gcp-service-account]";
+    default:
+      return "[redacted]";
+  }
+}
+
+// Builds the fixed connection-string marker users see, retaining only the detector-approved public scheme.
+// Missing classification returns the generic marker and never echoes any URL characters.
+function fixedConnectionStringMarker(matchedUrl: string): string {
+  const acceptedScheme = matchedUrl.match(/^(https?|postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|amqp|amqps|mssql):\/\//i)?.[1]?.toLowerCase();
+  // A missing detector-approved scheme gives users a generic marker rather than echoing any URL text.
+  if (!acceptedScheme) {
+    return "[redacted]";
+  }
+  return `[redacted:connection-string:${acceptedScheme}]`;
+}
+
+// Builds the fixed provider marker users see for recognizable API-key families.
+// Unknown or shared prefixes use the generic marker so no matched token characters are exposed.
+function fixedApiKeyMarker(matchedToken: string, metadata: Record<string, unknown> | undefined): string {
+  // An npm auth line may omit the public `npm_` prefix, but its detector-owned key name still identifies the category.
+  if (metadata?.keyName === "_authToken" || matchedToken.startsWith("npm_")) {
+    return "[redacted:npm-token]";
+  }
+  // A GitHub public prefix gives users the provider category without disclosing any token payload.
+  if (/^(?:ghp_|github_pat_|gh[ousr]_)/.test(matchedToken)) {
+    return "[redacted:github-token]";
+  }
+  // Slack tokens and webhook URLs share one fixed provider marker in user reports.
+  if (/^(?:xox[baprs]-|https:\/\/hooks\.slack\.com\/services\/)/.test(matchedToken)) {
+    return "[redacted:slack-token]";
+  }
+  // The public live-key prefix distinguishes Stripe production credentials for rotation guidance.
+  if (matchedToken.startsWith("sk_live_")) {
+    return "[redacted:stripe-live-key]";
+  }
+  // The public Google prefix selects a provider marker without revealing the remaining key.
+  if (matchedToken.startsWith("AIza")) {
+    return "[redacted:google-api-key]";
+  }
+  // The public Anthropic prefix selects a provider marker without revealing the remaining key.
+  if (matchedToken.startsWith("sk-ant-")) {
+    return "[redacted:anthropic-api-key]";
+  }
+  // The public GitLab prefix selects a provider marker without revealing the remaining token.
+  if (matchedToken.startsWith("glpat-")) {
+    return "[redacted:gitlab-token]";
+  }
+  return "[redacted]";
+}
+
+// Parses a secret-labelled assignment and returns it only when its value is credible and literal for that file type.
+// In scripts, unquoted right-hand sides are code expressions rather than user-visible embedded strings.
 function hardcodedEnvValue(line: string, minLength: number, requiresQuotedValue: boolean): { keyName: string; value: string } | undefined {
   const candidate = envValueCandidate(line);
+  // Missing, placeholder-shaped, or short values do not represent a credential the user needs to remove.
   if (!candidate || !isHardcodedEnvCandidate(candidate.value, minLength)) {
     return undefined;
   }
+  // In script files, an unquoted right-hand side is code rather than a literal value embedded by the user.
   if (requiresQuotedValue && !candidate.isQuoted) {
     return undefined;
   }
   return candidate;
 }
 
-// Script extensions where unquoted right-hand sides are code expressions rather than literal
-// values. Config formats (.env, .ini, .yaml, .json keys) keep their unquoted-literal semantics.
+// Checks whether a user's file treats unquoted assignment values as code expressions.
+// Script extensions require quotes; config formats keep their normal unquoted-literal behavior.
 function isScriptSourcePath(displayPath: string): boolean {
   return /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i.test(displayPath);
 }
 
 const SECRET_ASSIGNMENT_PATTERN = /^\s*((?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)|[A-Z][A-Z0-9_-]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)[A-Z0-9_-]*)\s*[:=]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|`([^`\r\n]+)`|([^"'`\s#]+))/i;
 
-// Extracts secret-labelled assignment values for scan reporting. Quoted arms preserve hashes,
-// while unquoted values stop at whitespace or hash because comments must not inflate a finding.
+// Extracts one secret-labelled literal assignment for later detector checks.
+// Missing output means the user's line has no supported key/value shape; comments never inflate the captured value.
 function envValueCandidate(line: string): { keyName: string; value: string; isQuoted: boolean } | undefined {
   const match = line.match(SECRET_ASSIGNMENT_PATTERN);
   // A user may have supplied an unrelated line or unknown key, which cannot produce this finding.
@@ -312,46 +410,44 @@ function envValueCandidate(line: string): { keyName: string; value: string; isQu
   return { keyName, value: secretValue, isQuoted: quotedValue !== undefined };
 }
 
-// Three predicates combined: long enough, not a literal placeholder, and shape-like (letters + digits).
-// All three are required - dropping any one regresses to noisy findings on fixture values.
+// Checks whether an extracted assignment is long, non-placeholder, and credential-shaped.
+// Users see a finding only when all three signals agree, reducing noise from ordinary examples.
 function isHardcodedEnvCandidate(secretValue: string, minLength: number): boolean {
   return secretValue.length >= minLength && !isPlaceholderSecretValue(secretValue) && hasLetterAndDigit(secretValue);
 }
 
-// Allowlist of obvious fixture words. Case-insensitive so `Placeholder`, `PASSWORD` and similar
-// fixture values stay quiet. Extend deliberately - the cost of a missing word is a false positive.
+// Recognizes obvious example words that users commonly place in documentation and fixtures.
+// Matching is case-insensitive so capitalization alone does not create a noisy secret finding.
 function isPlaceholderSecretValue(secretValue: string): boolean {
   return /^(?:x-api-key|token|secret|password|example|sample|placeholder)$/i.test(secretValue);
 }
 
-// Cheap shape filter: rejects all-letters words and all-digit numbers before the more expensive
-// entropy work runs. False negatives here are acceptable; false positives waste maintainer time.
+// Checks for the letter-and-digit mix expected in generated credential values.
+// Pure words and numbers stay out of the user's report before more expensive entropy work begins.
 function hasLetterAndDigit(candidateText: string): boolean {
   return /[A-Za-z]/.test(candidateText) && /[0-9]/.test(candidateText);
 }
 
-// Layered filter for the entropy detector. Order matters: cheap rejections (length, hex digest,
-// SRI hash) run before character-set checks before the entropy calculation itself, which is the
-// most expensive step. Reordering changes nothing semantically but can regress scan performance.
+// Applies cheap inert-shape checks before character diversity and entropy scoring.
+// This order preserves the same user result while avoiding expensive work for obvious non-secrets.
 function isHighEntropySecretCandidate(candidateText: string, minLength: number): boolean {
+  // Known public or readable shapes do not require a secret warning in the user's report.
   if (isExcludedHighEntropyCandidate(candidateText, minLength)) {
     return false;
   }
+  // Without lowercase, uppercase, and digits, the literal lacks the credential diversity this rule promises.
   if (!hasLowerUpperAndDigit(candidateText)) {
     return false;
   }
+  // Too few distinct characters indicate repetition rather than a generated secret the user should rotate.
   if (!hasEnoughDistinctCharacters(candidateText)) {
     return false;
   }
   return shannonEntropy(candidateText) >= 4;
 }
 
-// Entropy false-positive escape hatches. Hex digests and SRI hashes both look "high entropy" but
-// are well-known non-secrets - without these exclusions, package-lock.json scans become noise.
-// Repo-relative path-shaped strings (slashes plus a known extension and a conventional prefix
-// segment) also clear the entropy bar without being secrets; the path-shape guard suppresses them.
-// Alphabet enumerations and dotted/underscored/slug identifiers that decompose into dictionary-like
-// word segments are the remaining non-secret shapes that pass the entropy bar.
+// Recognizes high-entropy shapes users commonly commit on purpose: digests, paths, alphabets, and readable identifiers.
+// Returning true keeps these detector-owned non-secrets out of reports without consulting user preview values.
 function isExcludedHighEntropyCandidate(candidateText: string, minLength: number): boolean {
   return candidateText.length < minLength
     || isHexDigest(candidateText)
@@ -361,14 +457,16 @@ function isExcludedHighEntropyCandidate(candidateText: string, minLength: number
     || isWordSegmentIdentifier(candidateText);
 }
 
-// Translation/encoding alphabets ("ABC...xyz0123456789+/" in PlantUML, base64 tables) clear the
-// entropy bar but are enumerations, not secrets. The proof is a run of 10+ consecutive code
-// points, which credential generators essentially never produce.
+// Recognizes public encoding alphabets by a run of at least ten consecutive character codes.
+// Credential generators rarely produce that sequence, so users avoid a noisy entropy finding.
 function isCharacterAlphabetString(candidateText: string): boolean {
   let runLength = 1;
+  // Each character extends or resets the public alphabet sequence being recognized.
   for (let index = 1; index < candidateText.length; index += 1) {
+    // Consecutive character codes indicate an intentional alphabet rather than opaque credential material.
     if (candidateText.charCodeAt(index) === candidateText.charCodeAt(index - 1) + 1) {
       runLength += 1;
+      // Ten consecutive characters are enough to keep this public alphabet out of the user's findings.
       if (runLength >= 10) {
         return true;
       }
@@ -379,51 +477,52 @@ function isCharacterAlphabetString(candidateText: string): boolean {
   return false;
 }
 
-// Word-segment identifier exemption: a dotted namespace ("Com.Example2.Services.TokenProvider"),
-// an underscored constant ("WC_Admin_Reports_V2"), or a slug-like catalog name
-// ("DeepSeek-R1-Distill-Qwen-32B") decomposes entirely into short dictionary-like segments.
-// Real credentials do not - their segments interleave case and digits or run past word length.
-// The token guard runs FIRST so a JWT or segmented token never earns the exemption.
+// Recognizes readable namespaces, constants, and catalog names made entirely from short word-like segments.
+// Token-shaped segments are rejected first so JWTs and base64url credentials remain visible to users.
 function isWordSegmentIdentifier(candidateText: string): boolean {
+  // Base64 punctuation makes the value token-like, so it must remain eligible for a user finding.
   if (candidateText.includes("+") || candidateText.includes("=")) {
     return false;
   }
+  // A recognizable segmented token must not inherit the readable-identifier exemption.
   if (isTokenLikeSegmentedSecret(candidateText)) {
     return false;
   }
   const segments = candidateText.split(/[/._-]+/);
+  // A single segment is not a namespace, constant, or slug and therefore lacks this public-shape evidence.
   if (segments.length < 2) {
     return false;
   }
   return segments.every(isWordLikeSegment);
 }
 
-// Token guard for the word-segment exemption. JWTs always start with "eyJ" (base64 of `{"`), and
-// any single segment that is a 20+ char mixed-case-with-digit run is credential material even when
-// its separators mimic an identifier. Must stay ahead of the word-segment arms - relaxing it would
-// silently exempt JWT-shaped and long base64url secrets.
+// Recognizes JWT prefixes and long mixed-case segments that remain credential-like despite separators.
+// This guard runs before readable-word exemptions so users do not lose segmented secret findings.
 function isTokenLikeSegmentedSecret(candidateText: string): boolean {
+  // The standard JWT header prefix keeps this value visible to users even when separators resemble an identifier.
   if (candidateText.startsWith("eyJ")) {
     return true;
   }
   return candidateText.split(/[/._-]+/).some((segment) => segment.length >= 20 && hasLowerUpperAndDigit(segment));
 }
 
-// One identifier segment: letters with digits at most at one boundary ("Example2", "405B",
-// "20241022"), capped at 16 chars. More than one letter<->digit transition means the segment
-// interleaves like token material and must not earn the exemption.
+// Recognizes a short word or version segment with at most one letter-to-digit boundary.
+// Repeated transitions look token-like and keep the candidate visible for user review.
 function isWordLikeSegment(segment: string): boolean {
+  // Empty, long, or punctuated segments are too token-like to earn the readable-identifier exemption.
   if (segment.length === 0 || segment.length > 16 || !/^[A-Za-z0-9]+$/.test(segment)) {
     return false;
   }
   return letterDigitTransitionCount(segment) <= 1;
 }
 
-// Counts boundaries where the segment switches between letter and digit runs; word-like segments
-// have at most one ("Example2"), token material alternates repeatedly ("Xk9pQ2vL").
+// Counts letter-to-digit boundaries used to distinguish readable version names from token material.
+// Users avoid noise for names such as `Example2`, while repeatedly alternating segments remain reportable.
 function letterDigitTransitionCount(segment: string): number {
   let transitions = 0;
+  // Each adjacent character pair can add one boundary to the identifier-shape decision.
   for (let index = 1; index < segment.length; index += 1) {
+    // A change between letter and digit runs makes the segment incrementally more token-like.
     if (isDigitCharCode(segment.charCodeAt(index - 1)) !== isDigitCharCode(segment.charCodeAt(index))) {
       transitions += 1;
     }
@@ -431,51 +530,54 @@ function letterDigitTransitionCount(segment: string): number {
   return transitions;
 }
 
-// Character-code digit test so the transition counter never needs unchecked string indexing.
+// Checks one character code for a decimal digit while evaluating identifier transitions.
+// Using codes avoids an absent string index and keeps the user's classification deterministic.
 function isDigitCharCode(code: number): boolean {
   return code >= 48 && code <= 57;
 }
 
-// Path-shape guard: a string that contains at least one `/`, has a path-like extension, AND lives
-// under a conventional source/docs/test/workflow prefix is almost always a repo-relative reference
-// rather than a secret. The combined gate keeps the rule firing on real high-entropy material that
-// happens to contain slashes.
+// Recognizes repository paths by a known extension plus a conventional project segment or milestone filename.
+// Slash-containing opaque tokens stay reportable because path punctuation alone is not enough evidence.
 function isRepoPathShape(candidateText: string): boolean {
   const normalized = candidateText.replaceAll("\\", "/");
   const hasKnownExtension = /\.(?:md|mdx|ts|tsx|js|jsx|mjs|cjs|json|yaml|yml|toml|html|css|svg|sh)$/.test(candidateText);
+  // Without a known file extension, the value lacks enough evidence to hide a possible secret from the user.
   if (!hasKnownExtension) {
     return false;
   }
+  // A basename needs an ADR or milestone shape because it has no directory segment proving it is a project path.
   if (!normalized.includes("/")) {
     return isRepoPathLikeFilename(normalized);
   }
   return hasKnownRepoPathSegment(normalized);
 }
 
-// Basename-only docs and milestone filenames such as `ADR-024-...md` and `M00-...md`
-// appear in fixtures without a directory prefix but are still path references, not secrets.
+// Recognizes ADR and milestone filenames that users may reference without a directory prefix.
+// A match keeps these public project artifacts out of high-entropy findings.
 function isRepoPathLikeFilename(candidateText: string): boolean {
   return /^(?:ADR-\d{3}|M\d{2,3})-[A-Za-z0-9_.-]+\.(?:md|mdx)$/i.test(candidateText);
 }
 
-// Path references may be repo-relative under source directories or fixture-absolute under `/repo`.
-// Requiring a known repository segment keeps slash-containing tokens from being over-suppressed.
+// Recognizes paths under conventional source, test, documentation, workflow, and package locations.
+// Unknown slash-separated strings remain reportable because they may still be opaque credentials.
 function hasKnownRepoPathSegment(candidateText: string): boolean {
   return /(?:^|\/)(?:\.goat-flow|src|test|tests|fixtures?|docs|scripts|bin|workflow|package(?:-lock)?\.json)(?:\/|$)/.test(candidateText);
 }
 
-// Removes separators allowed in human-entered payment-card numbers before issuer and checksum checks.
+// Removes spaces and hyphens before validating a payment-card value the user may have pasted.
+// The normalized digits are used only for network and checksum checks, never report output.
 function normalizedPaymentCardNumber(candidateText: string): string {
   return candidateText.replace(/[ -]/g, "");
 }
 
-// Stable contract: only card-network-shaped values with a valid Luhn checksum are PII findings.
+// Checks issuer shape, supported length, and Luhn checksum before showing a payment-card finding.
+// Ordinary long numbers stay out of the user's report when any gate fails.
 function isPaymentCardNumber(cardNumber: string): boolean {
   return /^[0-9]+$/.test(cardNumber) && cardNumber.length >= 13 && cardNumber.length <= 19 && hasKnownPaymentCardPrefix(cardNumber) && passesLuhnCheck(cardNumber);
 }
 
-// Recognises common issuer prefixes by delegating per network because each one has different
-// length and IIN-range rules; keeping those branches separate makes false-positive tuning safer.
+// Checks a normalized card value against the supported issuer prefixes.
+// Network-specific helpers keep user-facing false-positive tuning isolated and readable.
 function hasKnownPaymentCardPrefix(cardNumber: string): boolean {
   return isVisaPaymentCard(cardNumber)
     || isMastercardPaymentCard(cardNumber)
@@ -520,25 +622,30 @@ function isJcbPaymentCard(cardNumber: string): boolean {
   return isInRange(firstFourDigits, 3528, 3589) && isPaymentCardLength(cardNumber, [16, 17, 18, 19]);
 }
 
-// Network-specific length guard kept separate so the prefix table reads as data, not arithmetic.
+// Checks whether a normalized card uses a length supported by its detected network.
+// Keeping the length table explicit makes the user-facing classification easier to audit.
 function isPaymentCardLength(cardNumber: string, allowedLengths: number[]): boolean {
   return allowedLengths.includes(cardNumber.length);
 }
 
-// Inclusive numeric range helper for issuer identification number ranges.
+// Checks an issuer identification number against an inclusive network range.
+// Card-prefix helpers use it to decide whether the user should receive a payment-data finding.
 function isInRange(candidateNumber: number, minimum: number, maximum: number): boolean {
   return candidateNumber >= minimum && candidateNumber <= maximum;
 }
 
-// Standard Luhn checksum over normalized digits; invalid checksum keeps long numeric identifiers quiet.
+// Runs the standard Luhn checksum over normalized digits before a card finding reaches the user.
+// Invalid checksums keep ordinary long numeric identifiers quiet.
 function passesLuhnCheck(cardNumber: string): boolean {
   const digits = [...cardNumber].reverse().map((digit) => Number(digit));
   const sum = digits.reduce((total, digit, index) => total + luhnDigitContribution(digit, index), 0);
   return sum % 10 === 0;
 }
 
-// Doubles every second digit from the right and folds two-digit products per the Luhn algorithm.
+// Calculates one digit's Luhn contribution while validating a possible payment-card value.
+// Even-positioned digits from the right remain unchanged; alternating digits are doubled and folded.
 function luhnDigitContribution(digit: number, indexFromRight: number): number {
+  // Even positions from the right contribute their original digit to the user's card-validity decision.
   if (indexFromRight % 2 === 0) {
     return digit;
   }
@@ -546,33 +653,35 @@ function luhnDigitContribution(digit: number, indexFromRight: number): number {
   return doubled > 9 ? doubled - 9 : doubled;
 }
 
-// All-hex strings - typical for SHA digests, content hashes, and tooling identifiers.
+// Recognizes all-hex values commonly used for public digests and tooling identifiers.
+// A match keeps those expected project values out of the user's high-entropy findings.
 function isHexDigest(candidateText: string): boolean {
   return /^[0-9a-f]+$/i.test(candidateText);
 }
 
-// Registry metadata and HTML integrity attributes use public SRI digests, not credentials.
-// Excluding that standard shape keeps the detector focused on values that grant access.
+// Recognizes public Subresource Integrity digests from registry metadata and HTML attributes.
+// A match keeps expected integrity values out of the user's secret report.
 function isSubresourceIntegrityHash(candidateText: string): boolean {
   return /^sha(?:1|256|384|512)-[A-Za-z0-9+/=]+$/.test(candidateText);
 }
 
-// Three-class character requirement that filters out single-case identifiers and pure base64 hashes
-// before the entropy calculation runs. Real API tokens almost always contain all three classes.
+// Checks for lowercase, uppercase, and digits before entropy scoring.
+// Values missing a class are less credential-like and stay out of this user's finding set.
 function hasLowerUpperAndDigit(candidateText: string): boolean {
   return /[a-z]/.test(candidateText) && /[A-Z]/.test(candidateText) && /[0-9]/.test(candidateText);
 }
 
-// Distinct-character guard. The cap at 12 keeps a long alphabet from inflating the requirement;
-// the `ceil(length/3)` floor scales the threshold with the candidate length.
+// Checks whether a literal has enough distinct characters to resemble a generated secret.
+// The capped, length-scaled threshold avoids flagging repeated text in the user's source.
 function hasEnoughDistinctCharacters(candidateText: string): boolean {
   return new Set(candidateText).size >= Math.min(12, Math.ceil(candidateText.length / 3));
 }
 
-// Standard Shannon entropy in bits per symbol. The 4.0-bit threshold in the caller corresponds
-// roughly to a uniform alphabet of 16 distinct characters - the typical floor for real secrets.
+// Calculates Shannon entropy for the final generated-secret decision.
+// The caller compares this score with the documented threshold before showing users a finding.
 function shannonEntropy(candidateText: string): number {
   const counts = new Map<string, number>();
+  // Each character contributes to the frequency distribution used for the user's entropy decision.
   for (const character of candidateText) {
     counts.set(character, (counts.get(character) ?? 0) + 1);
   }
@@ -580,21 +689,6 @@ function shannonEntropy(candidateText: string): number {
     const probability = count / candidateText.length;
     return sum - probability * Math.log2(probability);
   }, 0);
-}
-
-// The 24-character threshold prevents edge context from exposing most of a short credential.
-const MINIMUM_SECRET_LENGTH_FOR_CONTEXT = 24;
-// The four-character limit keeps long tokens recognizable without revealing most of their value.
-const VISIBLE_SECRET_EDGE_LENGTH = 4;
-
-// Formats the secret evidence shown in findings and every report. Reviewers see only length for
-// short values, while long credentials retain limited edge context to identify what to rotate.
-function redact(rawSecret: string): string {
-  // A reviewer opening any report gets a full mask when edge context would disclose too much.
-  if (rawSecret.length < MINIMUM_SECRET_LENGTH_FOR_CONTEXT) {
-    return `${"*".repeat(rawSecret.length)} (redacted, ${rawSecret.length} chars)`;
-  }
-  return `${rawSecret.slice(0, VISIBLE_SECRET_EDGE_LENGTH)}...${rawSecret.slice(-VISIBLE_SECRET_EDGE_LENGTH)} (redacted, ${rawSecret.length} chars)`;
 }
 
 export { analyseSensitiveData };

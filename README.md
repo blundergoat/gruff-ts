@@ -27,11 +27,11 @@ Used as a hook on an agent's output, gruff-ts is a forcing function rather than 
 | Binary | `gruff-ts` |
 | Rule catalogue | 120 rules across 11 pillars |
 | Primary config | `.gruff-ts.yaml`; `.gruff.json`, `.gruff.yaml`, and `.gruff.yml` are fallback files |
-| Analysis schema | `gruff.analysis.v2` |
-| Summary schema | `gruff.summary.v2` |
-| Baseline schema | `gruff.baseline.v1` |
+| Analysis schema | `gruff.analysis.v3` |
+| Summary schema | `gruff.summary.v3` |
+| Baseline schema | `gruff.baseline.v3` |
 | Hotspot schema | `gruff.hotspot.v1` |
-| Agent-hook schema | `gruff.hook.v1` |
+| Agent-hook schema | `gruff.hook.v2` |
 | Config schema | `gruff-ts.config.v0.1` |
 | Severity gate | `--fail-on` with `none`, `advisory`, `warning`, `error` |
 | Dashboard | `127.0.0.1:8767` by default |
@@ -96,13 +96,14 @@ Open `http://127.0.0.1:8767/` for the dashboard.
 | `summary [paths...]` | Print compact score, pillar, rule, and file summaries. |
 | `report [paths...]` | Render an HTML or JSON report to stdout or `--output`. |
 | `init` | Write the default `.gruff-ts.yaml` to the current directory (`--force` to overwrite). |
+| `migrate-config` | Rewrite a 0.5 config for the current schema, writing the result to a different file. |
 | `list-rules` | Print rule metadata as text or JSON. |
 | `list-profiles` | Print the built-in profiles (`gruff.minimal`, `gruff.recommended`, `gruff.strict`) with their rule-count summary, as text or JSON. |
 | `check-ignore <paths...>` | Report whether each path is ignored (config, gitignore, or default) with the matching source and pattern; runs no analysis. |
-| `hook [paths...]` | Emit the `gruff.hook.v1` coding-agent contract and capability metadata. |
+| `hook [paths...]` | Emit the `gruff.hook.v2` coding-agent contract and capability metadata. |
 | `dashboard` | Serve the local browser dashboard. |
 | `completion [shell]` | Print a shell completion script for `bash`, `zsh`, or `fish`. |
-| `list` | Show the registered command catalogue. Use `--help` on the root or a command for detailed help. |
+| `list`, `help` | Show the registered command catalogue, and per-command help. Use `--help` on the root or a command for the same detail. |
 
 Global console options match the broader gruff CLI surface: `--silent`, `--quiet`, `--ansi` / `--no-ansi`, `--no-interaction`, and `-v` / `-vv` / `-vvv`.
 
@@ -113,7 +114,7 @@ Global console options match the broader gruff CLI surface: `--silent`, `--quiet
 | Format | Use it for |
 | --- | --- |
 | `text` | Human terminal output. |
-| `json` | Full `gruff.analysis.v2` report. |
+| `json` | Full `gruff.analysis.v3` report. |
 | `html` | Self-contained inspection report. |
 | `markdown` | Pull-request or issue comment summary. |
 | `github` | GitHub Actions workflow annotations. |
@@ -130,7 +131,7 @@ Global console options match the broader gruff CLI surface: `--silent`, `--quiet
 | `1` | At least one finding met `--fail-on`. |
 | `2` | Fatal diagnostic such as missing input, parse error, config error, diff failure, baseline failure, or invalid input. |
 
-`analyse` and `summary` default to `--fail-on advisory`; `report` defaults to `--fail-on none`. The defaults can be overridden per-project by a `minimumSeverity:` block in `.gruff-ts.yaml`. CLI flag wins over config; config wins over the binary default. See ADR-004 and the Configuration section.
+`analyse` and `summary` default to `--fail-on advisory`; `report` and `hook` default to `--fail-on none`. This table covers `analyse`, `summary` and `report`; `hook` gates only on an explicit consumer request and has its own table in the Baselines And Changed-Code Scans section. The defaults can be overridden per-project by a `failOn:` block in `.gruff-ts.yaml`. CLI flag wins over config; config wins over the binary default. See ADR-004 and the Configuration section.
 
 ## CI Usage
 
@@ -177,7 +178,6 @@ allowlists:
   acceptedBooleanNames:
     - verbose
     - enabled
-  secretPreviews: []
 
 rules:
   complexity.cyclomatic:
@@ -251,19 +251,29 @@ Use `npx gruff-ts list-rules --format=json` for exact rule IDs, severities, conf
 
 ## Baselines And Changed-Code Scans
 
-For editor and coding-agent feedback, prefer the analyser-owned hook contract:
+For editor and coding-agent feedback, prefer the analyser-owned hook contract. Wiring it into an
+agent, gate levels, and CI use are covered in [Using gruff-ts As A Coding-Agent Hook](docs/agent-hook.md):
 
 ```bash
 npx gruff-ts hook --format=json --changed-ranges "3-3,8-10" src/foo.ts
 npx gruff-ts hook --capabilities --format=json
 ```
 
-`hook` emits `gruff.hook.v1` JSON with normalized `file`, `scope`, `suppressed.count`,
-`ignored.paths`, non-null `remediation`, stable identities, and threshold metadata. Hook mode is
-advisory: findings exit `0`; operational failures such as invalid config exit `2` and are reported
-in `config.error`.
+`hook` emits `gruff.hook.v2` JSON: a nine-key envelope of `contractVersion`, `analyzer`, `run`,
+`findings`, `diagnostics`, `suppressed`, `suppressions`, `ignored`, and `config`, carrying
+normalized `file` and `scope` per finding, non-null `remediation`, stable identities, and
+threshold metadata. Hook mode is advisory at its default `--fail-on none`: findings are published
+and the run exits `0`. Only an explicit consumer request blocks the edit, so `hook` has its own
+exit codes rather than the `analyse` ones above:
 
-Baselines suppress reviewed findings by stable fingerprint:
+| Code | Meaning |
+| --- | --- |
+| `0` | Nothing reached a gate the caller asked for. The default `--fail-on none` lands here however severe the findings are. |
+| `1` | Something did: a published finding met `--fail-on`, `--fail-on-new` saw a finding the applied baseline calls new, or `--fail-on-diagnostics` saw a diagnostic that touches the analysed change. |
+| `2` | The run could not happen. An invalid config also fills `config.error`; an unusable baseline or changed range is a fatal entry in `diagnostics`. |
+
+Baselines suppress reviewed findings by a line-free identity and the count each row accepts, so an
+unrelated edit that shifts line numbers does not re-open reviewed debt:
 
 ```bash
 npx gruff-ts analyse . --generate-baseline gruff-baseline.json --fail-on=none
@@ -292,7 +302,7 @@ Use `--changed-scope file` when a CI workflow intentionally wants every finding 
 files, including file-wide metrics such as `size.file-length`. The default `symbol` scope keeps
 the coding-agent feedback focused on the changed line or enclosing declaration.
 
-JSON output keeps the normal `findings` array and adds `suppressedCount` when changed-region filtering is active.
+JSON output keeps the normal `findings` array and reports the filtered count as `diff.filteredFindings` and `summary.suppressedFindings` when changed-region filtering is active.
 
 ## Dashboard
 
@@ -310,9 +320,9 @@ Default scans are local source inspections. `gruff-ts` parses supported source, 
 
 ## Stability Contract
 
-The `0.5.x` line treats rule IDs, finding fingerprints, baseline identity, `gruff.analysis.v2`, `gruff.summary.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`, `gruff.hook.v1`, `gruff-ts.config.v0.1`, SARIF rendering, and CLI exit semantics as compatibility-sensitive. Breaking changes belong in a coordinated future release and must be recorded in [`CHANGELOG.md`](CHANGELOG.md).
+`gruff-ts` treats rule IDs, finding fingerprints, baseline identity, `gruff.analysis.v3`, `gruff.summary.v3`, `gruff.baseline.v3`, `gruff.hotspot.v1`, `gruff.hook.v2`, `gruff-ts.config.v0.1`, SARIF rendering, and CLI exit semantics as compatibility-sensitive. The three `v3` strings arrive in `0.6.0`; the published `0.5.x` line emitted `gruff.analysis.v2`, `gruff.summary.v2`, and `gruff.baseline.v1`, and [Upgrading](https://github.com/blundergoat/gruff-ts/blob/main/UPGRADING.md) states every break between them. Breaking changes belong in a coordinated future release and must be recorded in [`CHANGELOG.md`](CHANGELOG.md).
 
-Analysis JSON continues to emit canonical `file` alongside legacy `filePath` for findings and top offenders. The v0.3.1 plan to remove `filePath` in the next release was superseded when v0.4.0 retained the alias. Consumers should read `file` now; removing `filePath` waits for the coordinated family JSON unification instead of happening in this port alone.
+Analysis JSON emits the canonical `file` for findings and top offenders; the legacy `filePath` alias is gone, removed with the coordinated family JSON unification. [Output formats](docs/output-formats.md) carries the full v2-to-v3 field table.
 
 ## How It Compares
 
@@ -338,12 +348,15 @@ Source lives under `src/`: `src/cli.ts` is the bootstrap, `src/cli-program.ts` o
 
 ## Documentation
 
+- [Docs index](docs/README.md)
+- [Output formats](docs/output-formats.md)
+- [Upgrading](https://github.com/blundergoat/gruff-ts/blob/main/UPGRADING.md)
 - [Changelog](CHANGELOG.md)
 - [Configuration](docs/configuration.md)
 - [Rules catalogue](docs/rules.md)
-- [Reports and CI](docs/reports-and-ci.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security](SECURITY.md)
+- [Reports and CI](docs/reports-and-ci.md) - retained legacy page; the pages above own their topics.
 
 ## Author
 

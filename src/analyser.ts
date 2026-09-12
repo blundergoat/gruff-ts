@@ -1,14 +1,17 @@
-// Analyser pipeline: walks discovered sources, runs every rule pass (complexity, dead-code, design,
-// documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality),
-// aggregates findings into the `gruff.analysis.v2` schema, and exposes `analyse` to the CLI shell.
+// Analyser pipeline behind `gruff-ts analyse`, and the module the CLI shell calls into.
+//
+// It walks the discovered sources, runs every rule pass across the eleven pillars, and aggregates the
+// results into native report state for the `gruff.analysis.v3` machine adapter to serialise.
 import { Buffer, isUtf8 } from "node:buffer";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { cwd } from "node:process";
-import { basename, extname } from "node:path";
+import { basename, dirname, extname, resolve } from "node:path";
 import { recordHistory, sortedUniqueFindings } from "./baseline.ts";
+import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan } from "./baseline-identity.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { changedRegionScope, filterChangedFindings, filterScopedDiagnostics } from "./changed-regions.ts";
 import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
+import { partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
@@ -31,7 +34,7 @@ import { scoreReport, summarize } from "./scoring.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
 import { parseScript, type ParsedScript } from "./parsed-script.ts";
 import { maskNonCode, maskTemplateLiteralBodies } from "./source-text.ts";
-import type { AnalysisOptions, AnalysisReport, Config, Finding, Pillar, RunDiagnostic, ScanSurfaceNote, SkippedPath } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport, Config, Finding, Pillar, RunDiagnostic, ScanSurfaceNote, SkippedPath, SuppressionSummary } from "./types.ts";
 
 /*
  * Internal hook view contract: both reports come from one current-tree scan so full-file and
@@ -43,7 +46,7 @@ export interface HookAnalysisReports {
 }
 
 /**
- * Analyse the configured paths and return the stable gruff.analysis.v2 report contract.
+ * Analyse the configured paths and return the stable gruff.analysis.v3 report state.
  *
  * @param options Normalised analysis options from the CLI or direct callers.
  * @returns Versioned report with fingerprinted findings, diagnostics, paths, and score data.
@@ -55,7 +58,15 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
   const changedResult = filterChangedFindings(run.baselineResult.findings, changedScope, run.scanned.sources);
 
   if (options.historyFile) {
-    recordHistory(run.projectRoot, options.historyFile, changedResult.findings, run.diagnostics);
+    // The history row is scored on the run's own denominator, so a later delta measures findings
+    // rather than the difference between two project sizes.
+    recordHistory(
+      run.projectRoot,
+      options.historyFile,
+      changedResult.findings,
+      run.discovery.files.filter((file) => file.isScript).length,
+      run.diagnostics,
+    );
   }
 
   // File-scoped policy: diff runs report and fail on diagnostics from changed target files only.
@@ -77,9 +88,79 @@ export function analyseHookReports(currentOptions: AnalysisOptions, scopedOption
   return { currentReport, scopedReport };
 }
 
+/**
+ * Pick the directory that every reported path is written relative to.
+ *
+ * Run `gruff-ts analyse .` inside a project and the answer is that directory. Run `gruff-ts analyse /srv/checkout` from a
+ * home directory, as CI and scripted scans do, and the answer is /srv/checkout, so findings still read as short project-relative
+ * paths rather than absolute ones.
+ *
+ * @param paths Scan targets as typed on the command line; empty means no target was named, so the launch directory is the project.
+ * @returns Directory to treat as the project root; never empty.
+ * @throws When targets sit under different filesystem roots, such as `analyse /srv/api /opt/tools`, leaving no single project.
+ */
+function projectRootFromTargets(paths: string[]): string {
+  const launchDirectory = cwd();
+
+  // No target was named, so the directory the command ran from is the project.
+  if (paths.length === 0) {
+    return launchDirectory;
+  }
+
+  let common: string | null = null;
+  // Each target narrows the answer: the root must be a directory that contains all of them.
+  for (const path of paths) {
+    const absolute = resolve(launchDirectory, path);
+    let directory = absolute;
+    try {
+      // Naming one file means the project is the folder holding it, not the file itself.
+      if (!statSync(absolute).isDirectory()) {
+        directory = dirname(absolute);
+      }
+    } catch {
+      // The caller named a path that does not exist, such as a typo; discovery reports it as missing instead.
+      continue;
+    }
+
+    // The first target sets the starting answer; later ones can only widen it.
+    if (common === null) {
+      common = directory;
+      continue;
+    }
+    while (!isSameOrDescendant(directory, common)) {
+      const parent = dirname(common);
+      // Walking up hit the filesystem root, so these targets live in unrelated projects.
+      if (parent === common) {
+        throw new Error("scan targets do not share a filesystem root");
+      }
+      common = parent;
+    }
+  }
+
+  // Targets sit inside the launch directory, so it stays the root. Moving the root down to a target's own folder would
+  // re-anchor config discovery, ignore patterns, and baseline paths.
+  if (common === null || isSameOrDescendant(common, launchDirectory)) {
+    return launchDirectory;
+  }
+  return common;
+}
+
+/**
+ * Report whether one directory is another or sits inside it.
+ *
+ * Comparison is by whole path segment, so a sibling folder such as /work/apidocs is never mistaken for something inside /work/api.
+ *
+ * @param candidate Directory being tested.
+ * @param ancestor Directory that may contain it.
+ * @returns True when candidate is the ancestor or sits inside it.
+ */
+function isSameOrDescendant(candidate: string, ancestor: string): boolean {
+  return candidate === ancestor || candidate.startsWith(ancestor.replace(/\/+$/u, "") + "/");
+}
+
 // Loads config and discovers inputs once so direct analysis and hook reuse share the same setup.
 function prepareAnalysis(options: AnalysisOptions): AnalysisPreparation {
-  const projectRoot = cwd();
+  const projectRoot = projectRootFromTargets(options.paths);
   const config = loadConfig(projectRoot, options);
   const diagnostics: RunDiagnostic[] = [];
   const discovery = discoverSources(projectRoot, options, config);
@@ -87,6 +168,7 @@ function prepareAnalysis(options: AnalysisOptions): AnalysisPreparation {
 }
 
 // Runs per-file and project-level rules before applying baseline suppression; finding order remains stable.
+// A baseline that cannot be read, or that another port wrote, throws out of the run so the CLI reports the reason instead of a clean scan.
 function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOptions): AnalysisRun {
   const { projectRoot, config, diagnostics, discovery } = preparation;
   pushMissingPathDiagnostics(discovery.missingPaths, diagnostics);
@@ -96,48 +178,56 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
     ...scanned.findings,
     ...analyseProjectIndex(projectRoot, options, discovery.files, scanned.projectSources, config).filter((finding) => ruleEnabled(config, finding.ruleId)),
   ].map((finding) => applyConfiguredSeverity(config, finding)));
-  const baselineResult = applyBaselineOptions(projectRoot, options, allFindings);
+  // Reviewed sensitive exclusions apply before the baseline so a suppressed finding never reaches
+  // the report, the score, or the exit code, and each entry's count covers the whole scan.
+  const excluded = partitionSensitiveExclusions(allFindings, config.sensitiveExclusions);
+  // Naming every finding before the baseline filters any of them keeps one alert one alert: code scanning reads the
+  // same identity the baseline does, and a finding hidden from this report keeps the ordinal it was ranked with.
+  const spans = declarationSpans(scanned);
+  const namedFindings = withBaselineIdentities(excluded.findings, spans);
+  const baselineResult = applyBaselineOptions(projectRoot, options, namedFindings, spans);
+  // A collision names two declarations one identity could not tell apart; it suppresses nothing and fails no run.
+  diagnostics.push(...baselineResult.diagnostics);
   const notes = [...discovery.notes, ...scanned.notes];
-  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes };
+  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes, suppressions: excluded.suppressions };
 }
 
-// Converts a completed run into a stable report contract or changed-region projection.
+/*
+ * Converts a completed run into native report state, or into a changed-region projection when the caller passed `--diff`.
+ *
+ * The JSON adapter owns the stable `gruff.analysis.v3` wire shape.
+ * `suppressions` carries one audit row per configured sensitive exclusion and is counted across the whole scan, so a
+ * changed-region view never understates what a suppression hid.
+ */
 function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResult: BaselineApplication, suppressedCount?: number): AnalysisReport {
-  return buildAnalysisReport(run.projectRoot, options, run.discovery, run.diagnostics, baselineResult, run.notes, suppressedCount);
-}
-
-// Assembles the run's payload; the field shape is the stable gruff.analysis.v2 schema contract.
-function buildAnalysisReport(
-  projectRoot: string,
-  options: AnalysisOptions,
-  discovery: DiscoverySummary,
-  diagnostics: RunDiagnostic[],
-  baselineResult: BaselineApplication,
-  notes: ScanSurfaceNote[],
-  suppressedCount?: number,
-): AnalysisReport {
   const findings = baselineResult.findings;
   return {
-    schemaVersion: "gruff.analysis.v2",
+    schemaVersion: "gruff.analysis.v3",
     tool: { name: "gruff-ts", version: VERSION },
     run: {
-      projectRoot,
+      projectRoot: run.projectRoot,
       format: options.format,
       failOn: options.failOn,
       generatedAt: new Date().toISOString(),
+      inputs: options.paths.length === 0 ? ["."] : [...options.paths],
+      ...(options.config === undefined ? {} : { config: options.config }),
+      ...(options.shouldIncludeIgnored ? { includeIgnored: true as const } : {}),
     },
     summary: summarize(findings),
     paths: {
-      analysedFiles: discovery.files.length,
-      ignoredPaths: discovery.ignoredPaths,
-      skipped: discovery.skipped,
-      missingPaths: discovery.missingPaths,
+      analysedFiles: run.discovery.files.length,
+      ignoredPaths: run.discovery.ignoredPaths,
+      skipped: run.discovery.skipped,
+      missingPaths: run.discovery.missingPaths,
     },
-    diagnostics,
-    ...(notes.length === 0 ? {} : { notes }),
+    diagnostics: run.diagnostics,
+    ...(run.notes.length === 0 ? {} : { notes: run.notes }),
+    suppressions: run.suppressions,
     findings,
     ...(suppressedCount === undefined ? {} : { suppressedCount }),
-    score: scoreReport(findings),
+    // Only script files carry code to score, so the ratified denominator is narrower than
+    // paths.analysedFiles, which also counts the text inputs the raw-text rules read.
+    score: scoreReport(findings, run.discovery.files.filter((file) => file.isScript).length),
     ...(baselineResult.baseline ? { baseline: baselineResult.baseline } : {}),
   };
 }
@@ -154,7 +244,7 @@ interface DiscoverySummary {
 
 // Output of the per-file scan pass - both the findings produced and the cached source bodies that
 // later project-level rules need to operate against the deterministic stable shape used by baselines.
-// Contract invariant: `notes` records bounded deep scans without changing finding order.
+// Contract invariant: `notes` records non-text scan-surface changes without changing finding order.
 interface SourceScanResult {
   findings: Finding[];
   projectSources: ProjectSource[];
@@ -171,8 +261,9 @@ interface AnalysisPreparation {
   discovery: DiscoverySummary;
 }
 
-// Completed scan state before final report rendering. The baseline result is carried separately so
-// changed-region filtering can project findings without losing baseline metadata.
+// Completed scan state before final report rendering. Stable contract: the baseline result is
+// carried separately so changed-region filtering can project findings without losing baseline
+// metadata, and the suppression rows stay whole-scan counts rather than a projection of them.
 interface AnalysisRun {
   projectRoot: string;
   discovery: DiscoverySummary;
@@ -180,6 +271,9 @@ interface AnalysisRun {
   scanned: SourceScanResult;
   baselineResult: BaselineApplication;
   notes: ScanSurfaceNote[];
+  // One audit row per configured sensitive exclusion, counted over every finding the scan produced
+  // so a changed-region projection cannot understate what a suppression actually hid.
+  suppressions: SuppressionSummary[];
 }
 
 // Emits a `missing-path` diagnostic per path that the user requested but discovery could not
@@ -217,19 +311,19 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
         continue;
       }
       const source = fileBytes.toString("utf8");
-      const budgetNote = deepScanBudgetNote(file, source);
+      const budgetDiagnostic = deepScanBudgetDiagnostic(file, source, config);
       // One parse per script per run: every deep consumer shares this result; over-budget files skip it.
-      const parsed = budgetNote ? undefined : parseScript(file, source);
+      const parsed = budgetDiagnostic ? undefined : parseScript(file, source);
       sources.set(file.displayPath, { file, source, ...(parsed ? { parsed } : {}) });
-      if (budgetNote) {
-        notes.push(budgetNote);
+      if (budgetDiagnostic) {
+        diagnostics.push(budgetDiagnostic);
       } else {
         if (shouldRetainProjectSource(file, source)) {
           projectSources.push(projectSource(file, source));
         }
         diagnostics.push(...(parsed?.diagnostics ?? []));
       }
-      findings.push(...analyseSource(file, source, config, budgetNote === undefined, parsed));
+      findings.push(...analyseSource(file, source, config, budgetDiagnostic === undefined, parsed));
     } catch (error) {
       diagnostics.push({
         diagnosticType: "read-error",
@@ -242,26 +336,57 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
   return { findings, projectSources, sources, notes };
 }
 
-// Scan budget for deep (masking, block-parsing, AST-walking) script analysis. Copied perf-test
-// fixtures of 100k+ lines time out whole scans, so files above either bound keep text-level rules.
-const DEEP_SCAN_MAX_LINES = 20_000; // Budget limit: bounds copied perf fixtures before deep passes.
-const DEEP_SCAN_MAX_BYTES = 2_000_000; // Budget limit: catches minified/long-line scripts too.
+/*
+ * Attaches each ordinary finding's durable identity, which SARIF publishes as its code-scanning fingerprint.
+ *
+ * A sensitive finding is left unnamed, because it has no durable identity at all; the field is native-only and
+ * never reaches the JSON envelope, which publishes the identity through SARIF alone.
+ */
+function withBaselineIdentities(findings: Finding[], spansByFile: Map<string, DeclarationSpan[]>): Finding[] {
+  const identities = findingIdentities(findings, declarationPositionFromSpans(spansByFile));
+  return findings.map((finding, index) => {
+    const named = identities[index];
+    // Publishing the subject beside the identity is what lets the hook state the ordinal instead of re-deriving it.
+    return named === undefined ? finding : { ...finding, baselineIdentity: named.identity, baselineSubject: named.subject };
+  });
+}
 
-// Returns the bounded-deep-scan note when a script file exceeds the budget, undefined otherwise.
-// The file still counts as analysed - silence is the failure mode this guard exists to remove.
-function deepScanBudgetNote(file: SourceFile, source: string): ScanSurfaceNote | undefined {
-  if (!file.isScript) {
+/*
+ * Names every function this run parsed, per file, so a baseline identity can count declarations rather than lines.
+ *
+ * Inserting code above a function moves its line and not its ordinal, which is what keeps a reviewed finding
+ * hidden through an ordinary edit; a file that never parsed contributes nothing and its findings rank by line.
+ */
+function declarationSpans(scanned: SourceScanResult): Map<string, DeclarationSpan[]> {
+  const spansByFile = new Map<string, DeclarationSpan[]>();
+  for (const [displayPath, entry] of scanned.sources) {
+    const blocks = functionBlocks(entry.source, entry.source, entry.parsed);
+    spansByFile.set(
+      displayPath,
+      blocks.map((block) => ({ name: block.name, startLine: block.startLine, endLine: block.startLine + block.lineCount - 1 })),
+    );
+  }
+  return spansByFile;
+}
+
+// Returns diagnostic metadata for a visible, non-fatal breach of either effective deep-scan bound.
+// Source classification happens first, so config and other non-code text files never enter this guard.
+function deepScanBudgetDiagnostic(file: SourceFile, source: string, config: Config): RunDiagnostic | undefined {
+  const budget = config.deepScanBudget;
+  if (!file.isScript || !budget.enabled) {
     return undefined;
   }
   const lines = lineCount(source);
   const bytes = Buffer.byteLength(source, "utf8");
-  if (lines <= DEEP_SCAN_MAX_LINES && bytes <= DEEP_SCAN_MAX_BYTES) {
+  if (lines <= budget.maxLines && bytes <= budget.maxBytes) {
     return undefined;
   }
   return {
-    noteType: "bounded-deep-scan",
-    path: file.displayPath,
-    message: `File exceeds the deep-scan budget (${lines} lines, ${bytes} bytes; limits ${DEEP_SCAN_MAX_LINES} lines / ${DEEP_SCAN_MAX_BYTES} bytes). Text-level rules (size, sensitive-data, config) still ran; deep script analysis was skipped.`,
+    diagnosticType: "bounded-deep-scan",
+    filePath: file.displayPath,
+    line: 1,
+    invalidatesRun: false,
+    message: `path=${file.displayPath}; lines=${lines}; bytes=${bytes}; maxLines=${budget.maxLines}; maxBytes=${budget.maxBytes}; override=${budget.override}. Text-level rules (size, sensitive-data, config) still ran; masking, block parsing, AST walking, and other deep script analysis were skipped.`,
   };
 }
 
@@ -285,12 +410,14 @@ function hasImportSyntaxCandidate(source: string): boolean {
   return source.includes("import") || source.includes("from");
 }
 
-// Per-file rule pipeline. Text rules run on every file (including config/yaml); TypeScript rules
-// run only on scripts within the deep-scan budget. Fixed order is part of the stable fingerprint
-// contract. Generated/copied files keep every security and sensitive-data finding but drop
-// documentation and naming findings - generated code is not maintainer-authored source, so pushing
-// doc/naming work at a human reviewer is unactionable noise.
-// Contract invariant: doc/naming skips must not suppress safety pillars or change rule order.
+// Per-file rule pipeline, run once for every discovered file.
+//
+// - Text rules run on every file, including config and YAML; TypeScript rules run only on scripts inside the deep-scan budget.
+// - The fixed rule order is part of the stable fingerprint contract, so baselines keep matching across runs.
+// - Generated and copied files keep every security and sensitive-data finding, but drop documentation and naming ones:
+//   nobody hand-wrote that code, so asking a reviewer to fix its docstrings is noise.
+//
+// Contract invariant: skipping docs and naming must never suppress a safety pillar or reorder rules.
 function analyseSource(file: SourceFile, source: string, config: Config, isWithinDeepScanBudget: boolean, parsed?: ParsedScript): Finding[] {
   const findings: Finding[] = [];
   // Size and documentation rules share one comment scan so code-only line counts do not add a second pass.
@@ -316,10 +443,13 @@ function isGeneratedSource(source: string): boolean {
 }
 
 /*
- * Cross-file rule pipeline. Contract invariant: scoped runs keep `paths.analysedFiles` scoped while
- * circular-import may build root graph context so cycles through requested files stay visible. It
- * swallows hidden root-context read failures in `graphProjectSources` so unrelated unreadable files
- * do not break a narrow scan.
+ * Cross-file rule pipeline, run once after every file has been analysed on its own.
+ *
+ * Contract invariant: a scoped run keeps `paths.analysedFiles` scoped, while circular-import may still build root graph
+ * context so a cycle passing through the requested files stays visible.
+ *
+ * Errors: `graphProjectSources` swallows a read failure on an unrelated root file, so one unreadable file elsewhere in the
+ * project cannot fail a narrow scan. No other error is handled here.
  */
 function analyseProjectIndex(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[], projectSources: ProjectSource[], config: Config): Finding[] {
   const shouldUseRootCircularContext = ruleEnabled(config, CIRCULAR_IMPORT_RULE_ID) && shouldBuildRootCircularContext(projectRoot, options, scopedFiles);
@@ -360,19 +490,19 @@ function shouldBuildRootCircularContext(projectRoot: string, options: AnalysisOp
 function rootCircularImportFindings(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[], config: Config): Finding[] {
   const requestedFiles = new Set(scopedFiles.map((file) => file.displayPath));
   const rootDiscovery = discoverSources(projectRoot, { ...options, paths: [] }, config);
-  const rootProjectSources = graphProjectSources(rootDiscovery.files);
+  const rootProjectSources = graphProjectSources(rootDiscovery.files, config);
   const findings: Finding[] = [];
   analyseCircularImportRule(buildProjectIndex(rootProjectSources), findings);
   return findings.filter((finding) => circularImportFindingTouchesRequestedFile(finding, requestedFiles));
 }
 
 // Reads just the root files needed for import graph context and swallows unrelated read failures.
-function graphProjectSources(files: SourceFile[]): ProjectSource[] {
+function graphProjectSources(files: SourceFile[], config: Config): ProjectSource[] {
   const projectSources: ProjectSource[] = [];
   for (const file of files) {
     try {
       const source = readFileSync(file.absolutePath, "utf8");
-      if (!deepScanBudgetNote(file, source) && shouldRetainProjectSource(file, source)) {
+      if (!deepScanBudgetDiagnostic(file, source, config) && shouldRetainProjectSource(file, source)) {
         projectSources.push(projectSource(file, source));
       }
     } catch {
@@ -401,10 +531,11 @@ const SIZE_RULE_IDS = ruleIdsForPillar("size");
 const TEST_QUALITY_RULE_IDS = ruleIdsForPillar("test-quality");
 
 /*
- * Sensitive-data rules that infer a secret from shape rather than value, so generated
- * dependency metadata defeats them: every integrity digest looks high-entropy, and a package
- * named `gtoken` turns `gtoken: 8.0.0(supports-color@11.0.0)` into a credential assignment.
- * Suppressed for lockfiles only. Every value-shaped detector still runs there.
+ * Sensitive-data rules that infer a secret from shape rather than value, which generated dependency metadata defeats.
+ *
+ * Every integrity digest looks high-entropy, and a package named `gtoken` turns `gtoken: 8.0.0(supports-color@11.0.0)`
+ * into what reads as a credential assignment.
+ * These are suppressed for lockfiles only; every value-shaped detector still runs there.
  */
 const LOCKFILE_SUPPRESSED_SENSITIVE_RULE_IDS = new Set([
   "sensitive-data.high-entropy-string",
@@ -575,10 +706,8 @@ function analyseTextRules(file: SourceFile, source: string, comments: CommentRec
   if (isAnyRuleEnabled(config, SENSITIVE_DATA_RULE_IDS)) {
     const sensitiveFindings: Finding[] = [];
     analyseSensitiveData(file, source, config, sensitiveFindings);
-    // Generated dependency metadata defeats the two shape-based detectors: integrity digests
-    // look high-entropy, and a package whose name contains `token`/`key`/`secret` makes its
-    // version spec look like a credential assignment. The value-shaped detectors still run,
-    // because a credential in a `resolved` URL is the real leak vector for this file family.
+    // Generated dependency metadata defeats the two shape-based detectors, so they are dropped for lockfiles only.
+    // The value-shaped detectors still run, because a credential inside a `resolved` URL is the real leak risk here.
     const isLockfile = isGeneratedLockfile(file.displayPath);
     for (const sensitiveFinding of sensitiveFindings) {
       if (!isLockfile || !LOCKFILE_SUPPRESSED_SENSITIVE_RULE_IDS.has(sensitiveFinding.ruleId)) {
@@ -719,10 +848,11 @@ function runRuleGroupPass(config: Config, ruleIds: readonly string[], action: ()
   }
 }
 
-// One pass over the file's parsed callables. The naming and test-block fanouts are dispatched
-// separately so blocks.ts can stay independent of the naming-pusher and test-block-rule modules;
-// the per-rule emission order from `analyseBlockRules` is the stable fingerprint contract every
-// Finding depends on for deterministic baseline matching.
+// One pass over the file's parsed callables.
+//
+// Naming and test-block fanouts are dispatched separately so `blocks.ts` stays independent of the naming-pusher and
+// test-block-rule modules. The per-rule emission order from `analyseBlockRules` is the stable fingerprint contract every
+// finding depends on for deterministic baseline matching.
 function analyseBlocks(file: SourceFile, source: string, codeSource: string, blocks: FunctionBlock[], config: Config, findings: Finding[]): void {
   const shouldAnalyseBlockRules = isAnyRuleEnabled(config, BLOCK_RULE_IDS);
   const shouldAnalyseParameterNaming = isAnyRuleEnabled(config, PARAMETER_NAMING_RULE_IDS);
