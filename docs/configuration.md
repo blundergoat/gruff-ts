@@ -56,6 +56,12 @@ a silent no-op CI footgun, so the validator rejects it with a clear error.
 
 Binary defaults are `analyse: advisory`, `summary: advisory`, `report: none`.
 
+Across the Gruff family only `analyse` and `report` are accepted by every port, so a
+polyglot repository that shares one `failOn` block should write only those two keys.
+`summary` is accepted by gruff-go and gruff-ts, and `dashboard` by gruff-go, gruff-php
+and gruff-py; each other port refuses the key with exit 2 rather than ignoring it,
+because it ships no gate for that command.
+
 `minimumSeverity:` is a different setting: one severity - `advisory`,
 `warning`, or `error` - that hides quieter findings from the report without
 changing the score or the exit code. A `minimumSeverity:` carrying the
