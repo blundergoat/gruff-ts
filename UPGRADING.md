@@ -30,6 +30,8 @@ time, so a project using more than one of them moves once. This port's recorded 
 
 12. **`report` no longer accepts `--no-baseline`** — The option was registered on `report` and did nothing: `report` never applies a baseline, and its JSON carried `baseline: null` with or without the flag. `report --baseline` additionally suggested `--no-baseline` in its error, pointing at the no-op. The option is gone and `report --no-baseline` now exits `2`. Remove it from any `report` invocation. `analyse` and `summary` keep `--no-baseline`, where it does suppress the auto-discovered baseline.
 
+13. **`list-rules --format=json` publishes the family rule record** — Each rule's identity is `id` (was `ruleId`), its severity is `defaultSeverity` (was `severity`), and its threshold is a named map under `thresholds` (was the scalar `threshold`): `{"maxComplexity": 15}` where gruff-go already names the knob, `{"threshold": 2}` where no port does, and no key for a rule without one. Update any consumer that read `rules[].ruleId`, `rules[].severity`, or `rules[].threshold`; `list-rules <ruleId> --format=json` publishes the same record under `rule`. The `tool` envelope, text output, `configKeys`, `.gruff-ts.yaml` keys, and the `ruleId` on analysis findings are unchanged.
+
 ## Upgrade workflow (`0.5.x` → `0.6.0`)
 
 1. Read the list above and decide which breaks touch your project. A project with no committed

@@ -45,6 +45,8 @@ Runs the local preflight gate:
   - npm dependency audit
   - npm run check (TypeScript compile plus unit tests)
   - gruff-ts full-project scan
+  - documentation drift (README.md and docs/ agree with list-rules, cite only carried decisions, link only to real pages)
+  - documentation drift fixtures (each mutation class is rejected: false-empty, phantom rule, decision-namespace, source-revision, dead link)
   - shellcheck for scripts/*.sh when shellcheck is installed
 
 Environment:
@@ -372,6 +374,239 @@ hook_policy_check() {
   printf '%s' "$joined"
 }
 
+# ---------------------------------------------------------------------------
+# Documentation drift (M09 task 14). The owned documentation must agree with the
+# live rule catalogue, name only rules that ship, cite only decisions this port
+# carries, and link only to pages that exist. Every extraction fails closed: a
+# document that states no catalogue size or names no rule is a defect, not a pass.
+# ---------------------------------------------------------------------------
+
+# Extract the live catalogue facts once so every drift assertion reads one snapshot.
+docs_drift_facts() {
+  local catalogue_file="$1"
+  node - "$catalogue_file" <<'NODE'
+const fs = require("fs");
+
+const listing = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const rules = listing && Array.isArray(listing.rules) ? listing.rules : null;
+if (!rules || rules.length === 0) {
+  throw new Error("false-empty: list-rules published no rules under rules");
+}
+const ids = rules.map((rule) => rule.id).sort();
+const pillars = [...new Set(rules.map((rule) => rule.pillar))].sort();
+console.log("count=" + rules.length);
+console.log("pillars=" + pillars.length);
+console.log("pillarNames=" + pillars.join("|"));
+console.log("ids=" + ids.join(" "));
+NODE
+}
+
+# Read one fact from the extracted facts block.
+docs_fact() {
+  local facts="$1"
+  local key="$2"
+  sed -n "s/^${key}=//p" <<<"$facts"
+}
+
+# Capture the live catalogue facts, or the reason the catalogue could not be read.
+docs_drift_live_facts() {
+  local catalogue
+  local facts
+  local status
+
+  catalogue=$(make_temp_file json) || return 1
+  if ! ./bin/gruff-ts list-rules --format=json >"$catalogue" 2>/dev/null; then
+    printf 'docs drift: list-rules --format=json failed'
+    return 1
+  fi
+  facts=$(docs_drift_facts "$catalogue" 2>&1)
+  status=$?
+  printf '%s' "$facts"
+  return "$status"
+}
+
+# Compare the owned documentation under one root with the live catalogue facts. Runs against the
+# real checkout, and against synthetic copies in the fixture harness, so both share one contract.
+docs_drift_check_root() {
+  local docs_root="$1"
+  local facts="$2"
+  local readme="$docs_root/README.md"
+  local rules_doc="$docs_root/docs/rules.md"
+  local count pillars ids pillar_names
+  local claim claims=0 doc token decision link
+  local documents=() mentioned=() phantom=() bad_decisions=() dead=()
+
+  count=$(docs_fact "$facts" count)
+  pillars=$(docs_fact "$facts" pillars)
+  ids=" $(docs_fact "$facts" ids) "
+  pillar_names=$(docs_fact "$facts" pillarNames)
+
+  for doc in "$readme" "$rules_doc"; do
+    if [[ ! -f "$doc" ]]; then
+      printf 'docs drift: false-empty: %s is missing\n' "${doc#"$docs_root"/}"
+      return 1
+    fi
+  done
+
+  # Source-revision claims: every stated catalogue size must equal the live catalogue.
+  while IFS= read -r claim; do
+    claims=$((claims + 1))
+    if [[ "$claim" != "$count rules across $pillars pillars" ]]; then
+      printf 'docs drift: source-revision: a document says "%s" but list-rules has %s rules across %s pillars\n' \
+        "$claim" "$count" "$pillars"
+      return 1
+    fi
+  done < <(grep -ohE '[0-9]+ rules across [0-9]+ pillars' "$readme" "$rules_doc")
+  while IFS= read -r claim; do
+    claims=$((claims + 1))
+    if [[ "$claim" != "The current catalogue contains $count rules" ]]; then
+      printf 'docs drift: source-revision: README.md says "%s" but list-rules has %s rules\n' "$claim" "$count"
+      return 1
+    fi
+  done < <(grep -oE 'The current catalogue contains [0-9]+ rules' "$readme")
+  if ((claims == 0)); then
+    printf 'docs drift: false-empty: README.md and docs/rules.md state no catalogue size\n'
+    return 1
+  fi
+
+  # Phantom rule ids: a backticked <pillar>.<slug> in the README or docs must be a rule that
+  # ships. UPGRADING.md is history by design, and a line that says retired or removed is too.
+  mapfile -t documents < <(find "$docs_root/docs" -maxdepth 1 -name '*.md' 2>/dev/null | sort)
+  documents+=("$readme")
+  while IFS= read -r token; do
+    mentioned+=("$token")
+    if [[ "$ids" != *" $token "* ]]; then
+      phantom+=("$token")
+    fi
+  done < <(grep -hvE 'retired|removed' "${documents[@]}" \
+    | grep -oE "\`($pillar_names)\.[a-z0-9-]+\`" | tr -d '`' | sort -u)
+  if ((${#mentioned[@]} == 0)); then
+    printf 'docs drift: false-empty: the documentation names no rule id\n'
+    return 1
+  fi
+  if ((${#phantom[@]} > 0)); then
+    printf 'docs drift: phantom rule ids not in list-rules: %s\n' "${phantom[*]}"
+    return 1
+  fi
+
+  # Decision namespace: every ADR the documentation cites must exist in this port's decisions.
+  while IFS= read -r decision; do
+    if ! compgen -G "$REPO_ROOT/.goat-flow/learning-loop/decisions/$decision-*.md" >/dev/null; then
+      bad_decisions+=("$decision")
+    fi
+  done < <(cat "${documents[@]}" "$docs_root/UPGRADING.md" 2>/dev/null | grep -oE 'ADR-[0-9]{3}' | sort -u)
+  if ((${#bad_decisions[@]} > 0)); then
+    printf 'docs drift: decision-namespace: %s cited but absent from .goat-flow/learning-loop/decisions\n' \
+      "${bad_decisions[*]}"
+    return 1
+  fi
+
+  # Entry-page links: every relative link from the README must resolve inside the checkout. A
+  # fixture copy carries only the documentation, so a link to any other checked-in file still
+  # resolves against the real repository root.
+  while IFS= read -r link; do
+    if [[ ! -e "$docs_root/$link" && ! -e "$REPO_ROOT/$link" ]]; then
+      dead+=("$link")
+    fi
+  done < <(grep -oE '\]\([^)#[:space:]]+' "$readme" | sed 's/^](//' | grep -vE '^(https?://|mailto:)' | sort -u)
+  if ((${#dead[@]} > 0)); then
+    printf 'docs drift: entry-page link does not resolve: %s\n' "${dead[*]}"
+    return 1
+  fi
+
+  printf '%s rules, %s pillars; %s rule ids and every cited decision resolve' \
+    "$count" "$pillars" "${#mentioned[@]}"
+}
+
+docs_drift_check() {
+  local facts
+  local status
+
+  facts=$(docs_drift_live_facts)
+  status=$?
+  if ((status != 0)); then
+    printf '%s' "$facts"
+    return "$status"
+  fi
+  docs_drift_check_root "$REPO_ROOT" "$facts"
+}
+
+# Run the drift check against one mutated copy and require the named rejection.
+expect_docs_drift_rejection() {
+  local case_name="$1"
+  local expected="$2"
+  local docs_root="$3"
+  local facts="$4"
+  local output
+
+  if output=$(docs_drift_check_root "$docs_root" "$facts" 2>&1); then
+    printf 'docs drift fixture %s: the mutation passed the gate\n' "$case_name"
+    return 1
+  fi
+  if [[ "$output" != *"$expected"* ]]; then
+    printf 'docs drift fixture %s: rejected for the wrong reason; expected "%s", got: %s\n' \
+      "$case_name" "$expected" "$output"
+    return 1
+  fi
+}
+
+# Prove the drift gate rejects each mutation class without touching the real documentation
+# (M09 task 16): false-empty, phantom rule, decision-namespace, source-revision, dead link.
+docs_drift_fixture_check() {
+  local facts status harness valid root count first_pillar
+  local backtick='`'
+
+  facts=$(docs_drift_live_facts)
+  status=$?
+  if ((status != 0)); then
+    printf '%s' "$facts"
+    return "$status"
+  fi
+  count=$(docs_fact "$facts" count)
+  first_pillar=$(docs_fact "$facts" pillarNames)
+  first_pillar=${first_pillar%%|*}
+
+  harness=$(mktemp -d "${TMPDIR:-/tmp}/gruff-ts-docs-fixtures.XXXXXX") || return 1
+  valid="$harness/valid"
+  mkdir -p "$valid"
+  cp "$REPO_ROOT/README.md" "$REPO_ROOT/UPGRADING.md" "$valid/"
+  cp -R "$REPO_ROOT/docs" "$valid/docs"
+  if ! docs_drift_check_root "$valid" "$facts" >/dev/null 2>&1; then
+    printf 'docs drift fixture: the unmodified copy failed the gate'
+    rm -rf -- "$harness"
+    return 1
+  fi
+
+  root="$harness/false-empty"
+  cp -R "$valid" "$root"
+  printf '# gruff-ts\n\nSee the docs.\n' >"$root/README.md"
+  printf '# Rules\n\nSee list-rules.\n' >"$root/docs/rules.md"
+  expect_docs_drift_rejection false-empty 'false-empty' "$root" "$facts" || { rm -rf -- "$harness"; return 1; }
+
+  root="$harness/phantom-rule"
+  cp -R "$valid" "$root"
+  printf '\nThe %s%s.phantom-rule%s rule is documented here.\n' "$backtick" "$first_pillar" "$backtick" >>"$root/README.md"
+  expect_docs_drift_rejection phantom-rule 'phantom rule ids' "$root" "$facts" || { rm -rf -- "$harness"; return 1; }
+
+  root="$harness/decision-namespace"
+  cp -R "$valid" "$root"
+  printf '\nSee ADR-999 for the rationale.\n' >>"$root/README.md"
+  expect_docs_drift_rejection decision-namespace 'decision-namespace' "$root" "$facts" || { rm -rf -- "$harness"; return 1; }
+
+  root="$harness/source-revision"
+  cp -R "$valid" "$root"
+  sed -i "s/$count rules across/$((count + 1)) rules across/" "$root/README.md"
+  expect_docs_drift_rejection source-revision 'source-revision' "$root" "$facts" || { rm -rf -- "$harness"; return 1; }
+
+  root="$harness/dead-link"
+  cp -R "$valid" "$root"
+  printf '\n[Missing page](docs/missing-page.md)\n' >>"$root/README.md"
+  expect_docs_drift_rejection dead-link 'entry-page link' "$root" "$facts" || { rm -rf -- "$harness"; return 1; }
+
+  rm -rf -- "$harness"
+  printf '5 mutations rejected'
+}
+
 summary() {
   local elapsed
 
@@ -429,6 +664,10 @@ main() {
   run_step "TypeScript + tests" npm_check
 
   run_step "Gruff full-project scan" gruff_ts_check
+
+  run_step "Documentation drift" docs_drift_check
+
+  run_step "Documentation drift fixtures" docs_drift_fixture_check
 
   if command -v shellcheck >/dev/null 2>&1; then
     run_step "Shell scripts (shellcheck)" shellcheck_check

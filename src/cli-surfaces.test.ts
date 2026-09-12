@@ -67,12 +67,20 @@ test("list-rules <ruleId> prints labelled per-rule detail in text mode", () => {
 });
 
 test("list-rules <ruleId> renders JSON envelope with tool + rule + configKeys", () => {
-  // JSON variant for docs/integration consumers. Shape: `{ tool: {name, version}, rule: { …descriptor, configKeys: [...] } }`.
+  // JSON variant for docs/integration consumers. Shape: `{ tool: {name, version}, rule: { …listed record, configKeys: [...] } }`,
+  // where the listed record is the same family shape the catalogue publishes (`id`, `defaultSeverity`, `thresholds`).
   const text = execFileSync("./bin/gruff-ts", ["list-rules", "naming.generic-parameter", "--format=json"], { encoding: "utf8" });
   const payload = JSON.parse(text);
   assert.equal(payload.tool?.name, "gruff-ts");
-  assert.equal(payload.rule?.ruleId, "naming.generic-parameter");
+  assert.equal(payload.rule?.id, "naming.generic-parameter");
+  assert.equal(typeof payload.rule?.defaultSeverity, "string");
+  assert.equal("ruleId" in payload.rule, false);
+  assert.equal("severity" in payload.rule, false);
   assert.deepEqual(payload.rule?.optionKeys, ["minCyclomatic", "minLineCount", "minParameters"]);
+
+  const thresholded = JSON.parse(execFileSync("./bin/gruff-ts", ["list-rules", "complexity.cognitive", "--format=json"], { encoding: "utf8" }));
+  assert.deepEqual(thresholded.rule?.thresholds, { maxComplexity: 15 });
+  assert.equal("threshold" in thresholded.rule, false);
   assert.equal(Array.isArray(payload.rule?.configKeys), true);
   const enabledKey = payload.rule.configKeys.find((entry: { key: string }) => entry.key === "rules.naming.generic-parameter.enabled");
   assert.equal(enabledKey?.type, "bool");
@@ -137,18 +145,26 @@ function assertRuleListJsonOutput(): boolean {
   const parsed = readDeterministicRuleListJson();
   assert.equal(parsed.schemaVersion, undefined);
   assert.equal(parsed.tool?.name, "gruff-ts");
-  assert.equal(ruleListJsonHasThreshold(parsed, "design.deep-relative-import", 2), true);
+  // The family listing shape: `id`, `defaultSeverity`, and a named threshold map under `thresholds`.
+  // A rule whose id has a gruff-go knob name borrows it; one with no knob name anywhere publishes
+  // the one-key `threshold` map; a rule with no threshold omits the key.
+  assert.equal(ruleListJsonHasThreshold(parsed, "complexity.cognitive", { maxComplexity: 15 }), true);
+  assert.equal(ruleListJsonHasThreshold(parsed, "design.deep-relative-import", { threshold: 2 }), true);
+  assert.equal(ruleListJsonHasThreshold(parsed, "sensitive-data.high-entropy-string", { minLength: 32 }), true);
+  assert.equal(parsed.rules?.find((rule) => rule.id === "security.eval-call")?.thresholds, undefined);
+  assert.equal(parsed.rules?.every((rule) => typeof rule.id === "string" && typeof rule.defaultSeverity === "string"), true);
+  assert.equal(parsed.rules?.some((rule) => "ruleId" in rule || "severity" in rule || "threshold" in rule), false);
   assert.equal(ruleListJsonHasOptionKey(parsed, "design.large-module-concentration", "minFiles"), true);
   return true;
 }
 
 type RuleListJsonRule = {
-  ruleId?: string;
+  id?: string;
   pillar?: string;
-  severity?: string;
+  defaultSeverity?: string;
   confidence?: string;
   description?: string;
-  threshold?: number;
+  thresholds?: Record<string, number>;
   optionKeys?: string[];
 };
 
@@ -166,14 +182,14 @@ function readDeterministicRuleListJson(): RuleListJsonPayload {
   return JSON.parse(firstJsonText) as RuleListJsonPayload;
 }
 
-/** Checks one rule threshold without making the catalogue test branch-heavy. */
-function ruleListJsonHasThreshold(payload: RuleListJsonPayload, ruleId: string, threshold: number): boolean {
-  return payload.rules?.some((rule) => rule.ruleId === ruleId && rule.threshold === threshold) ?? false;
+/** Checks one rule's threshold map without making the catalogue test branch-heavy. */
+function ruleListJsonHasThreshold(payload: RuleListJsonPayload, ruleId: string, thresholds: Record<string, number>): boolean {
+  return payload.rules?.some((rule) => rule.id === ruleId && JSON.stringify(rule.thresholds) === JSON.stringify(thresholds)) ?? false;
 }
 
 /** Checks one rule option key without making the catalogue test branch-heavy. */
 function ruleListJsonHasOptionKey(payload: RuleListJsonPayload, ruleId: string, optionKey: string): boolean {
-  return payload.rules?.some((rule) => rule.ruleId === ruleId && rule.optionKeys?.includes(optionKey)) ?? false;
+  return payload.rules?.some((rule) => rule.id === ruleId && rule.optionKeys?.includes(optionKey)) ?? false;
 }
 
 test("console globals suppress normal output and completion emits a script", () => {
