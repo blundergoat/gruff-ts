@@ -1,6 +1,6 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-08-22
+last_reviewed: 2026-09-13
 ---
 
 # Schema + CLI surface footguns
@@ -161,6 +161,20 @@ If a session starts with `M .gruff-ts.yaml` (or any other user-curated config) a
 **Evidence context:** 0.4.0 baseline plan audit.
 
 `makeFinding` (`src/findings.ts`, search: `const fingerprint = createHash`) hashes `[ruleId, filePath, line, symbol]` into the 16-hex fingerprint, and `applyBaseline` (`src/baseline.ts`, search: `function applyBaseline`) keys suppression on `(fingerprint, ruleId, filePath)`. Because `line` is inside the hash, inserting code above a baselined finding changes its line, changes its fingerprint, and resurfaces the finding as "new" even though the defect is unchanged - churn-by-design for any committed `gruff-baseline.json` that real code drifts under. The 0.4.0 M24 plan assumed the opposite ("a line-moved entry that still matches the same fingerprint"); that assumption is false against the current `makeFinding` and was the trigger for ADR-013, which moves the persistent baseline to PHPStan-style `(filePath, ruleId)` + `count` identity (no line). Keep the fingerprint for SARIF `partialFingerprints.gruffFingerprint` (search: `gruffFingerprint`) and report dedupe (`src/baseline.ts`, search: `function dedupeFindings`) - those WANT per-line identity - but never reintroduce `line` or `fingerprint` as the persistent-baseline match key. When editing baseline matching, grep `gruff.baseline.v`, `applyBaseline`, and `ADR-013`.
+
+## Footgun: a JSON parser's error message quotes the start of the file it could not parse
+
+**Status:** active | **Created:** 2026-09-13 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Never copy a parser's message, or any field read from the file, into a diagnostic about a file
+the user named. State what is wrong in fixed words and name only the path.
+**Trigger phase:** ACT
+
+On Node 22, `JSON.parse` fails with messages such as `Unexpected token 'N', "NOTJSON_Zx"... is not valid JSON`, which
+carry the file's opening characters. M22's first `baseline-error` diagnostic appended that message, so a `--baseline`
+that named the wrong file printed its first bytes into the report. A fresh-context review also found the
+foreign-baseline diagnostic echoing any `toolLanguage` text. `unreadableReason` and `writerName` (`src/baseline-file.ts`,
+search: `function unreadableReason`) now use fixed words, and `src/baseline-and-project.test.ts`
+(search: `unusable baseline`) asserts that no diagnostic carries the file's text.
 
 ## Resolved Entries
 

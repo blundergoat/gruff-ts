@@ -5,7 +5,7 @@
 // action a run takes and what the report says about it.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { applyBaseline, migrateBaseline, requireOverwritableDefaultPath, sensitiveCountOf, writeBaseline, type BaselineCollision } from "./baseline-file.ts";
+import { applyBaseline, BaselineFileError, migrateBaseline, requireOverwritableDefaultPath, sensitiveCountOf, writeBaseline, type BaselineCollision } from "./baseline-file.ts";
 import { declarationPositionFromSpans, type DeclarationSpan } from "./baseline-identity.ts";
 import { DEFAULT_BASELINE } from "./baseline.ts";
 import { absolutize, displayPath } from "./discovery.ts";
@@ -29,6 +29,8 @@ export interface BaselineApplication {
 interface BaselineSelection {
   path: string;
   source: string;
+  // The path as the user wrote it, or the default file name, so a diagnostic never prints this machine's absolute path.
+  label: string;
 }
 
 /*
@@ -39,7 +41,10 @@ interface BaselineSelection {
  * identity while a second same-named function takes its own; an empty map ranks by line instead.
  * Stable contract: generation wins over application, and a run with no baseline returns the findings untouched.
  */
-export function applyBaselineOptions(projectRoot: string, options: AnalysisOptions, findings: Finding[], declarationSpans = new Map<string, DeclarationSpan[]>()): BaselineApplication {
+// `unusableBaseline` decides what a baseline file that cannot be applied does: a hook run throws so it can publish its
+// own fatal payload, and a direct analysis records a fatal `baseline-error` diagnostic and keeps its report.
+// Stable contract: an unusable baseline never suppresses anything, so every finding stays in the report it gates.
+export function applyBaselineOptions(projectRoot: string, options: AnalysisOptions, findings: Finding[], declarationSpans = new Map<string, DeclarationSpan[]>(), unusableBaseline: "throw" | "diagnose" = "throw"): BaselineApplication {
   const declarationPosition = declarationPositionFromSpans(declarationSpans);
   if (options.generateBaseline) {
     return generateBaselineResult(projectRoot, options, findings, declarationPosition);
@@ -54,7 +59,16 @@ export function applyBaselineOptions(projectRoot: string, options: AnalysisOptio
     return { findings, diagnostics: [] };
   }
 
-  return applySelectedBaseline(projectRoot, selected, findings, declarationPosition);
+  try {
+    return applySelectedBaseline(projectRoot, selected, findings, declarationPosition);
+  } catch (error) {
+    // A baseline that cannot be used leaves every finding visible and invalidates the run, so it exits 2 rather than
+    // reading as a clean scan or as findings that met `--fail-on` (exit 1).
+    if (unusableBaseline === "diagnose" && error instanceof BaselineFileError) {
+      return { findings, diagnostics: [{ diagnosticType: "baseline-error", message: error.message.replaceAll(selected.path, selected.label) }] };
+    }
+    throw error;
+  }
 }
 
 /*
@@ -130,8 +144,8 @@ function collisionDiagnostic(collision: BaselineCollision): RunDiagnostic {
 // project root. Returning undefined means "no baseline" - the stable contract preserves report shape.
 function selectedBaseline(projectRoot: string, options: AnalysisOptions): BaselineSelection | undefined {
   if (options.baseline) {
-    return { path: absolutize(projectRoot, options.baseline), source: "explicit" };
+    return { path: absolutize(projectRoot, options.baseline), source: "explicit", label: options.baseline };
   }
   const defaultBaseline = join(projectRoot, DEFAULT_BASELINE);
-  return existsSync(defaultBaseline) ? { path: defaultBaseline, source: "default" } : undefined;
+  return existsSync(defaultBaseline) ? { path: defaultBaseline, source: "default", label: DEFAULT_BASELINE } : undefined;
 }

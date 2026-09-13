@@ -153,6 +153,8 @@ Security-focused gates can bypass adoption baselines:
 npx gruff-ts analyse . --no-baseline --fail-on=error
 ```
 
+That gate does not fail on `sensitive-data.high-entropy-string`, which reports at warning.
+
 ## Configuration
 
 `analyse` auto-loads the first supported config file it finds in the project root:

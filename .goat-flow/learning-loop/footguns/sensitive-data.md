@@ -1,6 +1,6 @@
 ---
 category: sensitive-data
-last_reviewed: 2026-08-22
+last_reviewed: 2026-09-13
 hallucination-risk: high
 ---
 
@@ -56,3 +56,21 @@ The current absence of `length` makes hook normalization fall back to fixed-mark
 
 For any sensitive metadata change, verify JSON report and `gruff.hook.v1` output separately.
 Assert that `length`, `digits`, and `measured` are absent and only the fixed marker plus detector-owned public metadata remain.
+
+## Footgun: an exemption keyed on the text before a literal also matches ternaries and secret-named keys
+
+**Status:** active | **Created:** 2026-09-13 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Before exempting a literal by the key it sits under, prove the text is a key (it follows `{` or
+`,`, and only in YAML may it open its line), check every word of the key for a secret label, and never rescan the line
+for each candidate.
+**Trigger phase:** ACT
+
+M22's first location-key exemption for `sensitive-data.high-entropy-string` matched `key : ` against the line text
+before each literal. Two fresh-context reviews, checked against the pre-repair source, showed it silenced secrets the
+port had reported. The silenced shapes were `useCache ? path : "<secret>"`, the same branch after a comment or a
+wrapped `- path`, and keys whose last word names a location, such as `privateKeyBlob`, `apiKeyInput`, `JWTSecretPath`
+and `secretsPath`. The unanchored regex also took 1,821 ms on one generated line of six 20,000-character literals,
+against 355 ms at the pre-repair source. `standsInKeyPosition` and `isLocationOrDigestKey` (`src/sensitive-data-rules.ts`,
+search: `function standsInKeyPosition`) now carry the rule, and `src/sensitive-data-rules.test.ts`
+(search: `location key only in key position`) pins each shape. Probe any new syntax-keyed exemption the same way: put
+secrets the rule already reports in every position its pattern can match, and confirm each still reports.

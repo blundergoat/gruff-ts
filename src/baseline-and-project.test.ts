@@ -1,6 +1,6 @@
 // Regression tests for baseline identity, history output, and discovery behavior.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -627,4 +627,52 @@ function branchLightly(input: string): string {
   });
   assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), false);
   assert.equal(report.findings.some((finding) => finding.ruleId === "complexity.cyclomatic"), true);
+});
+
+// Discrepancy ts-baseline-failures-crash-with-an-uncaught-stack-trace-and-exit-1: the README's exit contract reserves 2
+// for a baseline failure and 1 for findings that met --fail-on. A 0.5 baseline and a missing baseline path each used to
+// print a raw Node stack trace and exit 1; each now exits 2 with a baseline-error diagnostic inside the JSON report.
+// So does a file that parses but has the wrong shape, a bad row, or a file that is not JSON, whose reason never quotes
+// the file's own bytes.
+// The test writes a throwaway project to the filesystem and removes it afterwards.
+test("analyse reports an unusable baseline as an exit-2 diagnostic in the report, not a stack trace", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-baseline-failure-"));
+  try {
+    writeFileSync(join(projectRoot, "ok.ts"), "// File overview: baseline failure fixture.\nexport const fine = 1;\n");
+    writeFileSync(join(projectRoot, "legacy.json"), `${JSON.stringify({ schemaVersion: "gruff.baseline.v1", entries: [] })}\n`);
+    const header = { schemaVersion: "gruff.baseline.v3", toolLanguage: "ts" };
+    writeFileSync(join(projectRoot, "null.json"), "null\n");
+    writeFileSync(join(projectRoot, "listless.json"), `${JSON.stringify({ ...header, occurrences: {} })}\n`);
+    writeFileSync(join(projectRoot, "null-row.json"), `${JSON.stringify({ ...header, occurrences: [null] })}\n`);
+    writeFileSync(join(projectRoot, "bad-row.json"), `${JSON.stringify({ ...header, occurrences: [{ identity: "XYZ", count: 1 }] })}\n`);
+    writeFileSync(join(projectRoot, "not-json.txt"), "UNQUOTED opening bytes\n");
+    writeFileSync(join(projectRoot, "foreign.json"), `${JSON.stringify({ ...header, toolLanguage: "UNQUOTED", occurrences: [] })}\n`);
+    for (const [baselinePath, reason] of [
+      ["legacy.json", /is a 0\.5 baseline/],
+      ["missing-baseline.json", /cannot be read: the file does not exist/],
+      ["null.json", /must be a JSON object/],
+      ["listless.json", /occurrences must be a list/],
+      ["null-row.json", /occurrences\[0\] must be an object/],
+      ["bad-row.json", /occurrences\[0\]\.identity must be 16 lowercase hex characters/],
+      ["not-json.txt", /cannot be read: the file is not valid JSON/],
+      ["foreign.json", /was written by an unrecognised port and this run is ts/],
+    ] as const) {
+      const result = spawnSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "analyse", ".", "--baseline", baselinePath, "--format", "json", "--fail-on", "none", "--no-config"], {
+        cwd: projectRoot,
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 2, baselinePath);
+      assert.equal(/\n\s+at /.test(`${result.stdout}\n${result.stderr}`), false, baselinePath);
+      const report = JSON.parse(result.stdout) as { diagnostics: Array<{ type: string; message: string; invalidatesRun: boolean }> };
+      const diagnostic = report.diagnostics.find((entry) => entry.type === "baseline-error");
+      assert.equal(diagnostic?.invalidatesRun, true, baselinePath);
+      assert.match(diagnostic?.message ?? "", reason);
+      // The message names the path the user wrote, never this machine's absolute path.
+      assert.equal(diagnostic?.message.includes(projectRoot), false, baselinePath);
+      assert.equal(diagnostic?.message.includes(baselinePath), true, baselinePath);
+      assert.equal(diagnostic?.message.includes("UNQUOTED"), false, baselinePath);
+    }
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
 });

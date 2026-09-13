@@ -398,7 +398,10 @@ interface MaskState {
   isRegexCharClass: boolean;
   isRegexEscaped: boolean;
   previousCode: string;
-  templateInterpolationDepth: number;
+  // One entry per open `${`, innermost last, counting the braces still open inside that interpolation. A scalar
+  // depth cannot tell a nested template's own `}` from the enclosing interpolation's, so it resumed code where the
+  // inner template body continued and masked the rest of the file.
+  templateInterpolationDepths: number[];
 }
 
 // `text` is what gets written for this character (space for masked, original for code, "  " for
@@ -419,7 +422,7 @@ function defaultMaskState(): MaskState {
     isRegexCharClass: false,
     isRegexEscaped: false,
     previousCode: "",
-    templateInterpolationDepth: 0,
+    templateInterpolationDepths: [],
   };
 }
 
@@ -482,7 +485,7 @@ function maskQuotedCharacter(character: string, next: string, state: MaskState):
   }
   if (state.quote === "`" && character === "$" && next === "{") {
     state.quote = undefined;
-    state.templateInterpolationDepth += 1;
+    state.templateInterpolationDepths.push(1);
     state.previousCode = "{";
     return { text: "${", skip: 1 };
   }
@@ -535,20 +538,24 @@ function maskCodeCharacter(source: string, index: number, character: string, nex
 }
 
 // While inside a template `${...}` expression, braces are executable code and must stay visible.
-// The depth counter returns to backtick masking only after the matching interpolation closer.
+// Only the innermost interpolation's brace count moves; when it closes, masking resumes in the template that
+// opened it, which may itself sit inside an outer interpolation.
 function maskTemplateInterpolationBrace(character: string, state: MaskState): MaskStep | undefined {
-  if (state.templateInterpolationDepth === 0) {
+  const openBraceDepths = state.templateInterpolationDepths;
+  const innermost = openBraceDepths.length - 1;
+  if (innermost < 0) {
     return undefined;
   }
   if (character === "{") {
-    state.templateInterpolationDepth += 1;
+    openBraceDepths[innermost] = (openBraceDepths[innermost] ?? 0) + 1;
     state.previousCode = character;
     return { text: character, skip: 0 };
   }
   if (character === "}") {
-    state.templateInterpolationDepth -= 1;
+    openBraceDepths[innermost] = (openBraceDepths[innermost] ?? 0) - 1;
     state.previousCode = character;
-    if (state.templateInterpolationDepth === 0) {
+    if (openBraceDepths[innermost] === 0) {
+      openBraceDepths.pop();
       state.quote = "`";
     }
     return { text: character, skip: 0 };

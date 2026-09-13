@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { cwd } from "node:process";
 import { ruleDescriptors } from "./cli.ts";
-import { loadConfig, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
+import { loadConfig, namedThreshold, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { SECURITY_EXPANSION_RISKY_RULE_IDS, SECURITY_EXPANSION_RULE_QUALITY_DOCTRINE } from "./fixtures/rule-catalogue-security-doctrine.ts";
 import { ruleCatalogueCoverageRuleIds } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
@@ -340,7 +340,8 @@ const riskyRuleQualityDoctrine = [
     ruleId: "sensitive-data.high-entropy-string",
     signalSource: "raw text literal scanner with redacted preview metadata",
     expectedPillar: "sensitive-data",
-    expectedSeverity: "error",
+    // The family contract of 2026-09-02 reports this heuristic at warning in every port.
+    expectedSeverity: "warning",
     expectedConfidence: "medium",
     fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
     invalidFixture: "secret-like high-entropy literal",
@@ -575,19 +576,35 @@ test("rule descriptor thresholds and options match implementation and config def
   const implementationThresholds = thresholdUsages(implementationSources);
   assert.deepEqual(descriptorThresholds, implementationThresholds);
   assert.deepEqual(descriptorOptions, optionUsages(implementationSources));
+  const descriptorNamedThresholds = new Map(
+    descriptors.filter((descriptor) => descriptor.additionalThresholds !== undefined).map((descriptor) => [descriptor.ruleId, { ...descriptor.additionalThresholds }]),
+  );
+  assert.deepEqual(descriptorNamedThresholds, namedThresholdUsages(implementationSources));
 
-  // The shipped `.gruff-ts.yaml` selects `profile: recommended`, so it carries no explicit per-rule
-  // thresholds that could drift from the descriptor. Assert the loaded config enables every
-  // threshold-owning rule and leaves its threshold and severity at the descriptor default - a real
-  // override in the repo config would surface here. recommended == descriptor defaults is itself
-  // proven by the parity test in profiles.test.ts.
+  // The shipped `.gruff-ts.yaml` writes an explicit block for every rule, including the named `thresholds` of
+  // high-entropy-string. Assert the loaded config enables every threshold-owning rule and leaves its threshold,
+  // every additional named threshold, and its severity at the descriptor default, so a drifted value in the repo
+  // config surfaces here rather than silently changing gruff-ts's own scan.
   const config = loadConfig(cwd(), repoScanOptions());
   descriptors.filter((entry) => typeof entry.threshold === "number").forEach((descriptor) => {
     assert.equal(ruleEnabled(config, descriptor.ruleId), true, `repo config disables ${descriptor.ruleId}`);
     assert.equal(threshold(config, descriptor.ruleId, descriptor.threshold ?? 0), descriptor.threshold ?? 0, `repo config overrides ${descriptor.ruleId} threshold`);
+    for (const [name, value] of Object.entries(descriptor.additionalThresholds ?? {})) {
+      assert.equal(namedThreshold(config, descriptor.ruleId, name, value), value, `repo config overrides ${descriptor.ruleId} thresholds.${name}`);
+    }
     assert.equal(ruleSeverity(config, descriptor.ruleId, descriptor.severity), descriptor.severity, `repo config overrides ${descriptor.ruleId} severity`);
   });
 });
+
+// Preserves the descriptor/named-threshold invariant by extracting namedThreshold(config, ruleId, name, default) calls.
+function namedThresholdUsages(source: string): Map<string, Record<string, number>> {
+  const usages = new Map<string, Record<string, number>>();
+  for (const match of source.matchAll(/namedThreshold\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)",\s*(-?\d+(?:\.\d+)?)\)/g)) {
+    const ruleId = match[1] ?? "";
+    usages.set(ruleId, { ...usages.get(ruleId), [match[2] ?? ""]: Number(match[3] ?? "0") });
+  }
+  return usages;
+}
 
 // Preserves the descriptor/default invariant by extracting threshold(config, ruleId, default) calls.
 function thresholdUsages(source: string): Map<string, number> {

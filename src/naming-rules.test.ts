@@ -23,10 +23,10 @@ test("parameter parsing keeps commas inside defaults and type expressions", () =
   assert.deepEqual(
     parameterNames("opts = { a: 1, b: 2 }, public readonly name: string, handler: (left: string, right: number) => void, values: Map<string, number>"),
     [
-      { name: "opts", raw: "opts = { a: 1, b: 2 }" },
-      { name: "name", raw: "name: string" },
-      { name: "handler", raw: "handler: (left: string, right: number) => void" },
-      { name: "values", raw: "values: Map<string, number>" },
+      { name: "opts", raw: "opts = { a: 1, b: 2 }", isParameterProperty: false },
+      { name: "name", raw: "name: string", isParameterProperty: true },
+      { name: "handler", raw: "handler: (left: string, right: number) => void", isParameterProperty: false },
+      { name: "values", raw: "values: Map<string, number>", isParameterProperty: false },
     ],
   );
 });
@@ -877,4 +877,41 @@ test("naming class-file mismatch requires one public declaration across export f
     config: { allowlists: { acceptedClassFilePairs: ["focusModeTranscript:TranscriptFocusController"] } },
   }).findings.filter((finding) => finding.ruleId === "naming.class-file-mismatch");
   assert.deepEqual(acceptedPairFindings, []);
+});
+
+// Fixture covers the report's repro D: an inline object type with a boolean field, its named-interface control,
+// and real boolean parameters written four ways. The contract is the parameter's own top-level type.
+test("M22 report repro D: an object parameter with a boolean field is not a boolean, while real boolean parameters still report", () => {
+  const report = analyseFixture([
+    "/** Render a history table. */",
+    "export function renderHistory(",
+    "  rows: string[],",
+    "  options: {",
+    "    agent: string | null;",
+    "    includeAll: boolean;",
+    "  },",
+    "): string {",
+    "  return options.includeAll ? rows.join(\"\\n\") : rows.slice(0, 5).join(\"\\n\");",
+    "}",
+    "",
+    "/** Control: the same parameter typed through a named interface rather than an inline type literal. */",
+    "export interface RenderHistoryOptions {",
+    "  agent: string | null;",
+    "  includeAll: boolean;",
+    "}",
+    "",
+    "/** Control: typed through the named interface. */",
+    "export function renderHistoryControl(rows: string[], options: RenderHistoryOptions): string {",
+    "  return options.includeAll ? rows.join(\"\\n\") : rows.slice(0, 5).join(\"\\n\");",
+    "}",
+    "",
+    "/** Real booleans: annotated, optional union, defaulted, and a union opened with a leading pipe. */",
+    "export function toggle(flag: boolean, marker?: boolean | undefined, switchValue = false, spread?: | boolean | { deep: true }): string {",
+    "  return String(flag) + String(marker) + String(switchValue) + String(spread);",
+    "}",
+    "",
+  ].join("\n"));
+  const booleanPrefixNames = report.findings.filter((entry) => entry.ruleId === "naming.boolean-prefix").map((entry) => entry.metadata?.identifierName).sort();
+
+  assert.deepEqual(booleanPrefixNames, ["flag", "marker", "spread", "switchValue"]);
 });

@@ -33,6 +33,9 @@ const UNLOCATED_SPEND_LINE = Number.MAX_SAFE_INTEGER;
 // ts wrote entries. A file naming two of them cannot be read the same way twice, so a migration refuses it.
 const LEGACY_ROW_CONTAINERS = ["findings", "groups", "entries"] as const;
 
+// The family ports a baseline may name as its writer (gruff-spec `contracts/core/baseline.v3.json`, search: `toolLanguage`).
+const FAMILY_TOOL_LANGUAGES: ReadonlySet<string> = new Set(["go", "php", "py", "rs", "ts"]);
+
 /*
  * One reviewed row: a line-free identity and how many occurrences of it the team signed off.
  * Matching reads the identity and the count and nothing else; the rule, path, and subject exist so a reviewer can
@@ -246,43 +249,100 @@ function baselineDocument(findings: Finding[], declarationPosition?: (finding: F
   };
 }
 
+/**
+ * A baseline file that cannot be applied as written: missing, unreadable, malformed, a 0.5 layout, another port's file,
+ * or a row that could expire or leak. A direct analysis reports it as a fatal `baseline-error` diagnostic and exits 2;
+ * any other error from applying a baseline is a defect and keeps its stack.
+ */
+export class BaselineFileError extends Error {}
+
 // Reads one v3 baseline, refusing a 0.5 layout, another port's file, and any row that could expire or leak.
-// Throws on a 0.5 layout, an unknown schema, another port's file, or a row that could expire or leak, so a bad baseline fails closed.
+// Throws BaselineFileError on a missing or malformed file, a 0.5 layout, an unknown schema, another port's file, or a
+// row that could expire or leak, so a bad baseline fails closed.
 function readBaselineDocument(path: string): BaselineDocument {
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<BaselineDocument> & { occurrences?: Array<Record<string, unknown>> };
+  const parsed = parsedBaselineFile(path);
   // A 0.5 file fails closed and names the command that carries its reviews forward, so nothing is silently dropped.
   if (parsed.schemaVersion === LEGACY_BASELINE_SCHEMA_VERSION) {
-    throw new Error(
+    throw new BaselineFileError(
       `baseline ${path} is a 0.5 baseline; migrate it to a separate file with \`gruff-ts analyse --migrate-baseline ${path} --generate-baseline <new path>\`, the original is preserved`,
     );
   }
   if (parsed.schemaVersion !== BASELINE_SCHEMA_VERSION) {
-    throw new Error(`unsupported baseline schema in ${path}`);
+    throw new BaselineFileError(`unsupported baseline schema in ${path}`);
   }
   // A baseline names its writer, so another port's file is refused instead of reporting every row resolved.
   if (parsed.toolLanguage !== TOOL_LANGUAGE) {
-    throw new Error(`baseline ${path} was written by ${parsed.toolLanguage ?? "an unnamed port"} and this run is ${TOOL_LANGUAGE}; baselines are not shared across languages`);
+    throw new BaselineFileError(`baseline ${path} was written by ${writerName(parsed.toolLanguage)} and this run is ${TOOL_LANGUAGE}; baselines are not shared across languages`);
   }
-  return { ...(parsed as BaselineDocument), occurrences: (parsed.occurrences ?? []).map(validatedRow) };
+  return { ...(parsed as BaselineDocument), occurrences: (parsed.occurrences ?? []).map((row, index) => validatedRow(path, row, index)) };
+}
+
+// A baseline file as parsed, before its rows are validated: every field may be missing and a row may be anything.
+type ParsedBaselineFile = Omit<Partial<BaselineDocument>, "occurrences"> & { occurrences?: unknown[] };
+
+// Reads and parses one baseline file. Throws BaselineFileError when the file is missing, unreadable, not JSON, or not a
+// JSON object whose occurrences, when present, are a list, so the reason reaches the user as a diagnostic rather than
+// a raw filesystem, parser or type stack. The schema must be checked before any field is read.
+function parsedBaselineFile(path: string): ParsedBaselineFile {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new BaselineFileError(`baseline ${path} cannot be read: ${unreadableReason(error)}`);
+  }
+  // `null`, a list or a bare value has no schema to read, so the file is refused before any field is.
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new BaselineFileError(`baseline ${path} must be a JSON object`);
+  }
+  const occurrences = (parsed as { occurrences?: unknown }).occurrences;
+  // Rows are validated one by one, which needs a list to walk.
+  if (occurrences !== undefined && !Array.isArray(occurrences)) {
+    throw new BaselineFileError(`baseline ${path} occurrences must be a list`);
+  }
+  return parsed as ParsedBaselineFile;
+}
+
+// Why a baseline file could not be read, in words that never quote it. A JSON parser's message carries the file's
+// opening characters, and a mistyped --baseline can name a file that holds secrets.
+function unreadableReason(error: unknown): string {
+  if ((error as { code?: unknown }).code === "ENOENT") {
+    return "the file does not exist";
+  }
+  if (error instanceof SyntaxError) {
+    return "the file is not valid JSON";
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+// Names the port that wrote a refused baseline without quoting the file: a family port by its language, and any other
+// value, or none, as an unrecognised port.
+function writerName(toolLanguage: unknown): string {
+  return typeof toolLanguage === "string" && FAMILY_TOOL_LANGUAGES.has(toolLanguage) ? toolLanguage : "an unrecognised port";
 }
 
 // Rebuilds one reviewed row, refusing anything that could expire on an edit or leak a finding's text.
-// Throws when the identity is not the ratified digest shape, the count is below one, or a positional key is present.
-function validatedRow(row: Record<string, unknown>, index: number): BaselineEntry {
+// Throws a BaselineFileError naming the file when the row is not an object, the identity is not the ratified digest
+// shape, the count is below one, or a positional key is present.
+function validatedRow(path: string, candidate: unknown, index: number): BaselineEntry {
+  // A row that is not an object has no identity to match, so the file is refused as written.
+  if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+    throw new BaselineFileError(`baseline ${path} occurrences[${index}] must be an object`);
+  }
+  const row = candidate as Record<string, unknown>;
   const identity = row.identity;
   // An identity that is not the ratified digest shape cannot have come from a generator, so the row is refused.
   if (typeof identity !== "string" || !/^[0-9a-f]{16}$/u.test(identity)) {
-    throw new Error(`baseline occurrences[${index}].identity must be 16 lowercase hex characters`);
+    throw new BaselineFileError(`baseline ${path} occurrences[${index}].identity must be 16 lowercase hex characters`);
   }
   const count = row.count;
   // A count below one would mean a reviewed identity that suppresses nothing, which is a hand edit gone wrong.
   if (typeof count !== "number" || !Number.isInteger(count) || count < 1) {
-    throw new Error(`baseline occurrences[${index}].count must be a positive integer`);
+    throw new BaselineFileError(`baseline ${path} occurrences[${index}].count must be a positive integer`);
   }
   for (const forbidden of FORBIDDEN_OCCURRENCE_KEYS) {
     // A positional field is how a 0.5 baseline expired on every edit, so its presence fails the file.
     if (forbidden in row) {
-      throw new Error(`baseline occurrences[${index}] carries forbidden key "${forbidden}"`);
+      throw new BaselineFileError(`baseline ${path} occurrences[${index}] carries forbidden key "${forbidden}"`);
     }
   }
   return { identity, count, ...optionalText(row, "ruleId"), ...optionalText(row, "path"), ...optionalText(row, "subject") };

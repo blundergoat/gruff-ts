@@ -2,7 +2,7 @@
 //
 // It runs each detector in a stable order so repeated scans remain comparable.
 // Users receive fixed category markers, actionable locations, and one report entry per occurrence without matched characters or lengths.
-import { ruleSeverity, threshold } from "./config.ts";
+import { namedThreshold, ruleSeverity, threshold } from "./config.ts";
 import { makeFinding } from "./findings.ts";
 import { byteColumn, byteLine } from "./text-scans.ts";
 import type { Config, Finding } from "./types.ts";
@@ -42,6 +42,10 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
       if (isExplicitExampleCredential(matchedSensitiveText)) {
         continue;
       }
+      // A URL shape written as a template literal type names no credential at all.
+      if (ruleId === "sensitive-data.database-url-password" && isTypeLevelUrlCredential(matchedSensitiveText)) {
+        continue;
+      }
       pushSensitiveFinding({
         findings,
         file,
@@ -61,6 +65,19 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
   analysePhiLabelledIdentifiers(file, source, findings);
   analysePaymentCardNumbers(file, source, findings);
   analyseGcpServiceAccountKeys(file, source, findings);
+}
+
+// Recognizes a URL credential written in type position: a template literal type such as
+// `mongodb://${string}:${string}@${string}` interpolates the type keywords `string` or `number`, which a runtime
+// template would mean only through a variable of that name, so its userinfo describes a shape rather than holding a
+// password. Only a password that is wholly one such interpolation, straight after the user, qualifies: a literal
+// password beside a `${string}` user, or one written before a `:${string}` suffix, still reports. A runtime template
+// that interpolates user and password variables into the userinfo still reports, and the pattern still stops at `@`:
+// extending it to the host
+// would let the substring example markers below silence any host containing "example", which waits for ratified
+// host semantics (M22 activation bundle, decision 4).
+function isTypeLevelUrlCredential(matchedSensitiveText: string): boolean {
+  return /:\/\/[^\/\s:@]+:\$\{\s*(?:string|number)\s*\}@$/.test(matchedSensitiveText);
 }
 
 // Recognizes explicit example markers inside the matched value, such as an AWS key ending in `EXAMPLE`.
@@ -238,12 +255,17 @@ function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: st
 // Stable contract: known integrity and public identifier shapes stay quiet so users can focus on credible secret material.
 function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const minLength = threshold(config, "sensitive-data.high-entropy-string", 32);
+  const minimumEntropy = namedThreshold(config, "sensitive-data.high-entropy-string", "entropy", 4.2);
+  // YAML is the one scanned format whose keys may open a line with nothing before them.
+  const canKeyOpenLine = /\.ya?ml$/i.test(file.displayPath);
+  // The candidate floor follows the configured minimum length, so a lowered bar admits literals shorter than the default.
+  const candidatePattern = new RegExp(`(["'\`])([A-Za-z0-9_+=./-]{${Math.max(1, Math.ceil(minLength))},})\\1`, "g");
   // Every long literal is checked separately so same-line secrets remain independently actionable in the report.
-  for (const match of source.matchAll(/(["'`])([A-Za-z0-9_+=./-]{24,})\1/g)) {
+  for (const match of source.matchAll(candidatePattern)) {
     // A missing capture becomes empty text, which safely fails the configured length gate.
     const candidateText = match[2] ?? "";
     // Known public shapes or insufficient entropy mean the user does not need a secret finding for this literal.
-    if (!isHighEntropySecretCandidate(candidateText, minLength)) {
+    if (!isHighEntropySecretCandidate(candidateText, minLength, enclosingKeyName(source, match.index ?? 0, canKeyOpenLine), minimumEntropy)) {
       continue;
     }
     pushSensitiveFinding({
@@ -256,7 +278,7 @@ function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, co
       matchedSensitiveText: candidateText,
       confidence: "medium",
       metadata: { detector: "high-entropy-string", threshold: minLength },
-      severity: ruleSeverity(config, "sensitive-data.high-entropy-string", "error"),
+      severity: ruleSeverity(config, "sensitive-data.high-entropy-string", "warning"),
     });
   }
 }
@@ -430,9 +452,9 @@ function hasLetterAndDigit(candidateText: string): boolean {
 
 // Applies cheap inert-shape checks before character diversity and entropy scoring.
 // This order preserves the same user result while avoiding expensive work for obvious non-secrets.
-function isHighEntropySecretCandidate(candidateText: string, minLength: number): boolean {
+function isHighEntropySecretCandidate(candidateText: string, minLength: number, enclosingKey: string, minimumEntropy: number): boolean {
   // Known public or readable shapes do not require a secret warning in the user's report.
-  if (isExcludedHighEntropyCandidate(candidateText, minLength)) {
+  if (isExcludedHighEntropyCandidate(candidateText, minLength, enclosingKey)) {
     return false;
   }
   // Without lowercase, uppercase, and digits, the literal lacks the credential diversity this rule promises.
@@ -443,18 +465,109 @@ function isHighEntropySecretCandidate(candidateText: string, minLength: number):
   if (!hasEnoughDistinctCharacters(candidateText)) {
     return false;
   }
-  return shannonEntropy(candidateText) >= 4;
+  return shannonEntropy(candidateText) >= minimumEntropy;
 }
 
 // Recognizes high-entropy shapes users commonly commit on purpose: digests, paths, alphabets, and readable identifiers.
 // Returning true keeps these detector-owned non-secrets out of reports without consulting user preview values.
-function isExcludedHighEntropyCandidate(candidateText: string, minLength: number): boolean {
+function isExcludedHighEntropyCandidate(candidateText: string, minLength: number, enclosingKey: string): boolean {
   return candidateText.length < minLength
+    || isLocationOrDigestKey(enclosingKey)
     || isHexDigest(candidateText)
     || isSubresourceIntegrityHash(candidateText)
     || isRepoPathShape(candidateText)
     || isCharacterAlphabetString(candidateText)
     || isWordSegmentIdentifier(candidateText);
+}
+
+// Words naming a location or a digest. A value stored under a key ending in one is a path, URL or checksum by its
+// author's own label, so entropy says nothing about it being a secret. Words that name neither on their own, such as
+// input, output and blob, stay out: `apiKeyInput` and `privateKeyBlob` hold key material.
+const LOCATION_OR_DIGEST_KEY_WORDS: ReadonlySet<string> = new Set([
+  "path", "file", "filename", "filepath", "dir", "directory", "location", "locator", "artifact", "evidence", "url", "uri",
+  "src", "dest", "sha1", "sha256", "sha384", "sha512", "md5", "hash", "digest", "checksum",
+  "fingerprint", "etag", "integrity", "commit", "revision", "seal",
+]);
+
+// Words naming secret material, taken from this detector family's own labels: the token, secret, password and
+// credential of a secret-labelled assignment (search: `SECRET_ASSIGNMENT_PATTERN`) and the private of a private key.
+// Each counts anywhere inside a key word, so `JWTSecretPath`, `SECRETKEY_PATH` and `secretsPath` keep their finding.
+const SECRET_KEY_LABELS: readonly string[] = ["token", "secret", "password", "credential", "private"];
+
+// The key a string literal is directly the value of: `"path": "…"` in JSON, `path: "…"` in an object literal, or
+// `- path: "…"` in YAML. The key is read backwards from the opening quote over the colon and the key alone, so a long
+// generated line costs a few characters per literal rather than a rescan of the line. Empty when the literal is an
+// argument, an array element, a ternary branch, or anything but a key's value.
+function enclosingKeyName(source: string, quoteIndex: number, canKeyOpenLine: boolean): string {
+  const colonIndex = previousNonBlankIndex(source, quoteIndex - 1);
+  if (source[colonIndex] !== ":") {
+    return "";
+  }
+  const keyLastIndex = previousNonBlankIndex(source, colonIndex - 1);
+  const keyQuote = source[keyLastIndex] === '"' || source[keyLastIndex] === "'" ? source[keyLastIndex] : "";
+  const keyEnd = keyQuote === "" ? keyLastIndex + 1 : keyLastIndex;
+  let keyStart = keyEnd;
+  while (keyStart > 0 && /[\w$.-]/.test(source[keyStart - 1] ?? "")) {
+    keyStart -= 1;
+  }
+  const key = source.slice(keyStart, keyEnd);
+  if (!/^[A-Za-z_$]/.test(key) || (keyQuote !== "" && source[keyStart - 1] !== keyQuote)) {
+    return "";
+  }
+  return standsInKeyPosition(source, keyQuote === "" ? keyStart - 1 : keyStart - 2, canKeyOpenLine) ? key : "";
+}
+
+// True when the key ending before `index` stands where a key can: after `{` or `,`, with any whitespace or line breaks
+// between. A YAML key may also open its line, after an optional `- ` list marker. Anything else before it, such as a
+// ternary's `?`, a comment or an operator, means it is no key, so a key written after a comment keeps its finding too.
+function standsInKeyPosition(source: string, index: number, canKeyOpenLine: boolean): boolean {
+  let position = previousNonBlankIndex(source, index);
+  if (canKeyOpenLine && source[position] === "-") {
+    position = previousNonBlankIndex(source, position - 1);
+  }
+  if (canKeyOpenLine && (position < 0 || source[position] === "\n")) {
+    return true;
+  }
+  while (position >= 0 && /\s/.test(source[position] ?? "")) {
+    position -= 1;
+  }
+  return source[position] === "{" || source[position] === ",";
+}
+
+// The index of the nearest character at or before `index` that is neither a space nor a tab, or -1 at the source start.
+function previousNonBlankIndex(source: string, index: number): number {
+  let position = index;
+  while (position >= 0 && (source[position] === " " || source[position] === "\t")) {
+    position -= 1;
+  }
+  return position;
+}
+
+// True when a key, or its last word, names a location or a digest and none of its words names a secret,
+// case-insensitively and on the key alone: `path`, `SHA256`, `prior_seal`, `outputDir` and `expectedLiveHistorySha256`
+// all qualify, while `privateKeyHash` does not; the value is not read.
+// gruff-php's `isQuotedKeyLiteral` (HighEntropyStringRule.php) is a different guard, for a literal used as a key.
+function isLocationOrDigestKey(key: string): boolean {
+  if (key === "") {
+    return false;
+  }
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .split(/[\s_.-]+/)
+    .filter(Boolean)
+    .map((word) => word.toLowerCase());
+  if (words.some(namesSecretMaterial)) {
+    return false;
+  }
+  const lastWord = words[words.length - 1] ?? "";
+  return LOCATION_OR_DIGEST_KEY_WORDS.has(key.toLowerCase()) || LOCATION_OR_DIGEST_KEY_WORDS.has(lastWord);
+}
+
+// True when one lower-case key word names secret material: it is or ends in `key` or `keys`, as `apikey` does, or it
+// holds a secret label anywhere, as `jwtsecret` does.
+function namesSecretMaterial(word: string): boolean {
+  return /keys?$/.test(word) || SECRET_KEY_LABELS.some((label) => word.includes(label));
 }
 
 // Recognizes public encoding alphabets by a run of at least ten consecutive character codes.
@@ -540,7 +653,7 @@ function isDigitCharCode(code: number): boolean {
 // Slash-containing opaque tokens stay reportable because path punctuation alone is not enough evidence.
 function isRepoPathShape(candidateText: string): boolean {
   const normalized = candidateText.replaceAll("\\", "/");
-  const hasKnownExtension = /\.(?:md|mdx|ts|tsx|js|jsx|mjs|cjs|json|yaml|yml|toml|html|css|svg|sh)$/.test(candidateText);
+  const hasKnownExtension = /\.(?:md|mdx|ts|tsx|js|jsx|mjs|cjs|json|yaml|yml|toml|html|css|svg|sh|tsv|csv|txt|log|sha256|wav)$/.test(candidateText);
   // Without a known file extension, the value lacks enough evidence to hide a possible secret from the user.
   if (!hasKnownExtension) {
     return false;
@@ -561,7 +674,7 @@ function isRepoPathLikeFilename(candidateText: string): boolean {
 // Recognizes paths under conventional source, test, documentation, workflow, and package locations.
 // Unknown slash-separated strings remain reportable because they may still be opaque credentials.
 function hasKnownRepoPathSegment(candidateText: string): boolean {
-  return /(?:^|\/)(?:\.goat-flow|src|test|tests|fixtures?|docs|scripts|bin|workflow|package(?:-lock)?\.json)(?:\/|$)/.test(candidateText);
+  return /(?:^|\/)(?:\.goat-flow|src|test|tests|fixtures?|docs|scripts|bin|var|public|dist|build|workflow|package(?:-lock)?\.json)(?:\/|$)/.test(candidateText);
 }
 
 // Removes spaces and hyphens before validating a payment-card value the user may have pasted.

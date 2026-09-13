@@ -213,6 +213,26 @@ export function isPillarName(candidate: string): boolean {
 // Exported for config validation so `config.ts` keeps depending on this module, not `rules.ts`.
 const RULE_OPTION_KEYS: ReadonlyMap<string, readonly string[]> = new Map(DESCRIPTORS.map((descriptor) => [descriptor.ruleId, descriptor.optionKeys ?? []]));
 
+// Names a rule accepts under `rules.<id>.thresholds`: the published name of its `threshold` first, then its additional
+// thresholds. Only a rule whose descriptor declares additional thresholds takes the block; the rest configure
+// `threshold` alone, so the block stays an unknown key for them.
+const RULE_THRESHOLD_NAMES: ReadonlyMap<string, readonly string[]> = new Map(
+  DESCRIPTORS.filter((descriptor) => descriptor.additionalThresholds !== undefined).map((descriptor) => [
+    descriptor.ruleId,
+    [descriptor.thresholdName ?? "threshold", ...Object.keys(descriptor.additionalThresholds ?? {})],
+  ]),
+);
+
+/**
+ * Returns the names a rule accepts under `rules.<id>.thresholds`.
+ *
+ * @param ruleId Rule id already validated against the catalogue.
+ * @returns The primary threshold's name then any additional names; an empty array means the rule takes no `thresholds` block.
+ */
+export function ruleThresholdNames(ruleId: string): readonly string[] {
+  return RULE_THRESHOLD_NAMES.get(ruleId) ?? [];
+}
+
 /**
  * Returns the option keys a rule accepts under `rules.<id>.options`.
  *

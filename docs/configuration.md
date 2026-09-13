@@ -263,6 +263,23 @@ rules:
       minLines: 80
 ```
 
+A rule that publishes more than one named threshold takes them under `thresholds`. Today that is
+`sensitive-data.high-entropy-string`, whose `minLength` (default 32) and `entropy` (default 4.2) are
+the family contract's two bars:
+
+```yaml
+rules:
+  sensitive-data.high-entropy-string:
+    thresholds:
+      minLength: 24
+      entropy: 4.5
+    severity: warning
+```
+
+`threshold` still sets the minimum length there, and when a block writes both, `thresholds.minLength`
+wins. Any other key inside a rule block, including `thresholds` on a rule that does not publish named
+thresholds, fails the config load and names the key and the keys the block accepts.
+
 List supported thresholds and options:
 
 ```bash
@@ -368,8 +385,10 @@ rules:
     threshold: 2
     severity: advisory
   sensitive-data.high-entropy-string:
-    threshold: 32
-    severity: error
+    thresholds:
+      minLength: 32
+      entropy: 4.2
+    severity: warning
   size.function-length:
     threshold: 30
     severity: warning

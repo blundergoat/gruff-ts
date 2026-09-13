@@ -273,6 +273,47 @@ test("missing-side-effect-doc treats JSDoc and // runs identically", () => {
   assert.deepEqual(ruleFindings(documentedComment.lineRun, "docs.missing-side-effect-doc"), []);
 });
 
+// M22 brief shape (`parseUnderline`, 13 of 13 on the reporting repository): a regular expression's `.exec` is a
+// member call, not process execution. A bare `exec(cmd)`, a child-process module call and `execFileSync(cmd)` still
+// report, and a locally declared function named `spawn` stays a residual this receiver guard cannot see. The
+// receiver contract matches `security.process-exec`.
+test("missing-side-effect-doc does not read a regular expression's exec as process execution", () => {
+  const pure = [
+    "/** Overview: repro for docs.missing-side-effect-doc on pure functions. */",
+    "",
+    "/** Parse a setext underline into its heading level. */",
+    "export function parseUnderline(line: string): number | null {",
+    "  const underline = /^ {0,3}(=+|-+)[\\t ]*$/.exec(line)?.[1];",
+    "  if (!underline) return null;",
+    "  return underline.startsWith(\"=\") ? 1 : 2;",
+    "}",
+    "",
+  ].join("\n");
+  assert.deepEqual(ruleFindings(pure, "docs.missing-side-effect-doc"), []);
+
+  const executing = [
+    "import { exec, execFileSync } from \"node:child_process\";",
+    "import * as cp from \"node:child_process\";",
+    "",
+    "/** Runs the configured build step. */",
+    "export function runBuild(command: string): void {",
+    "  exec(command);",
+    "}",
+    "",
+    "/** Runs the configured lint step. */",
+    "export function runLint(command: string): void {",
+    "  cp.execSync(command);",
+    "}",
+    "",
+    "/** Runs the configured test step. */",
+    "export function runTests(command: string): Buffer {",
+    "  return execFileSync(command);",
+    "}",
+    "",
+  ].join("\n");
+  assert.deepEqual(ruleFindings(executing, "docs.missing-side-effect-doc").map((finding) => finding.symbol), ["runBuild", "runLint", "runTests"]);
+});
+
 test("missing-error-behavior-doc treats JSDoc and // runs identically", () => {
   const throwingBody = `export function requirePayload(value: string): string {
   if (value === "") {

@@ -150,7 +150,8 @@ function assertRuleListJsonOutput(): boolean {
   // the one-key `threshold` map; a rule with no threshold omits the key.
   assert.equal(ruleListJsonHasThreshold(parsed, "complexity.cognitive", { maxComplexity: 15 }), true);
   assert.equal(ruleListJsonHasThreshold(parsed, "design.deep-relative-import", { threshold: 2 }), true);
-  assert.equal(ruleListJsonHasThreshold(parsed, "sensitive-data.high-entropy-string", { minLength: 32 }), true);
+  // A rule with more than one named threshold publishes all of them: the family high-entropy contract.
+  assert.equal(ruleListJsonHasThreshold(parsed, "sensitive-data.high-entropy-string", { minLength: 32, entropy: 4.2 }), true);
   assert.equal(parsed.rules?.find((rule) => rule.id === "security.eval-call")?.thresholds, undefined);
   assert.equal(parsed.rules?.every((rule) => typeof rule.id === "string" && typeof rule.defaultSeverity === "string"), true);
   assert.equal(parsed.rules?.some((rule) => "ruleId" in rule || "severity" in rule || "threshold" in rule), false);

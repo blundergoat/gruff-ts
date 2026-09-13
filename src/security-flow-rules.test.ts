@@ -307,6 +307,87 @@ test("does not treat callback-only taint references as sink arguments", () => {
   assert.equal(findings.length, 0);
 });
 
+// M22 hunt shape (axios `http.test.js`): a server started with a request callback is not request data, so a later
+// call to that server's own loopback address is not an SSRF sink fed by external input.
+test("does not taint a local with a request token read only inside a callback argument", () => {
+  const findings = analyseSecurityFixture([
+    "async function supportsBasicAuth() {",
+    "  const server = await startHTTPServer(",
+    "    (req, res) => {",
+    "      res.end(req.headers.authorization);",
+    "    },",
+    "    { port: 4444 },",
+    "  );",
+    "  await axios.get(`http://localhost:${server.address().port}/`);",
+    "}",
+    "",
+  ].join("\n"));
+  assert.deepEqual(findings, []);
+});
+
+// M22 hunt shape, Promise-executor variant: the executor and the request handler inside it both run in their own
+// scopes, so the awaited promise's value is not tainted by the `req` they read.
+test("does not taint a local with a request token read only inside a Promise executor", () => {
+  const findings = analyseSecurityFixture([
+    "async function relay() {",
+    "  const server = await new Promise((resolve) => {",
+    "    const created = http.createServer((req, res) => {",
+    "      res.end(req.headers.host);",
+    "    });",
+    "    created.listen(0, () => resolve(created));",
+    "  });",
+    "  await axios.get(`http://localhost:${server.address().port}/`);",
+    "}",
+    "",
+  ].join("\n"));
+  assert.deepEqual(findings, []);
+});
+
+// Blanking a callback must not hide a source read by the expression itself: every rule sharing the classifier keeps
+// its finding when the request token sits outside the callback, including juice-shop's `req.body.imageUrl` upload.
+test("still taints a local whose own expression reads external input beside a callback", () => {
+  const findings = analyseSecurityFixture([
+    "function profileImageUrlUpload(req, res) {",
+    "  const url = req.body.imageUrl;",
+    "  const picked = choose(req.query.path, () => req.body.ignored);",
+    "  const target = choose(req.query.next, () => undefined);",
+    "  const pattern = build(req.query.pattern, (value) => value);",
+    "  fetch(url);",
+    "  fs.readFile(picked);",
+    "  res.redirect(target);",
+    "  new RegExp(pattern);",
+    "}",
+    "",
+  ].join("\n"));
+  assert.deepEqual(
+    findings.map((finding) => finding.ruleId).sort(),
+    ["security.dynamic-regexp", "security.open-redirect-candidate", "security.path-traversal-candidate", "security.ssrf-candidate"],
+  );
+});
+
+// M22 code review shape: only a handler's reads of the `req`, `request` or `ctx` it declares itself are set aside. A
+// callback that names its parameter `request` or `ctx` but reads the enclosing `req`, and a function run where it is
+// written, as an immediately invoked arrow, a rebinding call or an array callback, return the enclosing request's data
+// into the value, so the sink it reaches must still report.
+test("still taints a local whose nested function reads the enclosing request", () => {
+  const findings = analyseSecurityFixture([
+    "function handler(req) {",
+    "  const invoked = (() => req.query.path)();",
+    "  const mapped = [0].map(() => req.query.next).join('/');",
+    "  const renamed = retry(async (request) => req.query.file);",
+    "  const context = retry(async (ctx) => { ctx.log(1); return req.query.dir; });",
+    "  const rebound = ((req) => req.query.name)(req);",
+    "  fs.readFile(invoked);",
+    "  fs.readFile(mapped);",
+    "  fs.readFile(renamed);",
+    "  fs.readFile(context);",
+    "  fs.readFile(rebound);",
+    "}",
+    "",
+  ].join("\n"));
+  assert.deepEqual(findings.map((finding) => `${finding.ruleId}@${finding.line}`), [7, 8, 9, 10, 11].map((line) => `security.path-traversal-candidate@${line}`));
+});
+
 test("keeps taint intra-procedural across nested functions", () => {
   const findings = analyseSecurityFixture(
     "function outer(req) {\n  const target = req.query.path;\n  return function inner() {\n    return fs.readFile(target);\n  };\n}\n",

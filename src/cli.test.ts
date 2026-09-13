@@ -653,6 +653,28 @@ test("unreachable-code ignores reachable switch cases after returns", () => {
 `);
 
   assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unreachable-code"), false);
+
+  // The braced form, as zod's locale files write it (M22 hunt shape), is a branch label too, while a statement
+  // after a `return` inside the same case still fires.
+  const braced = analyseFixture(`function renderIssue(code: string, expected: string): string {
+  switch (code) {
+    case "invalid_type": {
+      return "type " + expected;
+    }
+    case "invalid_value":
+      return "value";
+    case "too_big": {
+      return "big";
+    }
+    default: {
+      return "other";
+      console.log("after return");
+    }
+  }
+}
+`);
+
+  assert.deepEqual(braced.findings.filter((finding) => finding.ruleId === "waste.unreachable-code").map((finding) => finding.line), [13]);
 });
 
 test("function parser ignores calls inside ternary expressions", () => {

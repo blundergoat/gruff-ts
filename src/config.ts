@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { arrayValue, isString, objectValue, parseConfigFile, SUGGEST_EDIT_CONFIG, SUGGEST_INIT_FORCE } from "./config-parse.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
-import { BUILT_IN_PROFILES, builtInProfileNames, DEFAULT_PROFILE_NAME, isKnownRuleId, ruleOptionKeys } from "./profiles.ts";
+import { BUILT_IN_PROFILES, builtInProfileNames, DEFAULT_PROFILE_NAME, isKnownRuleId, ruleOptionKeys, ruleThresholdNames } from "./profiles.ts";
 import { applyExecutionSelectors } from "./selectors.ts";
 import { parseSensitiveExclusions } from "./sensitive-exclusions.ts";
 import type { AnalysisOptions, Config, DeepScanBudgetOverride, FailThreshold, InlineProfileSpec, MinimumSeverityCommand, ProfileDefinition, ProfileRuleSetting, ProfileSpec, Severity } from "./types.ts";
@@ -127,6 +127,7 @@ function profileRuleToConfig(setting: ProfileRuleSetting): RuleOverride {
     ...(setting.threshold !== undefined ? { threshold: setting.threshold } : {}),
     ...(setting.severity !== undefined ? { severity: setting.severity } : {}),
     options: setting.options ?? new Map(),
+    ...(setting.thresholds !== undefined ? { thresholds: setting.thresholds } : {}),
   };
 }
 
@@ -523,16 +524,43 @@ function applyRuleConfig(config: Config, parsedConfig: Record<string, unknown>):
   }
 }
 
+// Every key a rule block may carry. `thresholds` joins them only for a rule that publishes named thresholds.
+const RULE_BLOCK_KEYS: ReadonlySet<string> = new Set(["enabled", "options", "severity", "threshold"]);
+
 // Builds one effective rule override after validating every user-supplied field.
 // Use this shared path for direct config and profile rules so both surfaces return the same errors.
 function ruleConfigValue(ruleId: string, rule: Record<string, unknown>): RuleOverride {
+  const thresholdNames = ruleThresholdNames(ruleId);
+  // A key beside `threshold` that gruff-ts does not read, such as a sibling port's spelling, is refused, not ignored.
+  assertKnownKeys(rule, thresholdNames.length > 0 ? new Set([...RULE_BLOCK_KEYS, "thresholds"]) : RULE_BLOCK_KEYS, `rules.${ruleId}.`);
   assertRuleThresholdConfig(rule);
+  assertRuleNamedThresholdsConfig(ruleId, rule, thresholdNames);
   assertRuleEnabledConfig(rule);
   const ruleOverride: RuleOverride = { options: validatedRuleOptions(ruleId, rule.options) };
   applyRuleEnabledConfig(ruleOverride, rule);
-  applyRuleThresholdConfig(ruleOverride, rule);
+  applyRuleThresholdConfig(ruleOverride, rule, thresholdNames);
   applyRuleSeverityConfig(ruleOverride, rule);
   return ruleOverride;
+}
+
+// Validates a `thresholds` block: a mapping of the rule's named thresholds, each numeric.
+// Throws naming the unrecognised or non-numeric name, so a misspelled `minLenght` never loads as a silent no-op.
+function assertRuleNamedThresholdsConfig(ruleId: string, rule: Record<string, unknown>, thresholdNames: readonly string[]): void {
+  // A rule block without the key keeps the thresholds its profile or descriptor supplies.
+  if (!("thresholds" in rule)) {
+    return;
+  }
+  const namedThresholds = objectValue(rule.thresholds);
+  // A scalar or list cannot name which threshold the user meant to set.
+  if (!namedThresholds) {
+    throw new ConfigLoadError(`Rule config key "thresholds" must be a mapping of ${thresholdNames.join(", ")}.`, SUGGEST_EDIT_CONFIG);
+  }
+  assertKnownKeys(namedThresholds, new Set(thresholdNames), `rules.${ruleId}.thresholds.`);
+  const nonNumeric = Object.keys(namedThresholds).find((name) => typeof namedThresholds[name] !== "number");
+  // A named threshold must be numeric to define a boundary analysis can apply.
+  if (nonNumeric !== undefined) {
+    throw new ConfigLoadError(`Rule config key "thresholds.${nonNumeric}" must be numeric.`, SUGGEST_EDIT_CONFIG);
+  }
 }
 
 // Validates an explicit rule-enabled value before it can change the user's scan.
@@ -570,11 +598,35 @@ function applyRuleEnabledConfig(ruleOverride: RuleOverride, rule: Record<string,
 }
 
 // Applies a validated numeric threshold to the user's effective rule settings.
-// Missing values preserve the profile or descriptor threshold.
-function applyRuleThresholdConfig(ruleOverride: RuleOverride, rule: Record<string, unknown>): void {
+// Missing values preserve the profile or descriptor threshold. The first named threshold is the same knob as
+// `threshold`, so written both ways the named spelling wins; the rest are read through `namedThreshold`.
+function applyRuleThresholdConfig(ruleOverride: RuleOverride, rule: Record<string, unknown>, thresholdNames: readonly string[]): void {
   // Only a numeric value can replace the threshold analysis will use.
   if (typeof rule.threshold === "number") {
     ruleOverride.threshold = rule.threshold;
+  }
+  const namedThresholds = objectValue(rule.thresholds);
+  // No named block leaves the scalar spelling, or the inherited threshold, in force.
+  if (!namedThresholds) {
+    return;
+  }
+  const [primaryName, ...additionalNames] = thresholdNames;
+  const primaryValue = primaryName === undefined ? undefined : namedThresholds[primaryName];
+  // The named spelling of the rule's own knob replaces any scalar `threshold` in the same block.
+  if (typeof primaryValue === "number") {
+    ruleOverride.threshold = primaryValue;
+  }
+  const additional = new Map<string, number>();
+  for (const name of additionalNames) {
+    const namedValue = namedThresholds[name];
+    // Validation already refused non-numeric values, so a number here is a setting the user wrote.
+    if (typeof namedValue === "number") {
+      additional.set(name, namedValue);
+    }
+  }
+  // Omitting every additional name keeps the descriptor defaults the rule reads.
+  if (additional.size > 0) {
+    ruleOverride.thresholds = additional;
   }
 }
 
@@ -645,6 +697,12 @@ function ruleSeverity(config: Config, ruleId: string, defaultSeverity: Severity)
   return config.rules.get(ruleId)?.severity ?? defaultSeverity;
 }
 
+// Returns one additional named threshold for a rule, such as high-entropy-string's `entropy`, or the caller's default.
+// Missing rules, blocks, or names all mean the user left that bound at the descriptor's published value.
+function namedThreshold(config: Config, ruleId: string, name: string, defaultValue: number): number {
+  return config.rules.get(ruleId)?.thresholds?.get(name) ?? defaultValue;
+}
+
 // Returns one numeric rule option or the caller's documented default.
 // Missing rules, option maps, or names all mean the user left that tuning unchanged.
 function optionNumber(config: Config, ruleId: string, name: string, defaultValue: number): number {
@@ -657,4 +715,4 @@ function isSeverity(configValue: unknown): configValue is Severity {
   return configValue === "advisory" || configValue === "warning" || configValue === "error";
 }
 
-export { defaultConfigPath, loadConfig, minimumSeverityFor, optionNumber, resolveProfile, ruleEnabled, ruleSeverity, threshold };
+export { defaultConfigPath, loadConfig, minimumSeverityFor, namedThreshold, optionNumber, resolveProfile, ruleEnabled, ruleSeverity, threshold };

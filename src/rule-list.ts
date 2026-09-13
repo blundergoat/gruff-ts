@@ -41,11 +41,11 @@ const CONSOLE_COMMANDS = [
 // Knob names gruff-go already publishes for a single-threshold rule, keyed by rule id. The family
 // listing shape (M09, ratified 2026-09-09) carries every threshold as a named map; a rule whose id
 // has no knob name anywhere in the family publishes the one-key map `{"threshold": N}` so no new
-// permanent public identifier is invented.
+// permanent public identifier is invented. A rule with more than one named threshold names them in
+// its descriptor (`thresholdName`, `additionalThresholds`) instead, because config reads them too.
 const LISTING_THRESHOLD_KNOB_NAMES: Readonly<Record<string, string>> = {
   "complexity.cognitive": "maxComplexity",
   "complexity.cyclomatic": "maxComplexity",
-  "sensitive-data.high-entropy-string": "minLength",
   "size.file-length": "maxLines",
   "size.function-length": "maxLines",
   "size.parameter-count": "maxParameters",
@@ -55,7 +55,7 @@ const LISTING_THRESHOLD_KNOB_NAMES: Readonly<Record<string, string>> = {
 // `defaultSeverity`, and the threshold as a named map under `thresholds`. The internal descriptor
 // keeps its own field names because reports, hooks, and config validation read those; only the two
 // public listing surfaces are projected.
-type ListedRule = Omit<RuleDescriptor, "ruleId" | "severity" | "threshold"> & {
+type ListedRule = Omit<RuleDescriptor, "ruleId" | "severity" | "threshold" | "thresholdName" | "additionalThresholds"> & {
   id: string;
   defaultSeverity: Severity;
   thresholds?: Record<string, number>;
@@ -65,14 +65,14 @@ type ListedRule = Omit<RuleDescriptor, "ruleId" | "severity" | "threshold"> & {
 // scoring first, the threshold map where the scalar used to sit, then every remaining descriptor
 // field unchanged, so a diff of the two shapes reads as the three renames it is.
 function listedRule(descriptor: RuleDescriptor): ListedRule {
-  const { ruleId, pillar, severity, confidence, threshold, ...rest } = descriptor;
-  const knob = LISTING_THRESHOLD_KNOB_NAMES[ruleId] ?? "threshold";
+  const { ruleId, pillar, severity, confidence, threshold, thresholdName, additionalThresholds, ...rest } = descriptor;
+  const knob = thresholdName ?? LISTING_THRESHOLD_KNOB_NAMES[ruleId] ?? "threshold";
   return {
     id: ruleId,
     pillar,
     defaultSeverity: severity,
     confidence,
-    ...(typeof threshold === "number" ? { thresholds: { [knob]: threshold } } : {}),
+    ...(typeof threshold === "number" ? { thresholds: { [knob]: threshold, ...additionalThresholds } } : {}),
     ...rest,
   };
 }

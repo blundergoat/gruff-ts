@@ -3,8 +3,9 @@
 // Fixtures prove fixed markers and retained occurrence counts across every renderer.
 // All examples are synthetic and assembled safely so the repository never stores real credentials.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
-import { renderReport } from "./cli.ts";
+import { renderReport, ruleDescriptors } from "./cli.ts";
 import {
   analyseFixture,
   analyseProject,
@@ -295,9 +296,9 @@ test("package-manager lockfiles drop entropy digests but keep credential finding
     sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string" && lockfilePaths.includes(finding.filePath)),
     false,
   );
-  // The identical value in authored source stays an error-severity finding.
+  // The identical value in authored source stays a finding, at the contract's warning severity.
   assert.equal(
-    sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string" && finding.filePath === "source.ts" && finding.severity === "error"),
+    sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string" && finding.filePath === "source.ts" && finding.severity === "warning"),
     true,
   );
   // Key-name inference also misreads lockfiles: a package named `gtoken` makes its version
@@ -487,4 +488,176 @@ const mixed = "${AWS_ACCESS_KEY_FIXTURE_VALUE}"; const other = "${HIGH_ENTROPY_F
   const ruleIds = new Set(sameLineFindings.map((finding) => finding.ruleId));
   assert.equal(ruleIds.has("sensitive-data.aws-access-key"), true);
   assert.equal(ruleIds.has("sensitive-data.high-entropy-string"), true);
+});
+
+// M22 hunt shape (zod `template-literal.test.ts`): a URL written as a template literal type describes a shape. A
+// runtime template, the family redaction corpus's connection string at `db.example.invalid`, the sample fixture and a
+// JSDoc documentation-host URL all still report at error: the documentation-host half waits for ratified host semantics.
+test("M22 database-url-password skips template literal types and keeps every runtime credential", () => {
+  // Assembled from parts so this test file never holds a credential-shaped literal of its own.
+  const credential = (scheme: string, user: string, secret: string, rest: string): string => [scheme, "://", user, ":", secret, "@", rest].join("");
+  const report = analyseFixture([
+    "export type MongoUrl =",
+    "  | `" + credential("mongodb", "${string}", "${string}", "${string}:${number}") + "`",
+    "  | `" + credential("mongodb", "admin", "${string}", "${string}/${string}") + "`;",
+    "export function connect(user: string, password: string): string {",
+    "  return `" + credential("postgres", "${user}", "${password}", "db.internal:5432/app") + "`;",
+    "}",
+    "export const databaseUrl = \"" + credential("postgres", "gruffuser", "Zq81Kx03Vt55Rm", "db.example.invalid:5432/appdb") + "\";",
+    "export const secretUrl = \"" + credential("mysql", "demo", "password123", "example.test/app") + "\";",
+    "/**",
+    " * given URL " + credential("http", "user", "password", "example.com:8080/#/some/path"),
+    " */",
+    "export const documented = true;",
+    "",
+  ].join("\n"));
+  const urlFindings = report.findings.filter((entry) => entry.ruleId === "sensitive-data.database-url-password");
+
+  assert.deepEqual(urlFindings.map((entry) => entry.line), [5, 7, 8, 10]);
+  assert.equal(urlFindings.every((entry) => entry.severity === "error"), true);
+});
+
+// M22 code review fixture: a template literal type is skipped only when its password is wholly a type interpolation
+// straight after the user. A literal password written beside a `${string}` user, or before a `:${string}` suffix,
+// still reports, because the type shapes the rest of the URL, not the secret.
+test("M22 database-url-password still reports a literal password beside a type-level user", () => {
+  // Assembled from parts so this test file never holds a credential-shaped literal of its own.
+  const credential = (user: string, secret: string): string => ["postgres://", user, ":", secret, "@db.internal/app"].join("");
+  const report = analyseFixture([
+    "export type Shaped = `" + credential("${string}", "${number}") + "`;",
+    "export type Leaked = `" + credential("${string}", ["Pr0d", "Passw0rd"].join("")) + "`;",
+    "export type Suffixed = `" + credential("admin", ["Pr0d", "Passw0rd", ":${string}"].join("")) + "`;",
+    "",
+  ].join("\n"));
+  const urlFindings = report.findings.filter((entry) => entry.ruleId === "sensitive-data.database-url-password");
+
+  assert.deepEqual(urlFindings.map((entry) => entry.line), [2, 3]);
+});
+
+// M22 brief shape (19 of 19 on the downstream project): repository paths under location keys. Each axis clears the
+// residual alone: a path shape under a neutral key, and an opaque value under a location or digest key. A base64
+// secret with one `/`, and one with two, still fire under a neutral key; a separator count alone is not a path, which
+// is the exclusion contract.
+test("M22 high-entropy-string clears location keys and repository paths on independent axes", () => {
+  const briefPaths = [
+    "var/quality/full-corpus-20260710T2328Z/primock57-day2-consultation09-i-cant-move-my-left-arm/live-history.json",
+    "var/quality/m02-acceptance-20260715T044500Z/replays/primock57-day5-consultation03-im-feeling-very-anxious/corrected-transcript.json",
+    "var/quality/m07-manifests-20260715T221131Z/triplet-hashes.sha256",
+    "var/quality/0.5.0-harness-20260717T011802Z/t02.9-holdout-registration.tsv",
+  ];
+  const oneSlashSecret = ["Qm9vZ3lXa2V5c", "1/Tm90QVJlYWxLZXk5OQ"].join("");
+  const twoSlashSecret = ["AKIAIOSFODNN7EXAMPLE", "+wJalrXUtnFEMI", "/K7MDENG/bPxRfiCY"].join("");
+  const report = analyseProject({
+    "paths.json": `{\n${briefPaths.map((briefPath, index) => `  "note${index}": "${briefPath}",`).join("\n")}\n  "end": true\n}\n`,
+    "keys.json": `{\n${["path", "artifact", "evidence", "prior_seal", "locator", "fileSha256"].map((key) => `  "${key}": "${HIGH_ENTROPY_FIXTURE_VALUE}",`).join("\n")}\n  "end": true\n}\n`,
+    "secrets.json": `{\n  "note": "${HIGH_ENTROPY_FIXTURE_VALUE}",\n  "oneSlash": "${oneSlashSecret}",\n  "twoSlash": "${twoSlashSecret}"\n}\n`,
+  });
+  const entropyFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+
+  assert.deepEqual(entropyFindings.map((finding) => `${finding.filePath}:${finding.line}`).sort(), ["secrets.json:2", "secrets.json:3", "secrets.json:4"]);
+});
+
+// M22 code review fixture: the location-key exclusion takes a key only where a key can stand, and never one that names
+// a secret. A ternary branch is no key, whether on one line, wrapped after its `?`, or after a comment or an operator.
+// `privateKeyBlob`, `apiKeyInput`, `JWTSecretPath`, `APIKeyFile`, `SECRETKEY_PATH` and `secretsPath` name key material,
+// and `modelOutput` names no location, so each keeps its finding. The same opaque value under a `path` or `prior_seal`
+// key, inline or opening its line, and under a YAML list item's keys must stay quiet.
+test("M22 high-entropy-string takes a location key only in key position and never one naming a secret", () => {
+  const opaque = HIGH_ENTROPY_FIXTURE_VALUE;
+  const report = analyseProject({
+    "position.ts": [
+      `export const pick = (useCache: boolean, path: string): string => (useCache ? path : "${opaque}");`,
+      "export const wrapped = (useCache: boolean, path: string): string => useCache ?",
+      `  path : "${opaque}";`,
+      `export const keyed = { privateKeyBlob: "${opaque}", apiKeyInput: "${opaque}", modelOutput: "${opaque}" };`,
+      `export const located = { "path": "${opaque}", prior_seal: "${opaque}" };`,
+      "export const nested = {",
+      `  path: "${opaque}",`,
+      "};",
+      "export const commented = (useCache: boolean, path: string): string => useCache ? // cached",
+      `  path : "${opaque}";`,
+      "export const subtracted = (useCache: boolean, offset: number, path: number): number | string => useCache",
+      "  ? offset",
+      `  - path : "${opaque}";`,
+      `export const acronyms = { JWTSecretPath: "${opaque}", APIKeyFile: "${opaque}", SECRETKEY_PATH: "${opaque}", secretsPath: "${opaque}" };`,
+      "",
+    ].join("\n"),
+    "settings.yaml": ["artifacts:", `  - path: "${opaque}"`, `    prior_seal: "${opaque}"`, `note: "${opaque}"`, ""].join("\n"),
+  });
+  const entropyFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+
+  assert.deepEqual(
+    entropyFindings.map((finding) => `${finding.filePath}:${finding.line}`).sort(),
+    ["position.ts:1", "position.ts:10", "position.ts:13", "position.ts:14", "position.ts:14", "position.ts:14", "position.ts:14", "position.ts:3", "position.ts:4", "position.ts:4", "position.ts:4", "settings.yaml:4"],
+  );
+});
+
+// The family contract the operator set on 2026-09-02 for sensitive-data.high-entropy-string: warning severity, medium
+// confidence, enabled by default, and `minLength` 32 and `entropy` 4.2 configurable. Each bar is silent at its default
+// and gives exactly one finding once lowered, including a length below the old fixed 24-character candidate floor.
+test("M22 high-entropy-string lands the family contract and its two configurable bars", () => {
+  const ruleId = "sensitive-data.high-entropy-string";
+  const descriptor = ruleDescriptors().find((entry) => entry.ruleId === ruleId);
+  assert.equal(descriptor?.severity, "warning");
+  assert.equal(descriptor?.confidence, "medium");
+  assert.equal(descriptor?.threshold, 32);
+  assert.deepEqual(descriptor?.additionalThresholds, { entropy: 4.2 });
+
+  // 22 distinct characters: entropy log2(22), about 4.46, above the default bar but shorter than every default floor.
+  const shortToken = ["Qz7Lm2Xp9R", "t4Wv6Nk8Hb3J"].join("");
+  // 17 characters, each twice: entropy exactly log2(17), about 4.09, long enough but under the 4.2 default.
+  const flatToken = ["aB3dE6gH9jK2mN5pQ", "Qp5Nm2Kj9Hg6Ed3Ba"].join("");
+  assert.equal(shortToken.length, 22);
+  assert.equal(flatToken.length, 34);
+  // The high-entropy findings one literal gives under an optional rule block.
+  const entropyFindings = (token: string, rule?: Record<string, unknown>) =>
+    analyseFixture(`export const token = "${token}";\n`, rule ? { config: { rules: { [ruleId]: rule } } } : {}).findings.filter((entry) => entry.ruleId === ruleId);
+
+  // Enabled by default, and silent at both default bars.
+  assert.deepEqual(entropyFindings(shortToken), []);
+  assert.deepEqual(entropyFindings(flatToken), []);
+  // Each bar lowered alone gives exactly one finding, reported at warning and medium confidence.
+  const lowLength = entropyFindings(shortToken, { thresholds: { minLength: 20 } });
+  assert.equal(lowLength.length, 1);
+  assert.equal(lowLength[0]?.severity, "warning");
+  assert.equal(lowLength[0]?.confidence, "medium");
+  assert.equal(entropyFindings(flatToken, { thresholds: { entropy: 4 } }).length, 1);
+  // `threshold` keeps working as the single-knob spelling, and written both ways `thresholds.minLength` wins.
+  assert.equal(entropyFindings(shortToken, { threshold: 20 }).length, 1);
+  assert.equal(entropyFindings(shortToken, { threshold: 40, thresholds: { minLength: 20 } }).length, 1);
+  assert.deepEqual(entropyFindings(shortToken, { threshold: 20, thresholds: { minLength: 40 } }), []);
+});
+
+// M22 C6 fixture: the 2026-08-29 downstream brief ran gruff-ts 0.4.0, and its digest and redaction classes describe
+// behaviour this port already ships. The contract is proved here rather than asserted. With the entropy bar dropped
+// to 1, so only an exclusion can silence a literal, a mixed-case hex digest and a repository path report nothing
+// while an opaque control reports, and that finding carries only the fixed marker: never the value, a fragment, its
+// length, a hash or an encoding, in any renderer.
+test("M22 already-shipped entropy exclusions and the fixed redaction marker behave as adjudicated", () => {
+  const hexDigest = ["9f86D081884c7D659a2f", "EAA0c55AD015a3bf4F1b", "2b0B822cd15D6c15b0F0", "0a08"].join("");
+  const repoPath = ["docs/decisions/ADR-020-Defer", "CorpusScoringParity2.md"].join("");
+  const report = analyseFixture(
+    [`export const digestNote = "${hexDigest}";`, `export const pathNote = "${repoPath}";`, `export const opaqueNote = "${HIGH_ENTROPY_FIXTURE_VALUE}";`, ""].join("\n"),
+    { config: { rules: { "sensitive-data.high-entropy-string": { thresholds: { entropy: 1 } } } } },
+  );
+  const entropyFindings = report.findings.filter((entry) => entry.ruleId === "sensitive-data.high-entropy-string");
+
+  // The fixture is exactly as long as a sha256 digest written in hex.
+  assert.equal(hexDigest.length, createHash("sha256").digest("hex").length);
+  assert.deepEqual(entropyFindings.map((entry) => entry.line), [3]);
+  const metadata = entropyFindings[0]?.metadata ?? {};
+  assert.equal(metadata.preview, "[redacted]");
+  assert.deepEqual(Object.keys(metadata).filter((key) => /length|hash|value|fragment|encod/i.test(key)), []);
+  assert.equal(Object.values(metadata).includes(HIGH_ENTROPY_FIXTURE_VALUE.length), false);
+  const leaks = [
+    HIGH_ENTROPY_FIXTURE_VALUE,
+    HIGH_ENTROPY_FIXTURE_VALUE.slice(0, 8),
+    HIGH_ENTROPY_FIXTURE_VALUE.slice(-8),
+    createHash("sha256").update(HIGH_ENTROPY_FIXTURE_VALUE).digest("hex"),
+    Buffer.from(HIGH_ENTROPY_FIXTURE_VALUE).toString("base64"),
+  ];
+  ALL_RENDER_FORMATS.forEach((format) => {
+    const rendered = renderReport(report, format);
+    leaks.forEach((leak) => assert.equal(rendered.includes(leak), false, `${format} carried part of the value`));
+  });
 });

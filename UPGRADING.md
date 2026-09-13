@@ -32,6 +32,12 @@ time, so a project using more than one of them moves once. This port's recorded 
 
 13. **`list-rules --format=json` publishes the family rule record** — Each rule's identity is `id` (was `ruleId`), its severity is `defaultSeverity` (was `severity`), and its threshold is a named map under `thresholds` (was the scalar `threshold`): `{"maxComplexity": 15}` where gruff-go already names the knob, `{"threshold": 2}` where no port does, and no key for a rule without one. Update any consumer that read `rules[].ruleId`, `rules[].severity`, or `rules[].threshold`; `list-rules <ruleId> --format=json` publishes the same record under `rule`. The `tool` envelope, text output, `configKeys`, `.gruff-ts.yaml` keys, and the `ruleId` on analysis findings are unchanged.
 
+14. **`sensitive-data.high-entropy-string` adopts the family contract** — It reports at warning instead of error, and its entropy bar rises from 4.0 to 4.2. A `--fail-on=error` gate no longer fails on it. Tune it with `rules.sensitive-data.high-entropy-string.thresholds.minLength` (default 32) and `thresholds.entropy` (default 4.2); an existing `threshold:` still sets the minimum length.
+
+15. **an unknown key inside a rule block is refused** — A `rules.<id>` block accepts `enabled`, `severity`, `threshold` and `options`, plus `thresholds` where the rule publishes named thresholds. A configuration that carried any other key loaded silently in `0.5.x` and now fails naming the key; delete it, or move the value to the key the rule accepts.
+
+16. **an unusable baseline exits 2 instead of 1** — A 0.5 baseline, a missing `--baseline` path or a malformed file now yields a `baseline-error` diagnostic and exit 2 from `analyse` and `summary`. A CI step that treated exit 1 as "findings present" no longer mistakes a broken baseline path for a failing quality gate.
+
 ## Upgrade workflow (`0.5.x` → `0.6.0`)
 
 1. Read the list above and decide which breaks touch your project. A project with no committed

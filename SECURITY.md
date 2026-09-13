@@ -38,7 +38,8 @@ Please include:
   advisory database.
 - Baselines suppress reviewed findings by a line-free identity and the count each row
   accepts, and a sensitive-data finding can never be baselined. For security-focused CI,
-  prefer `gruff-ts analyse . --no-baseline --fail-on=error`.
+  prefer `gruff-ts analyse . --no-baseline --fail-on=error`. That gate does not fail on
+  `sensitive-data.high-entropy-string`, which reports at warning.
 
 ## Disclosure Expectations
 

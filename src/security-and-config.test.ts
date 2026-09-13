@@ -752,3 +752,33 @@ export class PaymentController {
   // `--fail-on=error` must honor the configured severity, not the descriptor default.
   assert.equal(exitFor(report, "error"), 1);
 });
+
+// M22 hunt shape (axios `http2.smoke.test.cjs`): `rejectUnauthorized: false` as the expected value of a deep-equality
+// assertion configures nothing. The same test file's real `http2Options` setting, a real agent, and the environment
+// switch all still report at error.
+test("M22 disabled-tls-verification skips expected values in deep-equality assertions only", () => {
+  const report = analyseFixture([
+    "const { expect } = require(\"chai\");",
+    "",
+    "it(\"keeps instance-level http2Options in request config\", async () => {",
+    "  const client = axios.create({",
+    "    http2Options: {",
+    "      rejectUnauthorized: false,",
+    "    },",
+    "  });",
+    "  const response = await client.get(\"/\");",
+    "  expect(response.data.http2Options).to.deep.equal({",
+    "    rejectUnauthorized: false,",
+    "  });",
+    "  expect(response.data).toEqual({ rejectUnauthorized: false, sessionTimeout: 5000 });",
+    "  assert.deepStrictEqual(client.defaults.http2Options, { rejectUnauthorized: false });",
+    "  expect(new https.Agent({ rejectUnauthorized: false })).to.be.ok;",
+    "  process.env.NODE_TLS_REJECT_UNAUTHORIZED = \"0\";",
+    "});",
+    "",
+  ].join("\n"), { fileName: "http2.smoke.test.cjs" });
+  const tlsFindings = report.findings.filter((entry) => entry.ruleId === "security.disabled-tls-verification");
+
+  assert.deepEqual(tlsFindings.map((entry) => entry.line), [6, 15, 16]);
+  assert.equal(tlsFindings.every((entry) => entry.severity === "error"), true);
+});

@@ -15,7 +15,7 @@ import { partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { applyConfiguredSeverity, finding, parameterNames } from "./findings-helpers.ts";
+import { applyConfiguredSeverity, finding, parameterNames, parameterParts } from "./findings-helpers.ts";
 import { commentRecords, type CommentRecord } from "./comment-scanner.ts";
 import { analyseArchitectureRules, analyseCircularImportRule, buildProjectIndex, CIRCULAR_IMPORT_RULE_ID, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
 import { analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks } from "./blocks.ts";
@@ -54,7 +54,7 @@ export interface HookAnalysisReports {
 export function analyse(options: AnalysisOptions): AnalysisReport {
   const preparation = prepareAnalysis(options);
   const changedScope = changedRegionScope(options);
-  const run = completeAnalysis(preparation, options);
+  const run = completeAnalysis(preparation, options, "diagnose");
   const changedResult = filterChangedFindings(run.baselineResult.findings, changedScope, run.scanned.sources);
 
   if (options.historyFile) {
@@ -168,8 +168,9 @@ function prepareAnalysis(options: AnalysisOptions): AnalysisPreparation {
 }
 
 // Runs per-file and project-level rules before applying baseline suppression; finding order remains stable.
-// A baseline that cannot be read, or that another port wrote, throws out of the run so the CLI reports the reason instead of a clean scan.
-function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOptions): AnalysisRun {
+// A baseline that cannot be read, or that another port wrote, throws out of a hook run, which publishes its own fatal
+// payload, and becomes a fatal `baseline-error` diagnostic in a direct analysis, so neither reports a clean scan.
+function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOptions, unusableBaseline: "throw" | "diagnose" = "throw"): AnalysisRun {
   const { projectRoot, config, diagnostics, discovery } = preparation;
   pushMissingPathDiagnostics(discovery.missingPaths, diagnostics);
 
@@ -185,7 +186,7 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
   // same identity the baseline does, and a finding hidden from this report keeps the ordinal it was ranked with.
   const spans = declarationSpans(scanned);
   const namedFindings = withBaselineIdentities(excluded.findings, spans);
-  const baselineResult = applyBaselineOptions(projectRoot, options, namedFindings, spans);
+  const baselineResult = applyBaselineOptions(projectRoot, options, namedFindings, spans, unusableBaseline);
   // A collision names two declarations one identity could not tell apart; it suppresses nothing and fails no run.
   diagnostics.push(...baselineResult.diagnostics);
   const notes = [...discovery.notes, ...scanned.notes];
@@ -972,14 +973,11 @@ function pushGenericParameterAt(file: SourceFile, line: number, name: string, fi
   );
 }
 
-// Two positive cases: explicit `: boolean` annotation, or a default value of `true`/`false`.
-// Explicit `as` casts are rejected so generic-call sites don't trip the boolean-name checks.
+// Two positive cases, read from the parameter's own top-level annotation and default: a type that
+// starts with `boolean`, including a union the formatter opened with a leading `|`, or a default that is
+// exactly `true`/`false`. A boolean field inside an inline object type is that object's member, and a cast
+// such as `= true as unknown` is not a boolean default.
 function isBooleanParameter(raw: string): boolean {
-  if (/:\s*boolean\b/.test(raw)) {
-    return true;
-  }
-  if (/\bas\b/.test(raw)) {
-    return false;
-  }
-  return /=\s*(?:true|false)\s*$/.test(raw);
+  const { typeText, initializer } = parameterParts(raw);
+  return /^(?:\|\s*)?boolean\b/.test(typeText) || /^(?:true|false)$/.test(initializer);
 }
