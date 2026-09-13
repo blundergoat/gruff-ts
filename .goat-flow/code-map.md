@@ -66,8 +66,9 @@ gruff-ts/
 │   ├── sensitive-data-rules.ts    = secret-like detectors with allowlisted redacted previews
 │   ├── source-text.ts             = non-code masking and source-text helpers
 │   ├── text-scans.ts              = tracking-marker summaries, byte lines, and generic text scans
+│   ├── baseline-file.ts           = v3 baseline read/write/apply, 0.5 migration, and unusable-file errors
 │   ├── baseline-options.ts        = baseline option resolution shared by CLI commands
-│   ├── baseline.ts                = baseline apply/write, finding dedupe, and history recording
+│   ├── baseline.ts                = canonical finding order, dedupe, and score-history recording
 │   ├── scoring.ts                 = report scoring, summaries, and finding exit semantics
 │   ├── pillar-summary.ts          = canonical summary pillar rows and ordering
 │   ├── rules.ts                   = catalogue of exactly 120 descriptors across 11 pillars

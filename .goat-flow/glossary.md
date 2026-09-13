@@ -32,7 +32,7 @@ The local browser UI served by `gruff-ts dashboard`. It binds to `http://127.0.0
 
 ### Diagnostic
 
-A run-level problem such as `parse-error`, `read-error`, `missing-path`, or `history-error`. Fatal diagnostics force exit code `2`.
+A run-level problem such as `parse-error`, `read-error`, `missing-path`, `history-error`, or `baseline-error`, which reports a baseline file that cannot be applied as written. Fatal diagnostics force exit code `2`.
 
 ### Display Filter
 
@@ -52,7 +52,7 @@ A stable 16-character SHA-256 prefix of the finding identity. Baselines and down
 
 ### Gruff Config
 
-Project configuration that tunes discovery, allowlists, naming lists, and per-rule thresholds/severity/options. Shared keys include `paths.ignore`, `allowlists.acceptedAbbreviations`, and `rules.<id>`.
+Project configuration that tunes discovery, allowlists, naming lists, and per-rule thresholds/severity/options. Shared keys include `paths.ignore`, `allowlists.acceptedAbbreviations`, and `rules.<id>`. A `rules.<id>` block accepts `enabled`, `severity`, `threshold` and `options`, plus a named `thresholds` block where the rule publishes named thresholds, and any other key fails the load.
 
 ### Hotspot Output
 
