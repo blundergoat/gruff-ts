@@ -173,8 +173,8 @@ gruff-ts report . --format=json --output gruff-report.json
 ```
 
 `report` defaults to `--fail-on none`, making it suitable for local inspection
-and scheduled reporting. `analyse` and `summary` default to `--fail-on advisory`
-out of the box; override per-project by setting `failOn:` in `.gruff-ts.yaml`.
+and scheduled reporting. So does `summary`, so a first scan exits `0`. `analyse` defaults to
+`--fail-on advisory` out of the box; override per-project by setting `failOn:` in `.gruff-ts.yaml`.
 See `docs/configuration.md` and ADR-004 for the precedence chain (CLI flag >
 config > binary default).
 

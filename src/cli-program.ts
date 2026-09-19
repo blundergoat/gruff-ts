@@ -6,7 +6,7 @@ import { performance } from "node:perf_hooks";
 import { cwd } from "node:process";
 import { DEFAULT_BASELINE } from "./baseline.ts";
 import { checkIgnore, checkIgnoreExitCode, renderCheckIgnore, type CheckIgnoreFormat } from "./check-ignore.ts";
-import { ChangedRegionError } from "./changed-regions.ts";
+import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError } from "./changed-regions.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
 import { loadConfig, minimumSeverityFor } from "./config.ts";
 import { VERSION } from "./constants.ts";
@@ -260,8 +260,8 @@ function runMigrateConfig(program: Command, rawOptions: Record<string, unknown>)
 // The primary entry point. Sets `process.exitCode` (not `process.exit`) so async writers in the
 // renderer get a chance to flush before Node tears down. The default fail-on is `advisory` because
 // the project's gating philosophy is "show everything, fail on anything"; CI flows that want the
-// old `error`-only behaviour pass `--fail-on=error` explicitly or pin `minimumSeverity.analyse:
-// error` in `.gruff-ts.yaml`. See ADR-004.
+// old `error`-only behaviour pass `--fail-on=error` explicitly or set `failOn.analyse: error` in
+// `.gruff-ts.yaml`, the gate key the family CLI contract names.
 function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("analyse")
@@ -306,6 +306,7 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
         const report = runAnalyse(options);
         // The exit code is decided by everything that ran, before any presentation filter hides part of it.
         process.exitCode = Math.max(exitFor(report, options.failOn, confidenceFloor(rawOptions)), newDebtExitCode(report, rawOptions));
+        writeChangedRegionFailure(report, options.format);
         report.findings = applyDisplaySelectors(report.findings, displaySelectorsFrom(rawOptions), configured.displayFloor);
         writeCommandOutput(program, renderReport(report, options.format));
       });
@@ -575,7 +576,8 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--deep-scan-budget <lines:bytes|off>", "Override both deep-scan bounds as LINES:BYTES, or disable the budget with off.", parseDeepScanBudget)
     .option("--format <format>", "Output format: text or json.", parseSummaryFormat, "text")
     .option("--top <n>", "How many top rules and file offenders to list.", parseNonNegativeInteger, 10)
-    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "advisory")
+    // A first summary reports and exits 0: the family CLI contract reserves exit 1 for a gate somebody asked for.
+    .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "none")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .option("--diff [mode]", "Filter findings to changed files. Use working-tree, staged, unstaged, or a base ref.")
     .option("--history-file <path>", "Append score trend history to this JSON file (full scans only; incompatible with --diff).")
@@ -703,12 +705,26 @@ function hookGateFrom(rawOptions: Record<string, unknown>): HookExitGate {
   };
 }
 
+// Names an unreadable changed range on stderr in text mode, where a shell user looks for a usage error; the
+// report carries the same diagnostic, and a machine format reads it from there.
+// Stable contract: exactly one `gruff-ts: <message>` line per changed-region diagnostic, and none in any other format.
+function writeChangedRegionFailure(report: AnalysisReport, format: AnalysisOptions["format"]): void {
+  if (format !== "text") {
+    return;
+  }
+  for (const diagnostic of report.diagnostics) {
+    if (diagnostic.diagnosticType === CHANGED_REGION_DIAGNOSTIC_TYPE) {
+      process.stderr.write(`gruff-ts: ${diagnostic.message}\n`);
+    }
+  }
+}
+
 // Names the input a fatal hook failure could not use, so the diagnostic points at the flag to look at.
 // Stable contract: the answer comes from the error's own type and the flags the caller passed, never from parsing
 // the message text, so rewording a message can never change what a consumer reads.
 function hookFatalType(error: Error, rawOptions: Record<string, unknown>): string {
   if (error instanceof ChangedRegionError) {
-    return "changed-region";
+    return CHANGED_REGION_DIAGNOSTIC_TYPE;
   }
   return typeof rawOptions.baseline === "string" ? "baseline" : "run";
 }

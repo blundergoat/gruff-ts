@@ -11,7 +11,7 @@ schemaVersion: gruff-ts.config.v0.1
 #   none     - never exit non-zero from findings (use for raw reporting / baseline generation).
 failOn:
   analyse: advisory
-  summary: advisory
+  summary: none
   report: none
 
 paths:
@@ -29,11 +29,8 @@ paths:
     - ".github/**"
     - ".goat-flow/**"
     - "fixtures/**"
-    - "package-lock.json"
-    - "npm-shrinkwrap.json"
-    - "yarn.lock"
-    - "pnpm-lock.yaml"
-    - "bun.lockb"
+    # Lockfiles need no entry: the analyser skips package-lock.json, npm-shrinkwrap.json,
+    # yarn.lock, pnpm-lock.yaml and bun.lockb as generated files.
 
 allowlists:
   acceptedAbbreviations:

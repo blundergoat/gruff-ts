@@ -85,7 +85,7 @@ gruff-ts check-ignore $CHANGED_FILES --format json
 
 ## Picking the gate level
 
-`--fail-on` sets the bar the agent must clear. Built-in defaults are `advisory` for `analyse` and `summary`, `none` for `report` and `hook`; raise or lower per surface:
+`--fail-on` sets the bar the agent must clear. Built-in defaults are `advisory` for `analyse`, `none` for `summary`, `report` and `hook`; raise or lower per surface:
 
 | Level | Use it as the agent gate when |
 | --- | --- |

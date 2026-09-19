@@ -210,6 +210,34 @@ test("console globals suppress normal output and completion emits a script", () 
   assert.match(analyseHelp, /--profile <spec>/);
 });
 
+test("summary exits 0 on findings unless --fail-on asks for a gate", () => {
+  const args = ["summary", "fixtures/sample.ts", "--no-config", "--no-baseline"];
+  assert.equal(spawnSync("./bin/gruff-ts", args, { encoding: "utf8" }).status, 0);
+  assert.equal(spawnSync("./bin/gruff-ts", [...args, "--fail-on=advisory"], { encoding: "utf8" }).status, 1);
+});
+
+test("an unreadable --changed-ranges value exits 2 with one run-invalidating diagnostic", () => {
+  const base = ["analyse", "fixtures/sample.ts", "--no-config", "--no-baseline", "--fail-on=none"];
+  for (const [value, message] of [["abc", "invalid --changed-ranges entry: abc"], [",", "--changed-ranges must include at least one range such as 3-3 or 8-10"]]) {
+    const json = spawnSync("./bin/gruff-ts", [...base, "--format=json", `--changed-ranges=${value}`], { encoding: "utf8" });
+    assert.equal(json.status, 2, `${value}: exit`);
+    const payload = JSON.parse(json.stdout) as { schemaVersion: string; summary: { exitCode: number }; diagnostics: Array<{ type: string; message: string; invalidatesRun: boolean }> };
+    assert.equal(payload.schemaVersion, "gruff.analysis.v3");
+    assert.equal(payload.summary.exitCode, 2);
+    assert.deepEqual(payload.diagnostics.map(({ type, message, invalidatesRun }) => ({ type, message, invalidatesRun })), [{ type: "changed-region", message, invalidatesRun: true }]);
+
+    const text = spawnSync("./bin/gruff-ts", [...base, `--changed-ranges=${value}`], { encoding: "utf8" });
+    assert.equal(text.status, 2, `${value}: text exit`);
+    assert.equal(text.stderr, `gruff-ts: ${message}\n`);
+  }
+  // A literal empty value names no range at all and stays "no filter".
+  assert.equal(spawnSync("./bin/gruff-ts", [...base, "--changed-ranges="], { encoding: "utf8" }).status, 0);
+  // The hook keeps its own fatal payload for the same input.
+  const hook = spawnSync("./bin/gruff-ts", ["hook", "fixtures/sample.ts", "--no-config", "--changed-ranges=abc"], { encoding: "utf8" });
+  assert.equal(hook.status, 2);
+  assert.deepEqual((JSON.parse(hook.stdout) as { diagnostics: Array<{ type: string; severity: string }> }).diagnostics.map(({ type, severity }) => ({ type, severity })), [{ type: "changed-region", severity: "fatal" }]);
+});
+
 test("summary CLI prints compact scan digest without per-finding spam", () => {
   const output = execFileSync("./bin/gruff-ts", ["summary", "fixtures/sample.ts", "--fail-on=none", "--no-config", "--no-baseline"], { encoding: "utf8" });
   assert.match(output, new RegExp(`^gruff-ts ${VERSION_PATTERN} summary`));

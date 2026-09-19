@@ -173,7 +173,7 @@ function renderFailOnSection(preserved: ReadonlyMap<MinimumSeverityCommand, Fail
   ];
   const entries: Array<[MinimumSeverityCommand, FailThreshold]> = [
     ["analyse", preserved.get("analyse") ?? "advisory"],
-    ["summary", preserved.get("summary") ?? "advisory"],
+    ["summary", preserved.get("summary") ?? "none"],
     ["report", preserved.get("report") ?? "none"],
   ];
   return [...header, ...entries.map(([command, severity]) => `  ${command}: ${severity}`)].join("\n");

@@ -11,9 +11,12 @@ import type { AnalysisOptions, ChangedScopeMode, Finding, RunDiagnostic } from "
  * Raised when the requested changed region cannot be read, so the caller reports which input was wrong.
  *
  * The hook publishes it as a fatal diagnostic naming `changed-region`, which is what tells an agent the run never
- * happened rather than that the file was clean.
+ * happened rather than that the file was clean. `analyse` reports it under the same type.
  */
 export class ChangedRegionError extends Error {}
+
+// The diagnostic type both the hook and `analyse` give a ChangedRegionError.
+export const CHANGED_REGION_DIAGNOSTIC_TYPE = "changed-region";
 
 // Inclusive line range from a changed hunk or explicit `--changed-ranges` input.
 export interface ChangedRange {

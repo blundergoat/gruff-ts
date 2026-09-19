@@ -131,7 +131,7 @@ Global console options match the broader gruff CLI surface: `--silent`, `--quiet
 | `1` | At least one finding met `--fail-on`. |
 | `2` | Fatal diagnostic such as missing input, parse error, config error, diff failure, baseline failure, or invalid input. |
 
-`analyse` and `summary` default to `--fail-on advisory`; `report` and `hook` default to `--fail-on none`. This table covers `analyse`, `summary` and `report`; `hook` gates only on an explicit consumer request and has its own table in the Baselines And Changed-Code Scans section. The defaults can be overridden per-project by a `failOn:` block in `.gruff-ts.yaml`. CLI flag wins over config; config wins over the binary default. See ADR-004 and the Configuration section.
+`analyse` defaults to `--fail-on advisory`; `summary`, `report` and `hook` default to `--fail-on none`, so a first `summary` reports its findings and exits `0`. This table covers `analyse`, `summary` and `report`; `hook` gates only on an explicit consumer request and has its own table in the Baselines And Changed-Code Scans section. The defaults can be overridden per-project by a `failOn:` block in `.gruff-ts.yaml`. CLI flag wins over config; config wins over the binary default. See ADR-004 and the Configuration section.
 
 ## CI Usage
 

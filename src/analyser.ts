@@ -9,7 +9,7 @@ import { basename, dirname, extname, resolve } from "node:path";
 import { recordHistory, sortedUniqueFindings } from "./baseline.ts";
 import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan } from "./baseline-identity.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
-import { changedRegionScope, filterChangedFindings, filterScopedDiagnostics } from "./changed-regions.ts";
+import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError, changedRegionScope, filterChangedFindings, filterScopedDiagnostics, type ChangedRegionScope } from "./changed-regions.ts";
 import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
 import { VERSION } from "./constants.ts";
@@ -53,7 +53,7 @@ export interface HookAnalysisReports {
  */
 export function analyse(options: AnalysisOptions): AnalysisReport {
   const preparation = prepareAnalysis(options);
-  const changedScope = changedRegionScope(options);
+  const { changedScope, scopeDiagnostics } = changedRegionScopeOrDiagnostic(options);
   const run = completeAnalysis(preparation, options, "diagnose");
   const changedResult = filterChangedFindings(run.baselineResult.findings, changedScope, run.scanned.sources);
 
@@ -70,7 +70,22 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
   }
 
   // File-scoped policy: diff runs report and fail on diagnostics from changed target files only.
-  return reportFromRun({ ...run, diagnostics: filterScopedDiagnostics(run.diagnostics, changedScope) }, options, { ...run.baselineResult, findings: changedResult.findings }, changedResult.suppressedCount);
+  const diagnostics = [...filterScopedDiagnostics(run.diagnostics, changedScope), ...scopeDiagnostics];
+  return reportFromRun({ ...run, diagnostics }, options, { ...run.baselineResult, findings: changedResult.findings }, changedResult.suppressedCount);
+}
+
+// An unreadable changed range names no region, so the run is reported unscoped with one run-invalidating
+// diagnostic and exits 2, as a missing input does. The diagnostic carries the type the hook reports for the
+// same failure. A literal empty value never reaches here: it is read as no filter.
+function changedRegionScopeOrDiagnostic(options: AnalysisOptions): { changedScope: ChangedRegionScope | undefined; scopeDiagnostics: RunDiagnostic[] } {
+  try {
+    return { changedScope: changedRegionScope(options), scopeDiagnostics: [] };
+  } catch (error) {
+    if (!(error instanceof ChangedRegionError)) {
+      throw error;
+    }
+    return { changedScope: undefined, scopeDiagnostics: [{ diagnosticType: CHANGED_REGION_DIAGNOSTIC_TYPE, message: error.message }] };
+  }
 }
 
 // Builds the hook's full and changed-region reports from one scan. The diff-base replay still uses

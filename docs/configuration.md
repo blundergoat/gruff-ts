@@ -42,7 +42,7 @@ The precedence chain is **CLI flag > config > binary default**.
 schemaVersion: gruff-ts.config.v0.1
 failOn:
   analyse: advisory
-  summary: advisory
+  summary: none
   report: none
 ```
 
@@ -54,7 +54,7 @@ off-switch before the family converged on `none`).
 subcommand has no `--fail-on` flag today; setting `failOn.dashboard:` would be
 a silent no-op CI footgun, so the validator rejects it with a clear error.
 
-Binary defaults are `analyse: advisory`, `summary: advisory`, `report: none`.
+Binary defaults are `analyse: advisory`, `summary: none`, `report: none`.
 
 Across the Gruff family only `analyse` and `report` are accepted by every port, so a
 polyglot repository that shares one `failOn` block should write only those two keys.
@@ -74,7 +74,7 @@ an existing 0.5 config cannot quietly change what it gates.
 schemaVersion: gruff-ts.config.v0.1
 failOn:
   analyse: advisory
-  summary: advisory
+  summary: none
   report: none
 
 paths:
