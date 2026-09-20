@@ -85,6 +85,7 @@ interface HookSuppression {
   symbol?: string;
   reason: string;
   suppressed: number;
+  source?: "built-in";
 }
 
 // One diagnostic projected into the hook contract: what kind of problem, how much it matters, where, and the
@@ -318,6 +319,8 @@ function toHookSuppression(summary: SuppressionSummary): HookSuppression {
     ...(summary.symbol === null ? {} : { symbol: summary.symbol }),
     reason: summary.reason,
     suppressed: summary.suppressed,
+    // Only a built-in row names its source; a configured row is recognised by carrying none.
+    ...(summary.source === undefined ? {} : { source: summary.source }),
   };
 }
 

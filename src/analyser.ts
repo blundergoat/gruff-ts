@@ -11,7 +11,7 @@ import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan }
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError, changedRegionScope, filterChangedFindings, filterScopedDiagnostics, type ChangedRegionScope } from "./changed-regions.ts";
 import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
-import { partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
+import { applyBuiltInLockfileSkip, partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
@@ -197,15 +197,17 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
   // Reviewed sensitive exclusions apply before the baseline so a suppressed finding never reaches
   // the report, the score, or the exit code, and each entry's count covers the whole scan.
   const excluded = partitionSensitiveExclusions(allFindings, config.sensitiveExclusions);
+  // A configured entry claims its findings first, so its count stays what the user wrote it for.
+  const lockfileSkipped = applyBuiltInLockfileSkip(excluded.findings, excluded.suppressions);
   // Naming every finding before the baseline filters any of them keeps one alert one alert: code scanning reads the
   // same identity the baseline does, and a finding hidden from this report keeps the ordinal it was ranked with.
   const spans = declarationSpans(scanned);
-  const namedFindings = withBaselineIdentities(excluded.findings, spans);
+  const namedFindings = withBaselineIdentities(lockfileSkipped.findings, spans);
   const baselineResult = applyBaselineOptions(projectRoot, options, namedFindings, spans, unusableBaseline);
   // A collision names two declarations one identity could not tell apart; it suppresses nothing and fails no run.
   diagnostics.push(...baselineResult.diagnostics);
   const notes = [...discovery.notes, ...scanned.notes];
-  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes, suppressions: excluded.suppressions };
+  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes, suppressions: lockfileSkipped.suppressions };
 }
 
 /*
@@ -225,7 +227,9 @@ function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResul
       format: options.format,
       failOn: options.failOn,
       generatedAt: new Date().toISOString(),
-      inputs: options.paths.length === 0 ? ["."] : [...options.paths],
+      // Operands are typed relative to the launch directory, which need not be the project root, so they are
+      // recorded absolute and the renderer makes them project-relative.
+      inputs: options.paths.length === 0 ? ["."] : options.paths.map((path) => resolve(cwd(), path)),
       ...(options.config === undefined ? {} : { config: options.config }),
       ...(options.shouldIncludeIgnored ? { includeIgnored: true as const } : {}),
     },
@@ -546,18 +550,6 @@ const SENSITIVE_DATA_RULE_IDS = ruleIdsForPillar("sensitive-data");
 const SIZE_RULE_IDS = ruleIdsForPillar("size");
 const TEST_QUALITY_RULE_IDS = ruleIdsForPillar("test-quality");
 
-/*
- * Sensitive-data rules that infer a secret from shape rather than value, which generated dependency metadata defeats.
- *
- * Every integrity digest looks high-entropy, and a package named `gtoken` turns `gtoken: 8.0.0(supports-color@11.0.0)`
- * into what reads as a credential assignment.
- * These are suppressed for lockfiles only; every value-shaped detector still runs there.
- */
-const LOCKFILE_SUPPRESSED_SENSITIVE_RULE_IDS = new Set([
-  "sensitive-data.high-entropy-string",
-  "sensitive-data.hardcoded-env-value",
-]);
-
 const GITHUB_ACTIONS_RULE_IDS = [
   "security.github-actions-broad-permissions",
   "security.github-actions-pull-request-target",
@@ -720,16 +712,8 @@ function analyseTextRules(file: SourceFile, source: string, comments: CommentRec
   }
 
   if (isAnyRuleEnabled(config, SENSITIVE_DATA_RULE_IDS)) {
-    const sensitiveFindings: Finding[] = [];
-    analyseSensitiveData(file, source, config, sensitiveFindings);
-    // Generated dependency metadata defeats the two shape-based detectors, so they are dropped for lockfiles only.
-    // The value-shaped detectors still run, because a credential inside a `resolved` URL is the real leak risk here.
-    const isLockfile = isGeneratedLockfile(file.displayPath);
-    for (const sensitiveFinding of sensitiveFindings) {
-      if (!isLockfile || !LOCKFILE_SUPPRESSED_SENSITIVE_RULE_IDS.has(sensitiveFinding.ruleId)) {
-        findings.push(sensitiveFinding);
-      }
-    }
+    // The entropy rule's lockfile findings are removed later, by the counted built-in skip, so nothing is dropped here.
+    analyseSensitiveData(file, source, config, findings);
   }
   if (isAnyRuleEnabled(config, GITHUB_ACTIONS_RULE_IDS)) {
     analyseGithubActionsRules(file, source, findings);
@@ -803,9 +787,9 @@ function lineCount(source: string): number {
   return count;
 }
 
-// Package-manager lockfiles contain generated dependency metadata, including public integrity digests.
-// Discovery retains them; `size.file-length` skips them outright and the sensitive-data pass uses this
-// predicate to drop only `sensitive-data.high-entropy-string`, so lockfile credentials still report.
+// Package-manager lockfiles contain generated dependency metadata. Discovery retains them and `size.file-length`
+// skips them outright; the sensitive-data pass no longer consults this predicate, because the entropy rule's
+// lockfile findings are removed by the counted built-in skip in `sensitive-exclusions.ts` instead.
 function isGeneratedLockfile(filePath: string): boolean {
   const fileName = basename(filePath);
   return fileName === "package-lock.json" || fileName === "npm-shrinkwrap.json" || fileName === "yarn.lock" || fileName === "pnpm-lock.yaml" || fileName === "bun.lockb";

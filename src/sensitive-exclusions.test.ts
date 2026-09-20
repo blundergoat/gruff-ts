@@ -6,9 +6,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ConfigLoadError } from "./config-load-error.ts";
+import { renderHookReport } from "./hook-contract.ts";
 import { renderReport, renderSummary } from "./report-renderers.ts";
 import { AWS_ACCESS_KEY_FIXTURE_VALUE, analyseProject, JWT_FIXTURE_VALUE } from "./test-fixtures.ts";
-import type { AnalysisReport } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport } from "./types.ts";
 
 const AWS_RULE_ID = "sensitive-data.aws-access-key";
 const JWT_RULE_ID = "sensitive-data.jwt-token";
@@ -129,6 +130,28 @@ test("two entries with different scopes are independent and each reports its own
   assert.equal(findingCount(report, AWS_RULE_ID, AWS_FIXTURE_PATH), 0);
   assert.equal(findingCount(report, JWT_RULE_ID, JWT_FIXTURE_PATH), 0);
   assert.ok(findingCount(report, AWS_RULE_ID, AWS_SIBLING_FIXTURE_PATH) >= 1, "excluding one file must leave the sibling reporting");
+});
+
+// Section 13a lets no surface that filters do it in silence, so every surface that applies the family's built-in
+// lockfile skip publishes its count. The other four ports pin the same three surfaces.
+test("the built-in lockfile skip is counted on analyse text, summary text and the hook payload", () => {
+  const digest = ["Zx7pQ9vLm3N8sT2r", "Y6wK1dF4gH5jC0bR2"].join("");
+  const report = analyseProject({
+    "package-lock.json": JSON.stringify({ token: digest }),
+    "source.ts": "export const ok = 1;\n",
+  });
+  const expected = "builtInLockfile[package-lock.json] sensitive-data.high-entropy-string: ";
+
+  assert.ok(renderReport(report, "text").includes(expected), renderReport(report, "text"));
+  assert.ok(renderSummary(report).includes(expected), renderSummary(report));
+  // The hook renders from an analysis runner rather than a report, so the prepared report is handed straight back.
+  const hookOptions: AnalysisOptions = { paths: ["."], shouldSkipConfig: true, format: "json", failOn: "none", shouldIncludeIgnored: false, changedScope: "symbol", shouldSkipBaseline: true };
+  const payload = JSON.parse(renderHookReport(() => report, { currentOptions: hookOptions, scopedOptions: hookOptions, hasChangedRegion: false })) as {
+    suppressions?: Array<{ path: string; source?: string }>;
+  };
+
+  assert.deepEqual((payload.suppressions ?? []).map((row) => [row.path, row.source]), [["package-lock.json", "built-in"]]);
+  assert.equal(JSON.stringify(payload.suppressions).includes(digest), false, "no suppression surface may carry matched value material");
 });
 
 test("a suppressed finding leaves the score and the text total, not the finding list", () => {

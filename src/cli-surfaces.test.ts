@@ -356,6 +356,34 @@ test("json report emits only canonical v3 paths without mutating findings", () =
   assert.equal("file" in nativeFinding, false);
 });
 
+// A scan launched from a sibling directory names its target as `../project`. The JSON report must still be
+// published, with the operand made project-relative, and a baseline outside the project simply has no path.
+// Spawns the built binary three times and writes a project and a baseline inside a fresh temporary directory,
+// which is removed again whether an assertion threw or not.
+test("json report survives a target and a baseline outside the launch directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-outside-"));
+  try {
+    mkdirSync(join(root, "launch"));
+    mkdirSync(join(root, "project"));
+    writeFileSync(join(root, "project", "probe.ts"), "export function probe(rx: number): number {\n  return rx + rx;\n}\n");
+    const bin = join(REPO_ROOT, "bin/gruff-ts");
+    const flags = ["--no-config", "--fail-on", "none", "--format", "json"];
+
+    const fromSibling = spawnSync("bash", [bin, "analyse", "../project", "--no-baseline", ...flags], { cwd: join(root, "launch"), encoding: "utf8" });
+    assert.equal(fromSibling.status, 0, fromSibling.stderr);
+    assert.deepEqual((JSON.parse(fromSibling.stdout) as { run: { inputs: string[] } }).run.inputs, ["."]);
+
+    spawnSync("bash", [bin, "analyse", ".", "--generate-baseline", "../reviewed.json", "--no-config", "--fail-on", "none"], { cwd: join(root, "project"), encoding: "utf8" });
+    const outsideBaseline = spawnSync("bash", [bin, "analyse", ".", "--baseline", "../reviewed.json", ...flags], { cwd: join(root, "project"), encoding: "utf8" });
+    assert.equal(outsideBaseline.status, 0, outsideBaseline.stderr);
+    const baseline = (JSON.parse(outsideBaseline.stdout) as { baseline: { applied: boolean; path?: string } }).baseline;
+    assert.equal(baseline.applied, true);
+    assert.equal("path" in baseline, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // Fixture for the SARIF render test. Hoisted out of the test body so the test reaches its first
 // assertion within the setup-bloat threshold; the fixture data itself is non-trivial because it
 // encodes the cross-pillar coverage SARIF must round-trip.

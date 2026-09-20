@@ -7,6 +7,7 @@
 // rule id in exactly one project-relative file, optionally narrowed to one symbol, and a reviewed
 // reason is mandatory. Nothing here reads finding text, so no suppression can depend on secret
 // material (FAMILY-CONTRACT.md, search: `## 5. Secret-preview & redaction semantics`).
+import { basename } from "node:path";
 import { arrayValue, isString, objectValue, SUGGEST_EDIT_CONFIG } from "./config-parse.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
 import { isKnownRuleId, isPillarName, rulePillar } from "./profiles.ts";
@@ -28,6 +29,25 @@ const RULE_SELECTOR_CHARACTERS = /[*?[\]{}()|+^$\\]/;
 const PATH_GLOB_CHARACTERS = /[*?[\]{}]/;
 
 const SUGGEST_EXACT_SCOPE = "Each `sensitiveExclusions:` entry needs exactly one `rule:` id, one project-relative `path:`, and a non-empty `reason:`; add a separate entry for every file you mean to exclude.";
+
+// The one rule the family's built-in lockfile skip covers; every other sensitive-data rule still reads a lockfile.
+const BUILT_IN_LOCKFILE_RULE = "sensitive-data.high-entropy-string";
+
+// The rationale every port publishes on a built-in lockfile audit row.
+const BUILT_IN_LOCKFILE_REASON = "Lockfile digests are published integrity hashes, so the entropy rule skips package-manager lockfiles by name.";
+
+// The ratified package-manager lockfile names, matched by exact base name at any depth.
+const BUILT_IN_LOCKFILE_NAMES = new Set([
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "composer.lock",
+  "Cargo.lock",
+  "go.sum",
+  "uv.lock",
+  "poetry.lock",
+]);
 
 /**
  * Reads and validates the user's `sensitiveExclusions:` section before any scan runs.
@@ -248,6 +268,48 @@ export function partitionSensitiveExclusions(findings: readonly Finding[], exclu
     summary.suppressed += 1;
   }
   return { findings: kept, suppressions };
+}
+
+/*
+ * Removes the entropy rule's findings from package-manager lockfiles and appends one audit row per lockfile that
+ * had any, after the configured rows.
+ *
+ * A lockfile digest is a published integrity hash and a real project carries thousands of them, so the family skips
+ * that one rule by file name. It is counted on every surface rather than applied in silence, and a lockfile with
+ * nothing to skip publishes no row (FAMILY-CONTRACT.md section 13a). Every other sensitive-data rule still reads the
+ * lockfile, because a credential pasted into one is as live as anywhere else.
+ *
+ * @param findings The findings that survived the configured entries, in report order.
+ * @param suppressions The configured entries' audit rows, which the built-in rows follow.
+ * @returns The surviving findings and the audit rows, configured first.
+ */
+export function applyBuiltInLockfileSkip(findings: readonly Finding[], suppressions: readonly SuppressionSummary[]): SensitiveExclusionResult {
+  const skippedByPath = new Map<string, number>();
+  const kept: Finding[] = [];
+  for (const finding of findings) {
+    // A display path may carry a Windows separator, which POSIX basename does not split on, so it is normalised
+    // first: gruff-php, gruff-py and gruff-rs normalise too, and a lockfile must be one lockfile in every port.
+    if (finding.ruleId === BUILT_IN_LOCKFILE_RULE && BUILT_IN_LOCKFILE_NAMES.has(basename(finding.filePath.replaceAll("\\", "/")))) {
+      skippedByPath.set(finding.filePath, (skippedByPath.get(finding.filePath) ?? 0) + 1);
+      continue;
+    }
+    kept.push(finding);
+  }
+  const rows = [...suppressions];
+  // Built-in rows are numbered among themselves, so the index means the same thing in every port however many
+  // entries the user configured. `source` is what tells a consumer which channel a row came from.
+  for (const [builtInIndex, lockfile] of [...skippedByPath.keys()].sort().entries()) {
+    rows.push({
+      index: builtInIndex,
+      rule: BUILT_IN_LOCKFILE_RULE,
+      paths: [lockfile],
+      symbol: null,
+      reason: BUILT_IN_LOCKFILE_REASON,
+      suppressed: skippedByPath.get(lockfile) ?? 0,
+      source: "built-in",
+    });
+  }
+  return { findings: kept, suppressions: rows };
 }
 
 // Starts one entry's audit row at zero. `paths` is a single-element list and `symbol` is null when

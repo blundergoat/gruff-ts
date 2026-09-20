@@ -38,8 +38,11 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
     for (const match of source.matchAll(pattern)) {
       // A missing regex capture is treated as empty source evidence and will be ignored by the explicit-example guard.
       const matchedSensitiveText = match[0] ?? "";
-      // Explicit placeholders are teaching material rather than credentials the user needs to rotate.
-      if (isExplicitExampleCredential(matchedSensitiveText)) {
+      // Explicit placeholders are teaching material rather than credentials the user needs to rotate. An AWS key
+      // is one fixed-shape alphanumeric run, where a marker word can only sit inside the value and never begin a
+      // token, so only a mask silences it and AWS's documented example key reports, as it does in every port.
+      const isPlaceholder = ruleId === "sensitive-data.aws-access-key" ? isMaskedCredential(matchedSensitiveText) : isExplicitExampleCredential(matchedSensitiveText);
+      if (isPlaceholder) {
         continue;
       }
       // A URL shape written as a template literal type names no credential at all.
@@ -80,10 +83,15 @@ function isTypeLevelUrlCredential(matchedSensitiveText: string): boolean {
   return /:\/\/[^\/\s:@]+:\$\{\s*(?:string|number)\s*\}@$/.test(matchedSensitiveText);
 }
 
-// Recognizes explicit example markers inside the matched value, such as an AWS key ending in `EXAMPLE`.
+// Recognizes explicit example markers inside the matched value, such as a URL password written as `REDACTED`.
 // File paths never make production-shaped credentials disappear from the user's report.
 function isExplicitExampleCredential(matchedSensitiveText: string): boolean {
-  return /EXAMPLE|REDACTED|PLACEHOLDER|CHANGEME/i.test(matchedSensitiveText) || /\*{4}|X{4}/.test(matchedSensitiveText);
+  return /EXAMPLE|REDACTED|PLACEHOLDER|CHANGEME/i.test(matchedSensitiveText) || isMaskedCredential(matchedSensitiveText);
+}
+
+// Recognizes a value whose body was masked out with a run of `*` or `X`, which names no credential at all.
+function isMaskedCredential(matchedSensitiveText: string): boolean {
+  return /\*{4}|X{4}/.test(matchedSensitiveText);
 }
 
 // Finds medical-record numbers only when an MRN label gives users reliable health-data context.
@@ -432,10 +440,26 @@ function envValueCandidate(line: string): { keyName: string; value: string; isQu
   return { keyName, value: secretValue, isQuoted: quotedValue !== undefined };
 }
 
-// Checks whether an extracted assignment is long, non-placeholder, and credential-shaped.
-// Users see a finding only when all three signals agree, reducing noise from ordinary examples.
+// Checks whether an extracted assignment is long, non-placeholder, credential-shaped, and not a dependency spec.
+// Users see a finding only when all four signals agree, reducing noise from ordinary examples.
 function isHardcodedEnvCandidate(secretValue: string, minLength: number): boolean {
-  return secretValue.length >= minLength && !isPlaceholderSecretValue(secretValue) && hasLetterAndDigit(secretValue);
+  return secretValue.length >= minLength && !isPlaceholderSecretValue(secretValue) && hasLetterAndDigit(secretValue) && !isDependencySpecValue(secretValue);
+}
+
+// Recognizes a dependency version spec, which a manifest or lockfile writes under any key name - including one
+// ending in `token`, as `gtoken: 8.0.0(supports-color@11.0.0)` does. The value's shape decides this and the
+// file's name does not, so the same line stays quiet in a lockfile, in a manifest, and in authored source alike.
+//
+// The WHOLE value must be a version: optional range operators, a dotted numeric version, and at most a
+// parenthesised peer suffix, of which a pnpm lockfile writes more than one:
+// `7.1.0(encoding@0.1.13)(supports-color@11.0.0)`. Matching only the opening token would drop a committed
+// credential that happens to begin with one, such as `1.0-Rk8sPq2xT7vL9wHd`, and a dropped credential leaves no
+// audit row anywhere.
+const DEPENDENCY_SPEC_PATTERN = /^[v^~><=\s]*\d+(?:\.\d+)+(?:\((?:[^()]|\([^()]*\))*\))*$/u;
+
+// Reports whether the trimmed value is entirely a version spec, which is the only shape this guard may silence.
+function isDependencySpecValue(secretValue: string): boolean {
+  return DEPENDENCY_SPEC_PATTERN.test(secretValue.trim());
 }
 
 // Recognizes obvious example words that users commonly place in documentation and fixtures.

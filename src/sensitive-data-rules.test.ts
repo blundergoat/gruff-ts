@@ -301,12 +301,19 @@ test("package-manager lockfiles drop entropy digests but keep credential finding
     sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string" && finding.filePath === "source.ts" && finding.severity === "warning"),
     true,
   );
-  // Key-name inference also misreads lockfiles: a package named `gtoken` makes its version
-  // spec look like a credential assignment, so that detector is suppressed here too.
+  // A credential-shaped assignment is as live in a lockfile as anywhere else: only the entropy rule is skipped there,
+  // and only because every integrity digest looks high-entropy. Family decision of 2026-09-20.
   assert.equal(
     sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value" && lockfilePaths.includes(finding.filePath)),
-    false,
+    true,
   );
+  // The entropy skip is counted, never silent: one built-in audit row per lockfile that had findings. The YAML
+  // lockfile is absent because its values are unquoted, so the entropy rule never matched there and nothing was
+  // skipped - a lockfile with nothing to skip publishes no row rather than a zero.
+  const builtInRows = report.suppressions.filter((summary) => summary.source === "built-in");
+  assert.deepEqual(builtInRows.map((summary) => summary.paths[0]), ["npm-shrinkwrap.json", "package-lock.json"]);
+  assert.deepEqual(builtInRows.map((summary) => summary.rule), ["sensitive-data.high-entropy-string", "sensitive-data.high-entropy-string"]);
+  assert.equal(builtInRows.every((summary) => summary.suppressed >= 1), true);
 });
 
 // A 0.5.0 corpus scan treated Angular's `gtoken` dependency line as a hardcoded credential.
@@ -429,18 +436,37 @@ void gdpByCountry; void cardNumber; void formatted; void irregularStatistic;
   assert.deepEqual(cardFindings.map((finding) => finding.line).sort(), [2, 3]);
 });
 
-test("explicitly example-marked credentials stay quiet while production-shaped ones flag", () => {
-  // D6 policy: the fake marker must sit inside the matched value (AWS doc keys end in EXAMPLE,
-  // redaction fixtures use REDACTED). Path or test location alone never suppresses.
+// A dependency version spec is not a credential, but a credential that merely opens with one still is. The guard
+// reads the whole value, so anything trailing the version keeps reporting: dropping it would hide a committed
+// credential with no audit row anywhere. gruff-rs pins the same grammar.
+//
+// Invariant: every value in `quiet` stays silent and every value in `reported` produces one finding, on its own
+// line, so the test fails both if the guard stops silencing versions and if it starts swallowing credentials.
+test("a whole dependency version is quiet while a credential that merely opens with one still reports", () => {
+  const quiet = ["8.0.0(supports-color@11.0.0)", "7.1.0(encoding@0.1.13)(supports-color@11.0.0)", ">=v1.2.3", "^1.20.300"];
+  const reported = [`1.0-${["Rk8sPq2x", "T7vL9wHd"].join("")}`, `2.5_${["hunter2Live", "KeyXyz99"].join("")}`, `12.34${["abcdefgh", "ijklmnop"].join("")}`];
+  const source = [...quiet, ...reported].map((value, index) => `API_TOKEN_${index}=${value}`).join("\n");
+  const report = analyseFixture(`${source}\n`, { fileName: ".env" });
+
+  const lines = report.findings.filter((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value").map((finding) => finding.line);
+  assert.deepEqual(lines, reported.map((_, index) => quiet.length + index + 1));
+});
+
+test("a marker word silences a URL password but not a fixed-shape key, and a masked key stays quiet", () => {
+  // Family decision of 2026-09-20: AWS's documented example key reports in every port, because a key is one
+  // alphanumeric run and a marker word inside it begins no token. Redaction fixtures still use REDACTED, a
+  // masked key names no credential, and path or test location alone never suppresses.
   const awsDocExampleKey = ["AKIAIOSFODNN7", "EXAMPLE"].join("");
   const redactedUrl = "postgres://app:REDACTED@db.internal/app";
+  const maskedKey = ["AKIA", "X".repeat(16)].join("");
   const report = analyseFixture(`AWS_KEY_ONE=${awsDocExampleKey}
 AWS_KEY_TWO=${AWS_ACCESS_KEY_FIXTURE_VALUE}
 URL_ONE=${redactedUrl}
 URL_TWO=${URL_CREDENTIAL_FIXTURE_VALUE}
+AWS_KEY_THREE=${maskedKey}
 `, { fileName: ".env" });
   const awsFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
-  assert.deepEqual(awsFindings.map((finding) => finding.line), [2]);
+  assert.deepEqual(awsFindings.map((finding) => finding.line), [1, 2]);
   assert.equal(awsFindings[0]?.metadata.preview, "[redacted:aws-access-key]");
   const urlFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.database-url-password");
   assert.deepEqual(urlFindings.map((finding) => finding.line), [4]);
@@ -546,7 +572,7 @@ test("M22 high-entropy-string clears location keys and repository paths on indep
     "var/quality/0.5.0-harness-20260717T011802Z/t02.9-holdout-registration.tsv",
   ];
   const oneSlashSecret = ["Qm9vZ3lXa2V5c", "1/Tm90QVJlYWxLZXk5OQ"].join("");
-  const twoSlashSecret = ["AKIAIOSFODNN7EXAMPLE", "+wJalrXUtnFEMI", "/K7MDENG/bPxRfiCY"].join("");
+  const twoSlashSecret = ["AKIAIOSFODNN7", "EXAMPLE", "+wJalrXUtnFEMI", "/K7MDENG/bPxRfiCY"].join("");
   const report = analyseProject({
     "paths.json": `{\n${briefPaths.map((briefPath, index) => `  "note${index}": "${briefPath}",`).join("\n")}\n  "end": true\n}\n`,
     "keys.json": `{\n${["path", "artifact", "evidence", "prior_seal", "locator", "fileSha256"].map((key) => `  "${key}": "${HIGH_ENTROPY_FIXTURE_VALUE}",`).join("\n")}\n  "end": true\n}\n`,

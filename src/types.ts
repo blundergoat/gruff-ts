@@ -155,6 +155,8 @@ export interface SuppressionSummary {
   symbol: string | null;
   reason: string;
   suppressed: number;
+  /** `built-in` on a row the family lockfile skip produced; absent on a configured entry's row. */
+  source?: "built-in";
 }
 
 /**

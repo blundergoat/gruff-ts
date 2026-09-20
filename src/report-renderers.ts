@@ -116,7 +116,7 @@ interface MachineEnvelopeCore {
   diagnostics: MachineDiagnostic[];
   paths: { analysedFiles: number; details: MachinePathDetail[]; ignoredPaths: string[]; missingPaths: string[] };
   suppressions: MachineSuppression[];
-  baseline?: { applied: boolean; generated: boolean; path: string; source: string; suppressedFindings: number; entries: number; newFindings: number; unchangedFindings: number; resolvedFindings: number };
+  baseline?: { applied: boolean; generated: boolean; path?: string; source: string; suppressedFindings: number; entries: number; newFindings: number; unchangedFindings: number; resolvedFindings: number };
   diff?: { enabled: true; filteredFindings: number; mode: "changed-regions" };
   extensions?: { ts: { topLevel: { notes: ScanSurfaceNote[] } } };
 }
@@ -173,7 +173,7 @@ function machineEnvelopeCore(report: AnalysisReport): MachineEnvelopeCore {
       baseline: {
         applied: !report.baseline.generated,
         generated: report.baseline.generated,
-        path: machinePath(report.baseline.path, report.run.projectRoot),
+        ...optionalMachinePath("path", report.baseline.path, report.run.projectRoot),
         source: report.baseline.source,
         suppressedFindings: report.baseline.suppressed,
         // Every port publishes the same nine keys. A generate run compared against nothing, so its movement counts
@@ -200,7 +200,7 @@ function machineRun(report: AnalysisReport): MachineEnvelopeCore["run"] {
     format: report.run.format,
     inputs: machinePaths(report.run.inputs ?? ["."], report.run.projectRoot),
     projectRoot: ".",
-    ...(report.run.config === undefined ? {} : { config: machinePath(report.run.config, report.run.projectRoot) }),
+    ...(report.run.config === undefined ? {} : optionalMachinePath("config", report.run.config, report.run.projectRoot)),
     ...(report.run.includeIgnored === true ? { includeIgnored: true as const } : {}),
   };
 }
@@ -277,6 +277,8 @@ function machineSuppression(suppression: SuppressionSummary, projectRoot: string
     ...(suppression.symbol === null || suppression.symbol.length === 0 ? {} : { symbol: suppression.symbol }),
     reason: suppression.reason,
     suppressed: suppression.suppressed,
+    // Only a built-in row names its source; a configured row is recognised by carrying none.
+    ...(suppression.source === undefined ? {} : { source: suppression.source }),
   };
 }
 
@@ -330,6 +332,16 @@ function machineIgnoreReason(skipped: SkippedPath): MachinePathDetail["reason"] 
 // Produces unique portable paths in producer order.
 function machinePaths(values: readonly string[], projectRoot: string): string[] {
   return [...new Set(values.map((value) => machinePath(value, projectRoot)))];
+}
+
+// A baseline or config may sit outside the project, where no project-relative form exists and a host path may not
+// be published; the optional field is then omitted rather than failing the whole report.
+function optionalMachinePath<Key extends string>(key: Key, pathValue: string, projectRoot: string): Partial<Record<Key, string>> {
+  const relativeValue = (isAbsolute(pathValue) ? relative(projectRoot, pathValue) : pathValue).replaceAll("\\", "/");
+  if (relativeValue === ".." || relativeValue.startsWith("../")) {
+    return {};
+  }
+  return { [key]: machinePath(pathValue, projectRoot) } as Partial<Record<Key, string>>;
 }
 
 // Converts a native path to project-relative POSIX form.
@@ -777,7 +789,10 @@ function renderTextSuppressionLines(report: AnalysisReport): string[] {
   }
   const details = report.suppressions
     .filter((summary) => summary.suppressed > 0)
-    .map((summary) => `sensitiveExclusions[${summary.index}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`)
+    // A built-in row names the lockfile it skipped, because it has no configured entry to point at.
+    .map((summary) => (summary.source === "built-in"
+      ? `builtInLockfile[${summary.paths[0] ?? ""}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`
+      : `sensitiveExclusions[${summary.index}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`))
     .join("; ");
   return ["", `Suppressed findings: ${total} via ${details}`];
 }
