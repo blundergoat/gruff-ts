@@ -34,7 +34,7 @@ import { scoreReport, summarize } from "./scoring.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
 import { parseScript, type ParsedScript } from "./parsed-script.ts";
 import { maskNonCode, maskTemplateLiteralBodies } from "./source-text.ts";
-import type { AnalysisOptions, AnalysisReport, Config, Finding, Pillar, RunDiagnostic, ScanSurfaceNote, SkippedPath, SuppressionSummary } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport, Config, Finding, OutputFormat, Pillar, RunDiagnostic, ScanSurfaceNote, SkippedPath, SuppressionSummary } from "./types.ts";
 
 /*
  * Internal hook view contract: both reports come from one current-tree scan so full-file and
@@ -71,12 +71,16 @@ export function analyse(options: AnalysisOptions): AnalysisReport {
 
   // File-scoped policy: diff runs report and fail on diagnostics from changed target files only.
   const diagnostics = [...filterScopedDiagnostics(run.diagnostics, changedScope), ...scopeDiagnostics];
-  return reportFromRun({ ...run, diagnostics }, options, { ...run.baselineResult, findings: changedResult.findings }, changedResult.suppressedCount);
+  // A scope the run could not read leaves nothing scoped to report. Publishing the unscoped findings beside the
+  // diagnostic would read as a successful narrow scan at a scope the run never applied.
+  const findings = scopeDiagnostics.length === 0 ? changedResult.findings : [];
+  return reportFromRun({ ...run, diagnostics }, options, { ...run.baselineResult, findings }, changedResult.suppressedCount);
 }
 
-// An unreadable changed range names no region, so the run is reported unscoped with one run-invalidating
-// diagnostic and exits 2, as a missing input does. The diagnostic carries the type the hook reports for the
-// same failure. A literal empty value never reaches here: it is read as no filter.
+// An unreadable changed range names no region, so the run reports one run-invalidating diagnostic, no findings,
+// and exits 2, as a missing input does. The diagnostic carries the type the hook reports for the same failure,
+// which is the one type the family publishes for it. A literal empty value never reaches here: it is read as no
+// filter, which FAMILY-CONTRACT.md section 6 still has to settle.
 function changedRegionScopeOrDiagnostic(options: AnalysisOptions): { changedScope: ChangedRegionScope | undefined; scopeDiagnostics: RunDiagnostic[] } {
   try {
     return { changedScope: changedRegionScope(options), scopeDiagnostics: [] };
@@ -249,6 +253,34 @@ function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResul
     // paths.analysedFiles, which also counts the text inputs the raw-text rules read.
     score: scoreReport(findings, run.discovery.files.filter((file) => file.isScript).length),
     ...(baselineResult.baseline ? { baseline: baselineResult.baseline } : {}),
+  };
+}
+
+// The type every port publishes when it cannot load the configuration it was given.
+export const CONFIG_ERROR_DIAGNOSTIC_TYPE = "config-error";
+
+/*
+ * Builds the envelope a run that could not start still owes a caller who asked for a machine format.
+ *
+ * Nothing was discovered and nothing was scanned, so it reports one run-invalidating diagnostic and empty
+ * everything else. Printing only to stderr would leave a JSON consumer with no diagnostic, no type and no run block
+ * to read, where every other port publishes all three.
+ *
+ * Stable contract: the same `gruff.analysis.v3` schema shape `reportFromRun` publishes, carrying zero findings and
+ * exactly one diagnostic. Throws nothing.
+ */
+export function failedRunReport(projectRoot: string, format: OutputFormat, diagnosticType: string, message: string): AnalysisReport {
+  return {
+    schemaVersion: "gruff.analysis.v3",
+    tool: { name: "gruff-ts", version: VERSION },
+    // The threshold is the `analyse` default because no flag was read; the refusal exits 2 whatever it says.
+    run: { projectRoot, format, failOn: "advisory", generatedAt: new Date().toISOString() },
+    summary: summarize([]),
+    paths: { analysedFiles: 0, ignoredPaths: [], skipped: [], missingPaths: [] },
+    diagnostics: [{ diagnosticType, message }],
+    suppressions: [],
+    findings: [],
+    score: scoreReport([], 0),
   };
 }
 

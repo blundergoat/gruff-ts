@@ -62,9 +62,10 @@ const FILE_WIDE_RULE_IDS = new Set(["design.large-module-concentration", "docs.m
 // so changed-region attribution must consult the member list, not only the anchor `filePath`.
 const PROJECT_RELATIONSHIP_RULE_IDS = new Set(["design.circular-import"]);
 
-// Builds the changed-region scope requested by CLI options. Throws on stdin diffs missing patch text.
+// Builds the changed-region scope requested by CLI options. Throws on stdin diffs missing patch text, and on a
+// `--changed-ranges` the caller passed with no range in it, which asks for a scoped run over nothing.
 export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope | undefined {
-  if (options.changedRanges) {
+  if (options.changedRanges !== undefined) {
     return { mode: options.changedScope, rangesByFile: new Map(), wholeFiles: new Set(), changedFiles: new Set(), explicitRanges: parseChangedRanges(options.changedRanges) };
   }
   if (options.diffPatch !== undefined) {

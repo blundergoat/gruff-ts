@@ -218,7 +218,9 @@ test("summary exits 0 on findings unless --fail-on asks for a gate", () => {
 
 test("an unreadable --changed-ranges value exits 2 with one run-invalidating diagnostic", () => {
   const base = ["analyse", "fixtures/sample.ts", "--no-config", "--no-baseline", "--fail-on=none"];
-  for (const [value, message] of [["abc", "invalid --changed-ranges entry: abc"], [",", "--changed-ranges must include at least one range such as 3-3 or 8-10"]]) {
+  // A value naming no range at all is malformed too: the caller asked for a scoped run over nothing.
+  const emptyRangesMessage = "--changed-ranges must include at least one range such as 3-3 or 8-10";
+  for (const [value, message] of [["abc", "invalid --changed-ranges entry: abc"], [",", emptyRangesMessage], ["", emptyRangesMessage]]) {
     const json = spawnSync("./bin/gruff-ts", [...base, "--format=json", `--changed-ranges=${value}`], { encoding: "utf8" });
     assert.equal(json.status, 2, `${value}: exit`);
     const payload = JSON.parse(json.stdout) as { schemaVersion: string; summary: { exitCode: number }; diagnostics: Array<{ type: string; message: string; invalidatesRun: boolean }> };
@@ -230,8 +232,6 @@ test("an unreadable --changed-ranges value exits 2 with one run-invalidating dia
     assert.equal(text.status, 2, `${value}: text exit`);
     assert.equal(text.stderr, `gruff-ts: ${message}\n`);
   }
-  // A literal empty value names no range at all and stays "no filter".
-  assert.equal(spawnSync("./bin/gruff-ts", [...base, "--changed-ranges="], { encoding: "utf8" }).status, 0);
   // The hook keeps its own fatal payload for the same input.
   const hook = spawnSync("./bin/gruff-ts", ["hook", "fixtures/sample.ts", "--no-config", "--changed-ranges=abc"], { encoding: "utf8" });
   assert.equal(hook.status, 2);

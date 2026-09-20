@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { cwd } from "node:process";
+import { CONFIG_ERROR_DIAGNOSTIC_TYPE, failedRunReport } from "./analyser.ts";
 import { DEFAULT_BASELINE } from "./baseline.ts";
 import { checkIgnore, checkIgnoreExitCode, renderCheckIgnore, type CheckIgnoreFormat } from "./check-ignore.ts";
 import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError } from "./changed-regions.ts";
@@ -309,7 +310,7 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
         writeChangedRegionFailure(report, options.format);
         report.findings = applyDisplaySelectors(report.findings, displaySelectorsFrom(rawOptions), configured.displayFloor);
         writeCommandOutput(program, renderReport(report, options.format));
-      });
+      }, (error) => writeFailedRunEnvelope(program, rawOptions.format, error));
     });
 }
 
@@ -818,6 +819,7 @@ function assertFullScanHistoryOptions(rawOptions: Record<string, unknown>): void
     throw new ConfigLoadError(
       "`--history-file` requires a full scan and cannot be combined with `--diff`, `--since`, or `--changed-ranges`.",
       "Remove the changed-region option, or omit `--history-file` for this filtered scan.",
+      false,
     );
   }
 }
@@ -882,7 +884,7 @@ function deepScanBudgetOption(rawOptions: Record<string, unknown>): Partial<Pick
     && typeof budgetOverride.maxBytes === "number" && Number.isSafeInteger(budgetOverride.maxBytes) && budgetOverride.maxBytes > 0) {
     return { deepScanBudget: { enabled: true, maxLines: budgetOverride.maxLines, maxBytes: budgetOverride.maxBytes } };
   }
-  throw new ConfigLoadError("Invalid deep-scan budget override.", "Pass `--deep-scan-budget LINES:BYTES` with positive integers, or `--deep-scan-budget off`.");
+  throw new ConfigLoadError("Invalid deep-scan budget override.", "Pass `--deep-scan-budget LINES:BYTES` with positive integers, or `--deep-scan-budget off`.", false);
 }
 
 /*
@@ -912,6 +914,7 @@ function newDebtExitCode(report: AnalysisReport, rawOptions: Record<string, unkn
     throw new ConfigLoadError(
       "`--fail-on-new` needs an applied baseline to compare against, and this run applied none.",
       "Pass `--baseline <path>`, or generate one first with `--generate-baseline <path>`.",
+      false,
     );
   }
 
@@ -1025,18 +1028,35 @@ function applyMinimumSeverityPrecedence(options: AnalysisOptions, command: Minim
 }
 
 /*
+ * Publishes the envelope a run that could not start owes a caller who asked for a machine format.
+ *
+ * A human-readable format already carries the whole reason on stderr, so only the machine formats gain the
+ * envelope; every other port draws the line in the same place.
+ */
+function writeFailedRunEnvelope(program: Command, requestedFormat: unknown, error: ConfigLoadError): void {
+  if (!error.isConfigLoadFailure || (requestedFormat !== "json" && requestedFormat !== "sarif")) {
+    return;
+  }
+  writeCommandOutput(program, renderReport(failedRunReport(cwd(), requestedFormat, CONFIG_ERROR_DIAGNOSTIC_TYPE, error.message), requestedFormat));
+}
+
+/*
  * Wraps an async command action so a malformed `.gruff-ts.yaml` surfaces as a clean stderr message
  * and exit code 2, not a raw Node stack trace. Catches `ConfigLoadError` (user-actionable config
  * bug) and reports it via formatted stderr; rethrows every other exception so an analyser/code
  * bug still surfaces its stack for debugging. The exit code matches the existing diagnostic
  * convention in `exitFor` so CI scripts that already handle exit 2 keep working.
+ *
+ * `publishRefusal` lets a command that speaks a machine format publish the refusal as an envelope too, because
+ * only the call site knows which format was asked for.
  */
-async function runWithConfigErrorHandling(action: () => Promise<void> | void): Promise<void> {
+async function runWithConfigErrorHandling(action: () => Promise<void> | void, publishRefusal?: (error: ConfigLoadError) => void): Promise<void> {
   try {
     await action();
   } catch (error) {
     if (error instanceof ConfigLoadError) {
       process.stderr.write(`gruff-ts: config error\n  ${error.message}\n\nSuggested fix:\n  ${error.suggestion}\n`);
+      publishRefusal?.(error);
       process.exitCode = 2;
       return;
     }

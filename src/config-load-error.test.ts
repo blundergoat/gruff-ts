@@ -115,6 +115,43 @@ test("an invalid config rule value exits 2 with a concise error and no stack tra
 });
 
 /*
+ * Fixture purpose: a refusal after argument parsing still owes a machine caller an envelope, so a JSON consumer
+ * reads the failure from `diagnostics` instead of scraping stderr for it. A human-readable format keeps stdout
+ * empty, because the whole reason is already on stderr.
+ * Stable contract: only a configuration that failed to load publishes; a refusal the caller asked for by combining
+ * flags publishes nothing, whatever format it asked for.
+ */
+test("a config error publishes the v3 envelope under --format json and leaves text stdout empty", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-config-envelope-"));
+  try {
+    writeFileSync(join(projectRoot, "ok.ts"), "// File overview: config error fixture.\nexport const fine = 1;\n");
+    writeFileSync(join(projectRoot, ".gruff-ts.yaml"), "schemaVersion: gruff-ts.config.v0.1\nrules:\n  security.eval-call:\n    enabled: no\n");
+    const binary = join(REPO_ROOT, "bin/gruff-ts");
+    const spawnOptions = { cwd: projectRoot, encoding: "utf8" } as const;
+
+    const machine = spawnSync("bash", [binary, "analyse", ".", "--format", "json"], spawnOptions);
+    assert.equal(machine.status, 2);
+    const envelope = JSON.parse(machine.stdout);
+    assert.equal(envelope.schemaVersion, "gruff.analysis.v3");
+    assert.deepEqual(envelope.findings, []);
+    assert.equal(envelope.diagnostics.length, 1);
+    assert.equal(envelope.diagnostics[0].type, "config-error");
+
+    const human = spawnSync("bash", [binary, "analyse", ".", "--format", "text"], spawnOptions);
+    assert.equal(human.status, 2);
+    assert.equal(human.stdout, "");
+
+    // `--fail-on-new` without a baseline is a refusal the caller asked for, not a configuration that failed to
+    // load, so it publishes nothing: an empty envelope would replace a report this run did produce.
+    const flagConflict = spawnSync("bash", [binary, "analyse", ".", "--format", "json", "--fail-on-new", "--no-config", "--no-baseline"], spawnOptions);
+    assert.equal(flagConflict.status, 2);
+    assert.equal(flagConflict.stdout, "");
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+/*
  * Fixture purpose: a key gruff-ts does not act on is a setting the user believes is in force and is not, which is
  * the one configuration failure a reader cannot see by looking at their own file. Every other port already refuses
  * one; gruff-ts accepted all three of these shapes with exit 0 until 0.6.0.

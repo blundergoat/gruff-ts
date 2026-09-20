@@ -1,6 +1,6 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-09-13
+last_reviewed: 2026-09-21
 ---
 
 # Schema + CLI surface footguns
@@ -175,6 +175,27 @@ that named the wrong file printed its first bytes into the report. A fresh-conte
 foreign-baseline diagnostic echoing any `toolLanguage` text. `unreadableReason` and `writerName` (`src/baseline-file.ts`,
 search: `function unreadableReason`) now use fixed words, and `src/baseline-and-project.test.ts`
 (search: `unusable baseline`) asserts that no diagnostic carries the file's text.
+
+## Footgun: `ConfigLoadError` also carries three refusals that are not configuration failures
+
+**Status:** active | **Created:** 2026-09-21 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Never treat a caught `ConfigLoadError` as proof that the configuration failed to load. Read
+`isConfigLoadFailure` before publishing anything keyed on that meaning, such as a `config-error` diagnostic.
+**Trigger phase:** ACT
+
+This is the mirror of the sibling entry about IO and parse errors escaping the formatted path. There the problem
+was too few failures reaching `ConfigLoadError`; here it is too many. Besides the loader's own throws in
+`src/config.ts` and `src/sensitive-exclusions.ts`, `src/cli-program.ts` raises the same type for three refusals
+the caller asked for by combining flags: `--history-file` with a changed-region selector
+(search: `function assertFullScanHistoryOptions`), an unusable `--deep-scan-budget`, and `--fail-on-new` with no
+applied baseline (search: `needs an applied baseline to compare against`).
+
+M46 decision 5 published a `config-error` envelope from `runWithConfigErrorHandling`'s catch and so stamped that
+type on a `--history-file` conflict, which `src/history-scope.test.ts` caught. The worse case had no test:
+`--fail-on-new` throws **after** a successful scan, so publishing there would have replaced a report the run had
+already produced with an empty envelope claiming nothing was analysed. The type now records which it is
+(`src/config-load-error.ts`, search: `isConfigLoadFailure`), and only a genuine load failure publishes.
+
 
 ## Resolved Entries
 
