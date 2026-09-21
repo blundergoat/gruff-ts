@@ -42,6 +42,12 @@ time, so a project using more than one of them moves once. This port's recorded 
 
 18. **an unreadable `--changed-ranges` value exits 2** — A script that treated exit `1` as "findings" after a typo in `--changed-ranges` now sees `2` and a `changed-region` diagnostic.
 
+19. **an empty `--changed-ranges` is refused instead of scanning everything** — `--changed-ranges=` asks for a scoped run and names no range, and it was read as "no filter": the run silently widened to the whole tree and exited `0`. It now exits `2` with one `changed-region` diagnostic and no findings, on analyse and on the hook. A caller that passes a computed range which can legitimately come back empty must skip the run rather than pass the empty value; the shipped `gruff-code-quality.sh` wrapper already does.
+
+20. **two sensitive-data rules stop being silently skipped in lockfiles** — This port removed a whole rule pair from lockfiles with no audit row at all. Only `sensitive-data.high-entropy-string` is skipped now, and the skip is counted, so a real credential under a `token:` key in a lockfile reports where it did not before.
+
+21. **`sensitive-data.aws-access-key` reports AWS session tokens** — The rule matched only the `AKIA` long-term prefix, so a temporary `ASIA` credential went unnamed. Both are reported now. A run that gates on this rule may see new findings where a session token is present in source.
+
 ## Upgrade workflow (`0.5.x` → `0.6.0`)
 
 1. Read the list above and decide which breaks touch your project. A project with no committed
