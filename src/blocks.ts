@@ -403,13 +403,28 @@ function isEmptyFunctionBody(source: string): boolean {
 // arrow functions fall back to the slice after `=>`. The trailing-`;` strip keeps the arrow
 // branch usable for downstream regex tests that anchor on statement boundaries.
 export function functionBodyContent(source: string): string {
-  const start = source.indexOf("{");
+  const start = functionBlockBrace(source);
   const end = source.lastIndexOf("}");
   if (start === -1 || end <= start) {
     const arrow = source.indexOf("=>");
     return arrow === -1 ? "" : source.slice(arrow + 2).replace(/;?\s*$/, "");
   }
   return source.slice(start + 1, end);
+}
+
+// The opening brace of a function block, or -1 when the callable has an expression body. A template
+// interpolation's `${` carries a brace that is not a block: taking it as one made the body of an
+// expression-bodied arrow collapse to the interpolation's blanked contents, so every parameter used
+// beside the template read as unused. The masker blanks a template's text but preserves its braces,
+// which is why the brace survives to be mistaken for a block in the first place.
+function functionBlockBrace(source: string): number {
+  for (let index = source.indexOf("{"); index !== -1; index = source.indexOf("{", index + 1)) {
+    if (source[index - 1] !== "$") {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 // Walks upward past blank lines and the closing `}` looking for a final `return;`. Returns the

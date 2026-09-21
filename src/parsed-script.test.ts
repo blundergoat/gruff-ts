@@ -216,6 +216,35 @@ test("M22 report repro B: constructor parameter properties are members, while an
   assert.deepEqual(unusedParameters, ["ignoredCode"]);
 });
 
+// A template interpolation's braces are not a function block. Taking them for one collapsed an
+// expression-bodied arrow's body to the interpolation's blanked contents, so every parameter used beside the
+// template read as unused. M46 measured four such findings across the TypeScript corpus.
+test("M46: an expression-bodied arrow whose body holds a template interpolation reads its parameters", () => {
+  const report = analyseFixture([
+    "/** The corpus shape: the parameter is used on the line that also carries a template interpolation. */",
+    "export const routeConflict = (messages: string[]): string =>",
+    "  [",
+    "    \"Conflicting routes:\",",
+    "    ...messages.map((message) => `  - ${message}`),",
+    "  ].join(\"\\n\");",
+    "",
+    "/** Control: the same body with no interpolation, which always read correctly. */",
+    "export const routeConflictPlain = (entries: string[]): string =>",
+    "  [",
+    "    \"Conflicting routes:\",",
+    "    ...entries.map((entry) => \"  - \" + entry),",
+    "  ].join(\"\\n\");",
+    "",
+    "/** Control: an expression body holding an interpolation that reads nothing from the signature. */",
+    "export const fixedLabel = (unreadInput: string[]): string =>",
+    "  [`  - fixed`].join(\"\\n\");",
+    "",
+  ].join("\n"));
+  const unusedParameters = report.findings.filter((entry) => entry.ruleId === "waste.unused-parameter").map((entry) => entry.metadata?.parameter);
+
+  assert.deepEqual(unusedParameters, ["unreadInput"]);
+});
+
 // Fixture covers the report's repro C: a later default reading an earlier parameter, its body-default control, and
 // a parameter named only inside another parameter's function type.
 test("M22 report repro C: a parameter read by a later parameter's default is used, while an unread one still fires", () => {
