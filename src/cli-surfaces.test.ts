@@ -232,10 +232,15 @@ test("an unreadable --changed-ranges value exits 2 with one run-invalidating dia
     assert.equal(text.status, 2, `${value}: text exit`);
     assert.equal(text.stderr, `gruff-ts: ${message}\n`);
   }
-  // The hook keeps its own fatal payload for the same input.
-  const hook = spawnSync("./bin/gruff-ts", ["hook", "fixtures/sample.ts", "--no-config", "--changed-ranges=abc"], { encoding: "utf8" });
-  assert.equal(hook.status, 2);
-  assert.deepEqual((JSON.parse(hook.stdout) as { diagnostics: Array<{ type: string; severity: string }> }).diagnostics.map(({ type, severity }) => ({ type, severity })), [{ type: "changed-region", severity: "fatal" }]);
+  // The hook keeps its own fatal payload for the same inputs, empty among them: widening a hook run silently
+  // would hand an agent a whole-tree finding list attributed to the edit it just made.
+  for (const unusableRanges of ["abc", ""]) {
+    const hook = spawnSync("./bin/gruff-ts", ["hook", "fixtures/sample.ts", "--no-config", `--changed-ranges=${unusableRanges}`], { encoding: "utf8" });
+    assert.equal(hook.status, 2, `${unusableRanges}: hook exit`);
+    const payload = JSON.parse(hook.stdout) as { findings: unknown[]; diagnostics: Array<{ type: string; severity: string }> };
+    assert.deepEqual(payload.diagnostics.map(({ type, severity }) => ({ type, severity })), [{ type: "changed-region", severity: "fatal" }]);
+    assert.deepEqual(payload.findings, [], `${unusableRanges}: findings beside an unusable scope`);
+  }
 });
 
 test("summary CLI prints compact scan digest without per-finding spam", () => {

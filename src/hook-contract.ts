@@ -300,8 +300,9 @@ function hookRun(report: AnalysisReport, input: HookReportInput): HookRun {
 
 // Names which region selector chose the work, so a consumer can tell a targeted run from a whole-tree one.
 function hookRunMode(input: HookReportInput): HookRun["mode"] {
-  // Explicit ranges are the narrowest selector and win when more than one is given.
-  if (input.scopedOptions.changedRanges) {
+  // Explicit ranges are the narrowest selector and win when more than one is given, and an empty value is
+  // still a request to scope: presence decides, not truthiness.
+  if (input.scopedOptions.changedRanges !== undefined) {
     return "changed-ranges";
   }
   if (input.scopedOptions.diff || input.scopedOptions.diffPatch) {

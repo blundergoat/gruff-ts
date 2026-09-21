@@ -842,8 +842,10 @@ function hookCurrentOptions(options: AnalysisOptions): AnalysisOptions {
 }
 
 // True when any changed-region selector (ranges, diff, since, stdin patch) is active for the run.
+// `changedRanges` is tested for presence rather than truthiness, matching changedRegionScope: an empty value
+// asks to scope the run and names no range, which the parser refuses instead of widening the scan.
 function hasHookChangedRegion(options: AnalysisOptions): boolean {
-  return Boolean(options.changedRanges || options.diff || options.since || options.diffPatch);
+  return options.changedRanges !== undefined || Boolean(options.diff || options.since || options.diffPatch);
 }
 
 // Extracts the --baseline path for the hook's new-only filtering against the stable baseline contract.
