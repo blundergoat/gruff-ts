@@ -43,7 +43,7 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
       // Explicit placeholders are teaching material rather than credentials the user needs to rotate. An AWS key
       // is one fixed-shape alphanumeric run, where a marker word can only sit inside the value and never begin a
       // token, so only a mask silences it and AWS's documented example key reports, as it does in every port.
-      const isPlaceholder = ruleId === "sensitive-data.aws-access-key" ? isMaskedCredential(matchedSensitiveText) : isExplicitExampleCredential(matchedSensitiveText);
+      const isPlaceholder = ruleId === "sensitive-data.aws-access-key" ? isMaskedAwsAccessKey(matchedSensitiveText) : isExplicitExampleCredential(matchedSensitiveText);
       if (isPlaceholder) {
         continue;
       }
@@ -89,6 +89,12 @@ function isTypeLevelUrlCredential(matchedSensitiveText: string): boolean {
 // File paths never make production-shaped credentials disappear from the user's report.
 function isExplicitExampleCredential(matchedSensitiveText: string): boolean {
   return /EXAMPLE|REDACTED|PLACEHOLDER|CHANGEME/i.test(matchedSensitiveText) || isMaskedCredential(matchedSensitiveText);
+}
+
+// Recognizes an AWS key whose whole body is a run of X, written to show where a key goes (FAMILY-CONTRACT.md
+// section 5). Only the whole body counts: a real key may contain a run of X, and hiding it would hide a live credential.
+function isMaskedAwsAccessKey(matchedSensitiveText: string): boolean {
+  return /^(?:AKIA|ASIA)X{16}$/.test(matchedSensitiveText);
 }
 
 // Recognizes a value whose body was masked out with a run of `*` or `X`, which names no credential at all.

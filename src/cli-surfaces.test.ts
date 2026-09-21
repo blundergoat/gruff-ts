@@ -223,10 +223,11 @@ test("an unreadable --changed-ranges value exits 2 with one run-invalidating dia
   for (const [value, message] of [["abc", "invalid --changed-ranges entry: abc"], [",", emptyRangesMessage], ["", emptyRangesMessage]]) {
     const json = spawnSync("./bin/gruff-ts", [...base, "--format=json", `--changed-ranges=${value}`], { encoding: "utf8" });
     assert.equal(json.status, 2, `${value}: exit`);
-    const payload = JSON.parse(json.stdout) as { schemaVersion: string; summary: { exitCode: number }; diagnostics: Array<{ type: string; message: string; invalidatesRun: boolean }> };
+    const payload = JSON.parse(json.stdout) as { schemaVersion: string; summary: { exitCode: number }; diagnostics: Array<{ type: string; message: string; invalidatesRun: boolean }>; findings: unknown[] };
     assert.equal(payload.schemaVersion, "gruff.analysis.v3");
     assert.equal(payload.summary.exitCode, 2);
     assert.deepEqual(payload.diagnostics.map(({ type, message, invalidatesRun }) => ({ type, message, invalidatesRun })), [{ type: "changed-region", message, invalidatesRun: true }]);
+    assert.deepEqual(payload.findings, [], `${value}: findings beside an unreadable scope`);
 
     const text = spawnSync("./bin/gruff-ts", [...base, `--changed-ranges=${value}`], { encoding: "utf8" });
     assert.equal(text.status, 2, `${value}: text exit`);

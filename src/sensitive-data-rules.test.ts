@@ -486,6 +486,19 @@ AWS_SESSION_TWO=${maskedSession}
   assert.equal(awsFindings[0]?.metadata.preview, "[redacted:aws-access-key]");
 });
 
+test("an AWS key reads as masked only when its whole body is X", () => {
+  // FAMILY-CONTRACT.md section 5 reads a body that is entirely X as naming no credential, while a real key that
+  // merely contains a run of X still reports, because hiding it would hide a live credential.
+  const masked = ["AKIA", "X".repeat(16)].join("");
+  const partlyMasked = ["AKIA", "IOSFODNN", "X".repeat(8)].join("");
+  const report = analyseFixture(`AWS_KEY_ONE=${masked}
+AWS_KEY_TWO=${partlyMasked}
+`, { fileName: ".env" });
+  const awsFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
+
+  assert.deepEqual(awsFindings.map((finding) => finding.line), [2]);
+});
+
 test("sensitive-data expansion scans secret dotfiles", () => {
   const report = analyseProject({
     ".npmrc": `//registry.npmjs.org/:_authToken=${NPM_AUTH_TOKEN_FIXTURE_VALUE}
