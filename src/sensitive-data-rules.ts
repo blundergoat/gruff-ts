@@ -19,7 +19,9 @@ interface SensitiveSourceFile {
 // Keeping pattern order stable prevents baseline churn when no source behavior changed.
 function analyseSensitiveData(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const patterns: Array<[string, RegExp, string]> = [
-    ["sensitive-data.aws-access-key", /AKIA[0-9A-Z]{16}/g, "AWS access key pattern detected."],
+    // ASIA is AWS's prefix for temporary session credentials, over the same fixed body; missing it left a live
+    // credential unnamed.
+    ["sensitive-data.aws-access-key", /(?:AKIA|ASIA)[0-9A-Z]{16}/g, "AWS access key pattern detected."],
     ["sensitive-data.private-key", /BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY/g, "Private key block detected."],
     ["sensitive-data.jwt-token", /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "JWT-looking token detected."],
     ["sensitive-data.database-url-password", /\b(?:https?|postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|amqp|amqps|mssql):\/\/[^\/\s:@]+:[^\/\s@]+@/g, "URL appears to include embedded credentials."],

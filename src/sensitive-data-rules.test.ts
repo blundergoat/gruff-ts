@@ -472,6 +472,20 @@ AWS_KEY_THREE=${maskedKey}
   assert.deepEqual(urlFindings.map((finding) => finding.line), [4]);
 });
 
+test("an ASIA session token reports as an AWS access key, and a masked one stays quiet", () => {
+  // AWS issues temporary session credentials under the ASIA prefix over the same fixed body, so a rule that
+  // named only AKIA left a live credential unreported. gruff-php and gruff-py already named both shapes.
+  const sessionToken = ["ASIA", "IOSFODNN7", "EXAMPLE"].join("");
+  const maskedSession = ["ASIA", "X".repeat(16)].join("");
+  const report = analyseFixture(`AWS_SESSION_ONE=${sessionToken}
+AWS_SESSION_TWO=${maskedSession}
+`, { fileName: ".env" });
+  const awsFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
+
+  assert.deepEqual(awsFindings.map((finding) => finding.line), [1]);
+  assert.equal(awsFindings[0]?.metadata.preview, "[redacted:aws-access-key]");
+});
+
 test("sensitive-data expansion scans secret dotfiles", () => {
   const report = analyseProject({
     ".npmrc": `//registry.npmjs.org/:_authToken=${NPM_AUTH_TOKEN_FIXTURE_VALUE}
