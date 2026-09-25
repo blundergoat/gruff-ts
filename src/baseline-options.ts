@@ -47,7 +47,16 @@ interface BaselineSelection {
 export function applyBaselineOptions(projectRoot: string, options: AnalysisOptions, findings: Finding[], declarationSpans = new Map<string, DeclarationSpan[]>(), unusableBaseline: "throw" | "diagnose" = "throw"): BaselineApplication {
   const declarationPosition = declarationPositionFromSpans(declarationSpans);
   if (options.generateBaseline) {
-    return generateBaselineResult(projectRoot, options, findings, declarationPosition);
+    try {
+      return generateBaselineResult(projectRoot, options, findings, declarationPosition);
+    } catch (error) {
+      // A generate or migration the retreat path forbids writes nothing, so like an unusable baseline it keeps every
+      // finding visible and invalidates the run with exit 2, instead of escaping as a stack trace with exit 1.
+      if (unusableBaseline === "diagnose" && error instanceof BaselineFileError) {
+        return { findings, diagnostics: [{ diagnosticType: "baseline-error", message: error.message }] };
+      }
+      throw error;
+    }
   }
 
   if (options.shouldSkipBaseline) {

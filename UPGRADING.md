@@ -61,7 +61,9 @@ time, so a project using more than one of them moves once. This port's recorded 
 3. Regenerate the configuration if you hand-wrote one: `gruff-ts init --force` rewrites it
    with the current schema version and preserves your `paths.ignore`, `failOn:`, and
    `sensitiveExclusions:` entries. Any `rules:` tuning is reset to the shipped defaults, so copy
-   those overrides back into the regenerated file by hand.
+   those overrides back into the regenerated file by hand. To keep them instead, run
+   `gruff-ts migrate-config --config <old> --output <new>`, which writes a separate file and
+   leaves the original untouched.
 4. Carry a baseline forward rather than regenerating it, so previously reviewed findings stay
    reviewed: `gruff-ts analyse --migrate-baseline <old> --generate-baseline <new>`. It writes a
    separate file and never modifies the original.

@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { cwd } from "node:process";
-import { CONFIG_ERROR_DIAGNOSTIC_TYPE, failedRunReport } from "./analyser.ts";
+import { CONFIG_ERROR_DIAGNOSTIC_TYPE, failedRunReport, TARGET_ERROR_DIAGNOSTIC_TYPE, targetOutsideLaunchDirectory } from "./analyser.ts";
 import { DEFAULT_BASELINE } from "./baseline.ts";
 import { checkIgnore, checkIgnoreExitCode, renderCheckIgnore, type CheckIgnoreFormat } from "./check-ignore.ts";
 import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError } from "./changed-regions.ts";
@@ -299,6 +299,13 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .option("--fail-on-new", "Exit 1 when the applied baseline leaves any finding the user has not reviewed, whatever its severity.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
+      const outsideTarget = targetOutsideLaunchDirectory(paths);
+      // Several targets outside the launch directory leave no root to report from, so the run is refused with an
+      // envelope a machine caller can read instead of a throw while the report renders.
+      if (outsideTarget !== null) {
+        refuseTargetsOutsideLaunchDirectory(program, rawOptions.format, outsideTarget);
+        return;
+      }
       await runWithConfigErrorHandling(async () => {
         const baseOptions = normalizeOptions(paths, rawOptions, { shouldAllowBaselineFlag: true });
         const configured = configuredSeverities(baseOptions, "analyse", command);
@@ -1040,6 +1047,21 @@ function writeFailedRunEnvelope(program: Command, requestedFormat: unknown, erro
     return;
   }
   writeCommandOutput(program, renderReport(failedRunReport(cwd(), requestedFormat, CONFIG_ERROR_DIAGNOSTIC_TYPE, error.message), requestedFormat));
+}
+
+/*
+ * Refuses a run whose several targets sit outside the launch directory, with exit 2.
+ *
+ * The reason goes to stderr for every format, and a machine format also gets the envelope, drawing the line where
+ * `writeFailedRunEnvelope` does for a configuration that cannot load.
+ */
+function refuseTargetsOutsideLaunchDirectory(program: Command, requestedFormat: unknown, target: string): void {
+  const message = `target "${target}" is outside the launch directory; gruff-ts analyses several targets only from a directory that contains them all`;
+  process.stderr.write(`gruff-ts: ${message}\n`);
+  if (requestedFormat === "json" || requestedFormat === "sarif") {
+    writeCommandOutput(program, renderReport(failedRunReport(cwd(), requestedFormat, TARGET_ERROR_DIAGNOSTIC_TYPE, message), requestedFormat));
+  }
+  process.exitCode = 2;
 }
 
 /*

@@ -259,6 +259,29 @@ function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResul
 // The type every port publishes when it cannot load the configuration it was given.
 export const CONFIG_ERROR_DIAGNOSTIC_TYPE = "config-error";
 
+// The type every port publishes when it refuses the targets it was given, such as several outside the launch directory.
+export const TARGET_ERROR_DIAGNOSTIC_TYPE = "target-error";
+
+/**
+ * Name the first of several targets that sits outside the launch directory.
+ *
+ * One such target is supported: `gruff-ts analyse /srv/checkout` makes it the project root. Several are not, because
+ * every reported path is written relative to one root, so `../a` and `../b` from a sibling directory would leave paths
+ * the report cannot express. The caller refuses that run instead of throwing while the report renders.
+ *
+ * @param paths Scan targets as typed on the command line.
+ * @returns The first target outside the launch directory when two or more were named, otherwise null.
+ */
+export function targetOutsideLaunchDirectory(paths: string[]): string | null {
+  // A single target, or none, always has a root the run can report against.
+  if (paths.length < 2) {
+    return null;
+  }
+  const launchDirectory = cwd();
+  // One target outside the launch directory leaves the targets with no shared root to report from.
+  return paths.find((path) => !isSameOrDescendant(resolve(launchDirectory, path), launchDirectory)) ?? null;
+}
+
 /*
  * Builds the envelope a run that could not start still owes a caller who asked for a machine format.
  *

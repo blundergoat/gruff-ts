@@ -2,7 +2,7 @@
 import { findingIdentities } from "./baseline-identity.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -385,6 +385,57 @@ test("json report survives a target and a baseline outside the launch directory"
     const baseline = (JSON.parse(outsideBaseline.stdout) as { baseline: { applied: boolean; path?: string } }).baseline;
     assert.equal(baseline.applied, true);
     assert.equal("path" in baseline, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Two targets named from a sibling directory have no root inside the launch directory. The JSON caller must get one
+// run-invalidating target-error diagnostic and no findings with exit 2, not a throw while the report renders.
+// Spawns the built binary twice in a fresh temporary directory, removed again whether an assertion threw or not.
+test("several targets outside the launch directory are refused with a target-error envelope", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-targets-"));
+  try {
+    for (const directory of ["launch", "a", "b"]) {
+      mkdirSync(join(root, directory));
+    }
+    writeFileSync(join(root, "a", "one.ts"), "export const one = 1;\n");
+    writeFileSync(join(root, "b", "two.ts"), "export const two = 2;\n");
+    const bin = join(REPO_ROOT, "bin/gruff-ts");
+    const flags = ["--no-config", "--no-baseline", "--format", "json"];
+
+    const refused = spawnSync("bash", [bin, "analyse", "../a", "../b", ...flags], { cwd: join(root, "launch"), encoding: "utf8" });
+    assert.equal(refused.status, 2, refused.stderr);
+    const report = JSON.parse(refused.stdout) as { diagnostics: { type: string; invalidatesRun: boolean }[]; findings: unknown[] };
+    assert.deepEqual(report.diagnostics.map((diagnostic) => diagnostic.type), ["target-error"]);
+    assert.equal(report.diagnostics[0]?.invalidatesRun, true);
+    assert.deepEqual(report.findings, []);
+
+    const single = spawnSync("bash", [bin, "analyse", "../a", "--fail-on", "none", ...flags], { cwd: join(root, "launch"), encoding: "utf8" });
+    assert.equal(single.status, 0, single.stderr);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Migrating a 0.5 baseline onto itself, under the default name or any other, must be refused with one baseline-error
+// diagnostic and exit 2, like every other port, and must leave the 0.5 file byte-identical for a retreat.
+// Spawns the built binary twice in a fresh temporary directory, removed again whether an assertion threw or not.
+test("an in-place baseline migration is refused with a baseline-error envelope, not a crash", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-in-place-"));
+  try {
+    writeFileSync(join(root, "probe.ts"), "export const probe = 1;\n");
+    const legacy = `${JSON.stringify({ schemaVersion: "gruff.baseline.v1", entries: [] }, null, 2)}\n`;
+    const bin = join(REPO_ROOT, "bin/gruff-ts");
+
+    for (const name of ["gruff-baseline.json", "reviewed.json"]) {
+      writeFileSync(join(root, name), legacy);
+      const run = spawnSync("bash", [bin, "analyse", ".", "--no-config", "--format", "json", "--migrate-baseline", name, "--generate-baseline", name], { cwd: root, encoding: "utf8" });
+      assert.equal(run.status, 2, run.stderr);
+      const report = JSON.parse(run.stdout) as { diagnostics: { type: string }[] };
+      assert.deepEqual(report.diagnostics.map((diagnostic) => diagnostic.type), ["baseline-error"], name);
+      assert.equal(readFileSync(join(root, name), "utf8"), legacy, name);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

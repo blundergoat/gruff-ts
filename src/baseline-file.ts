@@ -189,7 +189,7 @@ export function requireOverwritableDefaultPath(outputPath: string, shouldForce: 
   if (schemaVersion === undefined || schemaVersion === BASELINE_SCHEMA_VERSION) {
     return;
   }
-  throw new Error(
+  throw new BaselineFileError(
     `${outputPath} is a "${schemaVersion}" baseline, not "${BASELINE_SCHEMA_VERSION}"; generating over it would destroy the retreat path. ` +
       `Migrate it with \`gruff-ts analyse --migrate-baseline ${outputPath} --generate-baseline <new path>\`, or pass --force to overwrite it`,
   );
@@ -451,7 +451,7 @@ function requireDistinctPaths(inputPath: string, outputPath: string): void {
   const resolvedInput = resolvedFilePath(inputPath);
   // A symlink or a hard link would make the "different" output the same bytes, destroying the retreat path.
   if (resolvedInput === resolvedFilePath(outputPath) || sameInode(inputPath, outputPath)) {
-    throw new Error(`migration output must be a different file from its input: ${inputPath}`);
+    throw new BaselineFileError(`migration output must be a different file from its input: ${inputPath}`);
   }
 }
 
@@ -485,15 +485,15 @@ function sameInode(inputPath: string, outputPath: string): boolean {
 function legacyRows(path: string, contents: Buffer): Array<Record<string, unknown>> {
   const parsed = JSON.parse(contents.toString("utf8")) as Record<string, unknown>;
   if (parsed.schemaVersion !== LEGACY_BASELINE_SCHEMA_VERSION) {
-    throw new Error(`migration input ${path} is not a 0.5 baseline`);
+    throw new BaselineFileError(`migration input ${path} is not a 0.5 baseline`);
   }
   const present = LEGACY_ROW_CONTAINERS.filter((container) => Array.isArray(parsed[container]));
   if (present.length > 1) {
-    throw new Error(`migration input ${path} carries more than one row container (${present.join(", ")}); a migration input must name exactly one`);
+    throw new BaselineFileError(`migration input ${path} carries more than one row container (${present.join(", ")}); a migration input must name exactly one`);
   }
   const rows = present.length === 1 ? parsed[present[0] as string] : undefined;
   if (!Array.isArray(rows)) {
-    throw new Error(`migration input ${path} must carry an "entries" or "findings" list`);
+    throw new BaselineFileError(`migration input ${path} must carry an "entries" or "findings" list`);
   }
   return rows.filter((row): row is Record<string, unknown> => typeof row === "object" && row !== null);
 }
