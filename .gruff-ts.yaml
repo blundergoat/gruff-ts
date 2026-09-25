@@ -346,23 +346,23 @@ rules:
   # security/warning: Flags external XML reaching parsers configured to expand entities.
   security.xxe-candidate:
     enabled: true
-  # sensitive-data/error: Flags vendor API key patterns including GitHub, GitLab, npm, Google API, Slack, Discord, and Stripe/OpenAI-style keys.
+  # sensitive-data/warning: Flags vendor API key patterns including GitHub, GitLab, npm, Google API, Slack, Discord, and Stripe/OpenAI-style keys.
   sensitive-data.api-key-pattern:
     enabled: true
-  # sensitive-data/error: Flags AWS access key looking values.
+  # sensitive-data/warning: Flags AWS access key looking values.
   sensitive-data.aws-access-key:
     enabled: true
-  # sensitive-data/error: Flags database and HTTP(S) URLs that include passwords or embedded credentials.
+  # sensitive-data/warning: Flags database and HTTP(S) URLs that include passwords or embedded credentials.
   sensitive-data.database-url-password:
     enabled: true
-  # sensitive-data/error: Flags GCP service-account key files (type service_account alongside a private key).
+  # sensitive-data/warning: Flags GCP service-account key files (type service_account alongside a private key).
   sensitive-data.gcp-service-account-key:
     enabled: true
-  # sensitive-data/error: Flags environment-style secret values committed in text.
+  # sensitive-data/warning: Flags environment-style secret values committed in text.
   sensitive-data.hardcoded-env-value:
     enabled: true
     threshold: 16
-    severity: error
+    severity: warning
   # sensitive-data/warning: Flags high-entropy string literals that may be secrets.
   sensitive-data.high-entropy-string:
     enabled: true
@@ -370,16 +370,16 @@ rules:
       minLength: 32
       entropy: 4.2
     severity: warning
-  # sensitive-data/error: Flags JWT-looking token literals.
+  # sensitive-data/warning: Flags JWT-looking token literals.
   sensitive-data.jwt-token:
     enabled: true
-  # sensitive-data/error: Flags PHI identifiers such as Medicare (MBI) and medical record numbers.
+  # sensitive-data/warning: Flags PHI identifiers such as Medicare (MBI) and medical record numbers.
   sensitive-data.phi-pattern:
     enabled: true
-  # sensitive-data/error: Flags PII-like identifier patterns including SSN-shaped values and Luhn-valid payment cards.
+  # sensitive-data/warning: Flags PII-like identifier patterns including SSN-shaped values and Luhn-valid payment cards.
   sensitive-data.pii-pattern:
     enabled: true
-  # sensitive-data/error: Flags private key block markers.
+  # sensitive-data/warning: Flags private key block markers.
   sensitive-data.private-key:
     enabled: true
   # size/error: Flags files longer than the configured threshold.

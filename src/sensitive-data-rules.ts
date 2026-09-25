@@ -262,7 +262,7 @@ function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: st
       matchedSensitiveText: hardcodedValue.value,
       confidence: "medium",
       metadata: { keyName: hardcodedValue.keyName, threshold: minLength },
-      severity: ruleSeverity(config, "sensitive-data.hardcoded-env-value", "error"),
+      severity: ruleSeverity(config, "sensitive-data.hardcoded-env-value", "warning"),
     });
   }
 }
@@ -328,7 +328,7 @@ function pushSensitiveFinding(args: SensitiveFindingArgs): void {
       filePath: args.file.displayPath,
       line: args.line,
       ...(args.column === undefined ? {} : { column: args.column }),
-      severity: args.severity ?? "error",
+      severity: args.severity ?? "warning",
       pillar: "sensitive-data",
       confidence: args.confidence,
       remediation: "Remove the sensitive value and load it from a secure runtime source.",

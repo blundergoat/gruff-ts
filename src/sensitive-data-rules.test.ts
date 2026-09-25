@@ -567,7 +567,26 @@ test("M22 database-url-password skips template literal types and keeps every run
   const urlFindings = report.findings.filter((entry) => entry.ruleId === "sensitive-data.database-url-password");
 
   assert.deepEqual(urlFindings.map((entry) => entry.line), [5, 7, 8, 10]);
-  assert.equal(urlFindings.every((entry) => entry.severity === "error"), true);
+  assert.equal(urlFindings.every((entry) => entry.severity === "warning"), true);
+});
+
+// The family unified sensitive-data severity at warning for 0.6.0: a detector that hard-fails a build on a match it
+// cannot confirm teaches users to add blanket ignores. Every sensitive-data descriptor must say warning, and an
+// unconfigured finding must carry the severity its descriptor publishes, not a detector-local fallback.
+test("sensitive-data findings default to the warning their descriptors publish", () => {
+  const sensitiveDescriptors = ruleDescriptors().filter((descriptor) => descriptor.pillar === "sensitive-data");
+  assert.deepEqual(sensitiveDescriptors.filter((descriptor) => descriptor.severity !== "warning").map((descriptor) => descriptor.ruleId), []);
+
+  // Assembled from parts so this test file never holds a credential-shaped literal of its own.
+  const report = analyseFixture([
+    "export const key = \"" + ["AKIA", "QWERTYUIOPASDFGH"].join("") + "\";",
+    "export const token = \"" + ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", ["dozjgNryP4J3jVmN", "Hl0w5N_XgL0n3I9P", "lFUP0THsR8U"].join("")].join(".") + "\";",
+    "",
+  ].join("\n"));
+  const sensitive = report.findings.filter((entry) => entry.pillar === "sensitive-data");
+
+  assert.deepEqual([...new Set(sensitive.map((entry) => entry.ruleId))].sort(), ["sensitive-data.aws-access-key", "sensitive-data.high-entropy-string", "sensitive-data.jwt-token"]);
+  assert.equal(sensitive.every((entry) => entry.severity === "warning"), true);
 });
 
 // M22 code review fixture: a template literal type is skipped only when its password is wholly a type interpolation

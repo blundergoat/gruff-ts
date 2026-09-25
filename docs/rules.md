@@ -174,16 +174,16 @@ existing config overrides and baselines keep matching.
 
 Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carrying explicit fake markers inside the matched value itself (`EXAMPLE`, `REDACTED`, `PLACEHOLDER`, `CHANGEME`, or masked `****`/`XXXX` runs) - the canonical AWS documentation keys end in `EXAMPLE`. A test or fixture file path alone never suppresses a production-shaped secret.
 
-- `sensitive-data.api-key-pattern` (error; high confidence): Flags vendor API key patterns including GitHub, GitLab, npm, Google API, Slack, Discord, and Stripe/OpenAI-style keys.
-- `sensitive-data.aws-access-key` (error; high confidence): Flags AWS access key looking values.
-- `sensitive-data.database-url-password` (error; high confidence): Flags database and HTTP(S) URLs that include passwords or embedded credentials.
-- `sensitive-data.gcp-service-account-key` (error; high confidence): Flags GCP service-account key files (type service_account alongside a private key).
-- `sensitive-data.hardcoded-env-value` (error; medium confidence; threshold 16): Flags environment-style secret values committed in text. In script files (TS/JS) only quoted values count: an unquoted right-hand side is a code expression (schema builder, secret-provider plumbing), not an embedded literal.
+- `sensitive-data.api-key-pattern` (warning; high confidence): Flags vendor API key patterns including GitHub, GitLab, npm, Google API, Slack, Discord, and Stripe/OpenAI-style keys.
+- `sensitive-data.aws-access-key` (warning; high confidence): Flags AWS access key looking values.
+- `sensitive-data.database-url-password` (warning; high confidence): Flags database and HTTP(S) URLs that include passwords or embedded credentials.
+- `sensitive-data.gcp-service-account-key` (warning; high confidence): Flags GCP service-account key files (type service_account alongside a private key).
+- `sensitive-data.hardcoded-env-value` (warning; medium confidence; threshold 16): Flags environment-style secret values committed in text. In script files (TS/JS) only quoted values count: an unquoted right-hand side is a code expression (schema builder, secret-provider plumbing), not an embedded literal.
 - `sensitive-data.high-entropy-string` (warning; medium confidence): Flags high-entropy string literals that may be secrets, at or above two configurable bars: `thresholds.minLength` (default 32) and `thresholds.entropy` (default 4.2 bits per character). A value under a key naming a location or a digest, such as `path`, `artifact` or `sha256`, is exempt, as are repository paths. Identifier-shaped values that decompose entirely into short dictionary-like word segments (dotted namespaces such as `Com.Example2.Services.TokenProvider`, underscored constants, slug-like catalog names) are exempt because credential alphabets interleave case and digits rather than forming words; JWTs and 20+ char mixed-case segments never earn the exemption. Character-set enumerations (a 10+ run of consecutive code points, e.g. base64 translation alphabets) are also exempt.
-- `sensitive-data.jwt-token` (error; high confidence): Flags JWT-looking token literals.
-- `sensitive-data.phi-pattern` (error; high confidence): Flags PHI identifiers such as Medicare (MBI) and medical record numbers.
-- `sensitive-data.pii-pattern` (error; high confidence): Flags PII-like identifier patterns including SSN-shaped values and Luhn-valid payment cards. A bare unseparated digit run additionally needs card vocabulary on its line (statistics can pass Luhn by coincidence); separator-grouped numbers flag without context.
-- `sensitive-data.private-key` (error; high confidence): Flags private key block markers.
+- `sensitive-data.jwt-token` (warning; high confidence): Flags JWT-looking token literals.
+- `sensitive-data.phi-pattern` (warning; high confidence): Flags PHI identifiers such as Medicare (MBI) and medical record numbers.
+- `sensitive-data.pii-pattern` (warning; high confidence): Flags PII-like identifier patterns including SSN-shaped values and Luhn-valid payment cards. A bare unseparated digit run additionally needs card vocabulary on its line (statistics can pass Luhn by coincidence); separator-grouped numbers flag without context.
+- `sensitive-data.private-key` (warning; high confidence): Flags private key block markers.
 
 ## Size
 

@@ -2,7 +2,7 @@
 import { findingIdentities } from "./baseline-identity.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -438,6 +438,32 @@ test("an in-place baseline migration is refused with a baseline-error envelope, 
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// npm installs the scoped package at node_modules/@blundergoat/gruff-ts and hoists tsx to node_modules/tsx, two
+// levels above the package. The launcher must find it there when run from a directory that is not the installing
+// project, where a bare `tsx` import has nothing to resolve against. The test writes that layout into a fresh
+// temporary directory, links the real tsx in, spawns the launcher, and removes the directory whether an assertion threw
+// or not.
+test("the launcher finds a hoisted tsx for a scoped install run from another directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-scoped-"));
+  // The launch directory is a sibling temporary directory, so no node_modules above it can resolve a bare `tsx`.
+  const elsewhere = mkdtempSync(join(tmpdir(), "gruff-ts-elsewhere-"));
+  try {
+    const packageDir = join(root, "node_modules", "@blundergoat", "gruff-ts");
+    mkdirSync(join(packageDir, "bin"), { recursive: true });
+    mkdirSync(join(packageDir, "src"), { recursive: true });
+    copyFileSync(join(REPO_ROOT, "bin/gruff-ts"), join(packageDir, "bin", "gruff-ts"));
+    writeFileSync(join(packageDir, "src", "cli.ts"), "const marker: string = \"scoped-launch-ok\";\nconsole.log(marker);\n");
+    symlinkSync(join(REPO_ROOT, "node_modules", "tsx"), join(root, "node_modules", "tsx"));
+
+    const run = spawnSync("bash", [join(packageDir, "bin", "gruff-ts")], { cwd: elsewhere, encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout.trim(), "scoped-launch-ok");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(elsewhere, { recursive: true, force: true });
   }
 });
 

@@ -112,15 +112,15 @@ file with your platform's code-scanning upload step:
 gruff-ts analyse . --format=sarif --fail-on=none > gruff.sarif
 ```
 
-For a strict security-oriented gate, bypass baselines and fail on error-severity
-findings:
+For a strict security-oriented gate, bypass baselines and fail on warning-severity
+findings, the level every sensitive-data rule reports at:
 
 ```bash
-gruff-ts analyse . --no-baseline --fail-on=error
+gruff-ts analyse . --no-baseline --fail-on=warning
 ```
 
 This is useful when an adoption baseline exists for general quality debt but
-security and sensitive-data errors should still break CI.
+security and sensitive-data findings should still break CI.
 
 ## Baselines
 
