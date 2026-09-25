@@ -489,8 +489,10 @@ function isHighEntropySecretCandidate(candidateText: string, minLength: number, 
   if (isExcludedHighEntropyCandidate(candidateText, minLength, enclosingKey)) {
     return false;
   }
-  // Without lowercase, uppercase, and digits, the literal lacks the credential diversity this rule promises.
-  if (!hasLowerUpperAndDigit(candidateText)) {
+  // Without a letter and a digit the literal is not credential-shaped (FAMILY-CONTRACT section 12): one character class
+  // clears the entropy bar by construction, and a digit-free mix of cases is an identifier. gruff-ts once required
+  // upper, lower and digit together, which hid lowercase-and-digit keys and base32 TOTP secrets.
+  if (!hasLetterAndDigit(candidateText)) {
     return false;
   }
   // Too few distinct characters indicate repetition rather than a generated secret the user should rotate.

@@ -1,6 +1,6 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-09-13
+last_reviewed: 2026-09-26
 ---
 
 # Rule scanner footguns
@@ -182,6 +182,20 @@ When you add or remove a rule from the complexity cluster (e.g. retiring `design
 After removing a rule from the catalogue, any committed comment that still names the dotted id (`pillar.name`) becomes an "unknown rule id" to `pushStaleRuleReferenceFindings` (`src/comment-rules.ts`, search: `function pushStaleRuleReferenceFindings`), which checks each id against `DESCRIPTOR_IDS`. The escape hatch is `isHistoricalContextComment` (`src/comment-rules.ts`, search: `function isHistoricalContextComment`): it matches `previously|legacy|compat|migration|ADR` and is checked PER comment line, because the scanner emits one record per `//` line. So the historical marker MUST sit on the SAME `//` line as the removed id - "retired"/"removed" are NOT in the vocabulary, and an `ADR-NNN` reference on the next line does not count.
 
 When a comment explains a retired rule (e.g. an ADR cross-reference about `design.god-function`), keep the id and an `ADR-NNN` (or `legacy`/`migration`) token on one line: `// ... the retired design.god-function (ADR-011) composite ...`. This compounds with the context-doc footgun above (the invariant/why marker must be on the LAST `//` line above the declaration), so one explanatory comment near a contract-owning declaration must satisfy both per-line constraints at once.
+
+## Footgun: a test comment that quotes a relative fixture path fails the self-scan as a stale reference
+
+**Status:** active | **Created:** 2026-09-26 | **Evidence:** OBSERVED
+**Decision changed:** In a test comment, describe a path a test creates at runtime in words ("a config named two levels
+up"), or keep it unquoted. Do not quote it in backticks.
+**Trigger phase:** VERIFY
+
+`pushStaleFileReferenceFindings` (`src/comment-rules.ts`, search: `function pushStaleFileReferenceFindings`) reads any
+quoted token that opens with `./`, `../` or a source directory and ends in a known extension as a path, and reports
+`docs.stale-comment` when that path resolves to nothing from the project root or the comment's own directory. A
+path that a test writes into a temporary directory never exists there. M10's D25 test in `src/cli-surfaces.test.ts`
+(search: `an explicit relative config is read from the launch directory`) first quoted its nested `--config` operand
+in a comment. `npm run check` passed, and the preflight's full-project scan then failed on one advisory finding.
 
 ## Footgun: a milestone may name "new" dependency rules that already exist under different ids
 

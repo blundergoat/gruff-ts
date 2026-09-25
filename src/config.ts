@@ -2,7 +2,7 @@
 //
 // Users get predictable defaults or an actionable startup error; syntax parsing and value narrowing live in `config-parse.ts`.
 import { existsSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { arrayValue, isString, objectValue, parseConfigFile, SUGGEST_EDIT_CONFIG, SUGGEST_INIT_FORCE } from "./config-parse.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
 import { BUILT_IN_PROFILES, builtInProfileNames, DEFAULT_PROFILE_NAME, isKnownRuleId, ruleOptionKeys, ruleThresholdNames } from "./profiles.ts";
@@ -80,7 +80,7 @@ function absolutize(projectRoot: string, path: string): string {
 function loadConfig(projectRoot: string, options: AnalysisOptions): Config {
   const config = defaultConfig();
   const path = options.shouldSkipConfig ? undefined : selectedConfigPath(projectRoot, options);
-  const parsedConfig: Record<string, unknown> = path ? parseConfigFile(path) : {};
+  const parsedConfig: Record<string, unknown> = path ? parseConfigFile(path, options.config ?? basename(path)) : {};
   // A selected path means the user supplied or owns a config file whose values must be applied.
   if (path) {
     applyConfigValues(config, parsedConfig);
@@ -281,9 +281,10 @@ function profileRulesFromBlock(rulesBlock: Record<string, unknown>): Record<stri
 }
 
 // Selects the explicit `--config` path or the first supported project-root config file.
+// An explicit path means what the user typed, relative to the launch directory as scan targets are.
 // No match means the user chose or inherited zero-config behavior, not an error.
 function selectedConfigPath(projectRoot: string, options: AnalysisOptions): string | undefined {
-  return options.config ? absolutize(projectRoot, options.config) : defaultConfigPath(projectRoot);
+  return options.config ? absolutize(process.cwd(), options.config) : defaultConfigPath(projectRoot);
 }
 
 // Applies each top-level config section in its stable loading order before analysis.

@@ -45,6 +45,21 @@ test("ConfigLoadError stores message and suggestion verbatim", () => {
   assert.equal(error instanceof Error, true);
 });
 
+// A config error reaches the analysis envelope, which may not publish a host path, so a missing `--config` file is named
+// the way the user typed it rather than by the absolute path the loader resolved. Writes a temporary directory to the
+// filesystem and removes it again whether the assertion threw or not.
+test("a missing --config file is named as typed, never by its host path", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-missing-config-"));
+  try {
+    assert.throws(
+      () => loadConfig(root, { ...CONFIG_LOAD_OPTIONS, config: "missing.yaml" }),
+      (error: unknown) => error instanceof ConfigLoadError && error.message === "Config file not found: missing.yaml." && !error.message.includes(root),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("rule config rejects unknown ids, alias booleans, and malformed options loudly", () => {
   const files = { "ok.ts": "// File overview: config validation fixture.\nexport const fine = 1;\n" };
   // A misspelled top-level rule id must fail at load time instead of silently no-opping.

@@ -37,14 +37,16 @@ const UNMATCHED_YAML_SCALAR: ParsedYamlScalar = { isMatched: false, value: undef
  *
  * Throws ConfigLoadError when: the file is missing (ENOENT), the contents are not valid JSON, the
  * YAML subset rejects the file (see parseYamlConfig), or the top-level value is not a mapping.
+ * Messages name the file as `shownPath`, the path the user typed, because they reach the analysis
+ * envelope, which may not publish the absolute host path `path` resolves to.
  */
-function parseConfigFile(path: string): Record<string, unknown> {
-  const source = readConfigSource(path);
+function parseConfigFile(path: string, shownPath: string = path): Record<string, unknown> {
+  const source = readConfigSource(path, shownPath);
   const extension = extname(path).toLowerCase();
-  const parsed = parseConfigSource(source, extension, path);
+  const parsed = parseConfigSource(source, extension, shownPath);
   const config = objectValue(parsed);
   if (!config) {
-    throw new ConfigLoadError(`Config file must contain an object with .yaml, .yml, or .json extension: ${path}`, SUGGEST_INIT_FORCE);
+    throw new ConfigLoadError(`Config file must contain an object with .yaml, .yml, or .json extension: ${shownPath}`, SUGGEST_INIT_FORCE);
   }
   return config;
 }
@@ -55,12 +57,12 @@ function parseConfigFile(path: string): Record<string, unknown> {
  * with a user-actionable suggestion; rethrows every other filesystem error unchanged so an
  * unexpected IO failure still surfaces its native stack for debugging.
  */
-function readConfigSource(path: string): string {
+function readConfigSource(path: string, shownPath: string): string {
   try {
     return readFileSync(path, "utf8").replace(/^\uFEFF/, "");
   } catch (error) {
     if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
-      throw new ConfigLoadError(`Config file not found: ${path}.`, "Pass --config with an existing path, or omit the flag to use the default lookup.");
+      throw new ConfigLoadError(`Config file not found: ${shownPath}.`, "Pass --config with an existing path, or omit the flag to use the default lookup.");
     }
     throw error;
   }
@@ -69,7 +71,7 @@ function readConfigSource(path: string): string {
 // Routes to the YAML subset parser or the native JSON parser. Wraps `JSON.parse`'s SyntaxError so
 // a malformed `.gruff.json` surfaces through the same ConfigLoadError channel as YAML failures
 // (parseYamlConfig already throws ConfigLoadError on its own malformed inputs).
-function parseConfigSource(source: string, extension: string, path: string): unknown {
+function parseConfigSource(source: string, extension: string, shownPath: string): unknown {
   if (extension === ".yaml" || extension === ".yml") {
     return parseYamlConfig(source);
   }
@@ -80,7 +82,7 @@ function parseConfigSource(source: string, extension: string, path: string): unk
     return JSON.parse(source) as unknown;
   } catch (error) {
     if (error instanceof SyntaxError) {
-      throw new ConfigLoadError(`Config file is not valid JSON: ${error.message} (${path}).`, SUGGEST_EDIT_CONFIG);
+      throw new ConfigLoadError(`Config file is not valid JSON: ${error.message} (${shownPath}).`, SUGGEST_EDIT_CONFIG);
     }
     throw error;
   }

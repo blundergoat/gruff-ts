@@ -100,6 +100,20 @@ void secret;
   assert.equal(findings.length, expectedFindingCount);
 });
 
+test("sensitive-data.high-entropy-string needs a letter and a digit", () => {
+  // FAMILY-CONTRACT section 12's floor: lowercase-only and uppercase-only runs and a digit-free mix of cases stay quiet,
+  // and a literal mixing letters and digits reports, where the old upper-lower-digit rule missed it. gruff-go, gruff-php,
+  // gruff-py and gruff-rs pin the same literals; the reported one is assembled so this file stores it in parts.
+  const mixed = "k3j9x2m7q1w8e5r4" + "t6y0u9i8o7p6a5s4" + "d3f2g1h0zb";
+  const report = analyseFixture(`export const lower = "vxezaawdsdwcvvuvryyabvkvbgdqlcqstgddkefmpdrjp";
+export const upper = "VXEZAAWDSDWCVVUVRYYABVKVBGDQLCQSTGDDKEFMPDRJP";
+export const camel = "VxEzAaWdSdWcVvUvRyYaBvKvBgDqLcQsTgDdKeFmPdRjP";
+export const mixed = "${mixed}";
+`);
+  const lines = report.findings.filter((entry) => entry.ruleId === "sensitive-data.high-entropy-string").map((entry) => entry.line);
+  assert.deepEqual(lines, [4]);
+});
+
 test("FP-#5 waste.empty-function skips interface and type-literal signatures", () => {
   const report = analyseFixture(`interface StateFS {
   exists(path: string): boolean;

@@ -5,7 +5,7 @@
 import { Buffer, isUtf8 } from "node:buffer";
 import { readFileSync, statSync } from "node:fs";
 import { cwd } from "node:process";
-import { basename, dirname, extname, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { recordHistory, sortedUniqueFindings } from "./baseline.ts";
 import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan } from "./baseline-identity.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
@@ -166,21 +166,35 @@ function projectRootFromTargets(paths: string[]): string {
 }
 
 /**
- * Rewrite each relative target as an absolute path from the launch directory when the project root is elsewhere.
+ * Rewrite each relative target, and each typed baseline path, to name from the project root what it named from the launch
+ * directory when the project root is elsewhere.
  *
  * Discovery reads operands against the project root, so `..` typed from `proj/src` names `proj`, but read against the root
- * `proj` it named the directory above the project, which was then scanned and failed on its first path.
+ * `proj` it named the directory above the project, which was then scanned and failed on its first path. The baseline
+ * flags are read against the root too, so a baseline typed two levels down was written above the project and never read.
  *
- * @param options Analysis options with the targets as typed on the command line.
- * @returns The options unchanged when the root is the launch directory, otherwise with each target anchored to it.
+ * Stable contract: the launch directory never changes which files a run scans or which baseline file it reads or writes.
+ *
+ * @param options Analysis options with the targets and baseline paths as typed on the command line.
+ * @returns The options unchanged when the root is the launch directory, otherwise with each target anchored to it and
+ *   each baseline path rewritten relative to the root, so no report names a host path.
  */
 function targetsFromLaunchDirectory(options: AnalysisOptions): AnalysisOptions {
   const launchDirectory = cwd();
+  const projectRoot = projectRootFromTargets(options.paths);
   // Inside the launch directory the root and the operands already agree, so they are passed on exactly as typed.
-  if (projectRootFromTargets(options.paths) === launchDirectory) {
+  if (projectRoot === launchDirectory) {
     return options;
   }
-  return { ...options, paths: options.paths.map((path) => resolve(launchDirectory, path)) };
+  // Names from the project root the file a relative baseline path names from the launch directory.
+  const fromRoot = (path: string): string => (isAbsolute(path) ? path : relative(projectRoot, resolve(launchDirectory, path)));
+  return {
+    ...options,
+    paths: options.paths.map((path) => resolve(launchDirectory, path)),
+    ...(options.baseline ? { baseline: fromRoot(options.baseline) } : {}),
+    ...(options.generateBaseline ? { generateBaseline: fromRoot(options.generateBaseline) } : {}),
+    ...(options.migrateBaseline ? { migrateBaseline: fromRoot(options.migrateBaseline) } : {}),
+  };
 }
 
 /**

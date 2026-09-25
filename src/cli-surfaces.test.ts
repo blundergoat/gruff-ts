@@ -2,7 +2,7 @@
 import { findingIdentities } from "./baseline-identity.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -416,6 +416,58 @@ test("machine json is the same from inside the project, a sibling and a subdirec
       assert.equal(stable(command, join(root, "sibling"), "../project"), inside, `${command} from a sibling`);
       assert.equal(stable(command, join(root, "project", "sub"), ".."), inside, `${command} from a subdirectory`);
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// `--config` means the path the user typed, so from a nested directory a config named two levels up is read against
+// that directory, as the target two levels up is, and not against the project root the target resolves to, where it
+// named no file.
+// Spawns the built binary twice inside a fresh temporary directory, which is removed again whether an assertion threw
+// or not.
+test("an explicit relative config is read from the launch directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-config-launch-"));
+  try {
+    mkdirSync(join(root, "project", "a", "b"), { recursive: true });
+    writeFileSync(join(root, "project", "probe.ts"), "export function probe(rx: number): number {\n  return rx + rx;\n}\n");
+    writeFileSync(join(root, "project", "cfg.yaml"), "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity: error\n");
+    const bin = join(REPO_ROOT, "bin/gruff-ts");
+    const flags = ["--no-baseline", "--fail-on", "none", "--format", "json"];
+
+    const nested = spawnSync("bash", [bin, "analyse", "../..", "--config", "../../cfg.yaml", ...flags], { cwd: join(root, "project", "a", "b"), encoding: "utf8" });
+    const inside = spawnSync("bash", [bin, "analyse", ".", "--config", "cfg.yaml", ...flags], { cwd: join(root, "project"), encoding: "utf8" });
+
+    assert.equal(nested.status, 0, nested.stderr);
+    assert.deepEqual(JSON.parse(nested.stdout).findings, JSON.parse(inside.stdout).findings);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A baseline path typed two levels inside the project names the project's own file, for writing and for reading. Read
+// against the project root it named a file above the project: the write landed there and the read never found it.
+// Stable contract: the launch directory never changes which baseline file a run writes or reads.
+// Spawns the built binary twice inside a fresh temporary directory, which is removed again whether an assertion threw
+// or not.
+test("typed baseline paths are read from the launch directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-baseline-launch-"));
+  try {
+    const project = join(root, "outer", "project");
+    mkdirSync(join(project, "a", "b"), { recursive: true });
+    writeFileSync(join(project, "probe.ts"), "export function probe(rx: number): number {\n  return rx + rx;\n}\n");
+    const bin = join(REPO_ROOT, "bin/gruff-ts");
+    const nested = join(project, "a", "b");
+    const baselineFile = join("..", "..", "base.json");
+
+    const generated = spawnSync("bash", [bin, "analyse", "../..", "--no-config", "--fail-on", "none", "--generate-baseline", baselineFile], { cwd: nested, encoding: "utf8" });
+    const applied = spawnSync("bash", [bin, "analyse", "../..", "--no-config", "--fail-on", "none", "--format", "json", "--baseline", baselineFile], { cwd: nested, encoding: "utf8" });
+
+    assert.equal(generated.status, 0, generated.stderr);
+    assert.equal(existsSync(join(project, "base.json")), true);
+    assert.equal(existsSync(join(root, "base.json")), false);
+    assert.equal(applied.status, 0, applied.stderr);
+    assert.deepEqual((JSON.parse(applied.stdout) as { baseline: { applied: boolean; path?: string } }).baseline.path, "base.json");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
