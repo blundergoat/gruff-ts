@@ -48,10 +48,11 @@ export interface HookAnalysisReports {
 /**
  * Analyse the configured paths and return the stable gruff.analysis.v3 report state.
  *
- * @param options Normalised analysis options from the CLI or direct callers.
+ * @param requestedOptions Normalised analysis options from the CLI or direct callers.
  * @returns Versioned report with fingerprinted findings, diagnostics, paths, and score data.
  */
-export function analyse(options: AnalysisOptions): AnalysisReport {
+export function analyse(requestedOptions: AnalysisOptions): AnalysisReport {
+  const options = targetsFromLaunchDirectory(requestedOptions);
   const preparation = prepareAnalysis(options);
   const { changedScope, scopeDiagnostics } = changedRegionScopeOrDiagnostic(options);
   const run = completeAnalysis(preparation, options, "diagnose");
@@ -162,6 +163,24 @@ function projectRootFromTargets(paths: string[]): string {
     return launchDirectory;
   }
   return common;
+}
+
+/**
+ * Rewrite each relative target as an absolute path from the launch directory when the project root is elsewhere.
+ *
+ * Discovery reads operands against the project root, so `..` typed from `proj/src` names `proj`, but read against the root
+ * `proj` it named the directory above the project, which was then scanned and failed on its first path.
+ *
+ * @param options Analysis options with the targets as typed on the command line.
+ * @returns The options unchanged when the root is the launch directory, otherwise with each target anchored to it.
+ */
+function targetsFromLaunchDirectory(options: AnalysisOptions): AnalysisOptions {
+  const launchDirectory = cwd();
+  // Inside the launch directory the root and the operands already agree, so they are passed on exactly as typed.
+  if (projectRootFromTargets(options.paths) === launchDirectory) {
+    return options;
+  }
+  return { ...options, paths: options.paths.map((path) => resolve(launchDirectory, path)) };
 }
 
 /**

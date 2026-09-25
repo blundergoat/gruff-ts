@@ -390,6 +390,37 @@ test("json report survives a target and a baseline outside the launch directory"
   }
 });
 
+// `..` typed from one of the project's own subdirectories names the project. Read against the project root instead of the
+// launch directory, it named the directory above, here holding stray.ts, so every machine command scanned it and threw.
+// Spawns the built binary nine times inside a fresh temporary directory, which is removed again whether an assertion
+// threw or not.
+test("machine json is the same from inside the project, a sibling and a subdirectory", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-launch-"));
+  try {
+    mkdirSync(join(root, "project", "sub"), { recursive: true });
+    mkdirSync(join(root, "sibling"));
+    writeFileSync(join(root, "project", "probe.ts"), "export function probe(rx: number): number {\n  return rx + rx;\n}\n");
+    writeFileSync(join(root, "stray.ts"), "export function stray(unused: number): void {}\n");
+    const bin = join(REPO_ROOT, "bin/gruff-ts");
+    // Spawns the built binary for one command from one launch directory and keeps only the sections the launch
+    // directory must not change.
+    const stable = (command: string, directory: string, target: string): string => {
+      const result = spawnSync("bash", [bin, command, target, "--no-config", "--fail-on", "none", "--format", "json"], { cwd: directory, encoding: "utf8" });
+      assert.equal(result.status, 0, `${command} ${target}: ${result.stderr}`);
+      const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+      return JSON.stringify(["findings", "score", "summary", "paths", "diagnostics"].map((key) => payload[key]));
+    };
+
+    for (const command of ["analyse", "summary", "report"]) {
+      const inside = stable(command, join(root, "project"), ".");
+      assert.equal(stable(command, join(root, "sibling"), "../project"), inside, `${command} from a sibling`);
+      assert.equal(stable(command, join(root, "project", "sub"), ".."), inside, `${command} from a subdirectory`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // Two targets named from a sibling directory have no root inside the launch directory. The JSON caller must get one
 // run-invalidating target-error diagnostic and no findings with exit 2, not a throw while the report renders.
 // Spawns the built binary twice in a fresh temporary directory, removed again whether an assertion threw or not.
