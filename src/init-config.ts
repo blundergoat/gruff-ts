@@ -122,10 +122,14 @@ function renderSensitiveExclusionsSection(preservedEntries: readonly PreservedSe
     "# Every entry reports its own count in the report's `suppressions` array and in the text",
     "# `Suppressed findings:` line, so a suppression is always visible in review.",
     "#",
+    "# Test, fixture and example paths automatically suppress sensitive-data findings",
+    "# except sensitive-data.pii-test-fixture; real credentials there are skipped too.",
+    "# Add entries only for reviewed findings that still report.",
+    "# Use the finding's rule id and replace the path/reason placeholders.",
     "# sensitiveExclusions:",
     "#   - rule: sensitive-data.aws-access-key",
-    "#     path: tests/fixtures/aws-sample.env",
-    "#     reason: Synthetic key used by the loader fixture; not a live credential.",
+    "#     path: <reviewed-project-relative-path>",
+    "#     reason: <reviewed-rationale>",
   ];
   // Regeneration must never silently re-enable a finding a reviewer accepted in writing, so any
   // existing entries are re-emitted verbatim below the guidance comment.
