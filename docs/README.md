@@ -11,10 +11,17 @@ Use these docs with the top-level README for the stable user-facing surface.
 - [Output Formats](output-formats.md) - text, JSON, HTML, Markdown, GitHub annotations, hotspot, and SARIF.
 - [CI Integration](ci-integration.md) - GitHub Actions, SARIF upload, baselines, and diff scans.
 - [Dashboard](dashboard.md) - local dashboard flags and safety model.
+- [Upgrading](https://github.com/blundergoat/gruff-ts/blob/main/UPGRADING.md) - what each release line breaks and how to retreat; `package.json` omits it from the npm package, so this link is absolute.
 
 ## Extra Docs
 
 - [Reports And CI](reports-and-ci.md) - combined reporting and CI details retained for existing links.
+
+## Maintainer Docs
+
+- [Releasing](releasing.md) - maintainer-only release checklist; `package.json` excludes it from the
+  npm package, so this link resolves only for a repository reader. Its published copy lives at
+  https://github.com/blundergoat/gruff-ts/blob/main/docs/releasing.md.
 
 ## Shared Contract
 

@@ -6,7 +6,7 @@ import { blockFinding, blockFindingWithMetadata, type FunctionBlock, hasAssertio
 import { type SourceFile } from "./discovery.ts";
 import { escapeRegex } from "./findings-helpers.ts";
 import { pushStaticAnalysisRedundantTestFindings, type StaticAnalysisSourceContext } from "./static-analysis-redundant-rules.ts";
-import { countMatches } from "./text-scans.ts";
+import { countMatches, matchingCloseParen } from "./text-scans.ts";
 import type { Finding, Severity } from "./types.ts";
 
 // Provisional rule output gathered during a test-block walk. Built before the surrounding context
@@ -128,7 +128,7 @@ function analyseTestStructureChecks(file: SourceFile, block: FunctionBlock, body
       continue;
     }
     // Loop findings report at medium confidence: parametrized tests are a legitimate pattern and
-    // the label heuristic cannot see every message shape (multi-line assertion calls, helpers).
+    // the label heuristic cannot see every message shape (helper-built messages, labels more than one local away).
     if (ruleId === "test-quality.loop-in-test") {
       findings.push(blockFindingWithMetadata({ ruleId, message, file, block, severity: "advisory", pillar: "test-quality", metadata: {} }));
       continue;
@@ -162,8 +162,9 @@ function controlFlowContainsNonFixtureLoop(source: string): boolean {
 /*
  * A data-driven loop whose assertions each carry a per-case template message referencing a
  * loop-bound name keeps a failing row identifiable - the failure mode this rule exists to catch -
- * so it opts out even when the case table is built dynamically. Multi-line assertion calls fall
- * outside the statement split and stay reported; the rule's medium confidence reflects that.
+ * so it opts out even when the case table is built dynamically. Each assertion is measured as a
+ * whole call chain, so a message the formatter wrapped onto its own line still counts, and a
+ * message built from a `const` the loop body derives from a bound name counts as naming it.
  */
 function isLabeledCaseLoop(segment: string): boolean {
   const parts = loopSegmentParts(segment);
@@ -174,11 +175,59 @@ function isLabeledCaseLoop(segment: string): boolean {
   if (boundNames.length === 0) {
     return false;
   }
-  const assertionStatements = parts.body.split(/[;\n]/).map((statement) => statement.trim()).filter((statement) => statement.length > 0 && hasAssertion(statement));
-  if (assertionStatements.length === 0) {
+  const assertionCalls = assertionCallChains(parts.body);
+  if (assertionCalls.length === 0) {
     return false;
   }
-  return assertionStatements.every((statement) => hasLoopCaseLabel(statement, boundNames));
+  const labelNames = [...boundNames, ...loopDerivedLocalNames(parts.body, boundNames)];
+  return assertionCalls.every((call) => hasLoopCaseLabel(call, labelNames));
+}
+
+// The assertion openers `hasAssertion` recognises, each ending at the call's own `(`.
+const ASSERTION_CALL_OPENER = /\b(?:assert(?:\.[A-Za-z]+|[A-Z][A-Za-z0-9_$]*)?|expect(?:\.(?:assertions|hasAssertions)|[A-Z][A-Za-z0-9_$]*)?|[A-Za-z_$][A-Za-z0-9_$]*Check)\s*(?:<[^;]*?>\s*)?\(/g;
+// One chained call such as `.toBe(` after a closed call.
+const CHAINED_CALL_LINK = /^\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*\s*(?:<[^;]*?>\s*)?\(/;
+
+// Every assertion call in a masked loop body, measured from its callee through the closing parenthesis of its last
+// chained call, so `assert.ok(\n  value,\n  `${item}: empty`,\n)` is one call however the formatter wrapped it. An
+// assertion nested inside another's arguments belongs to the outer call; an unclosed call is skipped, not guessed.
+function assertionCallChains(body: string): string[] {
+  const calls: string[] = [];
+  let measuredUntil = 0;
+  for (const match of body.matchAll(ASSERTION_CALL_OPENER)) {
+    const start = match.index ?? 0;
+    if (start < measuredUntil) {
+      continue;
+    }
+    let close = matchingCloseParen(body, start + match[0].length - 1);
+    if (close === undefined) {
+      continue;
+    }
+    for (let link = body.slice(close + 1).match(CHAINED_CALL_LINK); link; link = body.slice(close + 1).match(CHAINED_CALL_LINK)) {
+      const linkClose = matchingCloseParen(body, close + link[0].length);
+      if (linkClose === undefined) {
+        break;
+      }
+      close = linkClose;
+    }
+    calls.push(body.slice(start, close + 1));
+    measuredUntil = close + 1;
+  }
+  return calls;
+}
+
+// `const` locals the loop body assigns from an expression naming a loop-bound name, such as
+// `const label = `prefix/${item}``. One level only: a local derived from another derived local is not followed, so
+// this stays a name check rather than a dataflow pass.
+function loopDerivedLocalNames(body: string, boundNames: string[]): string[] {
+  const derived: string[] = [];
+  for (const match of body.matchAll(/\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\n]+)/g)) {
+    const initializer = match[2] ?? "";
+    if (boundNames.some((name) => new RegExp(`\\b${escapeRegex(name)}\\b`).test(initializer))) {
+      derived.push(match[1] ?? "");
+    }
+  }
+  return derived.filter(Boolean);
 }
 
 // Identifier names bound by a for..of header - `for (const { name, input } of cases)` binds both.
@@ -438,8 +487,7 @@ function isSnapshotOnlyTest(source: string): boolean {
   if (!/\.\s*toMatch(?:Inline)?Snapshot\s*\(/.test(source)) {
     return false;
   }
-  const withoutSnapshots = source
-    .replace(/\bexpect\s*\([\s\S]*?\)\s*\.\s*toMatch(?:Inline)?Snapshot\s*\([^)]*\)\s*;?/g, "")
+  const withoutSnapshots = withoutCallChains(source, /\bexpect\s*(?:<[^;]*?>\s*)?\(/g, /^\s*\.\s*toMatch(?:Inline)?Snapshot\s*\(/)
     .replace(/\bexpect\.(?:assertions|hasAssertions)\s*\([^)]*\)\s*;?/g, "");
   return !hasAssertion(withoutSnapshots);
 }
@@ -451,11 +499,45 @@ function isNoThrowOnlyTest(source: string): boolean {
   if (!/\bassert\.doesNotThrow\s*\(|\.\s*not\s*\.\s*toThrow\s*\(/.test(source)) {
     return false;
   }
-  const withoutNoThrow = source
-    .replace(/\bassert\.doesNotThrow\s*\([\s\S]*?\)\s*;?/g, "")
-    .replace(/\bexpect\s*\([\s\S]*?\)\s*\.\s*not\s*\.\s*toThrow\s*\([^)]*\)\s*;?/g, "")
+  const withoutAssertDoesNotThrow = withoutCallChains(source, /\bassert\.doesNotThrow\s*\(/g);
+  const withoutNoThrow = withoutCallChains(withoutAssertDoesNotThrow, /\bexpect\s*(?:<[^;]*?>\s*)?\(/g, /^\s*\.\s*not\s*\.\s*toThrow\s*\(/)
     .replace(/\bexpect\.(?:assertions|hasAssertions)\s*\([^)]*\)\s*;?/g, "");
   return !hasAssertion(withoutNoThrow);
+}
+
+/*
+ * Removes each call that `opener` starts, measured to its own closing parenthesis, and when `chainedMatcher` is
+ * given only a call whose next link is that matcher, measured to the matcher's closing parenthesis. `source` is
+ * masked, so string, template and comment bodies are blank and parentheses are the only structure to balance. A
+ * lazy regex cannot do this: it starts at an earlier statement's `expect(` and deletes a real assertion, and it
+ * stops at the first `)` inside a nested call or callback. An unclosed call is left in place rather than guessed.
+ */
+function withoutCallChains(source: string, opener: RegExp, chainedMatcher?: RegExp): string {
+  let result = "";
+  let copiedUntil = 0;
+  for (const match of source.matchAll(opener)) {
+    const start = match.index ?? 0;
+    if (start < copiedUntil) {
+      continue;
+    }
+    const callClose = matchingCloseParen(source, start + match[0].length - 1);
+    if (callClose === undefined) {
+      continue;
+    }
+    let end = callClose + 1;
+    if (chainedMatcher) {
+      const link = source.slice(end).match(chainedMatcher);
+      const linkClose = link ? matchingCloseParen(source, end + link[0].length - 1) : undefined;
+      if (linkClose === undefined) {
+        continue;
+      }
+      end = linkClose + 1;
+    }
+    const terminator = source.slice(end).match(/^\s*;/)?.[0] ?? "";
+    result += source.slice(copiedUntil, start);
+    copiedUntil = end + terminator.length;
+  }
+  return result + source.slice(copiedUntil);
 }
 
 // Pulls every numeric expected value out of `expect(...).toBe(n)` and `assert.equal(actual, n)`

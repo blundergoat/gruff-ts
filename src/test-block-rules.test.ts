@@ -5,6 +5,7 @@ import type { FunctionBlock } from "./blocks.ts";
 import { loadConfig } from "./config.ts";
 import type { SourceFile } from "./discovery.ts";
 import { analyseTestBlock } from "./test-block-rules.ts";
+import { analyseFixture } from "./test-fixtures.ts";
 import type { AnalysisOptions, Config, Finding } from "./types.ts";
 
 const SOURCE_FILE: SourceFile = {
@@ -387,3 +388,122 @@ function defaultTestConfig(): Config {
 function ruleIds(findings: Finding[]): string[] {
   return findings.map((finding) => finding.ruleId);
 }
+
+// M22 hunt shapes (zod `array.test.ts` and `apply.test.ts`): a snapshot strip must remove only the snapshot call
+// chain. A lazy regex started at the earlier `expect(r1.success)` and deleted that real assertion, and vitest's
+// `expectTypeOf<T>()` was not seen as an assertion at all. A test whose only assertion is a snapshot still fires.
+test("M22 snapshot-only-test strips only whole snapshot call chains and sees expectTypeOf assertions", () => {
+  const report = analyseFixture([
+    "import { expect, expectTypeOf, test } from \"vitest\";",
+    "",
+    "test(\"array min/max\", () => {",
+    "  const r1 = schema.safeParse([\"asdf\"]);",
+    "  expect(r1.success).toEqual(false);",
+    "  expect(r1.error!.issues).toMatchInlineSnapshot(`",
+    "    [",
+    "      { \"code\": \"too_small\", \"message\": \"Too small (expected >=2)\" },",
+    "    ]",
+    "  `);",
+    "});",
+    "",
+    "test(\"basic apply (object)\", () => {",
+    "  const schema = z.object({ a: z.number() }).apply((s) => s.extend({ c: z.boolean() }));",
+    "  expect(z.toJSONSchema(schema)).toMatchInlineSnapshot(`",
+    "    { \"type\": \"object\" }",
+    "  `);",
+    "  expectTypeOf<z.infer<typeof schema>>().toEqualTypeOf<{",
+    "    a: number;",
+    "    c: boolean;",
+    "  }>();",
+    "});",
+    "",
+    "test(\"continue parsing despite array size error\", () => {",
+    "  const result = schema.safeParse({ people: [123] });",
+    "  expect(result).toMatchInlineSnapshot(`",
+    "    { \"success\": false }",
+    "  `);",
+    "});",
+    "",
+  ].join("\n"), { fileName: "array.test.ts" });
+  const snapshotOnly = report.findings.filter((entry) => entry.ruleId === "test-quality.snapshot-only-test").map((entry) => entry.symbol);
+
+  assert.deepEqual(snapshotOnly, ["continue parsing despite array size error"]);
+});
+
+// The no-throw strip had the same lazy regex, so a real assertion before an `expect(() => ...).not.toThrow()` was
+// deleted with it. Only a test that asserts nothing beyond the absence of an exception still fires.
+test("M22 no-throw-only-test strips only whole no-throw call chains", () => {
+  const report = analyseFixture([
+    "import assert from \"node:assert/strict\";",
+    "",
+    "test(\"parses and does not throw\", () => {",
+    "  expect(parse(\"a\")).toBe(1);",
+    "  expect(() => {",
+    "    parse(\"(\");",
+    "  }).not.toThrow();",
+    "});",
+    "",
+    "test(\"asserts after a callback check\", () => {",
+    "  assert.doesNotThrow(() => {",
+    "    parse(\")\");",
+    "  });",
+    "  assert.equal(parse(\"x\"), 1);",
+    "});",
+    "",
+    "test(\"only checks that parse does not throw\", () => {",
+    "  assert.doesNotThrow(() => parse(value(\"b\")));",
+    "});",
+    "",
+  ].join("\n"), { fileName: "parse.test.ts" });
+  const noThrowOnly = report.findings.filter((entry) => entry.ruleId === "test-quality.no-throw-only-test").map((entry) => entry.symbol);
+
+  assert.deepEqual(noThrowOnly, ["only checks that parse does not throw"]);
+});
+
+// M22 brief shape (`test-quality.loop-in-test`, 18 of 18 on the reporting repository): a prettier-wrapped per-case
+// message and a message built from a loop-derived local both identify the failing row. A looped assertion with no
+// message, and one whose message names no loop binding, still fire: the rule's contract is an identifiable row.
+test("M22 loop-in-test reads wrapped and derived-local per-case messages", () => {
+  const report = analyseFixture([
+    "/** Overview: repro for loop-in-test line-wrapping blindness. */",
+    "import assert from \"node:assert/strict\";",
+    "import { describe, it } from \"node:test\";",
+    "const ITEMS = [\"alpha\", \"beta\", \"gamma\"];",
+    "describe(\"s\", () => {",
+    "  it(\"single-line message is seen\", () => {",
+    "    for (const item of ITEMS) {",
+    "      assert.ok(item.length > 0, `${item}: empty`);",
+    "    }",
+    "  });",
+    "  it(\"identical message, prettier-wrapped, is seen\", () => {",
+    "    for (const item of ITEMS) {",
+    "      assert.ok(",
+    "        item.length > 0,",
+    "        `${item}: empty`,",
+    "      );",
+    "    }",
+    "  });",
+    "  it(\"derived local message is seen\", () => {",
+    "    for (const item of ITEMS) {",
+    "      const label = `prefix/${item}`;",
+    "      assert.ok(item.length > 0, `${label}: empty`);",
+    "    }",
+    "  });",
+    "  it(\"no message still fires\", () => {",
+    "    for (const item of ITEMS) {",
+    "      assert.ok(item.length > 0);",
+    "    }",
+    "  });",
+    "  it(\"message naming no binding still fires\", () => {",
+    "    for (const item of ITEMS) {",
+    "      const size = ITEMS.length;",
+    "      assert.ok(item.length > 0, `${size}: empty`);",
+    "    }",
+    "  });",
+    "});",
+    "",
+  ].join("\n"), { fileName: "loops.test.ts" });
+  const loopTests = report.findings.filter((entry) => entry.ruleId === "test-quality.loop-in-test").map((entry) => entry.symbol).sort();
+
+  assert.deepEqual(loopTests, ["message naming no binding still fires", "no message still fires"]);
+});

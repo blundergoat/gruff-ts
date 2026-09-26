@@ -13,7 +13,7 @@ import { processExecMetadata, type ProcessExecArgumentSource, type ProcessExecMe
 import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
-import { byteLine } from "./text-scans.ts";
+import { byteLine, matchingCloseParen } from "./text-scans.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
 // Descriptor for one regex-backed line rule. `pattern` is the cheap test and `globalPattern`
@@ -34,6 +34,8 @@ interface LineRuleCheck {
 interface LineRuleContext {
   file: SourceFile;
   line: string;
+  // The raw line above `line`, or "" on the first line; commented-out-code reads it to see a wrapped comment.
+  previousLine: string;
   codeLine: string;
   // Full masked source as one array per line, indexed 0-based. Exposed so per-line rules that need
   // forward look-ahead (for-of body brace-balancing in `pushVariableNameFindings`) can scan beyond
@@ -127,6 +129,7 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
   const context: LineRuleContext = {
     file,
     line: "",
+    previousLine: "",
     codeLine: "",
     codeLines,
     lineNumber: 0,
@@ -138,6 +141,7 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
     gates,
   };
   sourceLines.forEach((line, index) => {
+    context.previousLine = index > 0 ? (sourceLines[index - 1] ?? "") : "";
     context.line = line;
     context.codeLine = codeLines[index] ?? codeLineForMatching(line);
     context.lineNumber = index + 1;
@@ -243,7 +247,7 @@ function withGlobalPattern(check: LineRuleCheck): LineRuleCheck {
  * because clever false positives drown the rule. Reports the stable `waste.commented-out-code` finding.
  */
 function pushCommentedOutCodeFinding(context: LineRuleContext): void {
-  if (isCommentedOutCode(context.line)) {
+  if (isCommentedOutCode(context.line, context.previousLine)) {
     context.findings.push(finding({ ruleId: "waste.commented-out-code", message: "Comment appears to contain disabled source code.", file: context.file, line: context.lineNumber, severity: "advisory", pillar: "maintainability" }));
   }
 }
@@ -366,10 +370,46 @@ function pushPatternCheckFindings(context: LineRuleContext): void {
     if (isSuppressedByPathContext(check.ruleId, context.file.displayPath)) {
       continue;
     }
-    if (rawPatternStartsInCode(context.line, context.codeLine, check.globalPattern ?? check.pattern)) {
+    const isExemptMatch = check.ruleId === "security.disabled-tls-verification"
+      ? (index: number) => isInsideDeepEqualityAssertion(context.codeLines, context.lineNumber - 1, index)
+      : undefined;
+    if (rawPatternStartsInCode(context.line, context.codeLine, check.globalPattern ?? check.pattern, isExemptMatch)) {
       context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: ruleSeverity(context.config, check.ruleId, check.severity), pillar: check.pillar }));
     }
   }
+}
+
+// Deep-equality assertions whose arguments are expected values: chai's `.to.deep.equal`, jest and vitest's `toEqual`,
+// and node's `assert.deepStrictEqual`. The named set is deliberately closed; any other call stays reportable.
+const DEEP_EQUALITY_ASSERTION_CALLEE = /(?:\.to\.deep\.equal|\.toEqual|\bassert\.deepStrictEqual)\s*$/;
+// How far back the enclosing-call search walks. An expected object literal longer than this is reported, not guessed.
+const ENCLOSING_CALL_SEARCH_LINES = 200;
+
+/*
+ * True when masked position `column` on line `lineIndex` sits directly inside the argument list of a deep-equality
+ * assertion call: `expect(options).to.deep.equal({ rejectUnauthorized: false })` compares an expected value and
+ * configures nothing, while `new https.Agent({ rejectUnauthorized: false })` really disables verification. This is a
+ * call-context test, not a path gate, so the same assertion outside a test file is exempt too and a real agent inside
+ * a test file still reports. Only the innermost unclosed call counts, so an agent built inside an assertion reports.
+ */
+function isInsideDeepEqualityAssertion(codeLines: readonly string[], lineIndex: number, column: number): boolean {
+  let unclosedCalls = 0;
+  const firstLine = Math.max(0, lineIndex - ENCLOSING_CALL_SEARCH_LINES);
+  for (let index = lineIndex; index >= firstLine; index -= 1) {
+    const codeLine = codeLines[index] ?? "";
+    for (let position = (index === lineIndex ? column : codeLine.length) - 1; position >= 0; position -= 1) {
+      if (codeLine[position] === ")") {
+        unclosedCalls += 1;
+      } else if (codeLine[position] === "(") {
+        if (unclosedCalls === 0) {
+          const calleeText = codeLine.slice(0, position).trim() === "" ? (codeLines[index - 1] ?? "") : codeLine.slice(0, position);
+          return DEEP_EQUALITY_ASSERTION_CALLEE.test(calleeText);
+        }
+        unclosedCalls -= 1;
+      }
+    }
+  }
+  return false;
 }
 
 // Per-rule path-context allowlist. CLI entry points, build scripts, and server diagnostic modules
@@ -481,13 +521,14 @@ function pushIdentifierQualityFinding(context: LineRuleContext, name: string): v
 // True iff the pattern matches somewhere on the raw line *and* the match's start position falls on
 // a code character in `codeLine`. Required for literal-rule checks where the raw line is needed to
 // see the literal content, but the match must still begin in executable code (not inside a comment).
-function rawPatternStartsInCode(rawLine: string, codeLine: string, pattern: RegExp): boolean {
+// `isExemptMatch`, when a rule supplies one, sets aside a code match whose surrounding call says it is not the defect.
+function rawPatternStartsInCode(rawLine: string, codeLine: string, pattern: RegExp, isExemptMatch?: (index: number) => boolean): boolean {
   const globalPattern = pattern;
   let match: RegExpExecArray | null;
   globalPattern.lastIndex = 0;
   while ((match = globalPattern["exec"](rawLine)) !== null) {
     const index = match.index ?? 0;
-    if (isNonWhitespaceCharacter(codeLine[index] ?? "")) {
+    if (isNonWhitespaceCharacter(codeLine[index] ?? "") && !isExemptMatch?.(index)) {
       return true;
     }
     if (match[0] === "") {
@@ -640,24 +681,6 @@ function processExecGrade(metadata: ProcessExecMetadata): { severity: Severity; 
 // remain valid process-exec candidates.
 function isMemberProcessExecFalsePositive(codeSource: string, start: number, hasProcessReceiver: boolean): boolean {
   return !hasProcessReceiver && codeSource[start - 1] === ".";
-}
-
-// Tiny parenthesis matcher over masked source. Strings and comments are already blanked by
-// `maskNonCode`, so nested call parentheses are the only structure this needs to balance.
-function matchingCloseParen(source: string, openParen: number): number | undefined {
-  let depth = 0;
-  for (let index = openParen; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === "(") {
-      depth += 1;
-    } else if (character === ")") {
-      depth -= 1;
-      if (depth === 0) {
-        return index;
-      }
-    }
-  }
-  return undefined;
 }
 
 // Fixed command vectors and known safe wrappers are intentionally not shell-interpolated, so this

@@ -6,7 +6,7 @@ import { hasLeadingCommentBeforeLines } from "./comment-scanner.ts";
 import { baseComplexityMetrics, complexityMetrics as measureComplexity, type ComplexityMetrics } from "./complexity-metrics.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { escapeRegex, isGenericName, lineOffset, parameterNames } from "./findings-helpers.ts";
+import { escapeRegex, isGenericName, lineOffset, parameterNames, parameterParts } from "./findings-helpers.ts";
 import { callableMatchPoints, type ParsedScript } from "./parsed-script.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
@@ -275,8 +275,9 @@ function pushUnusedParameterFindings(context: BlockRuleContext): void {
   if (isBodyLessDeclaration(context.block) || isDeclarationFile(context.file)) {
     return;
   }
-  for (const parameter of parameterNames(context.block.params)) {
-    if (!isUnusedParameter(context, parameter.name)) {
+  const parameters = parameterNames(context.block.params);
+  for (const parameter of parameters) {
+    if (!isUnusedParameter(context, parameter, parameters)) {
       continue;
     }
     context.findings.push(unusedParameterFinding(context, parameter.name));
@@ -311,16 +312,21 @@ function isDeclarationFile(file: SourceFile): boolean {
 // Word-boundary regex against the masked function body. The body is masked so a parameter mentioned
 // only in a string literal would still count as unused - that matches the intent of the rule. A
 // loose `${...param...}` regex over the raw body catches parameters used only inside template
-// interpolations, which the mask would otherwise hide.
-function isUnusedParameter(context: BlockRuleContext, parameterName: string): boolean {
-  if (parameterName.startsWith("_")) {
+// interpolations, which the mask would otherwise hide. A constructor parameter property is a class
+// member declaration, and a sibling parameter's default expression reads a parameter as surely as
+// the body does, so neither is reported.
+function isUnusedParameter(context: BlockRuleContext, parameter: { name: string; isParameterProperty: boolean }, parameters: ReadonlyArray<{ name: string; raw: string }>): boolean {
+  if (parameter.name.startsWith("_") || parameter.isParameterProperty) {
     return false;
   }
-  const escaped = escapeRegex(parameterName);
-  if (new RegExp(`\\b${escaped}\\b`).test(context.functionBody)) {
+  const reference = new RegExp(`\\b${escapeRegex(parameter.name)}\\b`);
+  if (reference.test(context.functionBody)) {
     return false;
   }
-  return !new RegExp(`\\$\\{[^}]*\\b${escaped}\\b[^}]*\\}`).test(context.block.body);
+  if (parameters.some((sibling) => sibling.name !== parameter.name && reference.test(parameterParts(sibling.raw).initializer))) {
+    return false;
+  }
+  return !new RegExp(`\\$\\{[^}]*\\b${escapeRegex(parameter.name)}\\b[^}]*\\}`).test(context.block.body);
 }
 
 /*
@@ -397,13 +403,28 @@ function isEmptyFunctionBody(source: string): boolean {
 // arrow functions fall back to the slice after `=>`. The trailing-`;` strip keeps the arrow
 // branch usable for downstream regex tests that anchor on statement boundaries.
 export function functionBodyContent(source: string): string {
-  const start = source.indexOf("{");
+  const start = functionBlockBrace(source);
   const end = source.lastIndexOf("}");
   if (start === -1 || end <= start) {
     const arrow = source.indexOf("=>");
     return arrow === -1 ? "" : source.slice(arrow + 2).replace(/;?\s*$/, "");
   }
   return source.slice(start + 1, end);
+}
+
+// The opening brace of a function block, or -1 when the callable has an expression body. A template
+// interpolation's `${` carries a brace that is not a block: taking it as one made the body of an
+// expression-bodied arrow collapse to the interpolation's blanked contents, so every parameter used
+// beside the template read as unused. The masker blanks a template's text but preserves its braces,
+// which is why the brace survives to be mistaken for a block in the first place.
+function functionBlockBrace(source: string): number {
+  for (let index = source.indexOf("{"); index !== -1; index = source.indexOf("{", index + 1)) {
+    if (source[index - 1] !== "$") {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 // Walks upward past blank lines and the closing `}` looking for a final `return;`. Returns the
@@ -713,7 +734,9 @@ function isControlBlockName(name: string): boolean {
 
 // Walks upward from the declaration line absorbing decorator (`@`), docblock (`/**`, `*`), and
 // blank lines so the function block includes its leading documentation. Stops at the first real
-// code line above - that boundary becomes the block's start line.
+// code line above, then steps back down off any blank separator - that line belongs to the
+// declaration above this one, and reporting it gives the user a finding pointing at empty space
+// inside someone else's function, which is neither triageable nor suppressible by line.
 function functionStartIndex(lines: string[], index: number): number {
   let start = index;
   while (start > 0) {
@@ -723,6 +746,9 @@ function functionStartIndex(lines: string[], index: number): number {
       continue;
     }
     break;
+  }
+  while (start < index && (lines[start]?.trim() ?? "") === "") {
+    start += 1;
   }
   return start;
 }
@@ -743,7 +769,8 @@ export function hasAssertion(source: string): boolean {
   if (/\bassert(?:\.[A-Za-z]+|[A-Z][A-Za-z0-9_$]*)?\s*\(/.test(source)) {
     return true;
   }
-  if (/\bexpect(?:\.(?:assertions|hasAssertions)|[A-Z][A-Za-z0-9_$]*)?\s*\(/.test(source)) {
+  // Type arguments may sit before the call, as in vitest's `expectTypeOf<Result>().toEqualTypeOf<Expected>()`.
+  if (/\bexpect(?:\.(?:assertions|hasAssertions)|[A-Z][A-Za-z0-9_$]*)?\s*(?:<[^;]*?>\s*)?\(/.test(source)) {
     return true;
   }
   if (/\b[A-Za-z_$][A-Za-z0-9_$]*Check\s*\(/.test(source)) {

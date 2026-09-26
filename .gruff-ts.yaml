@@ -9,9 +9,9 @@ schemaVersion: gruff-ts.config.v0.1
 #   warning  - exit non-zero on warning or error findings (advisory findings pass).
 #   advisory - exit non-zero on any finding at all (advisory, warning, or error).
 #   none     - never exit non-zero from findings (use for raw reporting / baseline generation).
-minimumSeverity:
+failOn:
   analyse: advisory
-  summary: advisory
+  summary: none
   report: none
 
 paths:
@@ -29,11 +29,8 @@ paths:
     - ".github/**"
     - ".goat-flow/**"
     - "fixtures/**"
-    - "package-lock.json"
-    - "npm-shrinkwrap.json"
-    - "yarn.lock"
-    - "pnpm-lock.yaml"
-    - "bun.lockb"
+    # Lockfiles need no entry: the analyser skips package-lock.json, npm-shrinkwrap.json,
+    # yarn.lock, pnpm-lock.yaml and bun.lockb as generated files.
 
 allowlists:
   acceptedAbbreviations:
@@ -55,7 +52,6 @@ allowlists:
     - tx
     - ui
     - url
-  secretPreviews: []
   # Names that trigger naming.generic-function. Each key replaces the built-in
   # default when present; an empty list disables that rule's blacklist branch.
   # Default: [process, handle, doit, run, execute, manage]
@@ -82,6 +78,20 @@ allowlists:
   # case-insensitively; match is against canonical lowercase.
   # Default: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]
   # knownAcronyms: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]
+
+# Reviewed suppressions for sensitive-data findings. Written by hand only - gruff never
+# converts a detected value, a preview, or a finding message into an exclusion.
+#
+# Each entry names exactly one rule id and one project-relative path, and must carry a
+# non-empty reason. `symbol:` narrows further where a rule stamps one. Nothing else is
+# suppressed: the same rule in another file and another rule in the same file keep reporting.
+# Every entry reports its own count in the report's `suppressions` array and in the text
+# `Suppressed findings:` line, so a suppression is always visible in review.
+#
+# sensitiveExclusions:
+#   - rule: sensitive-data.aws-access-key
+#     path: tests/fixtures/aws-sample.env
+#     reason: Synthetic key used by the loader fixture; not a live credential.
 
 rules:
   # complexity/warning: Flags functions with high combined branch and nesting complexity.
@@ -336,38 +346,40 @@ rules:
   # security/warning: Flags external XML reaching parsers configured to expand entities.
   security.xxe-candidate:
     enabled: true
-  # sensitive-data/error: Flags vendor API key patterns including GitHub, GitLab, npm, Google API, Slack, Discord, and Stripe/OpenAI-style keys.
+  # sensitive-data/warning: Flags vendor API key patterns including GitHub, GitLab, npm, Google API, Slack, Discord, and Stripe/OpenAI-style keys.
   sensitive-data.api-key-pattern:
     enabled: true
-  # sensitive-data/error: Flags AWS access key looking values.
+  # sensitive-data/warning: Flags AWS access key looking values.
   sensitive-data.aws-access-key:
     enabled: true
-  # sensitive-data/error: Flags database and HTTP(S) URLs that include passwords or embedded credentials.
+  # sensitive-data/warning: Flags database and HTTP(S) URLs that include passwords or embedded credentials.
   sensitive-data.database-url-password:
     enabled: true
-  # sensitive-data/error: Flags GCP service-account key files (type service_account alongside a private key).
+  # sensitive-data/warning: Flags GCP service-account key files (type service_account alongside a private key).
   sensitive-data.gcp-service-account-key:
     enabled: true
-  # sensitive-data/error: Flags environment-style secret values committed in text.
+  # sensitive-data/warning: Flags environment-style secret values committed in text.
   sensitive-data.hardcoded-env-value:
     enabled: true
     threshold: 16
-    severity: error
-  # sensitive-data/error: Flags high-entropy string literals that may be secrets.
+    severity: warning
+  # sensitive-data/warning: Flags high-entropy string literals that may be secrets.
   sensitive-data.high-entropy-string:
     enabled: true
-    threshold: 32
-    severity: error
-  # sensitive-data/error: Flags JWT-looking token literals.
+    thresholds:
+      minLength: 32
+      entropy: 4.2
+    severity: warning
+  # sensitive-data/warning: Flags JWT-looking token literals.
   sensitive-data.jwt-token:
     enabled: true
-  # sensitive-data/error: Flags PHI identifiers such as Medicare (MBI) and medical record numbers.
+  # sensitive-data/warning: Flags PHI identifiers such as Medicare (MBI) and medical record numbers.
   sensitive-data.phi-pattern:
     enabled: true
-  # sensitive-data/error: Flags PII-like identifier patterns including SSN-shaped values and Luhn-valid payment cards.
+  # sensitive-data/warning: Flags PII-like identifier patterns including SSN-shaped values and Luhn-valid payment cards.
   sensitive-data.pii-pattern:
     enabled: true
-  # sensitive-data/error: Flags private key block markers.
+  # sensitive-data/warning: Flags private key block markers.
   sensitive-data.private-key:
     enabled: true
   # size/error: Flags files longer than the configured threshold.

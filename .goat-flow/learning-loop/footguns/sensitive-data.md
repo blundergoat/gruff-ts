@@ -1,6 +1,6 @@
 ---
 category: sensitive-data
-last_reviewed: 2026-08-13
+last_reviewed: 2026-09-13
 hallucination-risk: high
 ---
 
@@ -40,3 +40,37 @@ The coupling crosses milestone boundaries, so the assumption that justified the 
 **Evidence:** package-manager lockfiles were excluded from the pillar to stop published integrity digests raising `sensitive-data.high-entropy-string`. Scanning one byte-identical file twice measured the cost: as `appconfig.json` it reported `sensitive-data.api-key-pattern`, `sensitive-data.database-url-password`, and `sensitive-data.high-entropy-string`; as `package-lock.json` it reported nothing. A credential in a `resolved` URL is the documented real-world leak vector for that exact file family, so the silenced siblings were the ones that mattered.
 
 **Prevention:** filter the produced findings by `ruleId` instead of skipping the dispatch, and lock it in with a two-way test: the noisy rule must stay silent on the family and a credential in the same family must still report. `isSubresourceIntegrityHash` (search: `function isSubresourceIntegrityHash`) already existed to exempt digest shapes, so the targeted mechanism usually exists before the blanket one is reached for.
+
+## Footgun: hook metadata can rename and re-expose sensitive measurements
+
+**Status:** active | **Created:** 2026-08-22 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** When removing secret-derived metadata, inspect the hook normalization layer and prove both finding and hook payloads omit the value.
+**Trigger phase:** VERIFY
+
+`pushSensitiveFinding` (`src/sensitive-data-rules.ts`, search: `function pushSensitiveFinding`) builds the safe finding metadata, but
+`thresholdMetadataFor` (`src/hook-contract.ts`, search: `function thresholdMetadataFor`) can translate it into the hook's `measured` field.
+A detector field can therefore disappear from the direct report yet remain part of the hook contract under a different name.
+
+During M00, removing secret `length` metadata caused the focused hook test to fail because it still expected a numeric `metadata.measured`.
+The current absence of `length` makes hook normalization fall back to fixed-marker metadata, but the sensitive rule cases remain coupled.
+
+For any sensitive metadata change, verify JSON report and `gruff.hook.v1` output separately.
+Assert that `length`, `digits`, and `measured` are absent and only the fixed marker plus detector-owned public metadata remain.
+
+## Footgun: an exemption keyed on the text before a literal also matches ternaries and secret-named keys
+
+**Status:** active | **Created:** 2026-09-13 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Before exempting a literal by the key it sits under, prove the text is a key (it follows `{` or
+`,`, and only in YAML may it open its line), check every word of the key for a secret label, and never rescan the line
+for each candidate.
+**Trigger phase:** ACT
+
+M22's first location-key exemption for `sensitive-data.high-entropy-string` matched `key : ` against the line text
+before each literal. Two fresh-context reviews, checked against the pre-repair source, showed it silenced secrets the
+port had reported. The silenced shapes were `useCache ? path : "<secret>"`, the same branch after a comment or a
+wrapped `- path`, and keys whose last word names a location, such as `privateKeyBlob`, `apiKeyInput`, `JWTSecretPath`
+and `secretsPath`. The unanchored regex also took 1,821 ms on one generated line of six 20,000-character literals,
+against 355 ms at the pre-repair source. `standsInKeyPosition` and `isLocationOrDigestKey` (`src/sensitive-data-rules.ts`,
+search: `function standsInKeyPosition`) now carry the rule, and `src/sensitive-data-rules.test.ts`
+(search: `location key only in key position`) pins each shape. Probe any new syntax-keyed exemption the same way: put
+secrets the rule already reports in every position its pattern can match, and confirm each still reports.

@@ -180,3 +180,100 @@ test("the security-flow fallback parse is counted by the shared boundary", () =>
   analyseSecurityFlow(fileStub, source, [], shared?.sourceFile);
   assert.equal(parsedScriptParseCount() - beforeShared, 0, "a threaded shared parse must not reparse");
 });
+
+// Fixture covers the report's repro B: its `CLIError` parameter property and explicit-field control, plus every
+// parameter-property modifier beside one ordinary parameter nothing reads.
+test("M22 report repro B: constructor parameter properties are members, while an unused ordinary parameter still fires", () => {
+  const report = analyseFixture([
+    "/** Structured error carrying an exit code for CLI process termination. */",
+    "export class CLIError extends Error {",
+    "  constructor(",
+    "    message: string,",
+    "    public readonly exitCode: number,",
+    "  ) {",
+    "    super(message);",
+    "  }",
+    "}",
+    "",
+    "/** Control: the same class written with an explicit field instead of a parameter property. */",
+    "export class CLIErrorExplicit extends Error {",
+    "  readonly exitCode: number;",
+    "",
+    "  constructor(message: string, exitCode: number) {",
+    "    super(message);",
+    "    this.exitCode = exitCode;",
+    "  }",
+    "}",
+    "",
+    "/** Every parameter-property modifier, including a bare readonly, beside one ordinary parameter nothing reads. */",
+    "export class Settings {",
+    "  constructor(private host: string, protected port: number, readonly label: string, ignoredCode: number) {}",
+    "}",
+    "",
+  ].join("\n"));
+  const unusedParameters = report.findings.filter((entry) => entry.ruleId === "waste.unused-parameter").map((entry) => entry.metadata?.parameter);
+
+  assert.deepEqual(unusedParameters, ["ignoredCode"]);
+});
+
+// A template interpolation's braces are not a function block. Taking them for one collapsed an
+// expression-bodied arrow's body to the interpolation's blanked contents, so every parameter used beside the
+// template read as unused. M46 measured four such findings across the TypeScript corpus.
+test("M46: an expression-bodied arrow whose body holds a template interpolation reads its parameters", () => {
+  const report = analyseFixture([
+    "/** The corpus shape: the parameter is used on the line that also carries a template interpolation. */",
+    "export const routeConflict = (messages: string[]): string =>",
+    "  [",
+    "    \"Conflicting routes:\",",
+    "    ...messages.map((message) => `  - ${message}`),",
+    "  ].join(\"\\n\");",
+    "",
+    "/** Control: the same body with no interpolation, which always read correctly. */",
+    "export const routeConflictPlain = (entries: string[]): string =>",
+    "  [",
+    "    \"Conflicting routes:\",",
+    "    ...entries.map((entry) => \"  - \" + entry),",
+    "  ].join(\"\\n\");",
+    "",
+    "/** Control: an expression body holding an interpolation that reads nothing from the signature. */",
+    "export const fixedLabel = (unreadInput: string[]): string =>",
+    "  [`  - fixed`].join(\"\\n\");",
+    "",
+  ].join("\n"));
+  const unusedParameters = report.findings.filter((entry) => entry.ruleId === "waste.unused-parameter").map((entry) => entry.metadata?.parameter);
+
+  assert.deepEqual(unusedParameters, ["unreadInput"]);
+});
+
+// Fixture covers the report's repro C: a later default reading an earlier parameter, its body-default control, and
+// a parameter named only inside another parameter's function type.
+test("M22 report repro C: a parameter read by a later parameter's default is used, while an unread one still fires", () => {
+  const report = analyseFixture([
+    "/** Run a handler, defaulting the working directory to the project root. */",
+    "export function describeRun(",
+    "  projectRoot: string,",
+    "  command: string,",
+    "  cwd: string = projectRoot,",
+    "): { command: string; cwd: string } {",
+    "  return { command, cwd };",
+    "}",
+    "",
+    "/** Control: the same defaulting written in the body instead of the signature. */",
+    "export function describeRunControl(",
+    "  projectRoot: string,",
+    "  command: string,",
+    "  cwd?: string,",
+    "): { command: string; cwd: string } {",
+    "  return { command, cwd: cwd ?? projectRoot };",
+    "}",
+    "",
+    "/** A default that reads nothing, and a function-typed parameter whose own type names a parameter. */",
+    "export function formatValue(value: string, fallback: string, format: (fallback: string) => string = (text) => text): string {",
+    "  return format(value);",
+    "}",
+    "",
+  ].join("\n"));
+  const unusedParameters = report.findings.filter((entry) => entry.ruleId === "waste.unused-parameter").map((entry) => entry.metadata?.parameter);
+
+  assert.deepEqual(unusedParameters, ["fallback"]);
+});

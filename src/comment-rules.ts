@@ -4,7 +4,6 @@
 // passes that all share a stable, deterministic emission order.
 import { existsSync } from "node:fs";
 import { dirname as dirnamePath, resolve } from "node:path";
-import { cwd } from "node:process";
 import { type FunctionBlock } from "./blocks.ts";
 import { combinedContextLineComment, type CommentRecord } from "./comment-scanner.ts";
 import { type SourceFile } from "./discovery.ts";
@@ -271,12 +270,29 @@ function pushStaleFileReferenceFindings(file: SourceFile, comment: CommentRecord
   }
 }
 
-// Tries both the project-root and same-directory interpretations because comments are inconsistent
-// about which they imply. Either match is enough to consider the reference live.
+// Tries both the project-root and same-directory interpretations because comments are inconsistent about which they imply.
+// Either match is enough to consider the reference live.
+//
+// The project root is derived from the scanned file itself rather than the process working directory. Reading `cwd()` here
+// made the result depend on where the command was run: scanning a project from an unrelated directory turned every
+// project-relative reference into a "missing path" finding, so the same tree scored differently under CI than by hand.
 function referencedPathExists(file: SourceFile, referencedPath: string): boolean {
-  const fromProject = resolve(cwd(), referencedPath);
+  const fromProject = resolve(projectRootOf(file), referencedPath);
   const fromFile = resolve(dirnamePath(file.absolutePath), referencedPath);
   return existsSync(fromProject) || existsSync(fromFile);
+}
+
+// Recovers the scan's project root by removing the file's project-relative display path from its absolute path, so the
+// answer follows the tree being scanned instead of the caller's working directory.
+function projectRootOf(file: SourceFile): string {
+  const absolute = file.absolutePath.replaceAll("\\", "/");
+  const display = file.displayPath.replaceAll("\\", "/");
+
+  // A display path that is not the tail of the absolute path cannot identify the root, so fall back to the file's folder.
+  if (!absolute.endsWith(`/${display}`)) {
+    return dirnamePath(file.absolutePath);
+  }
+  return absolute.slice(0, absolute.length - display.length - 1);
 }
 
 /*

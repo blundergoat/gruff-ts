@@ -205,6 +205,11 @@ function broadPermissionScope(line: WorkflowLine, state: IndentedBlockState): st
   if (state.indent === undefined || line.indent <= state.indent) {
     return undefined;
   }
+  // A job-level grant is least privilege; only a workflow-level block hands its write scopes to every job, which is
+  // what gruff-rs reports too. An inline `permissions: write-all` above stays broad at any level.
+  if (state.indent !== 0) {
+    return undefined;
+  }
   return scopedWritePermission(line);
 }
 
@@ -375,9 +380,10 @@ function isRemoteShellCommand(command: string): boolean {
   return /\b(?:curl|wget)\b[^|]*https?:\/\/[^|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)\b/i.test(command);
 }
 
-// Stable secret-exposure contract: reports secrets.NAME only when the workflow is pull-request triggered.
+// Stable secret-exposure contract: reports secrets.NAME only when the workflow's `on:` declares pull_request_target,
+// the one pull-request event that runs with the repository's secrets. A plain pull_request run from a fork gets none.
 function analyseSecretsInPullRequest(file: SourceFile, lines: readonly WorkflowLine[], findings: Finding[]): void {
-  if (!hasPullRequestStyleEvent(lines)) {
+  if (!declaredWorkflowEvents(lines).has("pull_request_target")) {
     return;
   }
   for (const line of lines) {
@@ -388,19 +394,58 @@ function analyseSecretsInPullRequest(file: SourceFile, lines: readonly WorkflowL
     findings.push(
       workflowFinding(file, {
         ruleId: "security.github-actions-secrets-in-pr",
-        message: `Pull request workflow references secret \`${secretName}\`.`,
+        message: `pull_request_target workflow references secret \`${secretName}\`.`,
         line: line.lineNumber,
         symbol: secretName,
         remediation: "Avoid exposing secrets to pull request workflows unless the code path is trusted and tightly gated.",
-        metadata: { event: "pull_request", secretName },
+        metadata: { event: "pull_request_target", secretName },
       }),
     );
   }
 }
 
-// Treats pull_request and pull_request_target as PR-style contexts for secret exposure checks.
-function hasPullRequestStyleEvent(lines: readonly WorkflowLine[]): boolean {
-  return lines.some((line) => !isCommentOrBlank(line) && /\bpull_request(?:_target)?\b/.test(line.trimmed));
+// Returns the events the workflow's top-level `on:` key declares, in scalar, flow-sequence, flow-mapping, block-mapping or
+// block-sequence form. An `if:` expression or a step input that names an event elsewhere is not a trigger.
+function declaredWorkflowEvents(lines: readonly WorkflowLine[]): Set<string> {
+  const events = new Set<string>();
+  let eventIndent: number | undefined;
+  let inOnBlock = false;
+  for (const line of lines) {
+    if (isCommentOrBlank(line)) {
+      continue;
+    }
+    if (line.indent === 0) {
+      const onKey = line.trimmed.match(/^["']?on["']?\s*:\s*(.*)$/);
+      inOnBlock = onKey !== null && stripInlineComment(onKey[1] ?? "").trim() === "";
+      eventIndent = undefined;
+      if (onKey && !inOnBlock) {
+        addFlowEvents(events, stripInlineComment(onKey[1] ?? "").trim());
+      }
+      continue;
+    }
+    if (!inOnBlock) {
+      continue;
+    }
+    // The first nested line fixes the event level; deeper lines configure one event, such as its branches.
+    eventIndent ??= line.indent;
+    if (line.indent === eventIndent) {
+      const event = line.trimmed.match(/^(?:-\s*)?["']?([A-Za-z_]+)["']?\s*(?::|$)/)?.[1];
+      if (event) {
+        events.add(event);
+      }
+    }
+  }
+  return events;
+}
+
+// Adds the events of a scalar, `[a, b]` flow sequence or `{a: x, b: y}` flow mapping.
+function addFlowEvents(events: Set<string>, declaration: string): void {
+  for (const flowEntry of declaration.replace(/^[[{]/, "").replace(/[\]}]$/, "").split(",")) {
+    const event = (flowEntry.split(":")[0] ?? "").trim().replace(/^["']|["']$/g, "");
+    if (event) {
+      events.add(event);
+    }
+  }
 }
 
 // Extracts the secret symbol while keeping the raw expression out of finding metadata.
@@ -408,8 +453,14 @@ function secretReference(line: WorkflowLine): string | undefined {
   if (isCommentOrBlank(line)) {
     return undefined;
   }
-  const match = line.trimmed.match(/\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)\b/);
-  return match?.[1];
+  // `secrets.GITHUB_TOKEN` is the token GitHub mints for each run, scoped by the job's `permissions:`, so it is not a
+  // repository secret; any other name on the line still is.
+  for (const match of line.trimmed.matchAll(/\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
+    if (match[1] !== "GITHUB_TOKEN") {
+      return match[1];
+    }
+  }
+  return undefined;
 }
 
 // Skips blank/comment-only YAML lines before applying simple text heuristics.

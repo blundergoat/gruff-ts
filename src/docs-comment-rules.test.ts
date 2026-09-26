@@ -361,6 +361,53 @@ ${routingBranches}
   assert.deepEqual(symbols, ["unexplainedRouting"]);
 });
 
+// M22 brief shape (10 findings downstream; 3 of 3 sampled had real rationale): a docblock that states a constraint or
+// a contrast explains the control flow. The two sampled docblocks are verbatim from the brief. A comment that only
+// names the arguments, and a constraint word beside a near-paraphrase of the function name, still fire, which is the
+// rule's contract for rationale that restates nothing.
+test("missing-why accepts constraint and contrast rationale that says more than the name", () => {
+  const routingBranches = branchFixtureLines(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p"]);
+  // Fixture covers the brief's two sampled docblocks verbatim beside two controls that must still fire.
+  const report = analyseFixture(`/**
+ * Walks every claim of a schema-v2 note and tallies its review flags.
+ * Use to build the status model for the axes and the copied header: the
+ * renderer and the clipboard must count from the same payload walk.
+ * ...
+ */
+function v2ReviewCountsFrom(value: string): string {
+${routingBranches}
+  return value;
+}
+
+/**
+ * Runs post-visit correction once when Stop or replay finalization arrives.
+ * Summary generation may await an in-flight request defensively, but a
+ * settled unavailable or blocked outcome is never retried by that click.
+ */
+function ensureCorrectedTranscriptReady(value: string): string {
+${routingBranches}
+  return value;
+}
+
+/** Takes the value and the fallback. */
+function namesItsArguments(value: string, fallback: string): string {
+${routingBranches}
+  return value || fallback;
+}
+
+/** Always routes the value. */
+function routeValue(value: string): string {
+${routingBranches}
+  return value;
+}
+`);
+  const symbols = report.findings
+    .filter((finding) => finding.ruleId === "docs.missing-why-for-complex-code")
+    .map((finding) => finding.symbol)
+    .sort();
+  assert.deepEqual(symbols, ["namesItsArguments", "routeValue"]);
+});
+
 /** Generates repeated branch lines without making the outer test look complex. */
 function branchFixtureLines(values: string[]): string {
   return values.map((value) => `  if (value === "${value}") return "${value}";`).join("\n");

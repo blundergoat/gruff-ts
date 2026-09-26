@@ -18,28 +18,47 @@ const FULL_SCORE = 100;
 const WARNING_PENALTY = 4;
 const CLUSTERED_SINGLE_PENALTY = WARNING_PENALTY / CLUSTER_FINDINGS.length;
 const CLUSTERED_COMPLEXITY_PENALTY = CLUSTERED_SINGLE_PENALTY * 2;
-const EXPECTED_CLUSTER_FILE_SCORE = FULL_SCORE - WARNING_PENALTY;
+// Under the ratified curve `50 + 50 / (1 + density / 0.1)`, a file's density is its own weight over
+// one file: the clustered stack weighs 4.00, so the file scores 51.22.
+const EXPECTED_CLUSTER_FILE_SCORE = 51.22;
 // Eleven rule-backed pillars average into the composite; the nine without findings count as 100.
+// Over ten evaluated files complexity weighs 8/3 (density 0.27, score 63.64) and size 4/3
+// (density 0.13, score 71.43), so the composite is (63.64 + 71.43 + 900) / 11.
 const SCOREABLE_PILLAR_COUNT = 11;
-const EXPECTED_CLUSTER_COMPOSITE_SCORE = (FULL_SCORE - CLUSTERED_COMPLEXITY_PENALTY + (FULL_SCORE - CLUSTERED_SINGLE_PENALTY) + 100 * (SCOREABLE_PILLAR_COUNT - 2)) / SCOREABLE_PILLAR_COUNT;
-const SEPARATE_COMPLEXITY_SCORE = FULL_SCORE - WARNING_PENALTY * 2;
+const EXPECTED_CLUSTER_COMPOSITE_SCORE = 94.1;
+// Two unclustered warnings weigh 8.00 on one file, which the per-file curve scores 50.62.
+const SEPARATE_COMPLEXITY_SCORE = 50.62;
 
 const COMPLEXITY_CLUSTER_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v2",
+  schemaVersion: "gruff.analysis.v3",
   tool: { name: "gruff-ts", version: "0.3.0-test" },
   run: { projectRoot: "/tmp/project", format: "text", failOn: "none", generatedAt: "2026-05-31T00:00:00.000Z" },
   summary: { advisory: 0, warning: CLUSTER_FINDINGS.length, error: 0, total: CLUSTER_FINDINGS.length },
   paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
+  suppressions: [],
   findings: CLUSTER_FINDINGS,
   score: {
     composite: EXPECTED_CLUSTER_FILE_SCORE,
     grade: "A",
+    evaluatedFiles: 10,
+    clusters: [],
+    ruleAttribution: [],
+    scoredPillars: ["complexity", "size"],
     pillars: [
-      { pillar: "complexity", score: FULL_SCORE - CLUSTERED_COMPLEXITY_PENALTY, penalty: CLUSTERED_COMPLEXITY_PENALTY, findings: 2 },
-      { pillar: "size", score: FULL_SCORE - CLUSTERED_SINGLE_PENALTY, penalty: CLUSTERED_SINGLE_PENALTY, findings: 1 },
+      {
+        pillar: "complexity",
+        applicable: true,
+        score: FULL_SCORE - CLUSTERED_COMPLEXITY_PENALTY,
+        grade: "A",
+        penalty: CLUSTERED_COMPLEXITY_PENALTY,
+        findings: 2,
+      },
+      { pillar: "size", applicable: true, score: FULL_SCORE - CLUSTERED_SINGLE_PENALTY, grade: "A", penalty: CLUSTERED_SINGLE_PENALTY, findings: 1 },
     ],
-    topOffenders: [{ filePath: "bad.ts", score: EXPECTED_CLUSTER_FILE_SCORE, findings: CLUSTER_FINDINGS.length }],
+    topOffenders: [
+      { filePath: "bad.ts", score: EXPECTED_CLUSTER_FILE_SCORE, penalty: CLUSTERED_COMPLEXITY_PENALTY, findings: CLUSTER_FINDINGS.length },
+    ],
   },
 };
 
@@ -85,32 +104,37 @@ function parseConfig(input: unknown): ParsedConfig {
   );
 });
 
-test("M06 text reports correlated complexity cluster contract without changing JSON score shape", () => {
+test("M06 text reports correlated complexity while v3 preserves its score values", () => {
   const text = renderReport(COMPLEXITY_CLUSTER_REPORT, "text");
   assert.match(text, /Correlated complexity clusters:/);
   assert.match(text, /bad\.ts#tangled: \d linked findings/);
 
   const json = JSON.parse(renderReport(COMPLEXITY_CLUSTER_REPORT, "json"));
-  assert.deepEqual(Object.keys(json.score).sort(), ["composite", "grade", "pillars", "topOffenders"]);
-  assert.equal(json.score.composite, EXPECTED_CLUSTER_FILE_SCORE);
+  assert.deepEqual(Object.keys(json.score).sort(), ["clusters", "composite", "evaluatedFiles", "pillars", "ruleAttribution", "scoredPillars", "topOffenders"]);
+  assert.deepEqual(json.score.composite, { grade: COMPLEXITY_CLUSTER_REPORT.score.grade, score: EXPECTED_CLUSTER_FILE_SCORE });
 });
 
 // P5 (DESIGN-PRINCIPLES): a function that is both long (size.function-length) and complex
 // (complexity.cognitive + complexity.cyclomatic) moves the grade once. The three findings share one
-// max-severity penalty, so the file drops by a single warning (100 - 4 = 96) while every finding stays
-// listed (topOffenders count == CLUSTER_FINDINGS.length). The retired design.god-function (ADR-011)
+// max-severity weight, so the file is scored on a weight of 4.00 rather than 12.00 while every
+// finding stays listed (topOffenders count == CLUSTER_FINDINGS.length). The retired design.god-function (ADR-011)
 // composite is gone, so P5 now rests on this score-clustering invariant alone, not a named rule.
 test("M06 score contract clusters correlated complexity penalties by symbol", () => {
-  const score = scoreReport(CLUSTER_FINDINGS);
+  const score = scoreReport(CLUSTER_FINDINGS, 10);
 
   assert.equal(score.topOffenders[0]?.findings, CLUSTER_FINDINGS.length);
   assert.equal(score.topOffenders[0]?.score, EXPECTED_CLUSTER_FILE_SCORE);
   assert.equal(score.composite, EXPECTED_CLUSTER_COMPOSITE_SCORE);
+  // Every rule-backed pillar now carries a row, so the clustering assertion reads the two that
+  // actually carry findings; weights are published at the ratified two decimals.
   assert.deepEqual(
-    score.pillars.map((pillar) => ({ pillar: pillar.pillar, penalty: pillar.penalty, findings: pillar.findings })).sort((left, right) => left.pillar.localeCompare(right.pillar)),
+    score.pillars
+      .filter((pillar) => pillar.findings > 0)
+      .map((pillar) => ({ pillar: pillar.pillar, penalty: pillar.penalty, findings: pillar.findings }))
+      .sort((left, right) => left.pillar.localeCompare(right.pillar)),
     [
-      { pillar: "complexity", penalty: CLUSTERED_COMPLEXITY_PENALTY, findings: 2 },
-      { pillar: "size", penalty: CLUSTERED_SINGLE_PENALTY, findings: 1 },
+      { pillar: "complexity", penalty: 2.67, findings: 2 },
+      { pillar: "size", penalty: 1.33, findings: 1 },
     ],
   );
 });
@@ -119,7 +143,7 @@ test("M06 score contract keeps different-symbol complexity penalties separate", 
   const score = scoreReport([
     clusterFinding("complexity.cognitive", "complexity", "first"),
     clusterFinding("complexity.cyclomatic", "complexity", "second"),
-  ]);
+  ], 10);
 
   assert.equal(score.pillars[0]?.penalty, WARNING_PENALTY * 2);
   assert.equal(score.topOffenders[0]?.score, SEPARATE_COMPLEXITY_SCORE);

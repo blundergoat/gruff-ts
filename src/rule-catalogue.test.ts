@@ -6,13 +6,16 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { cwd } from "node:process";
 import { ruleDescriptors } from "./cli.ts";
-import { loadConfig, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
+import { loadConfig, namedThreshold, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { SECURITY_EXPANSION_RISKY_RULE_IDS, SECURITY_EXPANSION_RULE_QUALITY_DOCTRINE } from "./fixtures/rule-catalogue-security-doctrine.ts";
 import { ruleCatalogueCoverageRuleIds } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
 
 const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "missing-invalid"] as const;
 const EXPECTED_RELEASE_RULE_COUNT = 120;
+// Every medium- and low-confidence rule carries reviewed false-positive guidance; the high-confidence
+// remainder omits the field. Naming both counts keeps the two guards below arithmetically linked.
+const EXPECTED_GUIDED_RULE_COUNT = 69;
 
 // Asserts the descriptor's optionKeys list is sorted and unique. Factored out of the descriptor
 // catalogue test body to preserve a stable sort invariant without an inline `if` branch.
@@ -337,7 +340,8 @@ const riskyRuleQualityDoctrine = [
     ruleId: "sensitive-data.high-entropy-string",
     signalSource: "raw text literal scanner with redacted preview metadata",
     expectedPillar: "sensitive-data",
-    expectedSeverity: "error",
+    // The family contract of 2026-09-02 reports this heuristic at warning in every port.
+    expectedSeverity: "warning",
     expectedConfidence: "medium",
     fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
     invalidFixture: "secret-like high-entropy literal",
@@ -418,6 +422,46 @@ test("documentation catalogue covers comment rule pack", () => {
 test("release catalogue contains exactly 120 rule descriptors", () => {
   const currentRuleCount = ruleDescriptors().length;
   assert.equal(currentRuleCount, EXPECTED_RELEASE_RULE_COUNT);
+});
+
+// A rule a user is told to trust less than the others owes them the shapes it gets wrong. This is
+// the metadata floor: every medium- and low-confidence rule carries at least one reviewed shape,
+// and each entry names both the pattern and what to do about it.
+test("every medium and low confidence rule carries reviewed false-positive guidance", () => {
+  const unguided = ruleDescriptors()
+    .filter((descriptor) => descriptor.confidence !== "high")
+    .filter((descriptor) => (descriptor.falsePositiveShapes ?? []).length === 0)
+    .map((descriptor) => descriptor.ruleId);
+
+  assert.deepEqual(unguided, []);
+
+  // Reported as one list rather than asserted in a loop, so a failure names every offending rule
+  // at once instead of stopping at the first.
+  const blankEntries = ruleDescriptors()
+    .flatMap((descriptor) => (descriptor.falsePositiveShapes ?? []).map((entry) => ({ descriptor, entry })))
+    .filter(({ entry }) => entry.shape.trim().length === 0 || entry.mitigation.trim().length === 0)
+    .map(({ descriptor }) => descriptor.ruleId);
+
+  assert.deepEqual(blankEntries, []);
+});
+
+// Omission is the contract, not an accident. A high-confidence rule leaves the field off entirely
+// so an absent field reads as "no shape reviewed" rather than "reviewed and found none" - an empty
+// array would publish the second claim, which no one has made.
+test("high confidence rules omit falsePositiveShapes rather than publishing an empty array", () => {
+  const highConfidence = ruleDescriptors().filter((descriptor) => descriptor.confidence === "high");
+
+  // The 51 high-confidence rules are the complement of the 69 medium/low rules that carry guidance.
+  assert.equal(highConfidence.length, EXPECTED_RELEASE_RULE_COUNT - EXPECTED_GUIDED_RULE_COUNT);
+
+  const publishingShapes = highConfidence
+    .filter((descriptor) => descriptor.falsePositiveShapes !== undefined)
+    .map((descriptor) => descriptor.ruleId);
+  assert.deepEqual(publishingShapes, []);
+
+  const exported = JSON.parse(JSON.stringify(ruleDescriptors())) as Array<Record<string, unknown>>;
+  const emptyArrays = exported.filter((rule) => Array.isArray(rule["falsePositiveShapes"]) && (rule["falsePositiveShapes"] as unknown[]).length === 0);
+  assert.deepEqual(emptyArrays, []);
 });
 
 test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
@@ -532,19 +576,35 @@ test("rule descriptor thresholds and options match implementation and config def
   const implementationThresholds = thresholdUsages(implementationSources);
   assert.deepEqual(descriptorThresholds, implementationThresholds);
   assert.deepEqual(descriptorOptions, optionUsages(implementationSources));
+  const descriptorNamedThresholds = new Map(
+    descriptors.filter((descriptor) => descriptor.additionalThresholds !== undefined).map((descriptor) => [descriptor.ruleId, { ...descriptor.additionalThresholds }]),
+  );
+  assert.deepEqual(descriptorNamedThresholds, namedThresholdUsages(implementationSources));
 
-  // The shipped `.gruff-ts.yaml` selects `profile: recommended`, so it carries no explicit per-rule
-  // thresholds that could drift from the descriptor. Assert the loaded config enables every
-  // threshold-owning rule and leaves its threshold and severity at the descriptor default - a real
-  // override in the repo config would surface here. recommended == descriptor defaults is itself
-  // proven by the parity test in profiles.test.ts.
+  // The shipped `.gruff-ts.yaml` writes an explicit block for every rule, including the named `thresholds` of
+  // high-entropy-string. Assert the loaded config enables every threshold-owning rule and leaves its threshold,
+  // every additional named threshold, and its severity at the descriptor default, so a drifted value in the repo
+  // config surfaces here rather than silently changing gruff-ts's own scan.
   const config = loadConfig(cwd(), repoScanOptions());
   descriptors.filter((entry) => typeof entry.threshold === "number").forEach((descriptor) => {
     assert.equal(ruleEnabled(config, descriptor.ruleId), true, `repo config disables ${descriptor.ruleId}`);
     assert.equal(threshold(config, descriptor.ruleId, descriptor.threshold ?? 0), descriptor.threshold ?? 0, `repo config overrides ${descriptor.ruleId} threshold`);
+    for (const [name, value] of Object.entries(descriptor.additionalThresholds ?? {})) {
+      assert.equal(namedThreshold(config, descriptor.ruleId, name, value), value, `repo config overrides ${descriptor.ruleId} thresholds.${name}`);
+    }
     assert.equal(ruleSeverity(config, descriptor.ruleId, descriptor.severity), descriptor.severity, `repo config overrides ${descriptor.ruleId} severity`);
   });
 });
+
+// Preserves the descriptor/named-threshold invariant by extracting namedThreshold(config, ruleId, name, default) calls.
+function namedThresholdUsages(source: string): Map<string, Record<string, number>> {
+  const usages = new Map<string, Record<string, number>>();
+  for (const match of source.matchAll(/namedThreshold\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)",\s*(-?\d+(?:\.\d+)?)\)/g)) {
+    const ruleId = match[1] ?? "";
+    usages.set(ruleId, { ...usages.get(ruleId), [match[2] ?? ""]: Number(match[3] ?? "0") });
+  }
+  return usages;
+}
 
 // Preserves the descriptor/default invariant by extracting threshold(config, ruleId, default) calls.
 function thresholdUsages(source: string): Map<string, number> {

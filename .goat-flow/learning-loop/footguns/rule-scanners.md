@@ -1,20 +1,9 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-08-12
+last_reviewed: 2026-09-26
 ---
 
 # Rule scanner footguns
-
-## Footgun: nested template interpolation can mask the rest of a scanned file
-
-**Status:** active | **Created:** 2026-07-12 | **Evidence:** OBSERVED
-**Evidence context:** Markdown renderer self-scan.
-
-`maskNonCode` (`src/source-text.ts`, search: `function maskNonCode`) tracks template interpolation with one numeric `templateInterpolationDepth`. An inner template literal opened inside an outer `${...}` expression can enter its own `${...}` expression, but closing the inner expression only decrements that shared depth; it does not restore the inner template's quote state. The inner closing backtick can then be treated as a new opener, masking valid code later in the file.
-
-The user-visible symptom is a cascade far from the new line: a valid nested interpolation in `src/report-renderers.ts` made the self-scan claim that later parameters were unused and several later functions were empty even though TypeScript and all 395 tests passed. Precomputing the inner path-symbol label before interpolating it into the outer row reduced the scan from 12 findings to the one independent comment-contract finding.
-
-Until `maskNonCode` gains a template quote stack, avoid a template literal directly inside another template's interpolation in gruff-scanned source. Name the inner user-facing value first, interpolate that variable into the outer string, and run the full self-scan because `tsc` cannot expose this text-mask failure.
 
 ## Footgun: line-rule emitters hardcode severity, so config `severity:` overrides are silently dropped
 
@@ -194,6 +183,20 @@ After removing a rule from the catalogue, any committed comment that still names
 
 When a comment explains a retired rule (e.g. an ADR cross-reference about `design.god-function`), keep the id and an `ADR-NNN` (or `legacy`/`migration`) token on one line: `// ... the retired design.god-function (ADR-011) composite ...`. This compounds with the context-doc footgun above (the invariant/why marker must be on the LAST `//` line above the declaration), so one explanatory comment near a contract-owning declaration must satisfy both per-line constraints at once.
 
+## Footgun: a test comment that quotes a relative fixture path fails the self-scan as a stale reference
+
+**Status:** active | **Created:** 2026-09-26 | **Evidence:** OBSERVED
+**Decision changed:** In a test comment, describe a path a test creates at runtime in words ("a config named two levels
+up"), or keep it unquoted. Do not quote it in backticks.
+**Trigger phase:** VERIFY
+
+`pushStaleFileReferenceFindings` (`src/comment-rules.ts`, search: `function pushStaleFileReferenceFindings`) reads any
+quoted token that opens with `./`, `../` or a source directory and ends in a known extension as a path, and reports
+`docs.stale-comment` when that path resolves to nothing from the project root or the comment's own directory. A
+path that a test writes into a temporary directory never exists there. M10's D25 test in `src/cli-surfaces.test.ts`
+(search: `an explicit relative config is read from the launch directory`) first quoted its nested `--config` operand
+in a comment. `npm run check` passed, and the preflight's full-project scan then failed on one advisory finding.
+
 ## Footgun: a milestone may name "new" dependency rules that already exist under different ids
 
 **Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED
@@ -221,7 +224,37 @@ Three takeaways: (1) `analyseSecurityFlow` is the only caller and runs once per 
 
 For syntax-only source-to-sink rules, inspect only sink-relevant expression trees. Prune nested function-like nodes while walking arguments, and treat string/no-substitution-template literals as literal text, not source evidence. Add a negative test any time a scanner starts using `node.getText()` over a subtree: one callback-only taint reference and one literal that names the source token. Tests: `src/security-flow-rules.test.ts`, search: `callback-only taint` and `string literals that only mention source tokens`.
 
+## Footgun: setting aside callback text in taint classification hides request data the callback returns
+
+**Status:** active | **Created:** 2026-09-13 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** When a source check sets callback text aside, blank only the reads of names that callback
+declares itself, and keep every function invoked where it is written.
+**Trigger phase:** ACT
+
+M22 stopped `const server = await startHTTPServer((req, res) => ...)` marking `server` as request data. Its first cut
+blanked every nested function in the classified expression, and its second blanked every function declaring `req`,
+`request` or `ctx`. Probes against the pre-repair source showed both silenced real flows into `fs.readFile`:
+`(() => req.query.path)()`, `[0].map(() => req.query.path)`, `retry(async (request) => req.query.path)` and
+`((req) => req.query.path)(req)`. `textOutsideRequestHandlers` (`src/security-flow-rules.ts`, search:
+`function textOutsideRequestHandlers`) now blanks only a handler's reads of its own declared names, and
+`src/security-flow-rules.test.ts` (search: `nested function reads the enclosing request`) pins the shapes. Residuals:
+`requests.map((req) => req.query.id)` is still set aside, and a destructured `({ req })` handler still reports.
+
 ## Resolved Entries
+
+## Footgun: nested template interpolation can mask the rest of a scanned file
+
+**Status:** resolved | **Created:** 2026-07-12 | **Evidence:** ACTUAL_MEASURED
+**Resolved:** 2026-09-13
+**Evidence context:** Markdown renderer self-scan.
+
+`maskNonCode` (`src/source-text.ts`, search: `function maskNonCode`) tracks template interpolation with one numeric `templateInterpolationDepth`. An inner template literal opened inside an outer `${...}` expression can enter its own `${...}` expression, but closing the inner expression only decrements that shared depth; it does not restore the inner template's quote state. The inner closing backtick can then be treated as a new opener, masking valid code later in the file.
+
+The user-visible symptom is a cascade far from the new line: a valid nested interpolation in `src/report-renderers.ts` made the self-scan claim that later parameters were unused and several later functions were empty even though TypeScript and all 395 tests passed. Precomputing the inner path-symbol label before interpolating it into the outer row reduced the scan from 12 findings to the one independent comment-contract finding.
+
+Until `maskNonCode` gains a template quote stack, avoid a template literal directly inside another template's interpolation in gruff-scanned source. Name the inner user-facing value first, interpolate that variable into the outer string, and run the full self-scan because `tsc` cannot expose this text-mask failure.
+
+Resolved 2026-09-13 by the family plan's M22. `maskNonCode` now keeps one brace depth per open interpolation (`src/source-text.ts`, search: `templateInterpolationDepths`), so a nested template's closing brace returns masking to that template's own body. `src/source-text.test.ts` (search: `M22 report repro A`) proves the external report's reproduction and its flattened control report the same, and the six interpolation shapes mask correctly. Across the 12 TypeScript corpus slots, the repair removed 302 false `waste.empty-function` and 207 false `waste.unused-import` findings, among others, and restored 310 findings the desynchronised mask had hidden. A nested template literal no longer needs to be flattened.
 
 ## Footgun: `process-exec` matches `RegExp.exec` source text
 

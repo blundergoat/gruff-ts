@@ -1,11 +1,12 @@
 // CLI and dashboard surface tests covering command help, render formats, SARIF, and HTML controls.
+import { findingIdentities } from "./baseline-identity.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { analyse, renderReport, ruleDescriptors } from "./cli.ts";
+import { analyse, buildProgram, renderReport, ruleDescriptors } from "./cli.ts";
 import { VERSION } from "./constants.ts";
 import type { AnalysisReport } from "./cli.ts";
 import { analyseFixture, REPO_ROOT } from "./test-fixtures.ts";
@@ -66,15 +67,43 @@ test("list-rules <ruleId> prints labelled per-rule detail in text mode", () => {
 });
 
 test("list-rules <ruleId> renders JSON envelope with tool + rule + configKeys", () => {
-  // JSON variant for docs/integration consumers. Shape: `{ tool: {name, version}, rule: { …descriptor, configKeys: [...] } }`.
+  // JSON variant for docs/integration consumers. Shape: `{ tool: {name, version}, rule: { …listed record, configKeys: [...] } }`,
+  // where the listed record is the same family shape the catalogue publishes (`id`, `defaultSeverity`, `thresholds`).
   const text = execFileSync("./bin/gruff-ts", ["list-rules", "naming.generic-parameter", "--format=json"], { encoding: "utf8" });
   const payload = JSON.parse(text);
   assert.equal(payload.tool?.name, "gruff-ts");
-  assert.equal(payload.rule?.ruleId, "naming.generic-parameter");
+  assert.equal(payload.rule?.id, "naming.generic-parameter");
+  assert.equal(typeof payload.rule?.defaultSeverity, "string");
+  assert.equal("ruleId" in payload.rule, false);
+  assert.equal("severity" in payload.rule, false);
   assert.deepEqual(payload.rule?.optionKeys, ["minCyclomatic", "minLineCount", "minParameters"]);
+
+  const thresholded = JSON.parse(execFileSync("./bin/gruff-ts", ["list-rules", "complexity.cognitive", "--format=json"], { encoding: "utf8" }));
+  assert.deepEqual(thresholded.rule?.thresholds, { maxComplexity: 15 });
+  assert.equal("threshold" in thresholded.rule, false);
   assert.equal(Array.isArray(payload.rule?.configKeys), true);
   const enabledKey = payload.rule.configKeys.find((entry: { key: string }) => entry.key === "rules.naming.generic-parameter.enabled");
   assert.equal(enabledKey?.type, "bool");
+});
+
+test("list-rules <ruleId> prints reviewed false-positive guidance in both formats", () => {
+  // M04: guidance reaches users only if the surfaces carry it. The JSON branch spreads the
+  // descriptor so it gains the field for free, but both text renderers hand-format each field and
+  // would drop it silently, which is what this guard exists to catch.
+  const text = execFileSync("./bin/gruff-ts", ["list-rules", "security.async-foreach"], { encoding: "utf8" });
+  assert.match(text, /Known false positives:/);
+  assert.match(text, /\n {4}-> /);
+
+  const payload = JSON.parse(execFileSync("./bin/gruff-ts", ["list-rules", "security.async-foreach", "--format=json"], { encoding: "utf8" }));
+  assert.equal(Array.isArray(payload.rule?.falsePositiveShapes), true);
+  assert.ok(payload.rule.falsePositiveShapes.length > 0);
+  const malformed = payload.rule.falsePositiveShapes
+    .filter((entry: { shape: unknown; mitigation: unknown }) => typeof entry.shape !== "string" || typeof entry.mitigation !== "string");
+  assert.deepEqual(malformed, []);
+
+  // A high-confidence rule omits the field, so its detail card shows no guidance heading at all.
+  const highConfidence = execFileSync("./bin/gruff-ts", ["list-rules", "security.eval-call"], { encoding: "utf8" });
+  assert.equal(highConfidence.includes("Known false positives:"), false);
 });
 
 test("list-rules unknown id exits 2 with the documented stderr message", () => {
@@ -116,18 +145,27 @@ function assertRuleListJsonOutput(): boolean {
   const parsed = readDeterministicRuleListJson();
   assert.equal(parsed.schemaVersion, undefined);
   assert.equal(parsed.tool?.name, "gruff-ts");
-  assert.equal(ruleListJsonHasThreshold(parsed, "design.deep-relative-import", 2), true);
+  // The family listing shape: `id`, `defaultSeverity`, and a named threshold map under `thresholds`.
+  // A rule whose id has a gruff-go knob name borrows it; one with no knob name anywhere publishes
+  // the one-key `threshold` map; a rule with no threshold omits the key.
+  assert.equal(ruleListJsonHasThreshold(parsed, "complexity.cognitive", { maxComplexity: 15 }), true);
+  assert.equal(ruleListJsonHasThreshold(parsed, "design.deep-relative-import", { threshold: 2 }), true);
+  // A rule with more than one named threshold publishes all of them: the family high-entropy contract.
+  assert.equal(ruleListJsonHasThreshold(parsed, "sensitive-data.high-entropy-string", { minLength: 32, entropy: 4.2 }), true);
+  assert.equal(parsed.rules?.find((rule) => rule.id === "security.eval-call")?.thresholds, undefined);
+  assert.equal(parsed.rules?.every((rule) => typeof rule.id === "string" && typeof rule.defaultSeverity === "string"), true);
+  assert.equal(parsed.rules?.some((rule) => "ruleId" in rule || "severity" in rule || "threshold" in rule), false);
   assert.equal(ruleListJsonHasOptionKey(parsed, "design.large-module-concentration", "minFiles"), true);
   return true;
 }
 
 type RuleListJsonRule = {
-  ruleId?: string;
+  id?: string;
   pillar?: string;
-  severity?: string;
+  defaultSeverity?: string;
   confidence?: string;
   description?: string;
-  threshold?: number;
+  thresholds?: Record<string, number>;
   optionKeys?: string[];
 };
 
@@ -145,14 +183,14 @@ function readDeterministicRuleListJson(): RuleListJsonPayload {
   return JSON.parse(firstJsonText) as RuleListJsonPayload;
 }
 
-/** Checks one rule threshold without making the catalogue test branch-heavy. */
-function ruleListJsonHasThreshold(payload: RuleListJsonPayload, ruleId: string, threshold: number): boolean {
-  return payload.rules?.some((rule) => rule.ruleId === ruleId && rule.threshold === threshold) ?? false;
+/** Checks one rule's threshold map without making the catalogue test branch-heavy. */
+function ruleListJsonHasThreshold(payload: RuleListJsonPayload, ruleId: string, thresholds: Record<string, number>): boolean {
+  return payload.rules?.some((rule) => rule.id === ruleId && JSON.stringify(rule.thresholds) === JSON.stringify(thresholds)) ?? false;
 }
 
 /** Checks one rule option key without making the catalogue test branch-heavy. */
 function ruleListJsonHasOptionKey(payload: RuleListJsonPayload, ruleId: string, optionKey: string): boolean {
-  return payload.rules?.some((rule) => rule.ruleId === ruleId && rule.optionKeys?.includes(optionKey)) ?? false;
+  return payload.rules?.some((rule) => rule.id === ruleId && rule.optionKeys?.includes(optionKey)) ?? false;
 }
 
 test("console globals suppress normal output and completion emits a script", () => {
@@ -161,7 +199,7 @@ test("console globals suppress normal output and completion emits a script", () 
 
   const completion = execFileSync("./bin/gruff-ts", ["completion"], { encoding: "utf8" });
   assert.match(completion, /complete -F _gruff_ts_completion gruff-ts/);
-  assert.match(completion, /commands="analyse completion dashboard hook init list list-profiles list-rules report summary"/);
+  assert.match(completion, /commands="analyse check-ignore completion dashboard hook init list list-profiles list-rules migrate-config report summary"/);
   assert.match(completion, /text json html markdown github hotspot sarif/);
 
   const analyseHelp = execFileSync("./bin/gruff-ts", ["analyse", "--help"], { encoding: "utf8" });
@@ -170,6 +208,40 @@ test("console globals suppress normal output and completion emits a script", () 
   assert.match(analyseHelp, /--since <ref>/);
   assert.match(analyseHelp, /--changed-scope <scope>/);
   assert.match(analyseHelp, /--profile <spec>/);
+});
+
+test("summary exits 0 on findings unless --fail-on asks for a gate", () => {
+  const args = ["summary", "fixtures/sample.ts", "--no-config", "--no-baseline"];
+  assert.equal(spawnSync("./bin/gruff-ts", args, { encoding: "utf8" }).status, 0);
+  assert.equal(spawnSync("./bin/gruff-ts", [...args, "--fail-on=advisory"], { encoding: "utf8" }).status, 1);
+});
+
+test("an unreadable --changed-ranges value exits 2 with one run-invalidating diagnostic", () => {
+  const base = ["analyse", "fixtures/sample.ts", "--no-config", "--no-baseline", "--fail-on=none"];
+  // A value naming no range at all is malformed too: the caller asked for a scoped run over nothing.
+  const emptyRangesMessage = "--changed-ranges must include at least one range such as 3-3 or 8-10";
+  for (const [value, message] of [["abc", "invalid --changed-ranges entry: abc"], [",", emptyRangesMessage], ["", emptyRangesMessage]]) {
+    const json = spawnSync("./bin/gruff-ts", [...base, "--format=json", `--changed-ranges=${value}`], { encoding: "utf8" });
+    assert.equal(json.status, 2, `${value}: exit`);
+    const payload = JSON.parse(json.stdout) as { schemaVersion: string; summary: { exitCode: number }; diagnostics: Array<{ type: string; message: string; invalidatesRun: boolean }>; findings: unknown[] };
+    assert.equal(payload.schemaVersion, "gruff.analysis.v3");
+    assert.equal(payload.summary.exitCode, 2);
+    assert.deepEqual(payload.diagnostics.map(({ type, message, invalidatesRun }) => ({ type, message, invalidatesRun })), [{ type: "changed-region", message, invalidatesRun: true }]);
+    assert.deepEqual(payload.findings, [], `${value}: findings beside an unreadable scope`);
+
+    const text = spawnSync("./bin/gruff-ts", [...base, `--changed-ranges=${value}`], { encoding: "utf8" });
+    assert.equal(text.status, 2, `${value}: text exit`);
+    assert.equal(text.stderr, `gruff-ts: ${message}\n`);
+  }
+  // The hook keeps its own fatal payload for the same inputs, empty among them: widening a hook run silently
+  // would hand an agent a whole-tree finding list attributed to the edit it just made.
+  for (const unusableRanges of ["abc", ""]) {
+    const hook = spawnSync("./bin/gruff-ts", ["hook", "fixtures/sample.ts", "--no-config", `--changed-ranges=${unusableRanges}`], { encoding: "utf8" });
+    assert.equal(hook.status, 2, `${unusableRanges}: hook exit`);
+    const payload = JSON.parse(hook.stdout) as { findings: unknown[]; diagnostics: Array<{ type: string; severity: string }> };
+    assert.deepEqual(payload.diagnostics.map(({ type, severity }) => ({ type, severity })), [{ type: "changed-region", severity: "fatal" }]);
+    assert.deepEqual(payload.findings, [], `${unusableRanges}: findings beside an unusable scope`);
+  }
 });
 
 test("summary CLI prints compact scan digest without per-finding spam", () => {
@@ -185,22 +257,33 @@ test("summary CLI prints compact scan digest without per-finding spam", () => {
   assert.equal(output.includes("Findings:\n- ["), false);
 });
 
-test("summary CLI supports json format and top limit", () => {
+test("summary JSON is the exact v3 analysis projection", () => {
   const output = execFileSync(
     "./bin/gruff-ts",
     ["summary", "fixtures/sample.ts", "--format=json", "--top=1", "--fail-on=none", "--no-config", "--no-baseline"],
     { encoding: "utf8" },
   );
   const payload = JSON.parse(output) as Record<string, unknown>;
-  assert.equal(payload.schemaVersion, "gruff.summary.v2");
-  assert.equal((payload.topRules as unknown[] | undefined)?.length, 1);
-  assert.ok(((payload.topOffenders as unknown[] | undefined)?.length ?? 0) <= 1);
-  const pillars = payload.pillars as unknown[] | undefined;
+  const analysis = JSON.parse(execFileSync(
+    "./bin/gruff-ts",
+    ["analyse", "fixtures/sample.ts", "--format=json", "--fail-on=none", "--no-config", "--no-baseline"],
+    { encoding: "utf8" },
+  )) as Record<string, unknown>;
+  delete analysis.findings;
+  analysis.schemaVersion = "gruff.summary.v3";
+
+  assert.equal(payload.schemaVersion, "gruff.summary.v3");
+  assert.equal("findings" in payload, false);
+  assert.equal("topRules" in payload, false);
+  assert.equal("topOffenders" in payload, false);
+  assert.deepEqual(payload, analysis);
+  const score = payload.score as Record<string, unknown>;
+  const pillars = score.pillars as unknown[] | undefined;
   assert.ok(Array.isArray(pillars) && pillars.length > 0);
   pillars.forEach(assertPillarRowShape);
 });
 
-/** Validates one pillar row from the `gruff.summary.v2` JSON output. Accepts the raw parsed
+/** Validates one pillar row from the `gruff.summary.v3` JSON output. Accepts the raw parsed
  * value so the test does not need a typed interface mirroring the wire schema - the schema
  * contract lives in `renderSummaryJson`, this helper just confirms the row carries the
  * documented keys with the documented value types. */
@@ -208,14 +291,9 @@ function assertPillarRowShape(rawRow: unknown): void {
   assert.ok(rawRow && typeof rawRow === "object");
   const row = rawRow as Record<string, unknown>;
   assert.equal(typeof row.pillar, "string");
-  assert.match(String(row.grade), /^[A-F]$/);
   assert.equal(typeof row.score, "number");
   assert.equal(typeof row.penalty, "number");
-  assert.equal(row.applicable, true);
   assert.equal(typeof row.findings, "number");
-  assert.equal(typeof row.advisory, "number");
-  assert.equal(typeof row.warning, "number");
-  assert.equal(typeof row.error, "number");
 }
 
 test("summary CLI reports generated and applied baseline metadata", () => {
@@ -255,42 +333,234 @@ test("json report uses schema version", () => {
     shouldSkipBaseline: true,
   });
   const rendered = renderReport(report, "json");
-  assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v2"/);
+  assert.match(rendered, /"schemaVersion": "gruff\.analysis\.v3"/);
 });
 
-test("json report emits canonical file alias without mutating findings", () => {
+test("json report emits only canonical v3 paths without mutating findings", () => {
   const report = analyseFixture(`function run(value: string): void {
   eval(value);
 }
 `);
   const before = JSON.stringify(report);
   const payload = JSON.parse(renderReport(report, "json")) as {
-    findings: Array<{ file: string; filePath: string; stableIdentity: string }>;
-    score: { topOffenders: Array<{ file: string; filePath: string }> };
+    findings: Array<{ file: string; stableIdentity: string; metadata: { locationPrecision: string } }>;
+    score: { topOffenders: Array<{ file: string }> };
   };
   const [finding] = payload.findings;
   const [offender] = payload.score.topOffenders;
   const [nativeFinding] = report.findings;
   assert.ok(finding);
-  assert.equal(finding.file, finding.filePath);
+  assert.equal(finding.file, nativeFinding?.filePath);
+  assert.equal("filePath" in finding, false);
   assert.match(finding.stableIdentity, /^[0-9a-f]{16}$/);
+  assert.equal(finding.metadata.locationPrecision, "line-only");
   assert.ok(offender);
-  assert.equal(offender.file, offender.filePath);
+  assert.equal(offender.file, report.score.topOffenders[0]?.filePath);
+  assert.equal("filePath" in offender, false);
   assert.ok(nativeFinding);
   assert.equal(JSON.stringify(report), before);
   assert.equal("file" in nativeFinding, false);
+});
+
+// A scan launched from a sibling directory names its target as `../project`. The JSON report must still be
+// published, with the operand made project-relative, and a baseline outside the project simply has no path.
+// Spawns the built binary three times and writes a project and a baseline inside a fresh temporary directory,
+// which is removed again whether an assertion threw or not.
+test("json report survives a target and a baseline outside the launch directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-outside-"));
+  try {
+    mkdirSync(join(root, "launch"));
+    mkdirSync(join(root, "project"));
+    writeFileSync(join(root, "project", "probe.ts"), "export function probe(rx: number): number {\n  return rx + rx;\n}\n");
+    const bin = join(REPO_ROOT, "bin/gruff-ts");
+    const flags = ["--no-config", "--fail-on", "none", "--format", "json"];
+
+    const fromSibling = spawnSync("bash", [bin, "analyse", "../project", "--no-baseline", ...flags], { cwd: join(root, "launch"), encoding: "utf8" });
+    assert.equal(fromSibling.status, 0, fromSibling.stderr);
+    assert.deepEqual((JSON.parse(fromSibling.stdout) as { run: { inputs: string[] } }).run.inputs, ["."]);
+
+    spawnSync("bash", [bin, "analyse", ".", "--generate-baseline", "../reviewed.json", "--no-config", "--fail-on", "none"], { cwd: join(root, "project"), encoding: "utf8" });
+    const outsideBaseline = spawnSync("bash", [bin, "analyse", ".", "--baseline", "../reviewed.json", ...flags], { cwd: join(root, "project"), encoding: "utf8" });
+    assert.equal(outsideBaseline.status, 0, outsideBaseline.stderr);
+    const baseline = (JSON.parse(outsideBaseline.stdout) as { baseline: { applied: boolean; path?: string } }).baseline;
+    assert.equal(baseline.applied, true);
+    assert.equal("path" in baseline, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// `..` typed from one of the project's own subdirectories names the project. Read against the project root instead of the
+// launch directory, it named the directory above, here holding stray.ts, so every machine command scanned it and threw.
+// Spawns the built binary nine times inside a fresh temporary directory, which is removed again whether an assertion
+// threw or not.
+test("machine json is the same from inside the project, a sibling and a subdirectory", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-launch-"));
+  try {
+    mkdirSync(join(root, "project", "sub"), { recursive: true });
+    mkdirSync(join(root, "sibling"));
+    writeFileSync(join(root, "project", "probe.ts"), "export function probe(rx: number): number {\n  return rx + rx;\n}\n");
+    writeFileSync(join(root, "stray.ts"), "export function stray(unused: number): void {}\n");
+    const bin = join(REPO_ROOT, "bin/gruff-ts");
+    // Spawns the built binary for one command from one launch directory and keeps only the sections the launch
+    // directory must not change.
+    const stable = (command: string, directory: string, target: string): string => {
+      const result = spawnSync("bash", [bin, command, target, "--no-config", "--fail-on", "none", "--format", "json"], { cwd: directory, encoding: "utf8" });
+      assert.equal(result.status, 0, `${command} ${target}: ${result.stderr}`);
+      const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+      return JSON.stringify(["findings", "score", "summary", "paths", "diagnostics"].map((key) => payload[key]));
+    };
+
+    for (const command of ["analyse", "summary", "report"]) {
+      const inside = stable(command, join(root, "project"), ".");
+      assert.equal(stable(command, join(root, "sibling"), "../project"), inside, `${command} from a sibling`);
+      assert.equal(stable(command, join(root, "project", "sub"), ".."), inside, `${command} from a subdirectory`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// `--config` means the path the user typed, so from a nested directory a config named two levels up is read against
+// that directory, as the target two levels up is, and not against the project root the target resolves to, where it
+// named no file.
+// Spawns the built binary twice inside a fresh temporary directory, which is removed again whether an assertion threw
+// or not.
+test("an explicit relative config is read from the launch directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-config-launch-"));
+  try {
+    mkdirSync(join(root, "project", "a", "b"), { recursive: true });
+    writeFileSync(join(root, "project", "probe.ts"), "export function probe(rx: number): number {\n  return rx + rx;\n}\n");
+    writeFileSync(join(root, "project", "cfg.yaml"), "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity: error\n");
+    const bin = join(REPO_ROOT, "bin/gruff-ts");
+    const flags = ["--no-baseline", "--fail-on", "none", "--format", "json"];
+
+    const nested = spawnSync("bash", [bin, "analyse", "../..", "--config", "../../cfg.yaml", ...flags], { cwd: join(root, "project", "a", "b"), encoding: "utf8" });
+    const inside = spawnSync("bash", [bin, "analyse", ".", "--config", "cfg.yaml", ...flags], { cwd: join(root, "project"), encoding: "utf8" });
+
+    assert.equal(nested.status, 0, nested.stderr);
+    assert.deepEqual(JSON.parse(nested.stdout).findings, JSON.parse(inside.stdout).findings);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A baseline path typed two levels inside the project names the project's own file, for writing and for reading. Read
+// against the project root it named a file above the project: the write landed there and the read never found it.
+// Stable contract: the launch directory never changes which baseline file a run writes or reads.
+// Spawns the built binary twice inside a fresh temporary directory, which is removed again whether an assertion threw
+// or not.
+test("typed baseline paths are read from the launch directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-baseline-launch-"));
+  try {
+    const project = join(root, "outer", "project");
+    mkdirSync(join(project, "a", "b"), { recursive: true });
+    writeFileSync(join(project, "probe.ts"), "export function probe(rx: number): number {\n  return rx + rx;\n}\n");
+    const bin = join(REPO_ROOT, "bin/gruff-ts");
+    const nested = join(project, "a", "b");
+    const baselineFile = join("..", "..", "base.json");
+
+    const generated = spawnSync("bash", [bin, "analyse", "../..", "--no-config", "--fail-on", "none", "--generate-baseline", baselineFile], { cwd: nested, encoding: "utf8" });
+    const applied = spawnSync("bash", [bin, "analyse", "../..", "--no-config", "--fail-on", "none", "--format", "json", "--baseline", baselineFile], { cwd: nested, encoding: "utf8" });
+
+    assert.equal(generated.status, 0, generated.stderr);
+    assert.equal(existsSync(join(project, "base.json")), true);
+    assert.equal(existsSync(join(root, "base.json")), false);
+    assert.equal(applied.status, 0, applied.stderr);
+    assert.deepEqual((JSON.parse(applied.stdout) as { baseline: { applied: boolean; path?: string } }).baseline.path, "base.json");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Two targets named from a sibling directory have no root inside the launch directory. The JSON caller must get one
+// run-invalidating target-error diagnostic and no findings with exit 2, not a throw while the report renders.
+// Spawns the built binary twice in a fresh temporary directory, removed again whether an assertion threw or not.
+test("several targets outside the launch directory are refused with a target-error envelope", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-targets-"));
+  try {
+    for (const directory of ["launch", "a", "b"]) {
+      mkdirSync(join(root, directory));
+    }
+    writeFileSync(join(root, "a", "one.ts"), "export const one = 1;\n");
+    writeFileSync(join(root, "b", "two.ts"), "export const two = 2;\n");
+    const bin = join(REPO_ROOT, "bin/gruff-ts");
+    const flags = ["--no-config", "--no-baseline", "--format", "json"];
+
+    const refused = spawnSync("bash", [bin, "analyse", "../a", "../b", ...flags], { cwd: join(root, "launch"), encoding: "utf8" });
+    assert.equal(refused.status, 2, refused.stderr);
+    const report = JSON.parse(refused.stdout) as { diagnostics: { type: string; invalidatesRun: boolean }[]; findings: unknown[] };
+    assert.deepEqual(report.diagnostics.map((diagnostic) => diagnostic.type), ["target-error"]);
+    assert.equal(report.diagnostics[0]?.invalidatesRun, true);
+    assert.deepEqual(report.findings, []);
+
+    const single = spawnSync("bash", [bin, "analyse", "../a", "--fail-on", "none", ...flags], { cwd: join(root, "launch"), encoding: "utf8" });
+    assert.equal(single.status, 0, single.stderr);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Migrating a 0.5 baseline onto itself, under the default name or any other, must be refused with one baseline-error
+// diagnostic and exit 2, like every other port, and must leave the 0.5 file byte-identical for a retreat.
+// Spawns the built binary twice in a fresh temporary directory, removed again whether an assertion threw or not.
+test("an in-place baseline migration is refused with a baseline-error envelope, not a crash", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-in-place-"));
+  try {
+    writeFileSync(join(root, "probe.ts"), "export const probe = 1;\n");
+    const legacy = `${JSON.stringify({ schemaVersion: "gruff.baseline.v1", entries: [] }, null, 2)}\n`;
+    const bin = join(REPO_ROOT, "bin/gruff-ts");
+
+    for (const name of ["gruff-baseline.json", "reviewed.json"]) {
+      writeFileSync(join(root, name), legacy);
+      const run = spawnSync("bash", [bin, "analyse", ".", "--no-config", "--format", "json", "--migrate-baseline", name, "--generate-baseline", name], { cwd: root, encoding: "utf8" });
+      assert.equal(run.status, 2, run.stderr);
+      const report = JSON.parse(run.stdout) as { diagnostics: { type: string }[] };
+      assert.deepEqual(report.diagnostics.map((diagnostic) => diagnostic.type), ["baseline-error"], name);
+      assert.equal(readFileSync(join(root, name), "utf8"), legacy, name);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// npm installs the scoped package at node_modules/@blundergoat/gruff-ts and hoists tsx to node_modules/tsx, two
+// levels above the package. The launcher must find it there when run from a directory that is not the installing
+// project, where a bare `tsx` import has nothing to resolve against. The test writes that layout into a fresh
+// temporary directory, links the real tsx in, spawns the launcher, and removes the directory whether an assertion threw
+// or not.
+test("the launcher finds a hoisted tsx for a scoped install run from another directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-scoped-"));
+  // The launch directory is a sibling temporary directory, so no node_modules above it can resolve a bare `tsx`.
+  const elsewhere = mkdtempSync(join(tmpdir(), "gruff-ts-elsewhere-"));
+  try {
+    const packageDir = join(root, "node_modules", "@blundergoat", "gruff-ts");
+    mkdirSync(join(packageDir, "bin"), { recursive: true });
+    mkdirSync(join(packageDir, "src"), { recursive: true });
+    copyFileSync(join(REPO_ROOT, "bin/gruff-ts"), join(packageDir, "bin", "gruff-ts"));
+    writeFileSync(join(packageDir, "src", "cli.ts"), "const marker: string = \"scoped-launch-ok\";\nconsole.log(marker);\n");
+    symlinkSync(join(REPO_ROOT, "node_modules", "tsx"), join(root, "node_modules", "tsx"));
+
+    const run = spawnSync("bash", [join(packageDir, "bin", "gruff-ts")], { cwd: elsewhere, encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout.trim(), "scoped-launch-ok");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
 });
 
 // Fixture for the SARIF render test. Hoisted out of the test body so the test reaches its first
 // assertion within the setup-bloat threshold; the fixture data itself is non-trivial because it
 // encodes the cross-pillar coverage SARIF must round-trip.
 const SARIF_FIXTURE_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v2",
+  schemaVersion: "gruff.analysis.v3",
   tool: { name: "gruff-ts", version: "0.1.0-test" },
   run: { projectRoot: "/tmp/project", format: "sarif", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 1, warning: 1, error: 1, total: 3 },
   paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
+  suppressions: [],
   findings: [
     { ruleId: "security.eval-call", message: "Avoid eval().", filePath: "./src\\bad.ts", line: 7, endLine: 10, column: 3, severity: "error", pillar: "security", secondaryPillars: ["sensitive-data"], tier: "v0.1", confidence: "high", symbol: "run", remediation: "Use a dispatch table.", metadata: { target: "eval" }, fingerprint: "abc123", stableIdentity: "stable-abc123" },
     { ruleId: "waste.console-log", message: "Avoid console logging.", filePath: "src\\warn.ts", line: 8, severity: "warning", pillar: "maintainability", secondaryPillars: [], tier: "v0.1", confidence: "high", metadata: {}, fingerprint: "def456", stableIdentity: "stable-def456" },
@@ -299,8 +569,12 @@ const SARIF_FIXTURE_REPORT: AnalysisReport = {
   score: {
     composite: 91,
     grade: "A",
-    pillars: [{ pillar: "security", score: 91, penalty: 9, findings: 1 }],
-    topOffenders: [{ filePath: "src/bad.ts", score: 91, findings: 1 }],
+    evaluatedFiles: 10,
+    clusters: [],
+    ruleAttribution: [],
+    scoredPillars: ["security"],
+    pillars: [{ pillar: "security", applicable: true, score: 91, grade: "A", penalty: 9, findings: 1 }],
+    topOffenders: [{ filePath: "src/bad.ts", score: 91, penalty: 9, findings: 1 }],
   },
 };
 
@@ -341,8 +615,8 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(evalRule.properties.defaultEnabled, true);
   results.forEach((sarifResult: SarifResult) => {
     assert.equal(rules[sarifResult.ruleIndex ?? -1]?.id ?? sarifResult.ruleId, sarifResult.ruleId);
-    assert.equal(typeof sarifResult.partialFingerprints.gruffFingerprint, "string");
-    assert.equal("primary" in sarifResult.partialFingerprints, false);
+    assert.equal(typeof sarifResult.partialFingerprints?.gruffFingerprint, "string");
+    assert.equal("primary" in (sarifResult.partialFingerprints ?? {}), false);
     assert.equal("codeFlows" in sarifResult, false);
     assert.equal("threadFlows" in sarifResult, false);
     assert.equal("fixes" in sarifResult, false);
@@ -360,7 +634,8 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(result.locations[0].physicalLocation.region.startLine, expectedStartLine);
   assert.equal(result.locations[0].physicalLocation.region.startColumn, expectedStartColumn);
   assert.equal(result.locations[0].physicalLocation.region.endLine, expectedEndLine);
-  assert.equal(result.partialFingerprints.gruffFingerprint, "abc123");
+  // Code scanning groups alerts by the ratified durable identity, not by the line-bearing fingerprint.
+  assert.equal(result.partialFingerprints.gruffFingerprint, findingIdentities(SARIF_FIXTURE_REPORT.findings.slice(0, 1))[0]?.identity);
   assert.equal(result.properties.severity, "error");
   assert.equal(result.properties.pillar, "security");
   assert.deepEqual(result.properties.secondaryPillars, ["sensitive-data"]);
@@ -374,12 +649,12 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(results[2].level, "note");
   assert.equal(results[2].locations[0].physicalLocation.artifactLocation.uri, "src/docs.ts");
   assert.equal(results[2].properties.severity, "advisory");
-  assert.equal(payload.runs[0].properties.gruffSchemaVersion, "gruff.analysis.v2");
+  assert.equal(payload.runs[0].properties.gruffSchemaVersion, "gruff.analysis.v3");
   assert.equal(payload.runs[0].properties.generatedAt, "2026-05-15T00:00:00.000Z");
   const expectedScore = 91;
   assert.equal(payload.runs[0].properties.score, expectedScore);
   assert.equal(payload.runs[0].properties.grade, "A");
-  assert.equal(JSON.parse(renderReport(report, "json")).schemaVersion, "gruff.analysis.v2");
+  assert.equal(JSON.parse(renderReport(report, "json")).schemaVersion, "gruff.analysis.v3");
   assert.equal(JSON.stringify(report), beforeSarif);
 });
 
@@ -406,7 +681,9 @@ test("machine renderers escape SARIF URIs and GitHub annotation properties", () 
 type SarifResult = {
   ruleId: string;
   ruleIndex?: number;
-  partialFingerprints: { gruffFingerprint: unknown } & Record<string, unknown>;
+  // Absent for a sensitive result, which has no durable identity to publish.
+  partialFingerprints?: { gruffFingerprint: unknown } & Record<string, unknown>;
+  properties?: { pillar?: string };
   locations: Array<{ physicalLocation: { artifactLocation: { uri: string } } }>;
 };
 
@@ -414,7 +691,9 @@ type SarifResult = {
 // presence, and POSIX-style normalised URI. Factored out of the test body so the loop carries no
 // inline conditional branches.
 function assertSarifResultShape(rules: Array<{ id: string }>, sarifResult: SarifResult): void {
-  assert.equal(typeof sarifResult.partialFingerprints.gruffFingerprint, "string");
+  // An ordinary result carries the ratified identity; a secret carries no fingerprints at all.
+  const isSensitive = sarifResult.ruleId.startsWith("sensitive-data.") || sarifResult.properties?.pillar === "sensitive-data";
+  assert.equal(typeof sarifResult.partialFingerprints?.gruffFingerprint, isSensitive ? "undefined" : "string");
   const indexedRule = typeof sarifResult.ruleIndex === "number" ? rules[sarifResult.ruleIndex] : undefined;
   assert.equal(indexedRule?.id ?? sarifResult.ruleId, sarifResult.ruleId);
   const uri = sarifResult.locations[0]?.physicalLocation.artifactLocation.uri ?? "";
@@ -469,12 +748,13 @@ test("sarif fail-on preserves error exit behavior", () => {
 // Fixture for the HTML render test. Hoisted out of the test body to keep setup-bloat under
 // threshold; the fixture intentionally embeds HTML metacharacters that the renderer must escape.
 const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v2",
+  schemaVersion: "gruff.analysis.v3",
   tool: { name: "gruff-ts", version: "0.1.0-test<script>" },
   run: { projectRoot: "/tmp/project", format: "html", failOn: "none", generatedAt: "2026-05-15T00:00:00.000Z" },
   summary: { advisory: 0, warning: 1, error: 1, total: 2 },
   paths: { analysedFiles: 1, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
+  suppressions: [],
   findings: [
     { ruleId: "docs.<script>", message: "Message with <script>alert(1)</script>", filePath: "src/<bad>.ts", line: 7, severity: "warning", pillar: "documentation", secondaryPillars: [], tier: "v0.1", confidence: "high", symbol: "badSymbol", metadata: {}, fingerprint: "abc123", stableIdentity: "stable-abc123" },
     { ruleId: "complexity.cyclomatic", message: "Function has cyclomatic complexity 12.", filePath: "src/Complex.ts", line: 11, severity: "error", pillar: "complexity", secondaryPillars: [], tier: "v0.1", confidence: "high", symbol: "run", metadata: {}, fingerprint: "def456", stableIdentity: "stable-def456" },
@@ -482,8 +762,12 @@ const ESCAPING_FIXTURE_REPORT: AnalysisReport = {
   score: {
     composite: 82.5,
     grade: "B",
-    pillars: [{ pillar: "documentation", score: 84, penalty: 16, findings: 1 }],
-    topOffenders: [{ filePath: "src/<bad>.ts", score: 88, findings: 1 }],
+    evaluatedFiles: 10,
+    clusters: [],
+    ruleAttribution: [],
+    scoredPillars: ["documentation"],
+    pillars: [{ pillar: "documentation", applicable: true, score: 84, grade: "B", penalty: 16, findings: 1 }],
+    topOffenders: [{ filePath: "src/<bad>.ts", score: 88, penalty: 16, findings: 1 }],
   },
 };
 
@@ -680,7 +964,7 @@ test("html report rendering does not mutate json report output", () => {
   renderReport(report, "html");
 
   assert.equal(renderReport(report, "json"), before);
-  assert.match(before, /"schemaVersion": "gruff\.analysis\.v2"/);
+  assert.match(before, /"schemaVersion": "gruff\.analysis\.v3"/);
 });
 
 test("report command ignores default baselines", () => {
@@ -720,6 +1004,14 @@ test("constrained option values fail fast as usage errors naming the accepted se
   assertConstrainedValueRejected("summary --fail-on", ["summary", "--fail-on", "bogus", "--no-config"]);
 });
 
+test("deep-scan CLI override accepts paired limits or off and rejects partial values", () => {
+  for (const command of ["analyse", "hook", "report", "summary"]) {
+    const invalid = spawnSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), command, "--deep-scan-budget", "100", "--no-config"], { encoding: "utf8" });
+    assert.notEqual(invalid.status, 0, `${command} must reject an unpaired budget`);
+    assert.match(invalid.stderr, /LINES:BYTES, or off/);
+  }
+});
+
 test("valid constrained values and bare directory arguments keep working", () => {
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-valid-values-"));
   try {
@@ -730,7 +1022,7 @@ test("valid constrained values and bare directory arguments keep working", () =>
       { cwd: projectRoot, encoding: "utf8" },
     );
     assert.equal(valid.status, 0);
-    assert.equal(JSON.parse(valid.stdout).schemaVersion, "gruff.analysis.v2");
+    assert.equal(JSON.parse(valid.stdout).schemaVersion, "gruff.analysis.v3");
 
     // Family CLI contract: a bare directory operand means the whole subtree (dir equals dir/**).
     mkdirSync(join(projectRoot, "sub"), { recursive: true });
@@ -741,9 +1033,40 @@ test("valid constrained values and bare directory arguments keep working", () =>
       { cwd: projectRoot, encoding: "utf8" },
     );
     assert.equal(bareDirRun.status, 0);
-    const bareDirReport = JSON.parse(bareDirRun.stdout) as AnalysisReport;
-    assert.equal(bareDirReport.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.filePath === "sub/nested.ts"), true);
+    const bareDirReport = JSON.parse(bareDirRun.stdout) as { findings: Array<{ ruleId: string; file: string }> };
+    assert.equal(bareDirReport.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.file === "sub/nested.ts"), true);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+/*
+ * Fixture purpose: the console catalogue is hand-written and the completion script is rendered from it, so a
+ * command registered on the program and forgotten in the catalogue is invisible in both.
+ * Stable contract: every registered command appears in the catalogue and in every shell completion script, so a
+ * user who runs `gruff-ts` or presses tab sees the whole command surface.
+ * Spawns the built binary four times to read what a user would actually see; it writes nothing and needs no fixture.
+ */
+test("every registered command appears in the catalogue and in every completion script", () => {
+  // Commander keeps its own help command out of `commands`, so the catalogue's `help` row is added back here.
+  const registered = [...buildProgram().commands.map((command) => command.name()), "help"].sort();
+  const catalogue = execFileSync("./bin/gruff-ts", [], { encoding: "utf8", cwd: REPO_ROOT });
+  const listed = catalogue
+    .split("Available commands:")[1]
+    ?.split("\n")
+    .map((line) => line.trim().split(/\s+/u)[0])
+    .filter((name) => name !== undefined && name.length > 0)
+    .sort() ?? [];
+
+  // check-ignore was registered and absent from this list until M08 task 9, so nothing surfaced it to a user.
+  assert.deepEqual(listed, registered);
+
+  for (const shell of ["bash", "zsh", "fish"]) {
+    const completion = execFileSync("./bin/gruff-ts", ["completion", shell], { encoding: "utf8", cwd: REPO_ROOT });
+
+    // `help` is deliberately absent from completions; every other registered command must be offered.
+    for (const command of registered.filter((name) => name !== "help")) {
+      assert.equal(completion.includes(command), true, `${shell} completion omits ${command}`);
+    }
   }
 });

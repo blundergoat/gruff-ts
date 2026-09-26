@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-08-13
+last_reviewed: 2026-08-21
 ---
 
 # Verification lessons
@@ -236,6 +236,8 @@ the self-scan cleared when the return contract used `reports`: “reports parser
 ## Lesson: keep verification wrappers visible to the deny hook
 
 **Created:** 2026-05-16
+**Decision changed:** Run verification targets as visible top-level commands. Keep a deny-hook self-test separate from quoted policy-trigger probes so the active admission hook can judge each intended action.
+**Trigger phase:** VERIFY
 
 The local deny-dangerous hook blocks verification wrappers that obscure nested execution. During discovery-scope verification, one `node` heredoc was blocked because JavaScript template-literal backticks looked like hidden command substitution, and a later `node -e` wrapper around `spawnSync("./bin/gruff-ts", ...)` was blocked because the shell-executing primitive hid the real command from hook review.
 
@@ -266,6 +268,10 @@ run `git worktree remove <worktree>`.
 M04 before-snapshot generation failed once because the command's `workdir` was set to the temp
 worktree path before `git worktree add` had created it. Create or attach temp worktrees from the
 repo root first, then `cd` into the worktree inside the command after the path exists.
+
+**Updated:** 2026-08-21
+
+During the goat-flow 1.16.0 upgrade, I combined the deny-hook self-test, two `--check` probes whose quoted payload used the word `secrets`, and `shellcheck` in one tool call. The active pre-tool policy classified the whole wrapper as `bash` and blocked it before any check ran. Running the self-test and shell analysis as separate top-level commands produced usable evidence. Treat an admission block as “not run,” not a failed target test, and split verification at command boundaries instead of rewriting a fixture to evade the hook.
 
 ## Lesson: zero-change refactor goldens come before edits
 

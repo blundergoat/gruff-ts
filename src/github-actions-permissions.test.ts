@@ -90,6 +90,43 @@ test("write-all keeps its specific broad-permission report", () => {
   );
 });
 
+test("a job-level write grant is least privilege and stays quiet, like gruff-rs", () => {
+  const report = analyseProject({
+    ".github/workflows/jobs.yml": "on: push\njobs:\n  analyze:\n    permissions:\n      security-events: write\n    steps:\n      - run: echo ready\n",
+    ".github/workflows/workflow.yml": "on: push\npermissions:\n  contents: write\njobs:\n  build:\n    steps:\n      - run: echo ready\n",
+  });
+
+  assert.deepEqual(
+    report.findings
+      .filter((finding) => finding.ruleId === "security.github-actions-broad-permissions")
+      .map((finding) => `${finding.filePath}:${finding.line}`),
+    [".github/workflows/workflow.yml:3"],
+  );
+});
+
+test("secrets-in-pr reads the on: key and reports only pull_request_target, never GITHUB_TOKEN", () => {
+  const job = "jobs:\n  build:\n    steps:\n      - run: echo \"${{ secrets.DEPLOY_TOKEN }}\"\n      - run: echo \"${{ secrets.GITHUB_TOKEN }}\"\n";
+  const report = analyseProject({
+    ".github/workflows/target-scalar.yml": `on: pull_request_target\n${job}`,
+    ".github/workflows/target-flow.yml": `on: [push, pull_request_target]\n${job}`,
+    ".github/workflows/target-mapping.yml": `"on":\n  "pull_request_target":\n    branches: [main]\n${job}`,
+    ".github/workflows/plain-pr.yml": `on:\n  pull_request:\n${job}`,
+    ".github/workflows/comment.yml": `on: issue_comment\n${job.replace("steps:", "if: github.event.issue.pull_request\n    steps:")}`,
+  });
+
+  assert.deepEqual(
+    report.findings
+      .filter((finding) => finding.ruleId === "security.github-actions-secrets-in-pr")
+      .map((finding) => `${finding.filePath}:${finding.symbol}`)
+      .sort(),
+    [
+      ".github/workflows/target-flow.yml:DEPLOY_TOKEN",
+      ".github/workflows/target-mapping.yml:DEPLOY_TOKEN",
+      ".github/workflows/target-scalar.yml:DEPLOY_TOKEN",
+    ],
+  );
+});
+
 test("read permissions and read-only scope names stay quiet", () => {
   const reviewedReadPermissions = REVIEWED_WRITE_PERMISSION_SCOPES
     .map(({ scope }) => `  ${scope}: read`);

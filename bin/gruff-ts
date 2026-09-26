@@ -16,6 +16,9 @@ PACKAGE_DIR="$SCRIPT_DIR/.."
 
 if [ -f "$PACKAGE_DIR/node_modules/tsx/dist/loader.mjs" ]; then
 	TSX_LOADER="$PACKAGE_DIR/node_modules/tsx/dist/loader.mjs"
+elif [ -f "$PACKAGE_DIR/../../tsx/dist/loader.mjs" ]; then
+	# A scoped install lives at node_modules/@blundergoat/gruff-ts, so npm hoists tsx two levels up, not one.
+	TSX_LOADER="$PACKAGE_DIR/../../tsx/dist/loader.mjs"
 elif [ -f "$PACKAGE_DIR/../tsx/dist/loader.mjs" ]; then
 	TSX_LOADER="$PACKAGE_DIR/../tsx/dist/loader.mjs"
 else

@@ -66,8 +66,9 @@ gruff-ts/
 │   ├── sensitive-data-rules.ts    = secret-like detectors with allowlisted redacted previews
 │   ├── source-text.ts             = non-code masking and source-text helpers
 │   ├── text-scans.ts              = tracking-marker summaries, byte lines, and generic text scans
+│   ├── baseline-file.ts           = v3 baseline read/write/apply, 0.5 migration, and unusable-file errors
 │   ├── baseline-options.ts        = baseline option resolution shared by CLI commands
-│   ├── baseline.ts                = baseline apply/write, finding dedupe, and history recording
+│   ├── baseline.ts                = canonical finding order, dedupe, and score-history recording
 │   ├── scoring.ts                 = report scoring, summaries, and finding exit semantics
 │   ├── pillar-summary.ts          = canonical summary pillar rows and ordering
 │   ├── rules.ts                   = catalogue of exactly 120 descriptors across 11 pillars
@@ -115,11 +116,11 @@ gruff-ts/
 │       ├── goat-security/         = security review skill
 │       └── goat-qa/               = QA/test skill
 │
-├── .agents/                       = shared Codex skill surface (goat, goat-plan/debug/review/critique/security/qa)
+├── .agents/                       = shared Codex skill surface (goat, goat-clarity, goat-plan/debug/review/critique/security/qa)
 ├── .codex/                        = Codex config and permission profile (deny hook shared in .goat-flow/hooks/)
 │
 ├── .goat-flow/                    = shared learning loop + skill packs (see .goat-flow/README files inline)
-│   ├── config.yaml                = goat-flow version (1.15.1) and skill install policy
+│   ├── config.yaml                = goat-flow version (1.16.0) and skill install policy
 │   ├── architecture.md            = system overview (this companion file)
 │   ├── code-map.md                = this file
 │   ├── glossary.md                = domain term definitions
@@ -129,10 +130,11 @@ gruff-ts/
 │   ├── plans/, scratchpad/        = milestone plans + ephemeral work (gitignored contents)
 │   ├── logs/sessions/, logs/quality/, logs/critiques/, logs/security/    = local continuity + skill output
 │   ├── skill-docs/                = meta references (skill-preamble, skill-conventions, README)
-│   └── skill-docs/playbooks/      = browser-use.md, changelog.md, code-comments.md, gruff-code-quality.md, hook-policy-testing.md, observability.md, page-capture.md, release-notes.md, skill-playbook-authoring-sync.md, writing-style.md
+│   └── skill-docs/playbooks/      = browser-use.md, changelog.md, code-comments.md, gruff-code-quality.md, hook-policy-testing.md, naming-and-placement.md, observability.md, page-capture.md, release-notes.md, skill-playbook-authoring-sync.md, test-selection.md, writing-sentence-diagnostics.md, writing-structure-diagnostics.md, writing-style.md
 │
 ├── node_modules/                  = vendored npm dependencies; never edit. Holds the goat-flow package whose
 │                                    workflow/hooks/ templates the installed .goat-flow/hooks/ scripts diff against
+│   └── goat-flow dist/dashboard/views/ = packaged HTML views (about.html, home.html, hooks.html, plans.html, projects.html, prompts.html, quality.html, settings.html, setup.html, skills.html, workspace.html)
 └── .idea/                         = JetBrains IDE config (gitignored, do not edit)
 ```
 

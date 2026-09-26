@@ -67,6 +67,10 @@ const SOURCE_TOKENS: readonly SourceToken[] = [
   { kind: "browser-location", pattern: /\blocation\.search\b|\bURLSearchParams\s*\(\s*location\.search\b/ },
 ];
 
+// The receivers the request source token reads. A nested function declaring one as its own parameter is a handler
+// whose request is its own argument, so `textOutsideRequestHandlers` blanks its reads of that name.
+const REQUEST_RECEIVER_NAMES: ReadonlySet<string> = new Set(["req", "request", "ctx"]);
+
 const SECURITY_FLOW_RULES: readonly SecurityFlowRule[] = [
   {
     ruleId: "security.path-traversal-candidate",
@@ -709,13 +713,63 @@ function sourceKindOf(parsedSource: TsSourceFile, expr: TsNode): string | undefi
   if (isSourceTextLiteral(expr)) {
     return undefined;
   }
-  const text = expr.getText(parsedSource);
+  const text = textOutsideRequestHandlers(parsedSource, expr);
   for (const token of SOURCE_TOKENS) {
     if (token.pattern.test(text)) {
       return token.kind;
     }
   }
   return undefined;
+}
+
+// The expression's source text with each handler's reads of its own request blanked. A nested function declaring
+// `req`, `request` or `ctx` as a parameter is a handler, and its reads of that name refer to the request it is later
+// called with, not to this expression's value: `startServer((req, res) => res.end(req.headers.host))` returns a server,
+// not request data. Only the declared names are blanked, so a callback that names its parameter `request` but reads the
+// enclosing `req` still taints. A function invoked where it is written, such as `(() => req.query.path)()` or
+// `((req) => req.query.path)(req)`, is no handler, since its result is part of the value. Blanking keeps offsets.
+function textOutsideRequestHandlers(parsedSource: TsSourceFile, expr: TsNode): string {
+  const expressionStart = expr.getStart(parsedSource);
+  let text = expr.getText(parsedSource);
+  walk(expr, (node) => {
+    if (node === expr || !isFunctionLike(node) || isImmediatelyInvoked(node)) {
+      return;
+    }
+    const declaredNames = declaredRequestParameterNames(node);
+    if (declaredNames.size === 0) {
+      return;
+    }
+    walk(node, (inner) => {
+      if (typescriptSyntax.isIdentifier(inner) && declaredNames.has(inner.text) && !isPropertyAccessName(inner)) {
+        const blankStart = inner.getStart(parsedSource) - expressionStart;
+        const blankEnd = inner.getEnd() - expressionStart;
+        text = text.slice(0, blankStart) + " ".repeat(blankEnd - blankStart) + text.slice(blankEnd);
+      }
+    });
+    return;
+  });
+  return text;
+}
+
+// The `req`, `request` and `ctx` names a function-like node declares as its own parameters. A request token in its body
+// that reads one of them reads that parameter, not a request the enclosing code holds.
+function declaredRequestParameterNames(node: TsNode): Set<string> {
+  const { parameters } = node as import("typescript").SignatureDeclaration;
+  return new Set(parameters.flatMap((parameter) => (typescriptSyntax.isIdentifier(parameter.name) && REQUEST_RECEIVER_NAMES.has(parameter.name.text) ? [parameter.name.text] : [])));
+}
+
+// True when a function is called where it is written, through any parentheses, as in `((req) => req.query.path)(req)`.
+function isImmediatelyInvoked(node: TsNode): boolean {
+  let callee = node;
+  while (typescriptSyntax.isParenthesizedExpression(callee.parent)) {
+    callee = callee.parent;
+  }
+  return typescriptSyntax.isCallExpression(callee.parent) && callee.parent.expression === callee;
+}
+
+// True when an identifier is the member name after a dot, as `req` is in `this.req`, which reads no local binding.
+function isPropertyAccessName(identifier: TsNode): boolean {
+  return typescriptSyntax.isPropertyAccessExpression(identifier.parent) && identifier.parent.name === identifier;
 }
 
 // Literal text can mention `req.query.path` in docs or fixtures without being external input.

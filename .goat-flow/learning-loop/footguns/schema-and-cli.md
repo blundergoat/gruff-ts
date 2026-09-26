@@ -1,9 +1,22 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-08-14
+last_reviewed: 2026-09-21
 ---
 
 # Schema + CLI surface footguns
+
+## Footgun: the bundled YAML subset could not express a list of multi-key mappings
+
+**Status:** active | **Created:** 2026-08-22 | **Evidence:** ACTUAL_MEASURED
+**Evidence context:** M02 `sensitiveExclusions:` construction in gruff-ts.
+**Decision changed:** Before designing any new config section, check whether its shape is expressible in `src/config-parse.ts`; a family-ratified shape is not automatically parseable here, and discovering that after the loader and matcher are written means reopening the parser under time pressure.
+**Trigger phase:** SCOPE
+
+ADR-012 keeps gruff-ts free of a YAML dependency, so `src/config-parse.ts` (search: `function parseYamlConfig`) hand-rolls a documented subset. Until M02 every config section was a mapping or a list of scalars, and the subset covered exactly that. `parseYamlArrayItem` (search: `function parseYamlArrayItem`) read `- key: value`, built a one-key object, and returned; the item's remaining keys, written at a deeper indent on the following lines, were never consumed. Control returned to `parseYamlObject`, whose `assertYamlIndent` (search: `function assertYamlIndent`) rejected them. A probe of the ratified section against the pre-M02 parser produced `Invalid YAML indentation near "path: secrets/aws.env"` - a list of multi-key mappings, the single most ordinary YAML shape, was unrepresentable.
+
+Nothing in the port revealed this. The rule catalogue, the allowlists, and `paths.ignore` all avoid the shape, so the gap survived four releases with no failing test and no documentation of the limit. The fix is `addYamlArrayItemSiblingKeys` (`src/config-parse.ts`, search: `function addYamlArrayItemSiblingKeys`), which fixes the item's key column from the first continuation line and consumes siblings at exactly that indent, so a deeper line still fails rather than silently nesting.
+
+**Portability question for the family (high-risk, M03 review):** gruff-ts is the only port whose configuration parser is project-owned, so it is the only port where a ratified config shape can be unrepresentable rather than merely unimplemented. rs, go, php and py all parse config through a library that already accepts arbitrary YAML or JSON, which means the family ratified `sensitiveExclusions:` without anyone checking that every port could parse it - the check only happened here, during implementation, because here it failed. The question M03 should answer: does contract ratification need an explicit parser-capability gate for the ports that own their parser, or does gruff-ts accept a standing obligation to extend `config-parse.ts` for whatever shape the family ratifies? The second answer has a cost the first does not - every extension widens what a malformed config can mean, and the subset is deliberately narrow because a silent misparse produces wrong findings and a stable but wrong baseline.
 
 ## Footgun: score value semantics and JSON field shape are different contracts
 
@@ -148,6 +161,41 @@ If a session starts with `M .gruff-ts.yaml` (or any other user-curated config) a
 **Evidence context:** 0.4.0 baseline plan audit.
 
 `makeFinding` (`src/findings.ts`, search: `const fingerprint = createHash`) hashes `[ruleId, filePath, line, symbol]` into the 16-hex fingerprint, and `applyBaseline` (`src/baseline.ts`, search: `function applyBaseline`) keys suppression on `(fingerprint, ruleId, filePath)`. Because `line` is inside the hash, inserting code above a baselined finding changes its line, changes its fingerprint, and resurfaces the finding as "new" even though the defect is unchanged - churn-by-design for any committed `gruff-baseline.json` that real code drifts under. The 0.4.0 M24 plan assumed the opposite ("a line-moved entry that still matches the same fingerprint"); that assumption is false against the current `makeFinding` and was the trigger for ADR-013, which moves the persistent baseline to PHPStan-style `(filePath, ruleId)` + `count` identity (no line). Keep the fingerprint for SARIF `partialFingerprints.gruffFingerprint` (search: `gruffFingerprint`) and report dedupe (`src/baseline.ts`, search: `function dedupeFindings`) - those WANT per-line identity - but never reintroduce `line` or `fingerprint` as the persistent-baseline match key. When editing baseline matching, grep `gruff.baseline.v`, `applyBaseline`, and `ADR-013`.
+
+## Footgun: a JSON parser's error message quotes the start of the file it could not parse
+
+**Status:** active | **Created:** 2026-09-13 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Never copy a parser's message, or any field read from the file, into a diagnostic about a file
+the user named. State what is wrong in fixed words and name only the path.
+**Trigger phase:** ACT
+
+On Node 22, `JSON.parse` fails with messages such as `Unexpected token 'N', "NOTJSON_Zx"... is not valid JSON`, which
+carry the file's opening characters. M22's first `baseline-error` diagnostic appended that message, so a `--baseline`
+that named the wrong file printed its first bytes into the report. A fresh-context review also found the
+foreign-baseline diagnostic echoing any `toolLanguage` text. `unreadableReason` and `writerName` (`src/baseline-file.ts`,
+search: `function unreadableReason`) now use fixed words, and `src/baseline-and-project.test.ts`
+(search: `unusable baseline`) asserts that no diagnostic carries the file's text.
+
+## Footgun: `ConfigLoadError` also carries three refusals that are not configuration failures
+
+**Status:** active | **Created:** 2026-09-21 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Never treat a caught `ConfigLoadError` as proof that the configuration failed to load. Read
+`isConfigLoadFailure` before publishing anything keyed on that meaning, such as a `config-error` diagnostic.
+**Trigger phase:** ACT
+
+This is the mirror of the sibling entry about IO and parse errors escaping the formatted path. There the problem
+was too few failures reaching `ConfigLoadError`; here it is too many. Besides the loader's own throws in
+`src/config.ts` and `src/sensitive-exclusions.ts`, `src/cli-program.ts` raises the same type for three refusals
+the caller asked for by combining flags: `--history-file` with a changed-region selector
+(search: `function assertFullScanHistoryOptions`), an unusable `--deep-scan-budget`, and `--fail-on-new` with no
+applied baseline (search: `needs an applied baseline to compare against`).
+
+M46 decision 5 published a `config-error` envelope from `runWithConfigErrorHandling`'s catch and so stamped that
+type on a `--history-file` conflict, which `src/history-scope.test.ts` caught. The worse case had no test:
+`--fail-on-new` throws **after** a successful scan, so publishing there would have replaced a report the run had
+already produced with an empty envelope claiming nothing was analysed. The type now records which it is
+(`src/config-load-error.ts`, search: `isConfigLoadFailure`), and only a genuine load failure publishes.
+
 
 ## Resolved Entries
 

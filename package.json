@@ -1,6 +1,6 @@
 {
   "name": "@blundergoat/gruff-ts",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Governs AI-generated code so a human can verify it: a TypeScript/JavaScript static analyzer - 120 rules across 11 quality pillars, SARIF output, baselines, and a local dashboard.",
   "license": "MIT",
   "author": "Matthew Hansen (https://www.blundergoat.com/about)",
@@ -48,6 +48,7 @@
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
+    "UPGRADING.md",
     "CONTRIBUTING.md",
     "SECURITY.md"
   ],
@@ -65,7 +66,7 @@
     "typescript": "^5.9.3"
   },
   "devDependencies": {
-    "@blundergoat/goat-flow": "^1.6.4",
+    "@blundergoat/goat-flow": "^1.16.0",
     "@types/node": "^25.0.0"
   }
 }
