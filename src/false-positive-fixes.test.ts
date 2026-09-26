@@ -116,7 +116,10 @@ export const mixed = "${mixed}";
 
 test("sensitive-data.high-entropy-string skips a public PEM block's body", () => {
   // A certificate is public by construction (FAMILY-CONTRACT section 12), so its base64 body stays quiet; the same body
-  // reports outside any armour and inside a private key's block. The body and the key label are assembled from parts.
+  // reports outside any armour and inside a private key's block. Markers that wrap code are not a block, so the secret
+  // between header and footer constants (line 5) and a private key between public markers (line 8) report too. A
+  // one-line block breaks at its escaped line breaks, so its header vouches for nothing after it (line 10). The body
+  // and the key label are assembled from parts.
   const body = "k3j9x2m7q1w8e5r4" + "t6y0u9i8o7p6a5s4" + "d3f2g1h0zb";
   const privateLabel = ["RSA PRIVATE", "KEY"].join(" ");
   // Builds a TypeScript expression that spells one armoured block around the body.
@@ -124,9 +127,16 @@ test("sensitive-data.high-entropy-string skips a public PEM block's body", () =>
   const report = analyseFixture(`export const certificate = ${wrap("CERTIFICATE")};
 export const bare = "${body}";
 export const key = ${wrap(privateLabel)};
+export const header = "-----BEGIN CERTIFICATE-----";
+export const secret = "${body}";
+export const footer = "-----END CERTIFICATE-----";
+export const outer = "-----BEGIN CERTIFICATE-----";
+export const nested = ${wrap(privateLabel)};
+export const close = "-----END CERTIFICATE-----";
+export const a = "-----BEGIN CERTIFICATE-----\\nComment: x\\n"; export const k = "${body}"; export const b = "-----END CERTIFICATE-----";
 `);
   const lines = report.findings.filter((entry) => entry.ruleId === "sensitive-data.high-entropy-string").map((entry) => entry.line);
-  assert.deepEqual(lines, [2, 3]);
+  assert.deepEqual(lines, [2, 3, 5, 8, 10]);
 });
 
 test("FP-#5 waste.empty-function skips interface and type-literal signatures", () => {

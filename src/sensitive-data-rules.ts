@@ -305,11 +305,17 @@ function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, co
   }
 }
 
-// Returns the half-open offset spans of complete PEM blocks whose label names no private key. A certificate, public key,
-// certificate request, PKCS7 bundle or CRL is public by construction, so its base64 body is never a secret; a private
-// key's block stays scannable (FAMILY-CONTRACT section 12).
+// One line of a PEM body once its string quoting is stripped: base64, a PGP checksum or an armour header.
+const PEM_BODY_LINE = /^(?:[A-Za-z0-9+/]+={0,2}|=[A-Za-z0-9+/]{4}|(?:Version|Comment|Hash|Charset|MessageID|Proc-Type|DEK-Info):.*)$/;
+
+// Returns the half-open offset spans of the PEM blocks whose label names no private key. A certificate, public key,
+// certificate request, PKCS7 bundle or CRL is public by construction, so its body is never a secret. A block ends at
+// the next marker, which must close the same label, and its body must be PEM-shaped. Anything else means the markers
+// are not a block, so nothing between them is exempted and a private key there stays scannable (FAMILY-CONTRACT
+// section 12).
 function publicArmourSpans(source: string): Array<[number, number]> {
   const spans: Array<[number, number]> = [];
+  const marker = /-----(BEGIN|END) ([A-Z0-9 ]+)-----/g;
   for (const opening of source.matchAll(/-----BEGIN ([A-Z0-9 ]+)-----/g)) {
     const label = opening[1] ?? "";
     // A private key's block stays scannable: the key material there is the secret this rule exists for.
@@ -317,14 +323,33 @@ function publicArmourSpans(source: string): Array<[number, number]> {
       continue;
     }
     const start = opening.index ?? 0;
-    const closing = `-----END ${label}-----`;
-    const end = source.indexOf(closing, start + opening[0].length);
-    // An opening marker without its matching end marker is not a block, so nothing is exempted.
-    if (end >= 0) {
-      spans.push([start, end + closing.length]);
+    const bodyStart = start + opening[0].length;
+    marker.lastIndex = bodyStart;
+    const closing = marker.exec(source);
+    // Another opening marker, a different label or no marker at all means these markers are not a block.
+    if (closing === null || closing[1] !== "END" || closing[2] !== label) {
+      continue;
+    }
+    // Code, a placeholder or prose between the markers is not a PEM body, so nothing is exempted.
+    if (isPemShapedBody(source.slice(bodyStart, closing.index))) {
+      spans.push([start, closing.index + closing[0].length]);
     }
   }
   return spans;
+}
+
+// Reports whether every line between two markers is base64, a PGP checksum, an armour header or empty. Source code
+// spells a PEM body across string literals, so the body breaks at real and escaped line breaks, and each line loses
+// its concatenation operators, and its quotes, commas, brackets, comment stars and ASCII whitespace; code, a
+// placeholder or prose is left over. Splitting at escaped line breaks too keeps a one-line block's header from
+// vouching for the rest of the line, and the operator pattern looks around one character so it stays linear.
+function isPemShapedBody(body: string): boolean {
+  return body.split(/\n|\\[nrt]/).every((segment) => {
+    const stripped = segment
+      .replace(/(?<=[ \t\r\f\x0B])[+.]|[+.](?=[ \t\r\f\x0B])/g, "")
+      .replace(/[ \t\r\f\x0B"'`,;()[\]{}#*\\]/g, "");
+    return stripped === "" || PEM_BODY_LINE.test(stripped);
+  });
 }
 
 // Describes one reportable sensitive occurrence before the finding is built.
