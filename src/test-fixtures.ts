@@ -23,8 +23,8 @@ export const DISCORD_WEBHOOK_FIXTURE_VALUE = [
 ].join("/");
 export const NPM_AUTH_TOKEN_FIXTURE_VALUE = ["npmAuthToken", "AbCdEfGhIjKlMnOp", "QrStUvWxYz123456"].join("");
 export const SSN_FIXTURE_VALUE = ["123", "45", "6789"].join("-");
-export const CREDIT_CARD_FIXTURE_VALUE = ["4111", "1111", "1111", "1111"].join(" ");
-export const INVALID_CREDIT_CARD_FIXTURE_VALUE = ["4111", "1111", "1111", "1112"].join(" ");
+export const CREDIT_CARD_FIXTURE_VALUE = ["4539", "5787", "6362", "1486"].join(" ");
+export const INVALID_CREDIT_CARD_FIXTURE_VALUE = ["4539", "5787", "6362", "1487"].join(" ");
 export const MBI_FIXTURE_VALUE = ["1EG4", "TE5", "MK73"].join("");
 export const MRN_FIXTURE_VALUE = "00489912";
 export const GCP_PRIVATE_KEY_ID_FIXTURE_VALUE = ["a1b2c3d4e5f6a7b8c9d0", "e1f2a3b4c5d6e7f8a9b0"].join("");

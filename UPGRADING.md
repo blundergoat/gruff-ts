@@ -48,6 +48,8 @@ time, so a project using more than one of them moves once. This port's recorded 
 
 21. **`sensitive-data.aws-access-key` reports AWS session tokens** — The rule matched only the `AKIA` long-term prefix, so a temporary `ASIA` credential went unnamed. Both are reported now. A run that gates on this rule may see new findings where a session token is present in source.
 
+22. **sensitive-data rules skip test, fixture and example files** — Every sensitive-data rule, `sensitive-data.pii-pattern` included, skips a file under a `test`, `tests`, `__tests__`, `spec`, `testdata`, `fixtures` or `examples` directory, or named like a test file, and publishes each skip as a counted `source: "built-in"` audit row. A real credential committed under one of those paths is no longer reported. The rest of this entry is in `CHANGELOG.md`.
+
 ## Upgrade workflow (`0.5.x` → `0.6.0`)
 
 1. Read the list above and decide which breaks touch your project. A project with no committed

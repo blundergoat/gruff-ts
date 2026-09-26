@@ -44,9 +44,17 @@ not change.
 `suppressions` carries one row per configured `sensitiveExclusions:` entry, in
 declaration order, shaped
 `{index, rule, paths, symbol?, reason, suppressed}`. The array is always present
-and is empty when nothing is configured. Text output prints the total as
-`Suppressed findings: N via ...` when it is non-zero. See
+and is empty when nothing is configured and no built-in skip applied. Text output
+prints the total as `Suppressed findings: N via ...` when it is non-zero. See
 [Configuration](./configuration.md).
+
+The family's two built-in skips also publish rows, after the configured ones,
+numbered from `0` among themselves and marked `source: "built-in"`, which a
+configured row never carries. The lockfile skip adds one row per package-manager
+lockfile whose `sensitive-data.high-entropy-string` findings it removed. The
+test-path skip then adds one row per file and rule it removed, because every
+sensitive-data rule skips test, fixture and example files. Text output labels
+them `builtInLockfile[<path>]` and `builtInTestPath[<path>]`.
 
 `paths.details` lists every excluded path with a canonical `reason` and its
 `source` (`config`, `gitignore`, or `default`). Only `config` entries include the

@@ -453,9 +453,9 @@ test("a whole dependency version is quiet while a credential that merely opens w
 });
 
 test("a marker word silences a URL password but not a fixed-shape key, and a masked key stays quiet", () => {
-  // Family decision of 2026-09-20: AWS's documented example key reports in every port, because a key is one
-  // alphanumeric run and a marker word inside it begins no token. Redaction fixtures still use REDACTED, a
-  // masked key names no credential, and path or test location alone never suppresses.
+  // Family decision of 2026-09-20, amended 2026-09-26 (M10 D33): a marker word inside a fixed-shape key begins no
+  // token, so it silences nothing, but AWS's documented example key is a vendor-documented sample and never reports.
+  // Redaction fixtures still use REDACTED, and a masked key names no credential.
   const awsDocExampleKey = ["AKIAIOSFODNN7", "EXAMPLE"].join("");
   const redactedUrl = "postgres://app:REDACTED@db.internal/app";
   const maskedKey = ["AKIA", "X".repeat(16)].join("");
@@ -466,7 +466,7 @@ URL_TWO=${URL_CREDENTIAL_FIXTURE_VALUE}
 AWS_KEY_THREE=${maskedKey}
 `, { fileName: ".env" });
   const awsFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
-  assert.deepEqual(awsFindings.map((finding) => finding.line), [1, 2]);
+  assert.deepEqual(awsFindings.map((finding) => finding.line), [2]);
   assert.equal(awsFindings[0]?.metadata.preview, "[redacted:aws-access-key]");
   const urlFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.database-url-password");
   assert.deepEqual(urlFindings.map((finding) => finding.line), [4]);

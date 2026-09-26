@@ -312,6 +312,73 @@ export function applyBuiltInLockfileSkip(findings: readonly Finding[], suppressi
   return { findings: kept, suppressions: rows };
 }
 
+// Reason a user reads on each `builtInTestPath[...]` audit row; every port publishes these exact words (FAMILY-CONTRACT.md section 13a).
+export const BUILT_IN_TEST_PATH_REASON = "Test, fixture and example files hold sample credentials, so sensitive-data rules skip them by path.";
+
+// The family's fixture-PII rule, which keeps reading test paths; gruff-ts has no rule with this id.
+const BUILT_IN_TEST_PATH_EXEMPT_RULE = "sensitive-data.pii-test-fixture";
+
+// Directory names, compared case-insensitively, that make a path test code, e.g. `__tests__/` or `Fixtures/`.
+const BUILT_IN_TEST_PATH_DIRECTORIES = new Set(["test", "tests", "__tests__", "spec", "testdata", "fixtures", "examples"]);
+
+// Matches a whole base name that marks a test file in any family language, e.g. `login.spec.ts` or `keys_test.go`.
+// `[^\n]` rather than `.`: JavaScript's `.` also refuses \r, U+2028 and U+2029, which the other four ports accept.
+const BUILT_IN_TEST_FILE_NAME = /^(?:[^\n]*_test\.go|test_[^\n]*\.py|[^\n]*_test\.py|[^\n]*Test\.php|[^\n]*\.(?:test|spec)\.(?:js|jsx|ts|tsx|mjs|cjs))$/;
+
+// Reports whether a finding's file is test, fixture or example code, e.g. a file under `__tests__/` or one named `login.spec.ts`.
+export function isBuiltInTestPath(displayPath: string): boolean {
+  const segments = displayPath.replaceAll("\\", "/").split("/");
+  const baseName = segments.pop() ?? "";
+  // Any directory on the path, compared case-insensitively, or the file name alone can mark test code.
+  return segments.some((directory) => BUILT_IN_TEST_PATH_DIRECTORIES.has(directory.toLowerCase())) || BUILT_IN_TEST_FILE_NAME.test(baseName);
+}
+
+// Hides sensitive-data findings in test, fixture and example files, and publishes one audit row per hidden file and rule.
+//
+// A user scanning a project with sample keys in `__tests__/` sees `builtInTestPath[...]` rows instead of findings.
+// The skip is never silent, and it covers every gruff-ts sensitive-data rule, pii-pattern included (FAMILY-CONTRACT.md section 13a).
+export function applyBuiltInTestPathSkip(findings: readonly Finding[], suppressions: readonly SuppressionSummary[]): SensitiveExclusionResult {
+  const skippedCountByFileAndRule = new Map<string, { path: string; rule: string; count: number }>();
+  const kept: Finding[] = [];
+  // Each finding either stays in the report or is folded into its file's audit row.
+  for (const finding of findings) {
+    // Only the pillar's findings in test code are skipped, and never the family's fixture-PII rule.
+    if (finding.ruleId.startsWith("sensitive-data.") && finding.ruleId !== BUILT_IN_TEST_PATH_EXEMPT_RULE && isBuiltInTestPath(finding.filePath)) {
+      const fileAndRuleKey = `${finding.filePath}\u0000${finding.ruleId}`;
+      const skipped = skippedCountByFileAndRule.get(fileAndRuleKey) ?? { path: finding.filePath, rule: finding.ruleId, count: 0 };
+      skipped.count += 1;
+      skippedCountByFileAndRule.set(fileAndRuleKey, skipped);
+      continue;
+    }
+    kept.push(finding);
+  }
+  const rows = [...suppressions];
+  // Built-in rows are numbered among themselves, so the first test-path row follows the last lockfile row.
+  const nextIndex = rows.filter((row) => row.source === "built-in").length;
+  const skippedFilesAndRules = [...skippedCountByFileAndRule.values()].sort(
+    (left, right) => compareUtf8Bytes(left.path, right.path) || compareUtf8Bytes(left.rule, right.rule),
+  );
+  // One row per file and rule, which text output shows as `builtInTestPath[src/keys.spec.ts] sensitive-data.aws-access-key: 2`.
+  for (const [offset, skipped] of skippedFilesAndRules.entries()) {
+    rows.push({
+      index: nextIndex + offset,
+      rule: skipped.rule,
+      paths: [skipped.path],
+      symbol: null,
+      reason: BUILT_IN_TEST_PATH_REASON,
+      suppressed: skipped.count,
+      source: "built-in",
+    });
+  }
+  return { findings: kept, suppressions: rows };
+}
+
+// Orders two strings by their UTF-8 bytes, the order every port publishes test-path rows in (FAMILY-CONTRACT.md section 13a).
+// JavaScript's own `<` compares UTF-16 units, which puts a path with an emoji or other astral character in a different place.
+function compareUtf8Bytes(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
+}
+
 // Starts one entry's audit row at zero. `paths` is a single-element list and `symbol` is null when
 // absent, which is the family row shape (gruff-rs/src/report.rs, search: `struct SuppressionSummary`).
 function initialSuppressionSummary(exclusion: SensitiveExclusion, index: number): SuppressionSummary {

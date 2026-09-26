@@ -11,7 +11,7 @@ import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan }
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError, changedRegionScope, filterChangedFindings, filterScopedDiagnostics, type ChangedRegionScope } from "./changed-regions.ts";
 import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
-import { applyBuiltInLockfileSkip, partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
+import { applyBuiltInLockfileSkip, applyBuiltInTestPathSkip, partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
@@ -236,15 +236,17 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
   const excluded = partitionSensitiveExclusions(allFindings, config.sensitiveExclusions);
   // A configured entry claims its findings first, so its count stays what the user wrote it for.
   const lockfileSkipped = applyBuiltInLockfileSkip(excluded.findings, excluded.suppressions);
+  // The lockfile skip runs first, so `tests/package-lock.json` gets one audit row, not two.
+  const testPathSkipped = applyBuiltInTestPathSkip(lockfileSkipped.findings, lockfileSkipped.suppressions);
   // Naming every finding before the baseline filters any of them keeps one alert one alert: code scanning reads the
   // same identity the baseline does, and a finding hidden from this report keeps the ordinal it was ranked with.
   const spans = declarationSpans(scanned);
-  const namedFindings = withBaselineIdentities(lockfileSkipped.findings, spans);
+  const namedFindings = withBaselineIdentities(testPathSkipped.findings, spans);
   const baselineResult = applyBaselineOptions(projectRoot, options, namedFindings, spans, unusableBaseline);
   // A collision names two declarations one identity could not tell apart; it suppresses nothing and fails no run.
   diagnostics.push(...baselineResult.diagnostics);
   const notes = [...discovery.notes, ...scanned.notes];
-  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes, suppressions: lockfileSkipped.suppressions };
+  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes, suppressions: testPathSkipped.suppressions };
 }
 
 /*

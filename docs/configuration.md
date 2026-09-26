@@ -291,9 +291,14 @@ See [Rules](./rules.md) for the full rule catalogue grouped by pillar.
 
 ## Sensitive Exclusions
 
-`sensitiveExclusions:` is the only way to suppress a sensitive-data finding. It
+`sensitiveExclusions:` is the only setting that suppresses a sensitive-data finding. It
 is a separate top-level section, not part of `rules:` or `paths.ignore`, because
 it is the one surface that can hide a detected secret.
+
+Two built-in skips also hide sensitive-data findings, and count each one in
+`suppressions`: the entropy rule in package-manager lockfiles, and every
+sensitive-data rule in test, fixture and example files. A configured entry
+applies before either, so a finding it claims is counted under the entry.
 
 You write every entry by hand. Gruff never converts a detected value, a preview,
 or a finding message into an exclusion, and no key on an entry matches against

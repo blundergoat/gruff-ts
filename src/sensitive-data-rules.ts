@@ -2,6 +2,7 @@
 //
 // It runs each detector in a stable order so repeated scans remain comparable.
 // Users receive fixed category markers, actionable locations, and one report entry per occurrence without matched characters or lengths.
+import { createHash } from "node:crypto";
 import { namedThreshold, ruleSeverity, threshold } from "./config.ts";
 import { makeFinding } from "./findings.ts";
 import { byteColumn, byteLine } from "./text-scans.ts";
@@ -369,9 +370,46 @@ interface SensitiveFindingArgs {
   severity?: Finding["severity"];
 }
 
+// SHA-256 digests of the 19 values vendors publish as documentation samples, so code that pastes one never reports.
+//
+// They are AWS's example access key ids and secret keys, the jwt.io sample token and fourteen published test card numbers.
+// Digests keep the literals out of this source (FAMILY-CONTRACT.md section 5).
+const DOCUMENTED_SAMPLE_DIGESTS = new Set([
+  "19ff47cc8024c133d5845d3f8938caca289929031e7d508c3adf7adff177f0c2",
+  "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+  "1c9d38ed26cd808fa3b02b9b3b988a7caf474e2e42d95789c0fe07e267c80d8f",
+  "2f725bbd1f405a1ed0336abaf85ddfeb6902a9984a76fd877c3b5cc3b5085a82",
+  "304945e91de3deff52a61d08733141d72dd42ec9d47972f1060534d54c0c7f90",
+  "3a134ef77d4e2e4cdad2d2945ff1f76c1a23296c93c851f6244220a8cedea130",
+  "477bba133c182267fe5f086924abdc5db71f77bfc27f01f2843f2cdc69d89f05",
+  "51a4ae4c6ae999146474a67cbcb3b05fbcf4c17ab683043a066459da95513ea8",
+  "53a8fc816e63b7a5ccd17aaff93f28bcf13abbf418209dcd93947722d7c326ba",
+  "576c15a8072461c216efb9bd7306a6fc6039b43a6763c4c1a05930a2dd7b788f",
+  "78314b11be2e581549ac1c4f616563fad3fdf0c3b71678f6e2299182080e0598",
+  "7f75367e7881255134e1375e723d1dea8ad5f6a4fdb79d938df1f1754a830606",
+  "9bbef19476623ca56c17da75fd57734dbf82530686043a6e491c6d71befe8f6e",
+  "c6ea27c534f993d31f0aef882e3d200e7b87470c379ae79c8f9b19d3bd363dc9",
+  "d79449f462cec9af0d857c3e1af888d4fa8bbdaa511b9eaaafcd2805c4ea6471",
+  "d8086d483c15c711ebba19f966b97d3c2adcba74025ff8d7e07c3698c9531deb",
+  "dd13cdf9af9dd3baf46ce96aecd7163cabf381ccb21e63f15f0fa10b1c663fa9",
+  "e21b597ba6b9cafa59d9ebc4d65c0385f5eb3fa56abab2607fa76589ad849a33",
+  "f41e7ca4a3d71c4f047581f2ae2d6a8dbb8c58e51a020fa227edc724474aab6e",
+]);
+
+// Reports whether a matched value is, exactly and whole, a vendor-documented sample such as AWS's example key.
+// A card is compared as digits, so its spaced and dashed spellings match the number its network publishes.
+function isDocumentedSample(matchedSensitiveText: string, metadata: Record<string, unknown> | undefined): boolean {
+  const comparedText = metadata?.["piiKind"] === "credit-card" ? matchedSensitiveText.replace(/\D/g, "") : matchedSensitiveText;
+  return DOCUMENTED_SAMPLE_DIGESTS.has(createHash("sha256").update(comparedText, "utf8").digest("hex"));
+}
+
 // Reports one user-visible finding with a detector-owned marker and an optional match column.
-// The matched value is used only to select a public category; every occurrence reaches the report.
+// The matched value only selects a public category and recognises a vendor-documented sample; every other occurrence reaches the report.
 function pushSensitiveFinding(args: SensitiveFindingArgs): void {
+  // A pasted documentation sample, e.g. AWS's example key id from its docs, is not a credential, so the user sees nothing.
+  if (isDocumentedSample(args.matchedSensitiveText, args.metadata)) {
+    return;
+  }
   const displayMarker = fixedMarkerForSensitiveFinding(args);
   // Missing location and metadata fields remain absent or empty so report consumers can distinguish unavailable user context.
   args.findings.push(

@@ -139,6 +139,27 @@ export const a = "-----BEGIN CERTIFICATE-----\\nComment: x\\n"; export const k =
   assert.deepEqual(lines, [2, 3, 5, 8, 10]);
 });
 
+// Vendor-documented samples must never report: AWS's example key, the jwt.io sample token and a published test card.
+//
+// A live-shaped key still reports (FAMILY-CONTRACT.md section 5), and every value is assembled from parts.
+test("sensitive-data rules do not report vendor-documented sample values", () => {
+  const example = ["AKIA", "IOSFODNN7", "EXAMPLE"].join("");
+  const live = ["AKIA", "Q7R2M8N4", "P6T9V1X3"].join("");
+  const jwt = [
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+    "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ",
+    "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+  ].join(".");
+  const card = ["4111", "1111", "1111", "1111"].join(" ");
+  const report = analyseFixture(`export const exampleKey = "${example}";
+export const liveKey = "${live}";
+export const sampleToken = "${jwt}";
+export const paymentCardNumber = "${card}";
+`);
+  const reported = report.findings.filter((entry) => entry.ruleId.startsWith("sensitive-data.")).map((entry) => `${entry.ruleId}:${entry.line}`);
+  assert.deepEqual(reported, ["sensitive-data.aws-access-key:2"]);
+});
+
 test("FP-#5 waste.empty-function skips interface and type-literal signatures", () => {
   const report = analyseFixture(`interface StateFS {
   exists(path: string): boolean;

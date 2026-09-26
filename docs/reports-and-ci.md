@@ -63,7 +63,9 @@ limits without changing exit codes. A fatal `diagnostics` entry owns exit `2`; a
 non-fatal one leaves the exit code alone.
 
 `gruff.analysis.v3` always carries a `suppressions` array: one row per
-configured `sensitiveExclusions:` entry, empty when none are configured. A
+configured `sensitiveExclusions:` entry, then one `source: "built-in"` row per
+lockfile, and per file and rule, that the built-in skips removed findings from,
+so it is empty only when nothing is configured and no built-in skip applied. A
 suppressed finding leaves `findings`, the score, and the `--fail-on` exit code,
 but its count is always reported. A malformed entry exits `2` before the scan
 starts. See [Configuration](./configuration.md).

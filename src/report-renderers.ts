@@ -2,6 +2,7 @@
 // HTML output and dashboard chrome live in `report-html.ts` so this module stays under the
 // `size.file-length` threshold; both files source `buildPillarRows` + `grade` from
 // `pillar-summary.ts` so the cross-format Pillars table stays byte-aligned.
+import { BUILT_IN_TEST_PATH_REASON } from "./sensitive-exclusions.ts";
 import { findingIdentities } from "./baseline-identity.ts";
 import { isAbsolute, relative } from "node:path";
 import type { AnalysisReport, Finding, OutputFormat, ScanSurfaceNote, Severity, SkippedPath, SuppressionSummary } from "./types.ts";
@@ -789,9 +790,9 @@ function renderTextSuppressionLines(report: AnalysisReport): string[] {
   }
   const details = report.suppressions
     .filter((summary) => summary.suppressed > 0)
-    // A built-in row names the lockfile it skipped, because it has no configured entry to point at.
+    // A built-in row names the file it skipped and its class, test path or lockfile, because it has no configured entry to point at.
     .map((summary) => (summary.source === "built-in"
-      ? `builtInLockfile[${summary.paths[0] ?? ""}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`
+      ? `${summary.reason === BUILT_IN_TEST_PATH_REASON ? "builtInTestPath" : "builtInLockfile"}[${summary.paths[0] ?? ""}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`
       : `sensitiveExclusions[${summary.index}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`))
     .join("; ");
   return ["", `Suppressed findings: ${total} via ${details}`];

@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ConfigLoadError } from "./config-load-error.ts";
+import { isBuiltInTestPath } from "./sensitive-exclusions.ts";
 import { renderHookReport } from "./hook-contract.ts";
 import { renderReport, renderSummary } from "./report-renderers.ts";
 import { AWS_ACCESS_KEY_FIXTURE_VALUE, analyseProject, JWT_FIXTURE_VALUE } from "./test-fixtures.ts";
@@ -152,6 +153,48 @@ test("the built-in lockfile skip is counted on analyse text, summary text and th
 
   assert.deepEqual((payload.suppressions ?? []).map((row) => [row.path, row.source]), [["package-lock.json", "built-in"]]);
   assert.equal(JSON.stringify(payload.suppressions).includes(digest), false, "no suppression surface may carry matched value material");
+});
+
+// A key in test, fixture or example files must be skipped and counted, one row per rule and file after the lockfile row.
+//
+// Production code and `latest.ts`, whose name only resembles a test, must still report (FAMILY-CONTRACT.md section 13a).
+test("the built-in test-path class skips sensitive-data findings in test, fixture and example files and counts them", () => {
+  const key = ["AKIA", "Q7R2M8N4", "P6T9V1X3"].join("");
+  const body = `export const accessKeyId = "${key}";\n`;
+  const report = analyseProject({
+    "package-lock.json": JSON.stringify({ token: ["Zx7pQ9vLm3N8sT2r", "Y6wK1dF4gH5jC0bR2"].join("") }),
+    "Tests/Fixtures/keys.ts": body,
+    "examples/demo.ts": body,
+    "src/login.spec.ts": body,
+    "src/config.ts": body,
+    "src/latest.ts": body,
+  });
+
+  const keyFiles = report.findings.filter((finding) => finding.ruleId === AWS_RULE_ID).map((finding) => finding.filePath).sort();
+  assert.deepEqual(keyFiles, ["src/config.ts", "src/latest.ts"]);
+  const builtIn = report.suppressions.filter((row) => row.source === "built-in").map((row) => [row.index, row.paths[0], row.rule]);
+  assert.deepEqual(builtIn, [
+    [0, "package-lock.json", "sensitive-data.high-entropy-string"],
+    [1, "Tests/Fixtures/keys.ts", AWS_RULE_ID],
+    [2, "examples/demo.ts", AWS_RULE_ID],
+    [3, "src/login.spec.ts", AWS_RULE_ID],
+  ]);
+  assert.ok(renderReport(report, "text").includes(`builtInTestPath[examples/demo.ts] ${AWS_RULE_ID}: 1 (`), renderReport(report, "text"));
+});
+
+// The base-name pattern accepts any character but a newline before its suffix, as the other four ports' patterns do.
+test("a test-file base name may hold a carriage return, as it may in every other port", () => {
+  assert.equal(isBuiltInTestPath("src/keys\r_test.go"), true);
+  assert.equal(isBuiltInTestPath("src/keys\n_test.go"), false);
+});
+
+// Test-path rows must sort by UTF-8 bytes like the other four ports, not by JavaScript's UTF-16 string order.
+test("test-path rows sort by UTF-8 bytes, so a private-use character comes before an emoji", () => {
+  const body = `export const accessKeyId = "${["AKIA", "Q7R2M8N4", "P6T9V1X3"].join("")}";\n`;
+  const report = analyseProject({ "src/\u{1F600}.spec.ts": body, "src/\u{E000}.spec.ts": body });
+
+  const testPathRows = report.suppressions.filter((row) => row.source === "built-in").map((row) => row.paths[0]);
+  assert.deepEqual(testPathRows, ["src/\u{E000}.spec.ts", "src/\u{1F600}.spec.ts"]);
 });
 
 test("a suppressed finding leaves the score and the text total, not the finding list", () => {
