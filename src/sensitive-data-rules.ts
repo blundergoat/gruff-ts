@@ -276,8 +276,14 @@ function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, co
   const canKeyOpenLine = /\.ya?ml$/i.test(file.displayPath);
   // The candidate floor follows the configured minimum length, so a lowered bar admits literals shorter than the default.
   const candidatePattern = new RegExp(`(["'\`])([A-Za-z0-9_+=./-]{${Math.max(1, Math.ceil(minLength))},})\\1`, "g");
+  const armoured = publicArmourSpans(source);
   // Every long literal is checked separately so same-line secrets remain independently actionable in the report.
   for (const match of source.matchAll(candidatePattern)) {
+    // A public PEM block's base64 body is certificate or public-key material, never a secret.
+    const offset = match.index ?? 0;
+    if (armoured.some(([start, end]) => offset >= start && offset < end)) {
+      continue;
+    }
     // A missing capture becomes empty text, which safely fails the configured length gate.
     const candidateText = match[2] ?? "";
     // Known public shapes or insufficient entropy mean the user does not need a secret finding for this literal.
@@ -297,6 +303,28 @@ function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, co
       severity: ruleSeverity(config, "sensitive-data.high-entropy-string", "warning"),
     });
   }
+}
+
+// Returns the half-open offset spans of complete PEM blocks whose label names no private key. A certificate, public key,
+// certificate request, PKCS7 bundle or CRL is public by construction, so its base64 body is never a secret; a private
+// key's block stays scannable (FAMILY-CONTRACT section 12).
+function publicArmourSpans(source: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  for (const opening of source.matchAll(/-----BEGIN ([A-Z0-9 ]+)-----/g)) {
+    const label = opening[1] ?? "";
+    // A private key's block stays scannable: the key material there is the secret this rule exists for.
+    if (label.includes("PRIVATE")) {
+      continue;
+    }
+    const start = opening.index ?? 0;
+    const closing = `-----END ${label}-----`;
+    const end = source.indexOf(closing, start + opening[0].length);
+    // An opening marker without its matching end marker is not a block, so nothing is exempted.
+    if (end >= 0) {
+      spans.push([start, end + closing.length]);
+    }
+  }
+  return spans;
 }
 
 // Describes one reportable sensitive occurrence before the finding is built.

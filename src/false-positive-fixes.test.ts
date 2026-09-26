@@ -114,6 +114,21 @@ export const mixed = "${mixed}";
   assert.deepEqual(lines, [4]);
 });
 
+test("sensitive-data.high-entropy-string skips a public PEM block's body", () => {
+  // A certificate is public by construction (FAMILY-CONTRACT section 12), so its base64 body stays quiet; the same body
+  // reports outside any armour and inside a private key's block. The body and the key label are assembled from parts.
+  const body = "k3j9x2m7q1w8e5r4" + "t6y0u9i8o7p6a5s4" + "d3f2g1h0zb";
+  const privateLabel = ["RSA PRIVATE", "KEY"].join(" ");
+  // Builds a TypeScript expression that spells one armoured block around the body.
+  const wrap = (label: string): string => `"-----BEGIN ${label}-----\\n" + "${body}" + "\\n-----END ${label}-----"`;
+  const report = analyseFixture(`export const certificate = ${wrap("CERTIFICATE")};
+export const bare = "${body}";
+export const key = ${wrap(privateLabel)};
+`);
+  const lines = report.findings.filter((entry) => entry.ruleId === "sensitive-data.high-entropy-string").map((entry) => entry.line);
+  assert.deepEqual(lines, [2, 3]);
+});
+
 test("FP-#5 waste.empty-function skips interface and type-literal signatures", () => {
   const report = analyseFixture(`interface StateFS {
   exists(path: string): boolean;
