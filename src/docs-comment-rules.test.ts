@@ -194,6 +194,37 @@ const narrowed = ok.value;
   assert.equal(report.findings.some((finding) => finding.ruleId === "modernisation.ts-comment-without-rationale"), true);
 });
 
+// Fixture purpose: axios case 398 explains its directive on the comment line directly above, and a
+// rationale may run over several comment lines. Code above, a blank line, another directive or a
+// comment trailing code breaks that attachment, so those directives keep the finding.
+// Stable contract: only the unbroken block of standalone comments directly above a standalone directive supplies its rationale.
+test("suppression rationale can come from the attached comment block above the directive", () => {
+  // Fixture covers case 398's attached rationale beside unexplained, detached, stacked and trailing-comment directives.
+  const report = analyseFixture(`// The control-code ranges are intentional: header sanitization strips C0/DEL bytes.
+// eslint-disable-next-line no-control-regex
+const invalidChars = buildPattern("c0");
+// eslint-disable-next-line no-control-regex
+const byteChars = buildPattern("bytes");
+// Stripping is intentional because callers pass raw header bytes.
+
+// eslint-disable-next-line no-control-regex
+const detachedChars = buildPattern("detached");
+// Parsing is intentional; the legacy grammar needs it.
+// eslint-disable-next-line no-param-reassign
+// eslint-disable-next-line no-control-regex
+const stackedChars = buildPattern("stacked");
+const trailing = buildPattern("trailing"); // Intentional: keeps the old grammar.
+// eslint-disable-next-line no-control-regex
+const trailingChars = buildPattern("after-trailing");
+// The trailing semicolon below exists because the printer emits it when the
+// block is reprinted.
+// prettier-ignore
+const printed = buildPattern("printed");
+`);
+  const suppressionLines = report.findings.filter((finding) => finding.ruleId === "docs.suppression-without-rationale").map((finding) => finding.line);
+  assert.deepEqual(suppressionLines, [4, 8, 12, 15]);
+});
+
 test("comment quality restates signature through useless-docblock without duplicates", () => {
   // Fixture covers useless-docblock detection without duplicate function/interface findings.
   const report = analyseFixture(`/**

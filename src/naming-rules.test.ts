@@ -100,6 +100,31 @@ console.log(process);
   assert.equal(finding?.fingerprint, "6786a041045d82a8");
 });
 
+// Fixture purpose: Angular case 420 overrides a base-class `run`, so the base declaration owns that
+// name and keeps the finding. A same-named method that omits `override` is not proven to be one.
+// Stable contract: only a method whose `override` modifier the parse records is exempt.
+test("generic function naming exempts only explicit override methods", () => {
+  // Fixture covers case 420's explicit override beside the base declaration and an undeclared override.
+  const report = analyseFixture(`abstract class TemplateCheck {
+  abstract run(context: string): string[];
+}
+
+class MissingDirectiveCheck extends TemplateCheck {
+  override run(context: string): string[] {
+    return context ? [context] : [];
+  }
+}
+
+class ImplicitCheck extends TemplateCheck {
+  run(context: string): string[] {
+    return [context];
+  }
+}
+`);
+  const genericLines = report.findings.filter((finding) => finding.ruleId === "naming.generic-function").map((finding) => finding.line);
+  assert.deepEqual(genericLines, [2, 12]);
+});
+
 test("naming short-variable flags single-letter parameter", () => {
   const report = analyseFixture(`function takesOne(x: number): number {
   return x;

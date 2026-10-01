@@ -1,6 +1,7 @@
-// Function-block parsing + per-block rule pass (size, complexity, doc,
-// empty-function, unused-parameter, redundant-variable, useless-return) and the block-anchored
-// finding factories. Pulls the parser and the rules that operate on parsed blocks out of cli.ts.
+// Finds function and test blocks that developers see in Gruff's source findings.
+
+// Block rules cover size, documentation, parameters, returns and assertion presence.
+// Finding helpers keep each warning anchored to the declaration the developer can edit.
 import { ruleSeverity, threshold } from "./config.ts";
 import { hasLeadingCommentBeforeLines } from "./comment-scanner.ts";
 import { baseComplexityMetrics, complexityMetrics as measureComplexity, type ComplexityMetrics } from "./complexity-metrics.ts";
@@ -22,6 +23,8 @@ export interface FunctionBlock {
   complexityMetrics?: ComplexityMetrics;
   // AST-known body presence; absent only for legacy regex-derived blocks.
   hasBody?: boolean;
+  // AST-known `override` modifier; absent for legacy regex-derived blocks, which keep name findings.
+  isOverride?: boolean;
   startLine: number;
   lineCount: number;
   body: string;
@@ -217,9 +220,10 @@ function pushCognitiveFinding(context: BlockRuleContext): void {
 }
 
 // Names like `process`, `handle`, `run` from `config.bannedGenericNames`. The list is user-configurable;
-// the rule body itself just consults the config. Reports `naming.generic-function`.
+// the rule body itself just consults the config. Reports `naming.generic-function`. An explicit
+// `override` inherits its name from the base declaration, which keeps the finding instead.
 function pushGenericFunctionFinding(context: BlockRuleContext): void {
-  if (isGenericName(context.block.name, context.config.bannedGenericNames)) {
+  if (context.block.isOverride !== true && isGenericName(context.block.name, context.config.bannedGenericNames)) {
     context.findings.push(blockFinding({ ruleId: "naming.generic-function", message: `Function \`${context.block.name}\` is too generic to explain intent.`, file: context.file, block: context.block, severity: "advisory", pillar: "naming" }));
   }
 }
@@ -502,6 +506,8 @@ interface BlockMatchPoint {
   isDirectlyExported?: boolean;
   isExplicitlyPublic?: boolean;
   isModuleScoped?: boolean;
+  // AST-known `override` modifier; regex points leave it absent, so their names stay reportable.
+  isOverride?: boolean;
   callableNode?: import("typescript").Node;
 }
 
@@ -520,6 +526,7 @@ function matchPointsFor(scan: FunctionBlockScan, parsed: ParsedScript | undefine
       isDirectlyExported: point.isDirectlyExported,
       isExplicitlyPublic: point.isExplicitlyPublic,
       isModuleScoped: point.isModuleScoped,
+      isOverride: point.isOverride,
       callableNode: point.callableNode,
     }));
   }
@@ -627,6 +634,7 @@ function functionBlockFromPoint(scan: FunctionBlockScan, point: BlockMatchPoint,
     params: point.params,
     ...(point.parameterCount === undefined ? {} : { parameterCount: point.parameterCount }),
     ...(point.hasBody === undefined ? {} : { hasBody: point.hasBody }),
+    ...(point.isOverride === undefined ? {} : { isOverride: point.isOverride }),
     ...(sharedComplexityMetrics === undefined ? {} : { complexityMetrics: sharedComplexityMetrics }),
     startLine: start + 1,
     lineCount: end - start + 1,
@@ -760,23 +768,28 @@ function isFunctionPrefixLine(trimmedLine: string): boolean {
   return trimmedLine.startsWith("@") || trimmedLine.startsWith("/**") || trimmedLine.startsWith("*") || trimmedLine === "";
 }
 
-// Generic "is there any assertion at all" probe used by missing-assertion rules. Accepts standard
-// `assert(...)` / `assert.foo(...)` / `expect(...)` (including `expect.assertions()` / `expect.hasAssertions()`)
-// PLUS project-local helpers shaped like `assertFoo(...)`, `expectFoo(...)`, `fooCheck(...)`, and
-// promise-rejection patterns (`rejects.`, `doesNotReject(`). Custom helpers are common in mature
-// test suites and missing them produced false positives in M38 false-positive triage.
-export function hasAssertion(source: string): boolean {
-  if (/\bassert(?:\.[A-Za-z]+|[A-Z][A-Za-z0-9_$]*)?\s*\(/.test(source)) {
+// Checks a masked test body before Gruff warns that the test makes no assertion.
+
+// TypeORM's `value.should.be.eql(expected)` counts; an ordinary `options.should` property does not.
+export function hasAssertion(maskedTestBody: string): boolean {
+  // Standard assert calls and named assert helpers show a developer's expected result.
+  if (/\bassert(?:\.[A-Za-z]+|[A-Z][A-Za-z0-9_$]*)?\s*\(/.test(maskedTestBody)) {
     return true;
   }
-  // Type arguments may sit before the call, as in vitest's `expectTypeOf<Result>().toEqualTypeOf<Expected>()`.
-  if (/\bexpect(?:\.(?:assertions|hasAssertions)|[A-Z][A-Za-z0-9_$]*)?\s*(?:<[^;]*?>\s*)?\(/.test(source)) {
+  // A typed expect call can verify a result even when its type arguments precede the call.
+  if (/\bexpect(?:\.(?:assertions|hasAssertions)|[A-Z][A-Za-z0-9_$]*)?\s*(?:<[^;]*?>\s*)?\(/.test(maskedTestBody)) {
     return true;
   }
-  if (/\b[A-Za-z_$][A-Za-z0-9_$]*Check\s*\(/.test(source)) {
+  // A project Check helper can be the test's assertion even without an assert import.
+  if (/\b[A-Za-z_$][A-Za-z0-9_$]*Check\s*\(/.test(maskedTestBody)) {
     return true;
   }
-  if (/\.(?:rejects|resolves)\b/.test(source) || /\b(?:doesNotReject|rejects)\s*\(/.test(source)) {
+  // Promise rejection and resolution matchers also verify an expected result.
+  if (/\.(?:rejects|resolves)\b/.test(maskedTestBody) || /\b(?:doesNotReject|rejects)\s*\(/.test(maskedTestBody)) {
+    return true;
+  }
+  // These observed TypeORM matcher calls check values inside returned test callbacks.
+  if (/\.\s*should\s*\.\s*be\s*\.\s*(?:eql|equal|greaterThan|instanceOf)\s*\(/.test(maskedTestBody)) {
     return true;
   }
   return false;

@@ -2,10 +2,37 @@
 
 ## v0.6.0 - Unreleased
 
+- Workflow secret warnings skip jobs or steps whose own event guard proves them unreachable for every detected PR event.
+
+- **Config values that name an existing image stop looking like secrets** - A YAML or JSON key whose whole value is an image file name no longer
+  receives `sensitive-data.high-entropy-string` when a file with exactly that name exists in the project. The search skips dependency, build and hidden
+  folders, does not follow symlinks and gives up after 20,000 entries; a missing image, extra text or a name in source code still reports.
+
+- **Explained suppressions and inherited method names stop reporting** - A suppression directive whose rationale is in the comment lines directly above
+  it no longer receives `docs.suppression-without-rationale`; a blank line, code or another directive in between still breaks the link. A method marked
+  `override` no longer receives `naming.generic-function`, because its base declaration chose the name and keeps the finding.
+
+- **Declarations and wrapped test callbacks no longer look like process or promise calls** - A method, function or interface signature named like
+  `fork`, `exec` or `spawn` no longer receives `security.process-exec`. A promise-like call passed straight into another call, such as `waitForAsync(...)`
+  inside a test wrapper, no longer receives `security.floating-promise`; other positions still report. A file with a parse error keeps the earlier matching.
+
+- **TypeORM matcher assertions no longer look assertion-free** - Tests using the observed `.should.be.eql`, `.equal`, `.greaterThan` or `.instanceOf` calls
+  no longer receive `test-quality.no-assertions`. An ordinary `should` property still reports when the test makes no assertion.
+
+- **Stored help-article links avoid false entropy warnings** - Complete article paths accept bounded titles, including the short words `a`, `to` and `in`.
+Extra URL components and opaque title suffixes remain eligible for warnings. The exact lowercase-letter-then-digit alphabet is also recognized.
+
+- **Entropy warnings recognize complete public formats and bounded names** - Public alphabets, structured identifiers and repository paths stay quiet
+only when the entire value qualifies; opaque suffixes remain reportable. Property names alone grant no exception.
+The bounded names include EC2 import paths and up to two parent-directory prefixes; the exact observed Hashids alphabet is also recognized.
+The standard Base64 decoder alphabet with one trailing `=`, the exact observed UUID alphabet and bounded help-category routes also stay quiet.
+Complete GitHub commit references use bounded owner, repository and revision formats; additional URL components grant no exception.
+The exact uppercase/lowercase/digit alphabet and nine complete Symfony signature service IDs also stay quiet.
+
 Upgrading from 0.5.x: this release changes every machine-readable contract at once. `UPGRADING.md` in this repository gives each break's migration command and the way back: pin the 0.5 line and keep the pre-upgrade configuration and baseline files, which 0.5 still reads.
 
 - **Sensitive-data rules skip test, fixture and example files** - A scan of the family's 57-repository corpus found this pillar's findings in test code were overwhelmingly sample keys and placeholder credentials. Every sensitive-data rule, `sensitive-data.pii-pattern` included, now skips a file under a directory named `test`, `tests`, `__tests__`, `spec`, `testdata`, `fixtures` or `examples` (any letter case), or a file named like a test: `*_test.go`, `test_*.py`, `*_test.py`, `*Test.php`, `*.test.*` or `*.spec.*` for JavaScript and TypeScript. **The trade-off is deliberate: a real credential committed under one of those paths is no longer reported.** The skip is counted, never silent: each skipped file and rule is published as an audit row with `source: "built-in"`, after the lockfile rows. The family exempts only a fixture-specific PII rule, which gruff-ts does not have.
-- **Vendor-documented sample values no longer report** - AWS's two example access key ids and secret keys, the sample token jwt.io shows, and fourteen test card numbers the card networks publish are documentation, not credentials. A value that equals one of these 19 exactly and whole is no longer reported by any sensitive-data rule. Card numbers are compared as digits only, so a spaced or dashed test card is matched too. The values are held as SHA-256 digests, so gruff-ts's detectors carry none of them. A real key that merely resembles one still reports.
+- **Vendor-documented sample values no longer report** - AWS's two example access key ids and secret keys, the sample token jwt.io shows, Google's published reCAPTCHA v2 test site key, and fourteen test card numbers the card networks publish are documentation, not credentials. A value that equals one of these 20 exactly and whole is no longer reported by any sensitive-data rule. Card numbers are compared as digits only, so a spaced or dashed test card is matched too. The values are held as SHA-256 digests, so gruff-ts's detectors carry none of them. A real key that merely resembles one still reports.
 - **An installed `gruff-ts` runs from any directory** - npm installs the scoped package at `node_modules/@blundergoat/gruff-ts` and hoists `tsx` two levels above it, but the launcher looked only one level up. The installed CLI therefore exited 1 unless it ran inside the installing project, where a bare `tsx` import still resolved. It now finds the hoisted `tsx`.
 - **`sensitive-data.high-entropy-string` skips package-manager lockfiles by name** - A lockfile records one published integrity digest per resolved package. Every one of them is high-entropy by construction and none is a credential, so a real project's lockfile buried the rule's true findings under thousands of false ones. The rule, and no other, is now skipped in a file whose base name is one of nine ratified lockfile names at any depth: `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `composer.lock`, `Cargo.lock`, `go.sum`, `uv.lock`, `poetry.lock`. **The skip is counted, never silent:** every surface that applies it publishes one audit row per lockfile that had findings, carrying `source: "built-in"`, which is how a consumer tells it from an entry you configured. **Every other sensitive-data rule still reads the file**, so a credential pasted into a lockfile is reported exactly as it would be anywhere else, and the identical bytes under any other file name keep reporting the entropy rule too. This replaces a silent skip that removed **two** sensitive-data rules from lockfiles with no audit row at all, so a real credential under a `token:` key in a lockfile now reports where it did not before.
 - **A scope the run could not read is one diagnostic, `changed-region`, with no findings beside it** - A `--changed-ranges` value the run cannot scope to used to arrive under a different type in almost every port, and some published their unscoped findings alongside it, so a caller could not tell a narrowed scan from a whole-tree one. The run now exits `2` with exactly one `changed-region` diagnostic and no findings, on the analyse surface and the hook alike.

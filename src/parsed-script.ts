@@ -192,6 +192,8 @@ export interface CallableMatchPoint extends IdentifierOwner {
   // signatures, and abstract or ambient members. The block rules use this instead of guessing
   // from text, because a multi-line signature reads like an implementation on its first line.
   hasBody: boolean;
+  // True only for a declaration carrying the `override` modifier: its base class chose the name.
+  isOverride: boolean;
   // Shared-parse node whose parameters and body belong to this stable analysed block.
   callableNode: TsNode;
 }
@@ -499,6 +501,7 @@ function declarationPoint(sourceFile: TsSourceFile, position: number, callableNo
     isExplicitlyPublic: isDirectlyExported || hasNodeModifier(visibilityNode, typescriptSyntax.SyntaxKind.PublicKeyword),
     isModuleScoped: visibilityNode.parent === sourceFile,
     hasBody: callableNodeHasBody(callableNode),
+    isOverride: hasNodeModifier(visibilityNode, typescriptSyntax.SyntaxKind.OverrideKeyword),
     callableNode,
   };
 }
@@ -575,6 +578,7 @@ function testCallbackPoint(sourceFile: TsSourceFile, node: import("typescript").
     isExplicitlyPublic: false,
     isModuleScoped: false,
     hasBody: true,
+    isOverride: false,
     callableNode: callback,
   };
 }

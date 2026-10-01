@@ -82,6 +82,52 @@ async function reportsFailure(): Promise<void> {
   });
 });
 
+// Fixture purpose: Angular case 401 passes waitForAsync(...) straight into an enclosing call, so
+// nothing is dropped. A bare statement, an arrow body whose promise forEach discards, and a statement
+// that merely contains a same-named argument call still start floating work.
+// Stable contract: only a line-leading call that is itself a direct argument of an enclosing call is exempt.
+test("floating promise exempts only a call passed directly as another call's argument", () => {
+  // Fixture covers case 401's wrapper argument beside bare, discarded and same-named floating calls.
+  const report = analyseFixture(`it(
+  "unsubscribes a registered callback",
+  withModule(
+    {providers},
+    waitForAsync(
+      inject([Injector], (injector: Injector) => {
+        createRootEl(injector);
+      }),
+    ),
+  ),
+);
+
+function notify(userIds: string[]): void {
+  sendEmailAsync(userIds[0]);
+  userIds.forEach((userId) =>
+    sendEmailAsync(userId),
+  );
+  sendEmailAsync(sendEmailAsync(userIds[1]));
+}
+`);
+  const floatingLines = report.findings.filter((finding) => finding.ruleId === "security.floating-promise").map((finding) => finding.line);
+  assert.deepEqual(floatingLines, [14, 16, 18]);
+});
+
+// Fixture purpose: an error-recovered syntax tree cannot prove where a call sits, so a file with a
+// parse error keeps the line heuristic and its security finding.
+// Stable contract: the direct-argument exemption needs a parse without errors.
+test("floating promise keeps the line heuristic when the file does not parse", () => {
+  const report = analyseFixture(`it(
+  "loads the application",
+  waitForAsync(() => {
+    load();
+  }),
+);
+const broken = ;
+`);
+  const floatingLines = report.findings.filter((finding) => finding.ruleId === "security.floating-promise").map((finding) => finding.line);
+  assert.deepEqual(floatingLines, [3]);
+});
+
 test("swallowed catch accepts explicit rationale comments", () => {
   // Fixture pairs a rationale-only catch with a placeholder-only catch so the rule keeps signal.
   const report = analyseFixture(`function optionalProbe(): void {

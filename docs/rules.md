@@ -83,7 +83,7 @@ Both rules consume the same parsed callable measurement as `docs.missing-why-for
 - `docs.missing-why-for-complex-code` (advisory; medium confidence): Flags comments on complex functions that do not explain why the shape exists. Accepted rationale vocabulary includes `because`, `why`, `intentional`, `tradeoff`/`trade-off`, `compat`/`compatible`/`compatibility`, `avoid`, and `preserve`, plus the phrases `due to`, `so that`, `in order to`, and `required by`. A contiguous run of leading `//` lines is evaluated as one comment; block comments are already evaluated as one body.
 - `docs.stale-comment` (advisory; medium confidence): Flags comments that reference missing files, unknown rules, stale CLI flags, or the wrong declaration.
 - `docs.stale-param-tag` (advisory; medium confidence): Flags @param tags for parameters no longer in the signature.
-- `docs.suppression-without-rationale` (advisory; medium confidence): Flags lint, formatter, coverage, or tool suppressions without a maintainer rationale.
+- `docs.suppression-without-rationale` (advisory; medium confidence): Flags lint, formatter, coverage, or tool suppressions without a maintainer rationale; the rationale may sit on the directive or in the comment lines directly above it.
 - `docs.todo-without-tracking` (advisory; high confidence): Flags comments introduced by a TODO, FIXME, HACK, or XXX marker without tracking context. The marker must start a comment body line (followed by `:`, `(`, `-`, whitespace, or end of line); quoted, backticked, mid-sentence, and fenced-example mentions are prose and stay quiet.
 - `docs.useless-docblock` (advisory; medium confidence): Flags comments or docblocks that only restate the symbol name.
 
@@ -130,7 +130,7 @@ existing config overrides and baselines keep matching.
 - `naming.acronym-case` (advisory; medium confidence): Flags a known acronym cased inconsistently across a file's chosen-case names (camelCase/PascalCase and other mixed-case forms). SCREAMING_SNAKE constants and all-lower names are convention-forced surfaces and do not count.
 - `naming.boolean-prefix` (advisory; medium confidence; allowlists: booleanPrefixes, acceptedBooleanNames): Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields. Local and parameter findings recommend a safe rename (`remediationAction: APPLY`). Contract-field findings use `CONFIGURE` with `configurationKey: allowlists.acceptedBooleanNames` and explain that users may instead preserve an external key through explicit serialization mapping; configuration replaces the complete accepted-name list rather than merging one entry into the defaults.
 - `naming.class-file-mismatch` (advisory; medium confidence; allowlist: acceptedClassFilePairs): Flags a named class whose normalized name differs from the file only when it is the module's sole supported public declaration. Direct exports, named default exports, and bottom re-exports share one syntax inventory; a public class beside an interface, type, enum, function, default value, or external re-export stays quiet. Exact case-insensitive `fileBase:ClassName` entries preserve intentional feature-file/class-role conventions. Retained findings include `candidatePrimaryExport: true` and sorted `publicExports` metadata.
-- `naming.generic-function` (advisory; high confidence): Flags generic function names that hide intent.
+- `naming.generic-function` (advisory; high confidence): Flags generic function names that hide intent; a method marked `override` is judged at its base declaration instead.
 - `naming.generic-parameter` (advisory; medium confidence; options: minCyclomatic, minLineCount, minParameters): Flags placeholder parameter names in multi-parameter, long, exported, or complex functions.
 - `naming.hungarian-notation` (advisory; medium confidence): Flags identifiers named after storage type prefixes.
 - `naming.identifier-quality` (advisory; medium confidence): Flags placeholder or numbered identifiers on declarations, function parameters, and destructured locals.
@@ -145,11 +145,11 @@ existing config overrides and baselines keep matching.
 - `security.document-write` (warning; high confidence): Flags document.write usage.
 - `security.dynamic-regexp` (warning; medium confidence): Flags external input used to construct regular expressions.
 - `security.eval-call` (error; high confidence): Flags eval() dynamic code execution.
-- `security.floating-promise` (warning; medium confidence): Flags promise-like calls without await, return, or void.
+- `security.floating-promise` (warning; medium confidence): Flags promise-like calls without await, return, or void; a call passed directly as another call's argument is not floating.
 - `security.github-actions-broad-permissions` (warning; medium confidence): Flags GitHub Actions workflows that grant broad write permissions: `write-all` anywhere, or a write scope in the workflow-level `permissions:` block that every job inherits. A job-level grant is least privilege and stays quiet, as in gruff-rs.
 - `security.github-actions-pull-request-target` (warning; medium confidence): Flags pull_request_target workflows paired with risky execution or trust context.
 - `security.github-actions-remote-shell` (warning; medium confidence): Flags workflow run steps that pipe remote downloads to a shell.
-- `security.github-actions-secrets-in-pr` (warning; medium confidence): Flags pull_request_target workflows that reference repository secrets other than GITHUB_TOKEN. The trigger is read from the workflow's `on:` key; a plain `pull_request` run from a fork receives no secrets.
+- `security.github-actions-secrets-in-pr` (warning; medium confidence): Flags pull_request_target workflows that reference repository secrets other than GITHUB_TOKEN. The trigger is read from the workflow's `on:` key; a plain `pull_request` run from a fork receives no secrets. An own job or step `if:` guard can silence a secret reference when exact `github.event_name` comparisons prove that scope unreachable for the detected PR event. Comparisons ignore case and support a whole expression wrapper, parentheses, negation, AND and OR. Unknown, malformed or unsupported guards and ambiguous YAML ownership retain warnings; a step guard cannot cover job/workflow env or siblings.
 - `security.github-actions-unpinned-action` (warning; medium confidence): Flags third-party GitHub Actions that are not pinned to a full commit SHA.
 - `security.inner-html` (warning; high confidence): Flags innerHTML assignment.
 - `security.insecure-random` (warning; high confidence): Flags Math.random usage in source.
@@ -157,7 +157,7 @@ existing config overrides and baselines keep matching.
 - `security.new-function` (error; high confidence): Flags Function constructor dynamic code execution.
 - `security.open-redirect-candidate` (warning; medium confidence): Flags external input sent to redirect or navigation sinks.
 - `security.path-traversal-candidate` (warning; medium confidence): Flags external input sent to filesystem path sinks.
-- `security.process-exec` (warning; high confidence): Flags child-process execution calls, grading severity from command-source and shell-mode evidence: warning only when a shell-enabled call takes a dynamic command.
+- `security.process-exec` (warning; high confidence): Flags child-process execution calls, grading severity from command-source and shell-mode evidence: warning only when a shell-enabled call takes a dynamic command. A declaration or signature named like a process function is not a call.
 - `security.proto-access` (warning; medium confidence): Flags direct __proto__ access that can enable prototype pollution.
 - `security.remote-install-script` (error; medium confidence): Flags package scripts that pipe remote content to a shell.
 - `security.risky-lifecycle-script` (warning; medium confidence): Flags install-time and side-effectful publish lifecycle scripts while allowing validation-only publish gates.
@@ -179,7 +179,11 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 - `sensitive-data.database-url-password` (warning; high confidence): Flags database and HTTP(S) URLs that include passwords or embedded credentials.
 - `sensitive-data.gcp-service-account-key` (warning; high confidence): Flags GCP service-account key files (type service_account alongside a private key).
 - `sensitive-data.hardcoded-env-value` (warning; medium confidence; threshold 16): Flags environment-style secret values committed in text. In script files (TS/JS) only quoted values count: an unquoted right-hand side is a code expression (schema builder, secret-provider plumbing), not an embedded literal.
-- `sensitive-data.high-entropy-string` (warning; medium confidence): Flags high-entropy string literals that may be secrets, at or above two configurable bars: `thresholds.minLength` (default 32) and `thresholds.entropy` (default 4.2 bits per character). A value must also hold a letter and a digit, the floor FAMILY-CONTRACT section 12 sets for all five ports. Text inside a PEM block whose label names no private key (a certificate, public key, certificate request, PKCS7 bundle or CRL) never reports, because it is public by construction; a private key's block is still scanned. A block ends at the next marker, which must close the same label, and holds only base64, a PGP checksum or armour headers once string quoting is stripped, so a secret between two marker constants still reports. A value under a key naming a location or a digest, such as `path`, `artifact` or `sha256`, is exempt, as are repository paths. Identifier-shaped values that decompose entirely into short dictionary-like word segments (dotted namespaces such as `Com.Example2.Services.TokenProvider`, underscored constants, slug-like catalog names) are exempt because credential alphabets interleave case and digits rather than forming words; JWTs and 20+ char mixed-case segments never earn the exemption. Character-set enumerations (a 10+ run of consecutive code points, e.g. base64 translation alphabets) are also exempt.
+- `sensitive-data.high-entropy-string` (warning; medium confidence; minLength 32, entropy 4.2): Flags long, random-looking literals. Both thresholds
+  are configurable. Finite complete public alphabets and formats, bounded structured names and repository paths can stay quiet; every name segment must
+  satisfy the shared casing and numeric bounds, with a strict word-letter majority across at least two segments. A location or digest property name
+  never exempts its value. Added opaque text cannot inherit a public prefix's exception. Existing hex, integrity, public PEM and documented-sample
+  handling remains in place. A whole YAML or JSON config value that names an image file present in the project also stays quiet.
 - `sensitive-data.jwt-token` (warning; high confidence): Flags JWT-looking token literals.
 - `sensitive-data.phi-pattern` (warning; high confidence): Flags PHI identifiers such as Medicare (MBI) and medical record numbers.
 - `sensitive-data.pii-pattern` (warning; high confidence): Flags PII-like identifier patterns including SSN-shaped values and Luhn-valid payment cards. A bare unseparated digit run additionally needs card vocabulary on its line (statistics can pass Luhn by coincidence); separator-grouped numbers flag without context.
@@ -199,7 +203,7 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 - `test-quality.loop-in-test` (advisory; medium confidence): Flags test-body loops whose assertions do not identify the failing iteration.
 - `test-quality.magic-number-assertion` (advisory; medium confidence): Flags assertions against unexplained numeric literals.
 - `test-quality.mock-only-test` (advisory; high confidence): Flags tests that only verify mock interaction.
-- `test-quality.no-assertions` (warning; high confidence): Flags tests without apparent assertions.
+- `test-quality.no-assertions` (warning; high confidence): Flags tests without apparent assertions; observed `.should.be` matcher calls count.
 - `test-quality.no-throw-only-test` (advisory; high confidence): Flags tests that only assert code does not throw.
 - `test-quality.only-skip` (advisory; high confidence): Flags focused or skipped test markers.
 - `test-quality.sleep-in-test` (advisory; high confidence): Flags sleeps in tests.

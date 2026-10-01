@@ -898,7 +898,7 @@ function analyseTypeScriptRules(file: SourceFile, source: string, comments: Comm
   runRulePass(config, "docs.missing-file-overview", () => analyseFileOverviewDoc(file, source, findings));
   analyseBlocks(file, source, codeSource, blocks, config, findings);
   runRulePass(config, "waste.unused-import", () => analyseUnusedImports(file, codeSource, source, findings));
-  runRuleGroupPass(config, LINE_RULE_IDS, () => analyseLineRules(file, source, codeSource, config, findings));
+  runRuleGroupPass(config, LINE_RULE_IDS, () => analyseLineRules(file, source, codeSource, config, findings, parsed));
   runRuleGroupPass(config, SECURITY_FLOW_RULE_IDS, () => analyseSecurityFlow(file, source, findings, parsed?.sourceFile));
   runRulePass(config, "waste.unreachable-code", () => analyseUnreachable(file, codeSource, findings));
   // Docblock rules read real AST signatures; a bounded-deep-scan file without a parse skips them

@@ -1,6 +1,7 @@
-// Lock-in tests for the 11 false-positive fixes triaged after the M38 goat-flow report.
-// Each test pairs a fixture that USED to trigger a false positive with a fixture that should
-// still legitimately fire - so future refactors cannot silently un-fix any of them.
+// Keeps source-backed false-positive repairs visible to developers running Gruff on their tests.
+
+// Each case pairs a benign source shape with nearby code that must still report.
+// The fixture runs through the public analysis path so masking and block discovery are covered.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderReport } from "./cli.ts";
@@ -68,6 +69,44 @@ test("genuinely has no assertion", () => {
   const noAssertion = report.findings.filter((entry) => entry.ruleId === "test-quality.no-assertions");
   assert.equal(noAssertion.length, 1);
   assert.match(noAssertion[0]?.message ?? "", /genuinely has no assertion/);
+});
+
+// Purpose: pin TypeORM's matcher shape and nearby assertion-free text in one analysis-path fixture.
+// Invariant: only a real matcher call prevents the no-assertions warning.
+test("TypeORM should.be matcher calls count as assertions while ordinary should text does not", () => {
+  // The TypeORM cases return Promise.all over callbacks containing these matcher calls.
+  const report = analyseFixture([
+    "it('checks enum arrays', () => Promise.all(dataSources.map(async (dataSource) => {",
+    "  const loaded = await dataSource.load();",
+    "  loaded.numericEnums.should.be.eql([]);",
+    "  loaded.count.should.be.equal(0);",
+    "  loaded.count.should.be.greaterThan(0);",
+    "  loaded.item.should.be.instanceOf(Item);",
+    "})));",
+    "it('only reads a should option', () => {",
+    "  const requested = options.should;",
+    "  use(requested);",
+    "});",
+    "it('only mentions a matcher in source text', () => {",
+    "  const example = 'loaded.item.should.be.equal(0)';",
+    "  // loaded.item.should.be.eql([]);",
+    "  use(example);",
+    "});",
+    "it('defines a callback without an assertion', () => {",
+    "  const callback = () => options.should;",
+    "  use(callback);",
+    "});",
+    "",
+  ].join("\n"), { fileName: "typeorm-assertions.test.ts" });
+
+  const testsWithoutAssertions = report.findings
+    .filter((finding) => finding.ruleId === "test-quality.no-assertions")
+    .map((finding) => finding.symbol);
+  assert.deepEqual(testsWithoutAssertions, [
+    "only reads a should option",
+    "only mentions a matcher in source text",
+    "defines a callback without an assertion",
+  ]);
 });
 
 test("FP-#11 waste.console-log skips CLI/script paths", () => {

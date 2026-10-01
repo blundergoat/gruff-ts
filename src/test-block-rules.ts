@@ -1,7 +1,7 @@
-// Per-test-block rule pass: assertion quality (no-assertions, trivial, snapshot-only,
-// no-throw-only, exception-type-only, magic-number), mock quality (unused-mock, mock-only-test),
-// global-state-mutation, and structural checks (sleep/loop/conditional/only-skip).
-// Invoked from the analyseBlocks orchestrator when `block.isTest` is true.
+// Reports test-quality findings developers can act on in each parsed test block.
+
+// Assertion and mock checks run before global-state and structural checks.
+// The block orchestrator calls this file when it finds a test body.
 import { blockFinding, blockFindingWithMetadata, type FunctionBlock, hasAssertion } from "./blocks.ts";
 import { type SourceFile } from "./discovery.ts";
 import { escapeRegex } from "./findings-helpers.ts";
@@ -183,7 +183,7 @@ function isLabeledCaseLoop(segment: string): boolean {
   return assertionCalls.every((call) => hasLoopCaseLabel(call, labelNames));
 }
 
-// The assertion openers `hasAssertion` recognises, each ending at the call's own `(`.
+// Only call forms with supported per-case label arguments can clear a loop warning; `.should.be` matchers have no proved label form.
 const ASSERTION_CALL_OPENER = /\b(?:assert(?:\.[A-Za-z]+|[A-Z][A-Za-z0-9_$]*)?|expect(?:\.(?:assertions|hasAssertions)|[A-Z][A-Za-z0-9_$]*)?|[A-Za-z_$][A-Za-z0-9_$]*Check)\s*(?:<[^;]*?>\s*)?\(/g;
 // One chained call such as `.toBe(` after a closed call.
 const CHAINED_CALL_LINK = /^\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*\s*(?:<[^;]*?>\s*)?\(/;

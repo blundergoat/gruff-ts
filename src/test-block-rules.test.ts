@@ -1,4 +1,7 @@
-// Focused unit tests for the per-test-block rule pass without routing through full project scans.
+// Exercises the test-block rules that developers see after scanning their test files.
+
+// These focused fixtures isolate assertion and structure decisions from project discovery.
+// Full analysis-path cases in false-positive-fixes.test.ts also cover source masking.
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { FunctionBlock } from "./blocks.ts";
@@ -240,6 +243,18 @@ test("analyseTestBlock reports structural test smells once per block", () => {
     "test-quality.conditional-logic",
     "test-quality.only-skip",
   ]);
+});
+
+test("an unlabeled loop with a should.be assertion still reports loop-in-test", () => {
+  // An assertion inside a loop can still hide which item failed, even though the test is not assertion-free.
+  const findings = analyseTestCallback(`
+  for (const item of items) {
+    item.should.be.equal(1);
+  }
+`);
+
+  assert.equal(findings.some((finding) => finding.ruleId === "test-quality.no-assertions"), false);
+  assert.equal(findings.some((finding) => finding.ruleId === "test-quality.loop-in-test"), true);
 });
 
 test("analyseTestBlock reports conditional assertions inside type guards", () => {

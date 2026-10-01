@@ -1,5 +1,6 @@
 // GitHub Actions workflow security heuristics, path-gated to committed workflow files.
 import type { SourceFile } from "./discovery.ts";
+import { unreachableWorkflowSecretLines } from "./github-actions-event-guards.ts";
 import { makeFinding } from "./findings.ts";
 import type { Finding } from "./types.ts";
 
@@ -386,9 +387,10 @@ function analyseSecretsInPullRequest(file: SourceFile, lines: readonly WorkflowL
   if (!declaredWorkflowEvents(lines).has("pull_request_target")) {
     return;
   }
+  const unreachable = unreachableWorkflowSecretLines(lines.map((line) => line.raw).join("\n"), ["pull_request_target"]);
   for (const line of lines) {
     const secretName = secretReference(line);
-    if (!secretName) {
+    if (!secretName || unreachable.has(line.lineNumber)) {
       continue;
     }
     findings.push(

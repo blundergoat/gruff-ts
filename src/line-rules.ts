@@ -4,17 +4,26 @@
 // detection and the block-rule parameter pass. Dead-code rules (unused imports, unreachable) are
 // invoked by the cli orchestrator before/after this module so the stable per-line emission order
 // stays a single contract.
+import { createRequire } from "node:module";
 import { ruleEnabled, ruleSeverity } from "./config.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts";
 import { type NamingSurface, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
+import type { ParsedScript } from "./parsed-script.ts";
 import { processExecMetadata, type ProcessExecArgumentSource, type ProcessExecMetadata } from "./process-exec-metadata.ts";
-import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
+import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches, type DirectArgumentCallLookup, directArgumentCallLookup } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
 import { byteLine, matchingCloseParen } from "./text-scans.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
+
+// TypeScript is CommonJS at runtime; the process-exec guard only walks the shared parse (ADR-012).
+const require = createRequire(import.meta.url);
+const typescriptSyntax = require("typescript") as typeof import("typescript");
+
+type TsSourceFile = import("typescript").SourceFile;
+type TsNode = import("typescript").Node;
 
 // Descriptor for one regex-backed line rule. `pattern` is the cheap test and `globalPattern`
 // (optional) is used when the rule needs all matches for emission, not just the first hit.
@@ -48,6 +57,8 @@ interface LineRuleContext {
   literalChecks: LineRuleCheck[];
   variables: RegExp;
   gates: LineRuleGates;
+  // Whether a line's leading call is a direct argument of an enclosing call; floating-promise reads it.
+  isDirectArgumentCall: DirectArgumentCallLookup;
 }
 
 const CODE_LINE_CHECKS = codeLineChecks();
@@ -106,8 +117,11 @@ const VARIABLE_NAMING_RULE_IDS = [
  * Per-line rule pipeline plus the two multi-line catch detectors. Excludes analyseUnusedImports
  * and analyseUnreachable so the dead-code module can own them; the orchestrator in cli.ts wraps
  * this call with those rules to preserve the stable, deterministic emission order.
+ * A parse without errors lets process-exec and floating-promise tell a call from a declaration
+ * or a direct argument; an error-recovered tree is ignored, so those rules keep their text behavior.
  */
-export function analyseLineRules(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[]): void {
+export function analyseLineRules(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[], parsed?: ParsedScript): void {
+  const syntax = parsed?.diagnostics.length === 0 ? parsed.sourceFile : undefined;
   const sourceLines = source.split(/\r?\n/);
   const codeLines = codeSource.split(/\r?\n/);
   const gates: LineRuleGates = {
@@ -139,6 +153,7 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
     literalChecks: LITERAL_LINE_CHECKS.filter((check) => ruleEnabled(config, check.ruleId)),
     variables: VARIABLE_DECLARATIONS,
     gates,
+    isDirectArgumentCall: directArgumentCallLookup(syntax, codeSource),
   };
   sourceLines.forEach((line, index) => {
     context.previousLine = index > 0 ? (sourceLines[index - 1] ?? "") : "";
@@ -150,7 +165,7 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
   });
 
   if (gates.shouldRunProcessExec) {
-    analyseProcessExecCalls(file, source, codeSource, findings);
+    analyseProcessExecCalls(file, source, codeSource, findings, syntax);
   }
   if (gates.shouldRunUselessCatch) {
     analyseUselessCatches(file, codeSource, findings);
@@ -167,7 +182,7 @@ function analyseLineRuleContext(context: LineRuleContext): void {
     analyseTypeSafetyLine(context.file, context.line, context.codeLine, context.lineNumber, context.findings);
   }
   if (context.gates.shouldRunReliability) {
-    analyseReliabilityLine(context.file, context.codeLine, context.lineNumber, context.findings);
+    analyseReliabilityLine(context.file, context.codeLine, context.lineNumber, context.findings, context.isDirectArgumentCall);
   }
   if (context.gates.shouldRunCommentedOutCode) {
     pushCommentedOutCodeFinding(context);
@@ -592,14 +607,21 @@ function stringTimerCandidate(codeLine: string): boolean {
 /*
  * Targets child_process-style calls across single- and multi-line expressions. Stable invariant:
  * masked-source matching keeps fixture strings quiet. Unmatched calls recover by being skipped
- * rather than guessed, while fixed literal-command argv calls stay quiet.
+ * rather than guessed, while fixed literal-command argv calls stay quiet. With a clean parse, a
+ * match that starts at a declared method, function or signature name is skipped: it names a callable
+ * rather than running one.
  */
-function analyseProcessExecCalls(file: SourceFile, rawSource: string, codeSource: string, findings: Finding[]): void {
+function analyseProcessExecCalls(file: SourceFile, rawSource: string, codeSource: string, findings: Finding[], syntax: TsSourceFile | undefined): void {
   const processCallPattern = /\b(?:(child_process|childProcess|cp)\.)?(exec|spawn|execFile|execSync|execFileSync|spawnSync|fork)\s*\(/g;
+  let declaredNameStarts: ReadonlySet<number> | undefined;
   for (const match of codeSource.matchAll(processCallPattern)) {
     const start = match.index ?? 0;
     const callName = match[2] ?? "";
     if (!callName || isMemberProcessExecFalsePositive(codeSource, start, Boolean(match[1]))) {
+      continue;
+    }
+    declaredNameStarts ??= syntax ? declaredCallableNameStarts(syntax) : new Set<number>();
+    if (declaredNameStarts.has(start)) {
       continue;
     }
     const openParen = start + match[0].length - 1;
@@ -681,6 +703,22 @@ function processExecGrade(metadata: ProcessExecMetadata): { severity: Severity; 
 // remain valid process-exec candidates.
 function isMemberProcessExecFalsePositive(codeSource: string, start: number, hasProcessReceiver: boolean): boolean {
   return !hasProcessReceiver && codeSource[start - 1] === ".";
+}
+
+// Offsets where a declared method, function, accessor or signature name starts, such as an
+// interface's `fork(zoneSpec: ZoneSpec): Zone;`. A process-call match must start exactly at one to be
+// skipped, so a real call on the same line as a same-named declaration still reports.
+function declaredCallableNameStarts(syntax: TsSourceFile): Set<number> {
+  const starts = new Set<number>();
+  // Records the name offset of every function-like declaration or signature with a plain identifier name.
+  const visit = (node: TsNode): void => {
+    if (typescriptSyntax.isFunctionLike(node) && node.name !== undefined && typescriptSyntax.isIdentifier(node.name)) {
+      starts.add(node.name.getStart(syntax));
+    }
+    node.forEachChild(visit);
+  };
+  syntax.forEachChild(visit);
+  return starts;
 }
 
 // Fixed command vectors and known safe wrappers are intentionally not shell-interpolated, so this

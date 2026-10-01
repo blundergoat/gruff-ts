@@ -606,11 +606,9 @@ test("M22 database-url-password still reports a literal password beside a type-l
   assert.deepEqual(urlFindings.map((entry) => entry.line), [2, 3]);
 });
 
-// M22 brief shape (19 of 19 on the downstream project): repository paths under location keys. Each axis clears the
-// residual alone: a path shape under a neutral key, and an opaque value under a location or digest key. A base64
-// secret with one `/`, and one with two, still fire under a neutral key; a separator count alone is not a path, which
-// is the exclusion contract.
-test("M22 high-entropy-string clears location keys and repository paths on independent axes", () => {
+// Invariant: timestamped public paths stay quiet while opaque values report under every location or digest property name.
+// A slash count alone cannot establish a public path.
+test("shared entropy policy preserves bounded paths and reports opaque values under location keys", () => {
   const briefPaths = [
     "var/quality/full-corpus-20260710T2328Z/primock57-day2-consultation09-i-cant-move-my-left-arm/live-history.json",
     "var/quality/m02-acceptance-20260715T044500Z/replays/primock57-day5-consultation03-im-feeling-very-anxious/corrected-transcript.json",
@@ -626,15 +624,12 @@ test("M22 high-entropy-string clears location keys and repository paths on indep
   });
   const entropyFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
 
-  assert.deepEqual(entropyFindings.map((finding) => `${finding.filePath}:${finding.line}`).sort(), ["secrets.json:2", "secrets.json:3", "secrets.json:4"]);
+  assert.deepEqual(entropyFindings.map((finding) => `${finding.filePath}:${finding.line}`).sort(), ["keys.json:2", "keys.json:3", "keys.json:4", "keys.json:5", "keys.json:6", "keys.json:7", "secrets.json:2", "secrets.json:3", "secrets.json:4"]);
 });
 
-// M22 code review fixture: the location-key exclusion takes a key only where a key can stand, and never one that names
-// a secret. A ternary branch is no key, whether on one line, wrapped after its `?`, or after a comment or an operator.
-// `privateKeyBlob`, `apiKeyInput`, `JWTSecretPath`, `APIKeyFile`, `SECRETKEY_PATH` and `secretsPath` name key material,
-// and `modelOutput` names no location, so each keeps its finding. The same opaque value under a `path` or `prior_seal`
-// key, inline or opening its line, and under a YAML list item's keys must stay quiet.
-test("M22 high-entropy-string takes a location key only in key position and never one naming a secret", () => {
+// Invariant: property names, ternary branches, comments and line wrapping cannot vouch for an opaque literal.
+// The same decision applies to native objects and YAML list-item properties.
+test("shared entropy policy retains opaque findings across key names and syntax positions", () => {
   const opaque = HIGH_ENTROPY_FIXTURE_VALUE;
   const report = analyseProject({
     "position.ts": [
@@ -660,7 +655,7 @@ test("M22 high-entropy-string takes a location key only in key position and neve
 
   assert.deepEqual(
     entropyFindings.map((finding) => `${finding.filePath}:${finding.line}`).sort(),
-    ["position.ts:1", "position.ts:10", "position.ts:13", "position.ts:14", "position.ts:14", "position.ts:14", "position.ts:14", "position.ts:3", "position.ts:4", "position.ts:4", "position.ts:4", "settings.yaml:4"],
+    ["position.ts:1", "position.ts:10", "position.ts:13", "position.ts:14", "position.ts:14", "position.ts:14", "position.ts:14", "position.ts:3", "position.ts:4", "position.ts:4", "position.ts:4", "position.ts:5", "position.ts:5", "position.ts:7", "settings.yaml:2", "settings.yaml:3", "settings.yaml:4"],
   );
 });
 
@@ -732,4 +727,33 @@ test("M22 already-shipped entropy exclusions and the fixed redaction marker beha
     const rendered = renderReport(report, format);
     leaks.forEach((leak) => assert.equal(rendered.includes(leak), false, `${format} carried part of the value`));
   });
+});
+
+// Fixture purpose: juice-shop's case 24 names an existing gallery image as a whole YAML config value. The
+// image lives in an unrelated folder, so only an existing file with that exact name proves the reference.
+// A missing image, extra text after the name, an opaque token and the same name in source code keep reporting.
+// Stable contract: the entropy exemption needs a whole config value, an image name and an existing repository file.
+test("high-entropy config values that name an existing repository image stay quiet", () => {
+  // Fixture covers case 24's gallery image beside missing, extended, opaque and source-code controls.
+  const report = analyseProject({
+    "config/gallery.yml": `memories:
+  -
+    image: 'building-something-literally-bottom-up-1721152342603.jpg'
+    caption: 'Building something literally bottom up...'
+  -
+    image: 'putting-in-the-missing-hardware-1721152366854.jpg'
+  -
+    image: 'building-something-literally-bottom-up-1721152342603.jpg.orig'
+  -
+    image: '${HIGH_ENTROPY_FIXTURE_VALUE}'
+`,
+    "config/gallery.json": `${JSON.stringify({ image: "building-something-literally-bottom-up-1721152342603.jpg" }, null, 2)}\n`,
+    "frontend/assets/uploads/building-something-literally-bottom-up-1721152342603.jpg": "image bytes",
+    "src/gallery.ts": `export const galleryImage = "building-something-literally-bottom-up-1721152342603.jpg";\n`,
+  });
+  const entropyLocations = report.findings
+    .filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string")
+    .map((finding) => `${finding.filePath}:${finding.line}`)
+    .sort();
+  assert.deepEqual(entropyLocations, ["config/gallery.yml:10", "config/gallery.yml:6", "config/gallery.yml:8", "src/gallery.ts:1"]);
 });

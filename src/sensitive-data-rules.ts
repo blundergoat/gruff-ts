@@ -3,6 +3,10 @@
 // It runs each detector in a stable order so repeated scans remain comparable.
 // Users receive fixed category markers, actionable locations, and one report entry per occurrence without matched characters or lengths.
 import { createHash } from "node:crypto";
+import { type Dirent, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { projectRootOf } from "./comment-rules.ts";
+import { isPublicEntropyShape } from "./entropy-public-shapes.ts";
 import { namedThreshold, ruleSeverity, threshold } from "./config.ts";
 import { makeFinding } from "./findings.ts";
 import { byteColumn, byteLine } from "./text-scans.ts";
@@ -10,11 +14,21 @@ import type { Config, Finding } from "./types.ts";
 
 // Describes the safe file context needed to locate a sensitive finding for the user.
 //
-// The report-facing path is sufficient for navigation.
-// Absolute filesystem details and source content stay outside this boundary.
+// The report-facing path is sufficient for navigation, and findings carry nothing else.
+// The absolute path is read only to prove that a config value names an existing project asset;
+// it never enters a finding, and source content stays outside this boundary.
 interface SensitiveSourceFile {
   displayPath: string;
+  absolutePath?: string;
 }
+
+// Image extensions a config value may name as an asset. The list is closed: any other value stays with the entropy rule.
+const IMAGE_ASSET_EXTENSION = /\.(?:png|jpe?g|gif|svg|webp|ico|avif)$/i;
+// Dependency, build and tool-output directories the asset search never enters; hidden directories are skipped too.
+const ASSET_SEARCH_SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", "build", "vendor", "coverage"]);
+// Cap on the directory entries one asset search may visit, because the search must stay bounded on large trees;
+// reaching the cap keeps the warning.
+const ASSET_SEARCH_ENTRY_LIMIT = 20_000;
 
 // Runs every sensitive-data detector for one user file in deterministic report order.
 // Keeping pattern order stable prevents baseline churn when no source behavior changed.
@@ -273,22 +287,25 @@ function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: st
 function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
   const minLength = threshold(config, "sensitive-data.high-entropy-string", 32);
   const minimumEntropy = namedThreshold(config, "sensitive-data.high-entropy-string", "entropy", 4.2);
-  // YAML is the one scanned format whose keys may open a line with nothing before them.
-  const canKeyOpenLine = /\.ya?ml$/i.test(file.displayPath);
   // The candidate floor follows the configured minimum length, so a lowered bar admits literals shorter than the default.
   const candidatePattern = new RegExp(`(["'\`])([A-Za-z0-9_+=./-]{${Math.max(1, Math.ceil(minLength))},})\\1`, "g");
   const armoured = publicArmourSpans(source);
   // Every long literal is checked separately so same-line secrets remain independently actionable in the report.
   for (const match of source.matchAll(candidatePattern)) {
-    // A public PEM block's base64 body is certificate or public-key material, never a secret.
+    // The source offset ties this candidate to any enclosing public PEM block.
     const offset = match.index ?? 0;
+    // Public PEM material stays quiet so users are not asked to rotate a certificate or public key.
     if (armoured.some(([start, end]) => offset >= start && offset < end)) {
       continue;
     }
     // A missing capture becomes empty text, which safely fails the configured length gate.
     const candidateText = match[2] ?? "";
     // Known public shapes or insufficient entropy mean the user does not need a secret finding for this literal.
-    if (!isHighEntropySecretCandidate(candidateText, minLength, enclosingKeyName(source, match.index ?? 0, canKeyOpenLine), minimumEntropy)) {
+    if (!isHighEntropySecretCandidate(candidateText, minLength, minimumEntropy)) {
+      continue;
+    }
+    // A whole config value naming an image the project actually contains is a resource reference, not a secret.
+    if (isExistingConfigImageReference(file, source, offset, candidateText)) {
       continue;
     }
     pushSensitiveFinding({
@@ -306,14 +323,70 @@ function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, co
   }
 }
 
+/*
+ * Case 24's shape: the entire value of a YAML or JSON key names an image file that exists in the scanned project.
+ * Contract invariant: all three proofs are required - the whole-value config role, the closed image-extension list
+ * and an existing file - so a key name or a file suffix alone never silences a possible secret.
+ */
+function isExistingConfigImageReference(file: SensitiveSourceFile, source: string, quoteOffset: number, candidateText: string): boolean {
+  if (file.absolutePath === undefined || !/\.(?:ya?ml|json)$/i.test(file.displayPath)) {
+    return false;
+  }
+  if (candidateText.includes("/") || !IMAGE_ASSET_EXTENSION.test(candidateText) || !isWholeConfigValue(source, quoteOffset, candidateText.length)) {
+    return false;
+  }
+  return projectContainsFileNamed(projectRootOf({ absolutePath: file.absolutePath, displayPath: file.displayPath }), candidateText);
+}
+
+// The quoted literal must be a key's entire value on its own line - `key: 'value'`, `- key: "value"` or JSON's
+// `"key": "value",` - with at most a trailing comma or YAML comment after it.
+function isWholeConfigValue(source: string, quoteOffset: number, valueLength: number): boolean {
+  const lineStart = source.lastIndexOf("\n", quoteOffset - 1) + 1;
+  const lineEnd = source.indexOf("\n", quoteOffset);
+  const before = source.slice(lineStart, quoteOffset);
+  const after = source.slice(quoteOffset + valueLength + 2, lineEnd === -1 ? source.length : lineEnd);
+  return /^\s*(?:-\s+)?(?:"[^"]*"|'[^']*'|[A-Za-z_][\w.-]*)\s*:\s*$/.test(before) && /^\s*,?\s*(?:#.*)?\r?$/.test(after);
+}
+
+/*
+ * Looks for a regular file with exactly this name under the project, skipping hidden, dependency and build
+ * directories and never following symlinks. Stable contract: entries are visited in code-unit order and the
+ * search stops at ASSET_SEARCH_ENTRY_LIMIT, so one tree always gives the same answer. It swallows an unreadable
+ * directory's error and treats that directory as not containing the file, so the warning stays and the scan goes on.
+ */
+function projectContainsFileNamed(projectRoot: string, name: string): boolean {
+  const pending = [projectRoot];
+  let visited = 0;
+  for (let directory = pending.shift(); directory !== undefined; directory = pending.shift()) {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    for (const entry of entries) {
+      visited += 1;
+      if (visited > ASSET_SEARCH_ENTRY_LIMIT) {
+        return false;
+      }
+      if (entry.isFile() && entry.name === name) {
+        return true;
+      }
+      if (entry.isDirectory() && !entry.name.startsWith(".") && !ASSET_SEARCH_SKIPPED_DIRECTORIES.has(entry.name)) {
+        pending.push(join(directory, entry.name));
+      }
+    }
+  }
+  return false;
+}
+
 // One line of a PEM body once its string quoting is stripped: base64, a PGP checksum or an armour header.
 const PEM_BODY_LINE = /^(?:[A-Za-z0-9+/]+={0,2}|=[A-Za-z0-9+/]{4}|(?:Version|Comment|Hash|Charset|MessageID|Proc-Type|DEK-Info):.*)$/;
 
-// Returns the half-open offset spans of the PEM blocks whose label names no private key. A certificate, public key,
-// certificate request, PKCS7 bundle or CRL is public by construction, so its body is never a secret. A block ends at
-// the next marker, which must close the same label, and its body must be PEM-shaped. Anything else means the markers
-// are not a block, so nothing between them is exempted and a private key there stays scannable (FAMILY-CONTRACT
-// section 12).
+// Locates public PEM material that users need not review as an entropy warning.
+//
+// Only a matching next closing marker and a PEM-shaped body grant the exception; an empty result leaves all source scannable.
 function publicArmourSpans(source: string): Array<[number, number]> {
   const spans: Array<[number, number]> = [];
   const marker = /-----(BEGIN|END) ([A-Z0-9 ]+)-----/g;
@@ -370,11 +443,12 @@ interface SensitiveFindingArgs {
   severity?: Finding["severity"];
 }
 
-// SHA-256 digests of the 19 values vendors publish as documentation samples, so code that pastes one never reports.
+// SHA-256 digests of the 20 values vendors publish as documentation samples, so code that pastes one never reports.
 //
-// They are AWS's example access key ids and secret keys, the jwt.io sample token and fourteen published test card numbers.
+// They cover AWS and jwt.io examples, fourteen published test cards and Google's reCAPTCHA v2 test site key.
 // Digests keep the literals out of this source (FAMILY-CONTRACT.md section 5).
 const DOCUMENTED_SAMPLE_DIGESTS = new Set([
+  "03b970ed8171d73b58bbc9a5c72e3e4eec28503b56b3bb400a0801857dd45614",
   "19ff47cc8024c133d5845d3f8938caca289929031e7d508c3adf7adff177f0c2",
   "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
   "1c9d38ed26cd808fa3b02b9b3b988a7caf474e2e42d95789c0fe07e267c80d8f",
@@ -575,9 +649,9 @@ function hasLetterAndDigit(candidateText: string): boolean {
 
 // Applies cheap inert-shape checks before character diversity and entropy scoring.
 // This order preserves the same user result while avoiding expensive work for obvious non-secrets.
-function isHighEntropySecretCandidate(candidateText: string, minLength: number, enclosingKey: string, minimumEntropy: number): boolean {
+function isHighEntropySecretCandidate(candidateText: string, minLength: number, minimumEntropy: number): boolean {
   // Known public or readable shapes do not require a secret warning in the user's report.
-  if (isExcludedHighEntropyCandidate(candidateText, minLength, enclosingKey)) {
+  if (isExcludedHighEntropyCandidate(candidateText, minLength)) {
     return false;
   }
   // Without a letter and a digit the literal is not credential-shaped (FAMILY-CONTRACT section 12): one character class
@@ -593,213 +667,12 @@ function isHighEntropySecretCandidate(candidateText: string, minLength: number, 
   return shannonEntropy(candidateText) >= minimumEntropy;
 }
 
-// Recognizes high-entropy shapes users commonly commit on purpose: digests, paths, alphabets, and readable identifiers.
-// Returning true keeps these detector-owned non-secrets out of reports without consulting user preview values.
-function isExcludedHighEntropyCandidate(candidateText: string, minLength: number, enclosingKey: string): boolean {
+// Whole-value policy exceptions cannot be inferred from the enclosing property name.
+function isExcludedHighEntropyCandidate(candidateText: string, minLength: number): boolean {
   return candidateText.length < minLength
-    || isLocationOrDigestKey(enclosingKey)
     || isHexDigest(candidateText)
     || isSubresourceIntegrityHash(candidateText)
-    || isRepoPathShape(candidateText)
-    || isCharacterAlphabetString(candidateText)
-    || isWordSegmentIdentifier(candidateText);
-}
-
-// Words naming a location or a digest. A value stored under a key ending in one is a path, URL or checksum by its
-// author's own label, so entropy says nothing about it being a secret. Words that name neither on their own, such as
-// input, output and blob, stay out: `apiKeyInput` and `privateKeyBlob` hold key material.
-const LOCATION_OR_DIGEST_KEY_WORDS: ReadonlySet<string> = new Set([
-  "path", "file", "filename", "filepath", "dir", "directory", "location", "locator", "artifact", "evidence", "url", "uri",
-  "src", "dest", "sha1", "sha256", "sha384", "sha512", "md5", "hash", "digest", "checksum",
-  "fingerprint", "etag", "integrity", "commit", "revision", "seal",
-]);
-
-// Words naming secret material, taken from this detector family's own labels: the token, secret, password and
-// credential of a secret-labelled assignment (search: `SECRET_ASSIGNMENT_PATTERN`) and the private of a private key.
-// Each counts anywhere inside a key word, so `JWTSecretPath`, `SECRETKEY_PATH` and `secretsPath` keep their finding.
-const SECRET_KEY_LABELS: readonly string[] = ["token", "secret", "password", "credential", "private"];
-
-// The key a string literal is directly the value of: `"path": "…"` in JSON, `path: "…"` in an object literal, or
-// `- path: "…"` in YAML. The key is read backwards from the opening quote over the colon and the key alone, so a long
-// generated line costs a few characters per literal rather than a rescan of the line. Empty when the literal is an
-// argument, an array element, a ternary branch, or anything but a key's value.
-function enclosingKeyName(source: string, quoteIndex: number, canKeyOpenLine: boolean): string {
-  const colonIndex = previousNonBlankIndex(source, quoteIndex - 1);
-  if (source[colonIndex] !== ":") {
-    return "";
-  }
-  const keyLastIndex = previousNonBlankIndex(source, colonIndex - 1);
-  const keyQuote = source[keyLastIndex] === '"' || source[keyLastIndex] === "'" ? source[keyLastIndex] : "";
-  const keyEnd = keyQuote === "" ? keyLastIndex + 1 : keyLastIndex;
-  let keyStart = keyEnd;
-  while (keyStart > 0 && /[\w$.-]/.test(source[keyStart - 1] ?? "")) {
-    keyStart -= 1;
-  }
-  const key = source.slice(keyStart, keyEnd);
-  if (!/^[A-Za-z_$]/.test(key) || (keyQuote !== "" && source[keyStart - 1] !== keyQuote)) {
-    return "";
-  }
-  return standsInKeyPosition(source, keyQuote === "" ? keyStart - 1 : keyStart - 2, canKeyOpenLine) ? key : "";
-}
-
-// True when the key ending before `index` stands where a key can: after `{` or `,`, with any whitespace or line breaks
-// between. A YAML key may also open its line, after an optional `- ` list marker. Anything else before it, such as a
-// ternary's `?`, a comment or an operator, means it is no key, so a key written after a comment keeps its finding too.
-function standsInKeyPosition(source: string, index: number, canKeyOpenLine: boolean): boolean {
-  let position = previousNonBlankIndex(source, index);
-  if (canKeyOpenLine && source[position] === "-") {
-    position = previousNonBlankIndex(source, position - 1);
-  }
-  if (canKeyOpenLine && (position < 0 || source[position] === "\n")) {
-    return true;
-  }
-  while (position >= 0 && /\s/.test(source[position] ?? "")) {
-    position -= 1;
-  }
-  return source[position] === "{" || source[position] === ",";
-}
-
-// The index of the nearest character at or before `index` that is neither a space nor a tab, or -1 at the source start.
-function previousNonBlankIndex(source: string, index: number): number {
-  let position = index;
-  while (position >= 0 && (source[position] === " " || source[position] === "\t")) {
-    position -= 1;
-  }
-  return position;
-}
-
-// True when a key, or its last word, names a location or a digest and none of its words names a secret,
-// case-insensitively and on the key alone: `path`, `SHA256`, `prior_seal`, `outputDir` and `expectedLiveHistorySha256`
-// all qualify, while `privateKeyHash` does not; the value is not read.
-// gruff-php's `isQuotedKeyLiteral` (HighEntropyStringRule.php) is a different guard, for a literal used as a key.
-function isLocationOrDigestKey(key: string): boolean {
-  if (key === "") {
-    return false;
-  }
-  const words = key
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
-    .split(/[\s_.-]+/)
-    .filter(Boolean)
-    .map((word) => word.toLowerCase());
-  if (words.some(namesSecretMaterial)) {
-    return false;
-  }
-  const lastWord = words[words.length - 1] ?? "";
-  return LOCATION_OR_DIGEST_KEY_WORDS.has(key.toLowerCase()) || LOCATION_OR_DIGEST_KEY_WORDS.has(lastWord);
-}
-
-// True when one lower-case key word names secret material: it is or ends in `key` or `keys`, as `apikey` does, or it
-// holds a secret label anywhere, as `jwtsecret` does.
-function namesSecretMaterial(word: string): boolean {
-  return /keys?$/.test(word) || SECRET_KEY_LABELS.some((label) => word.includes(label));
-}
-
-// Recognizes public encoding alphabets by a run of at least ten consecutive character codes.
-// Credential generators rarely produce that sequence, so users avoid a noisy entropy finding.
-function isCharacterAlphabetString(candidateText: string): boolean {
-  let runLength = 1;
-  // Each character extends or resets the public alphabet sequence being recognized.
-  for (let index = 1; index < candidateText.length; index += 1) {
-    // Consecutive character codes indicate an intentional alphabet rather than opaque credential material.
-    if (candidateText.charCodeAt(index) === candidateText.charCodeAt(index - 1) + 1) {
-      runLength += 1;
-      // Ten consecutive characters are enough to keep this public alphabet out of the user's findings.
-      if (runLength >= 10) {
-        return true;
-      }
-    } else {
-      runLength = 1;
-    }
-  }
-  return false;
-}
-
-// Recognizes readable namespaces, constants, and catalog names made entirely from short word-like segments.
-// Token-shaped segments are rejected first so JWTs and base64url credentials remain visible to users.
-function isWordSegmentIdentifier(candidateText: string): boolean {
-  // Base64 punctuation makes the value token-like, so it must remain eligible for a user finding.
-  if (candidateText.includes("+") || candidateText.includes("=")) {
-    return false;
-  }
-  // A recognizable segmented token must not inherit the readable-identifier exemption.
-  if (isTokenLikeSegmentedSecret(candidateText)) {
-    return false;
-  }
-  const segments = candidateText.split(/[/._-]+/);
-  // A single segment is not a namespace, constant, or slug and therefore lacks this public-shape evidence.
-  if (segments.length < 2) {
-    return false;
-  }
-  return segments.every(isWordLikeSegment);
-}
-
-// Recognizes JWT prefixes and long mixed-case segments that remain credential-like despite separators.
-// This guard runs before readable-word exemptions so users do not lose segmented secret findings.
-function isTokenLikeSegmentedSecret(candidateText: string): boolean {
-  // The standard JWT header prefix keeps this value visible to users even when separators resemble an identifier.
-  if (candidateText.startsWith("eyJ")) {
-    return true;
-  }
-  return candidateText.split(/[/._-]+/).some((segment) => segment.length >= 20 && hasLowerUpperAndDigit(segment));
-}
-
-// Recognizes a short word or version segment with at most one letter-to-digit boundary.
-// Repeated transitions look token-like and keep the candidate visible for user review.
-function isWordLikeSegment(segment: string): boolean {
-  // Empty, long, or punctuated segments are too token-like to earn the readable-identifier exemption.
-  if (segment.length === 0 || segment.length > 16 || !/^[A-Za-z0-9]+$/.test(segment)) {
-    return false;
-  }
-  return letterDigitTransitionCount(segment) <= 1;
-}
-
-// Counts letter-to-digit boundaries used to distinguish readable version names from token material.
-// Users avoid noise for names such as `Example2`, while repeatedly alternating segments remain reportable.
-function letterDigitTransitionCount(segment: string): number {
-  let transitions = 0;
-  // Each adjacent character pair can add one boundary to the identifier-shape decision.
-  for (let index = 1; index < segment.length; index += 1) {
-    // A change between letter and digit runs makes the segment incrementally more token-like.
-    if (isDigitCharCode(segment.charCodeAt(index - 1)) !== isDigitCharCode(segment.charCodeAt(index))) {
-      transitions += 1;
-    }
-  }
-  return transitions;
-}
-
-// Checks one character code for a decimal digit while evaluating identifier transitions.
-// Using codes avoids an absent string index and keeps the user's classification deterministic.
-function isDigitCharCode(code: number): boolean {
-  return code >= 48 && code <= 57;
-}
-
-// Recognizes repository paths by a known extension plus a conventional project segment or milestone filename.
-// Slash-containing opaque tokens stay reportable because path punctuation alone is not enough evidence.
-function isRepoPathShape(candidateText: string): boolean {
-  const normalized = candidateText.replaceAll("\\", "/");
-  const hasKnownExtension = /\.(?:md|mdx|ts|tsx|js|jsx|mjs|cjs|json|yaml|yml|toml|html|css|svg|sh|tsv|csv|txt|log|sha256|wav)$/.test(candidateText);
-  // Without a known file extension, the value lacks enough evidence to hide a possible secret from the user.
-  if (!hasKnownExtension) {
-    return false;
-  }
-  // A basename needs an ADR or milestone shape because it has no directory segment proving it is a project path.
-  if (!normalized.includes("/")) {
-    return isRepoPathLikeFilename(normalized);
-  }
-  return hasKnownRepoPathSegment(normalized);
-}
-
-// Recognizes ADR and milestone filenames that users may reference without a directory prefix.
-// A match keeps these public project artifacts out of high-entropy findings.
-function isRepoPathLikeFilename(candidateText: string): boolean {
-  return /^(?:ADR-\d{3}|M\d{2,3})-[A-Za-z0-9_.-]+\.(?:md|mdx)$/i.test(candidateText);
-}
-
-// Recognizes paths under conventional source, test, documentation, workflow, and package locations.
-// Unknown slash-separated strings remain reportable because they may still be opaque credentials.
-function hasKnownRepoPathSegment(candidateText: string): boolean {
-  return /(?:^|\/)(?:\.goat-flow|src|test|tests|fixtures?|docs|scripts|bin|var|public|dist|build|workflow|package(?:-lock)?\.json)(?:\/|$)/.test(candidateText);
+    || isPublicEntropyShape(candidateText);
 }
 
 // Removes spaces and hyphens before validating a payment-card value the user may have pasted.
