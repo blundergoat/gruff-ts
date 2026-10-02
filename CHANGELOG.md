@@ -2,6 +2,8 @@
 
 ## v0.6.0 - Unreleased
 
+- Test callbacks registered with `void it(...)` or `void test(...)` receive test-quality checks and no longer prompt internal-function documentation advice.
+
 - Workflow secret warnings skip jobs or steps whose own event guard proves them unreachable for every detected PR event.
 
 - **Config values that name an existing image stop looking like secrets** - A YAML or JSON key whose whole value is an image file name no longer

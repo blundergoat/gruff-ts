@@ -1,7 +1,34 @@
-// Documentation and comment-rule tests for doc coverage, stale comments, fixture purpose, and suppressions.
+// Check the documentation and comment advice developers receive when scanning TypeScript.
+//
+// Focused fixtures cover missing descriptions, stale comments, fixture purpose and suppression rationale.
+// Run these tests when changing comment interpretation so ordinary source text keeps its intended scan result.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { analyseFixture, analyseProject, largeFixtureSourceLines, TS_IGNORE_DIRECTIVE } from "./test-fixtures.ts";
+
+test("void-prefixed test callbacks do not require internal-function documentation", () => {
+  const report = analyseFixture(`// File overview: discarded test registration result.
+const path = "/Products/search";
+void it("GET product search returns all products", async () => {
+  const response = await requestProducts(path);
+  assert.equal(response.statusCode, 200);
+});
+`);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-internal-function-doc"), false);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.no-assertions"), false);
+});
+
+test("test-like text does not exempt an ordinary function from documentation", () => {
+  const report = analyseFixture(`// File overview: masked registration text.
+const title = "void it('not a callback', () => {})";
+function it(value: number): number {
+  return value + 1;
+}
+// void it("also not a callback", () => {});
+`);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-internal-function-doc" && finding.symbol === "it"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId.startsWith("test-quality.")), false);
+});
 
 test("docblock rules cover async exports and survive prose containing the word export", () => {
   const report = analyseFixture(`// File overview: docblock anchoring fixture.
@@ -15,8 +42,8 @@ export async function shipReports(actualName: string): Promise<number> {
 `);
   const docblockFindings = report.findings.filter((finding) => finding.symbol === "shipReports");
   const ruleIds = new Set(docblockFindings.map((finding) => finding.ruleId));
-  // Before AST anchoring, the async keyword broke detection and the prose "export" inside the
-  // docblock suppressed the block entirely - all three sub-rules were silently skipped.
+  // Before AST anchoring, the async keyword broke detection and the prose "export" inside the docblock suppressed the block entirely - all three
+  // sub-rules were silently skipped.
   assert.equal(ruleIds.has("docs.stale-param-tag"), true);
   assert.equal(ruleIds.has("docs.missing-param-tag"), true);
   assert.equal(ruleIds.has("docs.missing-return-tag"), true);
@@ -37,8 +64,8 @@ function persistReport(path: string, body: string): void {
   const sideEffectSymbols = report.findings
     .filter((finding) => finding.ruleId === "docs.missing-side-effect-doc")
     .map((finding) => finding.symbol);
-  // Exact block boundaries: only the real filesystem writer needs a side-effect note; the
-  // in-memory draft mutation above it must not inherit the later function's write signal.
+  // Exact block boundaries: only the real filesystem writer needs a side-effect note; the in-memory draft mutation above it must not inherit the
+  // later function's write signal.
   assert.deepEqual(sideEffectSymbols, ["persistReport"]);
 });
 
@@ -75,6 +102,7 @@ function parseDiagnostics(file: DiagnosticSourceFile, source: string): string {
   return source + file.displayPath;
 }
 `);
+  // Each supplied description must keep its corresponding missing-doc advice out of the scan.
   ["docs.missing-file-overview", "docs.missing-interface-doc", "docs.missing-exported-function-doc", "docs.missing-internal-function-doc"].forEach((ruleId) => {
     assert.equal(documentedReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
   });
@@ -194,9 +222,9 @@ const narrowed = ok.value;
   assert.equal(report.findings.some((finding) => finding.ruleId === "modernisation.ts-comment-without-rationale"), true);
 });
 
-// Fixture purpose: axios case 398 explains its directive on the comment line directly above, and a
-// rationale may run over several comment lines. Code above, a blank line, another directive or a
-// comment trailing code breaks that attachment, so those directives keep the finding.
+// Fixture purpose: axios case 398 explains its directive on the comment line directly above, and a rationale may run over several comment lines.
+//
+// Code above, a blank line, another directive or a comment trailing code breaks that attachment, so those directives keep the finding.
 // Stable contract: only the unbroken block of standalone comments directly above a standalone directive supplies its rationale.
 test("suppression rationale can come from the attached comment block above the directive", () => {
   // Fixture covers case 398's attached rationale beside unexplained, detached, stacked and trailing-comment directives.
@@ -334,12 +362,14 @@ function undocumentedSideEffect(path: string): void {
 }
 `);
   const findingsByRule = new Map<string, Set<string>>();
+  // Every fixture finding must keep the source file and location a developer needs to act on the advice.
   report.findings.forEach((finding) => {
     const symbols = findingsByRule.get(finding.ruleId) ?? new Set<string>();
     symbols.add(finding.symbol ?? String(finding.metadata.thresholdKind ?? "-"));
     findingsByRule.set(finding.ruleId, symbols);
   });
 
+  // Check each expected warning and quiet result so the documentation matrix preserves its intended boundary.
   documentationContextExpectations().forEach(([ruleId, symbol, expected]) => {
     assert.equal(findingsByRule.get(ruleId)?.has(symbol), expected, `${ruleId} ${symbol}`);
   });
@@ -357,9 +387,10 @@ ${switchCases}
   }
 }
 `);
-  // A 10-case flat switch scored old-npath 2**10 = 1024 (well over the retired 200 default, so it
-  // tripped the missing-why complexity gate), but its cyclomatic (12), cognitive (13), and nesting
-  // all stay under threshold. With npath gone the gate must not demand a "why" on legible flat dispatch.
+  // A 10-case flat switch scored old-npath 2**10 = 1024 (well over the retired 200 default, so it tripped the missing-why complexity gate), but its
+  //
+  // cyclomatic (12), cognitive (13), and nesting all stay under threshold.
+  // With npath gone the gate must not demand a "why" on legible flat dispatch.
   assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-why-for-complex-code"), false);
 });
 
@@ -392,10 +423,12 @@ ${routingBranches}
   assert.deepEqual(symbols, ["unexplainedRouting"]);
 });
 
-// M22 brief shape (10 findings downstream; 3 of 3 sampled had real rationale): a docblock that states a constraint or
-// a contrast explains the control flow. The two sampled docblocks are verbatim from the brief. A comment that only
-// names the arguments, and a constraint word beside a near-paraphrase of the function name, still fire, which is the
-// rule's contract for rationale that restates nothing.
+// M22 brief shape (10 findings downstream; 3 of 3 sampled had real rationale): a docblock that states a constraint or a contrast explains the control
+// flow.
+// The two sampled docblocks are verbatim from the brief.
+//
+// A comment that only names the arguments, and a constraint word beside a near-paraphrase of the function name, still fire, which is the rule's
+// contract for rationale that restates nothing.
 test("missing-why accepts constraint and contrast rationale that says more than the name", () => {
   const routingBranches = branchFixtureLines(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p"]);
   // Fixture covers the brief's two sampled docblocks verbatim beside two controls that must still fire.
@@ -439,12 +472,12 @@ ${routingBranches}
   assert.deepEqual(symbols, ["namesItsArguments", "routeValue"]);
 });
 
-/** Generates repeated branch lines without making the outer test look complex. */
+// Build repeated branch text for a documentation-rule fixture without adding complexity to the test driver.
 function branchFixtureLines(values: string[]): string {
   return values.map((value) => `  if (value === "${value}") return "${value}";`).join("\n");
 }
 
-/** Lists expected documentation findings so the matrix test stays branch-light. */
+// List expected documentation advice so the matrix checks each developer-visible outcome.
 function documentationContextExpectations(): Array<[string, string, boolean]> {
   return [
     ["docs.missing-why-for-complex-code", "complexFlow", true],
@@ -464,7 +497,7 @@ function documentationContextExpectations(): Array<[string, string, boolean]> {
   ];
 }
 
-// Fixture covers source-literal detection and fingerprint stability without private helper access.
+// Build literal fixtures that check source-purpose advice and stable finding identities.
 function fixturePurposeMatrixSource(): string {
   return [
     "const report = analyseFixture(`",
@@ -519,8 +552,8 @@ test("fixture purpose detector matrix", () => {
 
 // Fixture covers the gate contract: comment-quality gating must keep the fixture-purpose rule alive.
 test("fixture purpose rule still runs when every other comment-quality rule is disabled", () => {
-  // Regression: the analyser's comment-quality group gate must include `docs.fixture-purpose-missing`,
-  // otherwise disabling the other comment rules silently disables this still-enabled rule too.
+  // Regression: the analyser's comment-quality group gate must include `docs.fixture-purpose-missing`, otherwise disabling the other comment rules
+  // silently disables this still-enabled rule too.
   const disabledRuleIds = [
     "docs.magic-threshold-without-rationale",
     "docs.missing-error-behavior-doc",
@@ -540,7 +573,7 @@ test("fixture purpose rule still runs when every other comment-quality rule is d
   assert.equal(report.findings.some((finding) => disabledRuleIds.includes(finding.ruleId)), false);
 });
 
-// Fixture covers setup-block detection and stable fixture-purpose fingerprints.
+// Build setup-heavy test text that checks when a developer needs to explain the fixture's purpose.
 function fixturePurposeSetupBlockSource(): string {
   return [
     "test(\"builds noisy fixture setup\", () => {",
