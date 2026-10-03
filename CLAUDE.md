@@ -2,7 +2,7 @@
 
 `gruff-ts` - TypeScript project quality analyser. Modular Node.js/ESM CLI: a thin `src/cli.ts` shell (24 lines) delegates to `src/analyser.ts` and its focused sibling modules under `src/` (`blocks.ts`, `line-rules.ts`, `project-rules.ts`, `class-rules.ts`, `dead-code-rules.ts`, `safety-rules.ts`, `naming-pushers.ts`, `comment-rules.ts`, `doc-rules.ts`, `report-renderers.ts`, etc.). It scans TypeScript and JavaScript (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`) plus config and text assets (`conf`, `config`, `env`, `ini`, `json`, `toml`, `xml`, `yaml`, `yml`, any `.env*` name, and `.npmrc`/`.pypirc`/`.envrc`/`.netrc`); CSS left the allowlist in 0.3.0, and `src/discovery.ts`:`pushSourceFile` is the only authority. It emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable identity so baselines (`gruff.baseline.v3`, which matches on that identity and a count) and report snapshots (`gruff.analysis.v3`) round-trip without churn.
 
-goat-flow version: 1.16.0
+goat-flow version: 1.17.0
 
 ## Workspace Boundary
 
@@ -20,7 +20,7 @@ This repo is the **selected target project**. The controlling goat-flow workspac
 
 - **Always:** Read source before changing it; run `npm run check` on changed `.ts`; edit within declared scope; append progress lines to the active session log when one exists.
 - **Ask First:** Before touching any of: schema strings (`gruff.analysis.v3`, `gruff.summary.v3`, `gruff.baseline.v3`, `gruff.hotspot.v1`, `gruff.hook.v2`), the `Finding` shape, the default-ignored directory list, baseline file format, dashboard wire format, or `package.json`/`tsconfig.json`. State boundary touched, related code read (file:symbol), footgun checked, local instruction checked, rollback command.
-- **Never:** Freeze writes if interrupted; commit/push without explicit ask; relax `tsconfig.json` strict flags; introduce runtime dependencies beyond `commander`, `tsx`, and `typescript` (syntax-only parsing per ADR-012); bypass the `deny-dangerous.sh` hook.
+- **Never:** Freeze writes if interrupted; commit/push without explicit ask; relax `tsconfig.json` strict flags; introduce runtime dependencies beyond `commander`, `tsx`, and `typescript` (syntax-only parsing per ADR-012); bypass the `deny-dangerous.sh` or `deny-git-mutations.sh` policy hooks.
 
 ## Hard Rules
 
@@ -29,7 +29,7 @@ This repo is the **selected target project**. The controlling goat-flow workspac
 - `tsconfig.json` runs with `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`. New code must compile without weakening these.
 - Schema versions are public contract - bump only when the user explicitly asks.
 - Use semantic anchors (file:`symbolName`) in references, not bare line numbers.
-- Sub-agents get one objective, structured return, ≤5 calls.
+- Sub-agents get one objective, structured return, ≤5 calls; this overrides the larger implementation budget in `skill-conventions.md`.
 - No new abstractions or error handling beyond what was asked.
 - Ambiguous requirements: present interpretations, do not pick silently.
 
@@ -58,7 +58,7 @@ bash scripts/preflight-checks.sh              # full local gate: version, npm au
 When a `goat-*` skill is active, its Step 0 replaces READ and selects the skill's mode/depth. SCOPE still applies before writes: a skill may write when its selected mode permits writes or the user explicitly approves them. `/goat-plan` File-Write may create gitignored milestone files without a separate approval gate; `/goat-debug` D3 still requires approval before fixes. Resume at ACT after Step 0 output or when a blocking gate releases.
 
 ### READ
-MUST read relevant files before changes. Never fabricate codebase facts (rule counts and pillar names - read `src/rules.ts`:`ruleDescriptors`; schema strings - read `src/types.ts`; `src/cli.ts` only re-exports them). For URL, local HTML, localhost, screenshot, rendered UI, or browser-visible behaviour (the `dashboard` subcommand on `127.0.0.1:8767`), check browser evidence first. Search the generated `INDEX.md` files in `.goat-flow/learning-loop/{footguns,lessons,patterns}/` before opening source entries; include `.goat-flow/learning-loop/decisions/INDEX.md` for architecture, schema, or setup work. When a follow-up grep is needed, root it at the bucket directory or deeper - a recursive search started at `.goat-flow/` silently returns zero hits because its `.gitignore` opens with `*`. Before declaring any tool or capability unavailable, read the matching playbook in `.goat-flow/skill-docs/playbooks/` (e.g. `browser-use.md`, `page-capture.md`) and run that doc's "Availability Check" section verbatim - project-local CLI tools at `~/.local/bin/` are valid; do not conflate "no harness/MCP tool" with "no tool". Before editing human-read prose, load its playbook: `changelog.md` for `CHANGELOG.md`, `release-notes.md` for release notes, and `writing-style.md` for README, docs, plan narrative, PR/issue text, or learning-loop bodies.
+MUST read relevant files before changes. Never fabricate codebase facts (rule counts and pillar names - read `src/rules.ts`:`ruleDescriptors`; schema strings - read `src/types.ts`; `src/cli.ts` only re-exports them). For URL, local HTML, localhost, screenshot, rendered UI, or browser-visible behaviour (the `dashboard` subcommand on `127.0.0.1:8767`), check browser evidence first. Search the generated `INDEX.md` files in `.goat-flow/learning-loop/{footguns,lessons,patterns}/` before opening source entries; include `.goat-flow/learning-loop/decisions/INDEX.md` for architecture, schema, or setup work. When a follow-up grep is needed, root it at the bucket directory or deeper - a recursive search started at `.goat-flow/` silently returns zero hits because its `.gitignore` opens with `*`. Before declaring any tool or capability unavailable, read the matching playbook in `.goat-flow/skill-docs/playbooks/` (e.g. `browser-use.md`, `page-capture.md`) and run that doc's "Availability Check" section verbatim - project-local CLI tools at `~/.local/bin/` are valid; do not conflate "no harness/MCP tool" with "no tool". Before editing human-read prose, load its playbook: `changelog.md` for `CHANGELOG.md`, `release-notes.md` for release notes, and `writing-human-facing-prose.md` for README, docs, plan narrative, PR/issue text, or learning-loop bodies.
 
 ### SCOPE
 Three signals before acting: (1) Intent - question vs directive. (2) Complexity tier + budget. (3) Mode - Plan / Implement / Explain / Debug / Review. MUST declare files allowed to change, non-goals, max blast radius. Expanding beyond scope = stop and re-scope.
@@ -120,10 +120,11 @@ Runtime code, hooks, and agent config are out of scope unless the user explicitl
 | Instruction file | `CLAUDE.md` |
 | Architecture | `.goat-flow/architecture.md` |
 | Code map / glossary | `.goat-flow/code-map.md`, `.goat-flow/glossary.md` |
+| Security policy | `.goat-flow/security-policy.md` (optional; read by goat-security) |
 | Learning loop | `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, `.goat-flow/learning-loop/decisions/` |
 | Skill reference (meta) | `.goat-flow/skill-docs/`, incl. `.goat-flow/skill-docs/skill-quality-testing/` for authoring goat-* skills |
 | Tool playbooks (CLI/MCP availability checks: browser-use, page-capture) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |
-| Claude skills/config | `.claude/skills/`, `.claude/settings.json`, `.goat-flow/hooks/` (shared deny-dangerous + gruff-code-quality) |
+| Claude skills/config | `.claude/skills/`, `.claude/settings.json`, `.goat-flow/hooks/` (shared PreToolUse deny-dangerous + deny-git-mutations, Stop post-turn-safety; gruff-code-quality disabled) |
 | Source | `src/analyser.ts` (pipeline), `src/rules.ts` (catalogue), `src/cli-program.ts` (commands); `src/cli.ts` is a 24-line entrypoint |
 | Entry point / scripts | `bin/gruff-ts`, `scripts/preflight-checks.sh`, `scripts/check.sh`, `scripts/start-dev.sh` |
 | Fixtures | `fixtures/sample.ts` |

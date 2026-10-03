@@ -1,6 +1,6 @@
 # Glossary - gruff-ts
 
-Last reviewed 2026-08-14.
+Last reviewed 2026-10-03.
 
 This glossary defines terms used by `gruff-ts`, its public reports, and local project memory. Keep shared gruff-family terms aligned with the sibling implementations; keep TypeScript/JavaScript-specific differences explicit rather than making them look identical.
 
@@ -12,15 +12,15 @@ This glossary defines terms used by `gruff-ts`, its public reports, and local pr
 
 ### Analysis Report
 
-The complete result of one scan: schema version, tool metadata, run metadata, paths, summary counts, score data, diagnostics, findings, baseline state, and optional history state. Native JSON uses `gruff.analysis.v2`.
+The complete result of one scan: schema version, tool metadata, run metadata, paths, summary counts, score data, diagnostics, findings, baseline state, and optional history state. Native JSON uses `gruff.analysis.v3`.
 
 ### Baseline
 
-A reviewed-finding suppression file. `gruff-ts` writes and reads `gruff.baseline.v1`; entries match findings by fingerprint, rule ID, and file path.
+A reviewed-finding suppression file. `gruff-ts` writes and reads `gruff.baseline.v3`: each row stores a line-free finding identity and the count of findings it accepts, so moving code does not resurface a reviewed finding (ADR-013). Sensitive-data findings are never stored, and a 0.5-era baseline is refused with a pointer to `--migrate-baseline`.
 
 ### Changed-Code Scan
 
-A scan filtered to changed files. `--diff` accepts `working-tree`, `staged`, `unstaged`, or a base ref and uses local Git data only when requested.
+A scan whose reported findings are limited to changed regions. `--diff` accepts `working-tree`, `staged`, `unstaged`, a base ref, or `-` for a unified diff on stdin; `--since <ref>` and `--changed-ranges` also select regions, and `--changed-scope` attributes findings by `hunk`, `symbol`, or `file`. The whole project is still read for cross-file context, and Git runs only when requested.
 
 ### Confidence
 
@@ -32,7 +32,7 @@ The local browser UI served by `gruff-ts dashboard`. It binds to `http://127.0.0
 
 ### Diagnostic
 
-A run-level problem such as `parse-error`, `read-error`, `missing-path`, `history-error`, or `baseline-error`, which reports a baseline file that cannot be applied as written. Fatal diagnostics force exit code `2`.
+A run-level problem such as `parse-error`, `read-error`, `missing-path`, `history-error`, or `baseline-error`, which reports a baseline file that cannot be applied as written. Fatal diagnostics force exit code `2`. `bounded-deep-scan` and `baseline-collision` are non-fatal notices (`invalidatesRun: false`) and never change the exit code on their own.
 
 ### Display Filter
 
@@ -48,7 +48,7 @@ One rule-produced result with rule ID, message, severity, confidence, pillar, lo
 
 ### Fingerprint
 
-A stable 16-character SHA-256 prefix of the finding identity. Baselines and downstream tooling key on it together with rule ID and file path.
+A 16-character SHA-256 prefix over rule ID, file path, line, and symbol, used to deduplicate a report. Because it carries the line it is not a baseline key: baselines and SARIF `partialFingerprints.gruffFingerprint` use the line-free baseline identity instead.
 
 ### Gruff Config
 
@@ -106,7 +106,7 @@ Default scans are local source inspections. `gruff-ts` parses supported files an
 
 ### Function Block
 
-A regex-matched function-like unit used by per-function rules for size, complexity, naming, documentation, and test-quality checks. It is not a full TypeScript AST.
+A callable-owned unit built from the shared TypeScript syntax tree (`src/blocks.ts`:`functionBlocks`) and used by per-function rules for size, complexity, naming, documentation, and test-quality checks. Span-only utilities that run without a parse fall back to the legacy regex walk.
 
 ### Naming Surface
 

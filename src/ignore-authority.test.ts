@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import test from "node:test";
 import { checkIgnore, checkIgnoreExitCode, renderCheckIgnore } from "./check-ignore.ts";
+import { renderDefaultConfig } from "./init-config.ts";
 import { analyseProject, yamlConfigFixture } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
 
@@ -116,6 +117,38 @@ test("check-ignore keeps explicit files under fallback parents but reports the d
       { path: "dist/generated.ts", isIgnored: false },
       { path: "dist", isIgnored: true, source: "default", pattern: "dist/" },
     ]);
+  } finally {
+    chdir(previous);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/*
+ * Reads back the directories the starter config tells a new user a recursive scan already skips.
+ * Invariant: the names come from the rendered seed, so rewording the seed cannot bypass the check.
+ */
+function seedDefaultIgnoredDirectories(): string[] {
+  const seedLine = renderDefaultConfig().split("\n").find((line) => line.includes("# such as "));
+  assert.ok(seedLine, "the init seed must name example default-ignored directories");
+  return seedLine
+    .replace(/^.*# such as /u, "")
+    .replace(/\.$/u, "")
+    .split(/,\s*(?:and\s+)?/u);
+}
+
+test("every directory the init seed calls default-ignored is skipped by a recursive scan", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ci-seed-defaults-"));
+  const previous = cwd();
+  try {
+    const directories = seedDefaultIgnoredDirectories();
+    assert.equal(directories.length > 0, true, "the seed must name at least one directory");
+    for (const directory of directories) {
+      mkdirSync(join(dir, directory));
+    }
+    chdir(dir);
+    const results = checkIgnore(directories, { ...CHECK_IGNORE_OPTIONS, paths: directories, shouldSkipConfig: true });
+    // A name the engine would scan is a false promise in every config `gruff-ts init` writes.
+    assert.deepEqual(results.filter((result) => !result.isIgnored).map((result) => result.path), []);
   } finally {
     chdir(previous);
     rmSync(dir, { recursive: true, force: true });

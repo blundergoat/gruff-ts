@@ -1,6 +1,6 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-09-21
+last_reviewed: 2026-10-03
 ---
 
 # Schema + CLI surface footguns
@@ -23,7 +23,7 @@ Nothing in the port revealed this. The rule catalogue, the allowlists, and `path
 **Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED
 **Evidence context:** M06 score clustering.
 
-`scoreReport` (`src/scoring.ts`, search: `function scoreReport`) owns both the public `gruff.analysis.v2` score object shape and the numeric semantics inside that shape. M06 added correlated-complexity clustering (`src/scoring.ts`, search: `function scoringPenaltyMap`) so `score.composite`, `score.pillars[].penalty`, and `score.topOffenders[].score` can change while the JSON field names stay unchanged. It is valid to keep `schemaVersion: "gruff.analysis.v2"` when only score values change, but comments/docs must not say "score semantics unchanged" or "composite score byte-stable" unless the math is actually untouched. When editing scoring or report wording, grep for `score semantics`, `field shape`, `byte-stable`, `gruff.analysis.v2`, and `schema unchanged`; then verify against `src/m06-rubric-refinements.test.ts` (search: `clusters correlated complexity penalties by symbol`) and `.goat-flow/learning-loop/decisions/ADR-009-cluster-correlated-complexity-score-penalties.md` (search: `score field names and detailed finding array stay unchanged`).
+`scoreReport` (`src/scoring.ts`, search: `function scoreReport`) owns both the public analysis score object shape and the numeric semantics inside that shape. M06 added correlated-complexity clustering (`src/scoring.ts`, search: `function scoringPenaltyMap`) so `score.composite`, `score.pillars[].penalty`, and `score.topOffenders[].score` can change while the JSON field names stay unchanged. It is valid to keep the analysis `schemaVersion` when only score values change, but comments/docs must not say "score semantics unchanged" or "composite score byte-stable" unless the math is actually untouched. When editing scoring or report wording, grep for `score semantics`, `field shape`, `byte-stable`, `gruff.analysis.v`, and `schema unchanged`; then verify against `src/m06-rubric-refinements.test.ts` (search: `clusters correlated complexity penalties by symbol`) and `.goat-flow/learning-loop/decisions/ADR-009-cluster-correlated-complexity-score-penalties.md` (search: `score field names and detailed finding array stay unchanged`).
 
 ## Footgun: durable docs keep stale claims because no gate re-checks paths, anchors, or `Status` against live source
 
@@ -34,7 +34,7 @@ Nothing in the port revealed this. The rule catalogue, the allowlists, and `path
 **Latest occurrence:** 2026-08-11
 **hallucination-risk:** high
 
-`src/cli.ts` was split into focused modules and is now a 24-line shell, but durable docs kept naming it as the home of symbols that moved. Verified relocations: `exitFor` -> `src/scoring.ts` (search: `function exitFor`); `analyse` -> `src/analyser.ts`; `buildProgram` / `normalizeOptions` -> `src/cli-program.ts`; `changedFiles` -> `src/findings-helpers.ts`; `writeBaseline` / `applyBaseline` -> `src/baseline.ts`; `makeFinding` -> `src/findings.ts`; `RULE_DESCRIPTORS` / `ruleDescriptors` -> `src/rules.ts`; `isDefaultIgnoredDir` -> `src/discovery.ts`; `startDashboard` -> `src/dashboard.ts`; `renderHtml` / `escapeHtml` -> `src/report-html.ts`; `analyseSensitiveData` -> `src/sensitive-data-rules.ts`.
+`src/cli.ts` was split into focused modules and is now a 24-line shell, but durable docs kept naming it as the home of symbols that moved. Verified relocations: `exitFor` -> `src/scoring.ts` (search: `function exitFor`); `analyse` -> `src/analyser.ts`; `buildProgram` / `normalizeOptions` -> `src/cli-program.ts`; `changedFiles` -> `src/findings-helpers.ts`; `writeBaseline` / `applyBaseline` -> `src/baseline.ts`; `makeFinding` -> `src/findings.ts`; `RULE_DESCRIPTORS` / `ruleDescriptors` -> `src/rules.ts`; `isDefaultIgnoredDir` -> `src/discovery.ts` (since folded into `classifyIgnore`); `startDashboard` -> `src/dashboard.ts`; `renderHtml` / `escapeHtml` -> `src/report-html.ts`; `analyseSensitiveData` -> `src/sensitive-data-rules.ts`.
 
 The reason this survived two audits is mechanical: no shipped gate resolves an anchor. `goat-flow stats --check` exited 0 with empty findings and warnings on 2026-08-08 while 13 citations across four footgun buckets still pointed at `src/cli.ts` for symbols living elsewhere, because the check confirms the cited *path* exists and `src/cli.ts` does exist. A `grep ... src/cli.ts` static gate has the same shape of blind spot: it matches nothing and silently passes. Only comparing `search:` anchors against live source finds this.
 
@@ -49,7 +49,7 @@ Third occurrence, 2026-08-11, in two shapes the 2026-08-08 sweep did not cover. 
 
 `readExistingPreservedConfig` (`src/init-config.ts`, search: `function readExistingPreservedConfig`) originally called `loadConfig` to recover `paths.ignore` and `minimumSeverity` from the existing file before `init --force` regenerates it. `loadConfig` runs `applySchemaVersionConfig` (`src/config.ts`, search: `function applySchemaVersionConfig`), which throws `ConfigLoadError` on any config without `schemaVersion: gruff-ts.config.v0.1` - exactly the shape of every pre-0.1.2 config in the wild. The `try { ... } catch { return EMPTY }` swallowed the throw and the regenerated file lost the user's curated entries. The CHANGELOG simultaneously promised "init --force preserves … paths.ignore"; the implementation delivered the opposite for the migration cohort.
 
-The fix splits the readers: `src/config-preservation.ts` (search: `extractPreservedConfigFields`) reads the two preserved fields permissively (no schemaVersion gate, malformed entries dropped silently) for the migration handoff. The analyser load path still uses the strict validator so misconfigurations surface in context at the next run.
+The fix splits the readers: `src/config-preservation.ts` (search: `extractPreservedConfigFields`) reads the preserved fields permissively (no schemaVersion gate, malformed entries dropped silently) for the migration handoff. The analyser load path still uses the strict validator so misconfigurations surface in context at the next run.
 
 When introducing a strict validator for a new required field, audit every code path that reads existing config for purposes OTHER than running the analyser - preservation, diff, dry-run, doc generation. Each one needs a permissive reader that bypasses the new gate, because "no migration shim" is a contract for the analyser load path, not for tools that translate the user's old config into a new shape. Tests: `init-config.test.ts`, search: `preserves paths.ignore from a pre-schemaVersion config`.
 
@@ -68,13 +68,13 @@ Standing rule for any new CLI surface that wraps user input: rewrap raw producer
 
 **Status:** active | **Created:** 2026-05-10 | **Updated:** 2026-05-30 | **Evidence:** OBSERVED
 
-Three string literals are part of the public output contract: `gruff.analysis.v2` (set in `src/analyser.ts`:`analyse`, search: `schemaVersion: "gruff.analysis.v2"`), `gruff.baseline.v1` (`src/baseline.ts`:`writeBaseline` / `applyBaseline`), and `gruff.hotspot.v1` (`src/report-renderers.ts`:`renderReport` hotspot branch). The `analysis` schema bumped v1->v2 in 0.2.0; `baseline` and `hotspot` remain v1. Downstream consumers (CI integrations, baseline files already on disk) match on these strings exactly. `applyBaseline` even throws `unsupported baseline schema` on mismatch - bumping the baseline version invalidates every existing `gruff-baseline.json` in users' repos. Bump only when the user explicitly asks AND a migration story is in place.
+Three string literals are part of the public output contract: `gruff.analysis.v3` (`src/types.ts`, search: `schemaVersion: "gruff.analysis.v3";`), `gruff.baseline.v3` (`src/baseline-file.ts`, search: `export const BASELINE_SCHEMA_VERSION`), and `gruff.hotspot.v1` (`src/report-renderers.ts`, search: `schemaVersion: "gruff.hotspot.v1"`). The `analysis` schema bumped v1->v2 in 0.2.0 and is now v3; `baseline` is now v3, and the old v1 string survives only as `LEGACY_BASELINE_SCHEMA_VERSION`, which is refused with a pointer to `--migrate-baseline`. Downstream consumers (CI integrations, baseline files already on disk) match on these strings exactly. `applyBaseline` throws `unsupported baseline schema` (`src/baseline-file.ts`, search: `unsupported baseline schema`) on any other version, so bumping the baseline version invalidates every existing `gruff-baseline.json` in users' repos unless a migration path ships with it. Bump only when the user explicitly asks AND a migration story is in place.
 
-## Footgun: `exitFor` returns 2 on ANY diagnostic, regardless of `--fail-on`
+## Footgun: `exitFor` returns 2 on any run-invalidating diagnostic, regardless of `--fail-on`
 
 **Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
 
-`exitFor` (`src/scoring.ts`, search: `function exitFor`) returns `2` if `report.diagnostics.length > 0` before it ever consults `failOn`. That means a single `read-error`, `missing-path`, `parse-error`, or `history-error` fails the run even with `--fail-on none`. Tests and CI users sometimes assume `--fail-on none` is "always exit 0" - it is not. If you add a new diagnostic type, that diagnostic alone will start failing every consumer's CI on first appearance.
+`exitFor` (`src/scoring.ts`, search: `diagnostic.invalidatesRun !== false`) returns `2` for any diagnostic not marked `invalidatesRun: false`, before it ever consults `failOn`. A single `read-error`, `missing-path`, `parse-error`, or `history-error` fails the run even with `--fail-on none`; only notices such as `bounded-deep-scan` and `baseline-collision` opt out. Tests and CI users sometimes assume `--fail-on none` is "always exit 0" - it is not. A new diagnostic type fails every consumer's CI on first appearance unless it sets `invalidatesRun: false`.
 
 ## Footgun: `--no-baseline` and `--no-config` are CommanderJS auto-negations, not custom flags
 
@@ -86,7 +86,7 @@ Three string literals are part of the public output contract: `gruff.analysis.v2
 
 **Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
 
-`isDefaultIgnoredDir` (`src/discovery.ts`, search: `function isDefaultIgnoredDir`) checks the FIRST path segment against a fixed lowercase list (`.git`, `.hg`, `.svn`, `.idea`, `.vscode`, `build`, `cache`, `coverage`, `dist`, `generated`, `node_modules`, `target`, `tmp`, `vendor`). Project conventions like `Build/`, `out/`, `__pycache__/`, `.next/`, `.turbo/`, `.venv/` are NOT ignored by default - they get walked, scanned, and reported. Adding to the list is one line, but every addition is a behavioural change for users who had findings inside those dirs accepted into their baseline.
+`classifyIgnore` (`src/discovery.ts`, search: `function classifyIgnore`) compares every path component, by exact case-sensitive equality, against two fixed lowercase lists. `VCS_DIRECTORIES` (`.git`, `.hg`, `.svn`) always applies, even to explicit files. `FALLBACK_DIRECTORIES` (`src/discovery.ts`, search: `const FALLBACK_DIRECTORIES`) holds `.fleet`, `.idea`, `.vscode`, `build`, `coverage`, `dist`, `node_modules`, and `vendor`, and applies only to a walk with `--include-ignored` off when no `.gitignore` governs the path. Project conventions like `Build/`, `out/`, `tmp/`, `__pycache__/`, `.next/`, `.turbo/`, `.venv/` are NOT ignored by default - they get walked, scanned, and reported. Adding to the list is one line, but every addition is a behavioural change for users who had findings inside those dirs accepted into their baseline.
 
 ## Footgun: `gruff-ts init --force` regenerates the whole YAML and can wipe user customisations
 
@@ -113,7 +113,7 @@ Rule-count half gated 2026-08-14 by `documented rule counts match the live catal
 
 **Status:** active | **Created:** 2026-05-30 | **Evidence:** OBSERVED
 
-`discoverSourceInput` (`src/discovery.ts`) handles an explicit file operand by short-circuiting to `pushSourceFile` and returning BEFORE the directory `walk`. Any ignore/scoping policy enforced inside the walk (`classifyIgnore`, formerly `isIgnoredDiscoveryPath`) does NOT apply to explicitly-supplied files unless the `stats.isFile()` branch calls it too. This is exactly how config `paths.ignore` leaked: authoritative in the walk but bypassed for `analyse <file>` and for the changed-file paths a coding-agent hook passes - so the hook flagged deliberately-excluded files (ADR-007 fixed it by calling `classifyIgnore` with empty gitignore rules in the isFile branch: config-only, preserving ADR-003's "explicit files bypass git/default"). When adding any discovery-scope rule, wire it into BOTH the walk and the explicit-file branch, and add an `analyse <single-file>` regression, not just a directory-scan one.
+`discoverSourceInput` (`src/discovery.ts`, search: `function discoverSourceInput`) handles an explicit file operand by short-circuiting to `pushSourceFile` and returning BEFORE the directory `walk`. Any ignore/scoping policy enforced inside the walk (`classifyIgnore`, formerly `isIgnoredDiscoveryPath`) does NOT apply to explicitly-supplied files unless the `stats.isFile()` branch calls it too. This is exactly how config `paths.ignore` leaked: authoritative in the walk but bypassed for `analyse <file>` and for the changed-file paths a coding-agent hook passes - so the hook flagged deliberately-excluded files (ADR-007 fixed it by calling `classifyIgnore` with empty gitignore rules in the isFile branch: config rules plus the always-on VCS directories, preserving ADR-003's "explicit files bypass git/default"). When adding any discovery-scope rule, wire it into BOTH the walk and the explicit-file branch, and add an `analyse <single-file>` regression, not just a directory-scan one.
 
 ## Footgun: changed-region diff scope is not the same as project context
 
@@ -141,26 +141,13 @@ The compromise is deliberate: file inputs to `check-ignore` do NOT apply `.gitig
 
 **Status:** active | **Created:** 2026-05-24 | **Evidence:** OBSERVED
 
-If a session starts with `M .gruff-ts.yaml` (or any other user-curated config) already in the working tree, do NOT treat that as "fine, the user is mid-edit." Run `git diff -- .gruff-ts.yaml` against `HEAD` before editing the file - a regenerated config from `gruff-ts init` can look like ordinary modifications but actually represent destroyed user customisations (`paths.ignore`, `allowlists.acceptedAbbreviations`, rule tuning). If the diff shows entries vanishing from a sequence, surface that to the user before doing anything else; do not let the loss ride into your own commits or into a user commit that bundles it.
+If a session starts with `M .gruff-ts.yaml` (or any other user-curated config) already in the working tree, do NOT treat that as "fine, the user is mid-edit." Run `git diff -- .gruff-ts.yaml` against `HEAD` before editing the file - a regenerated config from `gruff-ts init --force` (`src/init-config.ts`, search: `function writeDefaultConfig`) can look like ordinary modifications but actually represent destroyed user customisations (`allowlists.acceptedAbbreviations`, rule tuning, and anything else `extractPreservedConfigFields` does not carry across). If the diff shows entries vanishing from a sequence, surface that to the user before doing anything else; do not let the loss ride into your own commits or into a user commit that bundles it.
 
 ## Footgun: `cli.ts` must keep using `parseAsync` because action handlers are async
 
 **Status:** active | **Created:** 2026-05-24 | **Evidence:** OBSERVED
 
 `src/cli.ts` (search: `buildProgram().parseAsync(argv)`) now awaits Commander's async `parseAsync()` inside an async IIFE, because action handlers in `src/cli-program.ts` for `analyse`, `summary`, `report`, and `dashboard` are `async` (each `await`s `maybePromptInitConfig`). Commander's docs require `parseAsync` when handlers return a Promise; the earlier synchronous `parse(argv)` let any rejection after the first `await` (prompt failure, downstream throw past the prompt gate) escape Commander's error path as an unhandled promise rejection. Minimal repro confirmed at the time: an async action that threw after a `setTimeout` triggered `process.on("unhandledRejection")` with the message intact while the main path had already returned, and exit-code semantics from `process.exitCode = exitFor(...)` were not reliable downstream of the first `await`. Do not regress the entrypoint to `parse()`: anyone adding another `await` to an action, or registering a new async command, depends on `parseAsync` staying in place.
-
-## Footgun: `gruff-ts init` only guards against `.gruff-ts.yaml`, not the four-name precedence list
-
-**Status:** active | **Created:** 2026-05-24 | **Evidence:** OBSERVED
-
-`writeDefaultConfig` (search: `function writeDefaultConfig`) calls `existsSync(join(projectRoot, DEFAULT_CONFIG_FILE_NAME))` to decide whether to refuse a write. But config resolution treats four names as interchangeable defaults via `DEFAULT_CONFIG_FILES` (search: `const DEFAULT_CONFIG_FILES`): `.gruff-ts.yaml`, `.gruff.json`, `.gruff.yaml`, `.gruff.yml`, with `.gruff-ts.yaml` first (highest precedence). Reproduced in `/tmp/init-clobber-test/`: with only `.gruff.yaml` present, `gruff-ts init` printed `Wrote .gruff-ts.yaml` with no warning and the project's effective config silently switched to the registry-derived default. Use `defaultConfigPath(projectRoot)` (already exported from `src/config.ts`) when deciding to refuse, and treat `--force` as the explicit override. Same precedence list governs every other code path that "the default config" means - adding a fifth name without updating both `DEFAULT_CONFIG_FILES` and the init guard repeats this trap.
-
-## Footgun: the finding fingerprint embeds `line`, so a baseline keyed on it churns on pure code movement
-
-**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED
-**Evidence context:** 0.4.0 baseline plan audit.
-
-`makeFinding` (`src/findings.ts`, search: `const fingerprint = createHash`) hashes `[ruleId, filePath, line, symbol]` into the 16-hex fingerprint, and `applyBaseline` (`src/baseline.ts`, search: `function applyBaseline`) keys suppression on `(fingerprint, ruleId, filePath)`. Because `line` is inside the hash, inserting code above a baselined finding changes its line, changes its fingerprint, and resurfaces the finding as "new" even though the defect is unchanged - churn-by-design for any committed `gruff-baseline.json` that real code drifts under. The 0.4.0 M24 plan assumed the opposite ("a line-moved entry that still matches the same fingerprint"); that assumption is false against the current `makeFinding` and was the trigger for ADR-013, which moves the persistent baseline to PHPStan-style `(filePath, ruleId)` + `count` identity (no line). Keep the fingerprint for SARIF `partialFingerprints.gruffFingerprint` (search: `gruffFingerprint`) and report dedupe (`src/baseline.ts`, search: `function dedupeFindings`) - those WANT per-line identity - but never reintroduce `line` or `fingerprint` as the persistent-baseline match key. When editing baseline matching, grep `gruff.baseline.v`, `applyBaseline`, and `ADR-013`.
 
 ## Footgun: a JSON parser's error message quotes the start of the file it could not parse
 
@@ -199,6 +186,19 @@ already produced with an empty envelope claiming nothing was analysed. The type 
 
 ## Resolved Entries
 
+## Footgun: `gruff-ts init` only guards against `.gruff-ts.yaml`, not the four-name precedence list
+
+**Status:** resolved | **Created:** 2026-05-24 | **Evidence:** OBSERVED
+
+`writeDefaultConfig` once called `existsSync(join(projectRoot, DEFAULT_CONFIG_FILE_NAME))` to decide whether to refuse a write, while config resolution treats four names as interchangeable defaults via `DEFAULT_CONFIG_FILES` (`src/config.ts`, search: `const DEFAULT_CONFIG_FILES`): `.gruff-ts.yaml`, `.gruff.json`, `.gruff.yaml`, `.gruff.yml`, with `.gruff-ts.yaml` first. Reproduced at the time: with only `.gruff.yaml` present, `gruff-ts init` printed `Wrote .gruff-ts.yaml` with no warning and the project's effective config silently switched to the registry-derived default. Resolved: `writeDefaultConfig` now refuses whenever any supported name exists (`src/init-config.ts`, search: `const existingConfigPath = defaultConfigPath(projectRoot);`), pinned by `src/init-config.test.ts` (search: `refuses to write .gruff-ts.yaml when a non-canonical supported config already exists`). Adding a fifth name to `DEFAULT_CONFIG_FILES` still has to keep that guard and test in step.
+
+## Footgun: the finding fingerprint embeds `line`, so a baseline keyed on it churns on pure code movement
+
+**Status:** resolved | **Created:** 2026-06-01 | **Evidence:** OBSERVED
+**Evidence context:** 0.4.0 baseline plan audit.
+
+`makeFinding` (`src/findings.ts`, search: `const fingerprint = createHash`) hashes `[ruleId, filePath, line, symbol]` into the 16-hex fingerprint, and the v1 `applyBaseline` keyed suppression on `(fingerprint, ruleId, filePath)`. Because `line` was inside the hash, inserting code above a baselined finding resurfaced it as "new" even though the defect was unchanged. The 0.4.0 M24 plan assumed the opposite, and that false assumption triggered ADR-013. Resolved by the `gruff.baseline.v3` format: `applyBaseline` (`src/baseline-file.ts`, search: `export function applyBaseline`) matches a line-free identity plus a reviewed `count`, and SARIF `partialFingerprints.gruffFingerprint` now carries `baselineIdentity` (`src/report-renderers.ts`, search: `return { gruffFingerprint: finding.baselineIdentity };`). The line-bearing fingerprint survives for report dedupe (`src/baseline.ts`, search: `function dedupeFindings`); never reintroduce `line` or `fingerprint` as the persistent-baseline match key.
+
 ## Footgun: `--format` argParser wiring is inconsistent across commands
 
 **Status:** resolved | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
@@ -218,4 +218,4 @@ The interactive-init prompt originally tested only stdin and stderr, so `gruff-t
 **Status:** resolved | **Created:** 2026-06-11 | **Evidence:** ACTUAL_MEASURED
 **Evidence context:** runtime reproduction plus regression test.
 
-`stableIdentitiesFromDiffBase` (`src/hook-contract.ts`, search: `function stableIdentitiesFromDiffBase`) replays the base ref inside a temp tree built only from materialized paths. It originally materialized just current finding anchor paths, so a multi-file finding (`design.circular-import` anchors one SCC member) could not be reconstructed at the base whenever the other members anchored no findings: the base scan saw a partial import graph, the cycle identity never entered the base set, and a pre-existing cycle was reported as new - false blame in the agent hook. Resolved 2026-06-11 by materializing `metadata.files` members alongside anchors (search: `findingBasePaths`); regression pinned in `src/hook-contract.test.ts` (search: `materializes SCC members`). When adding any finding whose stable identity depends on files beyond its anchor, extend `findingBasePaths` - a partial replay silently breaks the new-only comparison, and a member missing at the base ref is the correct "this cycle is new" signal, not an error.
+`keysFromDiffBase` (`src/hook-contract.ts`, search: `function keysFromDiffBase`), reached through `hookDiffBaseIdentities`, replays the base ref inside a temp tree built only from materialized paths. It originally materialized just current finding anchor paths, so a multi-file finding (`design.circular-import` anchors one SCC member) could not be reconstructed at the base whenever the other members anchored no findings: the base scan saw a partial import graph, the cycle identity never entered the base set, and a pre-existing cycle was reported as new - false blame in the agent hook. Resolved 2026-06-11 by materializing `metadata.files` members alongside anchors (search: `findingBasePaths`); regression pinned in `src/hook-contract.test.ts` (search: `materializes SCC members`). When adding any finding whose stable identity depends on files beyond its anchor, extend `findingBasePaths` - a partial replay silently breaks the new-only comparison, and a member missing at the base ref is the correct "this cycle is new" signal, not an error.

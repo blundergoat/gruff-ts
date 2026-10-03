@@ -84,12 +84,12 @@ itself dynamic.
 suppression for every finding that reports a column, and the whole baseline suite still passed. The
 local `writeBaseline` helper in `src/hook-contract.test.ts` persists a `stableIdentity` field, so its
 baselines matched by stored identity and never reached the recompute path. The production writer,
-`writeBaseline` in `src/baseline.ts`, persists no such field, so a real baseline recomputes its
+`writeBaseline` (then in `src/baseline.ts`), persisted no such field, so a real baseline recomputed its
 identity from the stored message and stopped matching the now column-bearing live finding.
 
 **Evidence:** `src/hook-contract.test.ts` (search: `function writeBaseline`) writes `stableIdentity`;
-`src/baseline.ts` (search: `function writeBaseline`) writes only fingerprint, ruleId, filePath, line,
-symbol, and message. A worktree at the pre-change commit suppressed the finding; the patched tree
+the production writer then wrote only fingerprint, ruleId, filePath, line, symbol, and message; its v3
+successor is `src/baseline-file.ts` (search: `function writeBaseline`). A worktree at the pre-change commit suppressed the finding; the patched tree
 reported it.
 
 **What to do instead:** When changing anything a persisted artifact is matched on, generate the

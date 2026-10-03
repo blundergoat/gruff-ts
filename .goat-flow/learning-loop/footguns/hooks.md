@@ -1,6 +1,6 @@
 ---
 category: hooks
-last_reviewed: 2026-08-21
+last_reviewed: 2026-10-03
 ---
 
 # Hooks footguns
@@ -15,7 +15,7 @@ goat-flow owns the hook files it installs and compares them byte-wise against it
 
 Version 1.15.1 had no supported local-override seam: `--force` overwrote every conflicted managed seed, and `.goat-flow/config.yaml` had no per-hook customization key. Version 1.16.0 adds `--force-path`, which narrows the replacement authority but still replaces the current bytes at that path.
 
-This bit during the 0.5.0 review. The secret-guard bypass documented below was fixed locally in `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` and `.goat-flow/hooks/deny-dangerous/patterns-paths.sh`, then reproduced against the pristine 1.15.1 template. Goat-flow 1.16.0 incorporated equivalent protections: `find_has_destructive_action` saves and restores the shared command context, and `.goat-flow/hooks/deny-dangerous.sh` (search: `Bash's |& operator pipes stderr too`) handles stderr pipelines in the shared splitter. Direct checks also confirmed that `npm run secrets` and `make secrets` remain allowed. The exact-path refresh therefore removed this repository's deliberate three-file divergence.
+This bit during the 0.5.0 review. The secret-guard bypass documented below was fixed locally in `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` and `.goat-flow/hooks/deny-dangerous/patterns-paths.sh`, then reproduced against the pristine 1.15.1 template. Goat-flow 1.16.0 incorporated equivalent protections: `find_has_destructive_action` saves and restores the shared command context, and the shared splitter handles stderr pipelines. Since 1.17.0 that splitter lives in `.goat-flow/hooks/deny-dangerous/guard-runtime.sh` (search: `Bash's |& operator pipes stderr too`) rather than `deny-dangerous.sh`. Direct checks also confirmed that `npm run secrets` and `make secrets` remain allowed. The exact-path refresh therefore removed this repository's deliberate three-file divergence.
 
 Detection: a managed dry run that reports `both-changed` is a divergence requiring review, not corruption. Confirm `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` still contains `saved_cmd_trimmed` in `find_has_destructive_action`, then run the full deny-hook self-test before authorizing a conflicted path.
 
@@ -25,7 +25,7 @@ Detection: a managed dry run that reports `both-changed` is a divergence requiri
 **Decision changed:** Before adding a recursive `check_command_segments` call inside any policy module, save the `CMD_*` and `HAS_*` globals and restore them once the nested walk returns. Adding a new recursion site without that save is a silent policy bypass, not a style issue.
 **Trigger phase:** ACT
 
-`check_segment` (`.goat-flow/hooks/deny-dangerous.sh`, search: `prepare_segment_context "$cmd" "$depth" || return $?`) parses each segment once and then runs three modules in sequence. `prepare_segment_context` assigns `CMD_TRIMMED`, `CMD_NORMALIZED`, `CMD_VERB`, `CMD_UNQUOTED`, `CMD_LOWER`, `HAS_REDIRECT`, and `HAS_PIPE` without `local`, so they are globals. Both later modules discard their own argument and read those globals instead (search: `CMD_TRIMMED` in `patterns-paths.sh` and `patterns-writes.sh`).
+`check_segment` (`.goat-flow/hooks/deny-dangerous/guard-runtime.sh`, search: `prepare_segment_context "$cmd" "$depth" || return $?`) parses each segment once and then runs three modules in sequence. `prepare_segment_context` assigns `CMD_TRIMMED`, `CMD_NORMALIZED`, `CMD_VERB`, `CMD_UNQUOTED`, `CMD_LOWER`, `HAS_REDIRECT`, and `HAS_PIPE` without `local`, so they are globals. Both later modules discard their own argument and read those globals instead (search: `CMD_TRIMMED` in `patterns-paths.sh` and `patterns-writes.sh`).
 
 Any module that recurses after the parse therefore rewrites the context the remaining modules depend on. `find_has_destructive_action` (`.goat-flow/hooks/deny-dangerous/patterns-shell.sh`, search: `check_command_segments "$exec_cmd"`) does exactly this for `-exec` and `-execdir` payloads, so the outer command was judged using the inner payload's context.
 
@@ -37,9 +37,23 @@ Regression coverage now lives in `.goat-flow/hooks/deny-dangerous/deny-dangerous
 
 Upstream status: goat-flow 1.16.0 carries the fix. The current `find_has_destructive_action` saves the shared command context immediately before each nested walk and restores it afterwards, while the regression suite covers a protected outer search root with a safe nested action. The structural warning remains active because any future recursion site that omits the same save and restore can recreate the bypass.
 
+## Footgun: a leading variable assignment makes deny-dangerous read quoted-heredoc backticks as command substitution
+
+**Status:** active | **Created:** 2026-10-03 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Write multi-line file bodies with the Write tool. When a shell heredoc is unavoidable and its body holds backticks, do not open the command with a bare `NAME=value;` segment, and treat a block as "not run" rather than rewording the body to slip past the guard.
+**Trigger phase:** ACT
+
+**Prevention:** Prefer the Write tool for file bodies; otherwise drop the leading assignment, which the guard accepts without it.
+
+Under goat-flow 1.17.0 the guard (`.goat-flow/hooks/deny-dangerous/guard-runtime.sh`, search: `Backtick command substitution hides nested execution`) blocked a scratch-file write whose command began `S=<dir>;` and then fed a quoted heredoc with backticks in its body. Quoted-delimiter heredoc bodies never undergo substitution, so the block is a false positive. Check mode reproduces it: `bash .goat-flow/hooks/deny-dangerous.sh --check="$cmd"` exits 2 when `cmd` is `S=/tmp/x; cat > /tmp/a.json <<'JSON'`, a body line holding a backticked word, and `JSON`; the same heredoc with no prefix, or after `echo start;`, exits 0.
+
+The block fails closed, so it costs time, not safety. The managed self-test pins only the bounded-saver shape (`.goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh`, search: `bounded quality saver treats Markdown report JSON as data`). Because install reverts local hook patches (first entry above), the fix belongs upstream; resolve this entry when a goat-flow release passes the reproduction.
+
+## Resolved Entries
+
 ## Footgun: `install` and `hooks sync` disagree about a disabled hook's script
 
-**Status:** active | **Created:** 2026-08-11 | **Evidence:** ACTUAL_MEASURED
+**Status:** resolved | **Created:** 2026-08-11 | **Evidence:** ACTUAL_MEASURED
 **Decision changed:** On a goat-flow upgrade, run every `install . --agent <id>` first and `hooks sync .` last, then restore the disabled hook's script from the package template instead of re-running `install`.
 **Trigger phase:** VERIFY
 
@@ -53,3 +67,5 @@ Neither order is self-consistent. Ending on `install` leaves `.claude/settings.j
 Measured on the 1.15.0 to 1.15.1 upgrade: a plain `install . --agent claude` took `.claude/settings.json` Stop blocks from 1 to 2; the following `hooks sync .` returned both `.claude/settings.json` and `.codex/hooks.json` to 1 and removed the script.
 
 Prevention: finish with `hooks sync .`, then copy the template back with `cp node_modules/@blundergoat/goat-flow/workflow/hooks/gruff-code-quality.sh .goat-flow/hooks/gruff-code-quality.sh` and `chmod 755` it. The copy is byte-identical to what `install` writes (sha256 `c37b2ea34e438f40e6238a5b9b73ce69c9ee967e0a8dc64ac5c577ea3d8c22eb`), so install-state stays valid and `--force` is never needed. Count Stop blocks per agent config and confirm one each before reporting done.
+
+Resolved 2026-10-03 by goat-flow 1.17.0. On the 1.16.0 to 1.17.0 upgrade, `install . --agent <id>` for claude, codex, and copilot followed by `hooks sync .` kept `.goat-flow/hooks/gruff-code-quality.sh` byte-identical to the package template and left one Stop block each in `.claude/settings.json` and `.codex/hooks.json`. A later `install . --agent <id> --dry-run` reported both configs `user-preserved` and the script `unchanged`, so neither command undoes the other and the template copy step is no longer needed.

@@ -2,6 +2,8 @@
 
 ## v0.6.0 - Unreleased
 
+- `gruff-ts init` no longer lists `generated` and `tmp` as skipped by default; scans include them unless Git or `paths.ignore` excludes them.
+
 - Test callbacks registered with `void it(...)` or `void test(...)` receive test-quality checks and no longer prompt internal-function documentation advice.
 
 - Workflow secret warnings skip jobs or steps whose own event guard proves them unreachable for every detected PR event.

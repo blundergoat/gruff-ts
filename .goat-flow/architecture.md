@@ -8,7 +8,7 @@ gruff-ts governs AI-generated code. Its reason for existing is the coding-agent 
 
 `gruff-ts` is a dependency-light Node.js/ESM CLI that statically analyses TypeScript/JavaScript projects and common config/text assets, then emits findings, reports, baselines, SARIF, and rule catalogue metadata. The current catalogue exposes 120 rules across 11 public pillars. The runtime is split across focused modules under `src/`, with `src/cli.ts` as a thin shell that wires `analyse` from `src/analyser.ts` into the commander program built by `src/cli-program.ts`. The three runtime dependencies have distinct jobs: `commander` owns the CLI, `tsx` launches the shipped TypeScript source, and `typescript` provides syntax-only parsing without type checking or emit. Baseline output is byte-stable; analysis reports are byte-stable after removing only the intentionally volatile `run.generatedAt` timestamp.
 
-Eleven command surfaces are registered in `src/cli-program.ts`:`buildProgram`:
+Twelve command surfaces are registered in `src/cli-program.ts`:`buildProgram`:
 
 - **`analyse`** - discover files, run rules, print/serialise findings, set exit code from `--fail-on`. Pipeline orchestrator lives in `src/analyser.ts`:`analyse`.
 - **`check-ignore`** - explain whether config, gitignore, or built-in policy excludes each path without running analysis.
@@ -19,6 +19,7 @@ Eleven command surfaces are registered in `src/cli-program.ts`:`buildProgram`:
 - **`list`** - print the Symfony-style command catalogue used when no command is supplied.
 - **`list-profiles`** - print bundled profile names, descriptions, and enabled-rule counts.
 - **`list-rules`** - print rule descriptor metadata from `src/rules.ts`:`ruleDescriptors`; renderer lives in `src/rule-list.ts`.
+- **`migrate-config`** - rewrite a 0.5 config for the current schema into a different file (`--output` or `--dry-run`), never touching the original; the rewrite lives in `src/migrate-config.ts`:`migrateConfigText`.
 - **`report`** - same pipeline, render-only output (`html` or `json`), optionally write to disk via `--output`; HTML uses the self-contained dark inspection-report renderer in `src/report-renderers.ts`.
 - **`summary`** - run the same scanner once and render a compact per-pillar/top-rule/top-offender digest without per-finding output.
 
@@ -32,35 +33,35 @@ Eleven command surfaces are registered in `src/cli-program.ts`:`buildProgram`:
 4. `src/project-rules.ts`:`buildProjectIndex` plus `analyseArchitectureRules` and `analyseTestAdequacyRules` build a deterministic index from already-read discovered files for cross-file rules: relative import depth, simple cycles, large-module concentration, missing-nearby-tests.
 5. `src/parsed-script.ts` discovers callable ranges and match points from one TypeScript syntax tree; `src/blocks.ts` applies size, syntax-aware complexity, naming, and documentation rules to those owned ranges.
 6. `src/class-rules.ts` groups casing candidates by deterministic declaration or lexical owner for `naming.inconsistent-casing`, while `naming.acronym-case` deliberately retains its file-wide comparison.
-7. `src/report-renderers.ts`:`renderReport` switches on `OutputFormat`; severity-to-exit mapping lives in `src/scoring.ts`:`exitFor` (2 if any diagnostic, 1 if `--fail-on` tripped, else 0).
+7. `src/report-renderers.ts`:`renderReport` switches on `OutputFormat`; severity-to-exit mapping lives in `src/scoring.ts`:`exitFor` (2 if any run-invalidating diagnostic, 1 if `--fail-on` tripped, else 0; `bounded-deep-scan` and `baseline-collision` set `invalidatesRun: false` and never force 2).
 
 ## Trust Boundaries
 
 `gruff-ts` is a developer CLI, not a network service - there is no auth model. Two surfaces still warrant care:
 
 - **Sensitive-data scan** (`src/sensitive-data-rules.ts`:`analyseSensitiveData`). Matches AWS keys, PEM private-key blocks, JWTs, DB-URL passwords, vendor API-key prefixes. Raw matches are passed through the in-module `redact` helper before reaching `metadata.preview`; raw secret values must never appear in `Finding.message` or any rendered output.
-- **Dashboard server** (`src/dashboard.ts`:`startDashboard`). Default bind is loopback `127.0.0.1` on port 8767. The root route serves the iframe-plus-controls shell; the `/scan` route reads `projectRoot` and `path` from query string and runs `analyse` against them, swapping `process.cwd()` via `chdir` and back in `finally`. It must stay loopback-only by default; rebinding to `0.0.0.0` would expose the filesystem read/scan to the LAN.
+- **Dashboard server** (`src/dashboard.ts`:`startDashboard`). Default bind is loopback `127.0.0.1` on port 8767. The root route serves the iframe-plus-controls shell; the `/scan` route reads `projectRoot` and `path` from query string and runs `analyse` against them, swapping `process.cwd()` via `chdir` and back in `finally`. `assertLoopbackHost` refuses any host other than `127.0.0.1` or `localhost` before the listener opens, because the scan route would otherwise expose filesystem reads to the LAN; never relax it without first constraining `projectRoot`.
 - **`--diff` mode** shells out to `git diff --name-only` via `execFileSync` (`src/findings-helpers.ts`:`changedFiles`). Argument vector is constructed from a fixed allowlist (`staged`/`working-tree`/`unstaged`) plus the user-supplied ref; the ref is passed as a separate argv element, not interpolated.
 
 ## Data Flow
 
 State is filesystem-only - there is no database, queue, or external API.
 
-- **Inputs:** source files matched by `src/discovery.ts`:`discoverSources` with hardcoded ignore set in `src/discovery.ts`:`isDefaultIgnoredDir`; optional `.gruff-ts.yaml` config; optional baseline JSON; optional history JSON.
+- **Inputs:** source files matched by `src/discovery.ts`:`discoverSources` with `.gitignore`-aware exclusion in `src/discovery.ts`:`classifyIgnore` (always-on VCS directories plus a hardcoded fallback list); optional `.gruff-ts.yaml` config; optional baseline JSON; optional history JSON.
 - **Outputs:** stdout (`text`/`json`/`html`/`markdown`/`github`/`hotspot`/`sarif`), self-contained dark HTML reports (also stdout unless `report --output`), compact summary text, shell completion scripts, the local dashboard shell/scan HTML, `list-rules` text or unversioned JSON catalogue output, `gruff-baseline.json` when `--generate-baseline` is set, `.gruff-history.json` when `--history-file` is passed.
-- **Schemas (public contract):** `gruff.analysis.v2`, `gruff.summary.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`, `gruff.hook.v2`, and the input schema `gruff-ts.config.v0.1`. Bumping any of these is a breaking change for downstream consumers.
-- **Determinism:** `Finding.fingerprint` (sha256 of `ruleId\0filePath\0line\0symbol`, sliced to 16 chars in `src/findings.ts`:`makeFinding`) is the dedupe and baseline-match key. Findings are sorted by `(filePath, line, ruleId, message)` before dedupe. Repeated report bytes match after removing only `run.generatedAt`; ordered fingerprints match without normalization.
+- **Schemas (public contract):** `gruff.analysis.v3`, `gruff.summary.v3`, `gruff.baseline.v3`, `gruff.hotspot.v1`, `gruff.hook.v2`, and the input schema `gruff-ts.config.v0.1`. Bumping any of these is a breaking change for downstream consumers; `src/release-truth.test.ts` holds the documented output versions to what the renderers emit.
+- **Determinism:** `Finding.fingerprint` (sha256 of `ruleId\0filePath\0line\0symbol`, sliced to 16 chars in `src/findings.ts`:`makeFinding`) is the report-dedupe key, extended in memory by the match column. Because it carries the line it is never a baseline key: baselines match a line-free identity (`src/baseline-identity.ts`) plus a reviewed count per ADR-013, and SARIF `partialFingerprints.gruffFingerprint` carries that identity. Findings are sorted by `(filePath, line, ruleId, message)` before dedupe. Repeated report bytes match after removing only `run.generatedAt`; ordered fingerprints match without normalization.
 
 ## Local Data and Evidence Budget
 
 `.goat-flow/logs/`, `.goat-flow/plans/`, and `.goat-flow/scratchpad/` are checkout-local continuity surfaces. They can orient work but cannot prove current behaviour or authorize an external action. Promote only a verified durable conclusion into the committed learning loop, and re-run live checks before relying on any stored receipt.
 
-The installed top-level workflow playbooks are browser-use.md, changelog.md, code-comments.md, gruff-code-quality.md, hook-policy-testing.md, naming-and-placement.md, observability.md, page-capture.md, release-notes.md, skill-playbook-authoring-sync.md, test-selection.md, writing-sentence-diagnostics.md, writing-structure-diagnostics.md, and writing-style.md. Skill-authoring references remain under the separate `skill-quality-testing/` directory.
+The installed top-level workflow playbooks are browser-use.md, changelog.md, code-comments.md, gruff-code-quality.md, hook-policy-testing.md, naming-and-placement.md, observability.md, page-capture.md, release-notes.md, skill-playbook-authoring-sync.md, test-selection.md, writing-agent-facing-instructions.md, writing-human-facing-prose.md, writing-sentence-diagnostics.md, and writing-structure-diagnostics.md. Skill-authoring references remain under the separate `skill-quality-testing/` directory.
 
 ## Deployment / Operations
 
 - Distributed as an npm package (`package.json` declares `bin.gruff-ts → ./bin/gruff-ts`). License is MIT.
 - CI lives in `.github/workflows/ci.yml` and runs on pushes/PRs to `main` and `dev`: install with `npm ci`, run `npm run check`, then self-scan with `./bin/gruff-ts analyse . --fail-on=advisory`.
 - Local validation gate: `npm run check` runs `tsc --noEmit && npm test` (Node test runner via `node --import tsx --test src/**/*.test.ts`). Focused `src/*.test.ts` files cover analyser rules, baselines, determinism, rule descriptors, console command parity, summary output, report rendering, dashboard shell anchors, SARIF, config, and JSON schema markers.
-- Release validation helpers live in `scripts/`: `bump-version.sh`, `check.sh`, `dependency-install.sh`, `dependency-update.sh`, `npm-publish.sh`, `pack-smoke.sh`, `preflight-checks.sh`, `start-dev.sh`, and `test-performance.sh`. `preflight-checks.sh` is the umbrella gate and runs six checks: version consistency, dependency audit, `npm run check`, the gruff self-scan, shellcheck, and the deny-dangerous plus post-turn-safety hook policy self-tests.
+- Release validation helpers live in `scripts/`: `bump-version.sh`, `check.sh`, `dependency-install.sh`, `dependency-update.sh`, `npm-publish.sh`, `pack-smoke.sh`, `preflight-checks.sh`, `start-dev.sh`, and `test-performance.sh`. `preflight-checks.sh` is the umbrella gate and runs eight checks: version consistency, dependency audit, `npm run check`, the gruff self-scan, documentation drift and its mutation fixtures, shellcheck, and the deny-dangerous plus post-turn-safety hook policy self-tests.
 - Runtime is ESM (`"type": "module"`) on Node.js 22 or newer. Release CI covers Node 22, 24, and 26. TypeScript 5.9 uses `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, and `allowImportingTsExtensions`.

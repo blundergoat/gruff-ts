@@ -20,7 +20,7 @@ When adding or expanding secret-like rules, include non-candidate coverage for d
 **Decision changed:** Treat any change to `redact()` output as a change to hook identity, and check same-line discrimination before shipping it.
 **Trigger phase:** ACT
 
-`stableIdentityComponent` (`src/hook-contract.ts`, search: `function stableIdentityComponent`) keys symbol-less line findings on the finding message, and `pushSensitiveFinding` (`src/sensitive-data-rules.ts`, search: `function pushSensitiveFinding`) builds that message from `redact()` output. Finding identity therefore depends on the redaction format, and nothing in either file states the coupling.
+`matchKeyComponent` (`src/hook-contract.ts`, search: `function matchKeyComponent`) and `stableIdentityFor` (`src/findings.ts`, search: `function stableIdentityFor`) key symbol-less line findings on the finding message, and `pushSensitiveFinding` (`src/sensitive-data-rules.ts`, search: `function pushSensitiveFinding`) builds that message from `redact()` output. Finding identity therefore depends on the redaction format. Both keys now append the match column, which separates same-line occurrences; a finding without a column still depends on the message alone.
 
 Raising the full-mask threshold to 24 characters made every secret shorter than that render as mask-plus-length. AWS access key ids are always 20 characters, so two of them on one line produced the same preview, the same message, and the same identity. The two findings became byte-identical on the `gruff.hook.v1` wire, and a consumer following the contract's own "track by stable identity" guidance collapsed a second real credential into the first.
 
@@ -57,9 +57,11 @@ The current absence of `length` makes hook normalization fall back to fixed-mark
 For any sensitive metadata change, verify JSON report and `gruff.hook.v1` output separately.
 Assert that `length`, `digits`, and `measured` are absent and only the fixed marker plus detector-owned public metadata remain.
 
+## Resolved Entries
+
 ## Footgun: an exemption keyed on the text before a literal also matches ternaries and secret-named keys
 
-**Status:** active | **Created:** 2026-09-13 | **Evidence:** ACTUAL_MEASURED
+**Status:** resolved | **Created:** 2026-09-13 | **Evidence:** ACTUAL_MEASURED
 **Decision changed:** Before exempting a literal by the key it sits under, prove the text is a key (it follows `{` or
 `,`, and only in YAML may it open its line), check every word of the key for a secret label, and never rescan the line
 for each candidate.
@@ -70,7 +72,11 @@ before each literal. Two fresh-context reviews, checked against the pre-repair s
 port had reported. The silenced shapes were `useCache ? path : "<secret>"`, the same branch after a comment or a
 wrapped `- path`, and keys whose last word names a location, such as `privateKeyBlob`, `apiKeyInput`, `JWTSecretPath`
 and `secretsPath`. The unanchored regex also took 1,821 ms on one generated line of six 20,000-character literals,
-against 355 ms at the pre-repair source. `standsInKeyPosition` and `isLocationOrDigestKey` (`src/sensitive-data-rules.ts`,
-search: `function standsInKeyPosition`) now carry the rule, and `src/sensitive-data-rules.test.ts`
-(search: `location key only in key position`) pins each shape. Probe any new syntax-keyed exemption the same way: put
-secrets the rule already reports in every position its pattern can match, and confirm each still reports.
+against 355 ms at the pre-repair source. Probe any new syntax-keyed exemption the same way: put secrets the rule
+already reports in every position its pattern can match, and confirm each still reports.
+
+Resolved when the shared entropy policy (commit `933b36e`, 2026-10-01) removed the location-key exemption entirely.
+`isExcludedHighEntropyCandidate` (`src/sensitive-data-rules.ts`, search: `function isExcludedHighEntropyCandidate`)
+now judges only the whole literal, and `src/sensitive-data-rules.test.ts`
+(search: `shared entropy policy retains opaque findings across key names and syntax positions`) asserts that every
+shape above reports.

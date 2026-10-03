@@ -20,7 +20,7 @@ Node's HTTP server does not concurrently *execute* JS, but `analyse` is synchron
 
 **Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
 
-`/scan?projectRoot=...` (in `src/dashboard.ts`, search: `url.searchParams.get("projectRoot")`) accepts any path the operator supplies and `chdir`s to it. The default bind is `127.0.0.1:8767`, so this is "trusted local user" - but if anyone rebinds via `--host 0.0.0.0`, the dashboard becomes a remote-controlled "scan any directory on the host" service. Treat the bind address as the only thing standing between this endpoint and arbitrary filesystem traversal; document it whenever you touch the `dashboard` command's CLI surface.
+`/scan?projectRoot=...` (`src/dashboard.ts`, search: `url.searchParams.get("projectRoot")`) accepts any path the operator supplies and `chdir`s to it. This is safe only as "trusted local user": `assertLoopbackHost` (`src/dashboard.ts`, search: `function assertLoopbackHost`) refuses any host other than `127.0.0.1` or `localhost` before the listener opens, so `--host 0.0.0.0` now fails instead of exposing a remote "scan any directory on the host" service. Treat that guard as the only thing standing between this endpoint and arbitrary filesystem traversal; never relax it without first constraining `projectRoot`.
 
 ## Footgun: HTML output is concatenated, not templated
 

@@ -1,6 +1,6 @@
 ---
 category: packaging
-last_reviewed: 2026-06-06
+last_reviewed: 2026-10-03
 ---
 
 # Packaging / npm publish footguns

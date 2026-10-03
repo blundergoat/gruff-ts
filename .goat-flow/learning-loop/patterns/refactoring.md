@@ -1,6 +1,6 @@
 ---
 category: refactoring
-last_reviewed: 2026-05-25
+last_reviewed: 2026-10-03
 ---
 
 # Refactoring patterns
@@ -20,17 +20,17 @@ last_reviewed: 2026-05-25
    - `scoring.ts` and `dashboard.ts` update their direct imports (no compat re-exports)
 4. Verify with `grep -rn "from \"./report-renderers\|from \"./report-html\|from \"./pillar-summary" src/` - the resulting graph must be acyclic and consumers like `cli.ts` should still import `renderReport` from `report-renderers.ts`.
 
-**Evidence:** `src/pillar-summary.ts`, `src/report-html.ts`, `src/report-renderers.ts`. Before the split, `report-renderers.ts` was 899 lines; after it sits around 442 with `report-html.ts` at ~384 and `pillar-summary.ts` at ~123. The gruff scan reports `design.circular-import` as zero and the JSON keys in `gruff.summary.v2` are byte-identical to the pre-split output.
+**Evidence:** `src/pillar-summary.ts`, `src/report-html.ts`, `src/report-renderers.ts`. At the split, `report-renderers.ts` went from 899 lines to about 442, with `report-html.ts` at ~384 and `pillar-summary.ts` at ~123; those are point-in-time sizes, not current ones. The gruff scan reports `design.circular-import` as zero and the JSON keys in `gruff.summary.v2` are byte-identical to the pre-split output.
 
 ## Pattern: preserve a JSON wire key while renaming the internal interface field
 **Created:** 2026-05-25
 
-**Context:** `naming.boolean-prefix` fires on interface fields that lack an `is`/`has`/`can`/`should`/`will` prefix. `PillarRow.applicable` triggered the rule, but the JSON output schema `gruff.summary.v2` exposes `applicable: true` as the canonical key - renaming the wire key would be a schema bump (`gruff.summary.v3`) and break every downstream consumer parsing the field.
+**Context:** `naming.boolean-prefix` fires on interface fields that lack an `is`/`has`/`can`/`should`/`will` prefix. `PillarRow.applicable` triggered the rule, but the summary JSON schema exposes `applicable: true` as the canonical key - renaming the wire key would be a schema bump (`gruff.summary.v3`) and break every downstream consumer parsing the field.
 
 **Approach:**
 1. Rename the TypeScript field to satisfy the prefix rule (`PillarRow.applicable` → `PillarRow.isApplicable`, `src/pillar-summary.ts`, search: `isApplicable: true`).
 2. At the SINGLE serialization boundary in the renderer that emits the wire payload (`src/report-renderers.ts`, `renderSummaryJson`, search: `applicable: row.isApplicable`), explicit-map the typed field back to the documented wire key.
-3. Verify with a runtime smoke test (`./bin/gruff-ts summary . --format=json --fail-on=none --no-baseline | node -e '…'`) that the parsed payload still has `applicable: true` and `schemaVersion: "gruff.summary.v2"`.
+3. Verify with a runtime smoke test (`./bin/gruff-ts summary . --format=json --fail-on=none --no-baseline | node -e '…'`) that the parsed payload still has `applicable: true` and the current summary `schemaVersion`.
 
 **Why this works:** the typed field and the JSON key are two different surfaces. The TypeScript field exists for compile-time clarity; the JSON key exists for cross-port wire compatibility. Renaming one without the other - via an explicit map at the boundary - keeps both surfaces clean. The reverse is also true for tests parsing the JSON: treat `payload` as `Record<string, unknown>` and access `row.applicable` at runtime to avoid declaring a typed interface whose field name fights the lint (see `assertPillarRowShape` in `src/cli-surfaces.test.ts`).
 

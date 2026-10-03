@@ -239,7 +239,7 @@ function renderPathsSection(ignoredPaths: readonly string[]): string {
   const header = [
     "paths:",
     "  # Recursive scans already respect .gitignore plus built-in default directories",
-    "  # such as .git, node_modules, dist, coverage, generated, tmp, and vendor.",
+    "  # such as .git, node_modules, build, dist, coverage, and vendor.",
     "  # Add project-specific generated or local outputs here when Git does not ignore them.",
     "  # Examples:",
     "  #   - \"out/**\"",

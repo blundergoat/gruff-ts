@@ -5,7 +5,7 @@ gruff-ts/
 ├── AGENTS.md                      = Codex instruction file (hot path; do not edit peer Claude surfaces)
 ├── CLAUDE.md                      = Claude instruction file (peer-agent surface; do not edit during Codex turns)
 ├── README.md                      = user-facing CLI overview, workflows, config, safety notes, and development commands
-├── CHANGELOG.md                   = dated public release notes; current 0.5.0 behavior and compatibility changes
+├── CHANGELOG.md                   = dated public release notes, newest first; the unreleased version heads the file
 ├── CONTRIBUTING.md                = contributor setup, rule-change checklist, docs expectations
 ├── SECURITY.md                    = public vulnerability reporting and security boundaries
 ├── package.json                   = npm manifest; declares bin "gruff-ts" -> bin/gruff-ts; runtime deps: commander, tsx, typescript
@@ -32,7 +32,7 @@ gruff-ts/
 │   ├── copilot-instructions.md    = Copilot instruction file (peer-agent surface; sweep with CLAUDE.md + AGENTS.md)
 │   ├── git-commit-instructions.md = project commit-message policy
 │   ├── hooks/hooks.json           = Copilot hook registration (scripts shared in .goat-flow/hooks/)
-│   ├── skills/                    = installed Copilot skill copies (goat, goat-plan/debug/review/critique/security/qa)
+│   ├── skills/                    = installed Copilot skill copies (goat, goat-clarity, goat-plan/debug/review/critique/security/qa)
 │   └── workflows/ci.yml           = npm ci → npm run check → gruff-ts self-scan on main/dev push/PR
 │
 ├── bin/
@@ -40,11 +40,14 @@ gruff-ts/
 │
 ├── src/                           = modular runtime plus focused Node test coverage
 │   ├── cli.ts                     = thin CLI bootstrap and public re-exports; delegates to analyser.ts
-│   ├── cli-program.ts             = Commander wiring for the eleven registered commands and shared option normalization
+│   ├── cli-program.ts             = Commander wiring for the twelve registered commands and shared option normalization
+│   ├── hook-contract.ts           = gruff.hook.v2 agent-hook payload, capability handshake, and new-only filtering
 │   ├── analyser.ts                = scan orchestrator: config -> discovery -> shared parse -> rules -> baseline -> report
+│   ├── changed-regions.ts         = --diff/--since/--changed-ranges region parsing and finding attribution
 │   ├── parsed-script.ts           = one TypeScript syntax parse per script, shared by callable, docs, flow, owner, and complexity consumers
 │   ├── complexity-metrics.ts      = syntax-aware cyclomatic, cognitive, and nesting measurements with deterministic breakdowns
 │   ├── discovery.ts               = source walk, gitignore handling, supported extensions, and default ignored directories
+│   ├── check-ignore.ts            = check-ignore command core over the shared discovery ignore engine
 │   ├── project-rules.ts           = cross-file imports, cycles, module concentration, and nearby-test analysis
 │   ├── blocks.ts                  = callable-owned size, complexity, waste, naming, and documentation rules
 │   ├── line-rules.ts              = per-line modernisation, naming, security, and waste patterns
@@ -60,18 +63,24 @@ gruff-ts/
 │   ├── safety-rules.ts            = type-safety, async reliability, catch, and throw rules
 │   ├── security-flow-rules.ts     = syntax-aware source-to-sink candidates and unsafe parser/execution checks
 │   ├── github-actions-rules.ts    = GitHub Actions workflow and permission rules
+│   ├── github-actions-event-guards.ts = bounded event-guard proof that keeps unreachable workflow secret sinks quiet
 │   ├── process-exec-metadata.ts   = safe process-call metadata shared by execution findings
 │   ├── naming-pushers.ts          = shared naming finding emitters and remediation metadata
 │   ├── project-config-rules.ts    = package, TypeScript, workflow, dependency, and config-health rules
 │   ├── sensitive-data-rules.ts    = secret-like detectors with allowlisted redacted previews
+│   ├── entropy-public-shapes.ts   = public-constant shapes kept out of high-entropy secret warnings
+│   ├── sensitive-exclusions.ts    = sensitiveExclusions config section, validator, matcher, and audit counter
 │   ├── source-text.ts             = non-code masking and source-text helpers
 │   ├── text-scans.ts              = tracking-marker summaries, byte lines, and generic text scans
 │   ├── baseline-file.ts           = v3 baseline read/write/apply, 0.5 migration, and unusable-file errors
+│   ├── baseline-identity.ts       = line-free baseline identity per finding (family finding-identity contract)
 │   ├── baseline-options.ts        = baseline option resolution shared by CLI commands
 │   ├── baseline.ts                = canonical finding order, dedupe, and score-history recording
 │   ├── scoring.ts                 = report scoring, summaries, and finding exit semantics
 │   ├── pillar-summary.ts          = canonical summary pillar rows and ordering
 │   ├── rules.ts                   = catalogue of exactly 120 descriptors across 11 pillars
+│   ├── profiles.ts                = built-in rule profile presets that profile: and --profile resolve
+│   ├── selectors.ts               = execution versus presentation rule selectors
 │   ├── rule-list.ts               = list-rules, profile list, and shell completion rendering
 │   ├── dashboard.ts               = loopback dashboard server and scan endpoint
 │   ├── report-html.ts             = escaped self-contained HTML and dashboard report rendering
@@ -79,6 +88,8 @@ gruff-ts/
 │   ├── config.ts                  = config loading and effective rule settings
 │   ├── config-parse.ts            = dependency-free YAML subset parsing and value narrowing
 │   ├── config-preservation.ts     = fields retained across init --force regeneration
+│   ├── init-config.ts             = init seed rendering and guarded (re)generation of .gruff-ts.yaml
+│   ├── migrate-config.ts          = out-of-place 0.5 -> 0.6 config rewrite behind migrate-config
 │   ├── config-load-error.ts       = user-facing config error and remediation context
 │   ├── findings.ts                = stable finding construction and fingerprint identity
 │   ├── findings-helpers.ts        = shared finding helpers and centralized severity overrides
@@ -95,8 +106,8 @@ gruff-ts/
 │   ├── dependency-update.sh       = dependency bump helper
 │   ├── npm-publish.sh             = publish helper run after the release gates pass
 │   ├── pack-smoke.sh              = pack, manifest, fresh-install, output, and exit-semantics release gate
-│   ├── preflight-checks.sh        = 6-check local gate: version consistency, npm audit, npm run check,
-│   │                                gruff self-scan, shellcheck, and the deny/post-turn hook policy self-tests
+│   ├── preflight-checks.sh        = 8-check local gate: version consistency, npm audit, npm run check, gruff self-scan,
+│   │                                documentation drift + its mutation fixtures, shellcheck, and the deny/post-turn hook policy self-tests
 │   ├── start-dev.sh               = wrapper for `npm run start-dev` with env host/port/project-root overrides
 │   └── test-performance.sh        = gruff-perf.v1 performance matrix/baseline helper
 │
@@ -104,11 +115,12 @@ gruff-ts/
 │   └── sample.ts                  = sample source used by manual smoke tests / dashboard
 │
 ├── .claude/                       = Claude Code agent surface (no hooks/ dir; the scripts live in .goat-flow/hooks/)
-│   ├── settings.json              = harness settings (committed); registers the PreToolUse deny hook and the
-│   │                                Stop post-turn hook, both pointing at .goat-flow/hooks/*.sh
+│   ├── settings.json              = harness settings (committed); registers the deny-dangerous and deny-git-mutations
+│   │                                PreToolUse hooks and the Stop post-turn hook, all pointing at .goat-flow/hooks/*.sh
 │   ├── settings.local.json        = local-only overrides (gitignored)
 │   └── skills/
 │       ├── goat/                  = dispatcher skill
+│       ├── goat-clarity/          = comment, naming, and placement remediation skill
 │       ├── goat-plan/             = milestone planner
 │       ├── goat-debug/            = debug skill
 │       ├── goat-review/           = code review skill
@@ -120,21 +132,20 @@ gruff-ts/
 ├── .codex/                        = Codex config and permission profile (deny hook shared in .goat-flow/hooks/)
 │
 ├── .goat-flow/                    = shared learning loop + skill packs (see .goat-flow/README files inline)
-│   ├── config.yaml                = goat-flow version (1.16.0) and skill install policy
+│   ├── config.yaml                = goat-flow version (1.17.0), skill install policy, and hook toggles
 │   ├── architecture.md            = system overview (this companion file)
 │   ├── code-map.md                = this file
 │   ├── glossary.md                = domain term definitions
-│   ├── security-policy.md         = scoped security review policy
-│   ├── hooks/                     = shared deny-dangerous + gruff-code-quality hooks
+│   ├── security-policy.md         = scoped security review policy (`.goat-flow/security-policy.md`, read by goat-security)
+│   ├── hooks/                     = shared deny-dangerous, deny-git-mutations, post-turn-safety, and gruff-code-quality hooks
 │   ├── learning-loop/{footguns,lessons,patterns,decisions}/ = learning loop dirs (READMEs inside)
 │   ├── plans/, scratchpad/        = milestone plans + ephemeral work (gitignored contents)
 │   ├── logs/sessions/, logs/quality/, logs/critiques/, logs/security/    = local continuity + skill output
 │   ├── skill-docs/                = meta references (skill-preamble, skill-conventions, README)
-│   └── skill-docs/playbooks/      = browser-use.md, changelog.md, code-comments.md, gruff-code-quality.md, hook-policy-testing.md, naming-and-placement.md, observability.md, page-capture.md, release-notes.md, skill-playbook-authoring-sync.md, test-selection.md, writing-sentence-diagnostics.md, writing-structure-diagnostics.md, writing-style.md
+│   └── skill-docs/playbooks/      = browser-use.md, changelog.md, code-comments.md, gruff-code-quality.md, hook-policy-testing.md, naming-and-placement.md, observability.md, page-capture.md, release-notes.md, skill-playbook-authoring-sync.md, test-selection.md, writing-agent-facing-instructions.md, writing-human-facing-prose.md, writing-sentence-diagnostics.md, writing-structure-diagnostics.md
 │
 ├── node_modules/                  = vendored npm dependencies; never edit. Holds the goat-flow package whose
 │                                    workflow/hooks/ templates the installed .goat-flow/hooks/ scripts diff against
-│   └── goat-flow dist/dashboard/views/ = packaged HTML views (about.html, home.html, hooks.html, plans.html, projects.html, prompts.html, quality.html, settings.html, setup.html, skills.html, workspace.html)
 └── .idea/                         = JetBrains IDE config (gitignored, do not edit)
 ```
 

@@ -11,8 +11,8 @@ gruff-ts carries five distinct identity layers serving different consumers:
 
 - `Finding.fingerprint` (`src/findings.ts`, search: "const fingerprint = createHash"): sha256(ruleId, filePath, line, symbol)[:16], line-bearing. Consumed by report dedupe, `gruff.baseline.v1` matching, and SARIF `partialFingerprints.gruffFingerprint`.
 - `Finding.stableIdentity` (`src/findings.ts`, search: "function stableIdentityFor"): sha256(ruleId, filePath, symbol-or-message)[:16], scope-blind, message-derived when no symbol exists. Consumed by external diff tooling only.
-- Hook `stableIdentity` (`src/hook-contract.ts`, search: "function hookStableIdentity"): scope-aware component (`file`, `project[:symbol]`, `symbol:{symbol}`, `message:{message}`). Consumed by hook new-only filtering (`--baseline`, `--diff` base replay).
-- `gruff.baseline.v1` matching (`src/baseline.ts`, search: "function applyBaseline"): set-match on (fingerprint, ruleId, filePath); `message` persisted for humans but ignored; no `stableIdentity` field is written.
+- Hook `stableIdentity` (then `hookStableIdentity`; the same component now feeds the port-local match key in `src/hook-contract.ts`, search: "function matchKeyComponent"): scope-aware component (`file`, `project[:symbol]`, `symbol:{symbol}`, `message:{message}`). Consumed by hook new-only filtering (`--baseline`, `--diff` base replay).
+- `gruff.baseline.v1` matching (then in `src/baseline.ts`; `src/baseline-file.ts`, search: "function applyBaseline", now holds the v3 matcher): set-match on (fingerprint, ruleId, filePath); `message` persisted for humans but ignored; no `stableIdentity` field is written.
 - Report dedupe (`src/baseline.ts`, search: "function dedupeFindings"): fingerprint-keyed, except `docs.missing-public-doc` which keys on (ruleId, filePath, symbol). Dedupe runs before hook rendering, so the hook only ever sees deduped findings.
 
 A live 2026-07-12 probe suite (real CLI `analyse` and `hook` runs plus the real `makeFinding` producer) established the before-state:

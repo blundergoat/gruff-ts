@@ -763,7 +763,7 @@ function requiredFinding(payload: HookPayload, ruleId: string): HookFinding {
   return finding;
 }
 
-// Writes a gruff.baseline.v1 file from the given findings, keyed by their stable identity.
+// Writes a gruff.baseline.v3 file from the given findings, keyed by their stable identity.
 function writeBaseline(root: string, findings: HookFinding[]): void {
   writeProjectFile(root, "gruff-baseline.json", JSON.stringify({
     schemaVersion: "gruff.baseline.v3",
