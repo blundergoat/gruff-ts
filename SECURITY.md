@@ -4,8 +4,8 @@
 
 | Version | Supported |
 | --- | --- |
-| 0.5.x | Yes |
-| 0.4.x and earlier | No |
+| 0.6.x | Yes |
+| 0.5.x and earlier | No |
 
 ## Reporting A Vulnerability
 
@@ -36,8 +36,10 @@ Please include:
   must be escaped.
 - The scanner is heuristic and is not a vulnerability scanner or dependency
   advisory database.
-- Baselines suppress matching fingerprints. For security-focused CI, prefer
-  `gruff-ts analyse . --no-baseline --fail-on=error`.
+- Baselines suppress reviewed findings by a line-free identity and the count each row
+  accepts, and a sensitive-data finding can never be baselined. For security-focused CI,
+  prefer `gruff-ts analyse . --no-baseline --fail-on=error`. That gate does not fail on
+  `sensitive-data.high-entropy-string`, which reports at warning.
 
 ## Disclosure Expectations
 

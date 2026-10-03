@@ -1,8 +1,8 @@
 # gruff-ts - GitHub Copilot Instructions
 
-`gruff-ts` governs AI-generated code: wired in as a coding-agent hook, it forces an agent to produce changes a human who did not write them can sign off on - legible enough to verify, secure where the reviewer's eye slips, and tested for real behavior rather than low-signal ceremony. Mechanically it is a TypeScript project quality analyzer: a dependency-light Node.js/ESM CLI with a thin `src/cli.ts` bootstrap and focused runtime modules under `src/`. It scans TypeScript and JavaScript (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`) plus config and text assets (`conf`, `config`, `env`, `ini`, `json`, `toml`, `xml`, `yaml`, `yml`, any `.env*` name, and `.npmrc`/`.pypirc`/`.envrc`/`.netrc`); CSS left the allowlist in 0.3.0, and `src/discovery.ts`:`pushSourceFile` is the only authority. It emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v1`) and report snapshots (`gruff.analysis.v2`) round-trip without churn.
+`gruff-ts` governs AI-generated code: wired in as a coding-agent hook, it forces an agent to produce changes a human who did not write them can sign off on - legible enough to verify, secure where the reviewer's eye slips, and tested for real behavior rather than low-signal ceremony. Mechanically it is a TypeScript project quality analyzer: a dependency-light Node.js/ESM CLI with a thin `src/cli.ts` bootstrap and focused runtime modules under `src/`. It scans TypeScript and JavaScript (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`) plus config and text assets (`conf`, `config`, `env`, `ini`, `json`, `toml`, `xml`, `yaml`, `yml`, any `.env*` name, and `.npmrc`/`.pypirc`/`.envrc`/`.netrc`); CSS left the allowlist in 0.3.0, and `src/discovery.ts`:`pushSourceFile` is the only authority. It emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v3`) and report snapshots (`gruff.analysis.v3`) round-trip without churn.
 
-goat-flow version: 1.15.1
+goat-flow version: 1.17.0
 
 ## Workspace Boundary
 
@@ -19,8 +19,8 @@ This repo is the **selected target project**. The controlling goat-flow workspac
 ## Autonomy Tiers
 
 - **Always:** Read source before changing it; run `npm run check` on changed `.ts`; edit within declared scope; append progress lines to the active session log when one exists.
-- **Ask First:** Before touching any of: schema strings (`gruff.analysis.v2`, `gruff.baseline.v1`, `gruff.hotspot.v1`), the `Finding` shape, the default-ignored directory list, baseline file format, dashboard wire format, or `package.json`/`tsconfig.json`. State boundary touched, related code read (file:symbol), footgun checked, local instruction checked, rollback command.
-- **Never:** Freeze writes if interrupted; commit/push without explicit ask; relax `tsconfig.json` strict flags; introduce runtime dependencies beyond `commander`, `tsx`, and `typescript` (syntax-only parsing per ADR-012); bypass `.goat-flow/hooks/deny-dangerous.sh`; edit peer-agent surfaces (`CLAUDE.md`, `.claude/`, `AGENTS.md`, `.codex/`, `.agents/`).
+- **Ask First:** Before touching any of: schema strings (`gruff.analysis.v3`, `gruff.baseline.v3`, `gruff.hotspot.v1`), the `Finding` shape, the default-ignored directory list, baseline file format, dashboard wire format, or `package.json`/`tsconfig.json`. State boundary touched, related code read (file:symbol), footgun checked, local instruction checked, rollback command.
+- **Never:** Freeze writes if interrupted; commit/push without explicit ask; relax `tsconfig.json` strict flags; introduce runtime dependencies beyond `commander`, `tsx`, and `typescript` (syntax-only parsing per ADR-012); bypass `.goat-flow/hooks/deny-dangerous.sh` or `.goat-flow/hooks/deny-git-mutations.sh`; edit peer-agent surfaces (`CLAUDE.md`, `.claude/`, `AGENTS.md`, `.codex/`, `.agents/`).
 
 ## Hard Rules
 
@@ -29,7 +29,7 @@ This repo is the **selected target project**. The controlling goat-flow workspac
 - `tsconfig.json` runs with `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`. New code must compile without weakening these.
 - Schema versions are public contract - bump only when the user explicitly asks.
 - Use semantic anchors (file:`symbolName`) in references, not bare line numbers.
-- Sub-agents get one objective, structured return, ≤5 calls.
+- Sub-agents get one objective, structured return, ≤5 calls; this overrides the larger implementation budget in `skill-conventions.md`.
 - No new abstractions or error handling beyond what was asked.
 - Ambiguous requirements: present interpretations, do not pick silently.
 
@@ -121,6 +121,7 @@ Runtime code, hooks, and agent config are out of scope unless the user explicitl
 | Instruction file | `.github/copilot-instructions.md` |
 | Architecture | `.goat-flow/architecture.md` |
 | Code map / glossary | `.goat-flow/code-map.md`, `.goat-flow/glossary.md` |
+| Security policy | `.goat-flow/security-policy.md` (optional; read by goat-security) |
 | Learning loop | `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, `.goat-flow/learning-loop/decisions/` |
 | Skill reference (meta) | `.goat-flow/skill-docs/` |
 | Tool playbooks (CLI/MCP availability checks: browser-use, page-capture) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |

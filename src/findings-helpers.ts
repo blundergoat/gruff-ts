@@ -9,17 +9,53 @@ import { makeFinding } from "./findings.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
 // Splits only at top-level commas, then strips parameter-property modifiers and `...rest`.
-// Destructured parameters remain intentionally invisible to per-parameter rules.
-export function parameterNames(params: string): Array<{ name: string; raw: string }> {
+// Destructured parameters remain intentionally invisible to per-parameter rules. `isParameterProperty` keeps what
+// the stripped modifiers meant: a constructor parameter that declares and assigns a class member.
+export function parameterNames(params: string): Array<{ name: string; raw: string; isParameterProperty: boolean }> {
   return splitTopLevelParameters(params)
     .map((parameter) => parameter.trim())
     .filter(Boolean)
     .map((raw) => {
-      const stripped = raw.replace(/^(?:(?:public|private|protected|readonly|override)\s+)*/, "").replace(/^\.\.\./, "");
+      const modifiers = raw.match(/^(?:(?:public|private|protected|readonly|override)\s+)*/)?.[0] ?? "";
+      const stripped = raw.slice(modifiers.length).replace(/^\.\.\./, "");
       const name = stripped.match(/^([A-Za-z_$][A-Za-z0-9_$]*)\s*(?=[?:=]|$)/)?.[1] ?? "";
-      return { name, raw: stripped };
+      return { name, raw: stripped, isParameterProperty: modifiers !== "" };
     })
     .filter((parameter) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(parameter.name));
+}
+
+/**
+ * Splits one parameter, as `parameterNames` returns it in `raw`, into its own type annotation and initializer.
+ *
+ * Only a top-level `:` or `=` counts, so a boolean field inside an inline object type, a function type's `=>`, and a
+ * comparison inside a default expression are never read as the parameter's own annotation or default.
+ *
+ * @param raw - one parameter without modifiers or `...`, such as `flags: { dryRun: boolean } = {}`
+ * @returns the trimmed annotation and initializer text, each empty when the parameter has none
+ */
+export function parameterParts(raw: string): { typeText: string; initializer: string } {
+  const state: ParameterSplitState = { parenthesisDepth: 0, bracketDepth: 0, braceDepth: 0, angleDepth: 0, quote: "", isEscaped: false };
+  let typeStart: number | undefined;
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index] ?? "";
+    if (advanceParameterQuoteState(state, character)) {
+      continue;
+    }
+    if (isTopLevelParameterPosition(state)) {
+      if (character === ":" && typeStart === undefined) {
+        typeStart = index + 1;
+      } else if (character === "=" && isAssignmentEquals(raw, index)) {
+        return { typeText: typeStart === undefined ? "" : raw.slice(typeStart, index).trim(), initializer: raw.slice(index + 1).trim() };
+      }
+    }
+    advanceParameterDepths(state, raw, index, 0);
+  }
+  return { typeText: typeStart === undefined ? "" : raw.slice(typeStart).trim(), initializer: "" };
+}
+
+// A lone `=` assigns; `=>`, `==`, `!=`, `<=` and `>=` are operators that only share its character.
+function isAssignmentEquals(text: string, index: number): boolean {
+  return !/[=!<>]/.test(text[index - 1] ?? "") && !/[=>]/.test(text[index + 1] ?? "");
 }
 
 // Nesting and quote context for the parameter splitter. Kept as one mutable record so the
@@ -206,17 +242,58 @@ export function lineOffset(source: string, index: number): number {
 }
 
 // Detector for `waste.commented-out-code`: require a parseable disabled-code shape rather than a
-// bare keyword so prose such as "import cycle" or section headings don't look executable.
-export function isCommentedOutCode(line: string): boolean {
+// bare keyword so prose such as "import cycle" or section headings don't look executable. `previousLine`
+// is the raw line above, which says whether this comment line continues a wrapped sentence.
+export function isCommentedOutCode(line: string, previousLine = ""): boolean {
   const trimmed = line.trim();
   if (!trimmed.startsWith("//")) {
     return false;
   }
   const uncommented = trimmed.replace(/^\/\/+\s?/, "");
-  if (isCommentSeparatorOrAnchor(uncommented)) {
+  if (isCommentSeparatorOrAnchor(uncommented) || isUnrestorablePayload(uncommented) || continuesWrappedSentence(previousLine)) {
     return false;
   }
   return isDisabledDeclaration(uncommented) || isDisabledControlFlow(uncommented) || isDisabledCall(uncommented);
+}
+
+// Words that leave a sentence unfinished at the end of a comment line: articles, prepositions, conjunctions,
+// relative pronouns and auxiliary verbs.
+const CONTINUING_WORDS: ReadonlySet<string> = new Set([
+  "a", "an", "the", "of", "to", "in", "on", "at", "by", "for", "from", "with", "into", "onto", "via", "as", "than",
+  "and", "or", "but", "nor", "if", "unless", "until", "whether", "while", "because", "since", "that", "which", "who",
+  "whose", "where", "when", "is", "are", "was", "were", "be", "been", "being", "will", "would", "can", "could",
+  "should", "may", "might", "must", "not",
+]);
+
+// A `//` line directly below another `//` line that stopped on a continuing word finishes that sentence, as
+// "// throw when using `localStorage` in private mode." does below "because some browsers will". A note that ends
+// its own sentence, such as "// TODO: temporarily disabled until the issue is resolved.", leaves the disabled code
+// under it reportable; measured on the 2026-09-13 corpus, treating every comment line above as a sentence hid real
+// disabled asserts, imports and conditionals.
+function continuesWrappedSentence(previousLine: string): boolean {
+  const previous = previousLine.trim();
+  if (!previous.startsWith("//")) {
+    return false;
+  }
+  const lastWord = previous.match(/([A-Za-z']+)\s*$/)?.[1]?.toLowerCase();
+  return lastWord !== undefined && CONTINUING_WORDS.has(lastWord);
+}
+
+// A payload that could not be restored as written: `...` standing for elided arguments, as in `fetch(url, ...)`,
+// or a string quote that never closes, which is how an apostrophe in prose reads. A spread such as `...args` stays.
+// The quote test reads only the code before a trailing `//` note, and skips a payload that may hold a regex literal,
+// whose quote characters are not strings: measured on zod, disabled `emailRegex` literals would otherwise be lost.
+function isUnrestorablePayload(uncommented: string): boolean {
+  if (/[(,]\s*\.\.\.\s*[,)]/.test(uncommented)) {
+    return true;
+  }
+  const code = uncommented.replace(/\s\/\/.*$/, "");
+  if (code.includes("/")) {
+    return false;
+  }
+  const withoutEscapes = code.replace(/\\./g, "");
+  const withoutClosedStrings = withoutEscapes.replace(/"[^"]*"|'[^']*'|`[^`]*`/g, "");
+  return /["'`]/.test(withoutClosedStrings);
 }
 
 // Skips prose examples, labels, search anchors, and section dividers that often begin with code words.
@@ -227,7 +304,10 @@ function isCommentSeparatorOrAnchor(uncommented: string): boolean {
     /^[-=*_#]{3,}$/.test(text) ||
     /^[A-Za-z_$][A-Za-z0-9_$]*\s*:\s*['"`[{]/.test(text) ||
     /\b(?:search|grep|anchor|example|for example|e\.g\.)\s*:/.test(text) ||
-    /^(?!(?:if|for|while|switch)\b)[A-Za-z_$][A-Za-z0-9_$]*\s+\([^;{}]*[A-Za-z][^;{}]*\)$/.test(text) ||
+    // A name or dotted name, then whitespace and a worded or numbered parenthetical: `dependency (2)`,
+    // `scanSectionAgainstSnapshot (claim patterns)`. Whitespace stays required: without it the guard would also take
+    // unterminated disabled calls such as `console.log(err)`, which the corpus holds far more of than API labels.
+    /^(?!(?:if|for|while|switch)\b)[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?\s+\([^;{}]*[A-Za-z0-9][^;{}]*\)$/.test(text) ||
     /^[A-Z][A-Za-z0-9_$]*(?:\s|\s*\([^)]*\)$)/.test(text)
   );
 }
@@ -246,9 +326,33 @@ function isDisabledDeclaration(uncommented: string): boolean {
   );
 }
 
-// Control-flow comments need real syntax such as parentheses or an expression after `return`/`throw`.
+// Control-flow comments need real syntax: parentheses after `if`/`for`/`while`/`switch`, and after
+// `return`/`throw`/`await` either a terminating `;` or an expression, which never puts two plain words
+// side by side the way "return the last request in case of redirects" does.
 function isDisabledControlFlow(uncommented: string): boolean {
-  return /^(?:if|for|while|switch)\s*\(/.test(uncommented) || /^(?:return|throw|await)\s+\S/.test(uncommented);
+  if (/^(?:if|for|while|switch)\s*\(/.test(uncommented)) {
+    return true;
+  }
+  const payload = uncommented.match(/^(?:return|throw|await)\s+(\S.*)$/)?.[1];
+  if (payload === undefined) {
+    return false;
+  }
+  return payload.trimEnd().endsWith(";") || !hasPlainWordPair(payload);
+}
+
+// Words that sit beside another word inside real expressions, so a pair containing one is still code.
+const EXPRESSION_KEYWORDS: ReadonlySet<string> = new Set(["as", "async", "await", "class", "delete", "extends", "function", "in", "instanceof", "keyof", "new", "of", "return", "satisfies", "throw", "typeof", "void", "yield"]);
+
+// True when two identifiers stand side by side with neither an expression keyword, once string contents are set
+// aside, so `new Error("bad input")` stays code while "when using localStorage" reads as prose.
+function hasPlainWordPair(payload: string): boolean {
+  const withoutStrings = payload.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, '""');
+  for (const match of withoutStrings.matchAll(/\b([A-Za-z_$][\w$]*)\s+(?=([A-Za-z_$][\w$]*)\b)/g)) {
+    if (!EXPRESSION_KEYWORDS.has(match[1] ?? "") && !EXPRESSION_KEYWORDS.has(match[2] ?? "")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Keep single-line disabled calls; heading/prose guards above filter labels such as `Rules (...)`.

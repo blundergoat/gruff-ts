@@ -82,6 +82,52 @@ async function reportsFailure(): Promise<void> {
   });
 });
 
+// Fixture purpose: Angular case 401 passes waitForAsync(...) straight into an enclosing call, so
+// nothing is dropped. A bare statement, an arrow body whose promise forEach discards, and a statement
+// that merely contains a same-named argument call still start floating work.
+// Stable contract: only a line-leading call that is itself a direct argument of an enclosing call is exempt.
+test("floating promise exempts only a call passed directly as another call's argument", () => {
+  // Fixture covers case 401's wrapper argument beside bare, discarded and same-named floating calls.
+  const report = analyseFixture(`it(
+  "unsubscribes a registered callback",
+  withModule(
+    {providers},
+    waitForAsync(
+      inject([Injector], (injector: Injector) => {
+        createRootEl(injector);
+      }),
+    ),
+  ),
+);
+
+function notify(userIds: string[]): void {
+  sendEmailAsync(userIds[0]);
+  userIds.forEach((userId) =>
+    sendEmailAsync(userId),
+  );
+  sendEmailAsync(sendEmailAsync(userIds[1]));
+}
+`);
+  const floatingLines = report.findings.filter((finding) => finding.ruleId === "security.floating-promise").map((finding) => finding.line);
+  assert.deepEqual(floatingLines, [14, 16, 18]);
+});
+
+// Fixture purpose: an error-recovered syntax tree cannot prove where a call sits, so a file with a
+// parse error keeps the line heuristic and its security finding.
+// Stable contract: the direct-argument exemption needs a parse without errors.
+test("floating promise keeps the line heuristic when the file does not parse", () => {
+  const report = analyseFixture(`it(
+  "loads the application",
+  waitForAsync(() => {
+    load();
+  }),
+);
+const broken = ;
+`);
+  const floatingLines = report.findings.filter((finding) => finding.ruleId === "security.floating-promise").map((finding) => finding.line);
+  assert.deepEqual(floatingLines, [3]);
+});
+
 test("swallowed catch accepts explicit rationale comments", () => {
   // Fixture pairs a rationale-only catch with a placeholder-only catch so the rule keeps signal.
   const report = analyseFixture(`function optionalProbe(): void {
@@ -163,7 +209,8 @@ test("security line-rule severity honours config overrides", () => {
 
 /*
  * Regression fixture covers the config contract, temp-project filesystem writes, and a fixed CLI
- * process. It proves configured `security.new-function` severity controls `--fail-on=error`.
+ * process. It proves configured `security.new-function` severity controls `--fail-on=error` through
+ * the v3 JSON envelope.
  */
 test("CLI severity override keeps new Function below fail-on error", () => {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-new-function-config-"));
@@ -193,11 +240,15 @@ module.exports = { loadHelper };
       [join(REPO_ROOT, "bin/gruff-ts"), "analyse", ".", "--format=json", "--fail-on=error"],
       { cwd: dir, encoding: "utf8" },
     );
-    const report = JSON.parse(output) as AnalysisReport;
+    const report = JSON.parse(output) as {
+      run: AnalysisReport["run"];
+      summary: { findings: AnalysisReport["summary"] };
+      findings: AnalysisReport["findings"];
+    };
     const dynamicExecutionFinding = report.findings.find((finding) => finding.ruleId === "security.new-function");
 
     assert.equal(report.run.failOn, "error");
-    assert.equal(report.summary.error, 0);
+    assert.equal(report.summary.findings.error, 0);
     assert.equal(dynamicExecutionFinding?.severity, "warning");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -746,4 +797,34 @@ export class PaymentController {
   assert.equal(report.findings.find((finding) => finding.ruleId === "naming.class-file-mismatch")?.severity, "error");
   // `--fail-on=error` must honor the configured severity, not the descriptor default.
   assert.equal(exitFor(report, "error"), 1);
+});
+
+// M22 hunt shape (axios `http2.smoke.test.cjs`): `rejectUnauthorized: false` as the expected value of a deep-equality
+// assertion configures nothing. The same test file's real `http2Options` setting, a real agent, and the environment
+// switch all still report at error.
+test("M22 disabled-tls-verification skips expected values in deep-equality assertions only", () => {
+  const report = analyseFixture([
+    "const { expect } = require(\"chai\");",
+    "",
+    "it(\"keeps instance-level http2Options in request config\", async () => {",
+    "  const client = axios.create({",
+    "    http2Options: {",
+    "      rejectUnauthorized: false,",
+    "    },",
+    "  });",
+    "  const response = await client.get(\"/\");",
+    "  expect(response.data.http2Options).to.deep.equal({",
+    "    rejectUnauthorized: false,",
+    "  });",
+    "  expect(response.data).toEqual({ rejectUnauthorized: false, sessionTimeout: 5000 });",
+    "  assert.deepStrictEqual(client.defaults.http2Options, { rejectUnauthorized: false });",
+    "  expect(new https.Agent({ rejectUnauthorized: false })).to.be.ok;",
+    "  process.env.NODE_TLS_REJECT_UNAUTHORIZED = \"0\";",
+    "});",
+    "",
+  ].join("\n"), { fileName: "http2.smoke.test.cjs" });
+  const tlsFindings = report.findings.filter((entry) => entry.ruleId === "security.disabled-tls-verification");
+
+  assert.deepEqual(tlsFindings.map((entry) => entry.line), [6, 15, 16]);
+  assert.equal(tlsFindings.every((entry) => entry.severity === "error"), true);
 });

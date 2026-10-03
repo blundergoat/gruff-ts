@@ -87,7 +87,7 @@ function functionContextDocFindings(block: FunctionBlock, commentText: string, c
 
 // Requires "why" context only after callable complexity crosses the configured threshold.
 function complexFunctionContextDocFinding(block: FunctionBlock, commentText: string, config: Config): ContextDocFindingDetails | undefined {
-  if (!isComplexContextCandidate(block, config) || hasComplexWhyMarker(commentText)) {
+  if (!isComplexContextCandidate(block, config) || hasComplexWhyMarker(commentText, block.name)) {
     return undefined;
   }
   return contextDocDetails(block.name, "docs.missing-why-for-complex-code", `Complex function \`${block.name}\` has a comment, but it does not explain why the control flow exists.`, "Explain the tradeoff, compatibility reason, or invariant behind the complex control flow.", "complex-code");
@@ -160,9 +160,28 @@ function isComplexContextCandidate(block: FunctionBlock, config: Config): boolea
 }
 
 // Vocabulary list signalling "the comment explains why" - the missing-why rule passes when any
-// listed word appears. Adding entries here loosens the rule; removing them tightens it.
-function hasComplexWhyMarker(text: string): boolean {
-  return /\b(?:because|why|intentional|trade-?off|compat(?:ibility|ible)?|avoid|preserve)\b|\b(?:due to|so that|in order to|required by)\b/i.test(text);
+// listed word appears. Adding entries here loosens the rule; removing them tightens it. Good technical
+// writing often states a constraint or a contrast instead of announcing a cause ("the renderer and the
+// clipboard must count from the same payload walk"), so those words count too, but only in a comment that
+// says more than the function's own name: "Always routes the value." above `routeValue` explains nothing.
+function hasComplexWhyMarker(text: string, functionName: string): boolean {
+  if (/\b(?:because|why|intentional|trade-?off|compat(?:ibility|ible)?|avoid|preserve)\b|\b(?:due to|so that|in order to|required by)\b/i.test(text)) {
+    return true;
+  }
+  return /\b(?:must|never|always|only|otherwise|instead|unless|since|cannot|to avoid|to keep|needs to)\b/i.test(text) && saysMoreThanTheName(text, functionName);
+}
+
+// Threshold of extra words, beyond the function name's own, before a constraint word counts as rationale: four,
+// because a one-line paraphrase of a function name rarely adds that many.
+const RATIONALE_MINIMUM_EXTRA_WORDS = 4;
+
+// True when the comment's prose, with tag lines such as `@param` set aside, keeps at least four words that are not
+// words of the function name, so a one-line paraphrase of the name cannot pass as rationale.
+function saysMoreThanTheName(text: string, functionName: string): boolean {
+  const nameWords = new Set(functionName.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+  const prose = text.split("\n").filter((line) => !/^\s*(?:\*\s*)?@/.test(line)).join(" ");
+  const extraWords = (prose.toLowerCase().match(/[a-z][a-z'-]*/g) ?? []).filter((word) => !nameWords.has(word));
+  return extraWords.length >= RATIONALE_MINIMUM_EXTRA_WORDS;
 }
 
 // Vocabulary for "comment names a side effect". Pairs with `SIDE_EFFECT_BODY_PATTERNS` - if the
@@ -187,7 +206,6 @@ const SIDE_EFFECT_BODY_PATTERNS = [
   /\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|mkdir(?:Sync)?|rm(?:Sync)?|rename(?:Sync)?|createWriteStream)\s*\(/,
   /\bprocess\.chdir\s*\(/,
   /\bprocess\.env\.[A-Za-z0-9_]+\s*=/,
-  /\b(?:exec|execFile|spawn)(?:Sync)?\s*\(/,
   /\b(?:response|res)\.(?:write|end|setHeader|writeHead)\s*\(/,
   /\bcreateServer\s*\(|\.listen\s*\(/,
 ] as const;
@@ -196,7 +214,20 @@ const SIDE_EFFECT_BODY_PATTERNS = [
 // pattern (functions starting with write/recordHistory/startDashboard). Either is sufficient
 // evidence that the callable has externally observable effects.
 function hasSideEffectSignal(name: string, body: string): boolean {
-  return SIDE_EFFECT_BODY_PATTERNS.some((pattern) => pattern.test(body)) || /^(?:write|recordHistory|startDashboard)\b/.test(name);
+  return SIDE_EFFECT_BODY_PATTERNS.some((pattern) => pattern.test(body)) || hasProcessExecutionCall(body) || /^(?:write|recordHistory|startDashboard)\b/.test(name);
+}
+
+// Process execution with the receiver guard `security.process-exec` ships (`src/line-rules.ts`, search:
+// `function isMemberProcessExecFalsePositive`): a bare `exec(cmd)` or a call on a child-process module receiver counts,
+// while any other member call, such as `/re/.exec(line)` or `pattern.exec(text)`, runs a regular expression and
+// changes nothing outside the function. The body is masked, so a regex literal's own text cannot fake a call.
+function hasProcessExecutionCall(body: string): boolean {
+  for (const match of body.matchAll(/\b(?:(child_process|childProcess|cp)\.)?(?:exec|execFile|spawn)(?:Sync)?\s*\(/g)) {
+    if (match[1] !== undefined || body[(match.index ?? 0) - 1] !== ".") {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Detects throw, catch, process.exit, diagnostic emission, or finding/diagnostic push patterns -

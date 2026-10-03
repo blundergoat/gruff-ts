@@ -7,12 +7,13 @@ import { renderReport } from "./cli.ts";
 import type { AnalysisReport } from "./cli.ts";
 
 const MARKDOWN_SAFETY_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v2",
+  schemaVersion: "gruff.analysis.v3",
   tool: { name: "gruff-ts", version: "0.5.0-test" },
   run: { projectRoot: "/tmp/markdown-project", format: "markdown", failOn: "none", generatedAt: "2026-07-12T00:00:00.000Z" },
   summary: { advisory: 1, warning: 2, error: 0, total: 3 },
   paths: { analysedFiles: 2, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
+  suppressions: [],
   findings: [
     {
       ruleId: "docs.rule`label",
@@ -62,11 +63,15 @@ const MARKDOWN_SAFETY_REPORT: AnalysisReport = {
   score: {
     composite: 82,
     grade: "B",
+    evaluatedFiles: 10,
+    clusters: [],
+    ruleAttribution: [],
+    scoredPillars: ["complexity", "documentation"],
     pillars: [
-      { pillar: "complexity", score: 70, penalty: 30, findings: 2 },
-      { pillar: "documentation", score: 94, penalty: 6, findings: 1 },
+      { pillar: "complexity", applicable: true, score: 70, grade: "C", penalty: 30, findings: 2 },
+      { pillar: "documentation", applicable: true, score: 94, grade: "A", penalty: 6, findings: 1 },
     ],
-    topOffenders: [{ filePath: "src/cluster`path.ts", score: 70, findings: 2 }],
+    topOffenders: [{ filePath: "src/cluster`path.ts", score: 70, penalty: 30, findings: 2 }],
   },
 };
 

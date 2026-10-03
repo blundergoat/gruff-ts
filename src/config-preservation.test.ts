@@ -1,5 +1,5 @@
 // Covers the best-effort field extraction used by `gruff-ts init --force` to preserve curated
-// `paths.ignore` and `minimumSeverity` entries across a config regeneration, including the
+// `paths.ignore` and per-command gate entries across a config regeneration, including the
 // pre-0.2.0 migration path where the source config lacks a `schemaVersion:` field.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -27,21 +27,25 @@ test("extractPreservedConfigFields reads paths.ignore from a pre-schemaVersion Y
     const preserved = extractPreservedConfigFields(configPath);
 
     assert.deepEqual(preserved.ignoredPaths, ["legacy/**", "vendored/**"]);
-    assert.equal(preserved.minimumSeverity.size, 0);
+    assert.equal(preserved.failOn.size, 0);
   });
 });
 
-test("extractPreservedConfigFields preserves valid minimumSeverity entries and drops the rest", () => {
+test("extractPreservedConfigFields preserves valid gate entries under either spelling and drops the rest", () => {
   withTempProjectRoot((projectRoot) => {
     const configPath = join(projectRoot, ".gruff-ts.yaml");
     writeFileSync(configPath, "minimumSeverity:\n  analyse: warning\n  summary: garbage\n  dashboard: error\n  report: none\n");
 
     const preserved = extractPreservedConfigFields(configPath);
 
-    assert.equal(preserved.minimumSeverity.get("analyse"), "warning");
-    assert.equal(preserved.minimumSeverity.get("report"), "none");
-    assert.equal(preserved.minimumSeverity.has("summary"), false);
-    assert.equal(preserved.minimumSeverity.has("dashboard" as never), false);
+    assert.equal(preserved.failOn.get("analyse"), "warning");
+    assert.equal(preserved.failOn.get("report"), "none");
+    assert.equal(preserved.failOn.has("summary"), false);
+    assert.equal(preserved.failOn.has("dashboard" as never), false);
+
+    // A 0.6.0 file spells the same block failOn, and a file carrying both is read from the current key.
+    writeFileSync(configPath, "failOn:\n  analyse: error\nminimumSeverity: warning\n");
+    assert.equal(extractPreservedConfigFields(configPath).failOn.get("analyse"), "error");
   });
 });
 
@@ -53,6 +57,41 @@ test("extractPreservedConfigFields returns empty fields for an empty config file
     const preserved = extractPreservedConfigFields(configPath);
 
     assert.deepEqual(preserved.ignoredPaths, []);
-    assert.equal(preserved.minimumSeverity.size, 0);
+    assert.equal(preserved.failOn.size, 0);
+  });
+});
+
+// Proves the carry-over bundle keeps every well-formed reviewed suppression, including the optional
+// symbol, and drops an entry missing a required field so the strict parser reports it at load time.
+// Writes a `.gruff-ts.yaml` into a temporary project root and removes that root afterwards.
+test("extractPreservedConfigFields carries reviewed sensitive exclusions through regeneration", () => {
+  withTempProjectRoot((projectRoot) => {
+    const configPath = join(projectRoot, ".gruff-ts.yaml");
+    writeFileSync(
+      configPath,
+      [
+        "sensitiveExclusions:",
+        "  - rule: sensitive-data.aws-access-key",
+        "    path: src/fixtures/sample.ts",
+        "    reason: Synthetic key used by the loader fixture.",
+        "  - rule: sensitive-data.jwt-token",
+        "    path: src/fixtures/token.ts",
+        "    symbol: Fixtures.sessionToken",
+        "    reason: Synthetic token used by the session fixture.",
+        "  - rule: sensitive-data.private-key",
+        "    path: src/fixtures/key.ts",
+        "",
+      ].join("\n"),
+    );
+
+    const preserved = extractPreservedConfigFields(configPath);
+
+    assert.equal(preserved.sensitiveExclusions.length, 2);
+    assert.deepEqual(preserved.sensitiveExclusions[0], {
+      rule: "sensitive-data.aws-access-key",
+      path: "src/fixtures/sample.ts",
+      reason: "Synthetic key used by the loader fixture.",
+    });
+    assert.equal(preserved.sensitiveExclusions[1]?.symbol, "Fixtures.sessionToken");
   });
 });

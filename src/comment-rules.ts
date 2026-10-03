@@ -4,7 +4,6 @@
 // passes that all share a stable, deterministic emission order.
 import { existsSync } from "node:fs";
 import { dirname as dirnamePath, resolve } from "node:path";
-import { cwd } from "node:process";
 import { type FunctionBlock } from "./blocks.ts";
 import { combinedContextLineComment, type CommentRecord } from "./comment-scanner.ts";
 import { type SourceFile } from "./discovery.ts";
@@ -68,9 +67,10 @@ export function analyseCommentQualityRules(input: CommentQualityRuleInput): void
  * Stable, deterministic emission order across the five sub-checks.
  */
 function analyseStandaloneCommentQuality(file: SourceFile, source: string, comments: CommentRecord[], ruleIdSet: Set<string>, optionFlagSet: Set<string>, findings: Finding[]): void {
+  const attachedRationale = directivesWithAttachedRationale(source, comments);
   for (const comment of comments) {
     pushTodoWithoutTrackingFinding(file, source, comment, findings);
-    pushSuppressionWithoutRationaleFinding(file, comment, findings);
+    pushSuppressionWithoutRationaleFinding(file, comment, attachedRationale.has(comment), findings);
     pushStaleFileReferenceFindings(file, comment, findings);
     pushStaleRuleReferenceFindings(file, comment, ruleIdSet, findings);
     pushStaleCliFlagReferenceFindings(file, comment, optionFlagSet, findings);
@@ -216,10 +216,11 @@ function hasTodoTracking(text: string): boolean {
  * Targets `eslint-disable`, `biome-ignore`, coverage `istanbul ignore`, etc. when no maintainer
  * rationale is attached - the false-positive escape hatch is explicit because TS suppression
  * directives have their own dedicated rule. Reports the stable `docs.suppression-without-rationale` finding.
+ * The rationale may sit on the directive itself or in the comment block attached above it.
  */
-function pushSuppressionWithoutRationaleFinding(file: SourceFile, comment: CommentRecord, findings: Finding[]): void {
+function pushSuppressionWithoutRationaleFinding(file: SourceFile, comment: CommentRecord, hasAttachedRationale: boolean, findings: Finding[]): void {
   const suppression = suppressionDirective(comment.text);
-  if (!suppression || hasSuppressionRationale(comment.text)) {
+  if (!suppression || hasAttachedRationale || hasSuppressionRationale(comment.text)) {
     return;
   }
   findings.push(
@@ -235,6 +236,40 @@ function pushSuppressionWithoutRationaleFinding(file: SourceFile, comment: Comme
       metadata: { suppression },
     }),
   );
+}
+
+/*
+ * Directives whose rationale is written in the comment block attached above them. The block is an
+ * unbroken run of standalone `//` lines ending on the line directly above a standalone directive; a
+ * blank line, code, a trailing comment or another directive ends it, so a rationale is never borrowed
+ * across them. Contract invariant: one pass in source order keeps the result deterministic.
+ */
+function directivesWithAttachedRationale(source: string, comments: readonly CommentRecord[]): Set<CommentRecord> {
+  const attached = new Set<CommentRecord>();
+  let blockEndLine = -1;
+  let hasBlockRationale = false;
+  for (const comment of comments) {
+    const isStandalone = comment.kind === "line" && startsItsLine(source, comment.startIndex);
+    const isDirective = suppressionDirective(comment.text) !== undefined;
+    const continuesBlock = isStandalone && comment.line === blockEndLine + 1;
+    if (isDirective && continuesBlock && hasBlockRationale) {
+      attached.add(comment);
+    }
+    if (isStandalone && !isDirective) {
+      hasBlockRationale = (continuesBlock && hasBlockRationale) || hasSuppressionRationale(comment.text);
+      blockEndLine = comment.line;
+    } else {
+      blockEndLine = -1;
+      hasBlockRationale = false;
+    }
+  }
+  return attached;
+}
+
+// A comment starts its line when only whitespace precedes it; a comment after code annotates that code.
+function startsItsLine(source: string, commentStart: number): boolean {
+  const lineStart = source.lastIndexOf("\n", commentStart - 1) + 1;
+  return source.slice(lineStart, commentStart).trim() === "";
 }
 
 // Returns the suppression keyword that triggered the rule. `@ts-*` directives are explicitly
@@ -271,12 +306,29 @@ function pushStaleFileReferenceFindings(file: SourceFile, comment: CommentRecord
   }
 }
 
-// Tries both the project-root and same-directory interpretations because comments are inconsistent
-// about which they imply. Either match is enough to consider the reference live.
+// Tries both the project-root and same-directory interpretations because comments are inconsistent about which they imply.
+// Either match is enough to consider the reference live.
+//
+// The project root is derived from the scanned file itself rather than the process working directory. Reading `cwd()` here
+// made the result depend on where the command was run: scanning a project from an unrelated directory turned every
+// project-relative reference into a "missing path" finding, so the same tree scored differently under CI than by hand.
 function referencedPathExists(file: SourceFile, referencedPath: string): boolean {
-  const fromProject = resolve(cwd(), referencedPath);
+  const fromProject = resolve(projectRootOf(file), referencedPath);
   const fromFile = resolve(dirnamePath(file.absolutePath), referencedPath);
   return existsSync(fromProject) || existsSync(fromFile);
+}
+
+// Recovers the scan's project root by removing the file's project-relative display path from its absolute path, so the
+// answer follows the tree being scanned instead of the caller's working directory. The entropy rule's asset check shares it.
+export function projectRootOf(file: Pick<SourceFile, "absolutePath" | "displayPath">): string {
+  const absolute = file.absolutePath.replaceAll("\\", "/");
+  const display = file.displayPath.replaceAll("\\", "/");
+
+  // A display path that is not the tail of the absolute path cannot identify the root, so fall back to the file's folder.
+  if (!absolute.endsWith(`/${display}`)) {
+    return dirnamePath(file.absolutePath);
+  }
+  return absolute.slice(0, absolute.length - display.length - 1);
 }
 
 /*

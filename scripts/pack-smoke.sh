@@ -124,7 +124,7 @@ printf '%s\n' \
   "$PACKAGED_BINARY" analyse "$GENERATED_FIXTURE_PATH" --format=json --fail-on=none --no-config --no-baseline > "$SUCCESS_REPORT_FILE"
 )
 
-require_report_text '"schemaVersion": "gruff.analysis.v2"' "analysis schema"
+require_report_text '"schemaVersion": "gruff.analysis.v3"' "analysis schema"
 require_report_text '"analysedFiles": 1' "single-file scan count"
 require_report_text '"ruleId": "security.eval-call"' "known security finding"
 

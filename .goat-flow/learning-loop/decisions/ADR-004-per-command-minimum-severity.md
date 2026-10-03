@@ -1,7 +1,8 @@
 # ADR-004: Per-Command minimumSeverity Config Block + Config Schema Version
 
-**Status:** Accepted
+**Status:** Superseded by the family CLI contract decision `config-exit-gate-key` (`gruff-spec/contracts/core/cli.v1.json`) on 2026-09-19: `failOn` carries the per-command exit gate, and `minimumSeverity` is the display floor.
 **Date:** 2026-05-27
+**Updated:** 2026-09-19
 **Author(s):** Operator, Claude
 **Ticket/Context:** `.goat-flow/tasks/0.1.2/ISSUE-minimumSeverity.md`, cross-port `gruff-go/.goat-flow/logs/critiques/2026-05-26-config-wording-brainstorm-b5k2x.md`
 
