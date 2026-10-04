@@ -9,6 +9,6 @@ hooks:
   post-turn-safety:
     enabled: true
   gruff-code-quality:
-    enabled: false
+    enabled: true
   deny-git-mutations:
     enabled: true
