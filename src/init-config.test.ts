@@ -19,7 +19,7 @@ test("renderDefaultConfig includes every descriptor rule id", () => {
   assertDefaultConfigIncludesEveryDescriptor(yaml);
 });
 
-test("renderDefaultConfig emits every descriptor rule as enabled:true", () => {
+test("renderDefaultConfig seeds each rule's enabled state from its registry default", () => {
   const yaml = renderDefaultConfig();
   assertDefaultConfigOptInStates(yaml);
 });
@@ -284,7 +284,8 @@ function assertDefaultConfigIncludesEveryDescriptor(yaml: string): void {
 function assertDefaultConfigOptInStates(yaml: string): void {
   for (const descriptor of ruleDescriptors()) {
     const block = renderedRuleBlock(yaml, descriptor.ruleId);
-    assert.equal(renderedRuleField(block, "enabled"), "true", `enabled mismatch for ${descriptor.ruleId}`);
+    // A rule its descriptor turns off is seeded off, so a fresh init does not quietly turn it back on.
+    assert.equal(renderedRuleField(block, "enabled"), String(descriptor.isEnabledByDefault !== false), `enabled mismatch for ${descriptor.ruleId}`);
   }
 }
 

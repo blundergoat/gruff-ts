@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { arrayValue, isString, objectValue, parseConfigFile, SUGGEST_EDIT_CONFIG, SUGGEST_INIT_FORCE } from "./config-parse.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
 import { BUILT_IN_PROFILES, builtInProfileNames, DEFAULT_PROFILE_NAME, isKnownRuleId, ruleOptionKeys, ruleThresholdNames } from "./profiles.ts";
+import { ruleDefaultEnabled } from "./rules.ts";
 import { applyExecutionSelectors } from "./selectors.ts";
 import { parseSensitiveExclusions } from "./sensitive-exclusions.ts";
 import type { AnalysisOptions, Config, DeepScanBudgetOverride, FailThreshold, InlineProfileSpec, MinimumSeverityCommand, ProfileDefinition, ProfileRuleSetting, ProfileSpec, Severity } from "./types.ts";
@@ -681,9 +682,9 @@ function defaultConfigPath(projectRoot: string): string | undefined {
 }
 
 // Returns whether one rule should run for the user's scan.
-// Missing config means enabled, matching the descriptor default used by zero-config analysis.
+// Missing config means the registry's default, which is on for every rule its descriptor does not turn off.
 function ruleEnabled(config: Config, ruleId: string): boolean {
-  return config.rules.get(ruleId)?.enabled ?? true;
+  return config.rules.get(ruleId)?.enabled ?? ruleDefaultEnabled(ruleId);
 }
 
 // Returns the configured threshold for one rule or the caller's documented default.

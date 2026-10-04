@@ -55,9 +55,10 @@ const LISTING_THRESHOLD_KNOB_NAMES: Readonly<Record<string, string>> = {
 // `defaultSeverity`, and the threshold as a named map under `thresholds`. The internal descriptor
 // keeps its own field names because reports, hooks, and config validation read those; only the two
 // public listing surfaces are projected.
-type ListedRule = Omit<RuleDescriptor, "ruleId" | "severity" | "threshold" | "thresholdName" | "additionalThresholds"> & {
+type ListedRule = Omit<RuleDescriptor, "ruleId" | "severity" | "isEnabledByDefault" | "threshold" | "thresholdName" | "additionalThresholds"> & {
   id: string;
   defaultSeverity: Severity;
+  defaultEnabled: boolean;
   thresholds?: Record<string, number>;
 };
 
@@ -65,13 +66,15 @@ type ListedRule = Omit<RuleDescriptor, "ruleId" | "severity" | "threshold" | "th
 // scoring first, the threshold map where the scalar used to sit, then every remaining descriptor
 // field unchanged, so a diff of the two shapes reads as the three renames it is.
 function listedRule(descriptor: RuleDescriptor): ListedRule {
-  const { ruleId, pillar, severity, confidence, threshold, thresholdName, additionalThresholds, ...rest } = descriptor;
+  const { ruleId, pillar, severity, confidence, isEnabledByDefault, threshold, thresholdName, additionalThresholds, ...rest } = descriptor;
   const knob = thresholdName ?? LISTING_THRESHOLD_KNOB_NAMES[ruleId] ?? "threshold";
   return {
     id: ruleId,
     pillar,
     defaultSeverity: severity,
     confidence,
+    // Every record publishes the family field, so a rule that is on by default says so rather than leaving it absent.
+    defaultEnabled: isEnabledByDefault !== false,
     ...(typeof threshold === "number" ? { thresholds: { [knob]: threshold, ...additionalThresholds } } : {}),
     ...rest,
   };

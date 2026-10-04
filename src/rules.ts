@@ -131,3 +131,18 @@ const RULE_DESCRIPTORS: readonly RuleDescriptor[] = [
 export function ruleDescriptors(): RuleDescriptor[] {
   return [...RULE_DESCRIPTORS].sort((left, right) => left.ruleId.localeCompare(right.ruleId));
 }
+
+// Rule ids whose descriptor turns them off unless a config enables them; built once, because analysis asks per finding.
+const DEFAULT_DISABLED_RULE_IDS: ReadonlySet<string> = new Set(
+  RULE_DESCRIPTORS.filter((descriptor) => descriptor.isEnabledByDefault === false).map((descriptor) => descriptor.ruleId),
+);
+
+/**
+ * Say whether a rule runs when no config names it: the registry's default, published by list-rules, SARIF and init.
+ *
+ * @param ruleId - Any rule id; an id the registry does not hold reports true, the default every descriptor starts from.
+ * @returns False only for a rule its descriptor marks `isEnabledByDefault: false`.
+ */
+export function ruleDefaultEnabled(ruleId: string): boolean {
+  return !DEFAULT_DISABLED_RULE_IDS.has(ruleId);
+}

@@ -370,6 +370,8 @@ export interface RuleDescriptor {
   confidence: Confidence;
   description: string;
   remediation: string;
+  /** False for a rule that runs only when a config enables it; omitted means the rule is on by default. Published as `defaultEnabled`. */
+  isEnabledByDefault?: boolean;
   threshold?: number;
   /** The published name of `threshold` in the listing's `thresholds` map and under `rules.<id>.thresholds`, when the descriptor names it. */
   thresholdName?: string;

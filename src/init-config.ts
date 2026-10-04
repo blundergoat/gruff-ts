@@ -317,7 +317,7 @@ function renderRuleEntry(descriptor: RuleDescriptor): string[] {
   const lines: string[] = [];
   lines.push(`  # ${descriptor.pillar}/${descriptor.severity}: ${descriptor.description}`);
   lines.push(`  ${descriptor.ruleId}:`);
-  lines.push("    enabled: true");
+  lines.push(`    enabled: ${descriptor.isEnabledByDefault !== false}`);
   if (typeof descriptor.threshold === "number") {
     lines.push(`    threshold: ${descriptor.threshold}`);
     lines.push(`    severity: ${descriptor.severity}`);

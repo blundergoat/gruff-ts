@@ -393,7 +393,7 @@ function renderSarif(report: AnalysisReport): string {
       tier: "v0.1",
       defaultSeverity: descriptor.severity,
       confidence: descriptor.confidence,
-      defaultEnabled: true,
+      defaultEnabled: descriptor.isEnabledByDefault !== false,
       ...(typeof descriptor.threshold === "number" ? { threshold: descriptor.threshold } : {}),
       ...(descriptor.optionKeys ? { optionKeys: descriptor.optionKeys } : {}),
     },

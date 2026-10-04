@@ -9,6 +9,7 @@ import test from "node:test";
 import { analyse, buildProgram, renderReport, ruleDescriptors } from "./cli.ts";
 import { VERSION } from "./constants.ts";
 import type { AnalysisReport } from "./cli.ts";
+import { ruleDefaultEnabled } from "./rules.ts";
 import { analyseFixture, REPO_ROOT } from "./test-fixtures.ts";
 
 const VERSION_PATTERN = VERSION.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -48,6 +49,18 @@ test("root CLI mirrors gruff php ANSI menu styling", () => {
 test("list-rules CLI prints text and deterministic json", () => {
   assert.equal(assertRuleListTextOutput(), true);
   assert.equal(assertRuleListJsonOutput(), true);
+});
+
+test("list-rules JSON publishes every rule's default-enabled flag from the registry", () => {
+  const listing = JSON.parse(execFileSync("./bin/gruff-ts", ["list-rules", "--format=json"], { encoding: "utf8" })) as {
+    rules: { id: string; defaultEnabled: unknown }[];
+  };
+  // Every record carries a boolean, because the family catalogue reader compares it with the reviewed default.
+  for (const rule of listing.rules) {
+    assert.equal(typeof rule.defaultEnabled, "boolean", `${rule.id} publishes defaultEnabled`);
+    assert.equal(rule.defaultEnabled, ruleDefaultEnabled(rule.id), `${rule.id} defaultEnabled follows the registry`);
+  }
+  assert.equal(listing.rules.length, ruleDescriptors().length);
 });
 
 test("list-rules <ruleId> prints labelled per-rule detail in text mode", () => {
@@ -612,7 +625,11 @@ test("sarif report renders code scanning contract without mutating native json s
   assert.equal(evalRule.properties.pillar, evalDescriptor.pillar);
   assert.equal(evalRule.properties.defaultSeverity, evalDescriptor.severity);
   assert.equal(evalRule.properties.confidence, evalDescriptor.confidence);
-  assert.equal(evalRule.properties.defaultEnabled, true);
+  // SARIF publishes the registry's default rather than a fixed stamp, so a rule turned off by default would say so here.
+  assert.equal(evalRule.properties.defaultEnabled, evalDescriptor.isEnabledByDefault !== false);
+  rules.forEach((rule) => {
+    assert.equal(rule.properties.defaultEnabled, ruleDefaultEnabled(rule.id), `${rule.id} SARIF defaultEnabled`);
+  });
   results.forEach((sarifResult: SarifResult) => {
     assert.equal(rules[sarifResult.ruleIndex ?? -1]?.id ?? sarifResult.ruleId, sarifResult.ruleId);
     assert.equal(typeof sarifResult.partialFingerprints?.gruffFingerprint, "string");
