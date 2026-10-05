@@ -1,6 +1,6 @@
 # Rules
 
-`gruff-ts` exposes 120 rules across 11 pillars. This list is maintained by hand
+`gruff-ts` exposes 112 rules across 11 pillars. This list is maintained by hand
 against the public rule catalogue used by `gruff-ts list-rules`; severity,
 confidence, thresholds, and option names are the defaults before project config
 overrides.
@@ -42,10 +42,10 @@ itself suppress any rule family.
 - maintainability: 14
 - modernisation: 14
 - naming: 10
-- security: 29
-- sensitive-data: 10
+- security: 24
+- sensitive-data: 8
 - size: 3
-- test-quality: 14
+- test-quality: 13
 
 ## Complexity
 
@@ -145,22 +145,17 @@ existing config overrides and baselines keep matching.
 - `security.document-write` (warning; high confidence): Flags document.write usage.
 - `security.dynamic-regexp` (warning; medium confidence): Flags external input used to construct regular expressions.
 - `security.eval-call` (error; high confidence): Flags eval() dynamic code execution.
-- `security.floating-promise` (warning; medium confidence): Flags promise-like calls without await, return, or void; a call passed directly as another call's argument is not floating.
-- `security.github-actions-broad-permissions` (warning; medium confidence): Flags GitHub Actions workflows that grant broad write permissions: `write-all` anywhere, or a write scope in the workflow-level `permissions:` block that every job inherits. A job-level grant is least privilege and stays quiet, as in gruff-rs.
 - `security.github-actions-pull-request-target` (warning; medium confidence): Flags pull_request_target workflows paired with risky execution or trust context.
 - `security.github-actions-remote-shell` (warning; medium confidence): Flags workflow run steps that pipe remote downloads to a shell.
 - `security.github-actions-secrets-in-pr` (warning; medium confidence): Flags pull_request_target workflows that reference repository secrets other than GITHUB_TOKEN. The trigger is read from the workflow's `on:` key; a plain `pull_request` run from a fork receives no secrets. An own job or step `if:` guard can silence a secret reference when exact `github.event_name` comparisons prove that scope unreachable for the detected PR event. Comparisons ignore case and support a whole expression wrapper, parentheses, negation, AND and OR. Unknown, malformed or unsupported guards and ambiguous YAML ownership retain warnings; a step guard cannot cover job/workflow env or siblings.
 - `security.github-actions-unpinned-action` (warning; medium confidence): Flags third-party GitHub Actions that are not pinned to a full commit SHA.
 - `security.inner-html` (warning; high confidence): Flags innerHTML assignment.
-- `security.insecure-random` (warning; high confidence): Flags Math.random usage in source.
 - `security.javascript-url` (error; high confidence): Flags javascript: URL literals that execute script.
 - `security.new-function` (error; high confidence): Flags Function constructor dynamic code execution.
-- `security.open-redirect-candidate` (warning; medium confidence): Flags external input sent to redirect or navigation sinks.
+- `security.open-redirect-candidate` (warning; medium confidence): Flags external input sent to redirect or navigation sinks. Off by default (ADR-021): enable it with `rules.security.open-redirect-candidate.enabled: true`.
 - `security.path-traversal-candidate` (warning; medium confidence): Flags external input sent to filesystem path sinks.
 - `security.process-exec` (warning; high confidence): Flags child-process execution calls, grading severity from command-source and shell-mode evidence: warning only when a shell-enabled call takes a dynamic command. A declaration or signature named like a process function is not a call.
-- `security.proto-access` (warning; medium confidence): Flags direct __proto__ access that can enable prototype pollution.
 - `security.remote-install-script` (error; medium confidence): Flags package scripts that pipe remote content to a shell.
-- `security.risky-lifecycle-script` (warning; medium confidence): Flags install-time and side-effectful publish lifecycle scripts while allowing validation-only publish gates.
 - `security.sql-concatenation` (warning; high confidence): Flags SQL text composed with runtime interpolation or concatenation in `query`, `execute`, `raw`, or `prepare` calls. Parameterized value placeholders stay quiet, but unknown runtime identifier interpolation such as table prefixes remains visible unless a project proves and documents a trusted source. The scanner is line-local and does not inspect multi-line SQL templates.
 - `security.ssrf-candidate` (warning; medium confidence): Flags external input sent to network request sinks.
 - `security.string-timer` (warning; high confidence): Flags string callbacks passed to timers.
@@ -178,13 +173,7 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 - `sensitive-data.aws-access-key` (warning; high confidence): Flags AWS access key looking values.
 - `sensitive-data.database-url-password` (warning; high confidence): Flags database and HTTP(S) URLs that include passwords or embedded credentials.
 - `sensitive-data.gcp-service-account-key` (warning; high confidence): Flags GCP service-account key files (type service_account alongside a private key).
-- `sensitive-data.hardcoded-env-value` (warning; medium confidence; threshold 16): Flags environment-style secret values committed in text. In script files (TS/JS) only quoted values count: an unquoted right-hand side is a code expression (schema builder, secret-provider plumbing), not an embedded literal.
-- `sensitive-data.high-entropy-string` (warning; medium confidence; minLength 32, entropy 4.2): Flags long, random-looking literals. Both thresholds
-  are configurable. Finite complete public alphabets and formats, bounded structured names and repository paths can stay quiet; every name segment must
-  satisfy the shared casing and numeric bounds, with a strict word-letter majority across at least two segments. A location or digest property name
-  never exempts its value. Added opaque text cannot inherit a public prefix's exception. Existing hex, integrity, public PEM and documented-sample
-  handling remains in place. A whole YAML or JSON config value that names an image file present in the project also stays quiet.
-- `sensitive-data.jwt-token` (warning; high confidence): Flags JWT-looking token literals.
+- `sensitive-data.jwt-token` (warning; high confidence): Flags JWT-looking token literals. Off by default (ADR-021): enable it with `rules.sensitive-data.jwt-token.enabled: true`.
 - `sensitive-data.phi-pattern` (warning; high confidence): Flags PHI identifiers such as Medicare (MBI) and medical record numbers.
 - `sensitive-data.pii-pattern` (warning; high confidence): Flags PII-like identifier patterns including SSN-shaped values and Luhn-valid payment cards. A bare unseparated digit run additionally needs card vocabulary on its line (statistics can pass Luhn by coincidence); separator-grouped numbers flag without context.
 - `sensitive-data.private-key` (warning; high confidence): Flags private key block markers.
@@ -203,7 +192,6 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 - `test-quality.loop-in-test` (advisory; medium confidence): Flags test-body loops whose assertions do not identify the failing iteration.
 - `test-quality.magic-number-assertion` (advisory; medium confidence): Flags assertions against unexplained numeric literals.
 - `test-quality.mock-only-test` (advisory; high confidence): Flags tests that only verify mock interaction.
-- `test-quality.no-assertions` (warning; high confidence): Flags tests without apparent assertions; observed `.should.be` matcher calls count.
 - `test-quality.no-throw-only-test` (advisory; high confidence): Flags tests that only assert code does not throw.
 - `test-quality.only-skip` (advisory; high confidence): Flags focused or skipped test markers.
 - `test-quality.sleep-in-test` (advisory; high confidence): Flags sleeps in tests.

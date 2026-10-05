@@ -25,7 +25,7 @@ Used as a hook on an agent's output, gruff-ts is a forcing function rather than 
 | Runtime dependencies | `commander`, `tsx`, and `typescript` |
 | Package | `@blundergoat/gruff-ts` |
 | Binary | `gruff-ts` |
-| Rule catalogue | 120 rules across 11 pillars |
+| Rule catalogue | 112 rules across 11 pillars |
 | Primary config | `.gruff-ts.yaml`; `.gruff.json`, `.gruff.yaml`, and `.gruff.yml` are fallback files |
 | Analysis schema | `gruff.analysis.v3` |
 | Summary schema | `gruff.summary.v3` |
@@ -153,7 +153,7 @@ Security-focused gates can bypass adoption baselines:
 npx gruff-ts analyse . --no-baseline --fail-on=error
 ```
 
-That gate does not fail on `sensitive-data.high-entropy-string`, which reports at warning.
+That gate does not fail on a sensitive-data finding, which reports at warning; use `--fail-on=warning` to gate on one.
 
 ## Configuration
 
@@ -200,7 +200,7 @@ A `profile:` selects a named bundle of rules instead of enumerating every rule b
 | --- | --- |
 | `gruff.minimal` | Security and sensitive-data rules only - the smallest sanity gate for incremental adoption. |
 | `gruff.recommended` | Every pillar at its default threshold and severity - identical to gruff's zero-config behaviour. |
-| `gruff.strict` | Every pillar enabled with tightened size, complexity, and secret thresholds for high-bar repositories. |
+| `gruff.strict` | Every pillar enabled with tightened size, complexity, and design thresholds for high-bar repositories. |
 
 `gruff-ts list-profiles` prints them with their enabled-rule counts. Select one in config or on the CLI:
 
@@ -233,7 +233,7 @@ Semantics:
 
 ## Rules And Pillars
 
-The current catalogue contains 120 rules:
+The current catalogue contains 112 rules:
 
 | Pillar | Rules |
 | --- | ---: |
@@ -244,10 +244,10 @@ The current catalogue contains 120 rules:
 | `maintainability` | 14 |
 | `modernisation` | 14 |
 | `naming` | 10 |
-| `security` | 29 |
-| `sensitive-data` | 10 |
+| `security` | 24 |
+| `sensitive-data` | 8 |
 | `size` | 3 |
-| `test-quality` | 14 |
+| `test-quality` | 13 |
 
 Use `npx gruff-ts list-rules --format=json` for exact rule IDs, severities, confidence levels, remediation text, thresholds, and options.
 

@@ -667,6 +667,9 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
           "size.file-length": { threshold: 8, severity: "warning" },
           "size.function-length": { threshold: 8, severity: "warning" },
           "size.parameter-count": { threshold: 3, severity: "warning" },
+          // Off by default (ADR-021); the coverage project switches them on so each still has a positive case.
+          "security.open-redirect-candidate": { enabled: true },
+          "sensitive-data.jwt-token": { enabled: true },
         },
       },
     };

@@ -122,7 +122,7 @@ export interface Config {
   minimumSeverity: Map<MinimumSeverityCommand, FailThreshold>;
   /** The `minimumSeverity:` display floor: findings below it are hidden from the report and still scored and gated. */
   displayFloor?: Severity;
-  rules: Map<string, { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number>; thresholds?: Map<string, number> }>;
+  rules: Map<string, { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> }>;
   deepScanBudget: DeepScanBudget;
   /** Reviewed sensitive-data suppressions in declaration order; an empty list means nothing is suppressed. */
   sensitiveExclusions: SensitiveExclusion[];
@@ -155,7 +155,7 @@ export interface SuppressionSummary {
   symbol: string | null;
   reason: string;
   suppressed: number;
-  /** `built-in` on a row the family lockfile skip produced; absent on a configured entry's row. */
+  /** `built-in` on a row the family test-path skip produced; absent on a configured entry's row. */
   source?: "built-in";
 }
 
@@ -169,8 +169,6 @@ export interface ProfileRuleSetting {
   threshold?: number;
   severity?: Severity;
   options?: Map<string, number>;
-  /** Additional named thresholds, such as high-entropy-string's `entropy`; `threshold` holds the rule's own knob. */
-  thresholds?: Map<string, number>;
 }
 
 /**
@@ -373,10 +371,6 @@ export interface RuleDescriptor {
   /** False for a rule that runs only when a config enables it; omitted means the rule is on by default. Published as `defaultEnabled`. */
   isEnabledByDefault?: boolean;
   threshold?: number;
-  /** The published name of `threshold` in the listing's `thresholds` map and under `rules.<id>.thresholds`, when the descriptor names it. */
-  thresholdName?: string;
-  /** Named thresholds beyond `threshold`, published beside it and configured under `rules.<id>.thresholds`. */
-  additionalThresholds?: Readonly<Record<string, number>>;
   optionKeys?: readonly string[];
   /** Allowlist keys shown to users for this rule; missing means the rule has no allowlist control. */
   allowlistKeys?: readonly string[];

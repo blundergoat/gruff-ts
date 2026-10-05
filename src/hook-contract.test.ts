@@ -252,10 +252,9 @@ test("hook stableIdentity survives line shifts and measured-value changes", () =
 });
 
 test("hook keeps multiple same-rule secrets in one file separately actionable and unnameable", () => {
-  // Assembled from sub-24-char halves so this test's own source does not trip the high-entropy rule;
-  // the file written into the temp project still holds the full secret literal for the scan to find.
-  const firstSecret = "aB3xY7kLmN9pQ2rS5" + "tU8vW1zC4dE6fG0hJ2kQ8w";
-  const secondSecret = "zX9wV3uT6sR1qP8oN5" + "mL2kJ4iH7gF0eD3cB6aZ1y";
+  // Split so this test file carries no scannable key of its own; the file written into the temp project holds both.
+  const firstSecret = ["AKIAL5HWQ2NBX", "R7TJMCV"].join("");
+  const secondSecret = ["AKIAP3ZKV8YDG", "W4SNHQE"].join("");
   const twoSecrets = [
     "// File overview: hook contract fixture.",
     `export const firstSecret = "${firstSecret}";`,
@@ -263,38 +262,37 @@ test("hook keeps multiple same-rule secrets in one file separately actionable an
   ].join("\n");
   withProject({ "secrets.ts": twoSecrets }, (dir) => {
     const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "secrets.ts"]);
-    const secrets = payload.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+    const secrets = payload.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
     assert.equal(secrets.length, 2);
     // A secret is never named, because a stored identity is what would let a review hide it.
     assert.deepEqual(secrets.map((finding) => finding.stableIdentity), [null, null]);
     // The port-local fingerprint still separates them, so a consumer can act on each one.
     assert.notEqual(secrets[0]?.fingerprint, secrets[1]?.fingerprint);
     assert.equal(secrets[0]?.metadata.measured, undefined);
-    assert.equal(typeof secrets[0]?.metadata.threshold, "number");
-    assert.equal(secrets[0]?.metadata.preview, "[redacted]");
+    assert.equal(secrets[0]?.metadata.preview, "[redacted:aws-access-key]");
     assert.equal("length" in (secrets[0]?.metadata ?? {}), false);
 
     // A baseline generated from this very run stores no secret, so both keep reporting until they are fixed.
     execFileSync("bash", [BIN, "analyse", "--generate-baseline", "gruff-baseline.json", "--fail-on", "none", "--no-config", "."], { cwd: dir, encoding: "utf8" });
     const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "secrets.ts"]);
-    const remaining = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+    const remaining = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
     assert.equal(remaining.length, 2);
     assert.equal(remaining.every((finding) => finding.baselineStatus === "notEligible"), true);
   });
 });
 
 test("hook keeps two same-line secrets independently classifiable", () => {
-  // Sub-threshold fragments keep this fixture safe; both assembled values sit on one line.
+  // Split so this test file carries no scannable key of its own; both assembled keys sit on one line.
   // The ADR-017 column discriminator is what keeps the second finding separately actionable.
-  const firstSecret = "aB3xY7kLmN9pQ2rS5" + "tU8vW1zC4dE6fG0hJ2kQ8w";
-  const secondSecret = "zX9wV3uT6sR1qP8oN5" + "mL2kJ4iH7gF0eD3cB6aZ1y";
+  const firstSecret = ["AKIAL5HWQ2NBX", "R7TJMCV"].join("");
+  const secondSecret = ["AKIAP3ZKV8YDG", "W4SNHQE"].join("");
   const sameLine = [
     "// File overview: hook same-line contract fixture.",
     `export const firstSecret = "${firstSecret}"; export const secondSecret = "${secondSecret}";`,
   ].join("\n");
   withProject({ "secrets.ts": sameLine }, (dir) => {
     const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "secrets.ts"]);
-    const secrets = payload.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+    const secrets = payload.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
     assert.equal(secrets.length, 2);
     assert.deepEqual(secrets.map((finding) => finding.stableIdentity), [null, null]);
     // The port-local fingerprint keys on the line, so a same-line pair deliberately shares one.
@@ -305,7 +303,7 @@ test("hook keeps two same-line secrets independently classifiable", () => {
     // A generated baseline stores neither, so both same-line secrets keep reporting.
     execFileSync("bash", [BIN, "analyse", "--generate-baseline", "gruff-baseline.json", "--fail-on", "none", "--no-config", "."], { cwd: dir, encoding: "utf8" });
     const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "secrets.ts"]);
-    const remaining = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+    const remaining = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
     assert.equal(remaining.length, 2);
   });
 });
@@ -636,16 +634,17 @@ test("two secrets on one line reach the hook as separately trackable findings", 
 // A secret is counted there and stored nowhere, so a generated baseline never hides one from the agent.
 // Stable contract: one review carries across analyse and hook, because both read the identical file.
 test("hook reads the same generated baseline analyse writes, and it hides no secret", () => {
-  const secret = "aB3xY7kLmN9pQ2rS5" + "tU8vW1zC4dE6fG0hJ2kQ8w";
+  // Split so this test file carries no scannable key of its own.
+  const secret = ["AKIAL5HWQ2NBX", "R7TJMCV"].join("");
   const source = ["// File overview: hook baseline-format fixture.", `export const token = "${secret}";`].join("\n");
   withProject({ "secret.ts": source }, (dir) => {
-    const before = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "secret.ts"]), "sensitive-data.high-entropy-string");
+    const before = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "secret.ts"]), "sensitive-data.aws-access-key");
     assert.equal(typeof before.column, "number");
     assert.equal(before.stableIdentity, null);
     execFileSync("bash", [BIN, "analyse", "--generate-baseline", "on-disk-baseline.json", "--fail-on", "none", "--no-config", "."], { cwd: dir, encoding: "utf8" });
 
     const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "on-disk-baseline.json", "secret.ts"]);
-    const secrets = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+    const secrets = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
     assert.equal(secrets.length, 1);
     assert.equal(secrets[0]?.baselineStatus, "notEligible");
     assert.equal(filtered.run?.baseline.applied, true);

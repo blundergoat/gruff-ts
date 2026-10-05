@@ -23,11 +23,6 @@ interface WorkflowFindingInput {
   metadata: Record<string, unknown>;
 }
 
-// Shared indentation state for YAML block scans; deleting `indent` exits the current block.
-interface IndentedBlockState {
-  indent?: number;
-}
-
 // Active `run: |` / `run: >` block scalar. The start line is the finding anchor, while `lines`
 // holds the shell body after YAML indentation has been stripped by `workflowLines`.
 interface RunBlockState {
@@ -63,17 +58,6 @@ const WRITE_PERMISSION_SCOPES = new Set([
   "statuses",
 ]);
 
-// These two scopes mint a short-lived OIDC token or a build attestation. Neither grants write access
-// to any repository resource, and GitHub documents both as the recommended alternative to storing
-// long-lived credentials, so a workflow that requests them is not over-permissioned. Reporting them
-// pushed users away from keyless auth and toward the static secrets this pillar exists to remove.
-// They still reach `broadPermissionSignal`, where a pull_request_target workflow hands that minting
-// power to untrusted pull-request code.
-const CAPABILITY_PERMISSION_SCOPES = new Set([
-  "attestations",
-  "id-token",
-]);
-
 // Stable rule contract: workflow-only checks ignore non-workflow YAML so example docs avoid findings.
 function analyseGithubActionsRules(file: SourceFile, source: string, findings: Finding[]): void {
   if (!isGithubWorkflowPath(file.displayPath)) {
@@ -81,7 +65,6 @@ function analyseGithubActionsRules(file: SourceFile, source: string, findings: F
   }
   const lines = workflowLines(source);
   analysePullRequestTarget(file, lines, findings);
-  analyseBroadPermissions(file, lines, findings);
   analyseUnpinnedActions(file, lines, findings);
   analyseRemoteShell(file, lines, findings);
   analyseSecretsInPullRequest(file, lines, findings);
@@ -162,74 +145,6 @@ function pullRequestTargetRiskContext(lines: readonly WorkflowLine[]): string[] 
     }
   }
   return [...contexts].sort();
-}
-
-// Stable permissions contract: helpers keep YAML block state explicit because nested scopes affect anchors.
-function analyseBroadPermissions(file: SourceFile, lines: readonly WorkflowLine[], findings: Finding[]): void {
-  const state: IndentedBlockState = {};
-  for (const line of lines) {
-    const scope = broadPermissionScope(line, state);
-    if (scope) {
-      pushBroadPermissionFinding(file, findings, line, scope);
-    }
-  }
-}
-
-// Reports one finding per broad permission scope; stable scope symbols keep remediation targeted.
-function pushBroadPermissionFinding(file: SourceFile, findings: Finding[], line: WorkflowLine, scope: string): void {
-  findings.push(
-    workflowFinding(file, {
-      ruleId: "security.github-actions-broad-permissions",
-      message: `Workflow grants broad write permission \`${scope}\`.`,
-      line: line.lineNumber,
-      symbol: scope,
-      remediation: "Reduce workflow permissions to read-only by default and grant write scopes only to trusted jobs.",
-      metadata: { permission: scope },
-    }),
-  );
-}
-
-// Returns the broad permission scope for either inline permissions or an active permissions block.
-function broadPermissionScope(line: WorkflowLine, state: IndentedBlockState): string | undefined {
-  if (isCommentOrBlank(line)) {
-    return undefined;
-  }
-  closeBlockWhenOutdented(state, line);
-  const inline = line.trimmed.match(/^permissions:\s*(write-all)\b/i);
-  if (inline?.[1]) {
-    return "write-all";
-  }
-  if (/^permissions:\s*$/i.test(line.trimmed)) {
-    state.indent = line.indent;
-    return undefined;
-  }
-  if (state.indent === undefined || line.indent <= state.indent) {
-    return undefined;
-  }
-  // A job-level grant is least privilege; only a workflow-level block hands its write scopes to every job, which is
-  // what gruff-rs reports too. An inline `permissions: write-all` above stays broad at any level.
-  if (state.indent !== 0) {
-    return undefined;
-  }
-  return scopedWritePermission(line);
-}
-
-// Clears YAML block state once the scanner reaches a sibling or parent indentation level.
-function closeBlockWhenOutdented(state: IndentedBlockState, line: WorkflowLine): void {
-  if (state.indent !== undefined && line.indent <= state.indent) {
-    delete state.indent;
-  }
-}
-
-// Extracts the write scopes that grant a repository resource, which is what this rule reports.
-function scopedWritePermission(line: WorkflowLine): string | undefined {
-  const scoped = line.trimmed.match(/^([a-z-]+):\s*write\b/i);
-  const scope = scoped?.[1] ?? "";
-  // A capability scope grants no repository resource, so requesting one is not a broad permission.
-  if (CAPABILITY_PERMISSION_SCOPES.has(scope)) {
-    return undefined;
-  }
-  return WRITE_PERMISSION_SCOPES.has(scope) ? scope : undefined;
 }
 
 // Lightweight permission signal used by the pull_request_target risk-context gate.

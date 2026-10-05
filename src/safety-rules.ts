@@ -1,26 +1,11 @@
 // Type-safety and reliability rule packs: TS directive rationales, non-null assertions, double
-// casts, exported `any`, async forEach, floating promises, non-Error throws, useless catches,
+// casts, exported `any`, async forEach, non-Error throws, useless catches,
 // swallowed catches. Each rule emits findings in the stable, deterministic per-line/per-source order.
-import { createRequire } from "node:module";
 import { hasSuppressionRationale } from "./comment-rules.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { byteLine } from "./text-scans.ts";
 import type { Finding } from "./types.ts";
-
-// TypeScript is CommonJS at runtime; the floating-promise guard only walks the shared parse (ADR-012).
-const require = createRequire(import.meta.url);
-const typescriptSyntax = require("typescript") as typeof import("typescript");
-
-type TsSourceFile = import("typescript").SourceFile;
-type TsNode = import("typescript").Node;
-
-/*
- * Answers whether a line's leading call is passed straight into an enclosing call, as a test
- * wrapper's `waitForAsync(...)` is. That promise is handed on rather than started as a bare
- * statement, so floating-promise does not report it.
- */
-export type DirectArgumentCallLookup = (lineNumber: number, callName: string) => boolean;
 
 // Four-rule TypeScript safety pass: directive comment, non-null assertion, double cast, exported any.
 // Stable, deterministic ordering keeps the per-line findings in a known sequence.
@@ -31,60 +16,11 @@ export function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: 
   pushExportedAnyFinding(file, codeLine, lineNumber, findings);
 }
 
-// Three reliability rules per line: async-forEach, floating-promise, non-Error throw. Order is
+// Two reliability rules per line: async-forEach, non-Error throw. Order is
 // the stable contract - reshuffling shifts per-block emission and churns baselines.
-export function analyseReliabilityLine(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[], isDirectArgumentCall: DirectArgumentCallLookup): void {
+export function analyseReliabilityLine(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   pushAsyncForEachFinding(file, codeLine, lineNumber, findings);
-  pushFloatingPromiseFinding(file, codeLine, lineNumber, findings, isDirectArgumentCall);
   pushNonErrorThrowFinding(file, codeLine, lineNumber, findings);
-}
-
-/*
- * Builds the lookup over the shared parse, walking it only when a line first looks like floating
- * work. The caller passes no tree when the parse reported errors: an error-recovered tree cannot
- * place a call, so that file keeps the line heuristic and its findings.
- */
-export function directArgumentCallLookup(syntax: TsSourceFile | undefined, codeSource: string): DirectArgumentCallLookup {
-  let directArgumentCalls: ReadonlySet<string> | undefined;
-  return (lineNumber, callName) => {
-    if (!syntax) {
-      return false;
-    }
-    directArgumentCalls ??= directArgumentCallKeys(syntax, codeSource);
-    return directArgumentCalls.has(`${lineNumber}:${callName}`);
-  };
-}
-
-// Keys `line:callee` for each call that begins its line's code and is itself an argument of an
-// enclosing call. Contract invariant: lines count "\n" as the per-line pass does, so a key must name
-// the line `floatingPromiseCall` reads; a call nested deeper, in an arrow body or array, never matches.
-function directArgumentCallKeys(syntax: TsSourceFile, codeSource: string): Set<string> {
-  const callees: { start: number; text: string }[] = [];
-  // Records every call passed directly as another call's argument, with its callee's offset and text.
-  const visit = (node: TsNode): void => {
-    if (typescriptSyntax.isCallExpression(node) && typescriptSyntax.isCallExpression(node.parent) && node.parent.arguments.includes(node)) {
-      callees.push({ start: node.expression.getStart(syntax), text: node.expression.getText(syntax) });
-    }
-    node.forEachChild(visit);
-  };
-  syntax.forEachChild(visit);
-  callees.sort((left, right) => left.start - right.start);
-  const keys = new Set<string>();
-  let line = 1;
-  let lineStart = 0;
-  let offset = 0;
-  for (const callee of callees) {
-    for (; offset < callee.start; offset += 1) {
-      if (codeSource.charCodeAt(offset) === 10) {
-        line += 1;
-        lineStart = offset + 1;
-      }
-    }
-    if (codeSource.slice(lineStart, callee.start).trim() === "") {
-      keys.add(`${line}:${callee.text}`);
-    }
-  }
-  return keys;
 }
 
 /*
@@ -289,32 +225,6 @@ function pushAsyncForEachFinding(file: SourceFile, codeLine: string, lineNumber:
 }
 
 /*
- * A promise-shaped call started as a bare statement, with no `await`, `return`, `void`, or chain,
- * and not passed straight into an enclosing call. Such promises lose their reject path - exceptions
- * land in an unhandled-rejection. Reports the stable `security.floating-promise` finding.
- */
-function pushFloatingPromiseFinding(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[], isDirectArgumentCall: DirectArgumentCallLookup): void {
-  const floating = floatingPromiseCall(codeLine);
-  if (!floating || isDirectArgumentCall(lineNumber, floating)) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "security.floating-promise",
-      message: `Promise-like call \`${floating}\` is started without await, return, or void.`,
-      filePath: file.displayPath,
-      line: lineNumber,
-      severity: "warning",
-      pillar: "security",
-      confidence: "medium",
-      symbol: floating,
-      remediation: "Await it, return it, or prefix with void when fire-and-forget is intentional.",
-      metadata: { callName: floating },
-    }),
-  );
-}
-
-/*
  * `throw "string"` / `throw { …object }` / `throw 42`. JavaScript permits it but the stack trace
  * is missing and the caller can't pattern-match an Error subclass. Reports the stable
  * `security.throw-non-error` finding.
@@ -371,40 +281,6 @@ function exportedAnySymbol(codeLine: string): string | undefined {
   }
   const match = codeLine.match(/\bexport\s+(?:async\s+)?(?:function|const|let|var|class|interface|type)\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
   return match?.[1];
-}
-
-// Two predicates compose: must be a bare statement (not handled), and must be a promise-shaped
-// call. Returning undefined keeps the per-line emission stable when either gate fails.
-function floatingPromiseCall(codeLine: string): string | undefined {
-  const trimmed = codeLine.trim();
-  if (isHandledPromiseStatement(trimmed)) {
-    return undefined;
-  }
-  const callName = leadingCallName(trimmed);
-  if (!callName) {
-    return undefined;
-  }
-  return isPromiseLikeCall(callName) ? callName : undefined;
-}
-
-// Five "this is intentional" forms: await, return, void, throw, yield, or a binding. Any one keeps
-// the line out of floating-promise reporting.
-function isHandledPromiseStatement(trimmedLine: string): boolean {
-  return trimmedLine.length === 0 || /^(?:await|return|void|throw|yield)\b/.test(trimmedLine) || /^(?:const|let|var)\s+/.test(trimmedLine);
-}
-
-// Picks the dotted callable name at the start of the line. Empty string for non-call statements
-// signals "not a candidate" to the caller without throwing.
-function leadingCallName(trimmedLine: string): string {
-  const match = trimmedLine.match(/^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*\(/);
-  return match?.[1] ?? "";
-}
-
-// Heuristic: `fetch`, anything ending in `Async`, or anything ending in `Promise`. False positives
-// are tolerated because the rule's remediation ("await or void it") is also the universal best practice.
-function isPromiseLikeCall(callName: string): boolean {
-  const localName = callName.split(".").at(-1) ?? callName;
-  return callName === "fetch" || /(?:Async|Promise)$/.test(localName);
 }
 
 // Allow `throw new XxxError(...)` and `throw e` (bare identifier - usually a rethrow), reject literals.

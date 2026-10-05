@@ -510,9 +510,6 @@ function thresholdMetadataFor(finding: Finding): Record<string, unknown> | undef
       return metricMetadata(metadata.parentSegments, metadata.maxParentSegments, "segments");
     case "design.large-module-concentration":
       return metricMetadata(metadata.sharePercent, metadata.maxSharePercent, "percent");
-    case "sensitive-data.hardcoded-env-value":
-    case "sensitive-data.high-entropy-string":
-      return metricMetadata(metadata.length, metadata.threshold, "characters");
     case "size.file-length":
     case "size.function-length":
       return metricMetadata(metadata.lines, metadata.threshold, "lines");

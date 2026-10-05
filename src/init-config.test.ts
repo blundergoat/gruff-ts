@@ -308,7 +308,7 @@ function assertLoadedConfigContainsEveryRule(ruleOverrides: Config["rules"]): vo
   for (const descriptor of ruleDescriptors()) {
     const ruleOverride = ruleOverrides.get(descriptor.ruleId);
     assert.notEqual(ruleOverride, undefined, `loadConfig dropped ${descriptor.ruleId}`);
-    assert.equal(ruleOverride?.enabled, true, `enabled state mismatch for ${descriptor.ruleId}`);
+    assert.equal(ruleOverride?.enabled, descriptor.isEnabledByDefault !== false, `enabled state mismatch for ${descriptor.ruleId}`);
   }
 }
 

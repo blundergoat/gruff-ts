@@ -11,6 +11,7 @@ import test from "node:test";
 import type { AnalysisReport } from "./cli.ts";
 import { resolveProfile } from "./config.ts";
 import { BUILT_IN_PROFILES, isKnownRuleId, profileSummaries } from "./profiles.ts";
+import { ruleDescriptors } from "./rules.ts";
 import { analyseProject, writeFixtureFiles } from "./test-fixtures.ts";
 
 // A small file carrying one naming smell, one security smell, and one maintainability smell, used to
@@ -103,12 +104,12 @@ test("profile with an unknown rule id errors clearly", () => {
   );
 });
 
-test("profile strict makes its high-entropy threshold reachable", () => {
-  const shortSecret = "aB3dE5fG7hJ9kLmN2pQ4rS6t";
-  const source = { "secret.ts": `const token = "${shortSecret}";\nconsole.log(token);\n` };
+test("profile strict makes its tighter parameter-count threshold reachable", () => {
+  // Six parameters sit under the recommended limit of 7 and over the strict limit of 4.
+  const source = { "wide.ts": "export function wide(a: number, b: number, c: number, d: number, e: number, f: number): number {\n  return a + b + c + d + e + f;\n}\n" };
 
-  assert.equal(analyseProject(source, { profile: "gruff.recommended" }).findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), false);
-  assert.equal(analyseProject(source, { profile: "gruff.strict" }).findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), true);
+  assert.equal(analyseProject(source, { profile: "gruff.recommended" }).findings.some((finding) => finding.ruleId === "size.parameter-count"), false);
+  assert.equal(analyseProject(source, { profile: "gruff.strict" }).findings.some((finding) => finding.ruleId === "size.parameter-count"), true);
 });
 
 test("CLI profile strict overrides a config profile minimal", () => {
@@ -132,7 +133,10 @@ test("profile summaries report all three built-ins with monotonic enabled counts
   const strict = byName.get("gruff.strict");
   assert.ok(minimal && recommended && strict, "all three summaries present");
   assert.ok(minimal.enabledRuleCount < recommended.enabledRuleCount, "minimal enables fewer rules than recommended");
-  assert.equal(recommended.enabledRuleCount, recommended.totalRuleCount, "recommended enables the whole catalogue");
-  assert.equal(strict.enabledRuleCount, strict.totalRuleCount, "strict enables the whole catalogue");
+  // Rules that ship off by default (ADR-021) run under no preset until a config enables them, so they are not counted.
+  const offByDefault = ruleDescriptors().filter((descriptor) => descriptor.isEnabledByDefault === false).length;
+  assert.equal(offByDefault, 2);
+  assert.equal(recommended.enabledRuleCount, recommended.totalRuleCount - offByDefault, "recommended enables every rule that is on by default");
+  assert.equal(strict.enabledRuleCount, strict.totalRuleCount - offByDefault, "strict enables every rule that is on by default");
   assert.ok(strict.tightenedThresholdCount > 0, "strict tightens at least one threshold");
 });

@@ -3,36 +3,20 @@
 // It runs each detector in a stable order so repeated scans remain comparable.
 // Users receive fixed category markers, actionable locations, and one report entry per occurrence without matched characters or lengths.
 import { createHash } from "node:crypto";
-import { type Dirent, readdirSync } from "node:fs";
-import { join } from "node:path";
-import { projectRootOf } from "./comment-rules.ts";
-import { isPublicEntropyShape } from "./entropy-public-shapes.ts";
-import { namedThreshold, ruleSeverity, threshold } from "./config.ts";
 import { makeFinding } from "./findings.ts";
 import { byteColumn, byteLine } from "./text-scans.ts";
-import type { Config, Finding } from "./types.ts";
+import type { Finding } from "./types.ts";
 
 // Describes the safe file context needed to locate a sensitive finding for the user.
 //
 // The report-facing path is sufficient for navigation, and findings carry nothing else.
-// The absolute path is read only to prove that a config value names an existing project asset;
-// it never enters a finding, and source content stays outside this boundary.
 interface SensitiveSourceFile {
   displayPath: string;
-  absolutePath?: string;
 }
-
-// Image extensions a config value may name as an asset. The list is closed: any other value stays with the entropy rule.
-const IMAGE_ASSET_EXTENSION = /\.(?:png|jpe?g|gif|svg|webp|ico|avif)$/i;
-// Dependency, build and tool-output directories the asset search never enters; hidden directories are skipped too.
-const ASSET_SEARCH_SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", "build", "vendor", "coverage"]);
-// Cap on the directory entries one asset search may visit, because the search must stay bounded on large trees;
-// reaching the cap keeps the warning.
-const ASSET_SEARCH_ENTRY_LIMIT = 20_000;
 
 // Runs every sensitive-data detector for one user file in deterministic report order.
 // Keeping pattern order stable prevents baseline churn when no source behavior changed.
-function analyseSensitiveData(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
+function analyseSensitiveData(file: SensitiveSourceFile, source: string, findings: Finding[]): void {
   const patterns: Array<[string, RegExp, string]> = [
     // ASIA is AWS's prefix for temporary session credentials, over the same fixed body; missing it left a live
     // credential unnamed.
@@ -79,9 +63,7 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, config:
     }
   }
 
-  analyseHardcodedEnvironmentValues(file, source, config, findings);
   analyseNpmAuthTokens(file, source, findings);
-  analyseHighEntropyStrings(file, source, config, findings);
   analysePhiLabelledIdentifiers(file, source, findings);
   analysePaymentCardNumbers(file, source, findings);
   analyseGcpServiceAccountKeys(file, source, findings);
@@ -255,180 +237,9 @@ function npmAuthTokenValue(line: string): string | undefined {
   return match?.[1];
 }
 
-// Finds literal assignments whose key tells users the value is secret-like, such as `API_KEY` or `PASSWORD`.
-// Stable contract: the configured minimum length keeps short examples out of reports without suppressing credible values.
-function analyseHardcodedEnvironmentValues(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
-  const minLength = threshold(config, "sensitive-data.hardcoded-env-value", 16);
-  const requiresQuotedValue = isScriptSourcePath(file.displayPath);
-  const lines = source.split(/\r?\n/);
-  // Each assignment is evaluated independently so users receive a location for every embedded value.
-  for (const [index, line] of lines.entries()) {
-    const hardcodedValue = hardcodedEnvValue(line, minLength, requiresQuotedValue);
-    // A missing result means the line is empty, non-literal, placeholder-shaped, or below the user's threshold.
-    if (!hardcodedValue) {
-      continue;
-    }
-    pushSensitiveFinding({
-      findings,
-      file,
-      ruleId: "sensitive-data.hardcoded-env-value",
-      message: `Environment-style value \`${hardcodedValue.keyName}\` appears to be hardcoded with secret-like content.`,
-      line: index + 1,
-      matchedSensitiveText: hardcodedValue.value,
-      confidence: "medium",
-      metadata: { keyName: hardcodedValue.keyName, threshold: minLength },
-      severity: ruleSeverity(config, "sensitive-data.hardcoded-env-value", "warning"),
-    });
-  }
-}
-
-// Finds generated-looking string literals after length, character-class, and distinct-character checks.
-// Stable contract: known integrity and public identifier shapes stay quiet so users can focus on credible secret material.
-function analyseHighEntropyStrings(file: SensitiveSourceFile, source: string, config: Config, findings: Finding[]): void {
-  const minLength = threshold(config, "sensitive-data.high-entropy-string", 32);
-  const minimumEntropy = namedThreshold(config, "sensitive-data.high-entropy-string", "entropy", 4.2);
-  // The candidate floor follows the configured minimum length, so a lowered bar admits literals shorter than the default.
-  const candidatePattern = new RegExp(`(["'\`])([A-Za-z0-9_+=./-]{${Math.max(1, Math.ceil(minLength))},})\\1`, "g");
-  const armoured = publicArmourSpans(source);
-  // Every long literal is checked separately so same-line secrets remain independently actionable in the report.
-  for (const match of source.matchAll(candidatePattern)) {
-    // The source offset ties this candidate to any enclosing public PEM block.
-    const offset = match.index ?? 0;
-    // Public PEM material stays quiet so users are not asked to rotate a certificate or public key.
-    if (armoured.some(([start, end]) => offset >= start && offset < end)) {
-      continue;
-    }
-    // A missing capture becomes empty text, which safely fails the configured length gate.
-    const candidateText = match[2] ?? "";
-    // Known public shapes or insufficient entropy mean the user does not need a secret finding for this literal.
-    if (!isHighEntropySecretCandidate(candidateText, minLength, minimumEntropy)) {
-      continue;
-    }
-    // A whole config value naming an image the project actually contains is a resource reference, not a secret.
-    if (isExistingConfigImageReference(file, source, offset, candidateText)) {
-      continue;
-    }
-    pushSensitiveFinding({
-      findings,
-      file,
-      ruleId: "sensitive-data.high-entropy-string",
-      message: "High-entropy string literal may be an embedded secret.",
-      line: byteLine(source, match.index ?? 0),
-      column: byteColumn(source, match.index ?? 0),
-      matchedSensitiveText: candidateText,
-      confidence: "medium",
-      metadata: { detector: "high-entropy-string", threshold: minLength },
-      severity: ruleSeverity(config, "sensitive-data.high-entropy-string", "warning"),
-    });
-  }
-}
-
-/*
- * Case 24's shape: the entire value of a YAML or JSON key names an image file that exists in the scanned project.
- * Contract invariant: all three proofs are required - the whole-value config role, the closed image-extension list
- * and an existing file - so a key name or a file suffix alone never silences a possible secret.
- */
-function isExistingConfigImageReference(file: SensitiveSourceFile, source: string, quoteOffset: number, candidateText: string): boolean {
-  if (file.absolutePath === undefined || !/\.(?:ya?ml|json)$/i.test(file.displayPath)) {
-    return false;
-  }
-  if (candidateText.includes("/") || !IMAGE_ASSET_EXTENSION.test(candidateText) || !isWholeConfigValue(source, quoteOffset, candidateText.length)) {
-    return false;
-  }
-  return projectContainsFileNamed(projectRootOf({ absolutePath: file.absolutePath, displayPath: file.displayPath }), candidateText);
-}
-
-// The quoted literal must be a key's entire value on its own line - `key: 'value'`, `- key: "value"` or JSON's
-// `"key": "value",` - with at most a trailing comma or YAML comment after it.
-function isWholeConfigValue(source: string, quoteOffset: number, valueLength: number): boolean {
-  const lineStart = source.lastIndexOf("\n", quoteOffset - 1) + 1;
-  const lineEnd = source.indexOf("\n", quoteOffset);
-  const before = source.slice(lineStart, quoteOffset);
-  const after = source.slice(quoteOffset + valueLength + 2, lineEnd === -1 ? source.length : lineEnd);
-  return /^\s*(?:-\s+)?(?:"[^"]*"|'[^']*'|[A-Za-z_][\w.-]*)\s*:\s*$/.test(before) && /^\s*,?\s*(?:#.*)?\r?$/.test(after);
-}
-
-/*
- * Looks for a regular file with exactly this name under the project, skipping hidden, dependency and build
- * directories and never following symlinks. Stable contract: entries are visited in code-unit order and the
- * search stops at ASSET_SEARCH_ENTRY_LIMIT, so one tree always gives the same answer. It swallows an unreadable
- * directory's error and treats that directory as not containing the file, so the warning stays and the scan goes on.
- */
-function projectContainsFileNamed(projectRoot: string, name: string): boolean {
-  const pending = [projectRoot];
-  let visited = 0;
-  for (let directory = pending.shift(); directory !== undefined; directory = pending.shift()) {
-    let entries: Dirent[];
-    try {
-      entries = readdirSync(directory, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
-    for (const entry of entries) {
-      visited += 1;
-      if (visited > ASSET_SEARCH_ENTRY_LIMIT) {
-        return false;
-      }
-      if (entry.isFile() && entry.name === name) {
-        return true;
-      }
-      if (entry.isDirectory() && !entry.name.startsWith(".") && !ASSET_SEARCH_SKIPPED_DIRECTORIES.has(entry.name)) {
-        pending.push(join(directory, entry.name));
-      }
-    }
-  }
-  return false;
-}
-
-// One line of a PEM body once its string quoting is stripped: base64, a PGP checksum or an armour header.
-const PEM_BODY_LINE = /^(?:[A-Za-z0-9+/]+={0,2}|=[A-Za-z0-9+/]{4}|(?:Version|Comment|Hash|Charset|MessageID|Proc-Type|DEK-Info):.*)$/;
-
-// Locates public PEM material that users need not review as an entropy warning.
-//
-// Only a matching next closing marker and a PEM-shaped body grant the exception; an empty result leaves all source scannable.
-function publicArmourSpans(source: string): Array<[number, number]> {
-  const spans: Array<[number, number]> = [];
-  const marker = /-----(BEGIN|END) ([A-Z0-9 ]+)-----/g;
-  for (const opening of source.matchAll(/-----BEGIN ([A-Z0-9 ]+)-----/g)) {
-    const label = opening[1] ?? "";
-    // A private key's block stays scannable: the key material there is the secret this rule exists for.
-    if (label.includes("PRIVATE")) {
-      continue;
-    }
-    const start = opening.index ?? 0;
-    const bodyStart = start + opening[0].length;
-    marker.lastIndex = bodyStart;
-    const closing = marker.exec(source);
-    // Another opening marker, a different label or no marker at all means these markers are not a block.
-    if (closing === null || closing[1] !== "END" || closing[2] !== label) {
-      continue;
-    }
-    // Code, a placeholder or prose between the markers is not a PEM body, so nothing is exempted.
-    if (isPemShapedBody(source.slice(bodyStart, closing.index))) {
-      spans.push([start, closing.index + closing[0].length]);
-    }
-  }
-  return spans;
-}
-
-// Reports whether every line between two markers is base64, a PGP checksum, an armour header or empty. Source code
-// spells a PEM body across string literals, so the body breaks at real and escaped line breaks, and each line loses
-// its concatenation operators, and its quotes, commas, brackets, comment stars and ASCII whitespace; code, a
-// placeholder or prose is left over. Splitting at escaped line breaks too keeps a one-line block's header from
-// vouching for the rest of the line, and the operator pattern looks around one character so it stays linear.
-function isPemShapedBody(body: string): boolean {
-  return body.split(/\n|\\[nrt]/).every((segment) => {
-    const stripped = segment
-      .replace(/(?<=[ \t\r\f\x0B])[+.]|[+.](?=[ \t\r\f\x0B])/g, "")
-      .replace(/[ \t\r\f\x0B"'`,;()[\]{}#*\\]/g, "");
-    return stripped === "" || PEM_BODY_LINE.test(stripped);
-  });
-}
-
 // Describes one reportable sensitive occurrence before the finding is built.
 //
-// Optional column, metadata, and severity enrich the user's report when available.
+// Optional column and metadata enrich the user's report when available.
 // Contract: matched text is used only to choose a fixed public category and never reaches report output or identity.
 interface SensitiveFindingArgs {
   findings: Finding[];
@@ -440,7 +251,6 @@ interface SensitiveFindingArgs {
   matchedSensitiveText: string;
   confidence: Finding["confidence"];
   metadata?: Record<string, unknown>;
-  severity?: Finding["severity"];
 }
 
 // SHA-256 digests of the 20 values vendors publish as documentation samples, so code that pastes one never reports.
@@ -493,7 +303,7 @@ function pushSensitiveFinding(args: SensitiveFindingArgs): void {
       filePath: args.file.displayPath,
       line: args.line,
       ...(args.column === undefined ? {} : { column: args.column }),
-      severity: args.severity ?? "warning",
+      severity: "warning",
       pillar: "sensitive-data",
       confidence: args.confidence,
       remediation: "Remove the sensitive value and load it from a secure runtime source.",
@@ -570,109 +380,6 @@ function fixedApiKeyMarker(matchedToken: string, metadata: Record<string, unknow
     return "[redacted:gitlab-token]";
   }
   return "[redacted]";
-}
-
-// Parses a secret-labelled assignment and returns it only when its value is credible and literal for that file type.
-// In scripts, unquoted right-hand sides are code expressions rather than user-visible embedded strings.
-function hardcodedEnvValue(line: string, minLength: number, requiresQuotedValue: boolean): { keyName: string; value: string } | undefined {
-  const candidate = envValueCandidate(line);
-  // Missing, placeholder-shaped, or short values do not represent a credential the user needs to remove.
-  if (!candidate || !isHardcodedEnvCandidate(candidate.value, minLength)) {
-    return undefined;
-  }
-  // In script files, an unquoted right-hand side is code rather than a literal value embedded by the user.
-  if (requiresQuotedValue && !candidate.isQuoted) {
-    return undefined;
-  }
-  return candidate;
-}
-
-// Checks whether a user's file treats unquoted assignment values as code expressions.
-// Script extensions require quotes; config formats keep their normal unquoted-literal behavior.
-function isScriptSourcePath(displayPath: string): boolean {
-  return /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i.test(displayPath);
-}
-
-const SECRET_ASSIGNMENT_PATTERN = /^\s*((?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)|[A-Z][A-Z0-9_-]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|DSN)[A-Z0-9_-]*)\s*[:=]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|`([^`\r\n]+)`|([^"'`\s#]+))/i;
-
-// Extracts one secret-labelled literal assignment for later detector checks.
-// Missing output means the user's line has no supported key/value shape; comments never inflate the captured value.
-function envValueCandidate(line: string): { keyName: string; value: string; isQuoted: boolean } | undefined {
-  const match = line.match(SECRET_ASSIGNMENT_PATTERN);
-  // A user may have supplied an unrelated line or unknown key, which cannot produce this finding.
-  if (!match) {
-    return undefined;
-  }
-  const keyName = match[1];
-  const quotedValue = match[2] ?? match[3] ?? match[4];
-  const secretValue = quotedValue ?? match[5];
-  // A user may have supplied an empty or unterminated assignment; neither is a secret candidate.
-  if (!keyName || !secretValue) {
-    return undefined;
-  }
-  return { keyName, value: secretValue, isQuoted: quotedValue !== undefined };
-}
-
-// Checks whether an extracted assignment is long, non-placeholder, credential-shaped, and not a dependency spec.
-// Users see a finding only when all four signals agree, reducing noise from ordinary examples.
-function isHardcodedEnvCandidate(secretValue: string, minLength: number): boolean {
-  return secretValue.length >= minLength && !isPlaceholderSecretValue(secretValue) && hasLetterAndDigit(secretValue) && !isDependencySpecValue(secretValue);
-}
-
-// Recognizes a dependency version spec, which a manifest or lockfile writes under any key name - including one
-// ending in `token`, as `gtoken: 8.0.0(supports-color@11.0.0)` does. The value's shape decides this and the
-// file's name does not, so the same line stays quiet in a lockfile, in a manifest, and in authored source alike.
-//
-// The WHOLE value must be a version: optional range operators, a dotted numeric version, and at most a
-// parenthesised peer suffix, of which a pnpm lockfile writes more than one:
-// `7.1.0(encoding@0.1.13)(supports-color@11.0.0)`. Matching only the opening token would drop a committed
-// credential that happens to begin with one, such as `1.0-Rk8sPq2xT7vL9wHd`, and a dropped credential leaves no
-// audit row anywhere.
-const DEPENDENCY_SPEC_PATTERN = /^[v^~><=\s]*\d+(?:\.\d+)+(?:\((?:[^()]|\([^()]*\))*\))*$/u;
-
-// Reports whether the trimmed value is entirely a version spec, which is the only shape this guard may silence.
-function isDependencySpecValue(secretValue: string): boolean {
-  return DEPENDENCY_SPEC_PATTERN.test(secretValue.trim());
-}
-
-// Recognizes obvious example words that users commonly place in documentation and fixtures.
-// Matching is case-insensitive so capitalization alone does not create a noisy secret finding.
-function isPlaceholderSecretValue(secretValue: string): boolean {
-  return /^(?:x-api-key|token|secret|password|example|sample|placeholder)$/i.test(secretValue);
-}
-
-// Checks for the letter-and-digit mix expected in generated credential values.
-// Pure words and numbers stay out of the user's report before more expensive entropy work begins.
-function hasLetterAndDigit(candidateText: string): boolean {
-  return /[A-Za-z]/.test(candidateText) && /[0-9]/.test(candidateText);
-}
-
-// Applies cheap inert-shape checks before character diversity and entropy scoring.
-// This order preserves the same user result while avoiding expensive work for obvious non-secrets.
-function isHighEntropySecretCandidate(candidateText: string, minLength: number, minimumEntropy: number): boolean {
-  // Known public or readable shapes do not require a secret warning in the user's report.
-  if (isExcludedHighEntropyCandidate(candidateText, minLength)) {
-    return false;
-  }
-  // Without a letter and a digit the literal is not credential-shaped (FAMILY-CONTRACT section 12): one character class
-  // clears the entropy bar by construction, and a digit-free mix of cases is an identifier. gruff-ts once required
-  // upper, lower and digit together, which hid lowercase-and-digit keys and base32 TOTP secrets.
-  if (!hasLetterAndDigit(candidateText)) {
-    return false;
-  }
-  // Too few distinct characters indicate repetition rather than a generated secret the user should rotate.
-  if (!hasEnoughDistinctCharacters(candidateText)) {
-    return false;
-  }
-  return shannonEntropy(candidateText) >= minimumEntropy;
-}
-
-// Whole-value policy exceptions cannot be inferred from the enclosing property name.
-function isExcludedHighEntropyCandidate(candidateText: string, minLength: number): boolean {
-  return candidateText.length < minLength
-    || isHexDigest(candidateText)
-    || isSubresourceIntegrityHash(candidateText)
-    || isPublicEntropyShape(candidateText);
 }
 
 // Removes spaces and hyphens before validating a payment-card value the user may have pasted.
@@ -762,44 +469,6 @@ function luhnDigitContribution(digit: number, indexFromRight: number): number {
   }
   const doubled = digit * 2;
   return doubled > 9 ? doubled - 9 : doubled;
-}
-
-// Recognizes all-hex values commonly used for public digests and tooling identifiers.
-// A match keeps those expected project values out of the user's high-entropy findings.
-function isHexDigest(candidateText: string): boolean {
-  return /^[0-9a-f]+$/i.test(candidateText);
-}
-
-// Recognizes public Subresource Integrity digests from registry metadata and HTML attributes.
-// A match keeps expected integrity values out of the user's secret report.
-function isSubresourceIntegrityHash(candidateText: string): boolean {
-  return /^sha(?:1|256|384|512)-[A-Za-z0-9+/=]+$/.test(candidateText);
-}
-
-// Checks for lowercase, uppercase, and digits before entropy scoring.
-// Values missing a class are less credential-like and stay out of this user's finding set.
-function hasLowerUpperAndDigit(candidateText: string): boolean {
-  return /[a-z]/.test(candidateText) && /[A-Z]/.test(candidateText) && /[0-9]/.test(candidateText);
-}
-
-// Checks whether a literal has enough distinct characters to resemble a generated secret.
-// The capped, length-scaled threshold avoids flagging repeated text in the user's source.
-function hasEnoughDistinctCharacters(candidateText: string): boolean {
-  return new Set(candidateText).size >= Math.min(12, Math.ceil(candidateText.length / 3));
-}
-
-// Calculates Shannon entropy for the final generated-secret decision.
-// The caller compares this score with the documented threshold before showing users a finding.
-function shannonEntropy(candidateText: string): number {
-  const counts = new Map<string, number>();
-  // Each character contributes to the frequency distribution used for the user's entropy decision.
-  for (const character of candidateText) {
-    counts.set(character, (counts.get(character) ?? 0) + 1);
-  }
-  return [...counts.values()].reduce((sum, count) => {
-    const probability = count / candidateText.length;
-    return sum - probability * Math.log2(probability);
-  }, 0);
 }
 
 export { analyseSensitiveData };

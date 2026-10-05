@@ -6,16 +6,16 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { cwd } from "node:process";
 import { ruleDescriptors } from "./cli.ts";
-import { loadConfig, namedThreshold, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
+import { loadConfig, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { SECURITY_EXPANSION_RISKY_RULE_IDS, SECURITY_EXPANSION_RULE_QUALITY_DOCTRINE } from "./fixtures/rule-catalogue-security-doctrine.ts";
 import { ruleCatalogueCoverageRuleIds } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
 
 const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "missing-invalid"] as const;
-const EXPECTED_RELEASE_RULE_COUNT = 120;
+const EXPECTED_RELEASE_RULE_COUNT = 112;
 // Every medium- and low-confidence rule carries reviewed false-positive guidance; the high-confidence
 // remainder omits the field. Naming both counts keeps the two guards below arithmetically linked.
-const EXPECTED_GUIDED_RULE_COUNT = 69;
+const EXPECTED_GUIDED_RULE_COUNT = 63;
 
 // Asserts the descriptor's optionKeys list is sorted and unique. Factored out of the descriptor
 // catalogue test body to preserve a stable sort invariant without an inline `if` branch.
@@ -78,10 +78,8 @@ const riskyRuleIdsRequiringNoisyValidProof = [
   "security.inner-html",
   "security.javascript-url",
   "security.process-exec",
-  "security.proto-access",
   "security.weak-crypto",
   "sensitive-data.api-key-pattern",
-  "sensitive-data.high-entropy-string",
   "test-quality.only-skip",
   "test-quality.static-analysis-redundant-test",
   "waste.commented-out-code",
@@ -311,19 +309,6 @@ const riskyRuleQualityDoctrine = [
     fingerprintStability: "keep the child-process call line as the finding anchor",
   },
   {
-    ruleId: "security.proto-access",
-    signalSource: "masked executable-line and guarded raw bracket-property scans",
-    expectedPillar: "security",
-    expectedSeverity: "warning",
-    expectedConfidence: "medium",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "direct dot or bracket __proto__ property access",
-    noisyValidFixture: "__proto__ text inside comments and unrelated string literals",
-    missingInvalidFixture: "direct prototype access remains reported beside noisy strings",
-    falsePositiveEscapeHatch: "require a real property access token in code",
-    fingerprintStability: "keep the prototype access line as the finding anchor",
-  },
-  {
     ruleId: "security.weak-crypto",
     signalSource: "raw text scan anchored to executable crypto API tokens",
     expectedPillar: "security",
@@ -335,20 +320,6 @@ const riskyRuleQualityDoctrine = [
     missingInvalidFixture: "weak crypto tokens remain reported with safe crypto nearby",
     falsePositiveEscapeHatch: "require exact weak algorithm or legacy protocol tokens",
     fingerprintStability: "keep the weak crypto line as the finding anchor",
-  },
-  {
-    ruleId: "sensitive-data.high-entropy-string",
-    signalSource: "raw text literal scanner with redacted preview metadata",
-    expectedPillar: "sensitive-data",
-    // The family contract of 2026-09-02 reports this heuristic at warning in every port.
-    expectedSeverity: "warning",
-    expectedConfidence: "medium",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "secret-like high-entropy literal",
-    noisyValidFixture: "package integrity hash and obvious placeholder literals",
-    missingInvalidFixture: "secret-like literal remains reported with redacted output",
-    falsePositiveEscapeHatch: "allowlist known non-secret encodings before reporting",
-    fingerprintStability: "anchor to the literal line without including raw secret text",
   },
   {
     ruleId: "test-quality.only-skip",
@@ -419,7 +390,7 @@ test("documentation catalogue covers comment rule pack", () => {
 
 // Pins the public release count so adding or removing a user-visible rule requires an intentional
 // catalogue and documentation update instead of silently changing the published scanner surface.
-test("release catalogue contains exactly 120 rule descriptors", () => {
+test("release catalogue contains exactly 112 rule descriptors", () => {
   const currentRuleCount = ruleDescriptors().length;
   assert.equal(currentRuleCount, EXPECTED_RELEASE_RULE_COUNT);
 });
@@ -451,7 +422,7 @@ test("every medium and low confidence rule carries reviewed false-positive guida
 test("high confidence rules omit falsePositiveShapes rather than publishing an empty array", () => {
   const highConfidence = ruleDescriptors().filter((descriptor) => descriptor.confidence === "high");
 
-  // The 51 high-confidence rules are the complement of the 69 medium/low rules that carry guidance.
+  // The 49 high-confidence rules are the complement of the 63 medium/low rules that carry guidance.
   assert.equal(highConfidence.length, EXPECTED_RELEASE_RULE_COUNT - EXPECTED_GUIDED_RULE_COUNT);
 
   const publishingShapes = highConfidence
@@ -576,35 +547,17 @@ test("rule descriptor thresholds and options match implementation and config def
   const implementationThresholds = thresholdUsages(implementationSources);
   assert.deepEqual(descriptorThresholds, implementationThresholds);
   assert.deepEqual(descriptorOptions, optionUsages(implementationSources));
-  const descriptorNamedThresholds = new Map(
-    descriptors.filter((descriptor) => descriptor.additionalThresholds !== undefined).map((descriptor) => [descriptor.ruleId, { ...descriptor.additionalThresholds }]),
-  );
-  assert.deepEqual(descriptorNamedThresholds, namedThresholdUsages(implementationSources));
 
-  // The shipped `.gruff-ts.yaml` writes an explicit block for every rule, including the named `thresholds` of
-  // high-entropy-string. Assert the loaded config enables every threshold-owning rule and leaves its threshold,
-  // every additional named threshold, and its severity at the descriptor default, so a drifted value in the repo
-  // config surfaces here rather than silently changing gruff-ts's own scan.
+  // The shipped `.gruff-ts.yaml` writes an explicit block for every rule. Assert the loaded config enables every
+  // threshold-owning rule and leaves its threshold and its severity at the descriptor default, so a drifted value in
+  // the repo config surfaces here rather than silently changing gruff-ts's own scan.
   const config = loadConfig(cwd(), repoScanOptions());
   descriptors.filter((entry) => typeof entry.threshold === "number").forEach((descriptor) => {
     assert.equal(ruleEnabled(config, descriptor.ruleId), true, `repo config disables ${descriptor.ruleId}`);
     assert.equal(threshold(config, descriptor.ruleId, descriptor.threshold ?? 0), descriptor.threshold ?? 0, `repo config overrides ${descriptor.ruleId} threshold`);
-    for (const [name, value] of Object.entries(descriptor.additionalThresholds ?? {})) {
-      assert.equal(namedThreshold(config, descriptor.ruleId, name, value), value, `repo config overrides ${descriptor.ruleId} thresholds.${name}`);
-    }
     assert.equal(ruleSeverity(config, descriptor.ruleId, descriptor.severity), descriptor.severity, `repo config overrides ${descriptor.ruleId} severity`);
   });
 });
-
-// Preserves the descriptor/named-threshold invariant by extracting namedThreshold(config, ruleId, name, default) calls.
-function namedThresholdUsages(source: string): Map<string, Record<string, number>> {
-  const usages = new Map<string, Record<string, number>>();
-  for (const match of source.matchAll(/namedThreshold\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)",\s*(-?\d+(?:\.\d+)?)\)/g)) {
-    const ruleId = match[1] ?? "";
-    usages.set(ruleId, { ...usages.get(ruleId), [match[2] ?? ""]: Number(match[3] ?? "0") });
-  }
-  return usages;
-}
 
 // Preserves the descriptor/default invariant by extracting threshold(config, ruleId, default) calls.
 function thresholdUsages(source: string): Map<string, number> {

@@ -51,8 +51,7 @@ function analysePackageJson(file: ConfigSourceFile, source: string, pkg: Record<
 
 /*
  * Iterates `package.json#scripts` in declaration order - the stable Finding[] emission contract
- * relies on this. Each script is funnelled through both the remote-installer and lifecycle-script
- * checks because one script can match both.
+ * relies on this. Each script is checked for a remote installer.
  */
 function analysePackageScripts(file: ConfigSourceFile, source: string, scripts: Record<string, unknown> | undefined, findings: Finding[]): void {
   if (!scripts) {
@@ -63,7 +62,6 @@ function analysePackageScripts(file: ConfigSourceFile, source: string, scripts: 
       continue;
     }
     pushRemoteInstallScriptFinding(file, source, scriptName, scriptCommand, findings);
-    pushLifecycleScriptFinding(file, source, scriptName, scriptCommand, findings);
   }
 }
 
@@ -87,31 +85,6 @@ function pushRemoteInstallScriptFinding(file: ConfigSourceFile, source: string, 
       confidence: "medium",
       symbol: scriptName,
       remediation: "Vendor the installer, pin an audited package, or remove remote shell execution.",
-      metadata: { scriptName },
-    }),
-  );
-}
-
-/*
- * Reports the stable `security.risky-lifecycle-script` finding for install-time and side-effectful
- * publish hooks. Validation-only publish gates stay quiet, but install/prepare hooks stay visible
- * because they run in broader contexts than an explicit release check.
- */
-function pushLifecycleScriptFinding(file: ConfigSourceFile, source: string, scriptName: string, scriptCommand: string, findings: Finding[]): void {
-  if (!isLifecycleScript(scriptName) || isValidationOnlyLifecycleCommand(scriptName, scriptCommand)) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "security.risky-lifecycle-script",
-      message: `Package lifecycle script \`${scriptName}\` runs automatically during install or publish flows.`,
-      filePath: file.displayPath,
-      line: jsonKeyLine(source, scriptName),
-      severity: "warning",
-      pillar: "security",
-      confidence: "medium",
-      symbol: scriptName,
-      remediation: "Review whether lifecycle execution is required; keep install/publish side effects behind explicit commands when possible.",
       metadata: { scriptName },
     }),
   );
@@ -403,25 +376,6 @@ function jsonKeyLine(source: string, key: string): number {
 function isRemoteInstallScript(command: string): boolean {
   return /\b(?:curl|wget)\b[^\n|;&]*https?:\/\/[^\n|;&]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)\b/i.test(command);
 }
-
-// The closed list of npm/yarn/pnpm install-time hooks. Adding entries here expands rule coverage.
-function isLifecycleScript(scriptName: string): boolean {
-  return ["preinstall", "install", "postinstall", "prepare", "prepublish", "prepublishOnly"].includes(scriptName);
-}
-
-// Allows closed-list validation commands in publish hooks while rejecting shell composition.
-function isValidationOnlyLifecycleCommand(scriptName: string, command: string): boolean {
-  if (!["prepublish", "prepublishOnly"].includes(scriptName)) {
-    return false;
-  }
-  const normalizedCommand = command.trim().replace(/\s+/g, " ");
-  if (/[;&|`$<>]/.test(normalizedCommand)) {
-    return false;
-  }
-  return VALIDATION_ONLY_LIFECYCLE_COMMANDS.has(normalizedCommand);
-}
-
-const VALIDATION_ONLY_LIFECYCLE_COMMANDS = new Set(["npm run check", "npm test", "npm run test", "npm run lint", "npm run typecheck", "npm run publish:check"]);
 
 // Recognises non-registry installs: full URLs, git+ssh, file:, and npm-hosting shortcuts.
 // These specs cannot be reproducibly locked the way registry versions can.

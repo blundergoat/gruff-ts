@@ -319,8 +319,8 @@ function referencedPathExists(file: SourceFile, referencedPath: string): boolean
 }
 
 // Recovers the scan's project root by removing the file's project-relative display path from its absolute path, so the
-// answer follows the tree being scanned instead of the caller's working directory. The entropy rule's asset check shares it.
-export function projectRootOf(file: Pick<SourceFile, "absolutePath" | "displayPath">): string {
+// answer follows the tree being scanned instead of the caller's working directory.
+function projectRootOf(file: Pick<SourceFile, "absolutePath" | "displayPath">): string {
   const absolute = file.absolutePath.replaceAll("\\", "/");
   const display = file.displayPath.replaceAll("\\", "/");
 

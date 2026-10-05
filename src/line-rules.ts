@@ -1,5 +1,5 @@
 // Per-line and per-source line rules: security/modernisation regex passes, type-safety
-// (ts-comment, non-null, double-cast, exported-any), reliability (async-forEach, floating-promise,
+// (ts-comment, non-null, double-cast, exported-any), reliability (async-forEach,
 // non-Error throw, useless/swallowed catches), and the naming-pusher fanout used by both line
 // detection and the block-rule parameter pass. Dead-code rules (unused imports, unreachable) are
 // invoked by the cli orchestrator before/after this module so the stable per-line emission order
@@ -12,7 +12,7 @@ import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts"
 import { type NamingSurface, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
 import type { ParsedScript } from "./parsed-script.ts";
 import { processExecMetadata, type ProcessExecArgumentSource, type ProcessExecMetadata } from "./process-exec-metadata.ts";
-import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches, type DirectArgumentCallLookup, directArgumentCallLookup } from "./safety-rules.ts";
+import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
 import { byteLine, matchingCloseParen } from "./text-scans.ts";
@@ -57,8 +57,6 @@ interface LineRuleContext {
   literalChecks: LineRuleCheck[];
   variables: RegExp;
   gates: LineRuleGates;
-  // Whether a line's leading call is a direct argument of an enclosing call; floating-promise reads it.
-  isDirectArgumentCall: DirectArgumentCallLookup;
 }
 
 const CODE_LINE_CHECKS = codeLineChecks();
@@ -92,7 +90,6 @@ const TYPE_SAFETY_RULE_IDS = [
 
 const RELIABILITY_RULE_IDS = [
   "security.async-foreach",
-  "security.floating-promise",
   "security.throw-non-error",
 ] as const;
 
@@ -117,8 +114,8 @@ const VARIABLE_NAMING_RULE_IDS = [
  * Per-line rule pipeline plus the two multi-line catch detectors. Excludes analyseUnusedImports
  * and analyseUnreachable so the dead-code module can own them; the orchestrator in cli.ts wraps
  * this call with those rules to preserve the stable, deterministic emission order.
- * A parse without errors lets process-exec and floating-promise tell a call from a declaration
- * or a direct argument; an error-recovered tree is ignored, so those rules keep their text behavior.
+ * A parse without errors lets process-exec tell a call from a declaration; an error-recovered tree is
+ * ignored, so that rule keeps its text behavior.
  */
 export function analyseLineRules(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[], parsed?: ParsedScript): void {
   const syntax = parsed?.diagnostics.length === 0 ? parsed.sourceFile : undefined;
@@ -153,7 +150,6 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
     literalChecks: LITERAL_LINE_CHECKS.filter((check) => ruleEnabled(config, check.ruleId)),
     variables: VARIABLE_DECLARATIONS,
     gates,
-    isDirectArgumentCall: directArgumentCallLookup(syntax, codeSource),
   };
   sourceLines.forEach((line, index) => {
     context.previousLine = index > 0 ? (sourceLines[index - 1] ?? "") : "";
@@ -182,7 +178,7 @@ function analyseLineRuleContext(context: LineRuleContext): void {
     analyseTypeSafetyLine(context.file, context.line, context.codeLine, context.lineNumber, context.findings);
   }
   if (context.gates.shouldRunReliability) {
-    analyseReliabilityLine(context.file, context.codeLine, context.lineNumber, context.findings, context.isDirectArgumentCall);
+    analyseReliabilityLine(context.file, context.codeLine, context.lineNumber, context.findings);
   }
   if (context.gates.shouldRunCommentedOutCode) {
     pushCommentedOutCodeFinding(context);
@@ -215,14 +211,12 @@ function analyseLineRuleContext(context: LineRuleContext): void {
 }
 
 // Code-shape rules: those that must match against the masked code (no comment or literal noise).
-// Targets the eval / new-Function / Math.random / innerHTML / proto-access family of security/waste signals.
+// Targets the eval / new-Function / innerHTML / document.write family of security/waste signals.
 function codeLineChecks(): LineRuleCheck[] {
   return [
     { ruleId: "security.eval-call", pattern: /\beval\s*\(/, message: "eval() executes dynamic code.", severity: "error", pillar: "security" },
     { ruleId: "security.new-function", pattern: /\bnew\s+Function\s*\(|(?:^|[=(:,])\s*Function\s*\(/, message: "Function constructor executes dynamic code.", severity: "error", pillar: "security" },
-    { ruleId: "security.insecure-random", pattern: /\bMath\.random\s*\(/, message: "Math.random() is not suitable for security-sensitive randomness.", severity: "warning", pillar: "security" },
     { ruleId: "security.inner-html", pattern: /\.innerHTML\s*=(?!\s*(?:""|''))|\bdangerouslySetInnerHTML\b/, message: "HTML injection sink can introduce XSS.", severity: "warning", pillar: "security" },
-    { ruleId: "security.proto-access", pattern: /\.__proto__\b/, message: "Direct __proto__ access can enable prototype pollution.", severity: "warning", pillar: "security" },
     { ruleId: "security.document-write", pattern: /\bdocument\.write\s*\(/, message: "document.write() can introduce injection risks.", severity: "warning", pillar: "security" },
     { ruleId: "waste.redundant-boolean-cast", pattern: /\b(?:if|while)\s*\(\s*(?:!!\s*[A-Za-z_$][A-Za-z0-9_$.]*|Boolean\s*\()/, message: "Condition contains a redundant boolean cast.", severity: "advisory", pillar: "maintainability" },
   ];
@@ -236,7 +230,6 @@ function literalLineChecks(): LineRuleCheck[] {
     { ruleId: "security.weak-crypto", pattern: /\b(?:createHash|createHmac)\s*\(\s*["'](?:md5|sha1)["']|\bcreateCipher\s*\(|\b(?:secureProtocol|minVersion|maxVersion)\s*:\s*["'](?:SSLv2_method|SSLv3_method|TLSv1(?:_method)?|TLSv1\.1)["']/i, message: "Weak cryptographic primitive is used.", severity: "warning", pillar: "security" },
     { ruleId: "security.disabled-tls-verification", pattern: /\b(?:process\.env\.)?NODE_TLS_REJECT_UNAUTHORIZED\b\s*=\s*["']0["']|\brejectUnauthorized\s*:\s*false\b/i, message: "TLS certificate verification is disabled.", severity: "error", pillar: "security" },
     { ruleId: "security.javascript-url", pattern: /["'`]\s*javascript\s*:(?!\s+URL\b)/i, message: "javascript: URL literal can execute script.", severity: "error", pillar: "security" },
-    { ruleId: "security.proto-access", pattern: /\[\s*["']__proto__["']\s*\]/, message: "Direct __proto__ access can enable prototype pollution.", severity: "warning", pillar: "security" },
     { ruleId: "security.sql-concatenation", pattern: /\b(?:query|execute|raw|prepare)\s*\(\s*(?:`[^`]*(?:SELECT|INSERT|UPDATE|DELETE)[^`]*\$\{|["'][^"']*(?:SELECT|INSERT|UPDATE|DELETE)[^"']*["']\s*\+)/i, message: "SQL text is composed with runtime string interpolation.", severity: "warning", pillar: "security" },
     { ruleId: "modernisation.date-now-candidate", pattern: /\bnew\s+Date\s*\(\s*\)\s*\.getTime\s*\(\s*\)|\bNumber\s*\(\s*new\s+Date\s*\(\s*\)\s*\)/, message: "Current-time expression can use Date.now().", severity: "advisory", pillar: "modernisation" },
     { ruleId: "modernisation.object-spread-candidate", pattern: /\bObject\.assign\s*\(\s*\{\s*\}\s*,/, message: "Object.assign clone can usually use object spread.", severity: "advisory", pillar: "modernisation" },

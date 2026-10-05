@@ -17,15 +17,15 @@ import {
   analyseProject,
   COMMENTED_OUT_CACHE_LOAD,
   COMMENTED_OUT_SECRET_LOAD,
+  AWS_ACCESS_KEY_FIXTURE_VALUE,
   evalFindingFiles,
-  HIGH_ENTROPY_FIXTURE_VALUE,
   gitAvailable,
   isGitIgnoredByGit,
   writeFixtureFiles,
 } from "./test-fixtures.ts";
 
 test("analysis finds core TypeScript smells", () => {
-  // Fixture covers core scanner findings across class, eval, parameter-count, and no-assertions paths.
+  // Fixture covers core scanner findings across class, eval, and parameter-count paths.
   const report = analyseFixture(`export class Bad {
   public name = "demo";
   public process(a: boolean, b: string[], c: string, d: string, e: string, f: string, g: string, h: string): void {
@@ -35,15 +35,10 @@ test("analysis finds core TypeScript smells", () => {
     console.log(b, d, e, f, g, h);
   }
 }
-
-test("sleeps without assertion", async () => {
-  await new Promise((resolve) => setTimeout(resolve, 1));
-});
 `);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   assert.equal(ruleIds.has("security.eval-call"), true);
   assert.equal(ruleIds.has("size.parameter-count"), true);
-  assert.equal(ruleIds.has("test-quality.no-assertions"), true);
   assert.equal(ruleIds.has("modernisation.public-property"), true);
 });
 
@@ -58,17 +53,10 @@ test("existing core fixture fingerprints stay stable", () => {
     console.log(b, d, e, f, g, h);
   }
 }
-
-test("sleeps without assertion", async () => {
-  await new Promise((resolve) => setTimeout(resolve, 1));
-});
 `);
   const fingerprints = new Map(report.findings.map((finding) => [finding.ruleId, finding.fingerprint]));
   assert.equal(fingerprints.get("security.eval-call"), "9597745a32e48f52");
   assert.equal(fingerprints.get("size.parameter-count"), "d616356804967e11");
-  // M07 moved this anchor off the blank line between the class and the test onto the test's own
-  // declaration line, so its line-bearing fingerprint moved once with the 0.6.0 identity break.
-  assert.equal(fingerprints.get("test-quality.no-assertions"), "6428e95a0033f64f");
   assert.equal(fingerprints.get("modernisation.public-property"), "c80058bf4fd46024");
 });
 
@@ -96,17 +84,17 @@ const FIRST_SLICE_RULE_IDS = new Set([
   "naming.identifier-quality",
   "test-quality.trivial-assertion",
   "security.weak-crypto",
-  "sensitive-data.high-entropy-string",
+  "sensitive-data.aws-access-key",
 ]);
 
 test("analysis finds first-slice portable TypeScript rules", () => {
-  const secret = HIGH_ENTROPY_FIXTURE_VALUE;
+  const secret = AWS_ACCESS_KEY_FIXTURE_VALUE;
   // Fixture covers portable source-text, line, function-block, test-block, and sensitive-data seams.
   const report = analyseFixture(`import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 
 const data1 = "placeholder";
-const embeddedToken = "${secret}";
+const embeddedKey = "${secret}";
 
 // ${COMMENTED_OUT_SECRET_LOAD}
 function hashPassword(password: string): string {
@@ -132,7 +120,7 @@ function testBuildsValue(): void {
   const helperTestFindings = report.findings.filter((finding) => finding.pillar === "test-quality" && finding.symbol === "testBuildsValue");
   assert.deepEqual(helperTestFindings, []);
 
-  const secretFinding = report.findings.find((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+  const secretFinding = report.findings.find((finding) => finding.ruleId === "sensitive-data.aws-access-key");
   assert.notEqual(secretFinding, undefined);
   assert.equal(secretFinding?.message.includes(secret), false);
   assert.equal(JSON.stringify(secretFinding?.metadata).includes(secret), false);

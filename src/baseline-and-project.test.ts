@@ -11,9 +11,9 @@ import type { AnalysisReport } from "./cli.ts";
 import {
   analyseFixture,
   analyseProject,
+  AWS_ACCESS_KEY_FIXTURE_VALUE,
   evalFindingFiles,
   gitAvailable,
-  HIGH_ENTROPY_FIXTURE_VALUE,
   REPO_ROOT,
   TS_IGNORE_DIRECTIVE,
   writeFixtureFiles,
@@ -30,17 +30,10 @@ test("expanded scanner keeps pre-expansion fingerprints stable", () => {
     console.log(b, d, e, f, g, h);
   }
 }
-
-test("sleeps without assertion", async () => {
-  await new Promise((resolve) => setTimeout(resolve, 1));
-});
 `);
   const fingerprints = new Map(report.findings.map((finding) => [finding.ruleId, finding.fingerprint]));
   assert.equal(fingerprints.get("security.eval-call"), "9597745a32e48f52");
   assert.equal(fingerprints.get("size.parameter-count"), "d616356804967e11");
-  // M07 moved this anchor off the blank line between the class and the test onto the test's own
-  // declaration line, so its line-bearing fingerprint moved once with the 0.6.0 identity break.
-  assert.equal(fingerprints.get("test-quality.no-assertions"), "6428e95a0033f64f");
   assert.equal(fingerprints.get("modernisation.public-property"), "c80058bf4fd46024");
 });
 
@@ -289,7 +282,7 @@ function withCommittedGitFixture(prefix: string, files: Record<string, string>, 
 function writeBaselineRoundTripFixture(projectDir: string): void {
   writeFileSync(
     join(projectDir, "bad.ts"),
-    `const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";
+    `const embeddedKey = "${AWS_ACCESS_KEY_FIXTURE_VALUE}";
 
 export function unsafePublicApi(input: any): any {
   // ${TS_IGNORE_DIRECTIVE}
@@ -397,7 +390,7 @@ function assertBaselineRoundTripRuleIds(report: AnalysisReport): void {
   for (const ruleId of [
     "security.eval-call",
     "security.new-function",
-    "sensitive-data.high-entropy-string",
+    "sensitive-data.aws-access-key",
     "modernisation.double-cast",
     "security.async-foreach",
     "waste.swallowed-catch",
@@ -535,7 +528,6 @@ test("project test adequacy checks nearby coverage and shallow tests", () => {
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   assert.equal(ruleIds.has("test-quality.snapshot-only-test"), true);
   assert.equal(ruleIds.has("test-quality.no-throw-only-test"), true);
-  assert.equal(ruleIds.has("test-quality.no-assertions"), false);
 });
 
 test("project test adequacy accepts central tests that import the source", () => {
@@ -608,7 +600,7 @@ foo/**.js
 };
 
 test("expanded scanner config disables and overrides new rules", () => {
-  const source = `API_TOKEN="qR8vT3mK6pL9xS2nD4eG"
+  const source = `const accessKey = "${AWS_ACCESS_KEY_FIXTURE_VALUE}";
 
 function branchLightly(input: string): string {
   if (input === "a") return "a";
@@ -616,16 +608,17 @@ function branchLightly(input: string): string {
   return "c";
 }
 `;
+  assert.equal(analyseFixture(source, { fileName: ".env.ts" }).findings.some((finding) => finding.ruleId === "sensitive-data.aws-access-key"), true);
   const report = analyseFixture(source, {
     fileName: ".env.ts",
     config: {
       rules: {
-        "sensitive-data.hardcoded-env-value": { enabled: false },
+        "sensitive-data.aws-access-key": { enabled: false },
         "complexity.cyclomatic": { threshold: 2, severity: "warning" },
       },
     },
   });
-  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), false);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.aws-access-key"), false);
   assert.equal(report.findings.some((finding) => finding.ruleId === "complexity.cyclomatic"), true);
 });
 

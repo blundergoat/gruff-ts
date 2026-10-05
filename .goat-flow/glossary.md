@@ -72,7 +72,7 @@ The set of built-in rules plus their public metadata. `list-rules --format=json`
 
 ### Rule ID
 
-Stable public identifier for one rule, using dotted gruff-family names such as `size.file-length`, `security.eval-call`, `docs.todo-without-tracking`, and `sensitive-data.high-entropy-string`. Documentation rules use `docs.*` while the emitted pillar is `documentation`.
+Stable public identifier for one rule, using dotted gruff-family names such as `size.file-length`, `security.eval-call`, `docs.todo-without-tracking`, and `sensitive-data.aws-access-key`. Documentation rules use `docs.*` while the emitted pillar is `documentation`.
 
 ### SARIF
 

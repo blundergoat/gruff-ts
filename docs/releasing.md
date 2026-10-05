@@ -92,6 +92,6 @@ After publication:
 - [ ] Run `gruff-ts --help`.
 - [ ] Run `gruff-ts analyse . --fail-on=none`.
 - [ ] Run `gruff-ts summary . --fail-on=none`.
-- [ ] Run `gruff-ts list-rules` and confirm 120 descriptors.
+- [ ] Run `gruff-ts list-rules` and confirm 112 descriptors.
 - [ ] Verify the public README installation flow.
 - [ ] Confirm the public release notes match the dated changelog.

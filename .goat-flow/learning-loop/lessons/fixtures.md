@@ -1,6 +1,6 @@
 ---
 category: fixtures
-last_reviewed: 2026-08-11
+last_reviewed: 2026-10-05
 ---
 
 # Fixture and test-data lessons
@@ -43,16 +43,16 @@ itself dynamic.
 
 **Created:** 2026-05-10
 
-`src/cli.test.ts` writes a fixture and asserts that specific `ruleId`s appear (`security.eval-call`, `size.parameter-count`, `test-quality.no-assertions`, `modernisation.public-property`). If you alter a rule's `ruleId`, threshold, or matcher, the fixture text - not the assertion list - is the part to expand: add a new bad pattern that triggers the renamed rule. Editing the assertion to "make the test pass" with the existing fixture defeats the test's purpose (proving the rule fires at all).
+`src/cli.test.ts` writes a fixture and asserts that specific `ruleId`s appear (`security.eval-call`, `size.parameter-count`, `modernisation.public-property`). If you alter a rule's `ruleId`, threshold, or matcher, the fixture text - not the assertion list - is the part to expand: add a new bad pattern that triggers the renamed rule. Editing the assertion to "make the test pass" with the existing fixture defeats the test's purpose (proving the rule fires at all).
 
 ## Lesson: threshold fixtures must exceed the threshold they are proving
 
 **Created:** 2026-05-13
-**Updated:** 2026-08-11
+**Updated:** 2026-10-05
 
 **What happened:** The first high-entropy sensitive-data fixture initially used a 31-character secret-like value while the rule default required 32 characters, so the targeted test failed after implementation until the fixture value was corrected. A later SHA-512 non-candidate test split its value into two literals, but the second 38-character fragment independently crossed the entropy threshold. The focused test passed because the assembled integrity value was excluded; the repository self-scan still reported the fragment in the test source.
 
-**Evidence:** `src/cli.test.ts` + `(search: "const secret =")` - the first-slice fixture owns the candidate value for `sensitive-data.high-entropy-string`; `src/sensitive-data-rules.test.ts` (search: `SHA512_INTEGRITY_FIXTURE_VALUE`) - every stored fragment is now shorter than the entropy scanner's 24-character candidate floor while their joined value retains the integrity shape.
+**Evidence:** `sensitive-data.high-entropy-string` was retired in 0.6.0 (ADR-021); both anchors are at gruff-ts `2b34759`. ~~`src/cli.test.ts` + `(search: "const secret =")`~~ - the first-slice fixture owned the candidate value for the rule; ~~`src/sensitive-data-rules.test.ts` (search: `SHA512_INTEGRITY_FIXTURE_VALUE`)~~ - every stored fragment was shorter than the entropy scanner's 24-character candidate floor while their joined value retained the integrity shape.
 
 **Prevention:** When adding threshold-backed rule fixtures, count or otherwise prove the fixture value crosses the threshold before treating a missing finding as an implementation bug. When an exclusion fixture is assembled to stay quiet under self-scan, prove both boundaries: the joined value must exercise the exclusion and every source literal must stay below the scanner's candidate floor.
 

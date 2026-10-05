@@ -99,6 +99,18 @@ test("list-rules <ruleId> renders JSON envelope with tool + rule + configKeys", 
   assert.equal(enabledKey?.type, "bool");
 });
 
+// A rule that ships off by default (ADR-021) says so on both detail surfaces. Spawns the built binary three times.
+// Stable contract: the JSON enabled key's default agrees with `defaultEnabled`, and the text card names the default.
+test("list-rules <ruleId> shows an off-by-default rule as off in both formats", () => {
+  const offRule = "security.open-redirect-candidate";
+  const payload = JSON.parse(execFileSync("./bin/gruff-ts", ["list-rules", offRule, "--format=json"], { encoding: "utf8" }));
+  assert.equal(payload.rule?.defaultEnabled, false);
+  const enabledKey = payload.rule.configKeys.find((entry: { key: string }) => entry.key === `rules.${offRule}.enabled`);
+  assert.equal(enabledKey?.default, false);
+  assert.match(execFileSync("./bin/gruff-ts", ["list-rules", offRule], { encoding: "utf8" }), /^Enabled by default: no$/m);
+  assert.match(execFileSync("./bin/gruff-ts", ["list-rules", "naming.generic-parameter"], { encoding: "utf8" }), /^Enabled by default: yes$/m);
+});
+
 test("list-rules <ruleId> prints reviewed false-positive guidance in both formats", () => {
   // M04: guidance reaches users only if the surfaces carry it. The JSON branch spreads the
   // descriptor so it gains the field for free, but both text renderers hand-format each field and
@@ -163,8 +175,6 @@ function assertRuleListJsonOutput(): boolean {
   // the one-key `threshold` map; a rule with no threshold omits the key.
   assert.equal(ruleListJsonHasThreshold(parsed, "complexity.cognitive", { maxComplexity: 15 }), true);
   assert.equal(ruleListJsonHasThreshold(parsed, "design.deep-relative-import", { threshold: 2 }), true);
-  // A rule with more than one named threshold publishes all of them: the family high-entropy contract.
-  assert.equal(ruleListJsonHasThreshold(parsed, "sensitive-data.high-entropy-string", { minLength: 32, entropy: 4.2 }), true);
   assert.equal(parsed.rules?.find((rule) => rule.id === "security.eval-call")?.thresholds, undefined);
   assert.equal(parsed.rules?.every((rule) => typeof rule.id === "string" && typeof rule.defaultSeverity === "string"), true);
   assert.equal(parsed.rules?.some((rule) => "ruleId" in rule || "severity" in rule || "threshold" in rule), false);

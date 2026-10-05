@@ -15,7 +15,6 @@ void it("GET product search returns all products", async () => {
 });
 `);
   assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-internal-function-doc"), false);
-  assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.no-assertions"), false);
 });
 
 test("test-like text does not exempt an ordinary function from documentation", () => {

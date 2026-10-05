@@ -80,7 +80,7 @@ test("rule config rejects unknown ids, alias booleans, and malformed options lou
 
 // An unrecognised key inside a rule block used to load as a silent no-op, so a project writing the sibling php shape
 // believed it had tuned the rule. The contract: each refusal names the key the user wrote and the keys that block accepts.
-test("rule config refuses unknown keys inside a rule block and inside its thresholds", () => {
+test("rule config refuses unknown keys inside a rule block, a sibling port's thresholds map included", () => {
   const files = { "ok.ts": "// File overview: config validation fixture.\nexport const fine = 1;\n" };
   assert.throws(
     () => analyseProject(files, { config: { rules: { "size.file-length": { threshhold: 400 } } } }),
@@ -90,25 +90,12 @@ test("rule config refuses unknown keys inside a rule block and inside its thresh
     () => analyseProject(files, { config: { rules: { "size.file-length": { thresholds: { maxLines: 400 } } } } }),
     /Unknown config key "rules\.size\.file-length\.thresholds"/,
   );
-  assert.throws(
-    () => analyseProject(files, { config: { rules: { "sensitive-data.high-entropy-string": { thresholds: { minLenght: 20 } } } } }),
-    /Unknown config key "rules\.sensitive-data\.high-entropy-string\.thresholds\.minLenght"\. Valid keys: rules\.sensitive-data\.high-entropy-string\.thresholds\.entropy, rules\.sensitive-data\.high-entropy-string\.thresholds\.minLength\./,
-  );
-  assert.throws(
-    () => analyseProject(files, { config: { rules: { "sensitive-data.high-entropy-string": { thresholds: { entropy: "high" } } } } }),
-    /"thresholds\.entropy" must be numeric/,
-  );
-  assert.throws(
-    () => analyseProject(files, { config: { rules: { "sensitive-data.high-entropy-string": { thresholds: 20 } } } }),
-    /"thresholds" must be a mapping of minLength, entropy/,
-  );
-  // Every key the port already supported still loads, beside the new named thresholds.
+  // Every key a rule block supports still loads.
   const valid = analyseProject(files, {
     config: {
       rules: {
         "size.file-length": { enabled: true, threshold: 400, severity: "warning" },
         "design.large-module-concentration": { threshold: 55, options: { minFiles: 4, minLines: 1 } },
-        "sensitive-data.high-entropy-string": { threshold: 30, thresholds: { minLength: 32, entropy: 4.5 } },
       },
     },
   });

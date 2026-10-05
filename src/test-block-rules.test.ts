@@ -34,7 +34,6 @@ const STATIC_REDUNDANT_RULE_ID = "test-quality.static-analysis-redundant-test";
 
 // This fixture matrix protects the checks enabled when a registration result is discarded.
 const DISCARDED_REGISTRATION_CASES = [
-    { body: "performRequest();", ruleId: "test-quality.no-assertions" },
     { body: "assert.equal(result, result);", ruleId: "test-quality.trivial-assertion" },
     { body: "expect(result).toMatchSnapshot();", ruleId: "test-quality.snapshot-only-test" },
     { body: "assert.doesNotThrow(() => performRequest());", ruleId: "test-quality.no-throw-only-test" },
@@ -280,7 +279,6 @@ test("an unlabeled loop with a should.be assertion still reports loop-in-test", 
   }
 `);
 
-  assert.equal(findings.some((finding) => finding.ruleId === "test-quality.no-assertions"), false);
   assert.equal(findings.some((finding) => finding.ruleId === "test-quality.loop-in-test"), true);
 });
 

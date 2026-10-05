@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import test from "node:test";
 import { renderReport, renderSummary, renderSummaryJson } from "./report-renderers.ts";
-import { analyseFixture, analyseProject, analyseProjectInCurrentDirectory, HIGH_ENTROPY_FIXTURE_VALUE, PRIVATE_KEY_HEADER_FIXTURE_VALUE } from "./test-fixtures.ts";
+import { analyseFixture, analyseProject, analyseProjectInCurrentDirectory, GOOGLE_API_KEY_FIXTURE_VALUE, PRIVATE_KEY_HEADER_FIXTURE_VALUE } from "./test-fixtures.ts";
 
 test("requested directory hidden by parent gitignore reports a no-analysable-files note", () => {
   // The adoption-scan repro: a nested project excluded by the parent's .gitignore analysed zero
@@ -117,7 +117,7 @@ test("a script file over the default line budget keeps text rules and reports a 
   // analysed, still run size/sensitive-data/text rules, but skip deep script passes (the eval
   // call below would otherwise produce security.eval-call).
   const filler = Array.from({ length: 20_001 }, (_, index) => `export const filler${index} = ${index};`).join("\n");
-  const hugeSource = `${filler}\nconst secret = "${HIGH_ENTROPY_FIXTURE_VALUE}";\neval("payload");\n`;
+  const hugeSource = `${filler}\nconst secret = "${GOOGLE_API_KEY_FIXTURE_VALUE}";\neval("payload");\n`;
   const report = analyseProject(
     { "huge.ts": hugeSource },
     { paths: ["huge.ts"], config: { rules: { "size.file-length": { severity: "warning" } } } },
@@ -130,7 +130,7 @@ test("a script file over the default line budget keeps text rules and reports a 
   assert.equal(diagnostic.invalidatesRun, false);
   assert.match(diagnostic.message, /path=huge\.ts; lines=20004; bytes=\d+; maxLines=20000; maxBytes=2000000; override=default/);
   assert.equal(report.findings.some((finding) => finding.ruleId === "size.file-length"), true);
-  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.api-key-pattern"), true);
   assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
 });
 

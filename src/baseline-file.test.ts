@@ -120,7 +120,7 @@ test("a measured file-level finding survives the file growing", () => {
 test("a sensitive finding is never stored and never hidden", () => {
   withProject((dir) => {
     const path = join(dir, "baseline.json");
-    const secret = finding({ ruleId: "sensitive-data.high-entropy-string", pillar: "sensitive-data", symbol: "", message: "Possible secret" });
+    const secret = finding({ ruleId: "sensitive-data.aws-access-key", pillar: "sensitive-data", symbol: "", message: "Possible secret" });
     writeBaseline(path, [secret]);
     const document = JSON.parse(readFileSync(path, "utf8")) as { occurrences: unknown[]; sensitive: { counts: { total: number } } };
 
@@ -216,7 +216,7 @@ test("a baseline only ever removes reviewed findings from the score and the exit
     const path = join(dir, "baseline.json");
     const reviewed = finding();
     const fresh = finding({ symbol: "other", line: 400 });
-    const secret = finding({ ruleId: "sensitive-data.high-entropy-string", pillar: "sensitive-data", symbol: "", message: "Possible secret" });
+    const secret = finding({ ruleId: "sensitive-data.aws-access-key", pillar: "sensitive-data", symbol: "", message: "Possible secret" });
     writeBaseline(path, [reviewed, secret]);
 
     const application = applyBaseline(path, [reviewed, fresh, secret]);

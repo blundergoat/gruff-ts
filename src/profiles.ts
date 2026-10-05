@@ -7,7 +7,7 @@
 import { ruleDescriptors } from "./rules.ts";
 import type { Pillar, ProfileDefinition, ProfileRuleSetting, Severity } from "./types.ts";
 
-// The eleven pillars listed explicitly so `recommended`/`strict` enable the whole catalogue without
+// The eleven pillars listed explicitly so `recommended`/`strict` enable every pillar without
 // referencing an implicit "all rules" default - the selection is greppable here, not derived elsewhere.
 const ALL_PILLARS: readonly Pillar[] = [
   "complexity",
@@ -57,9 +57,9 @@ export interface ProfileSummary {
 /*
  * The three built-in presets in source form. This array IS the readable preset catalogue the kill
  * criteria require: minimal (sanity/security only), recommended (current default behaviour, a no-op
- * delta), strict (every pillar enabled with tightened size/complexity/secret thresholds). Strict only
- * tightens thresholds - it enables no new rule, because recommended already enables the whole
- * catalogue - so a strict scan reports at least as many findings as recommended, never fewer.
+ * delta), strict (every pillar enabled with tightened size/complexity/design thresholds). Strict only
+ * tightens thresholds - it enables no new rule, because recommended already enables every rule that
+ * is on by default - so a strict scan reports at least as many findings as recommended, never fewer.
  */
 const BUILT_IN_PROFILE_SPECS: readonly BuiltInProfile[] = [
   {
@@ -78,7 +78,7 @@ const BUILT_IN_PROFILE_SPECS: readonly BuiltInProfile[] = [
   },
   {
     name: "gruff.strict",
-    description: "Every pillar enabled with tightened size, complexity, and secret thresholds for high-bar repositories.",
+    description: "Every pillar enabled with tightened size, complexity, and design thresholds for high-bar repositories.",
     enabledPillars: ALL_PILLARS,
     thresholds: {
       "complexity.cognitive": 10,
@@ -88,8 +88,6 @@ const BUILT_IN_PROFILE_SPECS: readonly BuiltInProfile[] = [
       "size.file-length": 400,
       "size.function-length": 60,
       "size.parameter-count": 4,
-      "sensitive-data.hardcoded-env-value": 12,
-      "sensitive-data.high-entropy-string": 24,
     },
     severities: {},
   },
@@ -213,26 +211,6 @@ export function isPillarName(candidate: string): boolean {
 // Exported for config validation so `config.ts` keeps depending on this module, not `rules.ts`.
 const RULE_OPTION_KEYS: ReadonlyMap<string, readonly string[]> = new Map(DESCRIPTORS.map((descriptor) => [descriptor.ruleId, descriptor.optionKeys ?? []]));
 
-// Names a rule accepts under `rules.<id>.thresholds`: the published name of its `threshold` first, then its additional
-// thresholds. Only a rule whose descriptor declares additional thresholds takes the block; the rest configure
-// `threshold` alone, so the block stays an unknown key for them.
-const RULE_THRESHOLD_NAMES: ReadonlyMap<string, readonly string[]> = new Map(
-  DESCRIPTORS.filter((descriptor) => descriptor.additionalThresholds !== undefined).map((descriptor) => [
-    descriptor.ruleId,
-    [descriptor.thresholdName ?? "threshold", ...Object.keys(descriptor.additionalThresholds ?? {})],
-  ]),
-);
-
-/**
- * Returns the names a rule accepts under `rules.<id>.thresholds`.
- *
- * @param ruleId Rule id already validated against the catalogue.
- * @returns The primary threshold's name then any additional names; an empty array means the rule takes no `thresholds` block.
- */
-export function ruleThresholdNames(ruleId: string): readonly string[] {
-  return RULE_THRESHOLD_NAMES.get(ruleId) ?? [];
-}
-
 /**
  * Returns the option keys a rule accepts under `rules.<id>.options`.
  *
@@ -261,11 +239,10 @@ export function profileSummaries(): ProfileSummary[] {
   const totalRuleCount = DESCRIPTORS.length;
   return BUILT_IN_PROFILE_SPECS.map((spec) => {
     const definition = BUILT_IN_PROFILES.get(spec.name);
-    const disabledCount = definition ? countDisabledRules(definition) : 0;
     return {
       name: spec.name,
       description: spec.description,
-      enabledRuleCount: totalRuleCount - disabledCount,
+      enabledRuleCount: countEnabledRules(definition),
       totalRuleCount,
       enabledPillars: spec.enabledPillars,
       tightenedThresholdCount: Object.keys(spec.thresholds).length,
@@ -273,16 +250,10 @@ export function profileSummaries(): ProfileSummary[] {
   });
 }
 
-// Counts the rules a flattened profile explicitly disables, so the enabled count is the catalogue
-// size minus the disables (enabled-at-default rules are omitted from the delta and stay enabled).
-function countDisabledRules(definition: ProfileDefinition): number {
-  let disabled = 0;
-  for (const setting of definition.rules.values()) {
-    if (setting.enabled === false) {
-      disabled += 1;
-    }
-  }
-  return disabled;
+// Counts the rules a flattened profile runs: its explicit setting wins, and a rule it leaves alone keeps its
+// descriptor default, so a rule that ships off by default (ADR-021) counts only where the profile enables it.
+function countEnabledRules(definition: ProfileDefinition | undefined): number {
+  return DESCRIPTORS.filter((descriptor) => definition?.rules.get(descriptor.ruleId)?.enabled ?? descriptor.isEnabledByDefault !== false).length;
 }
 
 export { DEFAULT_PROFILE_NAME };

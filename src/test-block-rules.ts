@@ -38,7 +38,7 @@ export function analyseTestBlock(file: SourceFile, block: FunctionBlock, finding
   analyseTestStructureChecks(file, block, body, findings);
 }
 
-// Five assertion-shape checks (no-assertions, trivial, snapshot-only, no-throw-only, exception-type-only)
+// Four assertion-shape checks (trivial, snapshot-only, no-throw-only, exception-type-only)
 // plus the magic-number sub-pass. Reports findings with stable test-block metadata.
 function analyseAssertionQuality(file: SourceFile, block: FunctionBlock, body: string, staticContext: StaticAnalysisSourceContext, findings: Finding[]): void {
   for (const check of assertionQualityChecks(block, body)) {
@@ -53,7 +53,6 @@ function analyseAssertionQuality(file: SourceFile, block: FunctionBlock, body: s
 function assertionQualityChecks(block: FunctionBlock, body: string): TestBlockCheck[] {
   const testName = block.name;
   const checks: Array<TestBlockCheck & { active: boolean }> = [
-    { active: !hasAssertion(body), ruleId: "test-quality.no-assertions", message: `Test \`${testName}\` does not appear to make an assertion.`, severity: "warning" },
     { active: hasTrivialAssertion(body), ruleId: "test-quality.trivial-assertion", message: `Test \`${testName}\` contains an assertion that compares a value to itself.`, severity: "warning" },
     { active: isSnapshotOnlyTest(body), ruleId: "test-quality.snapshot-only-test", message: `Test \`${testName}\` relies only on snapshot assertions.`, severity: "advisory" },
     { active: isNoThrowOnlyTest(body), ruleId: "test-quality.no-throw-only-test", message: `Test \`${testName}\` only verifies that code does not throw.`, severity: "advisory" },

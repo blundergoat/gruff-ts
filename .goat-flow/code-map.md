@@ -62,13 +62,12 @@ gruff-ts/
 │   ├── test-block-rules.ts        = setup, assertion, mock, sleep, loop, and structural test rules
 │   ├── safety-rules.ts            = type-safety, async reliability, catch, and throw rules
 │   ├── security-flow-rules.ts     = syntax-aware source-to-sink candidates and unsafe parser/execution checks
-│   ├── github-actions-rules.ts    = GitHub Actions workflow and permission rules
+│   ├── github-actions-rules.ts    = GitHub Actions workflow rules
 │   ├── github-actions-event-guards.ts = bounded event-guard proof that keeps unreachable workflow secret sinks quiet
 │   ├── process-exec-metadata.ts   = safe process-call metadata shared by execution findings
 │   ├── naming-pushers.ts          = shared naming finding emitters and remediation metadata
 │   ├── project-config-rules.ts    = package, TypeScript, workflow, dependency, and config-health rules
 │   ├── sensitive-data-rules.ts    = secret-like detectors with allowlisted redacted previews
-│   ├── entropy-public-shapes.ts   = public-constant shapes kept out of high-entropy secret warnings
 │   ├── sensitive-exclusions.ts    = sensitiveExclusions config section, validator, matcher, and audit counter
 │   ├── source-text.ts             = non-code masking and source-text helpers
 │   ├── text-scans.ts              = tracking-marker summaries, byte lines, and generic text scans
@@ -78,7 +77,7 @@ gruff-ts/
 │   ├── baseline.ts                = canonical finding order, dedupe, and score-history recording
 │   ├── scoring.ts                 = report scoring, summaries, and finding exit semantics
 │   ├── pillar-summary.ts          = canonical summary pillar rows and ordering
-│   ├── rules.ts                   = catalogue of exactly 120 descriptors across 11 pillars
+│   ├── rules.ts                   = catalogue of exactly 112 descriptors across 11 pillars
 │   ├── profiles.ts                = built-in rule profile presets that profile: and --profile resolve
 │   ├── selectors.ts               = execution versus presentation rule selectors
 │   ├── rule-list.ts               = list-rules, profile list, and shell completion rendering

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { renderReport } from "./cli.ts";
 import { renderSummary } from "./report-renderers.ts";
-import { analyseFixture, analyseProject, HIGH_ENTROPY_FIXTURE_VALUE } from "./test-fixtures.ts";
+import { analyseFixture, analyseProject } from "./test-fixtures.ts";
 import { countMatches } from "./text-scans.ts";
 
 test("FP-#10 security.inner-html ignores empty-string DOM clearing", () => {
@@ -44,71 +44,6 @@ function check(rule: { pattern: RegExp }, line: string, cmd: string): void {
   assert.deepEqual(lineNumbers, expectedFiringLines);
 });
 
-test("FP-#8 test-quality.no-assertions recognises custom helpers", () => {
-  // Purpose: prove the no-assertions detector accepts assertFoo, fooCheck, `.rejects.` matchers,
-  // and still flags the one test in the fixture that genuinely lacks any assertion.
-  const report = analyseFixture(`function assertLocalPathError(err: unknown): void { void err; }
-function bashCheck(out: string): void { void out; }
-
-test("uses custom assertion helper", () => {
-  assertLocalPathError(getSomething());
-});
-
-test("uses Check-suffixed helper", () => {
-  bashCheck(runScript());
-});
-
-test("uses rejects matcher", async () => {
-  await expect(doIt()).rejects.toThrow();
-});
-
-test("genuinely has no assertion", () => {
-  doWork();
-});
-`);
-  const noAssertion = report.findings.filter((entry) => entry.ruleId === "test-quality.no-assertions");
-  assert.equal(noAssertion.length, 1);
-  assert.match(noAssertion[0]?.message ?? "", /genuinely has no assertion/);
-});
-
-// Purpose: pin TypeORM's matcher shape and nearby assertion-free text in one analysis-path fixture.
-// Invariant: only a real matcher call prevents the no-assertions warning.
-test("TypeORM should.be matcher calls count as assertions while ordinary should text does not", () => {
-  // The TypeORM cases return Promise.all over callbacks containing these matcher calls.
-  const report = analyseFixture([
-    "it('checks enum arrays', () => Promise.all(dataSources.map(async (dataSource) => {",
-    "  const loaded = await dataSource.load();",
-    "  loaded.numericEnums.should.be.eql([]);",
-    "  loaded.count.should.be.equal(0);",
-    "  loaded.count.should.be.greaterThan(0);",
-    "  loaded.item.should.be.instanceOf(Item);",
-    "})));",
-    "it('only reads a should option', () => {",
-    "  const requested = options.should;",
-    "  use(requested);",
-    "});",
-    "it('only mentions a matcher in source text', () => {",
-    "  const example = 'loaded.item.should.be.equal(0)';",
-    "  // loaded.item.should.be.eql([]);",
-    "  use(example);",
-    "});",
-    "it('defines a callback without an assertion', () => {",
-    "  const callback = () => options.should;",
-    "  use(callback);",
-    "});",
-    "",
-  ].join("\n"), { fileName: "typeorm-assertions.test.ts" });
-
-  const testsWithoutAssertions = report.findings
-    .filter((finding) => finding.ruleId === "test-quality.no-assertions")
-    .map((finding) => finding.symbol);
-  assert.deepEqual(testsWithoutAssertions, [
-    "only reads a should option",
-    "only mentions a matcher in source text",
-    "defines a callback without an assertion",
-  ]);
-});
-
 test("FP-#11 waste.console-log skips CLI/script paths", () => {
   const cliReport = analyseFixture(`console.log("starting");\n`, { fileName: "src/cli/run.ts" });
   assert.equal(cliReport.findings.some((entry) => entry.ruleId === "waste.console-log"), false);
@@ -118,64 +53,6 @@ test("FP-#11 waste.console-log skips CLI/script paths", () => {
 
   const appReport = analyseFixture(`console.log("debug");\n`, { fileName: "src/dashboard/app.ts" });
   assert.equal(appReport.findings.some((entry) => entry.ruleId === "waste.console-log"), true);
-});
-
-test("FP-#2 sensitive-data.high-entropy-string suppresses repo path-shape strings", () => {
-  // Purpose: prove path-shape strings clear the entropy gate but a real secret value still fires.
-  const realSecret = HIGH_ENTROPY_FIXTURE_VALUE;
-  const report = analyseFixture(`const ref = ".goat-flow/tasks/0.1/M38-css-metrics-and-todo-density-calibration.md";
-const otherRef = "src/cli/audit/check-content-quality.ts";
-const adrRef = "ADR-025-block-all-git-push.md";
-const absoluteTaskRef = "/repo/.goat-flow/tasks/1.7.0/M00-side-menu-navigation.md";
-const secret = "${realSecret}";
-void ref;
-void otherRef;
-void adrRef;
-void absoluteTaskRef;
-void secret;
-`);
-  const findings = report.findings.filter((entry) => entry.ruleId === "sensitive-data.high-entropy-string");
-  const expectedFindingCount = 1;
-  assert.equal(findings.length, expectedFindingCount);
-});
-
-test("sensitive-data.high-entropy-string needs a letter and a digit", () => {
-  // FAMILY-CONTRACT section 12's floor: lowercase-only and uppercase-only runs and a digit-free mix of cases stay quiet,
-  // and a literal mixing letters and digits reports, where the old upper-lower-digit rule missed it. gruff-go, gruff-php,
-  // gruff-py and gruff-rs pin the same literals; the reported one is assembled so this file stores it in parts.
-  const mixed = "k3j9x2m7q1w8e5r4" + "t6y0u9i8o7p6a5s4" + "d3f2g1h0zb";
-  const report = analyseFixture(`export const lower = "vxezaawdsdwcvvuvryyabvkvbgdqlcqstgddkefmpdrjp";
-export const upper = "VXEZAAWDSDWCVVUVRYYABVKVBGDQLCQSTGDDKEFMPDRJP";
-export const camel = "VxEzAaWdSdWcVvUvRyYaBvKvBgDqLcQsTgDdKeFmPdRjP";
-export const mixed = "${mixed}";
-`);
-  const lines = report.findings.filter((entry) => entry.ruleId === "sensitive-data.high-entropy-string").map((entry) => entry.line);
-  assert.deepEqual(lines, [4]);
-});
-
-test("sensitive-data.high-entropy-string skips a public PEM block's body", () => {
-  // A certificate is public by construction (FAMILY-CONTRACT section 12), so its base64 body stays quiet; the same body
-  // reports outside any armour and inside a private key's block. Markers that wrap code are not a block, so the secret
-  // between header and footer constants (line 5) and a private key between public markers (line 8) report too. A
-  // one-line block breaks at its escaped line breaks, so its header vouches for nothing after it (line 10). The body
-  // and the key label are assembled from parts.
-  const body = "k3j9x2m7q1w8e5r4" + "t6y0u9i8o7p6a5s4" + "d3f2g1h0zb";
-  const privateLabel = ["RSA PRIVATE", "KEY"].join(" ");
-  // Builds a TypeScript expression that spells one armoured block around the body.
-  const wrap = (label: string): string => `"-----BEGIN ${label}-----\\n" + "${body}" + "\\n-----END ${label}-----"`;
-  const report = analyseFixture(`export const certificate = ${wrap("CERTIFICATE")};
-export const bare = "${body}";
-export const key = ${wrap(privateLabel)};
-export const header = "-----BEGIN CERTIFICATE-----";
-export const secret = "${body}";
-export const footer = "-----END CERTIFICATE-----";
-export const outer = "-----BEGIN CERTIFICATE-----";
-export const nested = ${wrap(privateLabel)};
-export const close = "-----END CERTIFICATE-----";
-export const a = "-----BEGIN CERTIFICATE-----\\nComment: x\\n"; export const k = "${body}"; export const b = "-----END CERTIFICATE-----";
-`);
-  const lines = report.findings.filter((entry) => entry.ruleId === "sensitive-data.high-entropy-string").map((entry) => entry.line);
-  assert.deepEqual(lines, [2, 3, 5, 8, 10]);
 });
 
 // Vendor-documented samples must never report: AWS's example key, the jwt.io sample token and a published test card.

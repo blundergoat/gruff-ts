@@ -1,6 +1,6 @@
 ---
 category: sensitive-data
-last_reviewed: 2026-09-13
+last_reviewed: 2026-10-05
 hallucination-risk: high
 ---
 
@@ -39,7 +39,7 @@ The coupling crosses milestone boundaries, so the assumption that justified the 
 
 **Evidence:** package-manager lockfiles were excluded from the pillar to stop published integrity digests raising `sensitive-data.high-entropy-string`. Scanning one byte-identical file twice measured the cost: as `appconfig.json` it reported `sensitive-data.api-key-pattern`, `sensitive-data.database-url-password`, and `sensitive-data.high-entropy-string`; as `package-lock.json` it reported nothing. A credential in a `resolved` URL is the documented real-world leak vector for that exact file family, so the silenced siblings were the ones that mattered.
 
-**Prevention:** filter the produced findings by `ruleId` instead of skipping the dispatch, and lock it in with a two-way test: the noisy rule must stay silent on the family and a credential in the same family must still report. `isSubresourceIntegrityHash` (search: `function isSubresourceIntegrityHash`) already existed to exempt digest shapes, so the targeted mechanism usually exists before the blanket one is reached for.
+**Prevention:** filter the produced findings by `ruleId` instead of skipping the dispatch, and lock it in with a two-way test: the noisy rule must stay silent on the family and a credential in the same family must still report. ~~`isSubresourceIntegrityHash` (search: `function isSubresourceIntegrityHash`)~~ already existed to exempt digest shapes, so the targeted mechanism usually exists before the blanket one is reached for. The entropy rule, the digest check and the lockfile skip that replaced the blanket guard were retired in 0.6.0 (ADR-021); the struck anchor is at gruff-ts `2b34759`.
 
 ## Footgun: hook metadata can rename and re-expose sensitive measurements
 
@@ -76,7 +76,7 @@ against 355 ms at the pre-repair source. Probe any new syntax-keyed exemption th
 already reports in every position its pattern can match, and confirm each still reports.
 
 Resolved when the shared entropy policy (commit `933b36e`, 2026-10-01) removed the location-key exemption entirely.
-`isExcludedHighEntropyCandidate` (`src/sensitive-data-rules.ts`, search: `function isExcludedHighEntropyCandidate`)
-now judges only the whole literal, and `src/sensitive-data-rules.test.ts`
-(search: `shared entropy policy retains opaque findings across key names and syntax positions`) asserts that every
-shape above reports.
+~~`isExcludedHighEntropyCandidate` (`src/sensitive-data-rules.ts`, search: `function isExcludedHighEntropyCandidate`)~~
+then judged only the whole literal, and ~~`src/sensitive-data-rules.test.ts`
+(search: `shared entropy policy retains opaque findings across key names and syntax positions`)~~ asserted that every
+shape above reports. 0.6.0 retired the rule itself (ADR-021); both anchors are at gruff-ts `2b34759`.

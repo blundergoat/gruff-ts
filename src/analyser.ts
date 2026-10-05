@@ -11,7 +11,7 @@ import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan }
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError, changedRegionScope, filterChangedFindings, filterScopedDiagnostics, type ChangedRegionScope } from "./changed-regions.ts";
 import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
-import { applyBuiltInLockfileSkip, applyBuiltInTestPathSkip, partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
+import { applyBuiltInTestPathSkip, partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
@@ -235,9 +235,7 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
   // the report, the score, or the exit code, and each entry's count covers the whole scan.
   const excluded = partitionSensitiveExclusions(allFindings, config.sensitiveExclusions);
   // A configured entry claims its findings first, so its count stays what the user wrote it for.
-  const lockfileSkipped = applyBuiltInLockfileSkip(excluded.findings, excluded.suppressions);
-  // The lockfile skip runs first, so `tests/package-lock.json` gets one audit row, not two.
-  const testPathSkipped = applyBuiltInTestPathSkip(lockfileSkipped.findings, lockfileSkipped.suppressions);
+  const testPathSkipped = applyBuiltInTestPathSkip(excluded.findings, excluded.suppressions);
   // Naming every finding before the baseline filters any of them keeps one alert one alert: code scanning reads the
   // same identity the baseline does, and a finding hidden from this report keeps the ordinal it was ranked with.
   const spans = declarationSpans(scanned);
@@ -641,7 +639,6 @@ const SIZE_RULE_IDS = ruleIdsForPillar("size");
 const TEST_QUALITY_RULE_IDS = ruleIdsForPillar("test-quality");
 
 const GITHUB_ACTIONS_RULE_IDS = [
-  "security.github-actions-broad-permissions",
   "security.github-actions-pull-request-target",
   "security.github-actions-remote-shell",
   "security.github-actions-secrets-in-pr",
@@ -650,7 +647,6 @@ const GITHUB_ACTIONS_RULE_IDS = [
 
 const PROJECT_CONFIG_RULE_IDS = [
   "security.remote-install-script",
-  "security.risky-lifecycle-script",
   "security.url-dependency",
   "waste.broad-runtime-version",
   "design.package-bin-missing",
@@ -802,8 +798,7 @@ function analyseTextRules(file: SourceFile, source: string, comments: CommentRec
   }
 
   if (isAnyRuleEnabled(config, SENSITIVE_DATA_RULE_IDS)) {
-    // The entropy rule's lockfile findings are removed later, by the counted built-in skip, so nothing is dropped here.
-    analyseSensitiveData(file, source, config, findings);
+    analyseSensitiveData(file, source, findings);
   }
   if (isAnyRuleEnabled(config, GITHUB_ACTIONS_RULE_IDS)) {
     analyseGithubActionsRules(file, source, findings);
@@ -878,8 +873,7 @@ function lineCount(source: string): number {
 }
 
 // Package-manager lockfiles contain generated dependency metadata. Discovery retains them and `size.file-length`
-// skips them outright; the sensitive-data pass no longer consults this predicate, because the entropy rule's
-// lockfile findings are removed by the counted built-in skip in `sensitive-exclusions.ts` instead.
+// skips them outright; every sensitive-data rule still reads them.
 function isGeneratedLockfile(filePath: string): boolean {
   const fileName = basename(filePath);
   return fileName === "package-lock.json" || fileName === "npm-shrinkwrap.json" || fileName === "yarn.lock" || fileName === "pnpm-lock.yaml" || fileName === "bun.lockb";

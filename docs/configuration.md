@@ -263,22 +263,8 @@ rules:
       minLines: 80
 ```
 
-A rule that publishes more than one named threshold takes them under `thresholds`. Today that is
-`sensitive-data.high-entropy-string`, whose `minLength` (default 32) and `entropy` (default 4.2) are
-the family contract's two bars:
-
-```yaml
-rules:
-  sensitive-data.high-entropy-string:
-    thresholds:
-      minLength: 24
-      entropy: 4.5
-    severity: warning
-```
-
-`threshold` still sets the minimum length there, and when a block writes both, `thresholds.minLength`
-wins. Any other key inside a rule block, including `thresholds` on a rule that does not publish named
-thresholds, fails the config load and names the key and the keys the block accepts.
+Any other key inside a rule block, a sibling port's `thresholds` map included, fails the config load
+and names the key and the keys the block accepts.
 
 List supported thresholds and options:
 
@@ -295,10 +281,9 @@ See [Rules](./rules.md) for the full rule catalogue grouped by pillar.
 is a separate top-level section, not part of `rules:` or `paths.ignore`, because
 it is the one surface that can hide a detected secret.
 
-Two built-in skips also hide sensitive-data findings, and count each one in
-`suppressions`: the entropy rule in package-manager lockfiles, and every
-sensitive-data rule in test, fixture and example files. A configured entry
-applies before either, so a finding it claims is counted under the entry.
+One built-in skip also hides sensitive-data findings, and counts each one in
+`suppressions`: every sensitive-data rule in test, fixture and example files.
+A configured entry applies first, so a finding it claims is counted under the entry.
 
 You write every entry by hand. Gruff never converts a detected value, a preview,
 or a finding message into an exclusion, and no key on an entry matches against
@@ -389,11 +374,6 @@ rules:
   design.deep-relative-import:
     threshold: 2
     severity: advisory
-  sensitive-data.high-entropy-string:
-    thresholds:
-      minLength: 32
-      entropy: 4.2
-    severity: warning
   size.function-length:
     threshold: 30
     severity: warning

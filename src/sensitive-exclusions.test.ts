@@ -30,9 +30,11 @@ const SENSITIVE_CORPUS: Record<string, string> = {
 
 // Renders one `sensitiveExclusions:` YAML document. Written as text rather than through the fixture
 // object serializer because that serializer emits inline `[...]` arrays and cannot express the
-// ratified sequence-of-mappings shape.
+// ratified sequence-of-mappings shape. jwt-token ships off by default (ADR-021), so the document switches
+// it on to keep a second sensitive rule in the corpus, as the cross-port suite does.
 function sensitiveExclusionConfig(entries: string[]): string {
-  return ["schemaVersion: gruff-ts.config.v0.1", "sensitiveExclusions:", ...entries].join("\n") + "\n";
+  const enableJwt = ["rules:", `  ${JWT_RULE_ID}:`, "    enabled: true"];
+  return ["schemaVersion: gruff-ts.config.v0.1", ...enableJwt, "sensitiveExclusions:", ...entries].join("\n") + "\n";
 }
 
 // Scans the synthetic corpus under one exclusion config and returns the stable report contract.
@@ -134,14 +136,14 @@ test("two entries with different scopes are independent and each reports its own
 });
 
 // Section 13a lets no surface that filters do it in silence, so every surface that applies the family's built-in
-// lockfile skip publishes its count. The other four ports pin the same three surfaces.
-test("the built-in lockfile skip is counted on analyse text, summary text and the hook payload", () => {
-  const digest = ["Zx7pQ9vLm3N8sT2r", "Y6wK1dF4gH5jC0bR2"].join("");
+// test-path skip publishes its count.
+test("the built-in test-path skip is counted on analyse text, summary text and the hook payload", () => {
+  const key = ["AKIA", "Q7R2M8N4", "P6T9V1X3"].join("");
   const report = analyseProject({
-    "package-lock.json": JSON.stringify({ token: digest }),
+    "src/login.spec.ts": `export const accessKeyId = "${key}";\n`,
     "source.ts": "export const ok = 1;\n",
   });
-  const expected = "builtInLockfile[package-lock.json] sensitive-data.high-entropy-string: ";
+  const expected = `builtInTestPath[src/login.spec.ts] ${AWS_RULE_ID}: `;
 
   assert.ok(renderReport(report, "text").includes(expected), renderReport(report, "text"));
   assert.ok(renderSummary(report).includes(expected), renderSummary(report));
@@ -151,18 +153,17 @@ test("the built-in lockfile skip is counted on analyse text, summary text and th
     suppressions?: Array<{ path: string; source?: string }>;
   };
 
-  assert.deepEqual((payload.suppressions ?? []).map((row) => [row.path, row.source]), [["package-lock.json", "built-in"]]);
-  assert.equal(JSON.stringify(payload.suppressions).includes(digest), false, "no suppression surface may carry matched value material");
+  assert.deepEqual((payload.suppressions ?? []).map((row) => [row.path, row.source]), [["src/login.spec.ts", "built-in"]]);
+  assert.equal(JSON.stringify(payload.suppressions).includes(key), false, "no suppression surface may carry matched value material");
 });
 
-// A key in test, fixture or example files must be skipped and counted, one row per rule and file after the lockfile row.
+// A key in test, fixture or example files must be skipped and counted, one row per rule and file.
 //
 // Production code and `latest.ts`, whose name only resembles a test, must still report (FAMILY-CONTRACT.md section 13a).
 test("the built-in test-path class skips sensitive-data findings in test, fixture and example files and counts them", () => {
   const key = ["AKIA", "Q7R2M8N4", "P6T9V1X3"].join("");
   const body = `export const accessKeyId = "${key}";\n`;
   const report = analyseProject({
-    "package-lock.json": JSON.stringify({ token: ["Zx7pQ9vLm3N8sT2r", "Y6wK1dF4gH5jC0bR2"].join("") }),
     "Tests/Fixtures/keys.ts": body,
     "examples/demo.ts": body,
     "src/login.spec.ts": body,
@@ -174,10 +175,9 @@ test("the built-in test-path class skips sensitive-data findings in test, fixtur
   assert.deepEqual(keyFiles, ["src/config.ts", "src/latest.ts"]);
   const builtIn = report.suppressions.filter((row) => row.source === "built-in").map((row) => [row.index, row.paths[0], row.rule]);
   assert.deepEqual(builtIn, [
-    [0, "package-lock.json", "sensitive-data.high-entropy-string"],
-    [1, "Tests/Fixtures/keys.ts", AWS_RULE_ID],
-    [2, "examples/demo.ts", AWS_RULE_ID],
-    [3, "src/login.spec.ts", AWS_RULE_ID],
+    [0, "Tests/Fixtures/keys.ts", AWS_RULE_ID],
+    [1, "examples/demo.ts", AWS_RULE_ID],
+    [2, "src/login.spec.ts", AWS_RULE_ID],
   ]);
   assert.ok(renderReport(report, "text").includes(`builtInTestPath[examples/demo.ts] ${AWS_RULE_ID}: 1 (`), renderReport(report, "text"));
 });

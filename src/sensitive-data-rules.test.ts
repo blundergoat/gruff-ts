@@ -3,7 +3,6 @@
 // Fixtures prove fixed markers and retained occurrence counts across every renderer.
 // All examples are synthetic and assembled safely so the repository never stores real credentials.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 import { renderReport, ruleDescriptors } from "./cli.ts";
 import {
@@ -16,7 +15,6 @@ import {
   DISCORD_WEBHOOK_FIXTURE_VALUE,
   GCP_PRIVATE_KEY_ID_FIXTURE_VALUE,
   GOOGLE_API_KEY_FIXTURE_VALUE,
-  HIGH_ENTROPY_FIXTURE_VALUE,
   INVALID_CREDIT_CARD_FIXTURE_VALUE,
   JWT_FIXTURE_VALUE,
   MBI_FIXTURE_VALUE,
@@ -29,7 +27,7 @@ import {
   URL_CREDENTIAL_FIXTURE_VALUE,
 } from "./test-fixtures.ts";
 
-const SENSITIVE_DATA_RULE_IDS = ["sensitive-data.hardcoded-env-value", "sensitive-data.api-key-pattern", "sensitive-data.database-url-password", "sensitive-data.pii-pattern"];
+const SENSITIVE_DATA_RULE_IDS = ["sensitive-data.api-key-pattern", "sensitive-data.database-url-password", "sensitive-data.pii-pattern"];
 const ALL_RENDER_FORMATS = ["text", "json", "markdown", "github", "html", "sarif", "hotspot"] as const;
 const MARKER_RENDER_FORMATS = ["text", "json", "markdown", "github", "html", "sarif"] as const;
 const RAW_SECRET_FIXTURE_VALUES = [
@@ -45,18 +43,6 @@ const RAW_SECRET_FIXTURE_VALUES = [
 ];
 const EXPECTED_SECRET_DOTFILE_ANALYSED_FILES = 2;
 const EXPECTED_NEW_DETECTOR_FINDINGS = 2;
-const RETIRED_EDGE_PREVIEW_FRAGMENT_LENGTH = 4;
-const SHORT_HASH_PREFIX = "a1B2";
-const HASH_SECRET_SUFFIX = "c3D4e5F6g7H8";
-const QUOTED_HASH_SECRET_FIXTURE_VALUE = [SHORT_HASH_PREFIX, "#", HASH_SECRET_SUFFIX].join("");
-const EXPECTED_QUOTED_HASH_SECRET_LENGTH = 17;
-const FIXED_MARKER_CASES = [
-  { keyName: "SHORT_TOKEN_NINE", secretValue: ["a1B2", "c3D4e"].join("") },
-  { keyName: "SHORT_TOKEN_TWELVE", secretValue: ["f5G6h7", "J8k9L0"].join("") },
-  { keyName: "SHORT_TOKEN_SIXTEEN", secretValue: ["m1N2p3Q4", "r5S6t7U8"].join("") },
-  { keyName: "LONG_TOKEN_TWENTY_FOUR", secretValue: ["v1W2x3Y4z5A6", "b7C8d9E0f1G2"].join("") },
-  { keyName: "LONG_TOKEN_FORTY", secretValue: ["h3J4k5L6m7N8p9Q0r1S2", "t3U4v5W6x7Y8z9A0b1C2"].join("") },
-] as const;
 
 // Build one user-like config file that exercises generic, provider, connection, and identifier markers together.
 function redactedSecretsFixtureSource(): string {
@@ -120,27 +106,6 @@ test("provider-shaped API keys use the fixed family marker vocabulary", () => {
   providerTokenCases.forEach(({ matchedValue }) => assert.equal(JSON.stringify(report).includes(matchedValue), false));
 });
 
-// Fixture purpose: values on both sides of the retired length boundary must now produce the same zero-payload marker.
-test("generic sensitive findings reveal no matched characters or length", () => {
-  const source = FIXED_MARKER_CASES.map(({ keyName, secretValue }) => `${keyName}=${secretValue}`).join("\n");
-  const report = analyseFixture(source, {
-    fileName: ".env",
-    config: { rules: { "sensitive-data.hardcoded-env-value": { threshold: 1 } } },
-  });
-  const sensitiveFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value");
-  assert.equal(sensitiveFindings.length, FIXED_MARKER_CASES.length);
-  assert.equal(sensitiveFindings.every((finding) => finding.metadata.preview === "[redacted]"), true);
-  assert.equal(sensitiveFindings.every((finding) => !("length" in finding.metadata)), true);
-
-  const serializedReport = JSON.stringify(report);
-  FIXED_MARKER_CASES.forEach(({ secretValue }) => {
-    assert.equal(serializedReport.includes(secretValue), false);
-    assert.equal(serializedReport.includes(secretValue.slice(0, RETIRED_EDGE_PREVIEW_FRAGMENT_LENGTH)), false);
-    assert.equal(serializedReport.includes(secretValue.slice(-RETIRED_EDGE_PREVIEW_FRAGMENT_LENGTH)), false);
-  });
-  assert.equal(serializedReport.includes("chars"), false);
-});
-
 test("M26 URL credentials and payment-card PII fire with deterministic redaction", () => {
   const report = analyseFixture(
     `REMOTE_CONTROL_URL=${URL_CREDENTIAL_FIXTURE_VALUE}
@@ -183,18 +148,6 @@ PAYMENT_CARD=${CREDIT_CARD_FIXTURE_VALUE}
     () => analyseFixture(source, { fileName: ".env", config: { allowlists: { secretPreviews: [] } } }),
     /section 5/,
   );
-});
-
-test("same-category occurrences stay separate without any preview configuration", () => {
-  const firstShortSecret = ["a1B2c3D4", "e5F6g7H8"].join("");
-  const secondShortSecret = ["j9K0m1N2", "p3Q4r5S6"].join("");
-  assert.equal(firstShortSecret.length, secondShortSecret.length);
-
-  const report = analyseFixture(`FIRST_TOKEN=${firstShortSecret}\nSECOND_TOKEN=${secondShortSecret}\n`, { fileName: ".env" });
-  const findings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value");
-
-  assert.deepEqual(findings.map((finding) => finding.metadata.keyName), ["FIRST_TOKEN", "SECOND_TOKEN"]);
-  assert.equal(findings.every((finding) => finding.metadata.preview === "[redacted]"), true);
 });
 
 test("M26 PHI (MBI/MRN) and GCP service-account detectors fire and redact across every renderer", () => {
@@ -250,70 +203,18 @@ test("GCP service-account metadata without private_key stays quiet", () => {
 });
 
 test("risk expansion respects sensitive-data config", () => {
-  // Users can still disable the rule or raise its minimum length; findings retain only safe key, threshold, and marker metadata.
-  const source = `API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
+  // Users can still disable a sensitive-data rule or raise its severity; findings keep only the fixed marker.
+  const ruleId = "sensitive-data.api-key-pattern";
+  const source = `GOOGLE_API_KEY=${GOOGLE_API_KEY_FIXTURE_VALUE}
 `;
   const defaultReport = analyseFixture(source, { fileName: ".env" });
-  assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), true);
+  assert.equal(defaultReport.findings.some((finding) => finding.ruleId === ruleId), true);
 
-  const disabledReport = analyseFixture(source, {
-    fileName: ".env",
-    config: { rules: { "sensitive-data.hardcoded-env-value": { enabled: false } } },
-  });
-  assert.equal(disabledReport.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), false);
+  const disabledReport = analyseFixture(source, { fileName: ".env", config: { rules: { [ruleId]: { enabled: false } } } });
+  assert.equal(disabledReport.findings.some((finding) => finding.ruleId === ruleId), false);
 
-  const thresholdReport = analyseFixture(source, {
-    fileName: ".env",
-    config: { rules: { "sensitive-data.hardcoded-env-value": { threshold: 40, severity: "error" } } },
-  });
-  assert.equal(thresholdReport.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), false);
-});
-
-// Each fragment stays below the 24-character candidate floor while the joined values retain complete
-// package integrity shapes. This is the stable fixture contract for repository self-scans.
-const SHA1_INTEGRITY_FIXTURE_VALUE = ["sha1-p3SS9LEdzHxEaj", "Sz4ochr9M8ZCo="].join("");
-const SHA512_INTEGRITY_FIXTURE_VALUE = [
-  "sha512-Zx7pQ9vLm3N8sT2",
-  "rY6wK1dF4gH5jC0bR2",
-  "mN5pQ8sR1tV4xY7zA0",
-  "bC3dE6fG9hI2jK5lM8",
-  "nO1pQ4rS7tU0vW3xY6",
-  "zA9bC2dE5fG8h==",
-].join("");
-
-test("package-manager lockfiles drop entropy digests but keep credential findings", () => {
-  const report = analyseProject({
-    "package-lock.json": JSON.stringify({ integrity: SHA1_INTEGRITY_FIXTURE_VALUE, token: HIGH_ENTROPY_FIXTURE_VALUE }),
-    "npm-shrinkwrap.json": JSON.stringify({ integrity: SHA512_INTEGRITY_FIXTURE_VALUE, token: HIGH_ENTROPY_FIXTURE_VALUE }),
-    "pnpm-lock.yaml": `integrity: ${SHA512_INTEGRITY_FIXTURE_VALUE}\ntoken: ${HIGH_ENTROPY_FIXTURE_VALUE}\n`,
-    "source.ts": `const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";\nvoid embeddedToken;\n`,
-  });
-  const sensitiveDataFindings = report.findings.filter((finding) => finding.pillar === "sensitive-data");
-  const lockfilePaths = ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml"];
-
-  // A lockfile's integrity digests are published metadata, so no lockfile may raise entropy.
-  assert.equal(
-    sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string" && lockfilePaths.includes(finding.filePath)),
-    false,
-  );
-  // The identical value in authored source stays a finding, at the contract's warning severity.
-  assert.equal(
-    sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string" && finding.filePath === "source.ts" && finding.severity === "warning"),
-    true,
-  );
-  // A credential-shaped assignment is as live in a lockfile as anywhere else: only the entropy rule is skipped there,
-  // and only because every integrity digest looks high-entropy. Family decision of 2026-09-20.
-  assert.equal(
-    sensitiveDataFindings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value" && lockfilePaths.includes(finding.filePath)),
-    true,
-  );
-  // The entropy skip is counted, never silent: one built-in audit row per lockfile that had findings. The YAML
-  // lockfile is absent because its values are unquoted, so the entropy rule never matched there and nothing was
-  // skipped - a lockfile with nothing to skip publishes no row rather than a zero.
-  const builtInRows = report.suppressions.filter((summary) => summary.source === "built-in");
-  assert.deepEqual(builtInRows.map((summary) => summary.paths[0]), ["npm-shrinkwrap.json", "package-lock.json"]);
-  assert.deepEqual(builtInRows.map((summary) => summary.rule), ["sensitive-data.high-entropy-string", "sensitive-data.high-entropy-string"]);
-  assert.equal(builtInRows.every((summary) => summary.suppressed >= 1), true);
+  const raisedReport = analyseFixture(source, { fileName: ".env", config: { rules: { [ruleId]: { severity: "error" } } } });
+  assert.equal(raisedReport.findings.find((finding) => finding.ruleId === ruleId)?.severity, "error");
 });
 
 // A 0.5.0 corpus scan treated Angular's `gtoken` dependency line as a hardcoded credential.
@@ -326,7 +227,7 @@ test("a lockfile dependency whose name contains token is not a credential", () =
   assert.deepEqual(report.findings.filter((finding) => finding.pillar === "sensitive-data"), []);
 });
 
-// Lockfiles may exclude public digest shapes, but a credential pasted into a resolved URL must still reach the user's report and CI gate.
+// A credential pasted into a lockfile's resolved URL must still reach the user's report and CI gate.
 test("a credential inside a lockfile is still reported", () => {
   const resolvedUrl = `  "resolved": "${DATABASE_URL_FIXTURE_VALUE}/pkg.tgz"\n`;
   const report = analyseProject({
@@ -341,84 +242,16 @@ test("a credential inside a lockfile is still reported", () => {
   );
 });
 
-test("integrity hashes outside lockfiles do not become high-entropy findings", () => {
-  const report = analyseFixture(
-    JSON.stringify({ legacyIntegrity: SHA1_INTEGRITY_FIXTURE_VALUE, integrity: SHA512_INTEGRITY_FIXTURE_VALUE }),
-    { fileName: "registry-metadata.json" },
-  );
-  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.high-entropy-string"), false);
-});
-
-// Counter-fixtures protect credential shapes from the readable-word exemption.
-//
-// Each value is assembled from safe fragments so repository self-scans stay quiet while runtime analysis must report all four.
-const BASE64_PADDED_TOKEN_FIXTURE_VALUE = ["dGhpc0lzQVRva2VuV2l0", "aDFEaWdpdEFuZE1peGVkQ2FzZQ=="].join("");
-const BASE64URL_TOKEN_FIXTURE_VALUE = ["Xk9pQ2vLmN8sT4rY6wK1dF5g", "H7jC0bR3eW9qT2uV4xZ6aPmQ"].join("");
-
-test("high-entropy counter-fixtures: base64 padding, JWT, base64url, and coverage value all flag", () => {
-  const source = `const padded = "${BASE64_PADDED_TOKEN_FIXTURE_VALUE}";
-const webToken = "${JWT_FIXTURE_VALUE}";
-const urlSafe = "${BASE64URL_TOKEN_FIXTURE_VALUE}";
-const coverage = "${HIGH_ENTROPY_FIXTURE_VALUE}";
-void padded; void webToken; void urlSafe; void coverage;
-`;
-  const report = analyseFixture(source);
-  const entropyLines = report.findings
-    .filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string")
-    .map((finding) => finding.line)
-    .sort();
-  assert.deepEqual(entropyLines, [1, 2, 3, 4]);
-  const jwtFinding = report.findings.find((finding) => finding.ruleId === "sensitive-data.jwt-token" && finding.line === 2);
+// JWT ships off by default (ADR-021).
+// Stable contract: a default run stays silent, and a project that enables it gets the fixed marker.
+test("jwt-token stays silent by default and reports its fixed marker once enabled", () => {
+  const source = `const webToken = "${JWT_FIXTURE_VALUE}";\nvoid webToken;\n`;
+  assert.equal(analyseFixture(source).findings.some((finding) => finding.ruleId === "sensitive-data.jwt-token"), false);
+  const enabledReport = analyseFixture(source, { config: { rules: { "sensitive-data.jwt-token": { enabled: true } } } });
+  const jwtFinding = enabledReport.findings.find((finding) => finding.ruleId === "sensitive-data.jwt-token");
+  assert.equal(jwtFinding?.line, 1);
+  assert.equal(jwtFinding?.severity, "warning");
   assert.equal(jwtFinding?.metadata.preview, "[redacted:jwt]");
-});
-
-test("hardcoded-env requires a quoted value in script files but not in config files", () => {
-  // Quoted TypeScript literals remain findings, while unquoted right-hand sides are code expressions such as secret-provider plumbing.
-  // The same unquoted value in a config file is literal user input and remains reportable.
-  const scriptReport = analyseFixture(`const settings = {
-  ACCESS_TOKEN: "${API_TOKEN_FIXTURE_VALUE}",
-};
-STORAGE_SECRET_ACCESS_KEY: SECRET.R2SecretKey.value;
-const table = { access_token: text().$type<OAuth2Token>() };
-void settings; void table;
-`, { fileName: "config.ts" });
-  const scriptFindings = scriptReport.findings.filter((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value");
-  assert.equal(scriptFindings.length, 1);
-  assert.equal(scriptFindings[0]?.line, 2);
-
-  const envReport = analyseFixture(`API_TOKEN=${API_TOKEN_FIXTURE_VALUE}\n`, { fileName: ".env" });
-  assert.equal(envReport.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), true);
-});
-
-// Fixture purpose: quoted assignment values exercise every quote style accepted by the scanner.
-// Stable contract: matching quotes preserve an embedded hash as secret data.
-test("hardcoded-env preserves hash characters inside matching quotes", () => {
-  assert.equal(QUOTED_HASH_SECRET_FIXTURE_VALUE.length, EXPECTED_QUOTED_HASH_SECRET_LENGTH);
-  const source = [
-    `DOUBLE_TOKEN="${QUOTED_HASH_SECRET_FIXTURE_VALUE}"`,
-    `SINGLE_TOKEN='${QUOTED_HASH_SECRET_FIXTURE_VALUE}'`,
-    `BACKTICK_TOKEN=\`${QUOTED_HASH_SECRET_FIXTURE_VALUE}\``,
-  ].join("\n");
-  const report = analyseFixture(source, { fileName: ".env" });
-  const findings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value");
-
-  assert.deepEqual(findings.map((finding) => finding.metadata.keyName), ["DOUBLE_TOKEN", "SINGLE_TOKEN", "BACKTICK_TOKEN"]);
-  assert.equal(findings.every((finding) => finding.metadata.preview === "[redacted]"), true);
-  assert.equal(findings.every((finding) => !("length" in finding.metadata)), true);
-});
-
-// Fixture purpose: unquoted hashes exercise .env, YAML, INI, and npmrc assignment handling.
-// Stable contract: comment text never inflates an unquoted value into a secret finding.
-test("hardcoded-env does not inflate unquoted values with hash comments across config dialects", () => {
-  const report = analyseProject({
-    ".env": `TOKEN=${QUOTED_HASH_SECRET_FIXTURE_VALUE}\nPASSWORD=${SHORT_HASH_PREFIX} #${HASH_SECRET_SUFFIX}\n`,
-    "config.yaml": `API_KEY: ${QUOTED_HASH_SECRET_FIXTURE_VALUE}\n`,
-    "settings.ini": `SECRET=${QUOTED_HASH_SECRET_FIXTURE_VALUE}\n`,
-    ".npmrc": `CREDENTIAL=${QUOTED_HASH_SECRET_FIXTURE_VALUE}\n`,
-  });
-  const findings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value");
-
-  assert.deepEqual(findings, []);
 });
 
 test("payment-card detection requires card context for bare digit runs", () => {
@@ -434,22 +267,6 @@ void gdpByCountry; void cardNumber; void formatted; void irregularStatistic;
 `);
   const cardFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.pii-pattern" && /Credit card/.test(finding.message));
   assert.deepEqual(cardFindings.map((finding) => finding.line).sort(), [2, 3]);
-});
-
-// A dependency version spec is not a credential, but a credential that merely opens with one still is. The guard
-// reads the whole value, so anything trailing the version keeps reporting: dropping it would hide a committed
-// credential with no audit row anywhere. gruff-rs pins the same grammar.
-//
-// Invariant: every value in `quiet` stays silent and every value in `reported` produces one finding, on its own
-// line, so the test fails both if the guard stops silencing versions and if it starts swallowing credentials.
-test("a whole dependency version is quiet while a credential that merely opens with one still reports", () => {
-  const quiet = ["8.0.0(supports-color@11.0.0)", "7.1.0(encoding@0.1.13)(supports-color@11.0.0)", ">=v1.2.3", "^1.20.300"];
-  const reported = [`1.0-${["Rk8sPq2x", "T7vL9wHd"].join("")}`, `2.5_${["hunter2Live", "KeyXyz99"].join("")}`, `12.34${["abcdefgh", "ijklmnop"].join("")}`];
-  const source = [...quiet, ...reported].map((value, index) => `API_TOKEN_${index}=${value}`).join("\n");
-  const report = analyseFixture(`${source}\n`, { fileName: ".env" });
-
-  const lines = report.findings.filter((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value").map((finding) => finding.line);
-  assert.deepEqual(lines, reported.map((_, index) => quiet.length + index + 1));
 });
 
 test("a marker word silences a URL password but not a fixed-shape key, and a masked key stays quiet", () => {
@@ -504,7 +321,7 @@ test("sensitive-data expansion scans secret dotfiles", () => {
     ".npmrc": `//registry.npmjs.org/:_authToken=${NPM_AUTH_TOKEN_FIXTURE_VALUE}
 `,
     ".pypirc": `[pypi]
-password = ${["pY7sK2mN8qR4", "vT6xW9zA1bC3"].join("")}
+repository = ${URL_CREDENTIAL_FIXTURE_VALUE}
 `,
   });
 
@@ -512,15 +329,15 @@ password = ${["pY7sK2mN8qR4", "vT6xW9zA1bC3"].join("")}
   assert.equal(report.paths.analysedFiles, EXPECTED_SECRET_DOTFILE_ANALYSED_FILES);
   assert.equal(apiKeyFindings.some((finding) => finding.filePath === ".npmrc"), true);
   assert.equal(apiKeyFindings.find((finding) => finding.filePath === ".npmrc")?.metadata.preview, "[redacted:npm-token]");
-  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value" && finding.filePath === ".pypirc"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.database-url-password" && finding.filePath === ".pypirc"), true);
   assert.equal(renderReport(report, "json").includes(NPM_AUTH_TOKEN_FIXTURE_VALUE), false);
 });
 
 test("two distinct same-line secrets keep two findings with distinct columns", () => {
   const report = analyseFixture(`// File overview: same-line secret fixture.
-const firstToken = "${HIGH_ENTROPY_FIXTURE_VALUE}"; const secondToken = "${API_TOKEN_FIXTURE_VALUE}";
+const firstKey = "${AWS_ACCESS_KEY_FIXTURE_VALUE}"; const secondKey = "${["AKIA", "QWERTYUIOPASDFGH"].join("")}";
 `);
-  const secrets = report.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+  const secrets = report.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
   // Two distinct secrets on one line share a fingerprint (line-keyed) but must both survive as
   // findings; the column discriminator keeps dedupe from dropping the second occurrence (ADR-017).
   assert.equal(secrets.length, 2);
@@ -530,17 +347,17 @@ const firstToken = "${HIGH_ENTROPY_FIXTURE_VALUE}"; const secondToken = "${API_T
   assert.equal(secrets[0]?.fingerprint, secrets[1]?.fingerprint);
   assert.notEqual(secrets[0]?.stableIdentity, secrets[1]?.stableIdentity);
   const previews = secrets.map((finding) => String(finding.metadata.preview));
-  assert.deepEqual(previews, ["[redacted]", "[redacted]"]);
+  assert.deepEqual(previews, ["[redacted:aws-access-key]", "[redacted:aws-access-key]"]);
 });
 
 test("different-rule secrets on one line stay distinct findings", () => {
   const report = analyseFixture(`// File overview: mixed same-line secret fixture.
-const mixed = "${AWS_ACCESS_KEY_FIXTURE_VALUE}"; const other = "${HIGH_ENTROPY_FIXTURE_VALUE}";
+const mixed = "${AWS_ACCESS_KEY_FIXTURE_VALUE}"; const other = "${GOOGLE_API_KEY_FIXTURE_VALUE}";
 `);
   const sameLineFindings = report.findings.filter((finding) => finding.pillar === "sensitive-data" && finding.line === 2);
   const ruleIds = new Set(sameLineFindings.map((finding) => finding.ruleId));
   assert.equal(ruleIds.has("sensitive-data.aws-access-key"), true);
-  assert.equal(ruleIds.has("sensitive-data.high-entropy-string"), true);
+  assert.equal(ruleIds.has("sensitive-data.api-key-pattern"), true);
 });
 
 // M22 hunt shape (zod `template-literal.test.ts`): a URL written as a template literal type describes a shape. A
@@ -580,12 +397,12 @@ test("sensitive-data findings default to the warning their descriptors publish",
   // Assembled from parts so this test file never holds a credential-shaped literal of its own.
   const report = analyseFixture([
     "export const key = \"" + ["AKIA", "QWERTYUIOPASDFGH"].join("") + "\";",
-    "export const token = \"" + ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", ["dozjgNryP4J3jVmN", "Hl0w5N_XgL0n3I9P", "lFUP0THsR8U"].join("")].join(".") + "\";",
+    "export const token = \"" + GOOGLE_API_KEY_FIXTURE_VALUE + "\";",
     "",
   ].join("\n"));
   const sensitive = report.findings.filter((entry) => entry.pillar === "sensitive-data");
 
-  assert.deepEqual([...new Set(sensitive.map((entry) => entry.ruleId))].sort(), ["sensitive-data.aws-access-key", "sensitive-data.high-entropy-string", "sensitive-data.jwt-token"]);
+  assert.deepEqual([...new Set(sensitive.map((entry) => entry.ruleId))].sort(), ["sensitive-data.api-key-pattern", "sensitive-data.aws-access-key"]);
   assert.equal(sensitive.every((entry) => entry.severity === "warning"), true);
 });
 
@@ -604,156 +421,4 @@ test("M22 database-url-password still reports a literal password beside a type-l
   const urlFindings = report.findings.filter((entry) => entry.ruleId === "sensitive-data.database-url-password");
 
   assert.deepEqual(urlFindings.map((entry) => entry.line), [2, 3]);
-});
-
-// Invariant: timestamped public paths stay quiet while opaque values report under every location or digest property name.
-// A slash count alone cannot establish a public path.
-test("shared entropy policy preserves bounded paths and reports opaque values under location keys", () => {
-  const briefPaths = [
-    "var/quality/full-corpus-20260710T2328Z/primock57-day2-consultation09-i-cant-move-my-left-arm/live-history.json",
-    "var/quality/m02-acceptance-20260715T044500Z/replays/primock57-day5-consultation03-im-feeling-very-anxious/corrected-transcript.json",
-    "var/quality/m07-manifests-20260715T221131Z/triplet-hashes.sha256",
-    "var/quality/0.5.0-harness-20260717T011802Z/t02.9-holdout-registration.tsv",
-  ];
-  const oneSlashSecret = ["Qm9vZ3lXa2V5c", "1/Tm90QVJlYWxLZXk5OQ"].join("");
-  const twoSlashSecret = ["AKIAIOSFODNN7", "EXAMPLE", "+wJalrXUtnFEMI", "/K7MDENG/bPxRfiCY"].join("");
-  const report = analyseProject({
-    "paths.json": `{\n${briefPaths.map((briefPath, index) => `  "note${index}": "${briefPath}",`).join("\n")}\n  "end": true\n}\n`,
-    "keys.json": `{\n${["path", "artifact", "evidence", "prior_seal", "locator", "fileSha256"].map((key) => `  "${key}": "${HIGH_ENTROPY_FIXTURE_VALUE}",`).join("\n")}\n  "end": true\n}\n`,
-    "secrets.json": `{\n  "note": "${HIGH_ENTROPY_FIXTURE_VALUE}",\n  "oneSlash": "${oneSlashSecret}",\n  "twoSlash": "${twoSlashSecret}"\n}\n`,
-  });
-  const entropyFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
-
-  assert.deepEqual(entropyFindings.map((finding) => `${finding.filePath}:${finding.line}`).sort(), ["keys.json:2", "keys.json:3", "keys.json:4", "keys.json:5", "keys.json:6", "keys.json:7", "secrets.json:2", "secrets.json:3", "secrets.json:4"]);
-});
-
-// Invariant: property names, ternary branches, comments and line wrapping cannot vouch for an opaque literal.
-// The same decision applies to native objects and YAML list-item properties.
-test("shared entropy policy retains opaque findings across key names and syntax positions", () => {
-  const opaque = HIGH_ENTROPY_FIXTURE_VALUE;
-  const report = analyseProject({
-    "position.ts": [
-      `export const pick = (useCache: boolean, path: string): string => (useCache ? path : "${opaque}");`,
-      "export const wrapped = (useCache: boolean, path: string): string => useCache ?",
-      `  path : "${opaque}";`,
-      `export const keyed = { privateKeyBlob: "${opaque}", apiKeyInput: "${opaque}", modelOutput: "${opaque}" };`,
-      `export const located = { "path": "${opaque}", prior_seal: "${opaque}" };`,
-      "export const nested = {",
-      `  path: "${opaque}",`,
-      "};",
-      "export const commented = (useCache: boolean, path: string): string => useCache ? // cached",
-      `  path : "${opaque}";`,
-      "export const subtracted = (useCache: boolean, offset: number, path: number): number | string => useCache",
-      "  ? offset",
-      `  - path : "${opaque}";`,
-      `export const acronyms = { JWTSecretPath: "${opaque}", APIKeyFile: "${opaque}", SECRETKEY_PATH: "${opaque}", secretsPath: "${opaque}" };`,
-      "",
-    ].join("\n"),
-    "settings.yaml": ["artifacts:", `  - path: "${opaque}"`, `    prior_seal: "${opaque}"`, `note: "${opaque}"`, ""].join("\n"),
-  });
-  const entropyFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
-
-  assert.deepEqual(
-    entropyFindings.map((finding) => `${finding.filePath}:${finding.line}`).sort(),
-    ["position.ts:1", "position.ts:10", "position.ts:13", "position.ts:14", "position.ts:14", "position.ts:14", "position.ts:14", "position.ts:3", "position.ts:4", "position.ts:4", "position.ts:4", "position.ts:5", "position.ts:5", "position.ts:7", "settings.yaml:2", "settings.yaml:3", "settings.yaml:4"],
-  );
-});
-
-// The family contract the operator set on 2026-09-02 for sensitive-data.high-entropy-string: warning severity, medium
-// confidence, enabled by default, and `minLength` 32 and `entropy` 4.2 configurable. Each bar is silent at its default
-// and gives exactly one finding once lowered, including a length below the old fixed 24-character candidate floor.
-test("M22 high-entropy-string lands the family contract and its two configurable bars", () => {
-  const ruleId = "sensitive-data.high-entropy-string";
-  const descriptor = ruleDescriptors().find((entry) => entry.ruleId === ruleId);
-  assert.equal(descriptor?.severity, "warning");
-  assert.equal(descriptor?.confidence, "medium");
-  assert.equal(descriptor?.threshold, 32);
-  assert.deepEqual(descriptor?.additionalThresholds, { entropy: 4.2 });
-
-  // 22 distinct characters: entropy log2(22), about 4.46, above the default bar but shorter than every default floor.
-  const shortToken = ["Qz7Lm2Xp9R", "t4Wv6Nk8Hb3J"].join("");
-  // 17 characters, each twice: entropy exactly log2(17), about 4.09, long enough but under the 4.2 default.
-  const flatToken = ["aB3dE6gH9jK2mN5pQ", "Qp5Nm2Kj9Hg6Ed3Ba"].join("");
-  assert.equal(shortToken.length, 22);
-  assert.equal(flatToken.length, 34);
-  // The high-entropy findings one literal gives under an optional rule block.
-  const entropyFindings = (token: string, rule?: Record<string, unknown>) =>
-    analyseFixture(`export const token = "${token}";\n`, rule ? { config: { rules: { [ruleId]: rule } } } : {}).findings.filter((entry) => entry.ruleId === ruleId);
-
-  // Enabled by default, and silent at both default bars.
-  assert.deepEqual(entropyFindings(shortToken), []);
-  assert.deepEqual(entropyFindings(flatToken), []);
-  // Each bar lowered alone gives exactly one finding, reported at warning and medium confidence.
-  const lowLength = entropyFindings(shortToken, { thresholds: { minLength: 20 } });
-  assert.equal(lowLength.length, 1);
-  assert.equal(lowLength[0]?.severity, "warning");
-  assert.equal(lowLength[0]?.confidence, "medium");
-  assert.equal(entropyFindings(flatToken, { thresholds: { entropy: 4 } }).length, 1);
-  // `threshold` keeps working as the single-knob spelling, and written both ways `thresholds.minLength` wins.
-  assert.equal(entropyFindings(shortToken, { threshold: 20 }).length, 1);
-  assert.equal(entropyFindings(shortToken, { threshold: 40, thresholds: { minLength: 20 } }).length, 1);
-  assert.deepEqual(entropyFindings(shortToken, { threshold: 20, thresholds: { minLength: 40 } }), []);
-});
-
-// M22 C6 fixture: the 2026-08-29 downstream brief ran gruff-ts 0.4.0, and its digest and redaction classes describe
-// behaviour this port already ships. The contract is proved here rather than asserted. With the entropy bar dropped
-// to 1, so only an exclusion can silence a literal, a mixed-case hex digest and a repository path report nothing
-// while an opaque control reports, and that finding carries only the fixed marker: never the value, a fragment, its
-// length, a hash or an encoding, in any renderer.
-test("M22 already-shipped entropy exclusions and the fixed redaction marker behave as adjudicated", () => {
-  const hexDigest = ["9f86D081884c7D659a2f", "EAA0c55AD015a3bf4F1b", "2b0B822cd15D6c15b0F0", "0a08"].join("");
-  const repoPath = ["docs/decisions/ADR-020-Defer", "CorpusScoringParity2.md"].join("");
-  const report = analyseFixture(
-    [`export const digestNote = "${hexDigest}";`, `export const pathNote = "${repoPath}";`, `export const opaqueNote = "${HIGH_ENTROPY_FIXTURE_VALUE}";`, ""].join("\n"),
-    { config: { rules: { "sensitive-data.high-entropy-string": { thresholds: { entropy: 1 } } } } },
-  );
-  const entropyFindings = report.findings.filter((entry) => entry.ruleId === "sensitive-data.high-entropy-string");
-
-  // The fixture is exactly as long as a sha256 digest written in hex.
-  assert.equal(hexDigest.length, createHash("sha256").digest("hex").length);
-  assert.deepEqual(entropyFindings.map((entry) => entry.line), [3]);
-  const metadata = entropyFindings[0]?.metadata ?? {};
-  assert.equal(metadata.preview, "[redacted]");
-  assert.deepEqual(Object.keys(metadata).filter((key) => /length|hash|value|fragment|encod/i.test(key)), []);
-  assert.equal(Object.values(metadata).includes(HIGH_ENTROPY_FIXTURE_VALUE.length), false);
-  const leaks = [
-    HIGH_ENTROPY_FIXTURE_VALUE,
-    HIGH_ENTROPY_FIXTURE_VALUE.slice(0, 8),
-    HIGH_ENTROPY_FIXTURE_VALUE.slice(-8),
-    createHash("sha256").update(HIGH_ENTROPY_FIXTURE_VALUE).digest("hex"),
-    Buffer.from(HIGH_ENTROPY_FIXTURE_VALUE).toString("base64"),
-  ];
-  ALL_RENDER_FORMATS.forEach((format) => {
-    const rendered = renderReport(report, format);
-    leaks.forEach((leak) => assert.equal(rendered.includes(leak), false, `${format} carried part of the value`));
-  });
-});
-
-// Fixture purpose: juice-shop's case 24 names an existing gallery image as a whole YAML config value. The
-// image lives in an unrelated folder, so only an existing file with that exact name proves the reference.
-// A missing image, extra text after the name, an opaque token and the same name in source code keep reporting.
-// Stable contract: the entropy exemption needs a whole config value, an image name and an existing repository file.
-test("high-entropy config values that name an existing repository image stay quiet", () => {
-  // Fixture covers case 24's gallery image beside missing, extended, opaque and source-code controls.
-  const report = analyseProject({
-    "config/gallery.yml": `memories:
-  -
-    image: 'building-something-literally-bottom-up-1721152342603.jpg'
-    caption: 'Building something literally bottom up...'
-  -
-    image: 'putting-in-the-missing-hardware-1721152366854.jpg'
-  -
-    image: 'building-something-literally-bottom-up-1721152342603.jpg.orig'
-  -
-    image: '${HIGH_ENTROPY_FIXTURE_VALUE}'
-`,
-    "config/gallery.json": `${JSON.stringify({ image: "building-something-literally-bottom-up-1721152342603.jpg" }, null, 2)}\n`,
-    "frontend/assets/uploads/building-something-literally-bottom-up-1721152342603.jpg": "image bytes",
-    "src/gallery.ts": `export const galleryImage = "building-something-literally-bottom-up-1721152342603.jpg";\n`,
-  });
-  const entropyLocations = report.findings
-    .filter((finding) => finding.ruleId === "sensitive-data.high-entropy-string")
-    .map((finding) => `${finding.filePath}:${finding.line}`)
-    .sort();
-  assert.deepEqual(entropyLocations, ["config/gallery.yml:10", "config/gallery.yml:6", "config/gallery.yml:8", "src/gallery.ts:1"]);
 });
