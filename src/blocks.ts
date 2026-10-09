@@ -8,7 +8,7 @@ import { baseComplexityMetrics, complexityMetrics as measureComplexity, type Com
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { escapeRegex, isGenericName, lineOffset, parameterNames, parameterParts } from "./findings-helpers.ts";
-import { callableMatchPoints, type ParsedScript } from "./parsed-script.ts";
+import { callableMatchPoints, codeLineFlags, type ParsedScript } from "./parsed-script.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
 // Describe one callable that block rules can locate in a developer's scan report.
@@ -27,7 +27,10 @@ export interface FunctionBlock {
   // AST-known `override` modifier; absent for legacy regex-derived blocks, which keep name findings.
   isOverride?: boolean;
   startLine: number;
+  // Raw span from the first JSDoc or decorator line to the closing line; it places findings and changed regions.
   lineCount: number;
+  // Code lines in that span, with JSDoc, comments, blank lines and decorators free; every length threshold reads this.
+  codeLineCount: number;
   body: string;
   codeBody: string;
   isPublic: boolean;
@@ -46,6 +49,8 @@ export interface FunctionBlock {
 interface FunctionBlockScan {
   lines: string[];
   codeLines: string[];
+  // One flag per line, true where the line carries code (`codeLineFlags` in parsed-script.ts).
+  isCodeLine: boolean[];
   patterns: RegExp[];
   reExportedNames: ReadonlySet<string>;
 }
@@ -155,15 +160,15 @@ export function analyseBlockRules(context: BlockRuleContext): void {
 function pushFunctionLengthFinding(context: BlockRuleContext): void {
   const functionLengthThreshold = threshold(context.config, "size.function-length", 200);
   // Show a size warning only when this function exceeds the user's configured line limit.
-  if (context.block.lineCount > functionLengthThreshold) {
+  if (context.block.codeLineCount > functionLengthThreshold) {
     context.findings.push(blockFindingWithMetadata({
       ruleId: "size.function-length",
-      message: `Function \`${context.block.name}\` has ${context.block.lineCount} lines, above the threshold of ${functionLengthThreshold}.`,
+      message: `Function \`${context.block.name}\` has ${context.block.codeLineCount} lines, above the threshold of ${functionLengthThreshold}.`,
       file: context.file,
       block: context.block,
       severity: ruleSeverity(context.config, "size.function-length", "warning"),
       pillar: "size",
-      metadata: { lines: context.block.lineCount, threshold: functionLengthThreshold },
+      metadata: { lines: context.block.codeLineCount, threshold: functionLengthThreshold },
     }));
   }
 }
@@ -447,9 +452,21 @@ function terminalBareReturnLines(source: string): number[] {
       current -= 1;
       continue;
     }
-    return /^return\s*;?$/.test(trimmed) ? [current] : [];
+    return /^return\s*;?$/.test(trimmed) && !isOnlyStatementOfCatch(lines, current) ? [current] : [];
   }
   return [];
+}
+
+// A bare `return;` that is a catch block's only statement is that catch's handling: removing it would leave an empty catch
+// that `waste.swallowed-catch` reports. Comments are already masked to blank lines, so the previous non-blank line is code.
+function isOnlyStatementOfCatch(lines: string[], returnIndex: number): boolean {
+  for (let current = returnIndex - 1; current >= 0; current -= 1) {
+    const trimmed = lines[current]?.trim() ?? "";
+    if (trimmed !== "") {
+      return /\bcatch\b[^{]*\{$/.test(trimmed);
+    }
+  }
+  return false;
 }
 
 
@@ -476,6 +493,7 @@ export function functionBlocks(source: string, codeSource = source, parsed?: Par
   const scan: FunctionBlockScan = {
     lines: source.split(/\r?\n/),
     codeLines: codeSource.split(/\r?\n/),
+    isCodeLine: codeLineFlags(source, parsed),
     patterns: FUNCTION_BLOCK_PATTERNS,
     reExportedNames: collectReExportedNames(codeSource),
   };
@@ -634,6 +652,7 @@ function functionBlockFromPoint(scan: FunctionBlockScan, point: BlockMatchPoint,
     ...(sharedComplexityMetrics === undefined ? {} : { complexityMetrics: sharedComplexityMetrics }),
     startLine: start + 1,
     lineCount: end - start + 1,
+    codeLineCount: scan.isCodeLine.slice(start, end + 1).filter(Boolean).length,
     body,
     codeBody,
     isPublic: point.isExplicitlyPublic ?? /\bexport\b|\bpublic\b/.test(scan.codeLines.slice(start, index + 1).join("\n")),

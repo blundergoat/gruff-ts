@@ -393,7 +393,6 @@ function assertBaselineRoundTripRuleIds(report: AnalysisReport): void {
     "sensitive-data.aws-access-key",
     "modernisation.double-cast",
     "security.async-foreach",
-    "waste.swallowed-catch",
     "security.remote-install-script",
     "modernisation.tsconfig-strict-disabled",
     "design.circular-import",

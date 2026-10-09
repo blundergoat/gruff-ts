@@ -155,6 +155,7 @@ export function applyBaseline(path: string, findings: Finding[], declarationPosi
  *
  * Stable contract: the input is only ever read, so a migration the user regrets leaves their 0.5 file to fall back to.
  * Throws when the input is missing, is not a 0.5 baseline, or resolves to the same file as the output, so the retreat path is never overwritten.
+ * @throws {BaselineFileError} when output is the input file or the parsed input is not a 0.5 baseline, or {Error} when the input is not JSON or changed during migration.
  */
 export function migrateBaseline(inputPath: string, outputPath: string, findings: Finding[], declarationPosition?: (finding: Finding) => number): BaselineMigration {
   requireDistinctPaths(inputPath, outputPath);
@@ -179,6 +180,7 @@ export function migrateBaseline(inputPath: string, outputPath: string, findings:
  *
  * Throws when the default path already holds a file this version would not read and the user passed no `--force`.
  * Stable contract: only the shared default filename is protected, and only a file this version cannot read.
+ * @throws {BaselineFileError} when shouldForce is false and the default-named output holds a non-v3 baseline.
  */
 export function requireOverwritableDefaultPath(outputPath: string, shouldForce: boolean): void {
   // Any other destination is the user's own choice of file, and any v3 file is what this version already reads.
@@ -259,6 +261,7 @@ export class BaselineFileError extends Error {}
 // Reads one v3 baseline, refusing a 0.5 layout, another port's file, and any row that could expire or leak.
 // Throws BaselineFileError on a missing or malformed file, a 0.5 layout, an unknown schema, another port's file, or a
 // row that could expire or leak, so a bad baseline fails closed.
+// @throws {BaselineFileError} when the file is unreadable, a 0.5 baseline, another schema or port's file, or has a bad row.
 function readBaselineDocument(path: string): BaselineDocument {
   const parsed = parsedBaselineFile(path);
   // A 0.5 file fails closed and names the command that carries its reviews forward, so nothing is silently dropped.
@@ -283,6 +286,7 @@ type ParsedBaselineFile = Omit<Partial<BaselineDocument>, "occurrences"> & { occ
 // Reads and parses one baseline file. Throws BaselineFileError when the file is missing, unreadable, not JSON, or not a
 // JSON object whose occurrences, when present, are a list, so the reason reaches the user as a diagnostic rather than
 // a raw filesystem, parser or type stack. The schema must be checked before any field is read.
+// @throws {BaselineFileError} when the file cannot be read or parsed, is not a JSON object, or has non-list occurrences.
 function parsedBaselineFile(path: string): ParsedBaselineFile {
   let parsed: unknown;
   try {
@@ -323,6 +327,7 @@ function writerName(toolLanguage: unknown): string {
 // Rebuilds one reviewed row, refusing anything that could expire on an edit or leak a finding's text.
 // Throws a BaselineFileError naming the file when the row is not an object, the identity is not the ratified digest
 // shape, the count is below one, or a positional key is present.
+// @throws {BaselineFileError} when the row is not an object, its identity or count is invalid, or it has a forbidden key.
 function validatedRow(path: string, candidate: unknown, index: number): BaselineEntry {
   // A row that is not an object has no identity to match, so the file is refused as written.
   if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
@@ -447,6 +452,7 @@ function collidedIdentities(groups: Map<string, IdentityGroup>): BaselineCollisi
 
 // Refuses an output that is the input by spelling, resolved link target, or inode.
 // Throws when the two paths are one file by spelling, symlink, or inode, which is what keeps the 0.5 input intact.
+// @throws {BaselineFileError} when the input and output resolve to the same path or share an inode.
 function requireDistinctPaths(inputPath: string, outputPath: string): void {
   const resolvedInput = resolvedFilePath(inputPath);
   // A symlink or a hard link would make the "different" output the same bytes, destroying the retreat path.
@@ -482,6 +488,7 @@ function sameInode(inputPath: string, outputPath: string): boolean {
 // Throws when the input is not a 0.5 baseline, names more than one row container, or carries no row list at all.
 // Stable contract: exactly one of the three 0.5 containers is accepted, because a file naming two of them migrates
 // differently in different ports.
+// @throws {BaselineFileError} when the parsed input is not a 0.5 baseline or has no row container or more than one, or {SyntaxError} when the input is not JSON.
 function legacyRows(path: string, contents: Buffer): Array<Record<string, unknown>> {
   const parsed = JSON.parse(contents.toString("utf8")) as Record<string, unknown>;
   if (parsed.schemaVersion !== LEGACY_BASELINE_SCHEMA_VERSION) {

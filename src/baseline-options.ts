@@ -44,6 +44,7 @@ interface BaselineSelection {
 // `unusableBaseline` decides what a baseline file that cannot be applied does: a hook run throws so it can publish its
 // own fatal payload, and a direct analysis records a fatal `baseline-error` diagnostic and keeps its report.
 // Stable contract: an unusable baseline never suppresses anything, so every finding stays in the report it gates.
+// @throws {BaselineFileError} when baseline generation or application fails in "throw" mode, or {Error} on other failures.
 export function applyBaselineOptions(projectRoot: string, options: AnalysisOptions, findings: Finding[], declarationSpans = new Map<string, DeclarationSpan[]>(), unusableBaseline: "throw" | "diagnose" = "throw"): BaselineApplication {
   const declarationPosition = declarationPositionFromSpans(declarationSpans);
   if (options.generateBaseline) {

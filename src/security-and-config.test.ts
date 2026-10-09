@@ -9,6 +9,9 @@ import type { AnalysisReport } from "./cli.ts";
 import { exitFor } from "./scoring.ts";
 import { analyseFixture, analyseProject, REPO_ROOT, TS_IGNORE_DIRECTIVE, writeFixtureFiles } from "./test-fixtures.ts";
 
+// waste.swallowed-catch ships off by default; these tests switch it on so they still exercise its detector.
+const SWALLOWED_CATCH_ON = { config: { rules: { "waste.swallowed-catch": { enabled: true } } } };
+
 const EXPECTED_DYNAMIC_PROCESS_EXEC_LINE = 15;
 
 test("extended type-safety rubric finds explicit unsafety without false positives", () => {
@@ -53,7 +56,7 @@ test("extended reliability rubric finds unsafe async patterns without false posi
   }
   throw ${JSON.stringify("failed")};
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const unsafeRuleIds = new Set(unsafeReport.findings.map((finding) => finding.ruleId));
   ["security.async-foreach", "waste.swallowed-catch", "security.throw-non-error"].forEach((ruleId) => {
     assert.equal(unsafeRuleIds.has(ruleId), true, `expected ${ruleId}`);
@@ -76,7 +79,7 @@ async function reportsFailure(): Promise<void> {
   }
   throw new Error("failed");
 }
-`);
+`, SWALLOWED_CATCH_ON);
   ["security.async-foreach", "waste.swallowed-catch", "security.throw-non-error"].forEach((ruleId) => {
     assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
   });
@@ -123,7 +126,7 @@ function bareSwallow(): void {
     // FIXME
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const swallowed = report.findings.filter((finding) => finding.ruleId === "waste.swallowed-catch");
   assert.equal(swallowed.length, 1);
   assert.equal(swallowed[0]?.symbol, undefined);
@@ -749,4 +752,61 @@ test("M22 disabled-tls-verification skips expected values in deep-equality asser
 
   assert.deepEqual(tlsFindings.map((entry) => entry.line), [6, 15, 16]);
   assert.equal(tlsFindings.every((entry) => entry.severity === "error"), true);
+});
+
+// FAMILY-CONTRACT section 15: a rationale written in the `//` lines above a directive explains it as well as one after it.
+test("a rationale in the comment lines above a @ts- directive counts", () => {
+  const explained = analyseFixture(`// The upstream typings lag the runtime by one release,
+// so this call is checked at runtime instead.
+// @ts-expect-error
+export const loaded: number = loadValue();
+`);
+  assert.deepEqual(explained.findings.filter((finding) => finding.ruleId === "modernisation.ts-comment-without-rationale"), []);
+  // The interpolation splits the directive so the scan of this test file does not read the fixture as one.
+  const bare = analyseFixture(`// ${"@"}ts-expect-error
+export const loaded: number = loadValue();
+`);
+  assert.equal(bare.findings.filter((finding) => finding.ruleId === "modernisation.ts-comment-without-rationale").length, 1);
+});
+
+// The `return;` that is a catch block's only statement is that catch's handling, so it must not report as a useless return.
+test("a bare return that is a catch block's only statement is not a useless return", () => {
+  const inCatch = analyseFixture(`export function parseQuietly(text: string): void {
+  try {
+    JSON.parse(text);
+  } catch {
+    // Malformed input is reported by the caller.
+    return;
+  }
+}
+`);
+  assert.deepEqual(inCatch.findings.filter((finding) => finding.ruleId === "waste.useless-return"), []);
+  const trailing = analyseFixture(`export function finish(work: () => void): void {
+  work();
+  return;
+}
+`);
+  assert.equal(trailing.findings.filter((finding) => finding.ruleId === "waste.useless-return").length, 1);
+});
+
+// A catch comment explains by shape; a lone label that names no intent must still report.
+test("swallowed catch reads a two-word reason by shape and still reports a lone label", () => {
+  // This fixture covers both shapes: a two-word reason that passes and a lone label that reports.
+  const report = analyseFixture(`export function readHyphenated(): void {
+  try {
+    refresh();
+  } catch {
+    // Session refresh is best-effort.
+  }
+}
+
+export function readLabelled(): void {
+  try {
+    refresh();
+  } catch {
+    /* silent */
+  }
+}
+`, SWALLOWED_CATCH_ON);
+  assert.deepEqual(report.findings.filter((finding) => finding.ruleId === "waste.swallowed-catch").map((finding) => finding.line), [12]);
 });

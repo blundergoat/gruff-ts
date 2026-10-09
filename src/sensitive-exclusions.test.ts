@@ -47,6 +47,7 @@ function analyseWithExclusions(entries: string[]): AnalysisReport {
 // Collects the config error one rejection case produces, so each assertion can name the key the
 // diagnostic must mention. Throws an assertion failure when the config loaded instead of being
 // rejected, or when it failed with something other than a ConfigLoadError.
+// @throws {AssertionError} when the config is accepted, or the scan fails with anything but a ConfigLoadError.
 function exclusionConfigError(entries: string[]): ConfigLoadError {
   try {
     analyseWithExclusions(entries);

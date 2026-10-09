@@ -31,7 +31,7 @@ const KNOWN_ROOT_KEYS: ReadonlySet<string> = new Set([
 const KNOWN_PATHS_KEYS: ReadonlySet<string> = new Set(["ignore"]);
 const KNOWN_ALLOWLISTS_KEYS: ReadonlySet<string> = new Set([
   "acceptedAbbreviations", "bannedGenericNames", "acceptedBooleanNames", "acceptedClassFilePairs", "acceptedCasingPairs",
-  "booleanPrefixes", "hungarianPrefixes", "placeholderNames", "negativeBooleanAllowed", "knownAcronyms",
+  "booleanPrefixes", "hungarianPrefixes", "placeholderNames", "negativeBooleanAllowed", "knownAcronyms", "trackingTokens",
   // Recognised only so the loader can refuse it by name with section 5's explanation, rather than as an unknown key.
   "secretPreviews",
 ]);
@@ -58,6 +58,7 @@ function defaultConfig(): Config {
     placeholderNames: new Set(["foo", "bar", "baz", "tmp", "temp", "thing", "stuff", "data", "value", "item"]),
     negativeBooleanAllowed: new Set(["nostore", "nofollow", "noreferrer", "noscript", "noindex"]),
     knownAcronyms: new Set(["url", "http", "https", "id", "xml", "json", "html", "css", "api", "sql", "db", "io", "ui", "uuid", "ip", "tcp", "udp", "ast", "cli", "npm"]),
+    trackingTokens: [],
     minimumSeverity: new Map(),
     rules: new Map(),
     deepScanBudget: {
@@ -154,6 +155,7 @@ function resolveProfileRef(ref: string, projectRoot: string, chain: string[]): P
 
 // Loads a local profile file and resolves its inheritance before analysis starts.
 // Throws an actionable config error for a missing file or inheritance cycle instead of starting a partial scan.
+// @throws {ConfigLoadError} when the profile file does not exist or its path already appears in the `extends` chain.
 function resolveProfileFile(ref: string, projectRoot: string, chain: string[]): ProfileDefinition {
   const path = absolutize(projectRoot, ref);
   assertNoProfileCycle(path, chain);
@@ -201,6 +203,7 @@ function cloneProfileDefinition(definition: ProfileDefinition): ProfileDefinitio
 
 // Stops a repeated profile path before recursive loading can loop.
 // Throws with the visit order so users can find and break the `extends` cycle.
+// @throws {ConfigLoadError} when the key is already in the chain of profile paths being resolved.
 function assertNoProfileCycle(key: string, chain: string[]): void {
   // A repeated path means the user's profile chain has returned to a file already being resolved.
   if (chain.includes(key)) {
@@ -213,6 +216,7 @@ function assertNoProfileCycle(key: string, chain: string[]): void {
 
 // Validates one profile rule name before it can affect analysis.
 // Throws for unknown names so users do not mistake a typo for applied policy.
+// @throws {ConfigLoadError} when the rule id is not in the gruff-ts rule catalogue.
 function assertKnownProfileRule(ruleId: string): void {
   // A name outside the rule catalogue cannot produce the behavior the user requested.
   if (!isKnownRuleId(ruleId)) {
@@ -225,6 +229,7 @@ function assertKnownProfileRule(ruleId: string): void {
 
 // Converts the user's parsed `profile` value into a named/file reference or inline profile.
 // Throws during loading for unsupported shapes so analysis never starts with a partially understood profile.
+// @throws {ConfigLoadError} when the value is neither a string nor a mapping, or the mapping's `extends` is not a string.
 function parseProfileSpec(configuredProfile: unknown): ProfileSpec {
   // A string preserves the exact built-in name or local path the user selected.
   if (typeof configuredProfile === "string") {
@@ -243,6 +248,7 @@ function parseProfileSpec(configuredProfile: unknown): ProfileSpec {
 
 // Reads the supported fields from an inline or file-backed profile after parsing.
 // Throws for invalid field shapes; unrelated top-level metadata remains inert.
+// @throws {ConfigLoadError} when the block has an `extends` key whose value is not a string.
 function inlineSpecFromObject(block: Record<string, unknown>): InlineProfileSpec {
   const spec: InlineProfileSpec = {};
   // A supplied base must name a built-in profile or local profile file.
@@ -310,6 +316,7 @@ function applyConfigValues(config: Config, parsedConfig: Record<string, unknown>
  * believes is in force; a block the file never wrote is skipped entirely.
  *
  * Stable contract: the message names the key the user wrote and lists what is accepted, so the fix is in the error.
+ * @throws {ConfigLoadError} when the block exists and contains a key that is not in the known set.
  */
 function assertKnownKeys(block: Record<string, unknown> | undefined, known: ReadonlySet<string>, prefix: string): void {
   // A block the user did not write cannot carry a wrong key.
@@ -329,6 +336,7 @@ function assertKnownKeys(block: Record<string, unknown> | undefined, known: Read
 // Loads the optional paired line/byte budget. Either bound can trigger degradation, so both limits
 // remain present even when a user changes only one of them.
 // Throws ConfigLoadError when the mapping, keys, enabled flag, or numeric limits are invalid.
+// @throws {ConfigLoadError} when deepScanBudget is not a mapping, has an unknown key, or enabled or a limit is invalid.
 function applyDeepScanBudgetConfig(config: Config, parsedConfig: Record<string, unknown>): void {
   const rawBudget = parsedConfig.deepScanBudget;
   if (rawBudget === undefined) {
@@ -354,6 +362,7 @@ function applyDeepScanBudgetConfig(config: Config, parsedConfig: Record<string, 
 
 // Rejects zero, fractions, and unsafe values because a scan bound must be an exact positive count.
 // Throws ConfigLoadError when a configured limit is not a safe positive integer.
+// @throws {ConfigLoadError} when the limit is set but is not a number, not a safe integer, or not greater than zero.
 function positiveBudgetLimit(configuredLimit: unknown, key: "maxLines" | "maxBytes", fallback: number): number {
   if (configuredLimit === undefined) {
     return fallback;
@@ -376,6 +385,7 @@ function applyDeepScanBudgetOverride(config: Config, override: DeepScanBudgetOve
 
 // Validates the required config schema before any user setting affects the scan.
 // Throws with migration guidance for missing or unsupported versions; the supported value already matches the default config.
+// @throws {ConfigLoadError} when schemaVersion is missing or is any value other than "gruff-ts.config.v0.1".
 function applySchemaVersionConfig(parsedConfig: Record<string, unknown>): void {
   const schemaVersion = parsedConfig.schemaVersion;
   // A missing version leaves Gruff unable to know which configuration contract the user intended.
@@ -397,6 +407,7 @@ function applySchemaVersionConfig(parsedConfig: Record<string, unknown>): void {
  *
  * Throws ConfigLoadError for the per-command mapping and for any value outside the three severities, so the run
  * stops before a misread floor can hide a finding the user expected to see.
+ * @throws {ConfigLoadError} when minimumSeverity is a per-command mapping or is not advisory, warning, or error.
  */
 function applyDisplayFloorConfig(config: Config, parsedConfig: Record<string, unknown>): void {
   const configuredFloor = parsedConfig.minimumSeverity;
@@ -429,6 +440,7 @@ function applyFailOnConfig(config: Config, parsedConfig: Record<string, unknown>
 
 // Validates one `failOn` command name before it can define the user's exit behavior.
 // Throws for dashboard and unknown names because they cannot provide the gate the configuration implies.
+// @throws {ConfigLoadError} when commandName is dashboard or any name other than analyse, summary, or report.
 function assertGatedCommand(commandName: string): MinimumSeverityCommand {
   // Dashboard has no `--fail-on` behavior, so accepting it would promise users a gate that cannot run.
   if (commandName === "dashboard") {
@@ -443,6 +455,7 @@ function assertGatedCommand(commandName: string): MinimumSeverityCommand {
 
 // Converts one configured failure threshold into the family vocabulary used by CLI exits.
 // Unsupported values fail with the accepted choices instead of silently changing the user's CI gate.
+// @throws {ConfigLoadError} when the configured threshold is not none, advisory, warning, or error.
 function parseFailThresholdConfig(configuredThreshold: unknown): FailThreshold {
   // Only the four documented values can define when a user's command exits unsuccessfully.
   if (configuredThreshold === "none" || configuredThreshold === "advisory" || configuredThreshold === "warning" || configuredThreshold === "error") {
@@ -467,6 +480,7 @@ function applyPathConfig(config: Config, parsedConfig: Record<string, unknown>):
 // Loads naming exceptions before rules run; naming values become lowercase for stable matching.
 // Throws ConfigLoadError when the removed `secretPreviews` key is present at all, because section 5 makes category
 // markers unconditional and a key that authorises nothing must not look as though it does.
+// @throws {ConfigLoadError} when allowlists.secretPreviews is present, or a trackingTokens entry is not a valid regex.
 function applyAllowlistConfig(config: Config, parsedConfig: Record<string, unknown>): void {
   const allowlists = objectValue(parsedConfig.allowlists);
   const abbreviations = arrayValue(allowlists?.acceptedAbbreviations).filter(isString);
@@ -487,6 +501,20 @@ function applyAllowlistConfig(config: Config, parsedConfig: Record<string, unkno
   applyNamingAllowlist(config, allowlists, "placeholderNames");
   applyNamingAllowlist(config, allowlists, "negativeBooleanAllowed");
   applyNamingAllowlist(config, allowlists, "knownAcronyms");
+  // Tracking tokens are project vocabulary, so none ship by default; each entry is a case-insensitive regular expression.
+  if (allowlists && "trackingTokens" in allowlists) {
+    config.trackingTokens = arrayValue(allowlists.trackingTokens).filter(isString).map((pattern) => trackingTokenPattern(pattern));
+  }
+}
+
+// Compiles one configured tracking token; an invalid pattern stops the load instead of silently matching nothing.
+// @throws {ConfigLoadError} when the pattern is not a valid regular expression.
+function trackingTokenPattern(pattern: string): RegExp {
+  try {
+    return new RegExp(pattern, "i");
+  } catch {
+    throw new ConfigLoadError(`Config key "allowlists.trackingTokens" holds an invalid regular expression: ${JSON.stringify(pattern)}.`, "Fix or remove that entry in `.gruff-ts.yaml`.");
+  }
 }
 
 // Applies one naming allowlist as a complete replacement for its built-in values.
@@ -501,6 +529,7 @@ function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown
 
 // Loads the user's per-rule enabled, threshold, severity, and numeric option overrides.
 // Missing fields retain defaults. It throws on unknown rules or malformed settings before the scan can misrepresent the user's policy.
+// @throws {ConfigLoadError} when a rules key is not a known rule id, or a field in its block fails validation.
 function applyRuleConfig(config: Config, parsedConfig: Record<string, unknown>): void {
   const rules = objectValue(parsedConfig.rules);
   // No rules mapping means the user accepts the effective profile and descriptor defaults.
@@ -544,6 +573,7 @@ function ruleConfigValue(ruleId: string, rule: Record<string, unknown>): RuleOve
 
 // Validates an explicit rule-enabled value before it can change the user's scan.
 // Missing means inherit. It throws on YAML words such as `no` because only true and false can reliably control the rule.
+// @throws {ConfigLoadError} when the rule block sets enabled to a value that is not a boolean.
 function assertRuleEnabledConfig(rule: Record<string, unknown>): void {
   // A supplied non-boolean would otherwise look like a successful enable or disable choice while doing nothing.
   if ("enabled" in rule && typeof rule.enabled !== "boolean") {
@@ -556,6 +586,7 @@ function assertRuleEnabledConfig(rule: Record<string, unknown>): void {
 
 // Validates optional threshold and severity fields independently before analysis.
 // Missing fields inherit rule defaults. It throws on malformed supplied values with the exact setting users must correct.
+// @throws {ConfigLoadError} when threshold is set but not a number, or severity is set but not advisory, warning, or error.
 function assertRuleThresholdConfig(rule: Record<string, unknown>): void {
   // A supplied threshold must be numeric to define a meaningful rule boundary for the user.
   if ("threshold" in rule && typeof rule.threshold !== "number") {
@@ -596,6 +627,7 @@ function applyRuleSeverityConfig(ruleOverride: RuleOverride, rule: Record<string
 
 // Builds the numeric options for one rule after checking its public option catalogue.
 // Missing options become an empty map. It throws on unknown names or non-numeric values so users never rely on an ignored tuning.
+// @throws {ConfigLoadError} when an option name is not one the rule accepts, or its value is not a number.
 function validatedRuleOptions(ruleId: string, optionsValue: unknown): Map<string, number> {
   const options = new Map<string, number>();
   const configuredOptions = objectValue(optionsValue);

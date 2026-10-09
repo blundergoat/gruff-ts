@@ -150,6 +150,7 @@ function enabledRuleSetting(spec: BuiltInProfile, ruleId: string): ProfileRuleSe
  * real rule id (caught by `KNOWN_RULE_IDS`) and must live in one of the preset's enabled pillars - a
  * threshold on a disabled rule would never fire and signals a preset authoring mistake. Throws a plain
  * Error (not ConfigLoadError) because this is an internal contract on bundled presets, not user input.
+ * @throws {Error} when an override key names an unknown rule id, or a rule whose pillar the preset does not enable.
  */
 function assertOverrideKeys(spec: BuiltInProfile): void {
   const enabledPillars = new Set<Pillar>(spec.enabledPillars);

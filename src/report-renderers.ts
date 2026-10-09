@@ -285,6 +285,7 @@ function machineSuppression(suppression: SuppressionSummary, projectRoot: string
 // Normalizes M15 skip reasons and proves the bare list is the exact detail projection.
 // Invariant: `ignoredPaths` equals `details.map(({ path }) => path)` in the same order.
 // Throws: when native ignored paths and skip details do not describe the same sequence.
+// @throws {Error} when the ignored-path list and the skip details differ in length or in path order.
 function machinePathProjection(report: AnalysisReport): { details: MachinePathDetail[]; ignoredPaths: string[] } {
   const details = report.paths.skipped.map((skipped) => machinePathDetail(skipped, report.run.projectRoot));
   const ignoredPaths = machinePaths(report.paths.ignoredPaths, report.run.projectRoot);
@@ -306,6 +307,7 @@ function machinePathDetail(skipped: SkippedPath, projectRoot: string): MachinePa
 
 // Maps TypeScript's native ignore sources onto the ratified family reason vocabulary.
 // Throws: when a default ignore pattern has no canonical family reason.
+// @throws {Error} when a default ignore pattern ends in a directory name that has no vcs, dependency, build, or tooling reason.
 function machineIgnoreReason(skipped: SkippedPath): MachinePathDetail["reason"] {
   if (skipped.source === "config") {
     return "config-ignore";
@@ -346,6 +348,7 @@ function optionalMachinePath<Key extends string>(key: Key, pathValue: string, pr
 
 // Converts a native path to project-relative POSIX form.
 // Throws: when the path is empty, absolute outside the project, drive-qualified, UNC, or escapes with `..`.
+// @throws {Error} when the path is empty, UNC, drive-qualified, or resolves above the project root.
 function machinePath(pathValue: string, projectRoot: string): string {
   const slashValue = pathValue.replaceAll("\\", "/");
   if (slashValue.length === 0 || slashValue.startsWith("//") || /^[A-Za-z]:/u.test(slashValue)) {

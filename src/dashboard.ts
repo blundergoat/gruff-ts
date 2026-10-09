@@ -46,6 +46,7 @@ function startDashboard(host: string, port: number, projectRoot: string, analyse
 
 // The dashboard accepts filesystem paths from query strings, so loopback binding is its safety
 // boundary. Throws before opening the listener when a caller asks for a public host.
+// @throws {Error} when the host is anything other than 127.0.0.1 or localhost.
 function assertLoopbackHost(host: string): void {
   if (host !== "127.0.0.1" && host !== "localhost") {
     throw new Error("Dashboard host must be 127.0.0.1 or localhost.");

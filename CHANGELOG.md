@@ -15,6 +15,36 @@
 - **Declarations no longer look like process calls** - A method, function or interface signature named like `fork`, `exec` or `spawn` no longer
   receives `security.process-exec`. A file with a parse error keeps the earlier matching.
 
+- **Line counts measure code lines only** - `size.function-length`, `size.file-length`, the `minLineCount` gate of `naming.generic-parameter`, the length at
+  which a function needs context documentation, the production-line share in `design.large-module-concentration` and the `for...of` loop span check leave
+  out blank, comment-only and decorator-only lines. Thresholds are unchanged, and the `size.file-length` message and `metadata.lines` still give the
+  substantive count, which no longer includes decorator lines.
+
+- **BREAKING: tracking tokens come from configuration** - Workflow-specific references (ADR numbers, milestone ids and task-file paths) no longer count as
+  a rationale or tracking reference. List a project's own tokens as regular expressions under the new `allowlists.trackingTokens` key, which
+  `docs.todo-without-tracking`, `modernisation.ts-comment-without-rationale` and `waste.swallowed-catch` read.
+
+- **BREAKING: `docs.missing-side-effect-doc` and `docs.missing-invariant-doc` are off by default** - Each decides by a keyword list that cannot accept an
+  accurate comment written in other words. Enable one with `rules.<id>.enabled: true`; a config written by an earlier `init` lists both as `enabled: true`
+  and keeps them on.
+
+- **`docs.missing-error-behavior-doc` asks for a `@throws` tag** - A commented function whose body contains `throw` reports unless its comment has a
+  `@throws` tag. Describing the error in other words no longer stands in for the tag, so the rule can report a function it accepted before.
+
+- **`modernisation.ts-comment-without-rationale` reads the comment above a directive** - A `@ts-` directive whose rationale sits in the `//` comment lines
+  directly above it no longer reports; a rationale written after the directive still counts.
+
+- **BREAKING: `waste.swallowed-catch` is off by default** - After the repair below, 59% of its sampled findings were right, under the 70% floor for
+  waste rules. The rest flagged a class method named `catch`, a catch explained by a comment above the `try` or before `catch`, or a one-word comment
+  that does explain. Enable it with `rules.waste.swallowed-catch.enabled: true`; a config written by an earlier `init` lists it as `enabled: true` and
+  keeps it on.
+
+- **`waste.swallowed-catch` accepts an empty catch whose comment gives a reason** - A comment of two or more words, a rationale or tracking reference, or an
+  intent marker (`ignore`/`ignored`, `no-op`, `cleanup`, `teardown`, `best-effort`, `non-fatal`, `optional`) clears the finding. A one-word label such as
+  `/* silent */`, or any comment holding `TODO`, `FIXME` or `XXX`, still reports.
+
+- **`waste.useless-return` skips a catch block's only statement** - A bare `return;` that is the only statement of a `catch` block is no longer reported.
+
 Upgrading from 0.5.x: this release changes every machine-readable contract at once. `UPGRADING.md` in this repository gives each break's migration command and the way back: pin the 0.5 line and keep the pre-upgrade configuration and baseline files, which 0.5 still reads.
 
 - **BREAKING: eight rules are removed** - `security.floating-promise` (right on 3 of 24 judged findings), `security.github-actions-broad-permissions` (3 of 10), `security.insecure-random` (2 of 23), `security.proto-access` (3 of 23), `security.risky-lifecycle-script` (5 of 14), `sensitive-data.hardcoded-env-value` (7 of 25), `sensitive-data.high-entropy-string` (2 of 22) and `test-quality.no-assertions` (5 of 25) were each right less than half the time in the 0.6.0 precision measurement. A `.gruff-ts.yaml` `rules:` block or `sensitiveExclusions` entry that names one now fails the run with exit `2`, and a config written by an earlier `init` names all eight (`migrate-config` keeps them), so delete those entries first. A baseline row for one loads and reports as resolved. `--include-rule` and `--exclude-rule` accept a retired id silently, so a run narrowed to one with `--include-rule` runs no rule and passes. The decision is ADR-021.

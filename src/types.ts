@@ -118,6 +118,8 @@ export interface Config {
   placeholderNames: Set<string>;
   negativeBooleanAllowed: Set<string>;
   knownAcronyms: Set<string>;
+  /** Project rationale and tracking references such as milestone ids, from `allowlists.trackingTokens`; none ship by default. */
+  trackingTokens: RegExp[];
   /** Per-command `--fail-on` defaults from `failOn:`; an empty map means each command keeps its binary default (ADR-004). */
   minimumSeverity: Map<MinimumSeverityCommand, FailThreshold>;
   /** The `minimumSeverity:` display floor: findings below it are hidden from the report and still scored and gated. */

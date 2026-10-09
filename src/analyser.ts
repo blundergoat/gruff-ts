@@ -32,7 +32,7 @@ import { analyseProjectConfigRules } from "./project-config-rules.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { scoreReport, summarize } from "./scoring.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
-import { parseScript, type ParsedScript } from "./parsed-script.ts";
+import { codeLineFlags, maskDecorators, parseScript, type ParsedScript } from "./parsed-script.ts";
 import { maskNonCode, maskTemplateLiteralBodies } from "./source-text.ts";
 import type { AnalysisOptions, AnalysisReport, Config, Finding, OutputFormat, Pillar, RunDiagnostic, ScanSurfaceNote, SkippedPath, SuppressionSummary } from "./types.ts";
 
@@ -82,6 +82,7 @@ export function analyse(requestedOptions: AnalysisOptions): AnalysisReport {
 // and exits 2, as a missing input does. The diagnostic carries the type the hook reports for the same failure,
 // which is the one type the family publishes for it. A literal empty value never reaches here: it is read as no
 // filter, which FAMILY-CONTRACT.md section 6 still has to settle.
+// @throws {Error} when changedRegionScope fails with any error other than a ChangedRegionError, rethrown unchanged.
 function changedRegionScopeOrDiagnostic(options: AnalysisOptions): { changedScope: ChangedRegionScope | undefined; scopeDiagnostics: RunDiagnostic[] } {
   try {
     return { changedScope: changedRegionScope(options), scopeDiagnostics: [] };
@@ -427,7 +428,7 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
         diagnostics.push(budgetDiagnostic);
       } else {
         if (shouldRetainProjectSource(file, source)) {
-          projectSources.push(projectSource(file, source));
+          projectSources.push(projectSource(file, source, parsed));
         }
         diagnostics.push(...(parsed?.diagnostics ?? []));
       }
@@ -504,12 +505,12 @@ function shouldRetainProjectSource(file: SourceFile, source: string): boolean {
   return file.isScript && (isProductionSourcePath(file.displayPath) || isTestPath(file.displayPath) || hasImportSyntaxCandidate(source));
 }
 
-// Stores the raw line view and, only when needed, a template-masked line view. The conditional mask
+// Stores the raw line view, its code-line count, and, only when needed, a template-masked line view. The conditional mask
 // avoids paying lexer cost for files that cannot affect import edges while keeping fixtures invisible.
-function projectSource(file: SourceFile, source: string): ProjectSource {
+function projectSource(file: SourceFile, source: string, parsed?: ParsedScript): ProjectSource {
   const lines = source.split(/\r?\n/);
   const templateMaskedLines = hasImportSyntaxCandidate(source) ? maskTemplateLiteralBodies(source).split(/\r?\n/) : lines;
-  return { file, lines, templateMaskedLines };
+  return { file, lines, templateMaskedLines, codeLineCount: codeLineFlags(source, parsed).filter(Boolean).length };
 }
 
 // Cheap prefilter for files that might contain real import/export edges or fixture strings that
@@ -530,7 +531,7 @@ function analyseSource(file: SourceFile, source: string, config: Config, isWithi
   const findings: Finding[] = [];
   // Size and documentation rules share one comment scan so code-only line counts do not add a second pass.
   const comments = (ruleEnabled(config, "size.file-length") && usesCStyleComments(file)) || (file.isScript && isAnyRuleEnabled(config, COMMENT_QUALITY_RULE_IDS)) ? commentRecords(source) : [];
-  analyseTextRules(file, source, comments, config, findings);
+  analyseTextRules(file, source, comments, config, findings, parsed);
   if (file.isScript && isWithinDeepScanBudget) {
     analyseTypeScriptRules(file, source, comments, config, findings, parsed);
   }
@@ -776,9 +777,9 @@ function isAnyRuleEnabled(config: Config, ruleIds: readonly string[]): boolean {
  * secret surfaces are not TypeScript. The order is a stable baseline contract: reshuffling these
  * checks changes same-line finding order for machine reports.
  */
-function analyseTextRules(file: SourceFile, source: string, comments: CommentRecord[], config: Config, findings: Finding[]): void {
+function analyseTextRules(file: SourceFile, source: string, comments: CommentRecord[], config: Config, findings: Finding[], parsed?: ParsedScript): void {
   if (ruleEnabled(config, "size.file-length") && !isGeneratedLockfile(file.displayPath)) {
-    const lines = substantiveLineCount(file, source, comments);
+    const lines = substantiveLineCount(file, source, comments, parsed);
     const fileLengthThreshold = threshold(config, "size.file-length", 1000);
     if (lines > fileLengthThreshold) {
       findings.push(
@@ -810,10 +811,12 @@ function analyseTextRules(file: SourceFile, source: string, comments: CommentRec
 
 // Counts nonblank lines after removing C-style and XML comments, then applies config-format
 // full-line markers. Strings remain intact, so a line containing only a string literal still counts.
-function substantiveLineCount(file: SourceFile, source: string, comments: CommentRecord[]): number {
+function substantiveLineCount(file: SourceFile, source: string, comments: CommentRecord[], parsed?: ParsedScript): number {
   const withoutCStyleComments = maskRecordedComments(source, comments);
   const withoutComments = extname(file.displayPath).toLowerCase() === ".xml" ? maskXmlComments(withoutCStyleComments) : withoutCStyleComments;
-  return withoutComments
+  // A parsed script also frees its decorator lines (FAMILY-CONTRACT section 12, search `Code lines in every line count`).
+  const withoutDecorators = parsed ? maskDecorators(withoutComments, parsed) : withoutComments;
+  return withoutDecorators
     .split(/\r?\n/)
     .filter((line) => isSubstantiveLine(file, line))
     .length;
@@ -1031,7 +1034,7 @@ function isGenericParameterCandidate(context: BlockRuleContext, paramCount: numb
   const minCyclomatic = optionNumber(context.config, "naming.generic-parameter", "minCyclomatic", 8);
   return (
     paramCount >= minParameters ||
-    context.block.lineCount >= minLineCount ||
+    context.block.codeLineCount >= minLineCount ||
     context.cyclomatic >= minCyclomatic
   );
 }

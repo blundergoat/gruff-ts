@@ -54,7 +54,7 @@ export function analyseCommentQualityRules(input: CommentQualityRuleInput): void
   const lines = source.split(/\r?\n/);
   const declarations = commentedDeclarations(blocks, interfaceDeclarations(source, codeSource));
 
-  analyseStandaloneCommentQuality(file, source, comments, DESCRIPTOR_IDS, CLI_FLAGS, findings);
+  analyseStandaloneCommentQuality(file, source, comments, DESCRIPTOR_IDS, CLI_FLAGS, findings, config.trackingTokens);
   analyseCommentedDeclarationQuality(file, lines, comments, declarations, findings);
   analyseFunctionContextCommentQuality({ file, lines, comments, blocks, config, findings });
   pushMagicThresholdFindings(file, lines, codeSource, comments, findings);
@@ -66,11 +66,11 @@ export function analyseCommentQualityRules(input: CommentQualityRuleInput): void
  * stale CLI flag refs) that run on every comment regardless of whether it documents a declaration.
  * Stable, deterministic emission order across the five sub-checks.
  */
-function analyseStandaloneCommentQuality(file: SourceFile, source: string, comments: CommentRecord[], ruleIdSet: Set<string>, optionFlagSet: Set<string>, findings: Finding[]): void {
-  const attachedRationale = directivesWithAttachedRationale(source, comments);
+function analyseStandaloneCommentQuality(file: SourceFile, source: string, comments: CommentRecord[], ruleIdSet: Set<string>, optionFlagSet: Set<string>, findings: Finding[], trackingTokens: readonly RegExp[]): void {
+  const attachedRationale = directivesWithAttachedRationale(source, comments, trackingTokens);
   for (const comment of comments) {
-    pushTodoWithoutTrackingFinding(file, source, comment, findings);
-    pushSuppressionWithoutRationaleFinding(file, comment, attachedRationale.has(comment), findings);
+    pushTodoWithoutTrackingFinding(file, source, comment, findings, trackingTokens);
+    pushSuppressionWithoutRationaleFinding(file, comment, attachedRationale.has(comment), findings, trackingTokens);
     pushStaleFileReferenceFindings(file, comment, findings);
     pushStaleRuleReferenceFindings(file, comment, ruleIdSet, findings);
     pushStaleCliFlagReferenceFindings(file, comment, optionFlagSet, findings);
@@ -125,9 +125,9 @@ function commentedDeclarations(blocks: FunctionBlock[], interfaces: ExportedDecl
  * preserved in stable metadata so consumers can group by marker kind. Reports the stable
  * untracked-task-marker finding when no tracking reference is attached.
  */
-function pushTodoWithoutTrackingFinding(file: SourceFile, source: string, comment: CommentRecord, findings: Finding[]): void {
+function pushTodoWithoutTrackingFinding(file: SourceFile, source: string, comment: CommentRecord, findings: Finding[], trackingTokens: readonly RegExp[]): void {
   const marker = todoMarker(source, comment);
-  if (!marker || hasTodoTracking(comment.text)) {
+  if (!marker || hasTodoTracking(comment.text, trackingTokens)) {
     return;
   }
   findings.push(
@@ -198,18 +198,14 @@ const TODO_TRACKING_PATTERNS = [
   /https?:\/\//i,
   /(?:^|\s)#\d+\b/,
   /\bGH-\d+\b/i,
-  /\bM\d{1,3}\b/,
-  /\.goat-flow\/tasks\//,
-  /\bADR-\d{3}\b/i,
   /\b\d{4}-\d{2}-\d{2}\b/,
   /\bowner\s*:/i,
 ] as const;
 
-// Eight accepted tracking forms (URL, #123, GH-123, M123, .goat-flow/tasks, ADR-001, ISO date,
-// `owner:`). The stable set is intentionally generous so projects with different ticketing systems
-// can comply without changing their conventions.
-function hasTodoTracking(text: string): boolean {
-  return TODO_TRACKING_PATTERNS.some((pattern) => pattern.test(text));
+// Five accepted tracking forms (URL, #123, GH-123, ISO date, `owner:`), plus any project token from
+// `allowlists.trackingTokens`, so projects with different ticketing systems can comply without changing their conventions.
+function hasTodoTracking(text: string, trackingTokens: readonly RegExp[] = []): boolean {
+  return TODO_TRACKING_PATTERNS.some((pattern) => pattern.test(text)) || trackingTokens.some((token) => token.test(text));
 }
 
 /*
@@ -218,9 +214,9 @@ function hasTodoTracking(text: string): boolean {
  * directives have their own dedicated rule. Reports the stable `docs.suppression-without-rationale` finding.
  * The rationale may sit on the directive itself or in the comment block attached above it.
  */
-function pushSuppressionWithoutRationaleFinding(file: SourceFile, comment: CommentRecord, hasAttachedRationale: boolean, findings: Finding[]): void {
+function pushSuppressionWithoutRationaleFinding(file: SourceFile, comment: CommentRecord, hasAttachedRationale: boolean, findings: Finding[], trackingTokens: readonly RegExp[]): void {
   const suppression = suppressionDirective(comment.text);
-  if (!suppression || hasAttachedRationale || hasSuppressionRationale(comment.text)) {
+  if (!suppression || hasAttachedRationale || hasSuppressionRationale(comment.text, trackingTokens)) {
     return;
   }
   findings.push(
@@ -244,7 +240,7 @@ function pushSuppressionWithoutRationaleFinding(file: SourceFile, comment: Comme
  * blank line, code, a trailing comment or another directive ends it, so a rationale is never borrowed
  * across them. Contract invariant: one pass in source order keeps the result deterministic.
  */
-function directivesWithAttachedRationale(source: string, comments: readonly CommentRecord[]): Set<CommentRecord> {
+function directivesWithAttachedRationale(source: string, comments: readonly CommentRecord[], trackingTokens: readonly RegExp[]): Set<CommentRecord> {
   const attached = new Set<CommentRecord>();
   let blockEndLine = -1;
   let hasBlockRationale = false;
@@ -256,7 +252,7 @@ function directivesWithAttachedRationale(source: string, comments: readonly Comm
       attached.add(comment);
     }
     if (isStandalone && !isDirective) {
-      hasBlockRationale = (continuesBlock && hasBlockRationale) || hasSuppressionRationale(comment.text);
+      hasBlockRationale = (continuesBlock && hasBlockRationale) || hasSuppressionRationale(comment.text, trackingTokens);
       blockEndLine = comment.line;
     } else {
       blockEndLine = -1;
@@ -282,10 +278,10 @@ function suppressionDirective(text: string): string | undefined {
   return match?.[1];
 }
 
-// Accepted rationale forms: explanatory keywords (because, intentional, false positive, tracked in),
-// project task markers (M123, ADR-XXX, GH-123), explicit `reason:`, a tracking URL, or a #issue.
-export function hasSuppressionRationale(text: string): boolean {
-  return /\b(?:because|intentional|false positive|tracked in|M\d{1,3}|ADR-\d{3}|GH-\d+)\b/i.test(text) || /\breason\s*:/i.test(text) || /(?:^|\s)#\d+\b/.test(text) || /https?:\/\//i.test(text) || /\.goat-flow\/tasks\//.test(text);
+// Accepted rationale forms: explanatory keywords (because, intentional, false positive, tracked in), a GH-123
+// reference, explicit `reason:`, a tracking URL, a #issue, or a project token from `allowlists.trackingTokens`.
+export function hasSuppressionRationale(text: string, trackingTokens: readonly RegExp[] = []): boolean {
+  return /\b(?:because|intentional|false positive|tracked in|GH-\d+)\b/i.test(text) || /\breason\s*:/i.test(text) || /(?:^|\s)#\d+\b/.test(text) || /https?:\/\//i.test(text) || trackingTokens.some((token) => token.test(text));
 }
 
 /*

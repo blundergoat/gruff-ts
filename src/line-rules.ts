@@ -10,7 +10,7 @@ import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts";
 import { type NamingSurface, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
-import type { ParsedScript } from "./parsed-script.ts";
+import { codeLineFlags, type ParsedScript } from "./parsed-script.ts";
 import { processExecMetadata, type ProcessExecArgumentSource, type ProcessExecMetadata } from "./process-exec-metadata.ts";
 import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
@@ -50,6 +50,10 @@ interface LineRuleContext {
   // forward look-ahead (for-of body brace-balancing in `pushVariableNameFindings`) can scan beyond
   // the current line without re-splitting the source.
   codeLines: readonly string[];
+  // The raw source lines, so a directive's rationale can be read from the comment lines above it.
+  sourceLines: readonly string[];
+  // One flag per line, true where it carries code; the for-of body span counts only these lines.
+  isCodeLine: readonly boolean[];
   lineNumber: number;
   config: Config;
   findings: Finding[];
@@ -143,6 +147,8 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
     previousLine: "",
     codeLine: "",
     codeLines,
+    sourceLines,
+    isCodeLine: gates.shouldRunVariableNaming ? codeLineFlags(source, parsed) : [],
     lineNumber: 0,
     config,
     findings,
@@ -167,7 +173,7 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
     analyseUselessCatches(file, codeSource, findings);
   }
   if (gates.shouldRunSwallowedCatch) {
-    analyseSwallowedCatches(file, source, codeSource, findings);
+    analyseSwallowedCatches(file, source, codeSource, findings, config.trackingTokens);
   }
 }
 
@@ -175,7 +181,7 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
 // either no-ops (rule skipped or no match) or appends to `findings`.
 function analyseLineRuleContext(context: LineRuleContext): void {
   if (context.gates.shouldRunTypeSafety) {
-    analyseTypeSafetyLine(context.file, context.line, context.codeLine, context.lineNumber, context.findings);
+    analyseTypeSafetyLine(context.file, context.line, context.codeLine, context.lineNumber, context.findings, context.sourceLines, context.config.trackingTokens);
   }
   if (context.gates.shouldRunReliability) {
     analyseReliabilityLine(context.file, context.codeLine, context.lineNumber, context.findings);
@@ -441,7 +447,7 @@ function pushVariableNameFindings(context: LineRuleContext): void {
     const matchText = match[0] ?? "";
     const headerTail = context.codeLine.slice((match.index ?? 0) + matchText.length);
     const isForOfHeader = matchText.startsWith("for") && /^\s+of\b/.test(headerTail);
-    const loopBodyLineCount = isForOfHeader ? forOfBodyLineSpan(context.codeLines, context.lineNumber - 1) : undefined;
+    const loopBodyLineCount = isForOfHeader ? forOfBodyLineSpan(context.codeLines, context.isCodeLine, context.lineNumber - 1) : undefined;
     pushShortVariableFinding(context, name, loopBodyLineCount);
     pushIdentifierQualityFinding(context, name);
   }
@@ -454,21 +460,21 @@ function pushVariableNameFindings(context: LineRuleContext): void {
 /*
  * Counts the line span of a for-of body starting at the opener line index. Brace-less
  * single-statement bodies return 1 because the body is trivially short. When the opener has `{`,
- * brace-balance tracking finds the matching `}` and returns the line count from `{` to `}`
+ * brace-balance tracking finds the matching `}` and returns the number of code lines (per `isCodeLine`) from `{` to `}`
  * inclusive. The walker uses the masked codeLines so braces inside string literals are blanked
  * out; this avoids the false "balanced" claim a raw-source walker would make on template strings.
  * A 50-line scan window guards against unterminated scans because malformed input must not stall
  * the whole-file walker; an unbalanced result returns Infinity so a long-but-unclosed for-of
  * still fires the rule rather than getting silently exempted.
  */
-function forOfBodyLineSpan(codeLines: readonly string[], openerLineIndex: number): number {
+function forOfBodyLineSpan(codeLines: readonly string[], isCodeLine: readonly boolean[], openerLineIndex: number): number {
   const maxLines = 50;
   const end = Math.min(codeLines.length, openerLineIndex + maxLines);
   let state: ForOfBraceScanState = { depth: 0, bodyOpenerLine: -1 };
   for (let i = openerLineIndex; i < end; i += 1) {
     state = advanceForOfBraceScan(state, codeLines[i] ?? "", i);
     if (state.bodyOpenerLine !== -1 && state.depth <= 0) {
-      return i - state.bodyOpenerLine + 1;
+      return isCodeLine.slice(state.bodyOpenerLine, i + 1).filter(Boolean).length;
     }
   }
   return state.bodyOpenerLine === -1 ? 1 : Infinity;

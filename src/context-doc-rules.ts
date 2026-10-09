@@ -101,12 +101,13 @@ function sideEffectContextDocFinding(block: FunctionBlock, body: string, comment
   return contextDocDetails(block.name, "docs.missing-side-effect-doc", `Function \`${block.name}\` performs side effects that its comment does not describe.`, "Name the observable side effect such as filesystem, process, environment, or network mutation.", "side-effect");
 }
 
-// Keeps thrown, diagnostic, and recovery behavior visible in maintainer comments.
+// The family's structural form (gruff-php's throws-tag rule, gruff-py's raises-doc rule): a commented function whose code
+// throws needs an `@throws` tag. A comment that describes the error in other words does not satisfy the rule; only the tag does.
 function errorBehaviorContextDocFinding(block: FunctionBlock, body: string, commentText: string): ContextDocFindingDetails | undefined {
-  if (!hasErrorBehaviorSignal(body) || hasErrorBehaviorMarker(commentText)) {
+  if (!/\bthrow\b/.test(body) || /@throws\b/.test(commentText)) {
     return undefined;
   }
-  return contextDocDetails(block.name, "docs.missing-error-behavior-doc", `Function \`${block.name}\` has error behavior that its comment does not describe.`, "Document thrown errors, diagnostics, exits, reports, or recovery behavior.", "error-behavior");
+  return contextDocDetails(block.name, "docs.missing-error-behavior-doc", `Function \`${block.name}\` throws, but its comment has no @throws tag.`, "Add an @throws tag that names each error the function throws and when.", "error-behavior");
 }
 
 // Protects schema and fingerprint invariants from becoming implicit tribal knowledge.
@@ -152,7 +153,7 @@ function isComplexContextCandidate(block: FunctionBlock, config: Config): boolea
   // A legacy span-only caller cannot reparse here, so it receives the same neutral fallback as block rules.
   const sharedComplexityMetrics = block.complexityMetrics ?? baseComplexityMetrics();
   return (
-    block.lineCount > threshold(config, "size.function-length", 200) ||
+    block.codeLineCount > threshold(config, "size.function-length", 200) ||
     sharedComplexityMetrics.cyclomatic > threshold(config, "complexity.cyclomatic", 15) ||
     sharedComplexityMetrics.cognitive > threshold(config, "complexity.cognitive", 15) ||
     sharedComplexityMetrics.maximumControlFlowNesting > 3
@@ -190,12 +191,6 @@ function hasSideEffectMarker(text: string): boolean {
   return /\b(?:writes|reads|persists|mutates|starts|spawns|network|filesystem|environment)\b/i.test(text);
 }
 
-// Vocabulary for "comment names error behaviour". Matches throws/reports/exits/swallows/fallback/
-// recover and the multi-word "returns diagnostic". Pairs with `hasErrorBehaviorSignal`.
-function hasErrorBehaviorMarker(text: string): boolean {
-  return /\b(?:throws|returns diagnostic|reports|exits|swallows|fallback|recover)\b/i.test(text);
-}
-
 // Vocabulary for "comment names a public contract". Seven canonical words; the rule fires when
 // the callable carries invariant signals (Finding/baseline/fingerprint references) but none of these.
 function hasInvariantMarker(text: string): boolean {
@@ -228,12 +223,6 @@ function hasProcessExecutionCall(body: string): boolean {
     }
   }
   return false;
-}
-
-// Detects throw, catch, process.exit, diagnostic emission, or finding/diagnostic push patterns -
-// the five places error behaviour can hide inside a callable body.
-function hasErrorBehaviorSignal(body: string): boolean {
-  return /\bthrow\b|\bcatch\b|\bprocess\.exit\s*\(|\bdiagnosticType\s*:|\b(?:findings|diagnostics)\.push\s*\(/.test(body);
 }
 
 // Searches both the callable name and body for vocabulary tied to the analyser's stable contracts

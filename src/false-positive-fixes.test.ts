@@ -9,6 +9,9 @@ import { renderSummary } from "./report-renderers.ts";
 import { analyseFixture, analyseProject } from "./test-fixtures.ts";
 import { countMatches } from "./text-scans.ts";
 
+// waste.swallowed-catch ships off by default; these tests switch it on so they still exercise its detector.
+const SWALLOWED_CATCH_ON = { config: { rules: { "waste.swallowed-catch": { enabled: true } } } };
+
 test("FP-#10 security.inner-html ignores empty-string DOM clearing", () => {
   // Fixture clears via "" and '', then assigns user input on line 4 - only the line-4 assignment
   // should fire because it's the actual injection sink.
@@ -265,7 +268,7 @@ test("FP-#16 waste.swallowed-catch accepts /* ignore */ rationale", () => {
     /* ignore */
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.swallowed-catch");
   assert.deepEqual(findings, []);
 });
@@ -278,7 +281,7 @@ test("FP-#17 waste.swallowed-catch accepts /* cleanup */ rationale", () => {
     /* cleanup */
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.swallowed-catch");
   assert.deepEqual(findings, []);
 });
@@ -291,7 +294,7 @@ test("FP-#18 waste.swallowed-catch accepts /* teardown */ rationale", () => {
     /* teardown */
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.swallowed-catch");
   assert.deepEqual(findings, []);
 });
@@ -305,7 +308,7 @@ test("FP-#19 waste.swallowed-catch accepts /* no-op */ rationale", () => {
   }
   return undefined;
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.swallowed-catch");
   assert.deepEqual(findings, []);
 });
@@ -707,13 +710,13 @@ test("FP-#20 waste.swallowed-catch still flags /* silent */ and empty catch", ()
     /* silent */
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   assert.equal(silentReport.findings.some((entry) => entry.ruleId === "waste.swallowed-catch"), true);
 
   const emptyReport = analyseFixture(`function h(handle: { close(): void }): void {
   try { handle.close(); } catch {}
 }
-`);
+`, SWALLOWED_CATCH_ON);
   assert.equal(emptyReport.findings.some((entry) => entry.ruleId === "waste.swallowed-catch"), true);
 });
 

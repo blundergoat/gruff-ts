@@ -39,6 +39,7 @@ const SUGGEST_EXACT_SCOPE = "Each `sensitiveExclusions:` entry needs exactly one
  *
  * @param parsedConfig The parsed config document; a missing section means no suppressions.
  * @returns Validated entries in declaration order, which is also their audit-row order.
+ * @throws {ConfigLoadError} when the section is not a list, an entry is invalid, or two entries claim one scope.
  */
 export function parseSensitiveExclusions(parsedConfig: Record<string, unknown>): SensitiveExclusion[] {
   // A missing section is the common case and means the user suppresses nothing.
@@ -58,6 +59,7 @@ export function parseSensitiveExclusions(parsedConfig: Record<string, unknown>):
 // Validates one entry's keys, rule, path, symbol, and reason in that order. Unknown keys are
 // rejected first so a `message_contains` or `value` key is reported as itself rather than masked by
 // a later complaint about a sibling field. Throws ConfigLoadError for every rejection.
+// @throws {ConfigLoadError} when the entry is not a mapping, has an unsupported key, or any field fails validation.
 function parseSensitiveExclusionEntry(entryValue: unknown, index: number): SensitiveExclusion {
   const entry = objectValue(entryValue);
   // Only a mapping can carry the named scope keys; a bare string would hide which field is meant.
@@ -78,6 +80,7 @@ function parseSensitiveExclusionEntry(entryValue: unknown, index: number): Sensi
  * value-matching prohibition: `message_contains`, `messageContains`, `value`, and `preview` fail
  * here by name, and so does any future key that would match against finding text. Throws
  * ConfigLoadError naming the offending key.
+ * @throws {ConfigLoadError} when the entry carries any key other than rule, path, symbol, or reason.
  */
 function assertNoUnsupportedKeys(entry: Record<string, unknown>, index: number): void {
   // Each supplied key is checked so the error names the exact key the user must delete.
@@ -96,6 +99,7 @@ function assertNoUnsupportedKeys(entry: Record<string, unknown>, index: number):
  * wildcard/glob/regex selector, a pillar name, an id outside the catalogue, and a real rule from
  * another pillar - each one either widens the declared scope or names a rule this section cannot
  * govern. Throws ConfigLoadError naming `sensitiveExclusions[<index>].rule`.
+ * @throws {ConfigLoadError} when the rule is missing, non-string, blank, a wildcard, a pillar, unknown, or not sensitive-data.
  */
 function validatedExclusionRule(configuredRule: unknown, index: number): string {
   const rule = requiredExclusionString(configuredRule, index, "rule");
@@ -122,6 +126,7 @@ function validatedExclusionRule(configuredRule: unknown, index: number): string 
  * Validates `path` as one exact project-relative file path. Rejects a missing or empty value, an
  * absolute path, a `..` traversal, and a glob, so the entry names a file inside the analysed project
  * that a reviewer can open. Throws ConfigLoadError naming `sensitiveExclusions[<index>].path`.
+ * @throws {ConfigLoadError} when the path is missing, non-string, blank, absolute, uses `..`, or has a glob character.
  */
 function validatedExclusionPath(configuredPath: unknown, index: number): string {
   const path = normalisedExclusionPath(requiredExclusionString(configuredPath, index, "path"));
@@ -156,6 +161,7 @@ function validatedExclusionReason(configuredReason: unknown, index: number): str
  * Shared narrowing for the four string-valued keys. Throws ConfigLoadError naming
  * `sensitiveExclusions[<index>].<key>` for a missing, non-string, or whitespace-only value, so the
  * user sees the exact field to fix. Returns the trimmed text.
+ * @throws {ConfigLoadError} when the value is missing, is not a string, or is empty or only whitespace.
  */
 function requiredExclusionString(configuredValue: unknown, index: number, key: string): string {
   const location = `sensitiveExclusions[${index}].${key}`;
@@ -185,6 +191,7 @@ function normalisedExclusionPath(path: string): string {
  * Rejects a second entry claiming a scope an earlier entry already claims. Two entries over one
  * (rule, path, symbol) would split the audit count arbitrarily between them, so neither row would
  * report what it actually suppressed. Throws ConfigLoadError naming the duplicate entry's index.
+ * @throws {ConfigLoadError} when a later entry repeats an earlier entry's rule, path, and symbol.
  */
 function assertUniqueSensitiveScopes(exclusions: readonly SensitiveExclusion[]): void {
   const claimedScopes = new Map<string, number>();

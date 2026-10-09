@@ -95,7 +95,8 @@ const expandedRuleIds = new Set([
 ]);
 
 test("cumulative expanded fixture covers every new rule with unique fingerprints", () => {
-  const report = analyseProject(cumulativeExpandedFixtureFiles());
+  // The side-effect and invariant rules ship off by default because their keyword lists cannot accept a comment written in other words; this fixture still covers both.
+  const report = analyseProject(cumulativeExpandedFixtureFiles(), { config: { rules: { "docs.missing-side-effect-doc": { enabled: true }, "docs.missing-invariant-doc": { enabled: true }, "waste.swallowed-catch": { enabled: true } } } });
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   expandedRuleIds.forEach((ruleId: string) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);

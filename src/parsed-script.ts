@@ -4,6 +4,7 @@
 // owns the parser, the script-kind mapping, and the AST callable enumeration consumed by the
 // block rules (and, downstream, complexity metrics and naming ownership).
 import { createRequire } from "node:module";
+import { commentRecords } from "./comment-scanner.ts";
 import type { RunDiagnostic } from "./types.ts";
 
 // Loaded via createRequire because typescript ships as CommonJS; usage stays bounded to syntax
@@ -116,6 +117,56 @@ export function parseScript(file: ParsedScriptInput, source: string): ParsedScri
       ? [summarizeParseErrors(file, parsedSourceFile, firstParseError, parsedSourceFile.parseDiagnostics.length)]
       : [],
   };
+}
+
+/**
+ * Blanks every decorator in `text` with spaces, keeping newlines and offsets, so a line that holds only decorators reads
+ * as blank.
+ *
+ * @param text - the parsed source text, or a same-length masking of it such as the source with its comments blanked
+ * @param parsed - the shared parse of that source
+ * @returns `text` with each decorator's characters replaced by spaces
+ */
+export function maskDecorators(text: string, parsed: ParsedScript): string {
+  const characters = text.split("");
+  // Walks every node once; decorators can sit on classes, members and parameters at any depth.
+  const visit = (node: TsNode): void => {
+    // A decorator's span runs from its `@` to the end of its expression, arguments included.
+    if (node.kind === typescriptSyntax.SyntaxKind.Decorator) {
+      blankRange(characters, node.getStart(parsed.sourceFile), node.end);
+    }
+    node.forEachChild(visit);
+  };
+  parsed.sourceFile.forEachChild(visit);
+  return characters.join("");
+}
+
+/**
+ * Flags each line that carries code, for the function-block, for-of body and module line counts (FAMILY-CONTRACT section 12,
+ * search `Code lines in every line count`). A line is not code when it is blank or holds only comments or decorators; the
+ * text of string and template literals still counts as code.
+ *
+ * @param source - decoded file text
+ * @param parsed - the shared parse of `source`; without it decorators are not recognised and count as code
+ * @returns one flag per line of `source`, 0-based, true where the line carries code
+ */
+export function codeLineFlags(source: string, parsed?: ParsedScript): boolean[] {
+  const characters = source.split("");
+  for (const comment of commentRecords(source)) {
+    blankRange(characters, comment.startIndex, comment.kind === "block" ? Math.min(source.length, comment.endIndex + 1) : comment.endIndex);
+  }
+  const withoutComments = characters.join("");
+  const code = parsed ? maskDecorators(withoutComments, parsed) : withoutComments;
+  return code.split(/\r?\n/).map((line) => line.trim() !== "");
+}
+
+// Replaces one half-open character range with spaces, keeping line breaks so line numbers do not move.
+function blankRange(characters: string[], start: number, end: number): void {
+  for (let index = start; index < end && index < characters.length; index += 1) {
+    if (characters[index] !== "\n" && characters[index] !== "\r") {
+      characters[index] = " ";
+    }
+  }
 }
 
 // Maps extensions onto the matching TypeScript parser mode so TSX/JSX syntax parses as syntax.

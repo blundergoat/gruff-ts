@@ -15,6 +15,12 @@ function ruleFindings(source: string, ruleId: string, fileName?: string) {
   return report.findings.filter((entry) => entry.ruleId === ruleId);
 }
 
+// Runs a rule that ships off by default with it switched on, so detector-logic tests still exercise it.
+function enabledRuleFindings(source: string, ruleId: string) {
+  const report = analyseFixture(source, { config: { rules: { [ruleId]: { enabled: true } } } });
+  return report.findings.filter((entry) => entry.ruleId === ruleId);
+}
+
 // Minimal real finding for direct scoring-math tests; distinct lines keep each fingerprint unique.
 function scoredFinding(ruleId: string, pillar: Finding["pillar"], severity: Finding["severity"], line: number): Finding {
   return makeFinding({ ruleId, message: `${ruleId} fired.`, filePath: "src/sample.ts", line, severity, pillar, confidence: "medium" });
@@ -264,13 +270,13 @@ test("missing-side-effect-doc treats JSDoc and // runs identically", () => {
   writeFileSync(path, "{}");
 }`;
   const silentComment = commentStyleVariants(["Stores the run marker for later comparison."], sideEffectBody);
-  assert.equal(ruleFindings(silentComment.jsdoc, "docs.missing-side-effect-doc").length, 1);
-  assert.equal(ruleFindings(silentComment.lineRun, "docs.missing-side-effect-doc").length, 1);
+  assert.equal(enabledRuleFindings(silentComment.jsdoc, "docs.missing-side-effect-doc").length, 1);
+  assert.equal(enabledRuleFindings(silentComment.lineRun, "docs.missing-side-effect-doc").length, 1);
 
   // The 0.4.0 trap: side-effect vocabulary on the FIRST line of a two-line comment must count.
   const documentedComment = commentStyleVariants(["Writes the run marker to disk so a later", "comparison can read it back."], sideEffectBody);
-  assert.deepEqual(ruleFindings(documentedComment.jsdoc, "docs.missing-side-effect-doc"), []);
-  assert.deepEqual(ruleFindings(documentedComment.lineRun, "docs.missing-side-effect-doc"), []);
+  assert.deepEqual(enabledRuleFindings(documentedComment.jsdoc, "docs.missing-side-effect-doc"), []);
+  assert.deepEqual(enabledRuleFindings(documentedComment.lineRun, "docs.missing-side-effect-doc"), []);
 });
 
 // M22 brief shape (`parseUnderline`, 13 of 13 on the reporting repository): a regular expression's `.exec` is a
@@ -289,7 +295,7 @@ test("missing-side-effect-doc does not read a regular expression's exec as proce
     "}",
     "",
   ].join("\n");
-  assert.deepEqual(ruleFindings(pure, "docs.missing-side-effect-doc"), []);
+  assert.deepEqual(enabledRuleFindings(pure, "docs.missing-side-effect-doc"), []);
 
   const executing = [
     "import { exec, execFileSync } from \"node:child_process\";",
@@ -311,7 +317,7 @@ test("missing-side-effect-doc does not read a regular expression's exec as proce
     "}",
     "",
   ].join("\n");
-  assert.deepEqual(ruleFindings(executing, "docs.missing-side-effect-doc").map((finding) => finding.symbol), ["runBuild", "runLint", "runTests"]);
+  assert.deepEqual(enabledRuleFindings(executing, "docs.missing-side-effect-doc").map((finding) => finding.symbol), ["runBuild", "runLint", "runTests"]);
 });
 
 test("missing-error-behavior-doc treats JSDoc and // runs identically", () => {
@@ -325,7 +331,7 @@ test("missing-error-behavior-doc treats JSDoc and // runs identically", () => {
   assert.equal(ruleFindings(silentComment.jsdoc, "docs.missing-error-behavior-doc").length, 1);
   assert.equal(ruleFindings(silentComment.lineRun, "docs.missing-error-behavior-doc").length, 1);
 
-  const documentedComment = commentStyleVariants(["Throws when the payload is empty, otherwise", "returns it unchanged."], throwingBody);
+  const documentedComment = commentStyleVariants(["Returns the payload unchanged.", "@throws Error when the payload is empty."], throwingBody);
   assert.deepEqual(ruleFindings(documentedComment.jsdoc, "docs.missing-error-behavior-doc"), []);
   assert.deepEqual(ruleFindings(documentedComment.lineRun, "docs.missing-error-behavior-doc"), []);
 });

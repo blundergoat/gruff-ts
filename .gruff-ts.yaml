@@ -135,7 +135,7 @@ rules:
   # documentation/advisory: Flags threshold-like numeric values without a nearby rationale comment.
   docs.magic-threshold-without-rationale:
     enabled: true
-  # documentation/advisory: Flags commented functions whose error behavior is not described.
+  # documentation/advisory: Flags commented functions that throw without an @throws tag.
   docs.missing-error-behavior-doc:
     enabled: true
   # documentation/warning: Flags exported functions without a leading maintainer comment.

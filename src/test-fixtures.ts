@@ -211,6 +211,7 @@ export function gitAvailable(): boolean {
 }
 
 // Reads `git check-ignore` and throws only for unexpected git failures.
+// @throws {Error} when `git check-ignore` cannot run or exits with a status other than 0 (ignored) or 1 (not ignored).
 export function isGitIgnoredByGit(projectRoot: string, path: string): boolean {
   try {
     execFileSync("git", ["check-ignore", "--quiet", path], { cwd: projectRoot });
@@ -276,6 +277,7 @@ export async function freePort(): Promise<number> {
 }
 
 // Polls a dashboard endpoint until it responds or reports the captured server output.
+// @throws {Error} when the endpoint has not answered OK within 5 seconds, with the last error and server output.
 export async function waitForEndpoint(endpoint: string, output: string): Promise<void> {
   const deadline = Date.now() + 5000;
   const processOutput = output;
@@ -670,6 +672,11 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
           // Off by default (ADR-021); the coverage project switches them on so each still has a positive case.
           "security.open-redirect-candidate": { enabled: true },
           "sensitive-data.jwt-token": { enabled: true },
+          // Off by default: their keyword lists cannot accept a comment written in other words.
+          "docs.missing-side-effect-doc": { enabled: true },
+          "docs.missing-invariant-doc": { enabled: true },
+          // Off by default: its sample stayed below the waste floor after its repair.
+          "waste.swallowed-catch": { enabled: true },
         },
       },
     };

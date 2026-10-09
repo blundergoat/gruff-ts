@@ -346,6 +346,7 @@ function registerCheckIgnoreCommand(program: Command): void {
 
 // Dedicated agent-hook surface for gruff.hook.v2. It owns hook defaults (JSON, advisory gate, symbol
 // attribution, no analysis baseline) and reports a run that could not happen in-band as a fatal diagnostic, exit 2.
+// @throws from the registered action, not from this call, only when the run throws a value that is not an Error.
 function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("hook")
@@ -618,6 +619,7 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
  * Commander `--format` argParser for the summary command. Throws `InvalidArgumentError` when the
  * input is neither `text` nor `json`; commander reports that as a usage error and exits non-zero
  * before the command body runs.
+ * @throws {InvalidArgumentError} when the format value is neither text nor json.
  */
 function parseSummaryFormat(rawFormat: string): "text" | "json" {
   if (rawFormat === "text" || rawFormat === "json") {
@@ -628,6 +630,7 @@ function parseSummaryFormat(rawFormat: string): "text" | "json" {
 
 // Hook mode is a JSON-only contract. The parser is explicit so an unknown format value is caught
 // before analysis: it throws InvalidArgumentError so commander reports a usage error.
+// @throws {InvalidArgumentError} when the format value is anything other than json.
 function parseHookFormat(rawFormat: string): "json" {
   if (rawFormat === "json") {
     return rawFormat;
@@ -639,6 +642,7 @@ function parseHookFormat(rawFormat: string): "json" {
  * Builds a commander argParser for one constrained-choice option. Governance controls (format,
  * failure severity, diff scope) must reject a misspelled value as a usage error before analysis
  * starts - a silent fallback would let CI pass under semantics the caller never asked for.
+ * @throws {InvalidArgumentError} from the returned parser, not from this call, when a value is not one of the choices.
  */
 function parseChoiceOf(choices: readonly string[]): (rawValue: string) => string {
   // Validates one raw CLI value against the documented set; throws InvalidArgumentError otherwise.
@@ -740,6 +744,7 @@ function hookFatalType(error: Error, rawOptions: Record<string, unknown>): strin
 // Parses the atomic CLI override. Keeping both numeric limits in one value prevents a half-updated
 // budget, while `off` explicitly disables degradation for the current invocation.
 // Throws InvalidArgumentError when the value is neither `off` nor two positive integer limits.
+// @throws {InvalidArgumentError} when the value is not off and not LINES:BYTES with two positive safe integers.
 function parseDeepScanBudget(rawBudget: string): DeepScanBudgetOverride {
   if (rawBudget === "off") {
     return { enabled: false };
@@ -756,6 +761,7 @@ function parseDeepScanBudget(rawBudget: string): DeepScanBudgetOverride {
 /*
  * Commander argParser for `--top`-style numeric flags. Throws `InvalidArgumentError` on non-integer
  * or negative input so commander reports a usage error and exits non-zero before the command runs.
+ * @throws {InvalidArgumentError} when the value does not parse to an integer or the integer is negative
  */
 function parseNonNegativeInteger(rawCount: string): number {
   const parsed = Number(rawCount);
@@ -815,6 +821,7 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
 /*
  * Rejects a history path paired with any changed-region selector before analysis or rendering.
  * Throws ConfigLoadError so analyse and summary emit the same exit-2 guidance with no stdout.
+ * @throws {ConfigLoadError} when `--history-file` is combined with `--diff`, `--since`, or `--changed-ranges`
  */
 function assertFullScanHistoryOptions(rawOptions: Record<string, unknown>): void {
   const hasChangedRegionSelector = rawOptions.diff === true
@@ -880,6 +887,7 @@ function profileOption(rawOptions: Record<string, unknown>): Partial<Pick<Analys
 // Reconstructs the parser result so direct programmatic option bags cannot smuggle malformed
 // values into the analyser's effective budget.
 // Throws ConfigLoadError when a supplied override is present but violates the parser contract.
+// @throws {ConfigLoadError} when an override is neither disabled nor has positive safe-integer maxLines and maxBytes
 function deepScanBudgetOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "deepScanBudget">> {
   const budgetOverride = rawOptions.deepScanBudget;
   if (typeof budgetOverride !== "object" || budgetOverride === null || !("enabled" in budgetOverride)) {
@@ -909,6 +917,7 @@ function deepScanBudgetOption(rawOptions: Record<string, unknown>): Partial<Pick
  * @param report - the run's report, whose baseline block is present only when a baseline was used or written
  * @param rawOptions - the parsed options, read for the flag itself
  * @returns 0 when the flag was not passed or nothing is unreviewed, 1 when something is, 2 when no baseline applied
+ * @throws {ConfigLoadError} when `--fail-on-new` is set but the run applied no baseline or only generated one
  */
 function newDebtExitCode(report: AnalysisReport, rawOptions: Record<string, unknown>): number {
   // A run that did not ask to block on new debt is unaffected by everything below.
@@ -1073,6 +1082,7 @@ function refuseTargetsOutsideLaunchDirectory(program: Command, requestedFormat: 
  *
  * `publishRefusal` lets a command that speaks a machine format publish the refusal as an envelope too, because
  * only the call site knows which format was asked for.
+ * @throws {unknown} whatever `action` throws when it is not a ConfigLoadError, rethrown unchanged with its stack
  */
 async function runWithConfigErrorHandling(action: () => Promise<void> | void, publishRefusal?: (error: ConfigLoadError) => void): Promise<void> {
   try {

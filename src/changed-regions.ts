@@ -64,6 +64,7 @@ const PROJECT_RELATIONSHIP_RULE_IDS = new Set(["design.circular-import"]);
 
 // Builds the changed-region scope requested by CLI options. Throws on stdin diffs missing patch text, and on a
 // `--changed-ranges` the caller passed with no range in it, which asks for a scoped run over nothing.
+// @throws {ChangedRegionError} when --diff is "-" with no diffPatch, or --changed-ranges is empty or malformed.
 export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope | undefined {
   if (options.changedRanges !== undefined) {
     return { mode: options.changedScope, rangesByFile: new Map(), wholeFiles: new Set(), changedFiles: new Set(), explicitRanges: parseChangedRanges(options.changedRanges) };
@@ -283,6 +284,7 @@ function rangesOverlap(left: ChangedRange, right: ChangedRange): boolean {
 }
 
 // Parses the comma-separated CLI range syntax and throws validation errors for malformed ranges.
+// @throws {ChangedRegionError} when the list holds no range, or any entry is not a valid N or N-M range.
 function parseChangedRanges(rawRanges: string): ChangedRange[] {
   const ranges = rawRanges
     .split(",")
@@ -296,6 +298,7 @@ function parseChangedRanges(rawRanges: string): ChangedRange[] {
 }
 
 // Parses one `N` or `N-M` range and throws the CLI-facing validation error for invalid input.
+// @throws {ChangedRegionError} when the entry is not N or N-M digits, starts below 1, or ends before it starts.
 function parseChangedRange(rawRange: string): ChangedRange {
   const match = rawRange.match(/^(\d+)(?:-(\d+))?$/);
   if (!match?.[1]) {

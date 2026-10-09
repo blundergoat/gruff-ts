@@ -228,6 +228,19 @@ pairs may be written in either order. Both lists are case-insensitive, replace
 the complete configured list, and suppress only the exact pair rather than every
 name sharing the same canonical form.
 
+`allowlists.trackingTokens` lists a project's own tracking references as regular
+expressions. `docs.todo-without-tracking` treats a marker comment that matches
+one as tracked, and `modernisation.ts-comment-without-rationale` and
+`waste.swallowed-catch` accept a match as a rationale. gruff-ts ships no
+project-specific token; to accept a reference style such as `ADR-004`, list a
+pattern for it:
+
+```yaml
+allowlists:
+  trackingTokens:
+    - "ADR-[0-9]+"
+```
+
 ## Rule Controls
 
 Disable a rule:

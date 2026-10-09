@@ -59,7 +59,7 @@ function applyPendingEdits(draft: { total: number }): void {
 function persistReport(path: string, body: string): void {
   writeFileSync(path, body);
 }
-`);
+`, { config: { rules: { "docs.missing-side-effect-doc": { enabled: true } } } });
   const sideEffectSymbols = report.findings
     .filter((finding) => finding.ruleId === "docs.missing-side-effect-doc")
     .map((finding) => finding.symbol);
@@ -193,7 +193,7 @@ test("comment quality requires tracking for TODO markers", () => {
  */
 // TODO owner: platform-runtime
 // FIXME tracked in #123
-// HACK .goat-flow/tasks/keep-fixture-intentional.md
+// HACK https://example.test/issues/42 keeps the fixture intentional
 // XXX 2026-05-18 revisit the temporary setup
 // TODO add the missing owner
 function trackedTodos(): void {}
@@ -329,7 +329,7 @@ function parseRequired(value: string): string {
   return value;
 }
 
-/** Throws when the required value is absent. */
+/** @throws Error when the required value is absent. */
 function parseRequiredWithContext(value: string): string {
   if (!value) {
     throw new Error("missing value");
@@ -359,7 +359,7 @@ function undocumentedSideEffect(path: string): void {
   writeFileSync(path, "ok");
   spawn("node", []);
 }
-`);
+`, { config: { rules: { "docs.missing-side-effect-doc": { enabled: true }, "docs.missing-invariant-doc": { enabled: true } } } });
   const findingsByRule = new Map<string, Set<string>>();
   // Every fixture finding must keep the source file and location a developer needs to act on the advice.
   report.findings.forEach((finding) => {
@@ -646,4 +646,18 @@ test("size file-length skips generated lockfiles", () => {
   const lockfile = Array.from({ length: 900 }, (_, index) => `"entry-${index}": "value"`).join("\n");
   const report = analyseProject({ "package-lock.json": lockfile });
   assert.equal(report.findings.some((finding) => finding.ruleId === "size.file-length" && finding.filePath === "package-lock.json"), false);
+});
+
+// No project-specific tracking token ships by default, so a project must add its own through `allowlists.trackingTokens`.
+test("project tracking tokens come from allowlists.trackingTokens, and none ship by default", () => {
+  const source = `/**
+ * Exercises a project task reference on a TODO marker.
+ */
+// TODO M12 follow-up
+function trackedLater(): void {}
+`;
+  const byDefault = analyseFixture(source).findings.filter((finding) => finding.ruleId === "docs.todo-without-tracking");
+  assert.equal(byDefault.length, 1);
+  const configured = analyseFixture(source, { config: { allowlists: { trackingTokens: ["\\bM\\d{1,3}\\b"] } } });
+  assert.deepEqual(configured.findings.filter((finding) => finding.ruleId === "docs.todo-without-tracking"), []);
 });

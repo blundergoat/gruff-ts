@@ -85,6 +85,7 @@ export function normaliseMeasuredValues(message: string): string {
  * rank a symbol it accepted, not anything the scanned project did.
  *
  * Stable contract: one declaration always produces one subject, which is what a stored review is matched on.
+ * @throws {BaselineIdentityError} when a symbol-bearing finding gets an ordinal that is not a positive integer.
  */
 export function baselineSubject(finding: Finding, ordinal: number): string | undefined {
   const symbol = finding.symbol && finding.symbol.length > 0 ? finding.symbol : undefined;

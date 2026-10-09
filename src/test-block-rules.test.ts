@@ -411,6 +411,7 @@ function testBlockFixture(callbackBody: string, testName: string): FunctionBlock
     params: "",
     startLine: TEST_START_LINE,
     lineCount: body.split(/\r?\n/).length,
+    codeLineCount: body.split(/\r?\n/).length,
     body,
     codeBody: body,
     isPublic: false,

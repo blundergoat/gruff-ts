@@ -62,7 +62,7 @@ Both rules consume the same parsed callable measurement as `docs.missing-why-for
 
 - `design.circular-import` (warning; medium confidence): Flags strongly connected relative import components. Each component reports once, anchored on the lexicographically first member path, with sorted member paths and a representative cycle path in metadata. Narrow path scans build root graph context for this rule only, then emit SCCs that include a requested file; per-file rules and `paths.analysedFiles` remain scoped to the requested paths.
 - `design.deep-relative-import` (advisory; medium confidence; threshold 2): Flags relative imports that climb too many parent directories.
-- `design.large-module-concentration` (advisory; medium confidence; threshold 55; options: minFiles, minLines): Flags a production module that dominates project source lines.
+- `design.large-module-concentration` (advisory; medium confidence; threshold 55; options: minFiles, minLines): Flags a production module that dominates project source lines. The share counts code lines only: blank, comment-only and decorator-only lines do not count.
 - `design.package-bin-missing` (warning; high confidence): Flags package bin entries that point at missing files.
 - `design.package-bin-not-executable` (warning; high confidence): Flags package bin targets that are not executable.
 
@@ -70,21 +70,21 @@ Both rules consume the same parsed callable measurement as `docs.missing-why-for
 
 - `docs.fixture-purpose-missing` (advisory; medium confidence): Flags large or scanner-relevant fixtures without a nearby purpose comment. A comment on or directly above the fixture (or above the test declaration for setup findings) clears it when it uses the purpose vocabulary or is a substantive explanation of eight or more words; stacked `//` headers count as one comment.
 - `docs.magic-threshold-without-rationale` (advisory; medium confidence): Flags threshold-like numeric values without a nearby rationale comment.
-- `docs.missing-error-behavior-doc` (advisory; medium confidence): Flags commented functions whose error behavior is not described.
+- `docs.missing-error-behavior-doc` (advisory; medium confidence): Flags commented functions whose body contains `throw` and whose comment has no `@throws` tag. Describing the error in other words does not stand in for the tag.
 - `docs.missing-exported-function-doc` (warning; medium confidence): Flags exported functions without a leading maintainer comment.
 - `docs.missing-file-overview` (advisory; medium confidence): Flags source files without a top-of-file purpose comment.
 - `docs.missing-interface-doc` (advisory; medium confidence): Flags interfaces without a leading maintainer comment.
 - `docs.missing-internal-function-doc` (advisory; medium confidence): Flags internal helper functions without a leading maintainer comment.
-- `docs.missing-invariant-doc` (advisory; medium confidence): Flags commented declarations that own schema, fingerprint, baseline, or determinism contracts without saying so.
+- `docs.missing-invariant-doc` (advisory; medium confidence): Flags commented declarations that own schema, fingerprint, baseline, or determinism contracts without saying so. Off by default, because its keyword list cannot accept an accurate comment written in other words: enable it with `rules.docs.missing-invariant-doc.enabled: true`.
 - `docs.missing-param-tag` (advisory; medium confidence): Flags documented exports with parameters missing @param tags.
 - `docs.missing-public-doc` (advisory; medium confidence): Flags exported class, type, and enum APIs without a nearby doc comment.
 - `docs.missing-return-tag` (advisory; medium confidence): Flags documented non-void exports without @returns.
-- `docs.missing-side-effect-doc` (advisory; medium confidence): Flags commented functions that perform observable side effects without naming them.
+- `docs.missing-side-effect-doc` (advisory; medium confidence): Flags commented functions that perform observable side effects without naming them. Off by default, because its keyword list cannot accept an accurate comment written in other words: enable it with `rules.docs.missing-side-effect-doc.enabled: true`.
 - `docs.missing-why-for-complex-code` (advisory; medium confidence): Flags comments on complex functions that do not explain why the shape exists. Accepted rationale vocabulary includes `because`, `why`, `intentional`, `tradeoff`/`trade-off`, `compat`/`compatible`/`compatibility`, `avoid`, and `preserve`, plus the phrases `due to`, `so that`, `in order to`, and `required by`. A contiguous run of leading `//` lines is evaluated as one comment; block comments are already evaluated as one body.
 - `docs.stale-comment` (advisory; medium confidence): Flags comments that reference missing files, unknown rules, stale CLI flags, or the wrong declaration.
 - `docs.stale-param-tag` (advisory; medium confidence): Flags @param tags for parameters no longer in the signature.
 - `docs.suppression-without-rationale` (advisory; medium confidence): Flags lint, formatter, coverage, or tool suppressions without a maintainer rationale; the rationale may sit on the directive or in the comment lines directly above it.
-- `docs.todo-without-tracking` (advisory; high confidence): Flags comments introduced by a TODO, FIXME, HACK, or XXX marker without tracking context. The marker must start a comment body line (followed by `:`, `(`, `-`, whitespace, or end of line); quoted, backticked, mid-sentence, and fenced-example mentions are prose and stay quiet.
+- `docs.todo-without-tracking` (advisory; high confidence): Flags comments introduced by a TODO, FIXME, HACK, or XXX marker without tracking context. The marker must start a comment body line (followed by `:`, `(`, `-`, whitespace, or end of line); quoted, backticked, mid-sentence, and fenced-example mentions are prose and stay quiet. A project's own tracking references count when they match a regular expression listed under `allowlists.trackingTokens`; gruff-ts ships no project-specific token.
 - `docs.useless-docblock` (advisory; medium confidence): Flags comments or docblocks that only restate the symbol name.
 
 ## Maintainability
@@ -101,12 +101,12 @@ existing config overrides and baselines keep matching.
 - `waste.exported-any` (warning; medium confidence): Flags exported APIs exposing any.
 - `waste.redundant-boolean-cast` (advisory; medium confidence): Flags redundant boolean casts in condition expressions.
 - `waste.redundant-variable` (advisory; medium confidence): Flags variables returned immediately after assignment.
-- `waste.swallowed-catch` (warning; medium confidence): Flags empty catch blocks.
+- `waste.swallowed-catch` (warning; medium confidence): Flags empty catch blocks with no comment that gives a reason. A comment of two or more words, a rationale or tracking reference (including a match for `allowlists.trackingTokens`), or an intent marker (`ignore`/`ignored`, `no-op`, `cleanup`, `teardown`, `best-effort`, `non-fatal`, `optional`) clears it; a one-word label such as `/* silent */`, or a comment holding `TODO`, `FIXME` or `XXX`, still reports. Off by default, because a measured sample stayed under the waste floor: enable it with `rules.waste.swallowed-catch.enabled: true`.
 - `waste.unreachable-code` (warning; high confidence): Flags statements after terminating statements.
 - `waste.unused-import` (advisory; medium confidence): Flags named imports with no apparent usage.
 - `waste.unused-parameter` (advisory; medium confidence): Flags parameters with no apparent usage.
 - `waste.useless-catch` (advisory; high confidence): Flags catch blocks that only rethrow the caught value.
-- `waste.useless-return` (advisory; medium confidence): Flags terminal bare return statements in void functions.
+- `waste.useless-return` (advisory; medium confidence): Flags terminal bare return statements in void functions. A bare `return;` that is the only statement of a `catch` block is not reported.
 
 ## Modernisation
 
@@ -119,7 +119,7 @@ existing config overrides and baselines keep matching.
 - `modernisation.optional-chaining-candidate` (advisory; medium confidence): Flags repeated guard-and-property access patterns.
 - `modernisation.public-property` (advisory; high confidence): Flags public class properties that expose representation.
 - `modernisation.readonly-property-candidate` (advisory; medium confidence): Flags class properties that appear readonly-worthy.
-- `modernisation.ts-comment-without-rationale` (warning; medium confidence): Flags TypeScript suppression comments without a rationale.
+- `modernisation.ts-comment-without-rationale` (warning; medium confidence): Flags TypeScript suppression comments without a rationale; the rationale may follow the `@ts-` directive or sit in the `//` comment lines directly above it, and a match for `allowlists.trackingTokens` counts as one.
 - `modernisation.tsconfig-exact-optional-disabled` (warning; high confidence): Flags tsconfig files without exactOptionalPropertyTypes enabled.
 - `modernisation.tsconfig-index-safety-disabled` (warning; high confidence): Flags tsconfig files without noUncheckedIndexedAccess enabled.
 - `modernisation.tsconfig-strict-disabled` (warning; high confidence): Flags tsconfig files without strict mode enabled.
@@ -131,7 +131,7 @@ existing config overrides and baselines keep matching.
 - `naming.boolean-prefix` (advisory; medium confidence; allowlists: booleanPrefixes, acceptedBooleanNames): Flags boolean names without intent-revealing prefixes on declarations, function parameters (typed `: boolean` or with `= true|false` default), and interface/type-literal fields. Local and parameter findings recommend a safe rename (`remediationAction: APPLY`). Contract-field findings use `CONFIGURE` with `configurationKey: allowlists.acceptedBooleanNames` and explain that users may instead preserve an external key through explicit serialization mapping; configuration replaces the complete accepted-name list rather than merging one entry into the defaults.
 - `naming.class-file-mismatch` (advisory; medium confidence; allowlist: acceptedClassFilePairs): Flags a named class whose normalized name differs from the file only when it is the module's sole supported public declaration. Direct exports, named default exports, and bottom re-exports share one syntax inventory; a public class beside an interface, type, enum, function, default value, or external re-export stays quiet. Exact case-insensitive `fileBase:ClassName` entries preserve intentional feature-file/class-role conventions. Retained findings include `candidatePrimaryExport: true` and sorted `publicExports` metadata.
 - `naming.generic-function` (advisory; high confidence): Flags generic function names that hide intent; a method marked `override` is judged at its base declaration instead.
-- `naming.generic-parameter` (advisory; medium confidence; options: minCyclomatic, minLineCount, minParameters): Flags placeholder parameter names in multi-parameter, long, exported, or complex functions.
+- `naming.generic-parameter` (advisory; medium confidence; options: minCyclomatic, minLineCount, minParameters): Flags placeholder parameter names in multi-parameter, long, exported, or complex functions. `minLineCount` counts code lines: blank, comment-only and decorator-only lines do not count.
 - `naming.hungarian-notation` (advisory; medium confidence): Flags identifiers named after storage type prefixes.
 - `naming.identifier-quality` (advisory; medium confidence): Flags placeholder or numbered identifiers on declarations, function parameters, and destructured locals.
 - `naming.inconsistent-casing` (advisory; medium confidence; allowlist: acceptedCasingPairs): Flags one canonical identifier appearing in different forms within the same module, function, interface, or named type-literal owner. Separate raw DTO and normalized UI model contracts may keep their own conventions; same-name interface declaration blocks in one lexical scope are treated as one merged owner. Exact case-insensitive pairs such as `note_id:noteId` preserve documented wire aliases inside one owner without hiding other variants.
@@ -180,8 +180,8 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 
 ## Size
 
-- `size.file-length` (error; high confidence; threshold 1000): Flags files with more than 1000 substantive lines by default. Blank lines and comment-only lines (`//`, `/* */`, XML comments, and the leading comment markers used by supported YAML/TOML/env/INI/npmrc files) do not count; lines containing code or data still count. `metadata.lines` is the substantive count.
-- `size.function-length` (warning; high confidence; threshold 200): Flags functions longer than the configured threshold.
+- `size.file-length` (error; high confidence; threshold 1000): Flags files with more than 1000 substantive lines by default. Blank lines, comment-only lines (`//`, `/* */`, XML comments, and the leading comment markers used by supported YAML/TOML/env/INI/npmrc files) and lines that hold only a TypeScript decorator do not count; lines containing other code or data still count. `metadata.lines` is the substantive count.
+- `size.function-length` (warning; high confidence; threshold 200): Flags functions longer than the configured threshold, counted in code lines: blank, comment-only and decorator-only lines do not count.
 - `size.parameter-count` (warning; high confidence; threshold 7): Flags functions with too many parameters.
 
 ## Test Quality

@@ -39,6 +39,7 @@ const UNMATCHED_YAML_SCALAR: ParsedYamlScalar = { isMatched: false, value: undef
  * YAML subset rejects the file (see parseYamlConfig), or the top-level value is not a mapping.
  * Messages name the file as `shownPath`, the path the user typed, because they reach the analysis
  * envelope, which may not publish the absolute host path `path` resolves to.
+ * @throws {ConfigLoadError} when the file is missing, fails to parse, has an unknown extension, or is not a mapping, or the original {Error} for any other read failure
  */
 function parseConfigFile(path: string, shownPath: string = path): Record<string, unknown> {
   const source = readConfigSource(path, shownPath);
@@ -56,6 +57,7 @@ function parseConfigFile(path: string, shownPath: string = path): Record<string,
  * check, so a typo here would otherwise dump a raw Node stack. Throws ConfigLoadError on ENOENT
  * with a user-actionable suggestion; rethrows every other filesystem error unchanged so an
  * unexpected IO failure still surfaces its native stack for debugging.
+ * @throws {ConfigLoadError} when the file does not exist (ENOENT), or the original {Error} for any other read failure
  */
 function readConfigSource(path: string, shownPath: string): string {
   try {
@@ -71,6 +73,7 @@ function readConfigSource(path: string, shownPath: string): string {
 // Routes to the YAML subset parser or the native JSON parser. Wraps `JSON.parse`'s SyntaxError so
 // a malformed `.gruff.json` surfaces through the same ConfigLoadError channel as YAML failures
 // (parseYamlConfig already throws ConfigLoadError on its own malformed inputs).
+// @throws {ConfigLoadError} when a .json source is not valid JSON or a .yaml/.yml source fails the YAML subset parser
 function parseConfigSource(source: string, extension: string, shownPath: string): unknown {
   if (extension === ".yaml" || extension === ".yml") {
     return parseYamlConfig(source);
@@ -106,6 +109,7 @@ interface YamlParser {
  * Custom YAML parser that intentionally supports only a documented subset (mappings, arrays,
  * scalars, inline `[]`/`{}`) - keeps gruff free of a yaml dependency. Throws on malformed input
  * because silently misparsing config would produce wrong findings and a stable but broken baseline.
+ * @throws {ConfigLoadError} when the top level is not a mapping, or a line uses tabs, is over-indented, or lacks its `:`
  */
 function parseYamlConfig(source: string): Record<string, unknown> {
   const parser = { lines: yamlLines(source), index: 0 };
@@ -224,6 +228,7 @@ function parseNestedYamlValue(parser: YamlParser, indent: number, fallback: unkn
 /*
  * Throws when a mapping line has no `:` separator - the parser cannot recover, and a silent skip
  * would hide a real config typo from the user.
+ * @throws {ConfigLoadError} when the line has no unquoted `:` followed by a space or the end of the line
  */
 function yamlKeyValuePair(content: string): [string, string] {
   const pair = splitYamlKeyValue(content);
@@ -241,6 +246,7 @@ function isYamlArrayLine(line: YamlLine): boolean {
 /*
  * Throws when a line is indented more than expected at this scope. Without this guard, a stray
  * indent would silently produce a sub-mapping and the user's config would mean something different.
+ * @throws {ConfigLoadError} when `line.indent` is greater than the `indent` expected for this scope
  */
 function assertYamlIndent(line: YamlLine, indent: number): void {
   if (line.indent > indent) {
@@ -252,6 +258,7 @@ function assertYamlIndent(line: YamlLine, indent: number): void {
  * Pre-pass that drops blank/comment lines and rejects tab-indented input. Tabs are forbidden
  * because mixing them with spaces is the canonical YAML footgun, so the parser throws rather than
  * guess at the user's intent.
+ * @throws {ConfigLoadError} when the leading whitespace of any non-blank, non-comment line contains a tab
  */
 function yamlLines(source: string): YamlLine[] {
   const lines: YamlLine[] = [];

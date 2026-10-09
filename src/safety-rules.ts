@@ -9,8 +9,8 @@ import type { Finding } from "./types.ts";
 
 // Four-rule TypeScript safety pass: directive comment, non-null assertion, double cast, exported any.
 // Stable, deterministic ordering keeps the per-line findings in a known sequence.
-export function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: string, lineNumber: number, findings: Finding[]): void {
-  pushTsDirectiveFinding(file, line, lineNumber, findings);
+export function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: string, lineNumber: number, findings: Finding[], sourceLines: readonly string[] = [], trackingTokens: readonly RegExp[] = []): void {
+  pushTsDirectiveFinding(file, line, lineNumber, findings, sourceLines, trackingTokens);
   pushNonNullAssertionFindings(file, codeLine, lineNumber, findings);
   pushDoubleCastFindings(file, line, codeLine, lineNumber, findings);
   pushExportedAnyFinding(file, codeLine, lineNumber, findings);
@@ -51,11 +51,11 @@ export function analyseUselessCatches(file: SourceFile, source: string, findings
  * only `// intentional` is still a swallowed catch but a real `console.error` is not. Reports
  * the stable `waste.swallowed-catch` finding.
  */
-export function analyseSwallowedCatches(file: SourceFile, rawSource: string, codeSource: string, findings: Finding[]): void {
+export function analyseSwallowedCatches(file: SourceFile, rawSource: string, codeSource: string, findings: Finding[], trackingTokens: readonly RegExp[] = []): void {
   for (const match of codeSource.matchAll(/\bcatch\s*(?:\(([^)]*)\))?\s*\{([\s\S]*?)\}/g)) {
     const body = match[2] ?? "";
     const rawBody = rawCatchBody(rawSource, codeSource, match);
-    if (!isSwallowedCatchBody(body) || hasIntentionalCatchRationale(rawBody)) {
+    if (!isSwallowedCatchBody(body) || hasIntentionalCatchRationale(rawBody, trackingTokens)) {
       continue;
     }
     const binding = (match[1] ?? "").trim();
@@ -83,19 +83,17 @@ function rawCatchBody(rawSource: string, codeSource: string, match: RegExpMatchA
   return openBrace === -1 || closeBrace <= openBrace ? "" : rawSource.slice(openBrace + 1, closeBrace);
 }
 
-// Comment-only catches are acceptable when the comment gives a rationale such as "already closed",
-// "cache write failure is non-fatal", or "composition continues"; placeholders still surface.
-// The bare-token alternatives (`ignore`, `ignored`, `cleanup`, `teardown`, `noop`, `no-op`) match
-// the most common idioms for documented teardown swallows. `silent` is deliberately NOT included -
-// real swallowed-error defects in goat-flow's dashboard-projects.ts use `/* silent */` and must
-// continue to fire. Deferred-work markers are also excluded - that flavour of placeholder is not
-// "intentional swallow."
-function hasIntentionalCatchRationale(body: string): boolean {
-  return (
-    /(?:\/\/|\/\*)/.test(body) &&
-    (hasSuppressionRationale(body) ||
-      /\b(?:already (?:closed|dead|gone)|optional|best effort|missing|unreadable|not a directory|doesn't exist|not available|non-fatal|cache write failure|composition continues|try next location|server unavailable|must not affect|explicit launch|malformed messages|template missing|sets [A-Za-z_$][A-Za-z0-9_$]* = false|skip agents? that fail|ignored?|cleanup|teardown|noop|no-op)\b/i.test(body))
-  );
+// A comment-only catch is intentional when its comment says why, judged by shape rather than a codebase-specific phrase
+// list: two or more words, a rationale or tracking reference, or one of the generic intent markers (ignore, no-op, cleanup,
+// teardown, best-effort, non-fatal, optional) with hyphens normalised. `/* silent */` names no intent and still reports, and a
+// deferred-work marker (TODO, FIXME, XXX) is a placeholder however long it is.
+function hasIntentionalCatchRationale(body: string, trackingTokens: readonly RegExp[]): boolean {
+  const commentText = (body.match(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g) ?? []).map((comment) => comment.replace(/^\/\/+|^\/\*+|\*+\/$/g, "")).join(" ");
+  if (commentText.trim() === "" || /\b(?:TODO|FIXME|XXX)\b/.test(commentText)) {
+    return false;
+  }
+  const words = commentText.match(/[A-Za-z][A-Za-z'-]*/g) ?? [];
+  return hasSuppressionRationale(commentText, trackingTokens) || words.length >= 2 || /\b(?:ignored?|no-?op|cleanup|teardown|best[- ]effort|non[- ]fatal|optional)\b/i.test(commentText);
 }
 
 /*
@@ -103,9 +101,10 @@ function hasIntentionalCatchRationale(body: string): boolean {
  * applies the rationale heuristic. Reports the stable `modernisation.ts-comment-without-rationale`
  * finding.
  */
-function pushTsDirectiveFinding(file: SourceFile, line: string, lineNumber: number, findings: Finding[]): void {
-  const directive = tsDirectiveWithoutRationale(line);
-  if (!directive) {
+function pushTsDirectiveFinding(file: SourceFile, line: string, lineNumber: number, findings: Finding[], sourceLines: readonly string[], trackingTokens: readonly RegExp[]): void {
+  const directive = tsDirectiveWithoutRationale(line, trackingTokens);
+  // A rationale may also sit in the `//` comment lines directly above the directive.
+  if (!directive || hasDirectiveRationale(lineCommentsAbove(sourceLines, lineNumber - 1), trackingTokens)) {
     return;
   }
   findings.push(
@@ -117,7 +116,7 @@ function pushTsDirectiveFinding(file: SourceFile, line: string, lineNumber: numb
       severity: "warning",
       pillar: "modernisation",
       confidence: "medium",
-      remediation: "Add a short reason after the directive or remove the suppression.",
+      remediation: "Add a short reason on the directive line or in the `//` comment lines directly above it, or remove the suppression.",
       metadata: { directive: directive.directive },
     }),
   );
@@ -252,13 +251,13 @@ function pushNonErrorThrowFinding(file: SourceFile, codeLine: string, lineNumber
 // Returns the directive name only when the suffix following a TypeScript suppression directive
 // has no meaningful rationale. Heuristic is intentionally lenient - three real words usually means
 // the maintainer wrote a reason.
-function tsDirectiveWithoutRationale(line: string): { directive: string } | undefined {
+function tsDirectiveWithoutRationale(line: string, trackingTokens: readonly RegExp[]): { directive: string } | undefined {
   const match = line.match(/@ts-(ignore|expect-error)\b(.*)$/);
   if (!match?.[1]) {
     return undefined;
   }
   const rationale = match[2] ?? "";
-  if (hasDirectiveRationale(rationale)) {
+  if (hasDirectiveRationale(rationale, trackingTokens)) {
     return undefined;
   }
   return { directive: `@ts-${match[1]}` };
@@ -267,10 +266,23 @@ function tsDirectiveWithoutRationale(line: string): { directive: string } | unde
 // Two-way pass: an explicit suppression rationale token (tracking URL / issue ID / owner / date)
 // or at least three real English-shaped words. The disjunction keeps maintainers from having to
 // remember a specific format.
-function hasDirectiveRationale(directiveSuffix: string): boolean {
+function hasDirectiveRationale(directiveSuffix: string, trackingTokens: readonly RegExp[]): boolean {
   const cleaned = directiveSuffix.replace(/^[-:\s]+/, "").trim();
   const words = cleaned.match(/[A-Za-z]{3,}/g) ?? [];
-  return hasSuppressionRationale(cleaned) || words.length >= 3;
+  return hasSuppressionRationale(cleaned, trackingTokens) || words.length >= 3;
+}
+
+// Joins the `//` comment lines directly above a line, nearest last, so a rationale written above a directive reads with it.
+function lineCommentsAbove(lines: readonly string[], index: number): string {
+  const texts: string[] = [];
+  for (let current = index - 1; current >= 0; current -= 1) {
+    const trimmed = (lines[current] ?? "").trim();
+    if (!trimmed.startsWith("//")) {
+      break;
+    }
+    texts.unshift(trimmed.replace(/^\/\/+\s*/, ""));
+  }
+  return texts.join(" ");
 }
 
 // Two-shot scan: line must have both `export` and `any` before the regex is invoked, because the
