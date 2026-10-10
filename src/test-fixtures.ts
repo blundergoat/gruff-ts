@@ -678,6 +678,10 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
           "docs.missing-invariant-doc": { enabled: true },
           // Off by default: its sample stayed below the waste floor after its repair.
           "waste.swallowed-catch": { enabled: true },
+          // Opt-in test-quality detectors retain positive catalogue coverage.
+          "test-quality.conditional-logic": { enabled: true },
+          "test-quality.only-skip": { enabled: true },
+          "test-quality.sleep-in-test": { enabled: true },
         },
       },
     };

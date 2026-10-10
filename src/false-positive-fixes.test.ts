@@ -694,7 +694,7 @@ test("FP-#29 test-quality.loop-in-test still flags conditional inside literal-ar
     }
   }
 });
-`);
+`, { config: { rules: { "test-quality.conditional-logic": { enabled: true } } } });
   const findings = report.findings.filter((entry) => entry.ruleId === "test-quality.loop-in-test");
   assert.equal(findings.length, 1);
   assert.equal(report.findings.some((entry) => entry.ruleId === "test-quality.conditional-logic"), true);
@@ -903,7 +903,7 @@ test("sleeps without assertion", async () => {
   await new Promise((resolve) => setTimeout(resolve, 1));
 });
 `;
-  const report = analyseFixture(source);
+  const report = analyseFixture(source, { config: { rules: { "test-quality.sleep-in-test": { enabled: true } } } });
   const lines = source.split("\n");
 
   assert.ok(report.findings.length > 0, "the anchor fixture produced no findings, so it proved nothing");

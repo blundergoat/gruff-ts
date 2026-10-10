@@ -13,6 +13,8 @@ safety where review is weakest; test-quality guards against coverage theatre. Se
 [Philosophy](philosophy.md) for the intent behind the catalogue, including why a
 doc comment is expected even on a private one-liner.
 
+`test-quality.conditional-logic`, `test-quality.only-skip` and `test-quality.sleep-in-test` are off by default after their repaired samples stayed below the 0.70 precision floor. Enable one with `rules.<rule-id>.enabled: true`; existing explicit settings remain effective. Conditional-logic and sleep-in-test each exceeded the after-audit disagreement limit twice. Their operator-approved default decisions retain both rounds and make no calibrated improvement claim.
+
 Use the CLI when you need machine-readable metadata:
 
 ```bash
@@ -207,3 +209,9 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 - `test-quality.static-analysis-redundant-test` (advisory; high confidence): Flags tests that primarily assert code shape rather than behavior, with review guidance for importability sentinels.
 - `test-quality.trivial-assertion` (warning; high confidence): Flags tautological assertions.
 - `test-quality.unused-mock` (advisory; medium confidence): Flags mocks created but not used.
+
+Loop assertions can identify the failing case through a message that refers to a loop binding, or an expected operand that is exactly that binding. This includes for-of, for-in and C-style loops.
+
+Conditional-logic findings skip host-capability guards, failure-only guards and assertion-only narrowing branches proved by the preceding assertion. Branches inside nested fakes do not count as test policy. Runtime skips with reasons inside guards stay quiet; unconditional skips and focused registrations still report.
+
+Sleep findings skip explicit fake clocks, failure deadlines and deferred zero-delay validator loaders. Real elapsed-time waits inside callbacks still report.

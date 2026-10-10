@@ -7,6 +7,7 @@ import { hasLeadingCommentBeforeLines } from "./comment-scanner.ts";
 import { baseComplexityMetrics, complexityMetrics as measureComplexity, type ComplexityMetrics } from "./complexity-metrics.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
+import { ruleDescriptors } from "./rules.ts";
 import { escapeRegex, isGenericName, lineOffset, parameterNames, parameterParts } from "./findings-helpers.ts";
 import { bandedFields, GROUP_PARAMETERS, LOWER_BAND_FUNCTION, LOWER_BAND_PARAMETER, SIMPLIFY_PATH, SPLIT_FUNCTION } from "./limit-band.ts";
 import { callableMatchPoints, codeLineFlags, measuredOnlyCallablePoints, type CallableMatchPoint, type ParsedScript } from "./parsed-script.ts";
@@ -25,6 +26,8 @@ export interface FunctionBlock {
   complexityMetrics?: ComplexityMetrics;
   // AST-known body presence; absent only for legacy regex-derived blocks.
   hasBody?: boolean;
+  // Shared callable node for structure checks; legacy text probes leave it absent.
+  callableNode?: import("typescript").Node;
   // AST-known `override` modifier; absent for legacy regex-derived blocks, which keep name findings.
   isOverride?: boolean;
   startLine: number;
@@ -57,6 +60,11 @@ interface FunctionBlockScan {
 }
 
 const FUNCTION_BLOCK_PATTERNS = functionBlockPatterns();
+
+// Test findings carry the catalogue's advice in JSON as well as hook output.
+const TEST_QUALITY_ADVICE = new Map(ruleDescriptors()
+  .filter((descriptor) => descriptor.pillar === "test-quality")
+  .map((descriptor) => [descriptor.ruleId, descriptor.remediation]));
 
 // Track an opened callable body while discovering the span used by scan rules.
 //
@@ -110,12 +118,14 @@ export interface BlockFindingWithMetadataArgs extends BlockFindingArgs {
 // Use the metadata variant when the rule needs measurements or medium confidence.
 export function blockFinding(args: BlockFindingArgs): Finding {
   const endLine = args.block.startLine + args.block.lineCount - 1;
-  return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.block.startLine, endLine, severity: args.severity, pillar: args.pillar, confidence: "high", symbol: args.block.name });
+  const remediation = TEST_QUALITY_ADVICE.get(args.ruleId);
+  return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.block.startLine, endLine, severity: args.severity, pillar: args.pillar, confidence: "high", symbol: args.block.name, ...(remediation === undefined ? {} : { remediation }) });
 }
 
 // Build a medium-confidence warning with measurements at the callable's stable source anchor.
 // Measurements accompany the callable's line and symbol without changing its fingerprint.
 export function blockFindingWithMetadata(args: BlockFindingWithMetadataArgs): Finding {
+  const remediation = args.remediation ?? TEST_QUALITY_ADVICE.get(args.ruleId);
   return makeFinding({
     ruleId: args.ruleId,
     message: args.message,
@@ -126,7 +136,7 @@ export function blockFindingWithMetadata(args: BlockFindingWithMetadataArgs): Fi
     pillar: args.pillar,
     confidence: "medium",
     symbol: args.block.name,
-    ...(args.remediation === undefined ? {} : { remediation: args.remediation }),
+    ...(remediation === undefined ? {} : { remediation }),
     metadata: args.metadata,
   });
 }
@@ -701,6 +711,7 @@ function functionBlockFromPoint(scan: FunctionBlockScan, point: BlockMatchPoint,
     params: point.params,
     ...(point.parameterCount === undefined ? {} : { parameterCount: point.parameterCount }),
     ...(point.hasBody === undefined ? {} : { hasBody: point.hasBody }),
+    ...(point.callableNode === undefined ? {} : { callableNode: point.callableNode }),
     ...(point.isOverride === undefined ? {} : { isOverride: point.isOverride }),
     ...(sharedComplexityMetrics === undefined ? {} : { complexityMetrics: sharedComplexityMetrics }),
     startLine: start + 1,

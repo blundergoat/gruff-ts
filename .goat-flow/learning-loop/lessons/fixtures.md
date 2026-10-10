@@ -69,12 +69,18 @@ itself dynamic.
 ## Lesson: rule-catalogue coverage fixtures must match scanner limits
 
 **Created:** 2026-05-14
+**Decision changed:** Enable opt-in detectors in coupled positive fixtures and synchronise explicit profile-default expectations when catalogue defaults change.
+**Trigger phase:** ACT
+**Caught at:** VERIFY
+**Latest occurrence:** 2026-10-10
 
 **What happened:** The descriptor self-test first failed for `design.god-function` because the catalogue fixture was not long and complex enough, then failed for `test-quality.magic-number-assertion` because the fixture used `expect(renderCatalogue().length).toBe(42)`, which exceeded the regex assertion matcher’s supported shape.
 
 **Evidence:** `src/cli.test.ts` + `(search: "rule descriptors cover emitted rules and fixture-backed coverage")`; failing runs of `node --import tsx --test src/cli.test.ts` reported missing positive fixture coverage for those rule ids.
 
 **Prevention:** For catalogue coverage, make each fixture intentionally boring and shaped exactly like the scanner pattern: simple variables for assertion arguments, deliberately long blocks for composite size/complexity rules, and no accidental symbol references that mask unused-import coverage.
+
+**Recurrence 2026-10-10:** M15 left the loop-in-test detector on but made its coupled conditional-logic control opt-in. The literal-loop regression lost its required conditional finding, and the profile summary still expected the old off-by-default list. Explicit fixture configuration and the three new catalogue defaults restore those contracts. Evidence: `src/false-positive-fixes.test.ts` (search: `FP-#29`) and `src/profiles.test.ts` (search: `profile summaries report all three built-ins`).
 
 ## Lesson: a test-local fixture writer can hide a break in the real on-disk format
 

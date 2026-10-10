@@ -2,6 +2,13 @@
 
 ## v0.6.0 - Unreleased
 
+- **BREAKING: three test-quality checks are opt-in** - `test-quality.conditional-logic`, `test-quality.only-skip` and `test-quality.sleep-in-test` stayed below the 0.70 precision floor after repair. Enable one with `rules.<id>.enabled: true`; existing explicit settings remain effective. Conditional-logic and sleep-in-test each failed both after audits, so their default decisions carry those caveats and make no calibrated improvement claim.
+
+- **Test-quality checks accept case context** - Loop messages and expected operands can identify a row; guarded runtime skips stay quiet.
+- Host and proved narrowing guards no longer report conditional logic; branch-specific assertions still do.
+- Sleep findings skip fake clocks, failure deadlines and deferred zero-delay validator loaders; real elapsed-time waits still report.
+- Test-quality findings carry actionable advice in JSON without asking for more tests or naming literal expected values.
+
 - **BREAKING: `complexity.cyclomatic` is off by default** - After the repair below, it was worth acting on 26 times in 48 judged
   findings at one and a half times its limit or more, under the 0.60 floor. Enable it with `rules.complexity.cyclomatic.enabled:
   true`; a config that already sets it keeps it on. The `gruff.strict` profile no longer tightens it, so it stays off there too.

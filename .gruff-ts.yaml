@@ -372,7 +372,7 @@ rules:
     severity: warning
   # test-quality/advisory: Flags tests with conditional logic.
   test-quality.conditional-logic:
-    enabled: true
+    enabled: false
   # test-quality/advisory: Flags tests that only assert exception type.
   test-quality.exception-type-only:
     enabled: true
@@ -393,10 +393,10 @@ rules:
     enabled: true
   # test-quality/advisory: Flags focused or skipped test markers.
   test-quality.only-skip:
-    enabled: true
+    enabled: false
   # test-quality/advisory: Flags sleeps in tests.
   test-quality.sleep-in-test:
-    enabled: true
+    enabled: false
   # test-quality/advisory: Flags tests that rely only on snapshots.
   test-quality.snapshot-only-test:
     enabled: true

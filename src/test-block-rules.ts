@@ -7,6 +7,7 @@ import { type SourceFile } from "./discovery.ts";
 import { escapeRegex } from "./findings-helpers.ts";
 import { pushStaticAnalysisRedundantTestFindings, type StaticAnalysisSourceContext } from "./static-analysis-redundant-rules.ts";
 import { countMatches, matchingCloseParen } from "./text-scans.ts";
+import { testStructureSyntax } from "./test-structure-syntax.ts";
 import type { Finding, Severity } from "./types.ts";
 
 // Provisional rule output gathered during a test-block walk. Built before the surrounding context
@@ -113,14 +114,15 @@ function analyseGlobalStateMutation(file: SourceFile, block: FunctionBlock, body
   }
 }
 
-// Pattern-driven checks for sleep/loop/conditional logic plus the `.only`/`.skip` commit gate.
+// Structural checks for fixed waits, loops, conditional assertions and committed focus/skip.
 // Reports each detected structural issue as a stable test-quality finding.
 function analyseTestStructureChecks(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
+  const syntax = testStructureSyntax(block.callableNode);
   const checks: Array<[string, boolean, string]> = [
-    ["test-quality.sleep-in-test", /\b(setTimeout|sleep|waitForTimeout)\s*\(/.test(body), "Test sleeps instead of synchronising on behaviour."],
+    ["test-quality.sleep-in-test", syntax?.hasFixedWait ?? /\b(setTimeout|sleep|waitForTimeout)\s*\(/.test(body), "Test sleeps instead of synchronising on behaviour."],
     ["test-quality.loop-in-test", controlFlowContainsNonFixtureLoop(body), "Test contains loop logic that hides which iteration failed."],
-    ["test-quality.conditional-logic", controlFlowContainsAssertion(body, /\b(?:if|switch)\b/g), "Test contains conditional logic around assertions."],
-    ["test-quality.only-skip", /\.(only|skip)\s*\(/.test(body), "Focused or skipped test is committed."],
+    ["test-quality.conditional-logic", syntax?.hasConditionalAssertion ?? controlFlowContainsAssertion(body, /\b(?:if|switch)\b/g), "Test contains conditional logic around assertions."],
+    ["test-quality.only-skip", syntax?.hasCommittedSkip ?? /\.(only|skip)\s*\(/.test(body), "Focused or skipped test is committed."],
   ];
   for (const [ruleId, active, message] of checks) {
     if (!active) {
@@ -159,7 +161,7 @@ function controlFlowContainsNonFixtureLoop(source: string): boolean {
 }
 
 /*
- * A data-driven loop whose assertions each carry a per-case template message referencing a
+ * A data-driven loop whose assertions each carry a per-case message or expected value naming a
  * loop-bound name keeps a failing row identifiable - the failure mode this rule exists to catch -
  * so it opts out even when the case table is built dynamically. Each assertion is measured as a
  * whole call chain, so a message the formatter wrapped onto its own line still counts, and a
@@ -168,6 +170,9 @@ function controlFlowContainsNonFixtureLoop(source: string): boolean {
 function isLabeledCaseLoop(segment: string): boolean {
   const parts = loopSegmentParts(segment);
   if (!parts) {
+    return false;
+  }
+  if (hasUnsafeFixtureLoopBranch("", parts.body)) {
     return false;
   }
   const boundNames = loopBoundNames(parts.header);
@@ -229,23 +234,48 @@ function loopDerivedLocalNames(body: string, boundNames: string[]): string[] {
   return derived.filter(Boolean);
 }
 
-// Identifier names bound by a for..of header - `for (const { name, input } of cases)` binds both.
+// Identifier names bound by for-of, for-in or C-style headers.
 // While-loops bind nothing here, so they never take the labeled opt-out.
 function loopBoundNames(header: string): string[] {
-  const binding = header.match(/\b(?:const|let|var)\s+([^)]*?)\s+of\b/)?.[1] ?? "";
+  const binding = header.match(/\b(?:const|let|var)\s+([^)]*?)\s+(?:of|in)\b/)?.[1]
+    ?? header.match(/\b(?:let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/)?.[1]
+    ?? "";
   return [...binding.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)].map((match) => match[0] ?? "").filter(Boolean);
 }
 
-// The per-case label: a template interpolation in the assertion statement naming a bound
-// identifier. Masked source keeps `${...}` expressions intact, so this works on codeBody.
+// Messages can name a case through any expression; an exact bound expected value also identifies it.
+// The actual operand alone cannot clear the warning because it may omit the failing case from output.
 function hasLoopCaseLabel(statement: string, boundNames: string[]): boolean {
-  for (const interpolation of statement.matchAll(/\$\{([^}]*)\}/g)) {
-    const expressionText = interpolation[1] ?? "";
-    if (boundNames.some((name) => new RegExp(`\\b${escapeRegex(name)}\\b`).test(expressionText))) {
-      return true;
+  const argumentsList = assertionArguments(statement);
+  const isBinaryAssert = /^assert\.(?:(?:not)?(?:strictEqual|deepStrictEqual|equal|deepEqual)|throws|rejects|match|doesNotMatch)\b/i.test(statement);
+  const isExpect = /^expect\s*\(/.test(statement);
+  const message = argumentsList[isBinaryAssert ? 2 : 1] ?? "";
+  const matcher = isExpect ? statement.slice((matchingCloseParen(statement, statement.indexOf("(")) ?? statement.length) + 1) : "";
+  const expected = isBinaryAssert ? argumentsList[1] ?? "" : isExpect ? assertionArguments(matcher)[0] ?? "" : "";
+  return boundNames.some((name) => new RegExp(`\\b${escapeRegex(name)}\\b`).test(message) || expected.trim() === name);
+}
+
+// Masked literals preserve delimiter positions, so only top-level commas separate arguments.
+function assertionArguments(statement: string): string[] {
+  const open = statement.indexOf("(");
+  const close = matchingCloseParen(statement, open);
+  if (open < 0 || close === undefined) {
+    return [];
+  }
+  const argumentsList: string[] = [];
+  let depth = 0;
+  let start = open + 1;
+  for (let index = start; index < close; index += 1) {
+    const character = statement[index] ?? "";
+    if ("([{".includes(character)) depth += 1;
+    else if (")]}".includes(character)) depth -= 1;
+    else if (character === "," && depth === 0) {
+      argumentsList.push(statement.slice(start, index));
+      start = index + 1;
     }
   }
-  return false;
+  argumentsList.push(statement.slice(start, close));
+  return argumentsList;
 }
 
 // A "fixture loop" is the table-test pattern: iterable is an inline fixture OR a local const-bound
