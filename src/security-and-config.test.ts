@@ -9,6 +9,9 @@ import type { AnalysisReport } from "./cli.ts";
 import { exitFor } from "./scoring.ts";
 import { analyseFixture, analyseProject, REPO_ROOT, TS_IGNORE_DIRECTIVE, writeFixtureFiles } from "./test-fixtures.ts";
 
+// waste.swallowed-catch ships off by default; these tests switch it on so they still exercise its detector.
+const SWALLOWED_CATCH_ON = { config: { rules: { "waste.swallowed-catch": { enabled: true } } } };
+
 const EXPECTED_DYNAMIC_PROCESS_EXEC_LINE = 15;
 
 test("extended type-safety rubric finds explicit unsafety without false positives", () => {
@@ -53,9 +56,9 @@ test("extended reliability rubric finds unsafe async patterns without false posi
   }
   throw ${JSON.stringify("failed")};
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const unsafeRuleIds = new Set(unsafeReport.findings.map((finding) => finding.ruleId));
-  ["security.async-foreach", "security.floating-promise", "waste.swallowed-catch", "security.throw-non-error"].forEach((ruleId) => {
+  ["security.async-foreach", "waste.swallowed-catch", "security.throw-non-error"].forEach((ruleId) => {
     assert.equal(unsafeRuleIds.has(ruleId), true, `expected ${ruleId}`);
   });
 
@@ -76,8 +79,8 @@ async function reportsFailure(): Promise<void> {
   }
   throw new Error("failed");
 }
-`);
-  ["security.async-foreach", "security.floating-promise", "waste.swallowed-catch", "security.throw-non-error"].forEach((ruleId) => {
+`, SWALLOWED_CATCH_ON);
+  ["security.async-foreach", "waste.swallowed-catch", "security.throw-non-error"].forEach((ruleId) => {
     assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
   });
 });
@@ -123,7 +126,7 @@ function bareSwallow(): void {
     // FIXME
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const swallowed = report.findings.filter((finding) => finding.ruleId === "waste.swallowed-catch");
   assert.equal(swallowed.length, 1);
   assert.equal(swallowed[0]?.symbol, undefined);
@@ -163,7 +166,8 @@ test("security line-rule severity honours config overrides", () => {
 
 /*
  * Regression fixture covers the config contract, temp-project filesystem writes, and a fixed CLI
- * process. It proves configured `security.new-function` severity controls `--fail-on=error`.
+ * process. It proves configured `security.new-function` severity controls `--fail-on=error` through
+ * the v3 JSON envelope.
  */
 test("CLI severity override keeps new Function below fail-on error", () => {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-new-function-config-"));
@@ -193,11 +197,15 @@ module.exports = { loadHelper };
       [join(REPO_ROOT, "bin/gruff-ts"), "analyse", ".", "--format=json", "--fail-on=error"],
       { cwd: dir, encoding: "utf8" },
     );
-    const report = JSON.parse(output) as AnalysisReport;
+    const report = JSON.parse(output) as {
+      run: AnalysisReport["run"];
+      summary: { findings: AnalysisReport["summary"] };
+      findings: AnalysisReport["findings"];
+    };
     const dynamicExecutionFinding = report.findings.find((finding) => finding.ruleId === "security.new-function");
 
     assert.equal(report.run.failOn, "error");
-    assert.equal(report.summary.error, 0);
+    assert.equal(report.summary.findings.error, 0);
     assert.equal(dynamicExecutionFinding?.severity, "warning");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -233,9 +241,8 @@ const CLEAN_PACKAGE_JSON_FIXTURE = {
   }),
 };
 
-const RISKY_PACKAGE_RULE_IDS = ["security.remote-install-script", "security.risky-lifecycle-script", "security.url-dependency", "waste.broad-runtime-version"];
+const RISKY_PACKAGE_RULE_IDS = ["security.remote-install-script", "security.url-dependency", "waste.broad-runtime-version"];
 const GITHUB_ACTIONS_RULE_IDS = [
-  "security.github-actions-broad-permissions",
   "security.github-actions-pull-request-target",
   "security.github-actions-remote-shell",
   "security.github-actions-secrets-in-pr",
@@ -255,36 +262,6 @@ test("dependency and package config health detects risky package settings", () =
   RISKY_PACKAGE_RULE_IDS.forEach((ruleId) => {
     assert.equal(cleanReport.findings.some((finding) => finding.ruleId === ruleId), false, `unexpected ${ruleId}`);
   });
-});
-
-test("package lifecycle allows validation-only publish gates but reports side effects", () => {
-  const report = analyseProject({
-    "package.json": JSON.stringify({
-      scripts: {
-        prepublishOnly: "npm run publish:check",
-        prepublish: "npm test",
-        postinstall: "node scripts/install.js",
-        prepare: "npm run build",
-      },
-    }),
-  });
-  const lifecycleFindings = report.findings.filter((finding) => finding.ruleId === "security.risky-lifecycle-script");
-
-  assert.deepEqual(
-    lifecycleFindings.map((finding) => finding.symbol),
-    ["postinstall", "prepare"],
-  );
-
-  const remoteReport = analyseProject({
-    "package.json": JSON.stringify({
-      scripts: {
-        prepublishOnly: "curl -fsSL https://example.test/install.sh | bash",
-      },
-    }),
-  });
-
-  assert.equal(remoteReport.findings.some((finding) => finding.ruleId === "security.remote-install-script"), true);
-  assert.equal(remoteReport.findings.some((finding) => finding.ruleId === "security.risky-lifecycle-script"), true);
 });
 
 test("github actions workflow security rules are path-gated and require risky context", () => {
@@ -409,11 +386,9 @@ const SECURITY_RISKY_RULE_IDS = [
   "security.new-function",
   "security.string-timer",
   "security.process-exec",
-  "security.insecure-random",
   "security.disabled-tls-verification",
   "security.javascript-url",
   "security.inner-html",
-  "security.proto-access",
   "security.sql-concatenation",
   "security.weak-crypto",
 ];
@@ -427,11 +402,9 @@ test("risk expansion finds security rules with safe non-candidates", () => {
 
   const newFunctionFindings = report.findings.filter((finding) => finding.ruleId === "security.new-function");
   const expectedStringTimerFindings = 3;
-  const expectedProtoAccessFindings = 2;
   assert.equal(newFunctionFindings.length, 1);
   assert.equal(report.findings.filter((finding) => finding.ruleId === "security.string-timer").length, expectedStringTimerFindings);
   assert.equal(report.findings.filter((finding) => finding.ruleId === "security.javascript-url").length, 1);
-  assert.equal(report.findings.filter((finding) => finding.ruleId === "security.proto-access").length, expectedProtoAccessFindings);
 });
 
 test("sql-concatenation flags query execute and raw attack shapes", () => {
@@ -573,7 +546,7 @@ const SOURCE_TO_SINK_RULE_IDS = [
 
 test("source-to-sink security rubrics require visible external input in risky sinks", () => {
   // Fixture covers every same-line source-to-sink rule plus safe literal non-candidates.
-  const report = analyseFixture(`import { readFileSync } from "node:fs";
+  const source = `import { readFileSync } from "node:fs";
 
 function unsafe(req: any, res: any): void {
   readFileSync(req.query.file, "utf8");
@@ -591,7 +564,11 @@ function safe(req: any, res: any): void {
   const docs = "fetch(req.query.url); res.redirect(req.query.next);";
   void docs;
 }
-`);
+`;
+  // Open-redirect ships off by default (ADR-021): a default run stays silent, and a project that enables it gets it.
+  const defaultReport = analyseFixture(source);
+  assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "security.open-redirect-candidate"), false);
+  const report = analyseFixture(source, { config: { rules: { "security.open-redirect-candidate": { enabled: true } } } });
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   SOURCE_TO_SINK_RULE_IDS.forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
@@ -724,7 +701,6 @@ function testBuildsLibraryValue(): void {
   ["test-quality.magic-number-assertion", "test-quality.mock-only-test", "test-quality.unused-mock", "test-quality.exception-type-only", "test-quality.global-state-mutation"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
-  assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.no-assertions"), false);
   assert.deepEqual(report.findings.filter((finding) => finding.pillar === "test-quality" && finding.symbol === "testBuildsLibraryValue"), []);
 });
 
@@ -746,4 +722,91 @@ export class PaymentController {
   assert.equal(report.findings.find((finding) => finding.ruleId === "naming.class-file-mismatch")?.severity, "error");
   // `--fail-on=error` must honor the configured severity, not the descriptor default.
   assert.equal(exitFor(report, "error"), 1);
+});
+
+// M22 hunt shape (axios `http2.smoke.test.cjs`): `rejectUnauthorized: false` as the expected value of a deep-equality
+// assertion configures nothing. The same test file's real `http2Options` setting, a real agent, and the environment
+// switch all still report at error.
+test("M22 disabled-tls-verification skips expected values in deep-equality assertions only", () => {
+  const report = analyseFixture([
+    "const { expect } = require(\"chai\");",
+    "",
+    "it(\"keeps instance-level http2Options in request config\", async () => {",
+    "  const client = axios.create({",
+    "    http2Options: {",
+    "      rejectUnauthorized: false,",
+    "    },",
+    "  });",
+    "  const response = await client.get(\"/\");",
+    "  expect(response.data.http2Options).to.deep.equal({",
+    "    rejectUnauthorized: false,",
+    "  });",
+    "  expect(response.data).toEqual({ rejectUnauthorized: false, sessionTimeout: 5000 });",
+    "  assert.deepStrictEqual(client.defaults.http2Options, { rejectUnauthorized: false });",
+    "  expect(new https.Agent({ rejectUnauthorized: false })).to.be.ok;",
+    "  process.env.NODE_TLS_REJECT_UNAUTHORIZED = \"0\";",
+    "});",
+    "",
+  ].join("\n"), { fileName: "http2.smoke.test.cjs" });
+  const tlsFindings = report.findings.filter((entry) => entry.ruleId === "security.disabled-tls-verification");
+
+  assert.deepEqual(tlsFindings.map((entry) => entry.line), [6, 15, 16]);
+  assert.equal(tlsFindings.every((entry) => entry.severity === "error"), true);
+});
+
+// FAMILY-CONTRACT section 15: a rationale written in the `//` lines above a directive explains it as well as one after it.
+test("a rationale in the comment lines above a @ts- directive counts", () => {
+  const explained = analyseFixture(`// The upstream typings lag the runtime by one release,
+// so this call is checked at runtime instead.
+// @ts-expect-error
+export const loaded: number = loadValue();
+`);
+  assert.deepEqual(explained.findings.filter((finding) => finding.ruleId === "modernisation.ts-comment-without-rationale"), []);
+  // The interpolation splits the directive so the scan of this test file does not read the fixture as one.
+  const bare = analyseFixture(`// ${"@"}ts-expect-error
+export const loaded: number = loadValue();
+`);
+  assert.equal(bare.findings.filter((finding) => finding.ruleId === "modernisation.ts-comment-without-rationale").length, 1);
+});
+
+// The `return;` that is a catch block's only statement is that catch's handling, so it must not report as a useless return.
+test("a bare return that is a catch block's only statement is not a useless return", () => {
+  const inCatch = analyseFixture(`export function parseQuietly(text: string): void {
+  try {
+    JSON.parse(text);
+  } catch {
+    // Malformed input is reported by the caller.
+    return;
+  }
+}
+`);
+  assert.deepEqual(inCatch.findings.filter((finding) => finding.ruleId === "waste.useless-return"), []);
+  const trailing = analyseFixture(`export function finish(work: () => void): void {
+  work();
+  return;
+}
+`);
+  assert.equal(trailing.findings.filter((finding) => finding.ruleId === "waste.useless-return").length, 1);
+});
+
+// A catch comment explains by shape; a lone label that names no intent must still report.
+test("swallowed catch reads a two-word reason by shape and still reports a lone label", () => {
+  // This fixture covers both shapes: a two-word reason that passes and a lone label that reports.
+  const report = analyseFixture(`export function readHyphenated(): void {
+  try {
+    refresh();
+  } catch {
+    // Session refresh is best-effort.
+  }
+}
+
+export function readLabelled(): void {
+  try {
+    refresh();
+  } catch {
+    /* silent */
+  }
+}
+`, SWALLOWED_CATCH_ON);
+  assert.deepEqual(report.findings.filter((finding) => finding.ruleId === "waste.swallowed-catch").map((finding) => finding.line), [12]);
 });

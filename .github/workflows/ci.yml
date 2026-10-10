@@ -40,6 +40,10 @@ jobs:
       - name: Type check and unit tests
         run: npm run check
 
+      - name: Version consistency
+        # Fails when package.json, package-lock.json, src/constants.ts and CHANGELOG.md disagree on the version.
+        run: bash scripts/bump-version.sh --check
+
       - name: gruff-ts analyse
         run: ./bin/gruff-ts analyse . --fail-on=advisory
 

@@ -119,7 +119,7 @@ function isBracelessConditionalOpener(trimmed: string): boolean {
 // `case X:` / `default:` open a new control path, so the unreachable walker must reset its
 // terminator flag here - otherwise the first statement in a fallthrough case looks dead.
 function isBranchLabel(trimmedLine: string): boolean {
-  return /^(?:case\b.*:|default\s*:)$/.test(trimmedLine);
+  return /^(?:case\b.*|default\s*):\s*\{?$/.test(trimmedLine);
 }
 
 // Three conditions must hold to flag a line: the prior statement terminated, this line has real

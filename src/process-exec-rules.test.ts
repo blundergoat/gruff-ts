@@ -141,3 +141,44 @@ export function runStatus(): void {
   assert.equal(fixed?.metadata.argumentSource, "local-const");
   assert.equal(fixed?.severity, "advisory");
 });
+
+// Fixture purpose: Angular case 411 declares fork(...) in an interface. A signature, method or function
+// that shares a child_process name is a declaration, not a call; the real calls beside them, including
+// one on the same line as a same-named method, still report.
+// Stable contract: only a process-call match at a declaration or signature name is exempt.
+test("process exec skips declarations and signatures that share a process function name", () => {
+  // This fixture covers case 411's interface signature beside same-named declarations and real calls.
+  const report = analyseProject({
+    "src/zone.ts": `import { fork } from "node:child_process";
+
+export interface Zone {
+  fork(zoneSpec: object): Zone;
+}
+
+export class Pool {
+  fork(workerPath: string): void { fork(workerPath); }
+}
+
+export function spawn(command: string): void {
+  fork(command);
+}
+`,
+  });
+  const processExecLines = report.findings.filter((finding) => finding.ruleId === "security.process-exec").map((finding) => finding.line);
+  assert.deepEqual(processExecLines, [8, 12]);
+});
+
+// Fixture purpose: an error-recovered syntax tree cannot prove that a name is a declaration, so a file
+// with a parse error keeps the text match and its security finding.
+// Stable contract: the declaration exemption needs a parse without errors.
+test("process exec keeps the text match when the file does not parse", () => {
+  const report = analyseProject({
+    "src/zone.ts": `export interface Zone {
+  fork(zoneSpec: object): Zone;
+}
+const broken = ;
+`,
+  });
+  const processExecLines = report.findings.filter((finding) => finding.ruleId === "security.process-exec").map((finding) => finding.line);
+  assert.deepEqual(processExecLines, [2]);
+});

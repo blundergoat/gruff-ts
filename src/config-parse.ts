@@ -9,7 +9,7 @@ import { ConfigLoadError } from "./config-load-error.ts";
 
 // Two common suggestion strings reused across the validators. Hoisted out so a future doc-link
 // or wording tweak lands in one place instead of N throw sites.
-const SUGGEST_INIT_FORCE = "Run `gruff-ts init --force` to regenerate the config from current defaults (preserves your `paths.ignore` and `minimumSeverity:` entries).";
+const SUGGEST_INIT_FORCE = "Run `gruff-ts init --force` to regenerate the config from current defaults (preserves your `paths.ignore` and `failOn:` entries).";
 const SUGGEST_EDIT_CONFIG = "Edit `.gruff-ts.yaml` to use a valid value, or run `gruff-ts init --force` to regenerate from defaults.";
 
 const YAML_KEYWORD_SCALARS = new Map<string, boolean | null>([
@@ -37,14 +37,17 @@ const UNMATCHED_YAML_SCALAR: ParsedYamlScalar = { isMatched: false, value: undef
  *
  * Throws ConfigLoadError when: the file is missing (ENOENT), the contents are not valid JSON, the
  * YAML subset rejects the file (see parseYamlConfig), or the top-level value is not a mapping.
+ * Messages name the file as `shownPath`, the path the user typed, because they reach the analysis
+ * envelope, which may not publish the absolute host path `path` resolves to.
+ * @throws {ConfigLoadError} when the file is missing, fails to parse, has an unknown extension, or is not a mapping, or the original {Error} for any other read failure
  */
-function parseConfigFile(path: string): Record<string, unknown> {
-  const source = readConfigSource(path);
+function parseConfigFile(path: string, shownPath: string = path): Record<string, unknown> {
+  const source = readConfigSource(path, shownPath);
   const extension = extname(path).toLowerCase();
-  const parsed = parseConfigSource(source, extension, path);
+  const parsed = parseConfigSource(source, extension, shownPath);
   const config = objectValue(parsed);
   if (!config) {
-    throw new ConfigLoadError(`Config file must contain an object with .yaml, .yml, or .json extension: ${path}`, SUGGEST_INIT_FORCE);
+    throw new ConfigLoadError(`Config file must contain an object with .yaml, .yml, or .json extension: ${shownPath}`, SUGGEST_INIT_FORCE);
   }
   return config;
 }
@@ -54,13 +57,14 @@ function parseConfigFile(path: string): Record<string, unknown> {
  * check, so a typo here would otherwise dump a raw Node stack. Throws ConfigLoadError on ENOENT
  * with a user-actionable suggestion; rethrows every other filesystem error unchanged so an
  * unexpected IO failure still surfaces its native stack for debugging.
+ * @throws {ConfigLoadError} when the file does not exist (ENOENT), or the original {Error} for any other read failure
  */
-function readConfigSource(path: string): string {
+function readConfigSource(path: string, shownPath: string): string {
   try {
     return readFileSync(path, "utf8").replace(/^\uFEFF/, "");
   } catch (error) {
     if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
-      throw new ConfigLoadError(`Config file not found: ${path}.`, "Pass --config with an existing path, or omit the flag to use the default lookup.");
+      throw new ConfigLoadError(`Config file not found: ${shownPath}.`, "Pass --config with an existing path, or omit the flag to use the default lookup.");
     }
     throw error;
   }
@@ -69,7 +73,8 @@ function readConfigSource(path: string): string {
 // Routes to the YAML subset parser or the native JSON parser. Wraps `JSON.parse`'s SyntaxError so
 // a malformed `.gruff.json` surfaces through the same ConfigLoadError channel as YAML failures
 // (parseYamlConfig already throws ConfigLoadError on its own malformed inputs).
-function parseConfigSource(source: string, extension: string, path: string): unknown {
+// @throws {ConfigLoadError} when a .json source is not valid JSON or a .yaml/.yml source fails the YAML subset parser
+function parseConfigSource(source: string, extension: string, shownPath: string): unknown {
   if (extension === ".yaml" || extension === ".yml") {
     return parseYamlConfig(source);
   }
@@ -80,7 +85,7 @@ function parseConfigSource(source: string, extension: string, path: string): unk
     return JSON.parse(source) as unknown;
   } catch (error) {
     if (error instanceof SyntaxError) {
-      throw new ConfigLoadError(`Config file is not valid JSON: ${error.message} (${path}).`, SUGGEST_EDIT_CONFIG);
+      throw new ConfigLoadError(`Config file is not valid JSON: ${error.message} (${shownPath}).`, SUGGEST_EDIT_CONFIG);
     }
     throw error;
   }
@@ -104,6 +109,7 @@ interface YamlParser {
  * Custom YAML parser that intentionally supports only a documented subset (mappings, arrays,
  * scalars, inline `[]`/`{}`) - keeps gruff free of a yaml dependency. Throws on malformed input
  * because silently misparsing config would produce wrong findings and a stable but broken baseline.
+ * @throws {ConfigLoadError} when the top level is not a mapping, or a line uses tabs, is over-indented, or lacks its `:`
  */
 function parseYamlConfig(source: string): Record<string, unknown> {
   const parser = { lines: yamlLines(source), index: 0 };
@@ -177,14 +183,39 @@ function parseYamlArrayItem(parser: YamlParser, indent: number, line: YamlLine):
   return pair ? parseYamlArrayMappingItem(parser, indent, pair) : parseYamlScalar(itemText);
 }
 
-// `- key: value` form: the first key is on the dash line, subsequent keys live as a nested object.
-// Mirrors the inline-vs-nested split of `addYamlObjectEntry`.
+// `- key: value` form: the first key is on the dash line, the item's remaining keys follow it at a
+// deeper indent. Mirrors the inline-vs-nested split of `addYamlObjectEntry`.
 function parseYamlArrayMappingItem(parser: YamlParser, indent: number, pair: [string, string]): Record<string, unknown> {
   const [rawKey, rawValue] = pair;
   const scalarText = rawValue.trim();
-  return {
+  const mappingItem: Record<string, unknown> = {
     [unquoteYaml(rawKey.trim())]: scalarText.length > 0 ? parseYamlScalar(scalarText) : parseNestedYamlValue(parser, indent, {}),
   };
+  addYamlArrayItemSiblingKeys(parser, indent, mappingItem);
+  return mappingItem;
+}
+
+/*
+ * Consumes the sibling keys of a `- key: value` item, which YAML writes at a deeper indent than the
+ * dash line. Without this pass, `sensitiveExclusions:` entries (rule/path/symbol/reason on separate
+ * lines) reached `parseYamlObject`, which rejected the continuation lines as unexpected indentation
+ * - a multi-key sequence item was unrepresentable in the supported subset. The first continuation
+ * line fixes the item's key column so a deeper line still fails rather than silently nesting.
+ */
+function addYamlArrayItemSiblingKeys(parser: YamlParser, indent: number, mappingItem: Record<string, unknown>): void {
+  const keyIndent = parser.lines[parser.index]?.indent;
+  // Nothing deeper than the dash line means the item ended with its first key.
+  if (keyIndent === undefined || keyIndent <= indent) {
+    return;
+  }
+  while (parser.index < parser.lines.length) {
+    const line = parser.lines[parser.index];
+    // A dedent, a further indent, or a new `- ` opener all end this item's key list.
+    if (!line || line.indent !== keyIndent || isYamlArrayLine(line)) {
+      break;
+    }
+    addYamlObjectEntry(parser, keyIndent, line, mappingItem);
+  }
 }
 
 // Returns the nested block if the next line indents further, otherwise the caller's `fallback`.
@@ -197,6 +228,7 @@ function parseNestedYamlValue(parser: YamlParser, indent: number, fallback: unkn
 /*
  * Throws when a mapping line has no `:` separator - the parser cannot recover, and a silent skip
  * would hide a real config typo from the user.
+ * @throws {ConfigLoadError} when the line has no unquoted `:` followed by a space or the end of the line
  */
 function yamlKeyValuePair(content: string): [string, string] {
   const pair = splitYamlKeyValue(content);
@@ -214,6 +246,7 @@ function isYamlArrayLine(line: YamlLine): boolean {
 /*
  * Throws when a line is indented more than expected at this scope. Without this guard, a stray
  * indent would silently produce a sub-mapping and the user's config would mean something different.
+ * @throws {ConfigLoadError} when `line.indent` is greater than the `indent` expected for this scope
  */
 function assertYamlIndent(line: YamlLine, indent: number): void {
   if (line.indent > indent) {
@@ -225,6 +258,7 @@ function assertYamlIndent(line: YamlLine, indent: number): void {
  * Pre-pass that drops blank/comment lines and rejects tab-indented input. Tabs are forbidden
  * because mixing them with spaces is the canonical YAML footgun, so the parser throws rather than
  * guess at the user's intent.
+ * @throws {ConfigLoadError} when the leading whitespace of any non-blank, non-comment line contains a tab
  */
 function yamlLines(source: string): YamlLine[] {
   const lines: YamlLine[] = [];

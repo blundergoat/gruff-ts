@@ -1,12 +1,16 @@
-// Lock-in tests for the 11 false-positive fixes triaged after the M38 goat-flow report.
-// Each test pairs a fixture that USED to trigger a false positive with a fixture that should
-// still legitimately fire - so future refactors cannot silently un-fix any of them.
+// Keeps source-backed false-positive repairs visible to developers running Gruff on their tests.
+
+// Each case pairs a benign source shape with nearby code that must still report.
+// The fixture runs through the public analysis path so masking and block discovery are covered.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderReport } from "./cli.ts";
 import { renderSummary } from "./report-renderers.ts";
-import { analyseFixture, analyseProject, HIGH_ENTROPY_FIXTURE_VALUE } from "./test-fixtures.ts";
+import { analyseFixture, analyseProject } from "./test-fixtures.ts";
 import { countMatches } from "./text-scans.ts";
+
+// waste.swallowed-catch ships off by default; these tests switch it on so they still exercise its detector.
+const SWALLOWED_CATCH_ON = { config: { rules: { "waste.swallowed-catch": { enabled: true } } } };
 
 test("FP-#10 security.inner-html ignores empty-string DOM clearing", () => {
   // Fixture clears via "" and '', then assigns user input on line 4 - only the line-4 assignment
@@ -43,33 +47,6 @@ function check(rule: { pattern: RegExp }, line: string, cmd: string): void {
   assert.deepEqual(lineNumbers, expectedFiringLines);
 });
 
-test("FP-#8 test-quality.no-assertions recognises custom helpers", () => {
-  // Purpose: prove the no-assertions detector accepts assertFoo, fooCheck, `.rejects.` matchers,
-  // and still flags the one test in the fixture that genuinely lacks any assertion.
-  const report = analyseFixture(`function assertLocalPathError(err: unknown): void { void err; }
-function bashCheck(out: string): void { void out; }
-
-test("uses custom assertion helper", () => {
-  assertLocalPathError(getSomething());
-});
-
-test("uses Check-suffixed helper", () => {
-  bashCheck(runScript());
-});
-
-test("uses rejects matcher", async () => {
-  await expect(doIt()).rejects.toThrow();
-});
-
-test("genuinely has no assertion", () => {
-  doWork();
-});
-`);
-  const noAssertion = report.findings.filter((entry) => entry.ruleId === "test-quality.no-assertions");
-  assert.equal(noAssertion.length, 1);
-  assert.match(noAssertion[0]?.message ?? "", /genuinely has no assertion/);
-});
-
 test("FP-#11 waste.console-log skips CLI/script paths", () => {
   const cliReport = analyseFixture(`console.log("starting");\n`, { fileName: "src/cli/run.ts" });
   assert.equal(cliReport.findings.some((entry) => entry.ruleId === "waste.console-log"), false);
@@ -81,23 +58,25 @@ test("FP-#11 waste.console-log skips CLI/script paths", () => {
   assert.equal(appReport.findings.some((entry) => entry.ruleId === "waste.console-log"), true);
 });
 
-test("FP-#2 sensitive-data.high-entropy-string suppresses repo path-shape strings", () => {
-  // Purpose: prove path-shape strings clear the entropy gate but a real secret value still fires.
-  const realSecret = HIGH_ENTROPY_FIXTURE_VALUE;
-  const report = analyseFixture(`const ref = ".goat-flow/tasks/0.1/M38-css-metrics-and-todo-density-calibration.md";
-const otherRef = "src/cli/audit/check-content-quality.ts";
-const adrRef = "ADR-025-block-all-git-push.md";
-const absoluteTaskRef = "/repo/.goat-flow/tasks/1.7.0/M00-side-menu-navigation.md";
-const secret = "${realSecret}";
-void ref;
-void otherRef;
-void adrRef;
-void absoluteTaskRef;
-void secret;
+// Vendor-documented samples must never report: AWS's example key, the jwt.io sample token and a published test card.
+//
+// A live-shaped key still reports (FAMILY-CONTRACT.md section 5), and every value is assembled from parts.
+test("sensitive-data rules do not report vendor-documented sample values", () => {
+  const example = ["AKIA", "IOSFODNN7", "EXAMPLE"].join("");
+  const live = ["AKIA", "Q7R2M8N4", "P6T9V1X3"].join("");
+  const jwt = [
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+    "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ",
+    "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+  ].join(".");
+  const card = ["4111", "1111", "1111", "1111"].join(" ");
+  const report = analyseFixture(`export const exampleKey = "${example}";
+export const liveKey = "${live}";
+export const sampleToken = "${jwt}";
+export const paymentCardNumber = "${card}";
 `);
-  const findings = report.findings.filter((entry) => entry.ruleId === "sensitive-data.high-entropy-string");
-  const expectedFindingCount = 1;
-  assert.equal(findings.length, expectedFindingCount);
+  const reported = report.findings.filter((entry) => entry.ruleId.startsWith("sensitive-data.")).map((entry) => `${entry.ruleId}:${entry.line}`);
+  assert.deepEqual(reported, ["sensitive-data.aws-access-key:2"]);
 });
 
 test("FP-#5 waste.empty-function skips interface and type-literal signatures", () => {
@@ -289,7 +268,7 @@ test("FP-#16 waste.swallowed-catch accepts /* ignore */ rationale", () => {
     /* ignore */
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.swallowed-catch");
   assert.deepEqual(findings, []);
 });
@@ -302,7 +281,7 @@ test("FP-#17 waste.swallowed-catch accepts /* cleanup */ rationale", () => {
     /* cleanup */
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.swallowed-catch");
   assert.deepEqual(findings, []);
 });
@@ -315,7 +294,7 @@ test("FP-#18 waste.swallowed-catch accepts /* teardown */ rationale", () => {
     /* teardown */
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.swallowed-catch");
   assert.deepEqual(findings, []);
 });
@@ -329,7 +308,7 @@ test("FP-#19 waste.swallowed-catch accepts /* no-op */ rationale", () => {
   }
   return undefined;
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.swallowed-catch");
   assert.deepEqual(findings, []);
 });
@@ -489,24 +468,22 @@ ${Array.from({ length: 55 }, () => "  if (x == y) return true;").join("\n")}
   assert.equal(/Tip: \d+ findings/.test(json), false);
 });
 
-test("FP-#45 summary topRules JSON shape is unchanged by M07", () => {
-  // Negative: the JSON output preserves the `{name, count}` shape for topRules. M07 enriches the
-  // text/summary rule row block but keeps the JSON contract byte-stable.
+test("FP-#45 v3 analysis omits retired topRules while preserving score values", () => {
+  // M05 removes the independent machine-summary ranking. Human summary rule rows remain, while
+  // analysis JSON carries the native score once in the canonical composite container.
   const report = analyseFixture(`function helperOne(): void { eval("noop"); }
 `);
   const json = JSON.parse(renderReport(report, "json"));
-  // Note: renderReport "json" uses the analysis schema; the summary JSON is renderSummaryJson which
-  // isn't directly callable from renderReport. The analyse JSON has no topRules block, so we only
-  // assert the analyse JSON's score block is unchanged here.
   const scoreKeys = Object.keys(json.score).sort();
-  assert.deepEqual(scoreKeys, ["composite", "grade", "pillars", "topOffenders"]);
+  assert.deepEqual(scoreKeys, ["clusters", "composite", "evaluatedFiles", "pillars", "ruleAttribution", "scoredPillars", "topOffenders"]);
+  assert.deepEqual(json.score.composite, { grade: report.score.grade, score: report.score.composite });
 });
 
 test("FP-#38 summary renderers include per-severity grade breakdown lines", () => {
   // §3.2(a): an F composite driven entirely by advisories reads identically to an F driven by
   // errors in the headline. The breakdown lines surface the difference. Text + markdown surfaces
-  // both render the three lines; HTML renders three grade pills. JSON stays unchanged (covered by
-  // FP-#40 below).
+  // both render the three lines; HTML renders three grade pills. M05's JSON adapter keeps those
+  // presentation rows out of the machine score (covered by FP-#40 below).
   const report = analyseFixture(`function helperOne(): void { eval("noop"); }
 function helperTwo(): void { eval("noop"); }
 `);
@@ -540,16 +517,16 @@ function helperTwo(): void { eval("noop"); }
   assert.equal(/findings, score \d+\.\d/.test(summary), false);
 });
 
-test("FP-#40 JSON output schema and shape unchanged by M05", () => {
-  // Negative coverage: M05 is renderer-only. JSON output must still be `gruff.analysis.v2`, no new
-  // severity-grade fields appear in the score block, and the existing keys (composite, grade,
-  // pillars, topOffenders) are the only top-level entries.
+test("FP-#40 v3 adapter preserves score values while changing only their container shape", () => {
+  // M05 owns the machine hard break, while M06 still owns score arithmetic. The adapter nests the
+  // existing composite value and grade without adding a second calculation or legacy score alias.
   const report = analyseFixture(`function helperOne(): void { eval("noop"); }
 `);
   const json = JSON.parse(renderReport(report, "json"));
-  assert.equal(json.schemaVersion, "gruff.analysis.v2");
+  assert.equal(json.schemaVersion, "gruff.analysis.v3");
   const scoreKeys = Object.keys(json.score).sort();
-  assert.deepEqual(scoreKeys, ["composite", "grade", "pillars", "topOffenders"]);
+  assert.deepEqual(scoreKeys, ["clusters", "composite", "evaluatedFiles", "pillars", "ruleAttribution", "scoredPillars", "topOffenders"]);
+  assert.deepEqual(json.score.composite, { grade: report.score.grade, score: report.score.composite });
 });
 
 test("FP-#32 docs.missing-exported-function-doc fires on export function", () => {
@@ -717,7 +694,7 @@ test("FP-#29 test-quality.loop-in-test still flags conditional inside literal-ar
     }
   }
 });
-`);
+`, { config: { rules: { "test-quality.conditional-logic": { enabled: true } } } });
   const findings = report.findings.filter((entry) => entry.ruleId === "test-quality.loop-in-test");
   assert.equal(findings.length, 1);
   assert.equal(report.findings.some((entry) => entry.ruleId === "test-quality.conditional-logic"), true);
@@ -733,13 +710,13 @@ test("FP-#20 waste.swallowed-catch still flags /* silent */ and empty catch", ()
     /* silent */
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   assert.equal(silentReport.findings.some((entry) => entry.ruleId === "waste.swallowed-catch"), true);
 
   const emptyReport = analyseFixture(`function h(handle: { close(): void }): void {
   try { handle.close(); } catch {}
 }
-`);
+`, SWALLOWED_CATCH_ON);
   assert.equal(emptyReport.findings.some((entry) => entry.ruleId === "waste.swallowed-catch"), true);
 });
 
@@ -907,4 +884,44 @@ export function doubleTotal(total: number): number {
 }
 `);
   assert.equal(localReport.findings.some((entry) => entry.ruleId === "naming.short-variable"), false);
+});
+
+test("M07 block anchors land on the declaration, never on the blank line above it", () => {
+  // The prefix walk absorbs decorators, docblocks and blank lines so a block includes its leading
+  // documentation. Before M07 it also STOPPED on the blank separator, so a finding pointed at empty
+  // space belonging to the declaration above - un-triageable, and un-suppressible by line.
+  const source = `export function first(): number {
+  return 1;
+}
+
+/** Doc line for second. */
+export function second(alpha: number, beta: number): number {
+  return alpha + beta;
+}
+
+test("sleeps without assertion", async () => {
+  await new Promise((resolve) => setTimeout(resolve, 1));
+});
+`;
+  const report = analyseFixture(source, { config: { rules: { "test-quality.sleep-in-test": { enabled: true } } } });
+  const lines = source.split("\n");
+
+  assert.ok(report.findings.length > 0, "the anchor fixture produced no findings, so it proved nothing");
+
+  // The claim is about the source text at the reported line, not about which rules happened to fire.
+  for (const finding of report.findings) {
+    const text = finding.line === undefined ? "x" : (lines[finding.line - 1] ?? "");
+    assert.equal(text.trim() === "", false, `${finding.ruleId} anchors on blank line ${String(finding.line)}`);
+  }
+
+  const byRule = new Map(report.findings.map((finding) => [finding.ruleId, finding.line]));
+  // Named so the assertions below read as source positions rather than bare numbers: `second` is preceded
+  // by a blank line and a docblock, and the test callable is preceded by a blank line only.
+  const docblockLineOfSecond = 5;
+  const declarationLineOfTestCallable = 10;
+
+  // The anchor is the docblock, never the blank line 4 that separates it from `first`.
+  assert.equal(byRule.get("docs.missing-param-tag"), docblockLineOfSecond);
+  // The anchor is the callable's own declaration line, never the blank line 9 above it.
+  assert.equal(byRule.get("test-quality.sleep-in-test"), declarationLineOfTestCallable);
 });

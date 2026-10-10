@@ -360,7 +360,7 @@ function hasOnlyBlankFixturePurposeGap(lines: string[], startLine: number, endLi
 }
 
 // Vocabulary list of words a meaningful fixture-purpose comment is expected to use (fixture,
-// covers, regression, baseline, fingerprint, …). Project task references count as well.
+// covers, regression, baseline, fingerprint, …).
 function hasFixturePurposeMarker(text: string): boolean {
-  return /\b(?:fixture|covers|reproduces|regression|scanner|parse|baseline|fingerprint|noise|valid case|invalid case|because|M\d{1,3})\b/i.test(text) || /\.goat-flow\/tasks\//.test(text);
+  return /\b(?:fixture|covers|reproduces|regression|scanner|parse|baseline|fingerprint|noise|valid case|invalid case|because)\b/i.test(text);
 }

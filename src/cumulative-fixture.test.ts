@@ -4,9 +4,7 @@ import test from "node:test";
 import { ruleDescriptors } from "./cli.ts";
 import {
   analyseProject,
-  API_TOKEN_FIXTURE_VALUE,
   COMMENTED_OUT_SECRET_LOAD,
-  HIGH_ENTROPY_FIXTURE_VALUE,
   largeFixtureSourceLines,
   OPENAI_KEY_FIXTURE_VALUE,
   SSN_FIXTURE_VALUE,
@@ -55,19 +53,14 @@ const expandedRuleIds = new Set([
   "security.async-foreach",
   "security.disabled-tls-verification",
   "security.dynamic-regexp",
-  "security.floating-promise",
-  "security.github-actions-broad-permissions",
   "security.github-actions-pull-request-target",
   "security.github-actions-remote-shell",
   "security.github-actions-secrets-in-pr",
   "security.github-actions-unpinned-action",
-  "security.insecure-random",
   "security.javascript-url",
   "security.new-function",
-  "security.open-redirect-candidate",
   "security.path-traversal-candidate",
   "security.process-exec",
-  "security.proto-access",
   "security.remote-install-script",
   "security.sql-concatenation",
   "security.ssrf-candidate",
@@ -78,8 +71,6 @@ const expandedRuleIds = new Set([
   "security.weak-crypto",
   "security.xxe-candidate",
   "sensitive-data.api-key-pattern",
-  "sensitive-data.hardcoded-env-value",
-  "sensitive-data.high-entropy-string",
   "sensitive-data.pii-pattern",
   "test-quality.exception-type-only",
   "test-quality.global-state-mutation",
@@ -104,7 +95,8 @@ const expandedRuleIds = new Set([
 ]);
 
 test("cumulative expanded fixture covers every new rule with unique fingerprints", () => {
-  const report = analyseProject(cumulativeExpandedFixtureFiles());
+  // The side-effect and invariant rules ship off by default because their keyword lists cannot accept a comment written in other words; this fixture still covers both.
+  const report = analyseProject(cumulativeExpandedFixtureFiles(), { config: { rules: { "docs.missing-side-effect-doc": { enabled: true }, "docs.missing-invariant-doc": { enabled: true }, "waste.swallowed-catch": { enabled: true } } } });
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   expandedRuleIds.forEach((ruleId: string) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
@@ -117,7 +109,6 @@ test("cumulative expanded fixture covers every new rule with unique fingerprints
 
   const sampleMessages = new Map(report.findings.filter((finding) => expandedRuleIds.has(finding.ruleId)).map((finding) => [finding.ruleId, finding.message]));
   assert.match(sampleMessages.get("security.new-function") ?? "", /dynamic code/);
-  assert.match(sampleMessages.get("sensitive-data.hardcoded-env-value") ?? "", /Redacted preview/);
 });
 
 // Builds the synthetic project for the cumulative rule-coverage assertion.
@@ -155,13 +146,11 @@ export function fromB(): string {
   return "shared";
 }
 `,
-    ".env": `API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
-OPENAI_API_KEY=${OPENAI_KEY_FIXTURE_VALUE}
+    ".env": `OPENAI_API_KEY=${OPENAI_KEY_FIXTURE_VALUE}
 PATIENT_SSN=${SSN_FIXTURE_VALUE}
 `,
     "package.json": JSON.stringify({
       scripts: {
-        postinstall: "node scripts/setup.js",
         prepare: "curl https://example.test/install.sh | sh",
       },
       bin: {
@@ -175,7 +164,6 @@ PATIENT_SSN=${SSN_FIXTURE_VALUE}
     }),
     ".github/workflows/risky.yml": `on:
   pull_request_target:
-permissions: write-all
 jobs:
   risky:
     runs-on: ubuntu-latest
@@ -232,7 +220,6 @@ const data1 = "placeholder";
 const strName = "Ada";
 const objUser = { name: strName };
 const loadedText = readFileSync("input.txt", "utf8");
-const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";
 const maxRetryLimit = 12;
 
 interface WidgetShape {
@@ -316,12 +303,10 @@ async function unsafe(userInput: string, userId: string, userIds: string[], req:
   nodeSerialize.unserialize(serializedPayload);
   const xmlPayload = req.body.xml;
   libxmljs.parseXml(xmlPayload, { noent: true });
-  Math.random();
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
   const insecureAgent = { rejectUnauthorized: false, minVersion: "TLSv1" };
   location.href = "javascript:alert(1)";
   element.dangerouslySetInnerHTML = { __html: userInput };
-  element.__proto__ = {};
   db.query("SELECT * FROM users WHERE id = " + userId);
   createHash("md5").update(userInput);
   const timestamp = new Date().getTime();

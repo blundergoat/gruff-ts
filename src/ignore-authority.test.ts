@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import test from "node:test";
 import { checkIgnore, checkIgnoreExitCode, renderCheckIgnore } from "./check-ignore.ts";
+import { renderDefaultConfig } from "./init-config.ts";
 import { analyseProject, yamlConfigFixture } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
 
@@ -100,17 +101,118 @@ test("check-ignore does not apply gitignore rules to explicit file operands", ()
   }
 });
 
-test("check-ignore reports files under default-ignored parent directories", () => {
+test("check-ignore keeps explicit files under fallback parents but reports the directory", () => {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ci-default-ignore-"));
   const previous = cwd();
   try {
     mkdirSync(join(dir, "dist"));
     writeFileSync(join(dir, "dist/generated.ts"), FLAGGABLE_SOURCE);
     chdir(dir);
-    const results = checkIgnore(["dist/generated.ts"], { ...CHECK_IGNORE_OPTIONS, paths: ["dist/generated.ts"], shouldSkipConfig: true });
-    assert.deepEqual(results, [{ path: "dist/generated.ts", isIgnored: true, source: "default", pattern: "dist/" }]);
+    const results = checkIgnore(["dist/generated.ts", "dist"], {
+      ...CHECK_IGNORE_OPTIONS,
+      paths: ["dist/generated.ts", "dist"],
+      shouldSkipConfig: true,
+    });
+    assert.deepEqual(results, [
+      { path: "dist/generated.ts", isIgnored: false },
+      { path: "dist", isIgnored: true, source: "default", pattern: "dist/" },
+    ]);
   } finally {
     chdir(previous);
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+/*
+ * Reads back the directories the starter config tells a new user a recursive scan already skips.
+ * Invariant: the names come from the rendered seed, so rewording the seed cannot bypass the check.
+ */
+function seedDefaultIgnoredDirectories(): string[] {
+  const seedLine = renderDefaultConfig().split("\n").find((line) => line.includes("# such as "));
+  assert.ok(seedLine, "the init seed must name example default-ignored directories");
+  return seedLine
+    .replace(/^.*# such as /u, "")
+    .replace(/\.$/u, "")
+    .split(/,\s*(?:and\s+)?/u);
+}
+
+test("every directory the init seed calls default-ignored is skipped by a recursive scan", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ci-seed-defaults-"));
+  const previous = cwd();
+  try {
+    const directories = seedDefaultIgnoredDirectories();
+    assert.equal(directories.length > 0, true, "the seed must name at least one directory");
+    for (const directory of directories) {
+      mkdirSync(join(dir, directory));
+    }
+    chdir(dir);
+    const results = checkIgnore(directories, { ...CHECK_IGNORE_OPTIONS, paths: directories, shouldSkipConfig: true });
+    // A name the engine would scan is a false promise in every config `gruff-ts init` writes.
+    assert.deepEqual(results.filter((result) => !result.isIgnored).map((result) => result.path), []);
+  } finally {
+    chdir(previous);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("explicit files and include-ignored never cross the VCS boundary", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ci-vcs-ignore-"));
+  const previous = cwd();
+  try {
+    mkdirSync(join(dir, ".git"));
+    writeFileSync(join(dir, ".git/config.ts"), FLAGGABLE_SOURCE);
+    chdir(dir);
+    const results = checkIgnore([".git/config.ts"], {
+      ...CHECK_IGNORE_OPTIONS,
+      paths: [".git/config.ts"],
+      shouldIncludeIgnored: true,
+      shouldSkipConfig: true,
+    });
+    assert.deepEqual(results, [
+      { path: ".git/config.ts", isIgnored: true, source: "default", pattern: ".git/" },
+    ]);
+  } finally {
+    chdir(previous);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("fallback names match at any depth while ordinary control directories stay scannable", () => {
+  const report = analyseProject(
+    {
+      "nested/dist/hidden.ts": FLAGGABLE_SOURCE,
+      ".fleet/hidden.ts": FLAGGABLE_SOURCE,
+      "cache/visible.ts": FLAGGABLE_SOURCE,
+      "generated/visible.ts": FLAGGABLE_SOURCE,
+      "target/visible.ts": FLAGGABLE_SOURCE,
+      "tmp/visible.ts": FLAGGABLE_SOURCE,
+      ".goat-flow/visible.ts": FLAGGABLE_SOURCE,
+    },
+    { shouldSkipConfig: true },
+  );
+
+  assert.deepEqual([...new Set(report.findings.map((finding) => finding.filePath))].sort(), [
+    ".goat-flow/visible.ts",
+    "cache/visible.ts",
+    "generated/visible.ts",
+    "target/visible.ts",
+    "tmp/visible.ts",
+  ]);
+  assert.equal(report.paths.skipped.some((entry) => entry.path === ".fleet"), true);
+  assert.equal(report.paths.skipped.some((entry) => entry.path === "nested/dist"), true);
+});
+
+test("an ancestor gitignore disables fallback only for its subtree", () => {
+  const report = analyseProject(
+    {
+      "packages/app/.gitignore": "*.log\n",
+      "packages/app/node_modules/visible.ts": FLAGGABLE_SOURCE,
+      "packages/other/node_modules/hidden.ts": FLAGGABLE_SOURCE,
+    },
+    { shouldSkipConfig: true },
+  );
+
+  const findingPaths = new Set(report.findings.map((finding) => finding.filePath));
+  assert.equal(findingPaths.has("packages/app/node_modules/visible.ts"), true);
+  assert.equal(findingPaths.has("packages/other/node_modules/hidden.ts"), false);
 });

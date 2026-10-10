@@ -4,6 +4,7 @@
 // owns the parser, the script-kind mapping, and the AST callable enumeration consumed by the
 // block rules (and, downstream, complexity metrics and naming ownership).
 import { createRequire } from "node:module";
+import { commentRecords } from "./comment-scanner.ts";
 import type { RunDiagnostic } from "./types.ts";
 
 // Loaded via createRequire because typescript ships as CommonJS; usage stays bounded to syntax
@@ -72,6 +73,8 @@ export interface DeclarationOwnershipPoints {
  */
 interface ParsedSyntaxIndex {
   callablePoints: CallableMatchPoint[];
+  // Callables only the size and complexity rules measure; every other block rule reads `callablePoints` alone.
+  measuredOnlyPoints: CallableMatchPoint[];
   declarationOwnership: DeclarationOwnershipPoints;
 }
 
@@ -116,6 +119,56 @@ export function parseScript(file: ParsedScriptInput, source: string): ParsedScri
       ? [summarizeParseErrors(file, parsedSourceFile, firstParseError, parsedSourceFile.parseDiagnostics.length)]
       : [],
   };
+}
+
+/**
+ * Blanks every decorator in `text` with spaces, keeping newlines and offsets, so a line that holds only decorators reads
+ * as blank.
+ *
+ * @param text - the parsed source text, or a same-length masking of it such as the source with its comments blanked
+ * @param parsed - the shared parse of that source
+ * @returns `text` with each decorator's characters replaced by spaces
+ */
+export function maskDecorators(text: string, parsed: ParsedScript): string {
+  const characters = text.split("");
+  // Walks every node once; decorators can sit on classes, members and parameters at any depth.
+  const visit = (node: TsNode): void => {
+    // A decorator's span runs from its `@` to the end of its expression, arguments included.
+    if (node.kind === typescriptSyntax.SyntaxKind.Decorator) {
+      blankRange(characters, node.getStart(parsed.sourceFile), node.end);
+    }
+    node.forEachChild(visit);
+  };
+  parsed.sourceFile.forEachChild(visit);
+  return characters.join("");
+}
+
+/**
+ * Flags each line that carries code, for the function-block, for-of body and module line counts (FAMILY-CONTRACT section 12,
+ * search `Code lines in every line count`). A line is not code when it is blank or holds only comments or decorators; the
+ * text of string and template literals still counts as code.
+ *
+ * @param source - decoded file text
+ * @param parsed - the shared parse of `source`; without it decorators are not recognised and count as code
+ * @returns one flag per line of `source`, 0-based, true where the line carries code
+ */
+export function codeLineFlags(source: string, parsed?: ParsedScript): boolean[] {
+  const characters = source.split("");
+  for (const comment of commentRecords(source)) {
+    blankRange(characters, comment.startIndex, comment.kind === "block" ? Math.min(source.length, comment.endIndex + 1) : comment.endIndex);
+  }
+  const withoutComments = characters.join("");
+  const code = parsed ? maskDecorators(withoutComments, parsed) : withoutComments;
+  return code.split(/\r?\n/).map((line) => line.trim() !== "");
+}
+
+// Replaces one half-open character range with spaces, keeping line breaks so line numbers do not move.
+function blankRange(characters: string[], start: number, end: number): void {
+  for (let index = start; index < end && index < characters.length; index += 1) {
+    if (characters[index] !== "\n" && characters[index] !== "\r") {
+      characters[index] = " ";
+    }
+  }
 }
 
 // Maps extensions onto the matching TypeScript parser mode so TSX/JSX syntax parses as syntax.
@@ -192,6 +245,8 @@ export interface CallableMatchPoint extends IdentifierOwner {
   // signatures, and abstract or ambient members. The block rules use this instead of guessing
   // from text, because a multi-line signature reads like an implementation on its first line.
   hasBody: boolean;
+  // True only for a declaration carrying the `override` modifier: its base class chose the name.
+  isOverride: boolean;
   // Shared-parse node whose parameters and body belong to this stable analysed block.
   callableNode: TsNode;
 }
@@ -208,6 +263,19 @@ export interface CallableMatchPoint extends IdentifierOwner {
  */
 export function callableMatchPoints(parsed: ParsedScript): CallableMatchPoint[] {
   return parsedSyntaxIndex(parsed).callablePoints;
+}
+
+/**
+ * Enumerates the callable forms only the size and complexity rules measure (FAMILY-CONTRACT.md section 12, search
+ * `four more function forms`): an object-literal `key: function` method, a function assigned to a member, a `var`
+ * function expression and an immediately invoked function. Each takes a function expression or an arrow function.
+ * Which callables the documentation rules see is unchanged.
+ *
+ * @param parsed Shared parse result for the script.
+ * @returns Points in source order; empty when the script uses none of these forms.
+ */
+export function measuredOnlyCallablePoints(parsed: ParsedScript): CallableMatchPoint[] {
+  return parsedSyntaxIndex(parsed).measuredOnlyPoints;
 }
 
 /**
@@ -228,6 +296,7 @@ function parsedSyntaxIndex(parsed: ParsedScript): ParsedSyntaxIndex {
     return cachedIndex;
   }
   const callablePointsByLine = new Map<number, CallableMatchPoint>();
+  const measuredOnlyPoints: CallableMatchPoint[] = [];
   const variableDeclarations: OwnedDeclarationPoint[] = [];
   const contractFields: OwnedDeclarationPoint[] = [];
   const sourceLines = parsed.sourceFile.text.split(/\r?\n/);
@@ -235,6 +304,11 @@ function parsedSyntaxIndex(parsed: ParsedScript): ParsedSyntaxIndex {
   // declaration merging while one depth-first walk visits the user's syntax tree.
   const visitSyntaxNode = (node: TsNode, declarationOwner: IdentifierOwner, contractScopeId: string): void => {
     recordCallablePoint(callablePointsByLine, matchPointFor(parsed.sourceFile, node));
+    const measuredOnlyPoint = measuredOnlyPointFor(parsed.sourceFile, node);
+    // Most nodes are not one of the measure-only forms.
+    if (measuredOnlyPoint) {
+      measuredOnlyPoints.push(measuredOnlyPoint);
+    }
     recordVariableDeclaration(parsed.sourceFile, node, declarationOwner, variableDeclarations);
     recordContractFields(parsed.sourceFile, sourceLines, node, contractScopeId, contractFields);
     const callableOwner = functionLikeOwner(parsed.sourceFile, node);
@@ -247,6 +321,7 @@ function parsedSyntaxIndex(parsed: ParsedScript): ParsedSyntaxIndex {
   parsed.sourceFile.forEachChild((node) => visitSyntaxNode(node, MODULE_IDENTIFIER_OWNER, MODULE_IDENTIFIER_OWNER.ownerId));
   const syntaxIndex: ParsedSyntaxIndex = {
     callablePoints: [...callablePointsByLine.values()].sort((left, right) => left.lineIndex - right.lineIndex),
+    measuredOnlyPoints,
     declarationOwnership: { variableDeclarations, contractFields },
   };
   parsedSyntaxIndexes.set(parsed, syntaxIndex);
@@ -477,6 +552,88 @@ function matchPointFor(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoi
   return undefined;
 }
 
+// Finds the point for one of the four measure-only forms; a node is at most one of them.
+function measuredOnlyPointFor(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
+  return varFunctionPoint(sourceFile, node) ?? keyFunctionPoint(sourceFile, node) ?? memberFunctionPoint(sourceFile, node) ?? invokedFunctionPoint(sourceFile, node);
+}
+
+// `var render = function () {}`, named after the variable.
+function varFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
+  if (!typescriptSyntax.isVariableDeclaration(node) || !typescriptSyntax.isIdentifier(node.name) || !isFunctionValue(node.initializer) || !isVarList(node.parent)) {
+    return undefined;
+  }
+  return declarationPoint(sourceFile, node.name.getStart(sourceFile), node.initializer, node.name.text, node.initializer.parameters);
+}
+
+// `{ paint: function () {} }`, named after the key, qualified by the object's variable or assignment target when it has one.
+function keyFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
+  if (!typescriptSyntax.isPropertyAssignment(node) || !isFunctionValue(node.initializer) || typescriptSyntax.isComputedPropertyName(node.name)) {
+    return undefined;
+  }
+  const objectName = objectLiteralName(sourceFile, node.parent);
+  const name = objectName ? `${objectName}.${node.name.text}` : node.name.text;
+  return declarationPoint(sourceFile, node.name.getStart(sourceFile), node.initializer, name, node.initializer.parameters);
+}
+
+// `Calendar.render = function () {}`, named after the member it is assigned to.
+function memberFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
+  if (!typescriptSyntax.isBinaryExpression(node) || node.operatorToken.kind !== typescriptSyntax.SyntaxKind.EqualsToken || !isMember(node.left) || !isFunctionValue(node.right)) {
+    return undefined;
+  }
+  return declarationPoint(sourceFile, node.left.getStart(sourceFile), node.right, compactText(sourceFile, node.left), node.right.parameters);
+}
+
+// `(function () {})()`, named after the function when it has a name and `<iife>` otherwise.
+function invokedFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
+  const callee = typescriptSyntax.isCallExpression(node) ? withoutParentheses(node.expression) : undefined;
+  if (!isFunctionValue(callee)) {
+    return undefined;
+  }
+  const name = typescriptSyntax.isFunctionExpression(callee) && callee.name ? callee.name.text : "<iife>";
+  return declarationPoint(sourceFile, callee.getStart(sourceFile), callee, name, callee.parameters);
+}
+
+// A function expression or arrow function is the value each measure-only form binds or invokes.
+function isFunctionValue(node: TsNode | undefined): node is import("typescript").FunctionExpression | import("typescript").ArrowFunction {
+  return node !== undefined && (typescriptSyntax.isFunctionExpression(node) || typescriptSyntax.isArrowFunction(node));
+}
+
+// `const` and `let` initializers are already ordinary blocks (search `variableInitializerPoint`); only `var` is added.
+function isVarList(node: TsNode): boolean {
+  return typescriptSyntax.isVariableDeclarationList(node) && (node.flags & typescriptSyntax.NodeFlags.BlockScoped) === 0;
+}
+
+// A property or element access is the member a function can be assigned to.
+function isMember(node: TsNode): boolean {
+  return typescriptSyntax.isPropertyAccessExpression(node) || typescriptSyntax.isElementAccessExpression(node);
+}
+
+// The name an object literal is bound to, when it is a variable's initializer or the right side of an assignment.
+function objectLiteralName(sourceFile: TsSourceFile, objectLiteral: TsNode): string | undefined {
+  const owner = objectLiteral.parent;
+  if (typescriptSyntax.isVariableDeclaration(owner) && typescriptSyntax.isIdentifier(owner.name)) {
+    return owner.name.text;
+  }
+  if (typescriptSyntax.isBinaryExpression(owner) && owner.operatorToken.kind === typescriptSyntax.SyntaxKind.EqualsToken && owner.right === objectLiteral) {
+    return compactText(sourceFile, owner.left);
+  }
+  return undefined;
+}
+
+// Source text with its whitespace removed, so a member written across lines names its function on one.
+function compactText(sourceFile: TsSourceFile, node: TsNode): string {
+  return node.getText(sourceFile).replace(/\s+/g, "");
+}
+
+// Looks through the parentheses an immediately invoked function is usually wrapped in.
+function withoutParentheses(node: TsNode): TsNode {
+  let inner = node;
+  while (typescriptSyntax.isParenthesizedExpression(inner)) {
+    inner = inner.expression;
+  }
+  return inner;
+}
+
 // Builds the point for a named declaration: the anchor line is the name's line, matching where
 // the legacy line-oriented patterns fired; the end line is the declaration's final token.
 function declarationPoint(sourceFile: TsSourceFile, position: number, callableNode: TsNode, name: string, parameters: readonly TsNode[]): CallableMatchPoint {
@@ -499,6 +656,7 @@ function declarationPoint(sourceFile: TsSourceFile, position: number, callableNo
     isExplicitlyPublic: isDirectlyExported || hasNodeModifier(visibilityNode, typescriptSyntax.SyntaxKind.PublicKeyword),
     isModuleScoped: visibilityNode.parent === sourceFile,
     hasBody: callableNodeHasBody(callableNode),
+    isOverride: hasNodeModifier(visibilityNode, typescriptSyntax.SyntaxKind.OverrideKeyword),
     callableNode,
   };
 }
@@ -575,6 +733,7 @@ function testCallbackPoint(sourceFile: TsSourceFile, node: import("typescript").
     isExplicitlyPublic: false,
     isModuleScoped: false,
     hasBody: true,
+    isOverride: false,
     callableNode: callback,
   };
 }

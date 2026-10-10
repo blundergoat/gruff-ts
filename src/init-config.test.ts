@@ -19,7 +19,7 @@ test("renderDefaultConfig includes every descriptor rule id", () => {
   assertDefaultConfigIncludesEveryDescriptor(yaml);
 });
 
-test("renderDefaultConfig emits every descriptor rule as enabled:true", () => {
+test("renderDefaultConfig seeds each rule's enabled state from its registry default", () => {
   const yaml = renderDefaultConfig();
   assertDefaultConfigOptInStates(yaml);
 });
@@ -54,7 +54,6 @@ test("renderDefaultConfig explains and seeds the family abbreviation allowlist",
     "    - tx",
     "    - ui",
     "    - url",
-    "  secretPreviews: []",
   ].join("\n");
 
   assert.equal(generatedConfig.includes(expectedFamilyAbbreviationBlock), true);
@@ -285,7 +284,8 @@ function assertDefaultConfigIncludesEveryDescriptor(yaml: string): void {
 function assertDefaultConfigOptInStates(yaml: string): void {
   for (const descriptor of ruleDescriptors()) {
     const block = renderedRuleBlock(yaml, descriptor.ruleId);
-    assert.equal(renderedRuleField(block, "enabled"), "true", `enabled mismatch for ${descriptor.ruleId}`);
+    // A rule its descriptor turns off is seeded off, so a fresh init does not quietly turn it back on.
+    assert.equal(renderedRuleField(block, "enabled"), String(descriptor.isEnabledByDefault !== false), `enabled mismatch for ${descriptor.ruleId}`);
   }
 }
 
@@ -308,7 +308,7 @@ function assertLoadedConfigContainsEveryRule(ruleOverrides: Config["rules"]): vo
   for (const descriptor of ruleDescriptors()) {
     const ruleOverride = ruleOverrides.get(descriptor.ruleId);
     assert.notEqual(ruleOverride, undefined, `loadConfig dropped ${descriptor.ruleId}`);
-    assert.equal(ruleOverride?.enabled, true, `enabled state mismatch for ${descriptor.ruleId}`);
+    assert.equal(ruleOverride?.enabled, descriptor.isEnabledByDefault !== false, `enabled state mismatch for ${descriptor.ruleId}`);
   }
 }
 
@@ -362,3 +362,37 @@ function sortNestedMap(input: Map<string, Map<string, number>>): Map<string, Map
       .map(([ruleId, options]) => [ruleId, new Map([...options.entries()].sort(([left], [right]) => left.localeCompare(right)))]),
   );
 }
+
+// Regression guard for the M02 surface: regeneration must never silently re-enable a sensitive
+// finding a reviewer accepted in writing. Losing the entry would also lose its rationale, which is
+// the one thing that made the suppression reviewable (FAMILY-CONTRACT.md, search:
+// `### 13a. Sensitive exclusions`). Creates a temporary project root, writes a config into it, runs
+// the real `init --force` binary against it, and removes the root afterwards.
+test("gruff-ts init --force preserves reviewed sensitive exclusions", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-init-preserve-exclusions-"));
+  try {
+    const configPath = join(projectRoot, DEFAULT_CONFIG_FILE_NAME);
+    writeFileSync(
+      configPath,
+      [
+        "schemaVersion: gruff-ts.config.v0.1",
+        "sensitiveExclusions:",
+        "  - rule: sensitive-data.aws-access-key",
+        "    path: src/fixtures/sample.ts",
+        "    reason: Synthetic key used by the loader fixture.",
+        "",
+      ].join("\n"),
+    );
+
+    const overwritten = execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "init", "--force"], { cwd: projectRoot, encoding: "utf8" });
+    assert.match(overwritten, /^Overwrote /);
+
+    const newContent = readFileSync(configPath, "utf8");
+    assert.match(newContent, /^sensitiveExclusions:$/mu);
+    assert.match(newContent, /  - rule: "sensitive-data\.aws-access-key"/);
+    assert.match(newContent, /    path: "src\/fixtures\/sample\.ts"/);
+    assert.match(newContent, /    reason: "Synthetic key used by the loader fixture\."/);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});

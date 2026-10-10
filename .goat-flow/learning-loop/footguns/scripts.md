@@ -1,6 +1,6 @@
 ---
 category: scripts
-last_reviewed: 2026-05-24
+last_reviewed: 2026-10-03
 ---
 
 # Shell scripts footguns
@@ -24,6 +24,6 @@ node -e "for (const key of Object.keys(pkg['$field'] || {})) console.log(key);"
 The same trap is latent in any future `mapfile -t < <(node -e "...")` or `mapfile -t < <(jq -r '.foo[]' …)` where the producer might emit zero lines but a stray newline sneaks in. Two defences:
 
 1. **Producer-side**: emit one line per element with no leading/trailing scaffolding. `for (const x of arr) console.log(x)` for JS, `jq -r '.foo[]?'` (note `?` for empty-safe) for JSON.
-2. **Consumer-side**: after `mapfile -t arr`, filter empties before iterating: `arr=("${arr[@]/#/}"); for x in "${arr[@]}"; do [[ -n "$x" ]] && ...; done` — verbose, but it protects against the trap even when the producer is third-party.
+2. **Consumer-side**: after `mapfile -t arr`, skip empties while iterating: `for x in "${arr[@]}"; do [[ -n "$x" ]] || continue; ...; done` — verbose, but it protects against the trap even when the producer is third-party. A pattern substitution such as `arr=("${arr[@]/#/}")` does not drop empty elements, so it is no substitute for the guard.
 
 `${#arr[@]} -gt 0` is **not** sufficient on its own. The trap is that bash treats `("")` as a one-element array.

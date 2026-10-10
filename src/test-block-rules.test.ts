@@ -1,10 +1,14 @@
-// Focused unit tests for the per-test-block rule pass without routing through full project scans.
+// Exercises the test-block rules that developers see after scanning their test files.
+
+// These focused fixtures isolate assertion and structure decisions from project discovery.
+// Full analysis-path cases in false-positive-fixes.test.ts also cover source masking.
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { FunctionBlock } from "./blocks.ts";
 import { loadConfig } from "./config.ts";
 import type { SourceFile } from "./discovery.ts";
 import { analyseTestBlock } from "./test-block-rules.ts";
+import { analyseFixture } from "./test-fixtures.ts";
 import type { AnalysisOptions, Config, Finding } from "./types.ts";
 
 const SOURCE_FILE: SourceFile = {
@@ -27,6 +31,32 @@ const TEST_START_LINE = 3;
 const EXPECTED_MAGIC_VALUE = 42;
 const EXPECTED_STATIC_REDUNDANT_FINDINGS = 4;
 const STATIC_REDUNDANT_RULE_ID = "test-quality.static-analysis-redundant-test";
+
+// This fixture matrix protects the checks enabled when a registration result is discarded.
+const DISCARDED_REGISTRATION_CASES = [
+    { body: "assert.equal(result, result);", ruleId: "test-quality.trivial-assertion" },
+    { body: "expect(result).toMatchSnapshot();", ruleId: "test-quality.snapshot-only-test" },
+    { body: "assert.doesNotThrow(() => performRequest());", ruleId: "test-quality.no-throw-only-test" },
+    { body: "expect(() => performRequest()).toThrow(Error);", ruleId: "test-quality.exception-type-only" },
+];
+// Check both observed registration forms so discarding their result cannot hide a test from scan rules.
+for (const registration of ["it", "test"]) {
+  // Try every quality-control body so the void prefix preserves its warning and source identity.
+  for (const { body, ruleId } of DISCARDED_REGISTRATION_CASES) {
+    // Compare complete quality findings so anchors and identities stay stable with the void prefix.
+    test(`discarding ${registration} preserves ${ruleId}`, () => {
+      const source = `// File overview: test registration result fixture.
+${registration}("request behavior", () => {
+  ${body}
+});
+`;
+      const ordinary = analyseFixture(source).findings.filter((finding) => finding.ruleId.startsWith("test-quality."));
+      const discarded = analyseFixture(source.replace(`${registration}(`, `void ${registration}(`)).findings.filter((finding) => finding.ruleId.startsWith("test-quality."));
+      assert.equal(ordinary.some((finding) => finding.ruleId === ruleId), true, ruleId);
+      assert.deepEqual(discarded, ordinary, `${registration}: ${ruleId}`);
+    });
+  }
+}
 
 const ASSERTION_AND_MOCK_CALLBACK = `
   const unusedMock = jest.fn();
@@ -241,6 +271,39 @@ test("analyseTestBlock reports structural test smells once per block", () => {
   ]);
 });
 
+test("test-quality findings carry actionable advice in report JSON", () => {
+  const bodies = [
+    STRUCTURAL_CALLBACK,
+    ASSERTION_AND_MOCK_CALLBACK,
+    ...DISCARDED_REGISTRATION_CASES.map((entry) => entry.body),
+    "process.env.MODE = 'test'; assert.ok(result);",
+    "const mock = jest.fn(); expect(mock).toHaveBeenCalled();",
+  ];
+  const findings = bodies.flatMap((body) => analyseTestCallback(body));
+  const rules = [
+    "conditional-logic", "exception-type-only", "global-state-mutation", "loop-in-test",
+    "magic-number-assertion", "mock-only-test", "no-throw-only-test", "only-skip",
+    "sleep-in-test", "snapshot-only-test", "trivial-assertion",
+  ];
+  for (const rule of rules) {
+    const finding = findings.find((entry) => entry.ruleId === `test-quality.${rule}`);
+    assert.ok(finding, rule);
+    assert.ok(finding.remediation, `${rule} must carry advice in JSON`);
+    assert.doesNotMatch(finding.remediation, /raise.*limit|ignore.*path|split.*separate tests|name expected values/i, rule);
+  }
+});
+
+test("an unlabeled loop with a should.be assertion still reports loop-in-test", () => {
+  // An assertion inside a loop can still hide which item failed, even though the test is not assertion-free.
+  const findings = analyseTestCallback(`
+  for (const item of items) {
+    item.should.be.equal(1);
+  }
+`);
+
+  assert.equal(findings.some((finding) => finding.ruleId === "test-quality.loop-in-test"), true);
+});
+
 test("analyseTestBlock reports conditional assertions inside type guards", () => {
   const findings = analyseTestCallback(`
   const result: unknown = getResult();
@@ -347,7 +410,8 @@ test("analyseTestBlock reports only the redundant assertion in mixed behavior te
   );
 });
 
-// Runs one callback-shaped fixture through the test-block rule pass. Invariant: default rule config is used.
+// Scan one callback fixture under the default-rule contract; an empty result means no quality warning.
+// An empty prefix adds no source declarations ahead of the test.
 function analyseTestCallback(callbackBody: string, displayPath = SOURCE_FILE.displayPath, testName = "fixture", staticSourcePrefix = ""): Finding[] {
   const findings: Finding[] = [];
   const block = testBlockFixture(callbackBody, testName);
@@ -360,7 +424,8 @@ function analyseTestCallback(callbackBody: string, displayPath = SOURCE_FILE.dis
   return findings;
 }
 
-// Builds the minimal FunctionBlock contract that analyseTestBlock consumes.
+// Build the minimal callable contract used to check developer-visible test warnings.
+// An empty callback body represents a test with no executable work; its parameter list is intentionally empty.
 function testBlockFixture(callbackBody: string, testName: string): FunctionBlock {
   const body = `test(${JSON.stringify(testName)}, () => {` + callbackBody + "});";
   return {
@@ -368,6 +433,7 @@ function testBlockFixture(callbackBody: string, testName: string): FunctionBlock
     params: "",
     startLine: TEST_START_LINE,
     lineCount: body.split(/\r?\n/).length,
+    codeLineCount: body.split(/\r?\n/).length,
     body,
     codeBody: body,
     isPublic: false,
@@ -378,12 +444,197 @@ function testBlockFixture(callbackBody: string, testName: string): FunctionBlock
   };
 }
 
-// Reuses the production config defaults instead of copying rule defaults into tests.
+// Enable opt-in detectors so these fixtures still prove their positive and negative cases.
 function defaultTestConfig(): Config {
-  return loadConfig(".", BASE_OPTIONS);
+  const config = loadConfig(".", BASE_OPTIONS);
+  for (const ruleId of ["test-quality.conditional-logic", "test-quality.only-skip", "test-quality.sleep-in-test"]) {
+    const settings = config.rules.get(ruleId);
+    config.rules.set(ruleId, { ...settings, enabled: true, options: settings?.options ?? new Map() });
+  }
+  return config;
 }
 
-// Returns rule IDs in emitted order. Invariant: ordering regressions remain visible.
+// Return warning IDs in their stable emitted order; an empty list means the scanned fixture produced no warnings.
 function ruleIds(findings: Finding[]): string[] {
   return findings.map((finding) => finding.ruleId);
 }
+
+// M22 hunt shapes (zod `array.test.ts` and `apply.test.ts`): a snapshot strip must remove only the snapshot call chain.
+// A lazy regex started at the earlier `expect(r1.success)` and deleted that real assertion, and vitest's `expectTypeOf<T>()` was not seen as an
+// assertion at all.
+//
+// A test whose only assertion is a snapshot still fires.
+test("M22 snapshot-only-test strips only whole snapshot call chains and sees expectTypeOf assertions", () => {
+  const report = analyseFixture([
+    "import { expect, expectTypeOf, test } from \"vitest\";",
+    "",
+    "test(\"array min/max\", () => {",
+    "  const r1 = schema.safeParse([\"asdf\"]);",
+    "  expect(r1.success).toEqual(false);",
+    "  expect(r1.error!.issues).toMatchInlineSnapshot(`",
+    "    [",
+    "      { \"code\": \"too_small\", \"message\": \"Too small (expected >=2)\" },",
+    "    ]",
+    "  `);",
+    "});",
+    "",
+    "test(\"basic apply (object)\", () => {",
+    "  const schema = z.object({ a: z.number() }).apply((s) => s.extend({ c: z.boolean() }));",
+    "  expect(z.toJSONSchema(schema)).toMatchInlineSnapshot(`",
+    "    { \"type\": \"object\" }",
+    "  `);",
+    "  expectTypeOf<z.infer<typeof schema>>().toEqualTypeOf<{",
+    "    a: number;",
+    "    c: boolean;",
+    "  }>();",
+    "});",
+    "",
+    "test(\"continue parsing despite array size error\", () => {",
+    "  const result = schema.safeParse({ people: [123] });",
+    "  expect(result).toMatchInlineSnapshot(`",
+    "    { \"success\": false }",
+    "  `);",
+    "});",
+    "",
+  ].join("\n"), { fileName: "array.test.ts" });
+  const snapshotOnly = report.findings.filter((entry) => entry.ruleId === "test-quality.snapshot-only-test").map((entry) => entry.symbol);
+
+  assert.deepEqual(snapshotOnly, ["continue parsing despite array size error"]);
+});
+
+// The no-throw strip had the same lazy regex, so a real assertion before an `expect(() => ...).not.toThrow()` was deleted with it.
+// Only a test that asserts nothing beyond the absence of an exception still fires.
+test("M22 no-throw-only-test strips only whole no-throw call chains", () => {
+  const report = analyseFixture([
+    "import assert from \"node:assert/strict\";",
+    "",
+    "test(\"parses and does not throw\", () => {",
+    "  expect(parse(\"a\")).toBe(1);",
+    "  expect(() => {",
+    "    parse(\"(\");",
+    "  }).not.toThrow();",
+    "});",
+    "",
+    "test(\"asserts after a callback check\", () => {",
+    "  assert.doesNotThrow(() => {",
+    "    parse(\")\");",
+    "  });",
+    "  assert.equal(parse(\"x\"), 1);",
+    "});",
+    "",
+    "test(\"only checks that parse does not throw\", () => {",
+    "  assert.doesNotThrow(() => parse(value(\"b\")));",
+    "});",
+    "",
+  ].join("\n"), { fileName: "parse.test.ts" });
+  const noThrowOnly = report.findings.filter((entry) => entry.ruleId === "test-quality.no-throw-only-test").map((entry) => entry.symbol);
+
+  assert.deepEqual(noThrowOnly, ["only checks that parse does not throw"]);
+});
+
+// M22 brief shape (`test-quality.loop-in-test`, 18 of 18 on the reporting repository): a prettier-wrapped per-case message and a message built from a
+//
+// loop-derived local both identify the failing row.
+// A looped assertion with no message, and one whose message names no loop binding, still fire: the rule's contract is an identifiable row.
+test("M22 loop-in-test reads wrapped and derived-local per-case messages", () => {
+  const report = analyseFixture([
+    "/** Overview: repro for loop-in-test line-wrapping blindness. */",
+    "import assert from \"node:assert/strict\";",
+    "import { describe, it } from \"node:test\";",
+    "const ITEMS = [\"alpha\", \"beta\", \"gamma\"];",
+    "describe(\"s\", () => {",
+    "  it(\"single-line message is seen\", () => {",
+    "    for (const item of ITEMS) {",
+    "      assert.ok(item.length > 0, `${item}: empty`);",
+    "    }",
+    "  });",
+    "  it(\"identical message, prettier-wrapped, is seen\", () => {",
+    "    for (const item of ITEMS) {",
+    "      assert.ok(",
+    "        item.length > 0,",
+    "        `${item}: empty`,",
+    "      );",
+    "    }",
+    "  });",
+    "  it(\"derived local message is seen\", () => {",
+    "    for (const item of ITEMS) {",
+    "      const label = `prefix/${item}`;",
+    "      assert.ok(item.length > 0, `${label}: empty`);",
+    "    }",
+    "  });",
+    "  it(\"no message still fires\", () => {",
+    "    for (const item of ITEMS) {",
+    "      assert.ok(item.length > 0);",
+    "    }",
+    "  });",
+    "  it(\"message naming no binding still fires\", () => {",
+    "    for (const item of ITEMS) {",
+    "      const size = ITEMS.length;",
+    "      assert.ok(item.length > 0, `${size}: empty`);",
+    "    }",
+    "  });",
+    "});",
+    "",
+  ].join("\n"), { fileName: "loops.test.ts" });
+  const loopTests = report.findings.filter((entry) => entry.ruleId === "test-quality.loop-in-test").map((entry) => entry.symbol).sort();
+
+  assert.deepEqual(loopTests, ["message naming no binding still fires", "no message still fires"]);
+});
+
+// Each case distinguishes a supported label or guard from the nearest unsafe mutation.
+const M15_STRUCTURE_CASES: ReadonlyArray<{ name: string; body: string; rule: string; reports: boolean }> = [
+  { name: "bare case message", body: "for (const item of items) { assert.ok(valid(item), item); }", rule: "loop-in-test", reports: false },
+  { name: "concatenated case message", body: "for (const item of items) { assert.ok(valid(item), 'case: ' + item); }", rule: "loop-in-test", reports: false },
+  { name: "call-built case message", body: "for (const item of items) { assert.ok(valid(item), describeCase(item)); }", rule: "loop-in-test", reports: false },
+  { name: "case expected operand", body: "for (const item of items) { assert.equal(actual(), item); }", rule: "loop-in-test", reports: false },
+  { name: "expect case expected operand", body: "for (const item of items) { expect(actual()).toBe(item); }", rule: "loop-in-test", reports: false },
+  { name: "C-style case message", body: "for (let index = 0; index < items.length; index++) { assert.ok(valid(items[index]), `case ${index}`); }", rule: "loop-in-test", reports: false },
+  { name: "for-in case message", body: "for (const key in items) { assert.ok(valid(items[key]), key); }", rule: "loop-in-test", reports: false },
+  { name: "actual alone lacks case context", body: "for (const item of items) { assert.ok(valid(item)); }", rule: "loop-in-test", reports: true },
+  { name: "constant message lacks case context", body: "for (const item of items) { assert.ok(valid(item), 'item'); }", rule: "loop-in-test", reports: true },
+  { name: "label cannot hide branch policy", body: "for (const item of items) { if (item.ok) { assert.ok(valid(item), item); } }", rule: "loop-in-test", reports: true },
+  { name: "host permission guard", body: "if (process.platform !== 'win32') { assert.equal(mode & 0o077, 0); }", rule: "conditional-logic", reports: false },
+  { name: "mixed host and result policy", body: "if (process.platform !== 'win32' && result.ok) { assert.equal(result.value, wanted); }", rule: "conditional-logic", reports: true },
+  { name: "proved discriminant narrowing", body: "assert.equal(result.ok, false); if (!result.ok) { assert.match(result.error, /JSON/u); }", rule: "conditional-logic", reports: false },
+  { name: "unproved type guard remains policy", body: "if (typeof result === 'string') { assert.equal(result, wanted); }", rule: "conditional-logic", reports: true },
+  { name: "narrowing cannot hide mutation", body: "assert.equal(result.ok, false); if (!result.ok) { result.error = wanted; assert.match(result.error, /JSON/u); }", rule: "conditional-logic", reports: true },
+  { name: "fake callback branch", body: "const fake = () => { if (result.ok) { assert.equal(result.value, wanted); } }; install(fake);", rule: "conditional-logic", reports: true },
+  { name: "inline completion callback keeps policy", body: "request().then(result => { if (result.ok) { assert.equal(result.value, wanted); } });", rule: "conditional-logic", reports: true },
+  { name: "promise executor keeps policy", body: "return new Promise(resolve => { if (result.ok) { assert.equal(result.value, wanted); } resolve(); });", rule: "conditional-logic", reports: true },
+  { name: "branch gates an inline assertion callback", body: "if (result.ok) { events.on('ready', value => { expect(value).toBe(wanted); }); }", rule: "conditional-logic", reports: true },
+  { name: "expect helper remains assertion evidence", body: "request().then(result => { if (result.ok) { cy.expectReady(result); } });", rule: "conditional-logic", reports: true },
+  { name: "assert helper remains assertion evidence", body: "request().then(result => { if (result.ok) { assertReady(result); } });", rule: "conditional-logic", reports: true },
+  { name: "assigned fixture callback retains guarded assertion", body: "sub.quit = () => { if (endHandler) { endHandler(); expect(closed).toBe(true); } }; await client.close();", rule: "conditional-logic", reports: true },
+  { name: "failure-only guard", body: "if (!result.ok) { assert.fail('missing result'); }", rule: "conditional-logic", reports: false },
+  { name: "constant guard is not host state", body: "if (true) { assert.equal(result, wanted); }", rule: "conditional-logic", reports: true },
+  { name: "guarded runtime skip", body: "if (process.platform === 'win32') { t.skip('POSIX only'); return; } assert.ok(result);", rule: "only-skip", reports: false },
+  { name: "caught capability skip", body: "try { probe(); } catch (error) { t.skip(String(error)); }", rule: "only-skip", reports: false },
+  { name: "logical capability skip", body: "isUnavailable && t.skip('host unavailable');", rule: "only-skip", reports: false },
+  { name: "skip in condition is unconditional", body: "if (t.skip('disabled')) { return; }", rule: "only-skip", reports: true },
+  { name: "unconditional runtime skip", body: "t.skip('temporarily disabled');", rule: "only-skip", reports: true },
+  { name: "guarded only still reports", body: "if (isUnavailable) { t.only('focused'); }", rule: "only-skip", reports: true },
+  { name: "guarded registration skip still reports", body: "if (isUnavailable) { it.skip('disabled', () => {}); }", rule: "only-skip", reports: true },
+  { name: "fake clock timer", body: "jest.useFakeTimers(); setTimeout(() => complete(), 10); jest.advanceTimersByTime(10); assert.ok(result);", rule: "sleep-in-test", reports: false },
+  { name: "restored real timer", body: "jest.useFakeTimers(); jest.useRealTimers(); await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(result);", rule: "sleep-in-test", reports: true },
+  { name: "comment cannot enable fake clock", body: "/* jest.useFakeTimers(); */ await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(result);", rule: "sleep-in-test", reports: true },
+  { name: "fake zone timer", body: "fakeAsyncTestZone.run(() => { setTimeout(() => complete(), 10); testZoneSpec.tick(10); }); assert.ok(result);", rule: "sleep-in-test", reports: false },
+  { name: "failure deadline", body: "await new Promise((resolve, reject) => { onMessage(resolve); setTimeout(() => { close(); reject(new Error('timeout')); }, 100); });", rule: "sleep-in-test", reports: false },
+  { name: "success delay remains fixed wait", body: "await new Promise(resolve => { setTimeout(() => resolve(), 100); }); assert.ok(result);", rule: "sleep-in-test", reports: true },
+  { name: "validator callback is fixture", body: "const form = buildForm({ loader: () => new Promise(resolve => setTimeout(() => resolve([]), 0)) }); assert.equal(form.pending(), true);", rule: "sleep-in-test", reports: false },
+  { name: "validator elapsed wait remains reportable", body: "const form = buildForm({ loader: () => new Promise(resolve => setTimeout(() => resolve([]), 100)) }); assert.equal(form.pending(), true);", rule: "sleep-in-test", reports: true },
+  { name: "completion callback elapsed wait remains reportable", body: "request().end(() => { setTimeout(() => { assert.ok(result); done(); }, 100); });", rule: "sleep-in-test", reports: true },
+];
+
+// Full analysis covers masking and shared-node ownership as well as each detector predicate.
+for (const { name, body, rule, reports } of M15_STRUCTURE_CASES) {
+  test(`M15 structure: ${name}`, () => {
+    const report = analyseFixture(`import assert from "node:assert/strict";\nimport { it } from "node:test";\nit("${name}", async (t) => { ${body} });`, { fileName: "m15-structure.test.ts", config: { rules: { [`test-quality.${rule}`]: { enabled: true } } } });
+    const actual = report.findings.some((finding) => finding.ruleId === `test-quality.${rule}`);
+    assert.equal(actual, reports, name);
+  });
+}
+
+test("M15 runtime skip accepts a TestContext parameter named test", () => {
+  const report = analyseFixture(`import { it } from "node:test";\nit("capability", (test) => { if (isUnavailable) { test.skip("host unavailable"); return; } });`, { fileName: "m15-context.test.ts", config: { rules: { "test-quality.only-skip": { enabled: true } } } });
+  assert.equal(report.findings.some((finding) => finding.ruleId === "test-quality.only-skip"), false);
+});

@@ -12,7 +12,10 @@ import { ruleCatalogueCoverageRuleIds } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
 
 const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "missing-invalid"] as const;
-const EXPECTED_RELEASE_RULE_COUNT = 120;
+const EXPECTED_RELEASE_RULE_COUNT = 112;
+// Every medium- and low-confidence rule carries reviewed false-positive guidance; the high-confidence
+// remainder omits the field. Naming both counts keeps the two guards below arithmetically linked.
+const EXPECTED_GUIDED_RULE_COUNT = 63;
 
 // Asserts the descriptor's optionKeys list is sorted and unique. Factored out of the descriptor
 // catalogue test body to preserve a stable sort invariant without an inline `if` branch.
@@ -75,10 +78,8 @@ const riskyRuleIdsRequiringNoisyValidProof = [
   "security.inner-html",
   "security.javascript-url",
   "security.process-exec",
-  "security.proto-access",
   "security.weak-crypto",
   "sensitive-data.api-key-pattern",
-  "sensitive-data.high-entropy-string",
   "test-quality.only-skip",
   "test-quality.static-analysis-redundant-test",
   "waste.commented-out-code",
@@ -308,19 +309,6 @@ const riskyRuleQualityDoctrine = [
     fingerprintStability: "keep the child-process call line as the finding anchor",
   },
   {
-    ruleId: "security.proto-access",
-    signalSource: "masked executable-line and guarded raw bracket-property scans",
-    expectedPillar: "security",
-    expectedSeverity: "warning",
-    expectedConfidence: "medium",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "direct dot or bracket __proto__ property access",
-    noisyValidFixture: "__proto__ text inside comments and unrelated string literals",
-    missingInvalidFixture: "direct prototype access remains reported beside noisy strings",
-    falsePositiveEscapeHatch: "require a real property access token in code",
-    fingerprintStability: "keep the prototype access line as the finding anchor",
-  },
-  {
     ruleId: "security.weak-crypto",
     signalSource: "raw text scan anchored to executable crypto API tokens",
     expectedPillar: "security",
@@ -332,19 +320,6 @@ const riskyRuleQualityDoctrine = [
     missingInvalidFixture: "weak crypto tokens remain reported with safe crypto nearby",
     falsePositiveEscapeHatch: "require exact weak algorithm or legacy protocol tokens",
     fingerprintStability: "keep the weak crypto line as the finding anchor",
-  },
-  {
-    ruleId: "sensitive-data.high-entropy-string",
-    signalSource: "raw text literal scanner with redacted preview metadata",
-    expectedPillar: "sensitive-data",
-    expectedSeverity: "error",
-    expectedConfidence: "medium",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "secret-like high-entropy literal",
-    noisyValidFixture: "package integrity hash and obvious placeholder literals",
-    missingInvalidFixture: "secret-like literal remains reported with redacted output",
-    falsePositiveEscapeHatch: "allowlist known non-secret encodings before reporting",
-    fingerprintStability: "anchor to the literal line without including raw secret text",
   },
   {
     ruleId: "test-quality.only-skip",
@@ -415,9 +390,49 @@ test("documentation catalogue covers comment rule pack", () => {
 
 // Pins the public release count so adding or removing a user-visible rule requires an intentional
 // catalogue and documentation update instead of silently changing the published scanner surface.
-test("release catalogue contains exactly 120 rule descriptors", () => {
+test("release catalogue contains exactly 112 rule descriptors", () => {
   const currentRuleCount = ruleDescriptors().length;
   assert.equal(currentRuleCount, EXPECTED_RELEASE_RULE_COUNT);
+});
+
+// A rule a user is told to trust less than the others owes them the shapes it gets wrong. This is
+// the metadata floor: every medium- and low-confidence rule carries at least one reviewed shape,
+// and each entry names both the pattern and what to do about it.
+test("every medium and low confidence rule carries reviewed false-positive guidance", () => {
+  const unguided = ruleDescriptors()
+    .filter((descriptor) => descriptor.confidence !== "high")
+    .filter((descriptor) => (descriptor.falsePositiveShapes ?? []).length === 0)
+    .map((descriptor) => descriptor.ruleId);
+
+  assert.deepEqual(unguided, []);
+
+  // Reported as one list rather than asserted in a loop, so a failure names every offending rule
+  // at once instead of stopping at the first.
+  const blankEntries = ruleDescriptors()
+    .flatMap((descriptor) => (descriptor.falsePositiveShapes ?? []).map((entry) => ({ descriptor, entry })))
+    .filter(({ entry }) => entry.shape.trim().length === 0 || entry.mitigation.trim().length === 0)
+    .map(({ descriptor }) => descriptor.ruleId);
+
+  assert.deepEqual(blankEntries, []);
+});
+
+// Omission is the contract, not an accident. A high-confidence rule leaves the field off entirely
+// so an absent field reads as "no shape reviewed" rather than "reviewed and found none" - an empty
+// array would publish the second claim, which no one has made.
+test("high confidence rules omit falsePositiveShapes rather than publishing an empty array", () => {
+  const highConfidence = ruleDescriptors().filter((descriptor) => descriptor.confidence === "high");
+
+  // The 49 high-confidence rules are the complement of the 63 medium/low rules that carry guidance.
+  assert.equal(highConfidence.length, EXPECTED_RELEASE_RULE_COUNT - EXPECTED_GUIDED_RULE_COUNT);
+
+  const publishingShapes = highConfidence
+    .filter((descriptor) => descriptor.falsePositiveShapes !== undefined)
+    .map((descriptor) => descriptor.ruleId);
+  assert.deepEqual(publishingShapes, []);
+
+  const exported = JSON.parse(JSON.stringify(ruleDescriptors())) as Array<Record<string, unknown>>;
+  const emptyArrays = exported.filter((rule) => Array.isArray(rule["falsePositiveShapes"]) && (rule["falsePositiveShapes"] as unknown[]).length === 0);
+  assert.deepEqual(emptyArrays, []);
 });
 
 test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
@@ -443,19 +458,18 @@ test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
   });
 });
 
-test("rule descriptors surface escape-hatch knobs in remediation prose", () => {
-  // M06 contract: every rule that carries a tunable knob (threshold, optionKeys, allowlistKeys)
-  // must point at it from `remediation` so consumers can find the config override without grepping
-  // the source. Threshold rules cite `rules.<ruleId>.threshold`; optionKeys rules name every key
-  // verbatim; allowlistKeys rules cite the `allowlists.<key>` path. Pre-filtering by descriptor
-  // shape avoids in-loop conditionals so the assertion runs as a deterministic table check.
+test("rule descriptors keep limit knobs out of remediation and allowlist knobs in it", () => {
+  // FAMILY-CONTRACT.md section 15 (search `Config hints in advice`): no advice offers raising a limit, and allowlist
+  // hints on naming rules stay. A threshold or option key is a limit, so it lives in docs/rules.md and the catalogue's
+  // false-positive mitigations; an allowlist key is not, so its `allowlists.<key>` path stays in the remediation.
+  // Pre-filtering by descriptor shape avoids in-loop conditionals so the assertion runs as a deterministic table check.
   const descriptors = ruleDescriptors();
   descriptors.filter((descriptor) => typeof descriptor.threshold === "number").forEach((descriptor) => {
-    assert.match(descriptor.remediation, /rules\./, `${descriptor.ruleId} remediation missing rules.<id> reference`);
+    assert.doesNotMatch(descriptor.remediation, /rules\.|threshold/, `${descriptor.ruleId} remediation offers its limit`);
   });
   descriptors.filter((descriptor) => descriptor.optionKeys !== undefined).forEach((descriptor) => {
     (descriptor.optionKeys ?? []).forEach((optionKey) => {
-      assert.match(descriptor.remediation, new RegExp(`\\b${optionKey}\\b`), `${descriptor.ruleId} remediation missing optionKey ${optionKey}`);
+      assert.doesNotMatch(descriptor.remediation, new RegExp(`\\b${optionKey}\\b`), `${descriptor.ruleId} remediation offers option ${optionKey}`);
     });
   });
   descriptors.filter((descriptor) => descriptor.allowlistKeys !== undefined).forEach((descriptor) => {
@@ -533,11 +547,9 @@ test("rule descriptor thresholds and options match implementation and config def
   assert.deepEqual(descriptorThresholds, implementationThresholds);
   assert.deepEqual(descriptorOptions, optionUsages(implementationSources));
 
-  // The shipped `.gruff-ts.yaml` selects `profile: recommended`, so it carries no explicit per-rule
-  // thresholds that could drift from the descriptor. Assert the loaded config enables every
-  // threshold-owning rule and leaves its threshold and severity at the descriptor default - a real
-  // override in the repo config would surface here. recommended == descriptor defaults is itself
-  // proven by the parity test in profiles.test.ts.
+  // The shipped `.gruff-ts.yaml` writes an explicit block for every rule. Assert the loaded config enables every
+  // threshold-owning rule and leaves its threshold and its severity at the descriptor default, so a drifted value in
+  // the repo config surfaces here rather than silently changing gruff-ts's own scan.
   const config = loadConfig(cwd(), repoScanOptions());
   descriptors.filter((entry) => typeof entry.threshold === "number").forEach((descriptor) => {
     assert.equal(ruleEnabled(config, descriptor.ruleId), true, `repo config disables ${descriptor.ruleId}`);
