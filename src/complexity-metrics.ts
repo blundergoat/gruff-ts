@@ -16,6 +16,7 @@ type TypeScriptNode = import("typescript").Node;
 /**
  * Stable per-kind decision counts attached to complexity findings for report consumers.
  * Every key is always present, including zero values, so JSON comparisons stay deterministic.
+ * `case` counts one decision per switch with a non-default case, however many cases it has.
  * `maxNesting` describes control-flow nesting only, never object or callback braces.
  */
 export interface ComplexityBreakdown {
@@ -59,7 +60,7 @@ interface ComplexityAccumulator {
 
 /**
  * Context threaded through the recursive walk so nested callable bodies keep one owner.
- * `callableNode` is the block being measured; `ownedCallableNodes` are sibling report blocks.
+ * `callableNode` is the node being measured; `ownedCallableNodes` includes nested callables measured separately.
  * The shared accumulator becomes metadata visible to report and hook consumers.
  */
 interface ComplexityWalkContext {
@@ -126,7 +127,7 @@ function walkComplexityNode(node: TypeScriptNode, controlFlowDepth: number, cont
   if (node !== context.callableNode && context.ownedCallableNodes.has(node)) {
     return;
   }
-  // A user's if statement adds one decision and one control-flow nesting level.
+  // An if adds one decision; an early-exit guard keeps the current nesting level.
   if (typescriptSyntax.isIfStatement(node)) {
     walkIfStatement(node, controlFlowDepth, context);
     return;
@@ -137,8 +138,12 @@ function walkComplexityNode(node: TypeScriptNode, controlFlowDepth: number, cont
     walkNestedControlFlow(node, controlFlowDepth, context);
     return;
   }
-  // A switch adds nesting for its choices but no decision beyond its non-default cases.
+  // A switch is one dispatch decision however many cases it has, and one control-flow nesting level.
   if (typescriptSyntax.isSwitchStatement(node)) {
+    // A switch with only a default clause chooses nothing, so it adds no decision.
+    if (node.caseBlock.clauses.some((clause) => typescriptSyntax.isCaseClause(clause))) {
+      context.accumulator.caseCount += 1;
+    }
     walkNestedControlFlow(node, controlFlowDepth, context);
     return;
   }
@@ -146,12 +151,6 @@ function walkComplexityNode(node: TypeScriptNode, controlFlowDepth: number, cont
   if (typescriptSyntax.isCatchClause(node)) {
     context.accumulator.catchCount += 1;
     walkNestedControlFlow(node, controlFlowDepth, context);
-    return;
-  }
-  // Each explicit case adds a decision; default and the case wrapper add no nesting.
-  if (typescriptSyntax.isCaseClause(node)) {
-    context.accumulator.caseCount += 1;
-    walkChildrenAtDepth(node, controlFlowDepth, context);
     return;
   }
   // A conditional expression adds one decision and one control-flow nesting level.
@@ -170,9 +169,10 @@ function walkComplexityNode(node: TypeScriptNode, controlFlowDepth: number, cont
 }
 
 // Counts an if and keeps an `else if` at peer depth while ordinary else bodies stay nested.
+// Returning early is the flattening the cognitive advice asks for, so a guard adds its decision but no nesting level.
 function walkIfStatement(node: import("typescript").IfStatement, controlFlowDepth: number, context: ComplexityWalkContext): void {
   context.accumulator.ifCount += 1;
-  const nestedDepth = enterControlFlow(controlFlowDepth, context.accumulator);
+  const nestedDepth = isEarlyExitGuard(node) ? controlFlowDepth : enterControlFlow(controlFlowDepth, context.accumulator);
   walkComplexityNode(node.expression, nestedDepth, context);
   walkComplexityNode(node.thenStatement, nestedDepth, context);
   // A source without an else branch has no further control-flow subtree for the user to review.
@@ -217,6 +217,19 @@ function enterControlFlow(controlFlowDepth: number, accumulator: ComplexityAccum
   const nestedDepth = controlFlowDepth + 1;
   accumulator.maximumControlFlowNesting = Math.max(accumulator.maximumControlFlowNesting, nestedDepth);
   return nestedDepth;
+}
+
+// A guard clause has no else and a body of one return, throw, break or continue, braced or not.
+function isEarlyExitGuard(node: import("typescript").IfStatement): boolean {
+  if (node.elseStatement) {
+    return false;
+  }
+  const body = typescriptSyntax.isBlock(node.thenStatement) ? node.thenStatement.statements : [node.thenStatement];
+  const exit = body.length === 1 ? body[0] : undefined;
+  return exit !== undefined && (typescriptSyntax.isReturnStatement(exit)
+    || typescriptSyntax.isThrowStatement(exit)
+    || typescriptSyntax.isBreakStatement(exit)
+    || typescriptSyntax.isContinueStatement(exit));
 }
 
 // Recognizes every loop syntax counted by the public complexity policy.

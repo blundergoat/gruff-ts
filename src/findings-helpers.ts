@@ -165,6 +165,11 @@ function opensTypeArgumentList(params: string, index: number, parameterStart: nu
  * Invariant: the fingerprint hashes (ruleId, filePath, line, symbol), so overrides never churn identity.
  */
 export function applyConfiguredSeverity(config: Config, finding: Finding): Finding {
+  // A lower-band size or complexity finding is advisory whatever severity the user configured (FAMILY-CONTRACT.md
+  // section 12, search `Size and complexity findings in two bands`).
+  if (finding.metadata.limitBand === "lower") {
+    return finding;
+  }
   const severity = ruleSeverity(config, finding.ruleId, finding.severity);
   return severity === finding.severity ? finding : { ...finding, severity };
 }

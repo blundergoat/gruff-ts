@@ -458,19 +458,18 @@ test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
   });
 });
 
-test("rule descriptors surface escape-hatch knobs in remediation prose", () => {
-  // M06 contract: every rule that carries a tunable knob (threshold, optionKeys, allowlistKeys)
-  // must point at it from `remediation` so consumers can find the config override without grepping
-  // the source. Threshold rules cite `rules.<ruleId>.threshold`; optionKeys rules name every key
-  // verbatim; allowlistKeys rules cite the `allowlists.<key>` path. Pre-filtering by descriptor
-  // shape avoids in-loop conditionals so the assertion runs as a deterministic table check.
+test("rule descriptors keep limit knobs out of remediation and allowlist knobs in it", () => {
+  // FAMILY-CONTRACT.md section 15 (search `Config hints in advice`): no advice offers raising a limit, and allowlist
+  // hints on naming rules stay. A threshold or option key is a limit, so it lives in docs/rules.md and the catalogue's
+  // false-positive mitigations; an allowlist key is not, so its `allowlists.<key>` path stays in the remediation.
+  // Pre-filtering by descriptor shape avoids in-loop conditionals so the assertion runs as a deterministic table check.
   const descriptors = ruleDescriptors();
   descriptors.filter((descriptor) => typeof descriptor.threshold === "number").forEach((descriptor) => {
-    assert.match(descriptor.remediation, /rules\./, `${descriptor.ruleId} remediation missing rules.<id> reference`);
+    assert.doesNotMatch(descriptor.remediation, /rules\.|threshold/, `${descriptor.ruleId} remediation offers its limit`);
   });
   descriptors.filter((descriptor) => descriptor.optionKeys !== undefined).forEach((descriptor) => {
     (descriptor.optionKeys ?? []).forEach((optionKey) => {
-      assert.match(descriptor.remediation, new RegExp(`\\b${optionKey}\\b`), `${descriptor.ruleId} remediation missing optionKey ${optionKey}`);
+      assert.doesNotMatch(descriptor.remediation, new RegExp(`\\b${optionKey}\\b`), `${descriptor.ruleId} remediation offers option ${optionKey}`);
     });
   });
   descriptors.filter((descriptor) => descriptor.allowlistKeys !== undefined).forEach((descriptor) => {

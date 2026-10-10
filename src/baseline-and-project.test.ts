@@ -613,7 +613,7 @@ function branchLightly(input: string): string {
     config: {
       rules: {
         "sensitive-data.aws-access-key": { enabled: false },
-        "complexity.cyclomatic": { threshold: 2, severity: "warning" },
+        "complexity.cyclomatic": { enabled: true, threshold: 2, severity: "warning" },
       },
     },
   });

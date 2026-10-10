@@ -8,7 +8,8 @@ import { baseComplexityMetrics, complexityMetrics as measureComplexity, type Com
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { escapeRegex, isGenericName, lineOffset, parameterNames, parameterParts } from "./findings-helpers.ts";
-import { callableMatchPoints, codeLineFlags, type ParsedScript } from "./parsed-script.ts";
+import { bandedFields, GROUP_PARAMETERS, LOWER_BAND_FUNCTION, LOWER_BAND_PARAMETER, SIMPLIFY_PATH, SPLIT_FUNCTION } from "./limit-band.ts";
+import { callableMatchPoints, codeLineFlags, measuredOnlyCallablePoints, type CallableMatchPoint, type ParsedScript } from "./parsed-script.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
 // Describe one callable that block rules can locate in a developer's scan report.
@@ -98,8 +99,11 @@ export interface BlockFindingArgs {
 //
 // Use it when consumers need thresholds or measurements alongside the editable source location.
 // Measurements travel with the warning; finding identifiers are computed separately.
+// Contract: metadata and any remediation reach the finding unchanged, so a band's advice and key stay together.
 export interface BlockFindingWithMetadataArgs extends BlockFindingArgs {
   metadata: Record<string, unknown>;
+  // The band's advice on a size or complexity finding; other block rules leave it out.
+  remediation?: string;
 }
 
 // Build a high-confidence warning at the callable's line and symbol, preserving its stable finding anchor.
@@ -122,6 +126,7 @@ export function blockFindingWithMetadata(args: BlockFindingWithMetadataArgs): Fi
     pillar: args.pillar,
     confidence: "medium",
     symbol: args.block.name,
+    ...(args.remediation === undefined ? {} : { remediation: args.remediation }),
     metadata: args.metadata,
   });
 }
@@ -144,10 +149,7 @@ export function blockRuleContext(file: SourceFile, block: FunctionBlock, config:
 
 // Run block rules in the fixed order expected by scan consumers and stable finding identities.
 export function analyseBlockRules(context: BlockRuleContext): void {
-  pushFunctionLengthFinding(context);
-  pushParameterCountFinding(context);
-  pushCyclomaticFinding(context);
-  pushCognitiveFinding(context);
+  analyseBlockMeasures(context);
   pushGenericFunctionFinding(context);
   pushMissingFunctionDocFinding(context);
   pushEmptyFunctionFinding(context);
@@ -156,19 +158,31 @@ export function analyseBlockRules(context: BlockRuleContext): void {
   pushUselessReturnFindings(context);
 }
 
-// Reports a size warning when the scanned function exceeds the configured line limit, which defaults to 200.
+// Run the size and complexity rules alone, in the order `analyseBlockRules` runs them. Callables that only these rules
+// measure use this entry, so the documentation and naming rules never see them (FAMILY-CONTRACT.md section 12, search
+// `four more function forms`).
+export function analyseBlockMeasures(context: BlockRuleContext): void {
+  pushFunctionLengthFinding(context);
+  pushParameterCountFinding(context);
+  pushCyclomaticFinding(context);
+  pushCognitiveFinding(context);
+}
+
+// Reports a size finding when the scanned function exceeds the configured line limit, which defaults to 200.
 function pushFunctionLengthFinding(context: BlockRuleContext): void {
   const functionLengthThreshold = threshold(context.config, "size.function-length", 200);
   // Show a size warning only when this function exceeds the user's configured line limit.
   if (context.block.codeLineCount > functionLengthThreshold) {
+    const band = bandedFields(context.block.codeLineCount, functionLengthThreshold, ruleSeverity(context.config, "size.function-length", "warning"), LOWER_BAND_FUNCTION, SPLIT_FUNCTION);
     context.findings.push(blockFindingWithMetadata({
       ruleId: "size.function-length",
       message: `Function \`${context.block.name}\` has ${context.block.codeLineCount} lines, above the threshold of ${functionLengthThreshold}.`,
       file: context.file,
       block: context.block,
-      severity: ruleSeverity(context.config, "size.function-length", "warning"),
+      severity: band.severity,
       pillar: "size",
-      metadata: { lines: context.block.codeLineCount, threshold: functionLengthThreshold },
+      remediation: band.remediation,
+      metadata: { lines: context.block.codeLineCount, threshold: functionLengthThreshold, limitBand: band.limitBand },
     }));
   }
 }
@@ -180,14 +194,16 @@ function pushParameterCountFinding(context: BlockRuleContext): void {
   const parameterCountThreshold = threshold(context.config, "size.parameter-count", 7);
   // Show a parameter-count warning when the declared inputs exceed the configured limit.
   if (params > parameterCountThreshold) {
+    const band = bandedFields(params, parameterCountThreshold, ruleSeverity(context.config, "size.parameter-count", "warning"), LOWER_BAND_PARAMETER, GROUP_PARAMETERS);
     context.findings.push(blockFindingWithMetadata({
       ruleId: "size.parameter-count",
       message: `Function \`${context.block.name}\` declares ${params} parameters.`,
       file: context.file,
       block: context.block,
-      severity: ruleSeverity(context.config, "size.parameter-count", "warning"),
+      severity: band.severity,
       pillar: "size",
-      metadata: { parameters: params, threshold: parameterCountThreshold },
+      remediation: band.remediation,
+      metadata: { parameters: params, threshold: parameterCountThreshold, limitBand: band.limitBand },
     }));
   }
 }
@@ -198,14 +214,16 @@ function pushCyclomaticFinding(context: BlockRuleContext): void {
   const cyclomaticThreshold = threshold(context.config, "complexity.cyclomatic", 15);
   // Show the shared decision count when it exceeds the user's complexity limit.
   if (context.cyclomatic > cyclomaticThreshold) {
+    const band = bandedFields(context.cyclomatic, cyclomaticThreshold, ruleSeverity(context.config, "complexity.cyclomatic", "warning"), LOWER_BAND_FUNCTION, SIMPLIFY_PATH);
     context.findings.push(blockFindingWithMetadata({
       ruleId: "complexity.cyclomatic",
       message: `Function \`${context.block.name}\` has cyclomatic complexity ${context.cyclomatic}.`,
       file: context.file,
       block: context.block,
-      severity: ruleSeverity(context.config, "complexity.cyclomatic", "warning"),
+      severity: band.severity,
       pillar: "complexity",
-      metadata: { complexity: context.cyclomatic, threshold: cyclomaticThreshold, breakdown: context.complexityMetrics.breakdown },
+      remediation: band.remediation,
+      metadata: { complexity: context.cyclomatic, threshold: cyclomaticThreshold, breakdown: context.complexityMetrics.breakdown, limitBand: band.limitBand },
     }));
   }
 }
@@ -217,14 +235,16 @@ function pushCognitiveFinding(context: BlockRuleContext): void {
   const cognitiveThreshold = threshold(context.config, "complexity.cognitive", 15);
   // Show a complexity warning when decisions and nesting exceed the configured limit.
   if (cognitive > cognitiveThreshold) {
+    const band = bandedFields(cognitive, cognitiveThreshold, ruleSeverity(context.config, "complexity.cognitive", "warning"), LOWER_BAND_FUNCTION, SIMPLIFY_PATH);
     context.findings.push(blockFindingWithMetadata({
       ruleId: "complexity.cognitive",
       message: `Function \`${context.block.name}\` has cognitive complexity ${cognitive}.`,
       file: context.file,
       block: context.block,
-      severity: ruleSeverity(context.config, "complexity.cognitive", "warning"),
+      severity: band.severity,
       pillar: "complexity",
-      metadata: { complexity: cognitive, threshold: cognitiveThreshold, breakdown: context.complexityMetrics.breakdown },
+      remediation: band.remediation,
+      metadata: { complexity: cognitive, threshold: cognitiveThreshold, breakdown: context.complexityMetrics.breakdown, limitBand: band.limitBand },
     }));
   }
 }
@@ -490,24 +510,52 @@ function isTestInvocationLine(line: string): boolean {
 // Builds report blocks from the shared syntax tree while preserving anchors and fingerprints.
 // Span-only utilities without a parse retain the legacy regex walk.
 export function functionBlocks(source: string, codeSource = source, parsed?: ParsedScript): FunctionBlock[] {
-  const scan: FunctionBlockScan = {
+  const scan = functionBlockScan(source, codeSource, parsed);
+  const matchPoints = matchPointsFor(scan, parsed);
+  const ownedCallableNodes = ownedCallables(matchPoints, parsed);
+  // Each stable block receives one metric result based on the final one-block-per-line ownership set.
+  return matchPoints.map((point) => functionBlockFromPoint(scan, point, ownedCallableNodes));
+}
+
+/**
+ * Builds blocks for the callable forms only the size and complexity rules measure: object-literal `key: function`
+ * methods, functions assigned to a member, `var` function expressions and immediately invoked functions.
+ * @param source Raw script text the blocks slice their bodies from.
+ * @param codeSource The same text with comments and literals masked.
+ * @param parsed Shared parse of the script; these forms are found only on the syntax tree.
+ * @returns One block per occurrence of these forms, in source order; empty when the script uses none of them.
+ */
+export function measuredOnlyFunctionBlocks(source: string, codeSource: string, parsed: ParsedScript): FunctionBlock[] {
+  const scan = functionBlockScan(source, codeSource, parsed);
+  const ownedCallableNodes = ownedCallables(matchPointsFor(scan, parsed), parsed);
+  return measuredOnlyCallablePoints(parsed).map((point) => functionBlockFromPoint(scan, blockMatchPoint(point), ownedCallableNodes));
+}
+
+// Reads the lines, code-line flags and re-exported names one script's block builders share.
+function functionBlockScan(source: string, codeSource: string, parsed: ParsedScript | undefined): FunctionBlockScan {
+  return {
     lines: source.split(/\r?\n/),
     codeLines: codeSource.split(/\r?\n/),
     isCodeLine: codeLineFlags(source, parsed),
     patterns: FUNCTION_BLOCK_PATTERNS,
     reExportedNames: collectReExportedNames(codeSource),
   };
-  const matchPoints = matchPointsFor(scan, parsed);
+}
+
+// Every AST-backed block owns one callable body, and so does every measure-only callable, so a nested callable's
+// decisions count in its own measure and never again in the function around it. Regex-only span probes have no node.
+function ownedCallables(matchPoints: BlockMatchPoint[], parsed: ParsedScript | undefined): Set<import("typescript").Node> {
   const ownedCallableNodes = new Set<import("typescript").Node>();
-  // Every AST-backed block owns one callable body; regex-only span probes have no syntax node.
   for (const point of matchPoints) {
     // A missing node means a caller requested the legacy regex discovery path without reparsing.
     if (point.callableNode) {
       ownedCallableNodes.add(point.callableNode);
     }
   }
-  // Each stable block receives one metric result based on the final one-block-per-line ownership set.
-  return matchPoints.map((point) => functionBlockFromPoint(scan, point, ownedCallableNodes));
+  for (const point of parsed ? measuredOnlyCallablePoints(parsed) : []) {
+    ownedCallableNodes.add(point.callableNode);
+  }
+  return ownedCallableNodes;
 }
 
 // One callable hit used to build the block that report rules inspect.
@@ -538,20 +586,7 @@ interface BlockMatchPoint {
 function matchPointsFor(scan: FunctionBlockScan, parsed: ParsedScript | undefined): BlockMatchPoint[] {
   // A normal script scan already owns one ParsedScript and must reuse its callable points here.
   if (parsed) {
-    return callableMatchPoints(parsed).map((point) => ({
-      lineIndex: point.lineIndex,
-      declarationLineIndex: point.declarationLineIndex,
-      endLineIndex: point.endLineIndex,
-      name: point.name,
-      params: point.params,
-      parameterCount: point.parameterCount,
-      hasBody: point.hasBody,
-      isDirectlyExported: point.isDirectlyExported,
-      isExplicitlyPublic: point.isExplicitlyPublic,
-      isModuleScoped: point.isModuleScoped,
-      isOverride: point.isOverride,
-      callableNode: point.callableNode,
-    }));
+    return callableMatchPoints(parsed).map(blockMatchPoint);
   }
   const points: BlockMatchPoint[] = [];
   // Span-only utilities still use the legacy masked-line inventory without triggering a parse.
@@ -563,6 +598,24 @@ function matchPointsFor(scan: FunctionBlockScan, parsed: ParsedScript | undefine
     }
   });
   return points;
+}
+
+// Carries one parsed callable point into the block builder's shape.
+function blockMatchPoint(point: CallableMatchPoint): BlockMatchPoint {
+  return {
+    lineIndex: point.lineIndex,
+    declarationLineIndex: point.declarationLineIndex,
+    endLineIndex: point.endLineIndex,
+    name: point.name,
+    params: point.params,
+    parameterCount: point.parameterCount,
+    hasBody: point.hasBody,
+    isDirectlyExported: point.isDirectlyExported,
+    isExplicitlyPublic: point.isExplicitlyPublic,
+    isModuleScoped: point.isModuleScoped,
+    isOverride: point.isOverride,
+    callableNode: point.callableNode,
+  };
 }
 
 // Identify local declarations exposed by export lists or bare default exports for the public-doc rule.

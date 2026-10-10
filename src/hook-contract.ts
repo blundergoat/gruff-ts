@@ -495,6 +495,11 @@ function scopeForFinding(finding: Finding): HookScope {
 // keeping the contract's metadata shape stable.
 function hookMetadata(finding: Finding): Record<string, unknown> {
   const thresholdMetadata = thresholdMetadataFor(finding);
+  // A banded size or complexity finding keeps its band beside the measurement (FAMILY-CONTRACT.md section 12, search
+  // `The band key`).
+  if (thresholdMetadata && typeof finding.metadata.limitBand === "string") {
+    return { ...thresholdMetadata, limitBand: finding.metadata.limitBand };
+  }
   return thresholdMetadata ?? finding.metadata;
 }
 

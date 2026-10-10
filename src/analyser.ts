@@ -5,7 +5,7 @@
 import { Buffer, isUtf8 } from "node:buffer";
 import { readFileSync, statSync } from "node:fs";
 import { cwd } from "node:process";
-import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { recordHistory, sortedUniqueFindings } from "./baseline.ts";
 import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan } from "./baseline-identity.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
@@ -18,7 +18,8 @@ import { makeFinding } from "./findings.ts";
 import { applyConfiguredSeverity, finding, parameterNames, parameterParts } from "./findings-helpers.ts";
 import { commentRecords, type CommentRecord } from "./comment-scanner.ts";
 import { analyseArchitectureRules, analyseCircularImportRule, buildProjectIndex, CIRCULAR_IMPORT_RULE_ID, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
-import { analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks } from "./blocks.ts";
+import { analyseBlockMeasures, analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks, measuredOnlyFunctionBlocks } from "./blocks.ts";
+import { bandedFields, LOWER_BAND_FILE, SPLIT_FILE } from "./limit-band.ts";
 import { analyseClassRules, analyseAcronymCase, analyseInconsistentCasing, analyseInterfaceFields, collectDeclaredIdentifiers } from "./class-rules.ts";
 import { analyseDeadCode, analyseUnreachable, analyseUnusedImports } from "./dead-code-rules.ts";
 import { analyseCommentQualityRules } from "./comment-rules.ts";
@@ -530,7 +531,7 @@ function hasImportSyntaxCandidate(source: string): boolean {
 function analyseSource(file: SourceFile, source: string, config: Config, isWithinDeepScanBudget: boolean, parsed?: ParsedScript): Finding[] {
   const findings: Finding[] = [];
   // Size and documentation rules share one comment scan so code-only line counts do not add a second pass.
-  const comments = (ruleEnabled(config, "size.file-length") && usesCStyleComments(file)) || (file.isScript && isAnyRuleEnabled(config, COMMENT_QUALITY_RULE_IDS)) ? commentRecords(source) : [];
+  const comments = file.isScript && (ruleEnabled(config, "size.file-length") || isAnyRuleEnabled(config, COMMENT_QUALITY_RULE_IDS)) ? commentRecords(source) : [];
   analyseTextRules(file, source, comments, config, findings, parsed);
   if (file.isScript && isWithinDeepScanBudget) {
     analyseTypeScriptRules(file, source, comments, config, findings, parsed);
@@ -654,11 +655,16 @@ const PROJECT_CONFIG_RULE_IDS = [
   "design.package-bin-not-executable",
 ] as const;
 
-const BLOCK_RULE_IDS = [
+// The size and complexity block rules, the only rules that also run on the measure-only callable forms.
+const BLOCK_MEASURE_RULE_IDS = [
   "size.function-length",
   "size.parameter-count",
   "complexity.cyclomatic",
   "complexity.cognitive",
+] as const;
+
+const BLOCK_RULE_IDS = [
+  ...BLOCK_MEASURE_RULE_IDS,
   "naming.generic-function",
   "docs.missing-exported-function-doc",
   "docs.missing-internal-function-doc",
@@ -778,21 +784,24 @@ function isAnyRuleEnabled(config: Config, ruleIds: readonly string[]): boolean {
  * checks changes same-line finding order for machine reports.
  */
 function analyseTextRules(file: SourceFile, source: string, comments: CommentRecord[], config: Config, findings: Finding[], parsed?: ParsedScript): void {
-  if (ruleEnabled(config, "size.file-length") && !isGeneratedLockfile(file.displayPath)) {
-    const lines = substantiveLineCount(file, source, comments, parsed);
+  // File length measures JavaScript and TypeScript only; JSON, YAML, TOML, XML and other text files are data, not logic
+  // (FAMILY-CONTRACT.md section 12, search `Size and complexity findings in two bands`).
+  if (file.isScript && ruleEnabled(config, "size.file-length")) {
+    const lines = substantiveLineCount(source, comments, parsed);
     const fileLengthThreshold = threshold(config, "size.file-length", 1000);
     if (lines > fileLengthThreshold) {
+      const band = bandedFields(lines, fileLengthThreshold, ruleSeverity(config, "size.file-length", "error"), LOWER_BAND_FILE, SPLIT_FILE);
       findings.push(
         makeFinding({
           ruleId: "size.file-length",
           message: `File has ${lines} substantive lines, above the threshold of ${fileLengthThreshold}.`,
           filePath: file.displayPath,
           line: 1,
-          severity: ruleSeverity(config, "size.file-length", "error"),
+          severity: band.severity,
           pillar: "size",
           confidence: "high",
-          remediation: "Split unrelated responsibilities into smaller files. Or raise rules.size.file-length.threshold in .gruff-ts.yaml if the bound is wrong for this project.",
-          metadata: { lines, threshold: fileLengthThreshold },
+          remediation: band.remediation,
+          metadata: { lines, threshold: fileLengthThreshold, limitBand: band.limitBand },
         }),
       );
     }
@@ -809,24 +818,16 @@ function analyseTextRules(file: SourceFile, source: string, comments: CommentRec
   }
 }
 
-// Counts nonblank lines after removing C-style and XML comments, then applies config-format
-// full-line markers. Strings remain intact, so a line containing only a string literal still counts.
-function substantiveLineCount(file: SourceFile, source: string, comments: CommentRecord[], parsed?: ParsedScript): number {
-  const withoutCStyleComments = maskRecordedComments(source, comments);
-  const withoutComments = extname(file.displayPath).toLowerCase() === ".xml" ? maskXmlComments(withoutCStyleComments) : withoutCStyleComments;
+// Counts a script's nonblank lines after removing comments, decorators and any `#!` line. Strings remain intact, so a
+// line containing only a string literal still counts.
+function substantiveLineCount(source: string, comments: CommentRecord[], parsed?: ParsedScript): number {
+  const withoutComments = maskRecordedComments(source, comments);
   // A parsed script also frees its decorator lines (FAMILY-CONTRACT section 12, search `Code lines in every line count`).
   const withoutDecorators = parsed ? maskDecorators(withoutComments, parsed) : withoutComments;
   return withoutDecorators
     .split(/\r?\n/)
-    .filter((line) => isSubstantiveLine(file, line))
+    .filter((line) => isSubstantiveLine(line))
     .length;
-}
-
-// C-style comments are valid on script/CSS surfaces and common in JSON-with-comments configs.
-// Other supported text formats use their own full-line markers and must keep literal slash pairs.
-function usesCStyleComments(file: SourceFile): boolean {
-  const extension = extname(file.displayPath).toLowerCase();
-  return file.isScript || extension === ".css" || extension === ".json";
 }
 
 // Replaces comment text with spaces while retaining newlines and UTF-16 offsets from CommentRecord.
@@ -842,26 +843,10 @@ function maskRecordedComments(source: string, comments: CommentRecord[]): string
   return masked + source.slice(cursor);
 }
 
-// XML comments are outside the JavaScript lexer; preserving their newlines keeps line accounting stable.
-function maskXmlComments(source: string): string {
-  return source.replace(/<!--[\s\S]*?(?:-->|$)/g, (comment) => comment.replace(/[^\r\n]/g, " "));
-}
-
-// Hash and semicolon markers are restricted to formats where they are comments, so TypeScript
-// private fields and ordinary semicolon statements remain substantive.
-function isSubstantiveLine(file: SourceFile, line: string): boolean {
+// A blank line and a `#!` interpreter line are free; a TypeScript private field such as `#count = 0;` still counts.
+function isSubstantiveLine(line: string): boolean {
   const trimmed = line.trim();
-  if (!trimmed) {
-    return false;
-  }
-  const name = basename(file.displayPath).toLowerCase();
-  const extension = extname(name);
-  const usesHashComments = [".yaml", ".yml", ".toml"].includes(extension) || name === ".npmrc" || name.startsWith(".env");
-  if ((usesHashComments || (file.isScript && trimmed.startsWith("#!"))) && trimmed.startsWith("#")) {
-    return false;
-  }
-  const usesSemicolonComments = extension === ".ini" || name === ".npmrc";
-  return !(usesSemicolonComments && trimmed.startsWith(";"));
+  return trimmed !== "" && !trimmed.startsWith("#!");
 }
 
 // Counts the same logical lines as `source.split(/\r?\n/)` without allocating the full line array.
@@ -873,13 +858,6 @@ function lineCount(source: string): number {
     }
   }
   return count;
-}
-
-// Package-manager lockfiles contain generated dependency metadata. Discovery retains them and `size.file-length`
-// skips them outright; every sensitive-data rule still reads them.
-function isGeneratedLockfile(filePath: string): boolean {
-  const fileName = basename(filePath);
-  return fileName === "package-lock.json" || fileName === "npm-shrinkwrap.json" || fileName === "yarn.lock" || fileName === "pnpm-lock.yaml" || fileName === "bun.lockb";
 }
 
 /*
@@ -894,6 +872,14 @@ function analyseTypeScriptRules(file: SourceFile, source: string, comments: Comm
   const blocks = isAnyRuleEnabled(config, BLOCK_DEPENDENT_RULE_IDS) ? functionBlocks(source, codeSource, parsed) : [];
   runRulePass(config, "docs.missing-file-overview", () => analyseFileOverviewDoc(file, source, findings));
   analyseBlocks(file, source, codeSource, blocks, config, findings);
+  // Callables only the size and complexity rules measure; the documentation and naming rules never see them.
+  runRuleGroupPass(config, BLOCK_MEASURE_RULE_IDS, () => {
+    if (parsed) {
+      for (const block of measuredOnlyFunctionBlocks(source, codeSource, parsed)) {
+        analyseBlockMeasures(blockRuleContext(file, block, config, findings));
+      }
+    }
+  });
   runRulePass(config, "waste.unused-import", () => analyseUnusedImports(file, codeSource, source, findings));
   runRuleGroupPass(config, LINE_RULE_IDS, () => analyseLineRules(file, source, codeSource, config, findings, parsed));
   runRuleGroupPass(config, SECURITY_FLOW_RULE_IDS, () => analyseSecurityFlow(file, source, findings, parsed?.sourceFile));

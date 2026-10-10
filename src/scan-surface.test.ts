@@ -75,24 +75,28 @@ test("findings outside the launch directory are project-relative to the scanned 
 test("size file-length counts substantive lines instead of documentation padding", () => {
   const commentOnlyTypeScript = Array.from({ length: 1001 }, (_, index) => `// Documentation line ${index + 1}`).join("\n");
   const blockCommentTypeScript = ["/**", ...Array.from({ length: 1001 }, (_, index) => ` * Guide line ${index + 1}`), " */"].join("\n");
-  const commentOnlyYaml = Array.from({ length: 1001 }, (_, index) => `# Configuration note ${index + 1}`).join("\n");
-  const commentOnlyIni = Array.from({ length: 1001 }, (_, index) => `; Configuration note ${index + 1}`).join("\n");
-  const commentOnlyXml = ["<!--", ...Array.from({ length: 1001 }, (_, index) => `Guide line ${index + 1}`), "-->"].join("\n");
-  const substantiveJson = Array.from({ length: 1001 }, (_, index) => `"// route ${index}",`).join("\n");
+  const substantiveTypeScript = Array.from({ length: 1001 }, (_, index) => `export const route${index} = "// route ${index}";`).join("\n");
 
   const typeScriptFinding = analyseFixture(commentOnlyTypeScript, { fileName: "help-guide.ts" }).findings.find((finding) => finding.ruleId === "size.file-length");
   const blockCommentFinding = analyseFixture(blockCommentTypeScript, { fileName: "block-guide.ts" }).findings.find((finding) => finding.ruleId === "size.file-length");
-  const yamlFinding = analyseFixture(commentOnlyYaml, { fileName: "settings.yaml" }).findings.find((finding) => finding.ruleId === "size.file-length");
-  const iniFinding = analyseFixture(commentOnlyIni, { fileName: "settings.ini" }).findings.find((finding) => finding.ruleId === "size.file-length");
-  const xmlFinding = analyseFixture(commentOnlyXml, { fileName: "guide.xml" }).findings.find((finding) => finding.ruleId === "size.file-length");
-  const substantiveFinding = analyseFixture(substantiveJson, { fileName: "large.json" }).findings.find((finding) => finding.ruleId === "size.file-length");
+  const substantiveFinding = analyseFixture(substantiveTypeScript, { fileName: "routes.ts" }).findings.find((finding) => finding.ruleId === "size.file-length");
 
   assert.equal(typeScriptFinding, undefined);
   assert.equal(blockCommentFinding, undefined);
-  assert.equal(yamlFinding, undefined);
-  assert.equal(iniFinding, undefined);
-  assert.equal(xmlFinding, undefined);
-  assert.deepEqual(substantiveFinding?.metadata, { lines: 1001, threshold: 1000 });
+  assert.deepEqual(substantiveFinding?.metadata, { lines: 1001, threshold: 1000, limitBand: "lower" });
+});
+
+test("size file-length reads JavaScript and TypeScript only", () => {
+  // FAMILY-CONTRACT.md section 12 (search `Size and complexity findings in two bands`): data files are not logic.
+  const dataFiles = {
+    "large.json": ["[", ...Array.from({ length: 1600 }, (_, index) => `  { "route": ${index} },`), "  {}", "]"].join("\n"),
+    "settings.yaml": Array.from({ length: 1600 }, (_, index) => `key${index}: ${index}`).join("\n"),
+    "settings.toml": Array.from({ length: 1600 }, (_, index) => `key${index} = ${index}`).join("\n"),
+    "guide.xml": ["<guide>", ...Array.from({ length: 1600 }, (_, index) => `  <line n="${index}"/>`), "</guide>"].join("\n"),
+    "long.js": Array.from({ length: 1600 }, (_, index) => `export const value${index} = ${index};`).join("\n"),
+  };
+  const reported = analyseProject(dataFiles).findings.filter((finding) => finding.ruleId === "size.file-length").map((finding) => finding.filePath);
+  assert.deepEqual(reported, ["long.js"]);
 });
 
 test("a normally analysable scan carries no notes field", () => {

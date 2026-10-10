@@ -135,9 +135,10 @@ test("profile summaries report all three built-ins with monotonic enabled counts
   assert.ok(minimal.enabledRuleCount < recommended.enabledRuleCount, "minimal enables fewer rules than recommended");
   // Rules that ship off by default run under no preset until a config enables them, so they are not counted: two from
   // ADR-021, the side-effect and invariant rules, whose keyword lists cannot accept a comment written in other words,
-  // and waste.swallowed-catch, whose measured precision stayed below the waste floor after its repair.
+  // waste.swallowed-catch, whose measured precision stayed below the waste floor after its repair, and
+  // complexity.cyclomatic, below the 0.60 floor after its precision-floor M14 repair.
   const offByDefault = ruleDescriptors().filter((descriptor) => descriptor.isEnabledByDefault === false).map((descriptor) => descriptor.ruleId);
-  assert.deepEqual(offByDefault.sort(), ["docs.missing-invariant-doc", "docs.missing-side-effect-doc", "security.open-redirect-candidate", "sensitive-data.jwt-token", "waste.swallowed-catch"]);
+  assert.deepEqual(offByDefault.sort(), ["complexity.cyclomatic", "docs.missing-invariant-doc", "docs.missing-side-effect-doc", "security.open-redirect-candidate", "sensitive-data.jwt-token", "waste.swallowed-catch"]);
   assert.equal(recommended.enabledRuleCount, recommended.totalRuleCount - offByDefault.length, "recommended enables every rule that is on by default");
   assert.equal(strict.enabledRuleCount, strict.totalRuleCount - offByDefault.length, "strict enables every rule that is on by default");
   assert.ok(strict.tightenedThresholdCount > 0, "strict tightens at least one threshold");

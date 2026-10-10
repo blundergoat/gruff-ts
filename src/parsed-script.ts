@@ -73,6 +73,8 @@ export interface DeclarationOwnershipPoints {
  */
 interface ParsedSyntaxIndex {
   callablePoints: CallableMatchPoint[];
+  // Callables only the size and complexity rules measure; every other block rule reads `callablePoints` alone.
+  measuredOnlyPoints: CallableMatchPoint[];
   declarationOwnership: DeclarationOwnershipPoints;
 }
 
@@ -264,6 +266,19 @@ export function callableMatchPoints(parsed: ParsedScript): CallableMatchPoint[] 
 }
 
 /**
+ * Enumerates the callable forms only the size and complexity rules measure (FAMILY-CONTRACT.md section 12, search
+ * `four more function forms`): an object-literal `key: function` method, a function assigned to a member, a `var`
+ * function expression and an immediately invoked function. Each takes a function expression or an arrow function.
+ * Which callables the documentation rules see is unchanged.
+ *
+ * @param parsed Shared parse result for the script.
+ * @returns Points in source order; empty when the script uses none of these forms.
+ */
+export function measuredOnlyCallablePoints(parsed: ParsedScript): CallableMatchPoint[] {
+  return parsedSyntaxIndex(parsed).measuredOnlyPoints;
+}
+
+/**
  * Returns variable and contract-field owners from the same syntax walk used for callable blocks.
  * @param parsed Shared parse for the user's script; it is always present for a deep script scan.
  * @returns Ordered rows; empty arrays mean the source declares no currently inventoried names.
@@ -281,6 +296,7 @@ function parsedSyntaxIndex(parsed: ParsedScript): ParsedSyntaxIndex {
     return cachedIndex;
   }
   const callablePointsByLine = new Map<number, CallableMatchPoint>();
+  const measuredOnlyPoints: CallableMatchPoint[] = [];
   const variableDeclarations: OwnedDeclarationPoint[] = [];
   const contractFields: OwnedDeclarationPoint[] = [];
   const sourceLines = parsed.sourceFile.text.split(/\r?\n/);
@@ -288,6 +304,11 @@ function parsedSyntaxIndex(parsed: ParsedScript): ParsedSyntaxIndex {
   // declaration merging while one depth-first walk visits the user's syntax tree.
   const visitSyntaxNode = (node: TsNode, declarationOwner: IdentifierOwner, contractScopeId: string): void => {
     recordCallablePoint(callablePointsByLine, matchPointFor(parsed.sourceFile, node));
+    const measuredOnlyPoint = measuredOnlyPointFor(parsed.sourceFile, node);
+    // Most nodes are not one of the measure-only forms.
+    if (measuredOnlyPoint) {
+      measuredOnlyPoints.push(measuredOnlyPoint);
+    }
     recordVariableDeclaration(parsed.sourceFile, node, declarationOwner, variableDeclarations);
     recordContractFields(parsed.sourceFile, sourceLines, node, contractScopeId, contractFields);
     const callableOwner = functionLikeOwner(parsed.sourceFile, node);
@@ -300,6 +321,7 @@ function parsedSyntaxIndex(parsed: ParsedScript): ParsedSyntaxIndex {
   parsed.sourceFile.forEachChild((node) => visitSyntaxNode(node, MODULE_IDENTIFIER_OWNER, MODULE_IDENTIFIER_OWNER.ownerId));
   const syntaxIndex: ParsedSyntaxIndex = {
     callablePoints: [...callablePointsByLine.values()].sort((left, right) => left.lineIndex - right.lineIndex),
+    measuredOnlyPoints,
     declarationOwnership: { variableDeclarations, contractFields },
   };
   parsedSyntaxIndexes.set(parsed, syntaxIndex);
@@ -528,6 +550,88 @@ function matchPointFor(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoi
     return testCallbackPoint(sourceFile, node);
   }
   return undefined;
+}
+
+// Finds the point for one of the four measure-only forms; a node is at most one of them.
+function measuredOnlyPointFor(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
+  return varFunctionPoint(sourceFile, node) ?? keyFunctionPoint(sourceFile, node) ?? memberFunctionPoint(sourceFile, node) ?? invokedFunctionPoint(sourceFile, node);
+}
+
+// `var render = function () {}`, named after the variable.
+function varFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
+  if (!typescriptSyntax.isVariableDeclaration(node) || !typescriptSyntax.isIdentifier(node.name) || !isFunctionValue(node.initializer) || !isVarList(node.parent)) {
+    return undefined;
+  }
+  return declarationPoint(sourceFile, node.name.getStart(sourceFile), node.initializer, node.name.text, node.initializer.parameters);
+}
+
+// `{ paint: function () {} }`, named after the key, qualified by the object's variable or assignment target when it has one.
+function keyFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
+  if (!typescriptSyntax.isPropertyAssignment(node) || !isFunctionValue(node.initializer) || typescriptSyntax.isComputedPropertyName(node.name)) {
+    return undefined;
+  }
+  const objectName = objectLiteralName(sourceFile, node.parent);
+  const name = objectName ? `${objectName}.${node.name.text}` : node.name.text;
+  return declarationPoint(sourceFile, node.name.getStart(sourceFile), node.initializer, name, node.initializer.parameters);
+}
+
+// `Calendar.render = function () {}`, named after the member it is assigned to.
+function memberFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
+  if (!typescriptSyntax.isBinaryExpression(node) || node.operatorToken.kind !== typescriptSyntax.SyntaxKind.EqualsToken || !isMember(node.left) || !isFunctionValue(node.right)) {
+    return undefined;
+  }
+  return declarationPoint(sourceFile, node.left.getStart(sourceFile), node.right, compactText(sourceFile, node.left), node.right.parameters);
+}
+
+// `(function () {})()`, named after the function when it has a name and `<iife>` otherwise.
+function invokedFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
+  const callee = typescriptSyntax.isCallExpression(node) ? withoutParentheses(node.expression) : undefined;
+  if (!isFunctionValue(callee)) {
+    return undefined;
+  }
+  const name = typescriptSyntax.isFunctionExpression(callee) && callee.name ? callee.name.text : "<iife>";
+  return declarationPoint(sourceFile, callee.getStart(sourceFile), callee, name, callee.parameters);
+}
+
+// A function expression or arrow function is the value each measure-only form binds or invokes.
+function isFunctionValue(node: TsNode | undefined): node is import("typescript").FunctionExpression | import("typescript").ArrowFunction {
+  return node !== undefined && (typescriptSyntax.isFunctionExpression(node) || typescriptSyntax.isArrowFunction(node));
+}
+
+// `const` and `let` initializers are already ordinary blocks (search `variableInitializerPoint`); only `var` is added.
+function isVarList(node: TsNode): boolean {
+  return typescriptSyntax.isVariableDeclarationList(node) && (node.flags & typescriptSyntax.NodeFlags.BlockScoped) === 0;
+}
+
+// A property or element access is the member a function can be assigned to.
+function isMember(node: TsNode): boolean {
+  return typescriptSyntax.isPropertyAccessExpression(node) || typescriptSyntax.isElementAccessExpression(node);
+}
+
+// The name an object literal is bound to, when it is a variable's initializer or the right side of an assignment.
+function objectLiteralName(sourceFile: TsSourceFile, objectLiteral: TsNode): string | undefined {
+  const owner = objectLiteral.parent;
+  if (typescriptSyntax.isVariableDeclaration(owner) && typescriptSyntax.isIdentifier(owner.name)) {
+    return owner.name.text;
+  }
+  if (typescriptSyntax.isBinaryExpression(owner) && owner.operatorToken.kind === typescriptSyntax.SyntaxKind.EqualsToken && owner.right === objectLiteral) {
+    return compactText(sourceFile, owner.left);
+  }
+  return undefined;
+}
+
+// Source text with its whitespace removed, so a member written across lines names its function on one.
+function compactText(sourceFile: TsSourceFile, node: TsNode): string {
+  return node.getText(sourceFile).replace(/\s+/g, "");
+}
+
+// Looks through the parentheses an immediately invoked function is usually wrapped in.
+function withoutParentheses(node: TsNode): TsNode {
+  let inner = node;
+  while (typescriptSyntax.isParenthesizedExpression(inner)) {
+    inner = inner.expression;
+  }
+  return inner;
 }
 
 // Builds the point for a named declaration: the anchor line is the name's line, matching where

@@ -255,6 +255,7 @@ test("loads default gruff-ts yaml config", () => {
 schemaVersion: gruff-ts.config.v0.1
 rules:
   "complexity.cyclomatic":
+    enabled: true
     threshold: 2
     severity: warning
 `,

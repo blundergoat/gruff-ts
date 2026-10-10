@@ -2,6 +2,28 @@
 
 ## v0.6.0 - Unreleased
 
+- **BREAKING: `complexity.cyclomatic` is off by default** - After the repair below, it was worth acting on 26 times in 48 judged
+  findings at one and a half times its limit or more, under the 0.60 floor. Enable it with `rules.complexity.cyclomatic.enabled:
+  true`; a config that already sets it keeps it on. The `gruff.strict` profile no longer tightens it, so it stays off there too.
+- **Flat dispatch and early-exit guards score as simpler paths** - `complexity.cyclomatic` counts a `switch` as one decision however
+  many cases it has, and `complexity.cognitive` gives an early-exit guard (an `if` with no `else` whose body is one `return`, `throw`,
+  `break` or `continue`) no nesting level. `docs.missing-why-for-complex-code` reads the same measurement, and
+  `metadata.breakdown.case` now counts switches rather than cases.
+
+- **Size and complexity findings report in two bands** - A `size.*` or `complexity.*` finding under one and a half times its limit is an advisory notice
+  not to add to the unit, whatever severity the config sets, with `metadata.limitBand: "lower"`; at that ratio or above it keeps its severity and the advice
+  to split or simplify, with `limitBand: "upper"`. Every such finding now carries this advice, the hook payload carries the band, and the message is unchanged.
+
+- **Advice no longer offers changing a limit** - Seven remediations stop suggesting a raised `rules.<id>.threshold`, and `naming.generic-parameter` and
+  `design.large-module-concentration` stop suggesting option changes; `docs/rules.md` still names the knobs, as do the
+  false-positive mitigations of `design.deep-relative-import`, `design.large-module-concentration` and `naming.generic-parameter`.
+
+- **Four more function forms are measured for size and complexity** - Object-literal `key: function` methods, functions assigned to a member, `var`
+  function expressions and immediately invoked functions now receive `size.function-length`, `size.parameter-count` and the complexity rules. Their
+  decisions no longer count again in the function around them; documentation and naming rules still skip them.
+
+- **`size.file-length` reads JavaScript and TypeScript only** - JSON, YAML, TOML, XML and other data files no longer receive file-length findings.
+
 - `gruff-ts init` no longer lists `generated` and `tmp` as skipped by default; scans include them unless Git or `paths.ignore` excludes them.
 
 - Test callbacks registered with `void it(...)` or `void test(...)` receive test-quality checks and no longer prompt internal-function documentation advice.

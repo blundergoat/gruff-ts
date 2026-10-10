@@ -47,12 +47,20 @@ itself suppress any rule family.
 - size: 3
 - test-quality: 13
 
+**Two bands for size and complexity.** Every `size.*` and `complexity.*` finding reports in one of two bands (FAMILY-CONTRACT.md
+section 12, "Size and complexity findings in two bands"). Under one and a half times its limit, the finding is an advisory notice
+whatever the configured severity, carries `metadata.limitBand: "lower"`, and advises not to add to the unit. At one and a half times
+the limit or more, it keeps its severity, carries `metadata.limitBand: "upper"`, and advises splitting the unit, or for a complexity
+rule simplifying the execution path. The message is the same in both bands, so a finding keeps its identity when its unit crosses
+the boundary, and the hook payload carries the band beside its measurement. Findings no longer suggest changing a limit; a project
+whose bound is wrong sets `rules.<id>.threshold` in `.gruff-ts.yaml` (see `docs/configuration.md`).
+
 ## Complexity
 
-- `complexity.cognitive` (warning; high confidence; threshold 15): Flags syntax-aware decisions plus nested `if`, loop, `switch`, `catch`, and ternary depth. Object literals, callback wrappers, classes, and ordinary blocks do not add nesting; `else if` remains at peer depth and switch cases do not stack.
-- `complexity.cyclomatic` (warning; high confidence; threshold 15): Starts at one, then counts each `if`, loop, `catch`, non-default `case`, ternary, `&&`, and `||` syntax node once. The `switch` wrapper, `default`, `??`, optional property/element/call chains, and non-null assertions add zero.
+- `complexity.cognitive` (warning; high confidence; threshold 15): Flags syntax-aware decisions plus nested `if`, loop, `switch`, `catch`, and ternary depth. Object literals, callback wrappers, classes, and ordinary blocks do not add nesting; `else if` remains at peer depth, switch cases do not stack, and an early-exit guard (an `if` with no `else` whose body is one `return`, `throw`, `break` or `continue`) adds its decision but no nesting.
+- `complexity.cyclomatic` (warning; high confidence; threshold 15; off by default since 0.6.0): Starts at one, then counts each `if`, loop, `catch`, ternary, `&&`, and `||` syntax node once, and each `switch` with a non-default `case` once however many cases it has; `metadata.breakdown.case` counts those switches. `default`, `??`, optional property/element/call chains, and non-null assertions add zero.
 
-Both rules consume the same parsed callable measurement as `docs.missing-why-for-complex-code`. A nested callable already reported as its own block is measured separately; an anonymous callback without its own block stays part of the nearest reported owner. Complexity findings retain `metadata.complexity` and `metadata.threshold` and add a fixed `metadata.breakdown` object with `if`, `loop`, `catch`, `case`, `ternary`, `logicalAnd`, `logicalOr`, and `maxNesting` counts.
+Both rules consume the same parsed callable measurement as `docs.missing-why-for-complex-code`. Besides declared functions, methods and `const`/`let` function values, the complexity and function-size rules measure four more forms: an object-literal `key: function` method, a function assigned to a member (`Calendar.render = function () {}`), a `var` function expression and an immediately invoked function, named after the key (qualified by the object's variable or assignment target, as in `Widget.paint`), the member, the variable, or the invoked function's own name and `<iife>` when it has none. The documentation and naming rules do not see these four. A nested callable already reported as its own block, or measured as one of these forms, is measured separately; an anonymous callback without its own block stays part of the nearest reported owner. Complexity findings retain `metadata.complexity` and `metadata.threshold` and add a fixed `metadata.breakdown` object with `if`, `loop`, `catch`, `case`, `ternary`, `logicalAnd`, `logicalOr`, and `maxNesting` counts.
 
 ## Dead Code
 
@@ -180,7 +188,7 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 
 ## Size
 
-- `size.file-length` (error; high confidence; threshold 1000): Flags files with more than 1000 substantive lines by default. Blank lines, comment-only lines (`//`, `/* */`, XML comments, and the leading comment markers used by supported YAML/TOML/env/INI/npmrc files) and lines that hold only a TypeScript decorator do not count; lines containing other code or data still count. `metadata.lines` is the substantive count.
+- `size.file-length` (error; high confidence; threshold 1000): Flags JavaScript and TypeScript files with more than 1000 substantive lines by default; JSON, YAML, TOML, XML and other data files are not measured. Blank lines, comment-only lines (`//`, `/* */`), a `#!` interpreter line and lines that hold only a TypeScript decorator do not count; lines containing other code still count. `metadata.lines` is the substantive count.
 - `size.function-length` (warning; high confidence; threshold 200): Flags functions longer than the configured threshold, counted in code lines: blank, comment-only and decorator-only lines do not count.
 - `size.parameter-count` (warning; high confidence; threshold 7): Flags functions with too many parameters.
 

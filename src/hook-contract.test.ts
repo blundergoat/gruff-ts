@@ -248,6 +248,8 @@ test("hook stableIdentity survives line shifts and measured-value changes", () =
     const grown = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "long.ts"]), "size.file-length");
 
     assert.equal(first.stableIdentity, grown.stableIdentity);
+    // Under one and a half times the limit, the hook carries the advisory notice and its band beside the measurement.
+    assert.deepEqual([first.severity, first.metadata.limitBand], ["advisory", "lower"]);
   });
 });
 
