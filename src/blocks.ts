@@ -267,7 +267,8 @@ function pushGenericFunctionFinding(context: BlockRuleContext): void {
   }
 }
 
-// Reports warnings for missing public descriptions and advice for missing internal descriptions.
+// Reports warnings for missing public descriptions and advice for missing internal descriptions; under either
+// tag rule's `everyCallable` switch, internal descriptions report warnings too.
 // Test titles and existing leading comments already explain the callable.
 function pushMissingFunctionDocFinding(context: BlockRuleContext): void {
   // A test title or an existing leading description already explains this callable, so no missing-doc warning is needed.

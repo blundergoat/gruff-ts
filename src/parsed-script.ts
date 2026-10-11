@@ -748,7 +748,9 @@ function parametersText(sourceFile: TsSourceFile, parameters: readonly TsNode[])
 }
 
 /*
- * One exported, documented callable as the docblock rules consume it: the JSDoc text
+ * One documented callable as the docblock rules consume it (exported function declarations by default;
+ * exported constants, default and later exports, methods, and private or nested callables only under
+ * the tag rules' `everyCallable` switches): the JSDoc text
  * between its markers, the declared name, identifier parameter names (destructured parameters stay
  * intentionally invisible, matching the legacy text splitter), the docblock's one-based start line
  * (the docblock rules' stable finding anchor), the declared return type text ("" when absent), and

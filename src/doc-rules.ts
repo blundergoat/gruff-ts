@@ -19,7 +19,7 @@ export interface ExportedDeclaration {
 
 // Precomputed JSDoc + signature pair used by every docblock rule (stale-param, missing-param,
 // missing-return, useless-docblock) so the parser runs only once per source file.
-interface DocumentedExportBlock {
+interface DocumentedCallableBlock {
   doc: string;
   name: string;
   params: string[];
@@ -40,8 +40,8 @@ interface DocFindingInput {
   parameter?: string;
 }
 
-// One `@returns` tag in a docblock, for the bare-tag checks: its line offset from the docblock's
-// first line and whether any description text follows the tag or its `{Type}`.
+// One `@returns` or `@param` tag in a docblock, for the bare-tag checks: its line offset from the
+// docblock's first line and whether any description text follows the tag, its `{Type}` or its name.
 interface DocTagOccurrence {
   lineOffset: number;
   isDescribed: boolean;
@@ -159,8 +159,8 @@ export interface DocTagRuleSwitches {
 
 /*
  * Docblock rule pack. Walks every documented exported function from the shared syntax tree and
- * fires four sub-rules per block in a stable, deterministic emission order
- * (stale-param → missing-param → missing-return → useless-docblock).
+ * fires its sub-rules per block in a stable, deterministic emission order
+ * (stale-param → missing-param → missing-return → bare-tag → useless-docblock).
  * `everyCallable` turns on the tag rules' widened coverage in `pushEveryCallableTagFindings`. On
  * every block, `docs.missing-return-tag`'s switch also infers a returned value from the body, and
  * each tag rule's switch also reports its tags that have no description (`pushBareTagFindings`).
@@ -209,7 +209,7 @@ function pushEveryCallableTagFindings(file: SourceFile, parsed: ParsedScript, ev
  * multi-line signatures are covered. The former regex fallback for parse-less callers is gone -
  * every caller supplies the shared parse.
  */
-function documentedBlocks(documentedCallables: DocumentedExportFunction[]): DocumentedExportBlock[] {
+function documentedBlocks(documentedCallables: DocumentedExportFunction[]): DocumentedCallableBlock[] {
   return documentedCallables.map((documented) => ({
     doc: documented.docText,
     name: documented.name,
@@ -225,7 +225,7 @@ function documentedBlocks(documentedCallables: DocumentedExportFunction[]): Docu
 // reports the "old name is stale" finding first because that order is the review contract.
 // With `isNamingEveryStaleTag` (`docs.missing-param-tag`'s `everyCallable` switch), one finding
 // names every stale tag instead (`pushEveryStaleParamFinding`).
-function pushStaleParamFindings(file: SourceFile, block: DocumentedExportBlock, findings: Finding[], isNamingEveryStaleTag: boolean): void {
+function pushStaleParamFindings(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[], isNamingEveryStaleTag: boolean): void {
   const staleTags = block.paramTags.filter((tag) => !block.params.includes(tag));
   if (isNamingEveryStaleTag) {
     pushEveryStaleParamFinding(file, block, findings, [...new Set(staleTags)]);
@@ -239,7 +239,7 @@ function pushStaleParamFindings(file: SourceFile, block: DocumentedExportBlock, 
 // One `docs.stale-param-tag` finding per declaration that names each stale tag once, in docblock
 // order. One finding per tag would share the docblock's line and symbol, so its fingerprint would
 // collapse them into the first. `parameter` metadata holds the same names, joined by ", ".
-function pushEveryStaleParamFinding(file: SourceFile, block: DocumentedExportBlock, findings: Finding[], staleTags: string[]): void {
+function pushEveryStaleParamFinding(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[], staleTags: string[]): void {
   if (staleTags.length === 0) {
     return;
   }
@@ -252,7 +252,7 @@ function pushEveryStaleParamFinding(file: SourceFile, block: DocumentedExportBlo
 // parameter with no @param tag, in signature order, so reviewers need not re-parse the signature.
 // One finding per parameter would share the docblock's line and symbol, so its fingerprint would
 // collapse them into the first. `parameter` metadata holds the same names, joined by ", ".
-function pushMissingParamFindings(file: SourceFile, block: DocumentedExportBlock, findings: Finding[]): void {
+function pushMissingParamFindings(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[]): void {
   const missing = block.params.filter((param) => !block.paramTags.includes(param));
   if (missing.length === 0) {
     return;
@@ -264,7 +264,7 @@ function pushMissingParamFindings(file: SourceFile, block: DocumentedExportBlock
 // `@returns` only required when the signature declares a non-void return type, or, with
 // `isInferringReturn` (the rule's `everyCallable` switch), when an unannotated body returns a value.
 // `void` is exempt because documenting "returns nothing" is noise. Reports the stable `docs.missing-return-tag`.
-function pushMissingReturnFinding(file: SourceFile, block: DocumentedExportBlock, findings: Finding[], isInferringReturn: boolean): void {
+function pushMissingReturnFinding(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[], isInferringReturn: boolean): void {
   if (!needsReturnTag(block, isInferringReturn)) {
     return;
   }
@@ -272,14 +272,14 @@ function pushMissingReturnFinding(file: SourceFile, block: DocumentedExportBlock
 }
 
 // The docblock has no `@returns` tag and the callable returns a value (`isReturningValue`).
-function needsReturnTag(block: DocumentedExportBlock, isInferringReturn: boolean): boolean {
+function needsReturnTag(block: DocumentedCallableBlock, isInferringReturn: boolean): boolean {
   return !/@returns?\b/.test(block.doc) && isReturningValue(block, isInferringReturn);
 }
 
 // Either a declared non-void return type exists, or there is no annotation, inference is on and the
 // body returns a value. A declared type always wins over the body. Without inference,
 // annotation-less and void returns are exempt.
-function isReturningValue(block: DocumentedExportBlock, isInferringReturn: boolean): boolean {
+function isReturningValue(block: DocumentedCallableBlock, isInferringReturn: boolean): boolean {
   if (block.returnType === "") {
     return isInferringReturn && block.hasBodyReturnValue;
   }
@@ -293,7 +293,7 @@ function isReturningValue(block: DocumentedExportBlock, isInferringReturn: boole
  * so at default settings a bare tag still satisfies both rules and the default finding contract
  * stays unchanged.
  */
-function pushBareTagFindings(file: SourceFile, block: DocumentedExportBlock, findings: Finding[], everyCallable: DocTagRuleSwitches): void {
+function pushBareTagFindings(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[], everyCallable: DocTagRuleSwitches): void {
   if (everyCallable.isParamTagEveryCallable) {
     pushBareParamTagFindings(file, block, findings);
   }
@@ -305,7 +305,7 @@ function pushBareTagFindings(file: SourceFile, block: DocumentedExportBlock, fin
 // One `docs.missing-param-tag` finding per parameter whose @param tags are all bare, anchored on the
 // first bare tag's line so each of two bare parameters, or a bare one and a missing one, keeps its
 // own fingerprint. A tag naming no parameter is left to `docs.stale-param-tag`.
-function pushBareParamTagFindings(file: SourceFile, block: DocumentedExportBlock, findings: Finding[]): void {
+function pushBareParamTagFindings(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[]): void {
   const tags = docParamTagOccurrences(block.doc);
   for (const param of block.params) {
     const bareTag = firstBareTag(tags.filter((tag) => tag.name === param));
@@ -317,7 +317,7 @@ function pushBareParamTagFindings(file: SourceFile, block: DocumentedExportBlock
 
 // Reports the stable `docs.missing-return-tag` finding when the callable returns a value (inference
 // is on with the switch) and its @returns tags are all bare, anchored on the first bare tag's line.
-function pushBareReturnTagFinding(file: SourceFile, block: DocumentedExportBlock, findings: Finding[]): void {
+function pushBareReturnTagFinding(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[]): void {
   if (!isReturningValue(block, true)) {
     return;
   }
@@ -334,7 +334,7 @@ function firstBareTag<T extends DocTagOccurrence>(tags: T[]): T | undefined {
 
 // Docblock-flavoured useless-docblock rule. Targets `/** Foo */ export function foo` shapes
 // that fail the same restate test as line-comment docs, then reports a stable `docs.useless-docblock`.
-function pushUselessDocblockFinding(file: SourceFile, block: DocumentedExportBlock, findings: Finding[]): void {
+function pushUselessDocblockFinding(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[]): void {
   if (isUselessDocblock(block.doc, block.name)) {
     findings.push(docFinding({ ruleId: "docs.useless-docblock", message: `Docblock for \`${block.name}\` only restates the signature.`, file, line: block.line, symbol: block.name }));
   }
