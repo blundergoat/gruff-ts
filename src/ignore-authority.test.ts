@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import test from "node:test";
 import { checkIgnore, checkIgnoreExitCode, renderCheckIgnore } from "./check-ignore.ts";
+import { renderReport } from "./cli.ts";
 import { renderDefaultConfig } from "./init-config.ts";
 import { analyseProject, yamlConfigFixture } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
@@ -215,4 +216,66 @@ test("an ancestor gitignore disables fallback only for its subtree", () => {
   const findingPaths = new Set(report.findings.map((finding) => finding.filePath));
   assert.equal(findingPaths.has("packages/app/node_modules/visible.ts"), true);
   assert.equal(findingPaths.has("packages/other/node_modules/hidden.ts"), false);
+});
+
+// FAMILY-CONTRACT.md section 7 (precision-floor M04): copied, built and minified code is skipped at any depth and in any
+// ASCII case even under a governing .gitignore, and every skip is listed with its family reason.
+test("third-party, build-output and minified classes skip whatever the .gitignore says and are listed", () => {
+  const report = analyseProject({
+    ".gitignore": "*.log\n",
+    "app.ts": "export const ready = true;\n",
+    "vendor/copied.ts": FLAGGABLE_SOURCE,
+    "Vendors/copied.ts": FLAGGABLE_SOURCE,
+    "pkg/THIRD_PARTY/copied.ts": FLAGGABLE_SOURCE,
+    "pkg/third-party/copied.ts": FLAGGABLE_SOURCE,
+    "web/bower_components/copied.ts": FLAGGABLE_SOURCE,
+    "app/Dist/built.ts": FLAGGABLE_SOURCE,
+    "static/jquery.min.js": FLAGGABLE_SOURCE,
+    "static/theme.min.css": "a{}",
+  });
+
+  assert.equal(report.paths.analysedFiles, 1);
+  assert.deepEqual(report.findings.filter((finding) => finding.ruleId.startsWith("security.")), []);
+  // gruff-ts never scans .css, so the minified stylesheet is unsupported rather than listed as ignored.
+  // gruff-ts sorts skipped paths with `localeCompare` collation, so `Vendors` follows `vendor` and `THIRD_PARTY`
+  // precedes `third-party`.
+  assert.deepEqual(report.paths.skipped, [
+    { path: "app/Dist", source: "default", pattern: "dist/" },
+    { path: "pkg/THIRD_PARTY", source: "default", pattern: "third_party/" },
+    { path: "pkg/third-party", source: "default", pattern: "third-party/" },
+    { path: "static/jquery.min.js", source: "default", pattern: "*.min.*" },
+    { path: "vendor", source: "default", pattern: "vendor/" },
+    { path: "Vendors", source: "default", pattern: "vendors/" },
+    { path: "web/bower_components", source: "default", pattern: "bower_components/" },
+  ]);
+  const details = (JSON.parse(renderReport(report, "json")) as { paths: { details: { path: string; reason: string }[] } }).paths.details;
+  assert.deepEqual(details.map((detail) => [detail.path, detail.reason]), [
+    ["app/Dist", "build-output"],
+    ["pkg/THIRD_PARTY", "dependency"],
+    ["pkg/third-party", "dependency"],
+    ["static/jquery.min.js", "generated"],
+    ["vendor", "dependency"],
+    ["Vendors", "dependency"],
+    ["web/bower_components", "dependency"],
+  ]);
+});
+
+test("--include-ignored and explicit files bring the section 7 classes back", () => {
+  const files = { "vendor/copied.ts": FLAGGABLE_SOURCE, "dist/built.ts": FLAGGABLE_SOURCE, "static/app.min.js": FLAGGABLE_SOURCE };
+  const included = analyseProject(files, { shouldIncludeIgnored: true });
+  const explicit = analyseProject(files, { paths: ["vendor/copied.ts", "static/app.min.js"] });
+
+  assert.equal(included.paths.analysedFiles, 3);
+  assert.equal(explicit.paths.analysedFiles, 2);
+  assert.deepEqual(explicit.paths.skipped, []);
+});
+
+test("first-party names that only resemble the section 7 classes stay in scope", () => {
+  const controls = ["build/scripts/release.ts", "distro/x.ts", "external/typings.ts", "lib/helpers.ts", "src/admin.mini.js", "src/dist.ts",
+    "src/vendor.ts", "vendoring/x.ts", "src/app.min.js.map"];
+  const report = analyseProject({ ".gitignore": "*.log\n", ...Object.fromEntries(controls.map((path) => [path, "export const kept = 1;\n"])) });
+
+  // The source map is not a scannable extension, so every other control is analysed and none is skipped.
+  assert.equal(report.paths.analysedFiles, controls.filter((path) => !path.endsWith(".map")).length);
+  assert.deepEqual(report.paths.skipped, []);
 });

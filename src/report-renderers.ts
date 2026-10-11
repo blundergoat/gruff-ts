@@ -6,6 +6,7 @@ import { findingIdentities } from "./baseline-identity.ts";
 import { isAbsolute, relative } from "node:path";
 import type { AnalysisReport, Finding, OutputFormat, ScanSurfaceNote, Severity, SkippedPath, SuppressionSummary } from "./types.ts";
 import { OUTPUT_VOLUME_HINT_THRESHOLD } from "./constants.ts";
+import { MINIFIED_FILE_PATTERN } from "./discovery.ts";
 import { countRuleSeverities } from "./findings-helpers.ts";
 import { buildPillarRows, type PillarRow } from "./pillar-summary.ts";
 import { ruleDescriptors } from "./rules.ts";
@@ -54,7 +55,7 @@ type MachineFinding = Omit<Finding, "filePath" | "line" | "endLine" | "column" |
  */
 interface MachinePathDetail {
   path: string;
-  reason: "vcs" | "dependency" | "build-output" | "local-tooling" | "gitignored" | "config-ignore";
+  reason: "vcs" | "dependency" | "build-output" | "local-tooling" | "generated" | "gitignored" | "config-ignore";
   source: SkippedPath["source"];
   pattern?: string;
 }
@@ -305,9 +306,19 @@ function machinePathDetail(skipped: SkippedPath, projectRoot: string): MachinePa
   };
 }
 
+// The family reason for each directory name TypeScript skips by default (FAMILY-CONTRACT.md section 7).
+const DEFAULT_DIRECTORY_REASONS: ReadonlyMap<string, MachinePathDetail["reason"]> = new Map([
+  [".git", "vcs"], [".hg", "vcs"], [".svn", "vcs"],
+  ["node_modules", "dependency"], ["vendor", "dependency"], ["vendors", "dependency"], ["third_party", "dependency"],
+  ["third-party", "dependency"], ["bower_components", "dependency"],
+  ["build", "build-output"], ["coverage", "build-output"], ["dist", "build-output"],
+  [".fleet", "local-tooling"], [".idea", "local-tooling"], [".vscode", "local-tooling"],
+]);
+
 // Maps TypeScript's native ignore sources onto the ratified family reason vocabulary.
 // Throws: when a default ignore pattern has no canonical family reason.
-// @throws {Error} when a default ignore pattern ends in a directory name that has no vcs, dependency, build, or tooling reason.
+// @throws {Error} when a default ignore pattern is neither the minified-file pattern nor a directory name with a vcs, dependency,
+// build, or tooling reason.
 function machineIgnoreReason(skipped: SkippedPath): MachinePathDetail["reason"] {
   if (skipped.source === "config") {
     return "config-ignore";
@@ -315,20 +326,15 @@ function machineIgnoreReason(skipped: SkippedPath): MachinePathDetail["reason"] 
   if (skipped.source === "gitignore") {
     return "gitignored";
   }
-  const component = skipped.pattern.replace(/\/+$/u, "").split("/").at(-1);
-  if (component === ".git" || component === ".hg" || component === ".svn") {
-    return "vcs";
+  if (skipped.pattern === MINIFIED_FILE_PATTERN) {
+    return "generated";
   }
-  if (component === "node_modules" || component === "vendor") {
-    return "dependency";
+  const component = skipped.pattern.replace(/\/+$/u, "").split("/").at(-1) ?? "";
+  const reason = DEFAULT_DIRECTORY_REASONS.get(component);
+  if (reason === undefined) {
+    throw new Error(`Default ignored path has no canonical reason: ${skipped.pattern}`);
   }
-  if (component === "build" || component === "coverage" || component === "dist") {
-    return "build-output";
-  }
-  if (component === ".fleet" || component === ".idea" || component === ".vscode") {
-    return "local-tooling";
-  }
-  throw new Error(`Default ignored path has no canonical reason: ${skipped.pattern}`);
+  return reason;
 }
 
 // Produces unique portable paths in producer order.

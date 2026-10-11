@@ -141,7 +141,10 @@ function walk(
         isExplicitFile: false,
       });
       if (match) {
-        skipped.set(display, { path: display, source: match.source, pattern: match.pattern });
+        // A minified file is listed only when gruff-ts would otherwise scan it, so `jquery.min.css` stays unsupported.
+        if (match.pattern !== MINIFIED_FILE_PATTERN || isScannableSourceFile(absolute)) {
+          skipped.set(display, { path: display, source: match.source, pattern: match.pattern });
+        }
         continue;
       }
     }
@@ -166,17 +169,53 @@ export const EXACT_SECRET_TEXT_FILES: readonly string[] = [".npmrc", ".pypirc", 
 // lists above will expand the rule set's reach across an entire project - the scan surface is also
 // stated in prose across seven documents, so `release-truth.test.ts` pins these lists literally.
 function pushSourceFile(projectRoot: string, absolutePath: string, files: SourceFile[]): void {
-  const extension = extname(absolutePath).slice(1).toLowerCase();
-  const name = basename(absolutePath);
-  const isScript = SCRIPT_FILE_EXTENSIONS.includes(extension);
-  const isText = TEXT_FILE_EXTENSIONS.includes(extension) || name.startsWith(".env") || EXACT_SECRET_TEXT_FILES.includes(name);
-  if (isScript || isText) {
-    files.push({ absolutePath, displayPath: displayPath(projectRoot, absolutePath), isScript });
+  if (isScannableSourceFile(absolutePath)) {
+    files.push({ absolutePath, displayPath: displayPath(projectRoot, absolutePath), isScript: isScriptFile(absolutePath) });
   }
 }
 
+// Reports whether pushSourceFile would admit a path, so the walk lists a skipped minified file only when it is scannable.
+function isScannableSourceFile(absolutePath: string): boolean {
+  const name = basename(absolutePath);
+  const isText = TEXT_FILE_EXTENSIONS.includes(extname(absolutePath).slice(1).toLowerCase()) || name.startsWith(".env") || EXACT_SECRET_TEXT_FILES.includes(name);
+  return isScriptFile(absolutePath) || isText;
+}
+
+// Reports whether a path's extension is parsed as code.
+function isScriptFile(absolutePath: string): boolean {
+  return SCRIPT_FILE_EXTENSIONS.includes(extname(absolutePath).slice(1).toLowerCase());
+}
+
 const VCS_DIRECTORIES = [".git", ".hg", ".svn"] as const;
-const FALLBACK_DIRECTORIES = [".fleet", ".idea", ".vscode", "build", "coverage", "dist", "node_modules", "vendor"] as const;
+const FALLBACK_DIRECTORIES = [".fleet", ".idea", ".vscode", "build", "coverage", "node_modules"] as const;
+
+// Directories holding third-party copies, and `dist`, the one build-output name section 7 adds; `build` and `coverage`
+// stay fallback-only. Like the fallback directories they match at any depth, but they are skipped even under a
+// governing .gitignore and compared over ASCII case, because a committed copy is still someone else's code
+// (FAMILY-CONTRACT.md section 7, amended by precision-floor M04).
+const THIRD_PARTY_DIRECTORIES: readonly string[] = ["bower_components", "dist", "third-party", "third_party", "vendor", "vendors"];
+
+/** Pattern recorded for a minified file such as `jquery.min.js`, which section 7 skips as generated. */
+export const MINIFIED_FILE_PATTERN = "*.min.*";
+
+// Lowercases A-Z only, so every port folds the same names: `VENDOR` matches and a non-ASCII look-alike does not.
+function asciiLower(pathComponent: string): string {
+  return pathComponent.replace(/[A-Z]/gu, (character) => character.toLowerCase());
+}
+
+// Returns the outermost third-party or build-output directory on a display path, lowercased; a file's own name is not a
+// directory, so `a/Vendor/x.ts` gives `vendor` while a file named `dist` matches nothing.
+function matchedThirdPartyDirectory(display: string, isDirectory: boolean): string | undefined {
+  const components = display.split("/");
+  const directories = isDirectory ? components : components.slice(0, -1);
+  return directories.map(asciiLower).find((component) => THIRD_PARTY_DIRECTORIES.includes(component));
+}
+
+// Reports a base name with `.min.` directly before its final extension, such as `jquery.min.js`; `app.min.js.map` and
+// `admin.mini.js` do not match.
+function isMinifiedName(name: string): boolean {
+  return /\.min\.[^.]+$/u.test(asciiLower(name));
+}
 
 // The matched ignore source and the exact pattern that excluded a path. Returned by `classifyIgnore`.
 interface IgnoreMatch {
@@ -216,6 +255,15 @@ function classifyIgnore(input: IgnoreClassificationInput): IgnoreMatch | undefin
   const rule = matchedGitIgnoreRule(gitIgnoreRules, display, isDirectory);
   if (rule) {
     return { source: "gitignore", pattern: rule.pattern };
+  }
+  // Section 7's classes skip even when no .gitignore rule matches. They come after the gitignore rule because the
+  // family precedence is gitignore, then outermost directory, then file name, and that order decides the reason.
+  const thirdPartyDirectory = matchedThirdPartyDirectory(display, isDirectory);
+  if (thirdPartyDirectory !== undefined) {
+    return { source: "default", pattern: `${thirdPartyDirectory}/` };
+  }
+  if (!isDirectory && isMinifiedName(basename(display))) {
+    return { source: "default", pattern: MINIFIED_FILE_PATTERN };
   }
   const fallbackComponent = matchedDirectoryComponent(display, FALLBACK_DIRECTORIES);
   if (fallbackComponent !== undefined && fallbackAppliesAt(projectRoot, absolute)) {
