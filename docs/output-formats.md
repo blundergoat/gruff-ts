@@ -51,7 +51,7 @@ prints the total as `Suppressed findings: N via ...` when it is non-zero. See
 The family's built-in test-path skip also publishes rows, after the configured
 ones, numbered from `0` among themselves and marked `source: "built-in"`, which
 a configured row never carries. It adds one row per file and rule it removed,
-because every sensitive-data rule skips test, fixture and example files. Text
+because every sensitive-data and security rule skips test, fixture and example files. Text
 output labels them `builtInTestPath[<path>]`.
 
 `paths.details` lists every excluded path with a canonical `reason` and its

@@ -32,7 +32,10 @@ function runHarness(full: string, userCommand: string): void {
   });
 
   const processExecFindings = report.findings.filter((finding) => finding.ruleId === "security.process-exec");
-  assert.deepEqual(processExecFindings.map((finding) => `${finding.filePath}:${finding.line}`), ["test/unit/cli-harness.test.ts:7"]);
+  assert.deepEqual(processExecFindings, []);
+  // Security rules skip test files and count the skip; the fixed harness calls are exempt, so only the dynamic one is counted.
+  const harnessRows = report.suppressions.filter((row) => row.rule === "security.process-exec" && row.paths[0] === "test/unit/cli-harness.test.ts");
+  assert.deepEqual(harnessRows.map((row) => row.suppressed), [1]);
 });
 
 test("process exec severity follows shell mode and command-source evidence", () => {

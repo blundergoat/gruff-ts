@@ -183,6 +183,26 @@ test("the built-in test-path class skips sensitive-data findings in test, fixtur
   assert.ok(renderReport(report, "text").includes(`builtInTestPath[examples/demo.ts] ${AWS_RULE_ID}: 1 (`), renderReport(report, "text"));
 });
 
+// A deliberate `eval` in test and example files must be skipped and counted with the security reason.
+//
+// The same call in production code must still report, which proves the rule still runs (FAMILY-CONTRACT.md section 13a).
+test("the built-in test-path class skips security findings in test and example files and counts them", () => {
+  const body = "export function run(expression: string): unknown {\n  return eval(expression);\n}\n";
+  const report = analyseProject({
+    "src/runner.ts": body,
+    "src/runner.spec.ts": body,
+    "examples/run-demo.ts": body,
+  });
+
+  const securityFiles = [...new Set(report.findings.filter((finding) => finding.ruleId.startsWith("security.")).map((finding) => finding.filePath))];
+  assert.deepEqual(securityFiles, ["src/runner.ts"]);
+  const securityRows = report.suppressions.filter((row) => row.source === "built-in" && row.rule.startsWith("security."));
+  assert.deepEqual([...new Set(securityRows.map((row) => row.paths[0]))].sort(), ["examples/run-demo.ts", "src/runner.spec.ts"]);
+  assert.deepEqual([...new Set(securityRows.map((row) => row.reason))], [
+    "Test, fixture and example files exercise insecure calls on purpose, so security rules skip them by path.",
+  ]);
+});
+
 // The base-name pattern accepts any character but a newline before its suffix, as the other four ports' patterns do.
 test("a test-file base name may hold a carriage return, as it may in every other port", () => {
   assert.equal(isBuiltInTestPath("src/keys\r_test.go"), true);

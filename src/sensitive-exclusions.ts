@@ -257,8 +257,11 @@ export function partitionSensitiveExclusions(findings: readonly Finding[], exclu
   return { findings: kept, suppressions };
 }
 
-// Reason a user reads on each `builtInTestPath[...]` audit row; every port publishes these exact words (FAMILY-CONTRACT.md section 13a).
+// Reason on each sensitive-data `builtInTestPath[...]` audit row; every port publishes these exact words (FAMILY-CONTRACT.md section 13a).
 export const BUILT_IN_TEST_PATH_REASON = "Test, fixture and example files hold sample credentials, so sensitive-data rules skip them by path.";
+
+// Reason on each security `builtInTestPath[...]` audit row, since a test calls insecure APIs on purpose; every port publishes these exact words.
+export const BUILT_IN_SECURITY_TEST_PATH_REASON = "Test, fixture and example files exercise insecure calls on purpose, so security rules skip them by path.";
 
 // The family's fixture-PII rule, which keeps reading test paths; gruff-ts has no rule with this id.
 const BUILT_IN_TEST_PATH_EXEMPT_RULE = "sensitive-data.pii-test-fixture";
@@ -278,17 +281,26 @@ export function isBuiltInTestPath(displayPath: string): boolean {
   return segments.some((directory) => BUILT_IN_TEST_PATH_DIRECTORIES.has(directory.toLowerCase())) || BUILT_IN_TEST_FILE_NAME.test(baseName);
 }
 
-// Hides sensitive-data findings in test, fixture and example files, and publishes one audit row per hidden file and rule.
+// Reports whether the test-path class covers a rule: every sensitive-data rule but the fixture-PII rule, and every security rule.
+function isSkippedOnTestPaths(ruleId: string): boolean {
+  // Security rules are skipped whole, because a test exercises insecure calls on purpose.
+  if (ruleId.startsWith("security.")) {
+    return true;
+  }
+  return ruleId.startsWith("sensitive-data.") && ruleId !== BUILT_IN_TEST_PATH_EXEMPT_RULE;
+}
+
+// Hides sensitive-data and security findings in test, fixture and example files, and publishes one audit row per hidden file and rule.
 //
-// A user scanning a project with sample keys in `__tests__/` sees `builtInTestPath[...]` rows instead of findings.
-// The skip is never silent, and it covers every gruff-ts sensitive-data rule, pii-pattern included (FAMILY-CONTRACT.md section 13a).
+// A user scanning a project with sample keys or a deliberate `eval` in `__tests__/` sees `builtInTestPath[...]` rows instead of findings.
+// The skip is never silent, and it covers every gruff-ts sensitive-data rule, pii-pattern included, and every security rule (FAMILY-CONTRACT.md section 13a).
 export function applyBuiltInTestPathSkip(findings: readonly Finding[], suppressions: readonly SuppressionSummary[]): SensitiveExclusionResult {
   const skippedCountByFileAndRule = new Map<string, { path: string; rule: string; count: number }>();
   const kept: Finding[] = [];
   // Each finding either stays in the report or is folded into its file's audit row.
   for (const finding of findings) {
-    // Only the pillar's findings in test code are skipped, and never the family's fixture-PII rule.
-    if (finding.ruleId.startsWith("sensitive-data.") && finding.ruleId !== BUILT_IN_TEST_PATH_EXEMPT_RULE && isBuiltInTestPath(finding.filePath)) {
+    // Only the two pillars' findings in test code are skipped, and never the family's fixture-PII rule.
+    if (isSkippedOnTestPaths(finding.ruleId) && isBuiltInTestPath(finding.filePath)) {
       const fileAndRuleKey = `${finding.filePath}\u0000${finding.ruleId}`;
       const skipped = skippedCountByFileAndRule.get(fileAndRuleKey) ?? { path: finding.filePath, rule: finding.ruleId, count: 0 };
       skipped.count += 1;
@@ -309,7 +321,7 @@ export function applyBuiltInTestPathSkip(findings: readonly Finding[], suppressi
       rule: skipped.rule,
       paths: [skipped.path],
       symbol: null,
-      reason: BUILT_IN_TEST_PATH_REASON,
+      reason: skipped.rule.startsWith("security.") ? BUILT_IN_SECURITY_TEST_PATH_REASON : BUILT_IN_TEST_PATH_REASON,
       suppressed: skipped.count,
       source: "built-in",
     });

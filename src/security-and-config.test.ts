@@ -178,7 +178,8 @@ rules:
   security.new-function:
     severity: warning
 `,
-      "loader.test.cjs": `const typescriptCompiler = require("typescript");
+      // A test file would skip every security rule, so the loader sits at a production path.
+      "loader.cjs": `const typescriptCompiler = require("typescript");
 
 function loadHelper(source) {
   const transpiled = typescriptCompiler.transpileModule(source, {
@@ -489,9 +490,15 @@ function run(userCommand: string): void {
 
   const processExecFindings = report.findings.filter((finding) => finding.ruleId === "security.process-exec");
   const expectedRunnerExecFindings = 6;
+  // Security rules skip test files and count the skip, so the shell-enabled harness call shows as one skipped finding.
+  const skippedCount = (filePath: string): number => report.suppressions
+    .filter((row) => row.rule === "security.process-exec" && row.paths[0] === filePath)
+    .reduce((total, row) => total + row.suppressed, 0);
   assert.equal(processExecFindings.some((finding) => finding.filePath === "src/harness.test.ts"), false);
+  assert.equal(skippedCount("src/harness.test.ts"), 0);
   assert.equal(processExecFindings.some((finding) => finding.filePath === "src/test-fixtures.ts"), false);
-  assert.equal(processExecFindings.filter((finding) => finding.filePath === "src/harness-shell.test.ts").length, 1);
+  assert.equal(processExecFindings.some((finding) => finding.filePath === "src/harness-shell.test.ts"), false);
+  assert.equal(skippedCount("src/harness-shell.test.ts"), 1);
   assert.equal(processExecFindings.filter((finding) => finding.filePath === "src/runner.ts").length, expectedRunnerExecFindings);
 });
 
@@ -728,6 +735,7 @@ export class PaymentController {
 // assertion configures nothing. The same test file's real `http2Options` setting, a real agent, and the environment
 // switch all still report at error.
 test("M22 disabled-tls-verification skips expected values in deep-equality assertions only", () => {
+  // A test file would skip every security rule, so the smoke source sits at a production path (http2-smoke.cjs).
   const report = analyseFixture([
     "const { expect } = require(\"chai\");",
     "",
@@ -747,7 +755,7 @@ test("M22 disabled-tls-verification skips expected values in deep-equality asser
     "  process.env.NODE_TLS_REJECT_UNAUTHORIZED = \"0\";",
     "});",
     "",
-  ].join("\n"), { fileName: "http2.smoke.test.cjs" });
+  ].join("\n"), { fileName: "http2-smoke.cjs" });
   const tlsFindings = report.findings.filter((entry) => entry.ruleId === "security.disabled-tls-verification");
 
   assert.deepEqual(tlsFindings.map((entry) => entry.line), [6, 15, 16]);

@@ -289,6 +289,22 @@ AWS_KEY_THREE=${maskedKey}
   assert.deepEqual(urlFindings.map((finding) => finding.line), [4]);
 });
 
+test("a stock development pair stays quiet on a local host and reports on a reachable one", () => {
+  // FAMILY-CONTRACT.md section 5: `postgres:postgres` on localhost, a loopback address or a Compose service name such
+  // as `db` is a documented development default. The same pair on a reachable host, or a real password on a local
+  // host, still reports. The stock words are not credentials; the real password is assembled from parts.
+  const realPassword = ["Vq7", "mZ2", "kP9"].join("");
+  const report = analyseFixture(`A=postgresql://postgres:postgres@localhost:5432/app
+B=mysql://root:root@127.0.0.1/app
+C=postgres://user:pass@[::1]:5432/app
+D=redis://Guest:Secret@db:6379
+E=postgres://postgres:postgres@db.example.com/app
+F=postgres://postgres:${realPassword}@localhost/app
+`, { fileName: ".env" });
+  const urlFindings = report.findings.filter((finding) => finding.ruleId === "sensitive-data.database-url-password");
+  assert.deepEqual(urlFindings.map((finding) => finding.line), [5, 6]);
+});
+
 test("an ASIA session token reports as an AWS access key, and a masked one stays quiet", () => {
   // AWS issues temporary session credentials under the ASIA prefix over the same fixed body, so a rule that
   // named only AKIA left a live credential unreported. gruff-php and gruff-py already named both shapes.

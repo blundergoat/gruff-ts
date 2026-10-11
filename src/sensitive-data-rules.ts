@@ -46,8 +46,11 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, finding
       if (isPlaceholder) {
         continue;
       }
-      // A URL shape written as a template literal type names no credential at all.
-      if (ruleId === "sensitive-data.database-url-password" && isTypeLevelUrlCredential(matchedSensitiveText)) {
+      // A URL shape written as a template literal type names no credential at all, and a stock pair on a local host is a
+      // documented development default.
+      const matchEnd = (match.index ?? 0) + matchedSensitiveText.length;
+      if (ruleId === "sensitive-data.database-url-password"
+        && (isTypeLevelUrlCredential(matchedSensitiveText) || isStockDevelopmentUrl(matchedSensitiveText, source.slice(matchEnd, matchEnd + 256)))) {
         continue;
       }
       pushSensitiveFinding({
@@ -80,6 +83,35 @@ function analyseSensitiveData(file: SensitiveSourceFile, source: string, finding
 // host semantics (M22 activation bundle, decision 4).
 function isTypeLevelUrlCredential(matchedSensitiveText: string): boolean {
   return /:\/\/[^\/\s:@]+:\$\{\s*(?:string|number)\s*\}@$/.test(matchedSensitiveText);
+}
+
+// Stock development user names and passwords, compared case-insensitively and whole (FAMILY-CONTRACT.md section 5).
+// They are documented defaults such as `postgres:postgres` or `scott:tiger`, not credentials, so they are held as plain text.
+const STOCK_DEVELOPMENT_WORDS = new Set([
+  "admin", "bar", "dbpass", "dbuser", "default", "demo", "example", "foo", "guest", "mysql", "pass", "passwd",
+  "password", "postgres", "root", "sa", "scott", "secret", "test", "tiger", "user", "username",
+]);
+
+// Loopback hosts, on which a stock pair is a development default rather than a live weakness.
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+
+// Recognizes a stock development pair such as `postgres:postgres` on a loopback host or a single-label service name
+// such as `db`. The same pair on any other host still reports, because a default credential on a reachable host is a
+// live weakness (FAMILY-CONTRACT.md section 5). The host is read from the text after the match, so the detector's
+// pattern still stops at `@` and no host can reach the example markers.
+function isStockDevelopmentUrl(matchedSensitiveText: string, textAfterAt: string): boolean {
+  const userInfo = /:\/\/([^\/\s:@]+):([^\/\s@]+)@$/.exec(matchedSensitiveText);
+  const user = userInfo?.[1]?.toLowerCase() ?? "";
+  const password = userInfo?.[2]?.toLowerCase() ?? "";
+  // Both halves must be stock words; one real word keeps the finding.
+  if (!STOCK_DEVELOPMENT_WORDS.has(user) || !STOCK_DEVELOPMENT_WORDS.has(password)) {
+    return false;
+  }
+  const authority = (/^[^\/?#\s"'`]*/.exec(textAfterAt)?.[0] ?? "").toLowerCase();
+  // A bracketed IPv6 host such as `[::1]:5432` keeps its colons inside the brackets.
+  const bracketed = /^\[([^\]]+)\]/.exec(authority);
+  const host = bracketed ? (bracketed[1] ?? "") : (authority.split(":")[0] ?? "");
+  return LOOPBACK_HOSTS.has(host) || (host !== "" && !host.includes(".") && !host.includes(":"));
 }
 
 // Recognizes explicit example markers inside the matched value, such as a URL password written as `REDACTED`.

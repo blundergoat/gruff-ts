@@ -294,8 +294,8 @@ See [Rules](./rules.md) for the full rule catalogue grouped by pillar.
 is a separate top-level section, not part of `rules:` or `paths.ignore`, because
 it is the one surface that can hide a detected secret.
 
-One built-in skip also hides sensitive-data findings, and counts each one in
-`suppressions`: every sensitive-data rule in test, fixture and example files.
+One built-in skip also hides findings, and counts each one in `suppressions`:
+every sensitive-data and security rule in test, fixture and example files.
 A configured entry applies first, so a finding it claims is counted under the entry.
 
 You write every entry by hand. Gruff never converts a detected value, a preview,

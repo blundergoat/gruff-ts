@@ -2,6 +2,9 @@
 
 ## v0.6.0 - Unreleased
 
+- **Security rules skip test, fixture and example files** - Every security rule now skips the test, fixture and example paths the sensitive-data rules already skip, because a test exercises insecure calls on purpose. **The trade-off is deliberate: a real injection, weak-crypto or TLS mistake committed under one of those paths is no longer reported.** Each skip is counted, never silent: one audit row per file and rule with `source: "built-in"` and the reason "Test, fixture and example files exercise insecure calls on purpose, so security rules skip them by path." (FAMILY-CONTRACT.md section 13a).
+- **Stock development credentials on local hosts stop reporting** - `sensitive-data.database-url-password` no longer reports a URL whose user name and password are both stock development words, such as `postgres:postgres`, `root:root` or `scott:tiger`, on `localhost`, `127.0.0.1`, `::1`, `0.0.0.0` or a single-label host such as a Compose service called `db`. The same pair on any other host, and every other password anywhere, still reports (FAMILY-CONTRACT.md section 5).
+
 - **One missing-parameter finding names every parameter** - `docs.missing-param-tag` reports a function once and names each
   missing `@param`, as in "missing @param for `first`, `third`"; before, only the first missing parameter was reported.
 - **Missing-doc messages say what the comment should cover** - `docs.missing-exported-function-doc` and
