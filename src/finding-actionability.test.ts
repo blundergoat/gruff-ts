@@ -477,3 +477,55 @@ test("fixture-purpose-missing still fires on undocumented and trivially commente
   const trivialFindings = ruleFindings(`// setup data\nconst routeSweepFixture = \`\n${lines}\n\`;\n`, "docs.fixture-purpose-missing", "routes.test.ts");
   assert.equal(trivialFindings.length, 1);
 });
+
+// Fixture for the missing-doc message built from the signature (M13-T29, operator decision D3).
+const SIGNATURE_MESSAGE_SOURCE = `export function joinChecked(left: string, right: string): string {
+  if (left === "") {
+    throw new Error("empty");
+  }
+  return left + right;
+}
+
+export function logPair(this: unknown, label: string, { value }: { value: number }): void {
+  console.log(label, value);
+}
+
+function countInferred(items: string[]) {
+  return items.length;
+}
+
+export async function flushAll(): Promise<void> {
+  await Promise.resolve();
+}
+
+function resetState() {
+  return;
+}
+`;
+
+// One scan of the fixture, as missing-doc messages keyed by symbol.
+function signatureMessages(): Map<string | undefined, string> {
+  const missingDocRules = new Set(["docs.missing-exported-function-doc", "docs.missing-internal-function-doc"]);
+  const findings = analyseFixture(SIGNATURE_MESSAGE_SOURCE).findings.filter((entry) => missingDocRules.has(entry.ruleId));
+  return new Map(findings.map((entry) => [entry.symbol, entry.message]));
+}
+
+test("the missing-doc message names each parameter and asks for the return value and errors when the callable has them", () => {
+  const expected = "Exported function `joinChecked` is missing a leading maintainer comment; describe parameters `left`, `right`; describe the return value; say when it throws.";
+  assert.equal(signatureMessages().get("joinChecked"), expected);
+});
+
+test("the missing-doc message skips this and destructured parameters and asks no return value of a void callable", () => {
+  assert.equal(signatureMessages().get("logPair"), "Exported function `logPair` is missing a leading maintainer comment; describe parameter `label`.");
+});
+
+test("the missing-doc message reads an unannotated return value from the body and keeps the internal wording", () => {
+  const expected = "Internal function `countInferred` is missing a leading maintainer comment; describe parameter `items`; describe the return value.";
+  assert.equal(signatureMessages().get("countInferred"), expected);
+});
+
+test("the missing-doc message stays plain when the signature has no parameter, value or error to describe", () => {
+  const messages = signatureMessages();
+  assert.equal(messages.get("flushAll"), "Exported function `flushAll` is missing a leading maintainer comment.");
+  assert.equal(messages.get("resetState"), "Internal function `resetState` is missing a leading maintainer comment.");
+});

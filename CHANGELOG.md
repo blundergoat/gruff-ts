@@ -2,6 +2,23 @@
 
 ## v0.6.0 - Unreleased
 
+- **One missing-parameter finding names every parameter** - `docs.missing-param-tag` reports a function once and names each
+  missing `@param`, as in "missing @param for `first`, `third`"; before, only the first missing parameter was reported.
+- **Missing-doc messages say what the comment should cover** - `docs.missing-exported-function-doc` and
+  `docs.missing-internal-function-doc` add "describe parameter `a`", "describe the return value" and "say when it throws", each
+  only when the signature or body calls for it.
+- **`everyCallable` widens the JSDoc tag rules, off by default** - With `rules.docs.missing-param-tag.options.everyCallable: true`
+  or the same option on `docs.missing-return-tag`, the rule also checks arrow and function-expression constants, class and
+  object-literal methods, default exports and functions exported later, and private and nested functions, and it reports a tag
+  with no description. The return rule then reads an unannotated body for a returned value, `docs.stale-param-tag` names every
+  stale parameter in one finding, and an undocumented private function or public method of an exported class reports at the
+  exported severity, warning. Nothing changes until a configuration turns it on.
+- **File overviews and dividers no longer count as a function's docblock** - A function whose only comment above it is the file's opening
+  comment (followed by a blank line, or tagged `@file`, `@fileoverview`, `@overview`, `@packageDocumentation`, `@module` or `@license`)
+  or a one-line divider such as `// ---- helpers` or `/* ==== */` now gets `docs.missing-exported-function-doc` or
+  `docs.missing-internal-function-doc`, and `docs.missing-param-tag`, `docs.missing-return-tag` and `docs.useless-docblock` stop
+  reporting on that comment.
+
 - **BREAKING: three test-quality checks are opt-in** - `test-quality.conditional-logic`, `test-quality.only-skip` and `test-quality.sleep-in-test` stayed below the 0.70 precision floor after repair. Enable one with `rules.<id>.enabled: true`; existing explicit settings remain effective. Conditional-logic and sleep-in-test each failed both after audits, so their default decisions carry those caveats and make no calibrated improvement claim.
 
 - **Test-quality checks accept case context** - Loop messages and expected operands can identify a row; guarded runtime skips stay quiet.

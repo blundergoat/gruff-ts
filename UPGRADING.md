@@ -50,6 +50,8 @@ time, so a project using more than one of them moves once. This port's recorded 
 
 22. **two rules are off by default** — `security.open-redirect-candidate` (right on 1 of 5 judged findings) and `sensitive-data.jwt-token` (0 of 1) were measured on too few findings to delete on. Enable one with `rules.<id>.enabled: true`. `--include-rule` does not turn one on: it only narrows the run, so naming an off rule there runs no rule and passes. A config written by an earlier `init` lists them as `enabled: true` and keeps them on. The decision is ADR-021.
 
+23. **a file overview is no longer a function's docblock, and the JSDoc tag rules can widen** — A function whose only comment above it is the file's opening comment or a one-line divider now gets a missing-doc finding, and the tag rules and `docs.useless-docblock` stop reporting on that comment; `docs.missing-param-tag` also names every missing parameter in one finding. On the 0.6.0 precision measurement's twelve TypeScript repositories these changes added 240 missing-doc findings and removed 235 others at the defaults, 193 of them `docs.useless-docblock`. The `everyCallable` option is off by default; turning it on for `docs.missing-param-tag` and `docs.missing-return-tag` there added 8,702 and 6,870 findings and moved 9,121 undocumented private functions and exported-class methods from `docs.missing-internal-function-doc` (advisory) to `docs.missing-exported-function-doc` (warning), taking the total from 130,348 to 145,920. The rest of this entry is in `CHANGELOG.md`.
+
 ## Upgrade workflow (`0.5.x` → `0.6.0`)
 
 1. Read the list above and decide which breaks touch your project. A project with no committed

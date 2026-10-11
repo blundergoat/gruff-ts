@@ -124,7 +124,7 @@ export interface Config {
   minimumSeverity: Map<MinimumSeverityCommand, FailThreshold>;
   /** The `minimumSeverity:` display floor: findings below it are hidden from the report and still scored and gated. */
   displayFloor?: Severity;
-  rules: Map<string, { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number> }>;
+  rules: Map<string, { enabled?: boolean; threshold?: number; severity?: Severity; options: Map<string, number | boolean> }>;
   deepScanBudget: DeepScanBudget;
   /** Reviewed sensitive-data suppressions in declaration order; an empty list means nothing is suppressed. */
   sensitiveExclusions: SensitiveExclusion[];
@@ -164,13 +164,13 @@ export interface SuppressionSummary {
 /**
  * Describes one rule override inside a profile before it joins the user's effective configuration.
  *
- * Missing fields inherit from the base profile or descriptor; a missing options map means the profile did not tune numeric options.
+ * Missing fields inherit from the base profile or descriptor; a missing options map means the profile did not tune any option.
  */
 export interface ProfileRuleSetting {
   enabled?: boolean;
   threshold?: number;
   severity?: Severity;
-  options?: Map<string, number>;
+  options?: Map<string, number | boolean>;
 }
 
 /**

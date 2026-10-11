@@ -65,13 +65,19 @@ test("renderDefaultConfig documents exact naming-pair allowlists", () => {
   assert.match(generatedConfig, /acceptedCasingPairs: \[note_id:noteId\]/);
 });
 
-test("RULE_OPTION_DEFAULTS mirrors live optionNumber call-site defaults", () => {
+test("RULE_OPTION_DEFAULTS mirrors live optionNumber and optionBoolean call-site defaults", () => {
   // The init renderer hardcodes option defaults because RuleDescriptor only carries optionKeys,
   // not values. Drift between this table and the rule implementations would make `gruff-ts init`
   // produce subtly-wrong starter config; assert parity by parsing the call sites directly.
   const implementationSources = ["src/analyser.ts", "src/project-rules.ts"].map((path) => readFileSync(join(REPO_ROOT, path), "utf8")).join("\n");
-  const implementationDefaults = parseOptionNumberDefaults(implementationSources);
+  const implementationDefaults = parseOptionDefaults(implementationSources);
   assert.deepEqual(normalizeOptionDefaults(RULE_OPTION_DEFAULTS), implementationDefaults);
+});
+
+test("renderDefaultConfig seeds the tag rules' everyCallable switch off", () => {
+  const generatedConfig = renderDefaultConfig();
+  assert.match(generatedConfig, /\n {2}docs\.missing-param-tag:\n {4}enabled: true\n {4}options:\n {6}everyCallable: false\n/);
+  assert.match(generatedConfig, /\n {2}docs\.missing-return-tag:\n {4}enabled: true\n {4}options:\n {6}everyCallable: false\n/);
 });
 
 // Guards the init contract: the generated allowlist must mirror the runtime defaults, so a fresh
@@ -329,25 +335,26 @@ function renderedRuleField(block: string, key: string): string | undefined {
   return match?.[1];
 }
 
-// Extracts `optionNumber(<varName>.config | config, "ruleId", "key", <number>)` defaults from
-// rule implementation sources. Mirrors the parsing approach used by rule-catalogue.test.ts.
-function parseOptionNumberDefaults(source: string): Map<string, Map<string, number>> {
-  const usages = new Map<string, Map<string, number>>();
-  for (const match of source.matchAll(/optionNumber\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)",\s*(-?\d+(?:\.\d+)?)\)/g)) {
+// Extracts `optionNumber` and `optionBoolean(<varName>.config | config, "ruleId", "key", <default>)` defaults
+// from rule implementation sources. Mirrors the parsing approach used by rule-catalogue.test.ts.
+function parseOptionDefaults(source: string): Map<string, Map<string, number | boolean>> {
+  const usages = new Map<string, Map<string, number | boolean>>();
+  for (const match of source.matchAll(/option(?:Number|Boolean)\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)",\s*(-?\d+(?:\.\d+)?|true|false)\)/g)) {
     const ruleId = match[1] ?? "";
     const key = match[2] ?? "";
-    const defaultValue = Number(match[3] ?? "0");
-    const ruleDefaults = usages.get(ruleId) ?? new Map<string, number>();
+    const rawDefault = match[3] ?? "0";
+    const defaultValue = rawDefault === "true" || rawDefault === "false" ? rawDefault === "true" : Number(rawDefault);
+    const ruleDefaults = usages.get(ruleId) ?? new Map<string, number | boolean>();
     ruleDefaults.set(key, defaultValue);
     usages.set(ruleId, ruleDefaults);
   }
   return sortNestedMap(usages);
 }
 
-// Converts the readonly hardcoded table into the same Map<ruleId, Map<key, number>> shape so the
+// Converts the readonly hardcoded table into the same Map<ruleId, Map<key, value>> shape so the
 // drift assertion compares like-for-like with deepEqual.
-function normalizeOptionDefaults(defaults: Readonly<Record<string, Readonly<Record<string, number>>>>): Map<string, Map<string, number>> {
-  const result = new Map<string, Map<string, number>>();
+function normalizeOptionDefaults(defaults: Readonly<Record<string, Readonly<Record<string, number | boolean>>>>): Map<string, Map<string, number | boolean>> {
+  const result = new Map<string, Map<string, number | boolean>>();
   for (const [ruleId, options] of Object.entries(defaults)) {
     result.set(ruleId, new Map(Object.entries(options)));
   }
@@ -355,7 +362,7 @@ function normalizeOptionDefaults(defaults: Readonly<Record<string, Readonly<Reco
 }
 
 // Deterministic key ordering so deepEqual does not fail on insertion-order differences.
-function sortNestedMap(input: Map<string, Map<string, number>>): Map<string, Map<string, number>> {
+function sortNestedMap(input: Map<string, Map<string, number | boolean>>): Map<string, Map<string, number | boolean>> {
   return new Map(
     [...input.entries()]
       .sort(([left], [right]) => left.localeCompare(right))

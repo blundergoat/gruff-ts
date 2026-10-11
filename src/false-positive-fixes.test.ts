@@ -925,3 +925,85 @@ test("sleeps without assertion", async () => {
   // The anchor is the callable's own declaration line, never the blank line 9 above it.
   assert.equal(byRule.get("test-quality.sleep-in-test"), declarationLineOfTestCallable);
 });
+
+// M13-T18: a file overview or a divider above a function is not that function's docblock, so the
+// missing-doc rule reports the function and the docblock rules do not judge that comment.
+const FUNCTION_DOC_RULE_IDS = new Set(["docs.missing-exported-function-doc", "docs.missing-param-tag", "docs.missing-return-tag", "docs.useless-docblock"]);
+
+// "rule symbol" lines for the function documentation rules in a stable, deterministic order, so each case reads as one list.
+function functionDocFindings(source: string): string[] {
+  return analyseFixture(source)
+    .findings.filter((entry) => FUNCTION_DOC_RULE_IDS.has(entry.ruleId))
+    .map((entry) => `${entry.ruleId} ${entry.symbol ?? ""}`)
+    .sort();
+}
+
+test("M13-T18 a file overview above the first function is not its docblock", () => {
+  // A blank line after it, or a file-level tag, marks the opening comment as the file's overview.
+  const afterBlankLine = functionDocFindings(`/** Label helpers shared by the report renderers. */
+
+export function joinAfterOverview(left: string): string {
+  return left.trim();
+}
+`);
+  const tagged = functionDocFindings(`/** @file Label helpers shared by the report renderers. */
+export function joinAfterFileTag(left: string): string {
+  return left.trim();
+}
+`);
+  assert.deepEqual(afterBlankLine, ["docs.missing-exported-function-doc joinAfterOverview"]);
+  assert.deepEqual(tagged, ["docs.missing-exported-function-doc joinAfterFileTag"]);
+});
+
+test("M13-T18 a divider comment above a function is not its docblock", () => {
+  const findings = functionDocFindings(`// Fixture module for divider comments.
+import { join } from "node:path";
+
+// ---- helpers
+export function afterLineDivider(left: string): string {
+  return join(left);
+}
+
+/* ==== */
+export function afterBlockDivider(left: string): string {
+  return join(left);
+}
+
+// -----
+export function afterDashDivider(left: string): string {
+  return join(left);
+}
+
+/** ---- */
+export function afterDocDivider(left: string): string {
+  return join(left);
+}
+`);
+  assert.deepEqual(findings, [
+    "docs.missing-exported-function-doc afterBlockDivider",
+    "docs.missing-exported-function-doc afterDashDivider",
+    "docs.missing-exported-function-doc afterDocDivider",
+    "docs.missing-exported-function-doc afterLineDivider",
+  ]);
+});
+
+test("M13-T18 a function's own docblock still counts at the top of a file and below a divider", () => {
+  // Control: the tag rules still read each docblock, and the missing-doc rule stays quiet.
+  const findings = functionDocFindings(`/** Joins one label for the report header. */
+export function joinAtTop(left: string): string {
+  return left.trim();
+}
+
+// ---- helpers
+/** Joins one label for the report footer. */
+export function joinBelowDivider(left: string): string {
+  return left.trim();
+}
+`);
+  assert.deepEqual(findings, [
+    "docs.missing-param-tag joinAtTop",
+    "docs.missing-param-tag joinBelowDivider",
+    "docs.missing-return-tag joinAtTop",
+    "docs.missing-return-tag joinBelowDivider",
+  ]);
+});

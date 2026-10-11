@@ -2,15 +2,15 @@
 
 // Block rules cover size, documentation, parameters, returns and assertion presence.
 // Finding helpers keep each warning anchored to the declaration the developer can edit.
-import { ruleSeverity, threshold } from "./config.ts";
-import { hasLeadingCommentBeforeLines } from "./comment-scanner.ts";
+import { optionBoolean, ruleSeverity, threshold } from "./config.ts";
+import { hasFunctionLeadingCommentBeforeLines } from "./comment-scanner.ts";
 import { baseComplexityMetrics, complexityMetrics as measureComplexity, type ComplexityMetrics } from "./complexity-metrics.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { escapeRegex, isGenericName, lineOffset, parameterNames, parameterParts } from "./findings-helpers.ts";
 import { bandedFields, GROUP_PARAMETERS, LOWER_BAND_FUNCTION, LOWER_BAND_PARAMETER, SIMPLIFY_PATH, SPLIT_FUNCTION } from "./limit-band.ts";
-import { callableMatchPoints, codeLineFlags, measuredOnlyCallablePoints, type CallableMatchPoint, type ParsedScript } from "./parsed-script.ts";
+import { callableMatchPoints, codeLineFlags, isCallableReturningValue, isPublicExportedClassMethod, measuredOnlyCallablePoints, type CallableMatchPoint, type ParsedScript } from "./parsed-script.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
 // Describe one callable that block rules can locate in a developer's scan report.
@@ -274,10 +274,46 @@ function pushMissingFunctionDocFinding(context: BlockRuleContext): void {
   if (context.block.isTest || context.block.hasLeadingComment) {
     return;
   }
-  const ruleId = context.block.isExported ? "docs.missing-exported-function-doc" : "docs.missing-internal-function-doc";
-  const severity = context.block.isExported ? "warning" : "advisory";
-  const audience = context.block.isExported ? "exported" : "internal";
-  context.findings.push(blockFinding({ ruleId, message: `${audience === "exported" ? "Exported" : "Internal"} function \`${context.block.name}\` is missing a leading maintainer comment.`, file: context.file, block: context.block, severity, pillar: "documentation" }));
+  const isExportedApi = context.block.isExported || isEveryCallablePublicMethod(context);
+  const ruleId = isExportedApi ? "docs.missing-exported-function-doc" : "docs.missing-internal-function-doc";
+  // Under either tag rule's `everyCallable` switch an internal callable keeps its rule and wording
+  // but reports at the exported severity (operator decision D8).
+  const severity = isExportedApi || isTagRuleEveryCallable(context.config) ? "warning" : "advisory";
+  context.findings.push(blockFinding({ ruleId, message: missingFunctionDocMessage(context.block, isExportedApi ? "Exported" : "Internal"), file: context.file, block: context.block, severity, pillar: "documentation" }));
+}
+
+// Builds the missing-doc message from the signature (M13-T29, operator decision D3). It names each
+// parameter, asks for the return value only when the callable returns one, and asks when it fails
+// only when its body throws, the same test docs.missing-error-behavior-doc uses. A `this` parameter is a
+// type annotation, not an argument, and destructured parameters have no name, so neither is named.
+// With nothing to ask, the message is the plain one.
+function missingFunctionDocMessage(block: FunctionBlock, audience: "Exported" | "Internal"): string {
+  const asks: string[] = [];
+  const names = parameterNames(block.params).map((parameter) => parameter.name).filter((name) => name !== "this");
+  if (names.length > 0) {
+    asks.push(`describe ${names.length > 1 ? "parameters" : "parameter"} ${names.map((name) => `\`${name}\``).join(", ")}`);
+  }
+  if (block.callableNode !== undefined && isCallableReturningValue(block.callableNode)) {
+    asks.push("describe the return value");
+  }
+  if (/\bthrow\b/.test(block.codeBody)) {
+    asks.push("say when it throws");
+  }
+  const suffix = asks.length > 0 ? `; ${asks.join("; ")}` : "";
+  return `${audience} function \`${block.name}\` is missing a leading maintainer comment${suffix}.`;
+}
+
+// Under either tag rule's `everyCallable` switch, a public method of an exported class is exported
+// API and reports at the exported severity (operator decision D8).
+function isEveryCallablePublicMethod(context: BlockRuleContext): boolean {
+  return isTagRuleEveryCallable(context.config) && context.block.callableNode !== undefined && isPublicExportedClassMethod(context.block.callableNode);
+}
+
+// Whether either tag rule's `everyCallable` switch is on. Both are off by default, so the default
+// missing-doc rules and tiers stay unchanged.
+function isTagRuleEveryCallable(config: Config): boolean {
+  return optionBoolean(config, "docs.missing-param-tag", "everyCallable", false)
+    || optionBoolean(config, "docs.missing-return-tag", "everyCallable", false);
 }
 
 // Reports advice about implementations with no executable body; declarations and documented empty test doubles stay quiet.
@@ -724,8 +760,8 @@ function functionBlockFromPoint(scan: FunctionBlockScan, point: BlockMatchPoint,
       || point.isModuleScoped !== false && scan.reExportedNames.has(point.name),
     isTest: isTestInvocationLine(scan.codeLines[index] ?? ""),
     // Look upward from the declaration, not the name: a split-line `export async function` header would otherwise hide the declaration's own docblock
-    // behind its modifier line.
-    hasLeadingComment: hasLeadingCommentBeforeLines(scan.lines, (point.declarationLineIndex ?? index) + 1),
+    // behind its modifier line. A divider or the file's overview above it is not its comment.
+    hasLeadingComment: hasFunctionLeadingCommentBeforeLines(scan.lines, (point.declarationLineIndex ?? index) + 1),
     declarationLine: index + 1,
   };
 }

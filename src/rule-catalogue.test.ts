@@ -569,10 +569,10 @@ function thresholdUsages(source: string): Map<string, number> {
   return new Map([...usages.entries()].sort(([left], [right]) => left.localeCompare(right)));
 }
 
-// Preserves the descriptor/options invariant by extracting optionNumber(config, ruleId, key) calls.
+// Preserves the descriptor/options invariant by extracting optionNumber and optionBoolean(config, ruleId, key) calls.
 function optionUsages(source: string): Map<string, string[]> {
   const usages = new Map<string, Set<string>>();
-  for (const match of source.matchAll(/optionNumber\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)"/g)) {
+  for (const match of source.matchAll(/option(?:Number|Boolean)\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)"/g)) {
     const ruleId = match[1] ?? "";
     const key = match[2] ?? "";
     usages.set(ruleId, usages.get(ruleId) ?? new Set<string>());

@@ -138,7 +138,7 @@ rules:
   # documentation/advisory: Flags commented functions that throw without an @throws tag.
   docs.missing-error-behavior-doc:
     enabled: true
-  # documentation/warning: Flags exported functions without a leading maintainer comment.
+  # documentation/warning: Flags exported functions without a leading maintainer comment; with `everyCallable` on either JSDoc tag rule, also public methods of exported classes.
   docs.missing-exported-function-doc:
     enabled: true
   # documentation/advisory: Flags source files without a top-of-file purpose comment.
@@ -153,13 +153,13 @@ rules:
   # documentation/advisory: Flags commented declarations that own schema, fingerprint, baseline, or determinism contracts without saying so.
   docs.missing-invariant-doc:
     enabled: true
-  # documentation/advisory: Flags documented exports with parameters missing @param tags.
+  # documentation/advisory: Flags documented exports with parameters missing @param tags; with `everyCallable`, also JSDoc-documented private and nested functions, class and object methods, default exports and single `const` function values, and a @param tag with no description.
   docs.missing-param-tag:
     enabled: true
   # documentation/advisory: Flags exported class, type, and enum APIs without a nearby doc comment.
   docs.missing-public-doc:
     enabled: true
-  # documentation/advisory: Flags documented non-void exports without @returns.
+  # documentation/advisory: Flags documented non-void exports without @returns; with `everyCallable`, also JSDoc-documented private and nested functions, class and object methods, default exports and single `const` function values, an unannotated body that returns a value, and a @returns tag with no description.
   docs.missing-return-tag:
     enabled: true
   # documentation/advisory: Flags commented functions that perform observable side effects without naming them.

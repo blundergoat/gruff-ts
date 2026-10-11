@@ -661,3 +661,545 @@ function trackedLater(): void {}
   const configured = analyseFixture(source, { config: { allowlists: { trackingTokens: ["\\bM\\d{1,3}\\b"] } } });
   assert.deepEqual(configured.findings.filter((finding) => finding.ruleId === "docs.todo-without-tracking"), []);
 });
+
+// Fixture for the tag rules' everyCallable switch: an arrow and a function-expression constant that
+// return a value and lack tags, a void arrow constant, and a function declaration to compare severity with.
+const CALLABLE_CONSTANT_SOURCE = `// File overview: callable constant fixture.
+/** Joins two labels with a separator. */
+export const joinArrow = (left: string): string => left + "-";
+
+/** Picks the first label from a pair. */
+export const pickFirst = function (first: string): string {
+  return first;
+};
+
+/** Writes a label to the console. */
+export const logLabel = (label: string): void => {
+  console.log(label);
+};
+
+/** Joins a label with a fixed separator. */
+export function joinDeclared(left: string): string {
+  return left;
+}
+`;
+
+// Collects the two tag rules' findings as "severity message" lines in a stable sorted order so each case reads as one list.
+function tagFindings(options: Parameters<typeof analyseFixture>[1] = {}): string[] {
+  return analyseFixture(CALLABLE_CONSTANT_SOURCE, options)
+    .findings.filter((finding) => finding.ruleId === "docs.missing-param-tag" || finding.ruleId === "docs.missing-return-tag")
+    .map((finding) => `${finding.severity} ${finding.message}`)
+    .sort();
+}
+
+test("tag rules leave documented callable constants alone at default settings", () => {
+  assert.deepEqual(tagFindings(), ["advisory Docblock for `joinDeclared` is missing @param for `left`.", "advisory Docblock for `joinDeclared` is missing @returns."]);
+});
+
+test("everyCallable on docs.missing-param-tag covers arrow and function-expression constants at the declaration severity", () => {
+  assert.deepEqual(tagFindings({ config: { rules: { "docs.missing-param-tag": { options: { everyCallable: true } } } } }), [
+    "advisory Docblock for `joinArrow` is missing @param for `left`.",
+    "advisory Docblock for `joinDeclared` is missing @param for `left`.",
+    "advisory Docblock for `joinDeclared` is missing @returns.",
+    "advisory Docblock for `logLabel` is missing @param for `label`.",
+    "advisory Docblock for `pickFirst` is missing @param for `first`.",
+  ]);
+});
+
+test("everyCallable on docs.missing-return-tag asks only non-void callable constants for @returns", () => {
+  assert.deepEqual(tagFindings({ config: { rules: { "docs.missing-return-tag": { options: { everyCallable: true } } } } }), [
+    "advisory Docblock for `joinArrow` is missing @returns.",
+    "advisory Docblock for `joinDeclared` is missing @param for `left`.",
+    "advisory Docblock for `joinDeclared` is missing @returns.",
+    "advisory Docblock for `pickFirst` is missing @returns.",
+  ]);
+});
+
+// Fixture for the tag rules' everyCallable switch on methods: an exported class with documented
+// public, static and private methods that lack tags (the private one is void), an undocumented
+// public method and an undocumented private method, and a documented object-literal method.
+const METHOD_SOURCE = `// File overview: method fixture.
+/** Holds labels for joining. */
+export class LabelHolder {
+  /** Joins a label with the prefix. */
+  public join(left: string): string {
+    return left;
+  }
+
+  /** Joins a label without an instance. */
+  static joinStatic(left: string): string {
+    return left;
+  }
+
+  /** Writes a label to the console. */
+  private logHidden(label: string): void {
+    console.log(label);
+  }
+
+  undocumented(left: string): string {
+    return this.secret(left);
+  }
+
+  private secret(left: string): string {
+    return left;
+  }
+}
+
+/** Helper object literal. */
+export const helpers = {
+  /** Picks the first label. */
+  pickFirst(first: string): string {
+    return first;
+  },
+};
+`;
+
+const TAG_RULE_IDS = ["docs.missing-param-tag", "docs.missing-return-tag"];
+const MISSING_DOC_RULE_IDS = ["docs.missing-exported-function-doc", "docs.missing-internal-function-doc"];
+
+// Collects the method fixture's findings for the given rules as "severity message" lines in a stable sorted order.
+function methodFindings(ruleIds: string[], options: Parameters<typeof analyseFixture>[1] = {}): string[] {
+  return analyseFixture(METHOD_SOURCE, options)
+    .findings.filter((finding) => ruleIds.includes(finding.ruleId))
+    .map((finding) => `${finding.severity} ${finding.message}`)
+    .sort();
+}
+
+test("tag rules and missing-doc tiers leave methods alone at default settings", () => {
+  assert.deepEqual(methodFindings(TAG_RULE_IDS), []);
+  assert.deepEqual(methodFindings(MISSING_DOC_RULE_IDS), [
+    "advisory Internal function `secret` is missing a leading maintainer comment; describe parameter `left`; describe the return value.",
+    "advisory Internal function `undocumented` is missing a leading maintainer comment; describe parameter `left`; describe the return value.",
+  ]);
+});
+
+test("everyCallable on docs.missing-param-tag covers class and object-literal methods under their own names", () => {
+  assert.deepEqual(methodFindings(TAG_RULE_IDS, { config: { rules: { "docs.missing-param-tag": { options: { everyCallable: true } } } } }), [
+    "advisory Docblock for `joinStatic` is missing @param for `left`.",
+    "advisory Docblock for `join` is missing @param for `left`.",
+    "advisory Docblock for `logHidden` is missing @param for `label`.",
+    "advisory Docblock for `pickFirst` is missing @param for `first`.",
+  ]);
+});
+
+test("everyCallable on docs.missing-return-tag asks only non-void methods for @returns", () => {
+  assert.deepEqual(methodFindings(TAG_RULE_IDS, { config: { rules: { "docs.missing-return-tag": { options: { everyCallable: true } } } } }), [
+    "advisory Docblock for `joinStatic` is missing @returns.",
+    "advisory Docblock for `join` is missing @returns.",
+    "advisory Docblock for `pickFirst` is missing @returns.",
+  ]);
+});
+
+test("everyCallable on either tag rule reports an undocumented public method of an exported class as exported, never a private one", () => {
+  const expected = [
+    "warning Exported function `undocumented` is missing a leading maintainer comment; describe parameter `left`; describe the return value.",
+    "warning Internal function `secret` is missing a leading maintainer comment; describe parameter `left`; describe the return value.",
+  ];
+  assert.deepEqual(methodFindings(MISSING_DOC_RULE_IDS, { config: { rules: { "docs.missing-param-tag": { options: { everyCallable: true } } } } }), expected);
+  assert.deepEqual(methodFindings(MISSING_DOC_RULE_IDS, { config: { rules: { "docs.missing-return-tag": { options: { everyCallable: true } } } } }), expected);
+});
+
+// Fixtures for the tag rules' everyCallable switch on default exports: an anonymous and a named
+// `export default function` and a default-exported arrow, each documented without tags.
+const DEFAULT_EXPORT_SOURCES = [
+  `// File overview: anonymous default export fixture.
+/** Joins a label with a fixed separator. */
+export default function (left: string): string {
+  return left;
+}
+`,
+  `// File overview: named default export fixture.
+/** Joins a label with a fixed separator. */
+export default function joinDefault(left: string): string {
+  return left;
+}
+`,
+  `// File overview: default arrow export fixture.
+/** Joins a label with a fixed separator. */
+export default (left: string): string => left;
+`,
+];
+
+// Fixture for the tag rules' everyCallable switch on later export statements: a function exported by
+// a default-name export, and a function and an arrow constant exported by a list (the arrow under an
+// alias), all documented without tags.
+const LATER_EXPORT_SOURCE = `// File overview: later export fixture.
+/** Joins a label, exported later as the default. */
+function joinLater(left: string): string {
+  return left;
+}
+
+/** Joins a label, exported later in a list. */
+function joinListed(left: string): string {
+  return left;
+}
+
+/** Joins a label as an arrow, exported later under another name. */
+const joinListedArrow = (left: string): string => left;
+
+export default joinLater;
+export { joinListed, joinListedArrow as renamedArrow };
+`;
+
+// Collects the tag rules' findings across the given fixtures as "severity symbol message" lines in a stable sorted order.
+function exportFormTagFindings(sources: string[], options: Parameters<typeof analyseFixture>[1] = {}): string[] {
+  return sources
+    .flatMap((source) => analyseFixture(source, options).findings)
+    .filter((finding) => TAG_RULE_IDS.includes(finding.ruleId))
+    .map((finding) => `${finding.severity} ${finding.symbol} ${finding.message}`)
+    .sort();
+}
+
+test("tag rules leave default and later-exported callables alone at default settings", () => {
+  assert.deepEqual(exportFormTagFindings([...DEFAULT_EXPORT_SOURCES, LATER_EXPORT_SOURCE]), []);
+});
+
+test("everyCallable on docs.missing-param-tag covers default exports and names an anonymous one default", () => {
+  assert.deepEqual(exportFormTagFindings(DEFAULT_EXPORT_SOURCES, { config: { rules: { "docs.missing-param-tag": { options: { everyCallable: true } } } } }), [
+    "advisory default Docblock for `default` is missing @param for `left`.",
+    "advisory default Docblock for `default` is missing @param for `left`.",
+    "advisory joinDefault Docblock for `joinDefault` is missing @param for `left`.",
+  ]);
+});
+
+test("everyCallable on docs.missing-param-tag covers callables a later export statement names, under their local names", () => {
+  assert.deepEqual(exportFormTagFindings([LATER_EXPORT_SOURCE], { config: { rules: { "docs.missing-param-tag": { options: { everyCallable: true } } } } }), [
+    "advisory joinLater Docblock for `joinLater` is missing @param for `left`.",
+    "advisory joinListed Docblock for `joinListed` is missing @param for `left`.",
+    "advisory joinListedArrow Docblock for `joinListedArrow` is missing @param for `left`.",
+  ]);
+});
+
+test("everyCallable on docs.missing-return-tag covers default and later-exported callables", () => {
+  assert.deepEqual(exportFormTagFindings([...DEFAULT_EXPORT_SOURCES, LATER_EXPORT_SOURCE], { config: { rules: { "docs.missing-return-tag": { options: { everyCallable: true } } } } }), [
+    "advisory default Docblock for `default` is missing @returns.",
+    "advisory default Docblock for `default` is missing @returns.",
+    "advisory joinDefault Docblock for `joinDefault` is missing @returns.",
+    "advisory joinLater Docblock for `joinLater` is missing @returns.",
+    "advisory joinListed Docblock for `joinListed` is missing @returns.",
+    "advisory joinListedArrow Docblock for `joinListedArrow` is missing @returns.",
+  ]);
+});
+
+// Fixture for the tag rules' everyCallable switch on private and nested callables: a documented
+// module-private function, private arrow constant and void private function that lack tags, an
+// undocumented private function, and a documented nested function and nested arrow constant inside
+// a fully tagged exported function.
+const PRIVATE_CALLABLE_SOURCE = `// File overview: private and nested callable fixture.
+/** Joins a label privately. */
+function joinPrivate(left: string): string {
+  return left;
+}
+
+/** Joins a label with a private arrow. */
+const joinPrivateArrow = (left: string): string => left;
+
+/** Writes a label to the console. */
+function logPrivate(label: string): void {
+  console.log(label);
+}
+
+function undocumentedPrivate(left: string): string {
+  return left;
+}
+
+/**
+ * Uses the private helpers.
+ * @param label - the label to join
+ * @returns the joined label
+ */
+export function useAll(label: string): string {
+  /** Joins a label inside the outer function. */
+  function inner(left: string): string {
+    return left;
+  }
+  /** Joins a label with a nested arrow. */
+  const innerArrow = (left: string): string => left;
+  logPrivate(label);
+  return joinPrivate(label) + joinPrivateArrow(label) + inner(label) + innerArrow(label) + undocumentedPrivate(label);
+}
+`;
+
+// Collects the private-callable fixture's findings for the given rules as "severity symbol message" lines in a stable sorted order.
+function privateCallableFindings(ruleIds: string[], options: Parameters<typeof analyseFixture>[1] = {}): string[] {
+  return analyseFixture(PRIVATE_CALLABLE_SOURCE, options)
+    .findings.filter((finding) => ruleIds.includes(finding.ruleId))
+    .map((finding) => `${finding.severity} ${finding.symbol} ${finding.message}`)
+    .sort();
+}
+
+test("tag rules and the internal missing-doc tier leave private and nested callables alone at default settings", () => {
+  assert.deepEqual(privateCallableFindings(TAG_RULE_IDS), []);
+  assert.deepEqual(privateCallableFindings(MISSING_DOC_RULE_IDS), ["advisory undocumentedPrivate Internal function `undocumentedPrivate` is missing a leading maintainer comment; describe parameter `left`; describe the return value."]);
+});
+
+test("everyCallable on docs.missing-param-tag covers private and nested functions and callable constants", () => {
+  assert.deepEqual(privateCallableFindings(TAG_RULE_IDS, { config: { rules: { "docs.missing-param-tag": { options: { everyCallable: true } } } } }), [
+    "advisory inner Docblock for `inner` is missing @param for `left`.",
+    "advisory innerArrow Docblock for `innerArrow` is missing @param for `left`.",
+    "advisory joinPrivate Docblock for `joinPrivate` is missing @param for `left`.",
+    "advisory joinPrivateArrow Docblock for `joinPrivateArrow` is missing @param for `left`.",
+    "advisory logPrivate Docblock for `logPrivate` is missing @param for `label`.",
+  ]);
+});
+
+test("everyCallable on docs.missing-return-tag asks only non-void private and nested callables for @returns", () => {
+  assert.deepEqual(privateCallableFindings(TAG_RULE_IDS, { config: { rules: { "docs.missing-return-tag": { options: { everyCallable: true } } } } }), [
+    "advisory inner Docblock for `inner` is missing @returns.",
+    "advisory innerArrow Docblock for `innerArrow` is missing @returns.",
+    "advisory joinPrivate Docblock for `joinPrivate` is missing @returns.",
+    "advisory joinPrivateArrow Docblock for `joinPrivateArrow` is missing @returns.",
+  ]);
+});
+
+test("everyCallable on either tag rule reports an undocumented private function at the exported severity without calling it exported", () => {
+  const expected = ["warning undocumentedPrivate Internal function `undocumentedPrivate` is missing a leading maintainer comment; describe parameter `left`; describe the return value."];
+  assert.deepEqual(privateCallableFindings(MISSING_DOC_RULE_IDS, { config: { rules: { "docs.missing-param-tag": { options: { everyCallable: true } } } } }), expected);
+  assert.deepEqual(privateCallableFindings(MISSING_DOC_RULE_IDS, { config: { rules: { "docs.missing-return-tag": { options: { everyCallable: true } } } } }), expected);
+});
+
+// Fixture for docs.missing-return-tag's everyCallable inference from the body: an annotated function,
+// unannotated functions and an arrow constant that return a value, one that already has @returns, and
+// unannotated callables whose only returns are bare, undefined, void or inside nested callables.
+const INFERRED_RETURN_SOURCE = `// File overview: inferred return fixture.
+/**
+ * Joins with an explicit return type.
+ * @param left - first label
+ */
+export function joinExplicit(left: string): string {
+  return left;
+}
+
+/**
+ * Joins with an inferred return type after an early bare return.
+ * @param left - first label
+ */
+export function joinInferred(left: string) {
+  if (left === "") {
+    return;
+  }
+  return left + "!";
+}
+
+/**
+ * Resolves with an inferred promise.
+ * @param left - first label
+ */
+export async function resolveInferred(left: string) {
+  return left;
+}
+
+/**
+ * Joins with a concise arrow body.
+ * @param left - first label
+ */
+export const joinArrow = (left: string) => left;
+
+/**
+ * Joins with a documented inferred return.
+ * @param left - first label
+ * @returns the label
+ */
+export function joinDocumented(left: string) {
+  return left;
+}
+
+/**
+ * Logs with only bare and undefined returns.
+ * @param left - first label
+ */
+export function logInferred(left: string) {
+  if (left === "") {
+    return;
+  }
+  console.log(left);
+  return undefined;
+}
+
+/**
+ * Discards a label with a void arrow body.
+ * @param left - first label
+ */
+export const discardArrow = (left: string) => void left;
+
+/**
+ * Logs callbacks whose returns are not this function's.
+ * @param left - first label
+ */
+export function registerNested(left: string) {
+  const read = () => {
+    return left;
+  };
+  console.log(read, [left].map(function (value) {
+    return value;
+  }));
+}
+
+/**
+ * Logs a class whose method return is not this function's.
+ * @param left - first label
+ */
+export function buildHolder(left: string) {
+  class Holder {
+    read() {
+      return left;
+    }
+  }
+  console.log(Holder);
+}
+`;
+
+test("docs.missing-return-tag needs a return annotation at default settings and with only the param rule's everyCallable", () => {
+  const expected = ["advisory joinExplicit Docblock for `joinExplicit` is missing @returns."];
+  assert.deepEqual(exportFormTagFindings([INFERRED_RETURN_SOURCE]), expected);
+  assert.deepEqual(exportFormTagFindings([INFERRED_RETURN_SOURCE], { config: { rules: { "docs.missing-param-tag": { options: { everyCallable: true } } } } }), expected);
+});
+
+test("everyCallable on docs.missing-return-tag infers a returned value from the body, skipping bare, undefined, void and nested returns", () => {
+  assert.deepEqual(exportFormTagFindings([INFERRED_RETURN_SOURCE], { config: { rules: { "docs.missing-return-tag": { options: { everyCallable: true } } } } }), [
+    "advisory joinArrow Docblock for `joinArrow` is missing @returns.",
+    "advisory joinExplicit Docblock for `joinExplicit` is missing @returns.",
+    "advisory joinInferred Docblock for `joinInferred` is missing @returns.",
+    "advisory resolveInferred Docblock for `resolveInferred` is missing @returns.",
+  ]);
+});
+
+// Fixture for the tag rules' everyCallable check on tags with no description: bare and dash-only
+// tags, a type-only @param and a stale one beside a void @returns {void}, a description on a
+// continuation line, and a widened arrow constant with a bare @param and a type-only @returns.
+const BARE_TAG_SOURCE = `// File overview: bare tag fixture.
+/**
+ * Joins two labels with bare tags.
+ * @param left
+ * @param right -
+ * @returns
+ */
+export function joinBare(left: string, right: string): string {
+  return left + right;
+}
+
+/**
+ * Joins two labels with described tags.
+ * @param left - first label
+ * @param {string} right
+ *   second label, described on the next line
+ * @returns the joined label
+ */
+export function joinDescribed(left: string, right: string): string {
+  return left + right;
+}
+
+/**
+ * Logs a label with type-only tags.
+ * @param {string} label
+ * @param {string} stale
+ * @returns {void}
+ */
+export function logTyped(label: string): void {
+  console.log(label);
+}
+
+/**
+ * Picks a label with a type-only return tag.
+ * @param label
+ * @returns {string}
+ */
+export const pickTyped = (label: string) => label;
+`;
+
+// Collects the two tag rules' findings on BARE_TAG_SOURCE as "line message" strings in a stable sorted order.
+function bareTagFindings(options: Parameters<typeof analyseFixture>[1] = {}): string[] {
+  return analyseFixture(BARE_TAG_SOURCE, options)
+    .findings.filter((finding) => TAG_RULE_IDS.includes(finding.ruleId))
+    .map((finding) => `${finding.line} ${finding.severity} ${finding.message}`)
+    .sort();
+}
+
+test("tag rules accept @param and @returns tags with no description at default settings", () => {
+  assert.deepEqual(bareTagFindings(), []);
+});
+
+test("everyCallable on docs.missing-param-tag reports each parameter whose @param tag has no description, on the tag's line", () => {
+  assert.deepEqual(bareTagFindings({ config: { rules: { "docs.missing-param-tag": { options: { everyCallable: true } } } } }), [
+    "25 advisory Docblock for `logTyped` has no description for @param `label`.",
+    "35 advisory Docblock for `pickTyped` has no description for @param `label`.",
+    "4 advisory Docblock for `joinBare` has no description for @param `left`.",
+    "5 advisory Docblock for `joinBare` has no description for @param `right`.",
+  ]);
+});
+
+test("everyCallable on docs.missing-return-tag reports a @returns tag with no description only on a callable that returns a value", () => {
+  assert.deepEqual(bareTagFindings({ config: { rules: { "docs.missing-return-tag": { options: { everyCallable: true } } } } }), [
+    "36 advisory Docblock for `pickTyped` has no description for @returns.",
+    "6 advisory Docblock for `joinBare` has no description for @returns.",
+  ]);
+});
+
+// Fixture for docs.missing-param-tag naming every missing parameter in one finding: `joinThree`
+// documents only its middle parameter, and `joinNone` has no @param tag at all.
+const MISSING_PARAMS_SOURCE = `// File overview: docblocks that leave out several parameters.
+
+/**
+ * Joins three labels in order.
+ * @param second - the middle label
+ * @returns the joined labels
+ */
+export function joinThree(first: string, second: string, third: string): string {
+  return first + second + third;
+}
+
+/**
+ * Joins two labels with nothing between them.
+ * @returns the joined labels
+ */
+export function joinNone(left: string, right: string): string {
+  return left + right;
+}
+`;
+
+test("docs.missing-param-tag reports one finding per declaration that names every missing parameter at default settings", () => {
+  const findings = analyseFixture(MISSING_PARAMS_SOURCE).findings.filter((finding) => finding.ruleId === "docs.missing-param-tag");
+  assert.deepEqual(findings.map((finding) => [finding.symbol, finding.message, finding.metadata.parameter]), [
+    ["joinThree", "Docblock for `joinThree` is missing @param for `first`, `third`.", "first, third"],
+    ["joinNone", "Docblock for `joinNone` is missing @param for `left`, `right`.", "left, right"],
+  ]);
+});
+
+// Fixture for docs.stale-param-tag naming every stale parameter in one finding behind
+// docs.missing-param-tag's everyCallable switch: `joinRenamed` keeps tags for two parameters it no
+// longer has, one of them twice, and `trimOneStale` keeps one.
+const STALE_PARAMS_SOURCE = `// File overview: docblocks that keep tags for renamed parameters.
+
+/**
+ * @param first - the old first label
+ * @param left - the first label
+ * @param second - the old second label
+ * @param first - the old first label again
+ * @param right - the second label
+ */
+export function joinRenamed(left: string, right: string): string { return left + right; }
+
+/**
+ * @param raw - the old label
+ * @param label - the label to trim
+ */
+export function trimOneStale(label: string): string { return label.trim(); }
+`;
+
+// Collects docs.stale-param-tag findings on STALE_PARAMS_SOURCE as [symbol, message, parameter] rows in their stable emission order.
+function staleParamFindings(options: Parameters<typeof analyseFixture>[1] = {}): unknown[][] {
+  return analyseFixture(STALE_PARAMS_SOURCE, options).findings.filter((finding) => finding.ruleId === "docs.stale-param-tag").map((finding) => [finding.symbol, finding.message, finding.metadata.parameter]);
+}
+
+test("docs.stale-param-tag keeps one finding per stale tag at default settings and under docs.missing-return-tag's everyCallable alone", () => {
+  const expected = [["joinRenamed", "Docblock for `joinRenamed` has stale @param tag `first`.", "first"], ["trimOneStale", "Docblock for `trimOneStale` has stale @param tag `raw`.", "raw"]];
+  assert.deepEqual(staleParamFindings(), expected);
+  assert.deepEqual(staleParamFindings({ config: { rules: { "docs.missing-return-tag": { options: { everyCallable: true } } } } }), expected);
+});
+
+test("everyCallable on docs.missing-param-tag makes docs.stale-param-tag name every stale parameter once in one finding", () => {
+  assert.deepEqual(staleParamFindings({ config: { rules: { "docs.missing-param-tag": { options: { everyCallable: true } } } } }), [
+    ["joinRenamed", "Docblock for `joinRenamed` has stale @param tags `first`, `second`.", "first, second"],
+    ["trimOneStale", "Docblock for `trimOneStale` has stale @param tag `raw`.", "raw"],
+  ]);
+});

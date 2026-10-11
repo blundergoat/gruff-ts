@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { loadConfig } from "./config.ts";
+import { loadConfig, optionBoolean } from "./config.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
 import { writeDefaultConfig } from "./init-config.ts";
 import { analyseProject, REPO_ROOT } from "./test-fixtures.ts";
@@ -76,6 +76,32 @@ test("rule config rejects unknown ids, alias booleans, and malformed options lou
   // Valid overrides still round-trip: boolean enabled plus a declared numeric option.
   const valid = analyseProject(files, { config: { rules: { "naming.generic-parameter": { enabled: true, options: { minCyclomatic: 3 } } } } });
   assert.equal(valid.schemaVersion, "gruff.analysis.v3");
+});
+
+test("rule config reads a boolean everyCallable switch per tag rule", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-every-callable-"));
+  try {
+    writeFileSync(join(root, ".gruff-ts.yaml"), "schemaVersion: gruff-ts.config.v0.1\nrules:\n  docs.missing-param-tag:\n    options:\n      everyCallable: true\n");
+    const config = loadConfig(root, CONFIG_LOAD_OPTIONS);
+    assert.equal(optionBoolean(config, "docs.missing-param-tag", "everyCallable", false), true);
+    assert.equal(optionBoolean(config, "docs.missing-return-tag", "everyCallable", false), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rule config rejects a non-boolean switch and a boolean numeric option", () => {
+  const files = { "ok.ts": "// File overview: option type fixture.\nexport const fine = 1;\n" };
+  assert.throws(() => analyseProject(files, { config: { rules: { "docs.missing-param-tag": { options: { everyCallable: "yes" } } } } }), /"everyCallable" for docs.missing-param-tag must be true or false; got "yes"/);
+  assert.throws(() => analyseProject(files, { config: { rules: { "naming.generic-parameter": { options: { minCyclomatic: true } } } } }), /"minCyclomatic" for naming.generic-parameter must be numeric; got true/);
+});
+
+test("everyCallable false leaves the tag-rule findings at their defaults", () => {
+  const files = { "lib.ts": "// File overview: tag-rule default control.\n/** Adds two numbers. */\nexport function add(left: number, right: number): number {\n  return left + right;\n}\n" };
+  const defaults = analyseProject(files);
+  const switchedOff = analyseProject(files, { config: { rules: { "docs.missing-param-tag": { options: { everyCallable: false } }, "docs.missing-return-tag": { options: { everyCallable: false } } } } });
+  assert.ok(defaults.findings.some((finding) => finding.ruleId === "docs.missing-param-tag"));
+  assert.deepEqual(switchedOff.findings, defaults.findings);
 });
 
 // An unrecognised key inside a rule block used to load as a silent no-op, so a project writing the sibling php shape

@@ -10,7 +10,7 @@ import { recordHistory, sortedUniqueFindings } from "./baseline.ts";
 import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan } from "./baseline-identity.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError, changedRegionScope, filterChangedFindings, filterScopedDiagnostics, type ChangedRegionScope } from "./changed-regions.ts";
-import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
+import { loadConfig, optionBoolean, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { applyBuiltInTestPathSkip, partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
@@ -888,7 +888,10 @@ function analyseTypeScriptRules(file: SourceFile, source: string, comments: Comm
   // like the other syntax-backed passes instead of falling back to a lossy regex walk.
   runRuleGroupPass(config, DOCBLOCK_RULE_IDS, () => {
     if (parsed) {
-      analyseDocRules(file, findings, parsed);
+      analyseDocRules(file, findings, parsed, {
+        isParamTagEveryCallable: optionBoolean(config, "docs.missing-param-tag", "everyCallable", false),
+        isReturnTagEveryCallable: optionBoolean(config, "docs.missing-return-tag", "everyCallable", false),
+      });
     }
   });
   runRulePass(config, "docs.missing-interface-doc", () => analyseInterfaceDocs(file, source, codeSource, findings));

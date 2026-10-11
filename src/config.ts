@@ -557,6 +557,9 @@ function applyRuleConfig(config: Config, parsedConfig: Record<string, unknown>):
 // Every key a rule block may carry; a sibling port's `thresholds:` map is not one of them.
 const RULE_BLOCK_KEYS: ReadonlySet<string> = new Set(["enabled", "options", "severity", "threshold"]);
 
+// Option keys that switch a rule on or off for a wider scope, such as the tag rules' `everyCallable`; every other option is numeric.
+const BOOLEAN_RULE_OPTION_KEYS: ReadonlySet<string> = new Set(["everyCallable"]);
+
 // Builds one effective rule override after validating every user-supplied field.
 // Use this shared path for direct config and profile rules so both surfaces return the same errors.
 function ruleConfigValue(ruleId: string, rule: Record<string, unknown>): RuleOverride {
@@ -625,31 +628,43 @@ function applyRuleSeverityConfig(ruleOverride: RuleOverride, rule: Record<string
   }
 }
 
-// Builds the numeric options for one rule after checking its public option catalogue.
-// Missing options become an empty map. It throws on unknown names or non-numeric values so users never rely on an ignored tuning.
-// @throws {ConfigLoadError} when an option name is not one the rule accepts, or its value is not a number.
-function validatedRuleOptions(ruleId: string, optionsValue: unknown): Map<string, number> {
-  const options = new Map<string, number>();
+// Builds the options for one rule after checking its public option catalogue.
+// Missing options become an empty map. It throws on unknown names or mistyped values so users never rely on an ignored tuning.
+// @throws {ConfigLoadError} when an option name is not one the rule accepts, or its value has the wrong type.
+function validatedRuleOptions(ruleId: string, optionsValue: unknown): Map<string, number | boolean> {
+  const options = new Map<string, number | boolean>();
   const configuredOptions = objectValue(optionsValue);
   // No options mapping means this rule uses its documented option defaults.
   if (!configuredOptions) {
     return options;
   }
   const acceptedKeys = ruleOptionKeys(ruleId);
-  // Every supplied option must be both supported by the rule and numeric before analysis uses it.
+  // Every supplied option must be both supported by the rule and of its type before analysis uses it.
   for (const [name, option] of Object.entries(configuredOptions)) {
     // Reject unknown keys first so a typo is reported as the typo, not as a type error.
     if (!acceptedKeys.includes(name)) {
       const accepted = acceptedKeys.length > 0 ? `accepts options: ${acceptedKeys.join(", ")}` : "accepts no options";
       throw new ConfigLoadError(`Unknown option ${JSON.stringify(name)} for rule ${ruleId}; the rule ${accepted}.`, SUGGEST_EDIT_CONFIG);
     }
-    // A supported option with a non-numeric value cannot define the boundary the user intended.
-    if (typeof option !== "number") {
-      throw new ConfigLoadError(`Rule config option ${JSON.stringify(name)} for ${ruleId} must be numeric; got ${JSON.stringify(option)}.`, SUGGEST_EDIT_CONFIG);
-    }
-    options.set(name, option);
+    options.set(name, ruleOptionValue(ruleId, name, option));
   }
   return options;
+}
+
+// Returns one supported option value once its type matches: a switch takes true or false, every other option a number.
+// @throws {ConfigLoadError} when a switch is not a boolean, or a numeric option is not a number.
+function ruleOptionValue(ruleId: string, name: string, option: unknown): number | boolean {
+  const isSwitch = BOOLEAN_RULE_OPTION_KEYS.has(name);
+  // A switch takes only true or false, so a YAML word such as `yes` cannot look like a choice that does nothing.
+  if (isSwitch && typeof option === "boolean") {
+    return option;
+  }
+  // A numeric option takes only a number, because nothing else can define the boundary the user intended.
+  if (!isSwitch && typeof option === "number") {
+    return option;
+  }
+  const expected = isSwitch ? "true or false" : "numeric";
+  throw new ConfigLoadError(`Rule config option ${JSON.stringify(name)} for ${ruleId} must be ${expected}; got ${JSON.stringify(option)}.`, SUGGEST_EDIT_CONFIG);
 }
 
 // Finds the first supported project-root configuration file for zero-argument discovery.
@@ -687,7 +702,15 @@ function ruleSeverity(config: Config, ruleId: string, defaultSeverity: Severity)
 // Returns one numeric rule option or the caller's documented default.
 // Missing rules, option maps, or names all mean the user left that tuning unchanged.
 function optionNumber(config: Config, ruleId: string, name: string, defaultValue: number): number {
-  return config.rules.get(ruleId)?.options.get(name) ?? defaultValue;
+  const option = config.rules.get(ruleId)?.options.get(name);
+  return typeof option === "number" ? option : defaultValue;
+}
+
+// Returns one boolean rule option, such as a tag rule's `everyCallable` switch, or the caller's documented default.
+// Missing rules, option maps, or names all mean the user left that switch unchanged.
+function optionBoolean(config: Config, ruleId: string, name: string, isOnByDefault: boolean): boolean {
+  const option = config.rules.get(ruleId)?.options.get(name);
+  return typeof option === "boolean" ? option : isOnByDefault;
 }
 
 // Checks whether a parsed config value belongs to the public severity vocabulary.
@@ -696,4 +719,4 @@ function isSeverity(configValue: unknown): configValue is Severity {
   return configValue === "advisory" || configValue === "warning" || configValue === "error";
 }
 
-export { defaultConfigPath, loadConfig, minimumSeverityFor, optionNumber, resolveProfile, ruleEnabled, ruleSeverity, threshold };
+export { defaultConfigPath, loadConfig, minimumSeverityFor, optionBoolean, optionNumber, resolveProfile, ruleEnabled, ruleSeverity, threshold };

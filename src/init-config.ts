@@ -12,11 +12,13 @@ import type { FailThreshold, MinimumSeverityCommand, RuleDescriptor } from "./ty
 const DEFAULT_CONFIG_FILE_NAME = ".gruff-ts.yaml";
 
 // Default option values for rules with `optionKeys`. The source of truth is the
-// `optionNumber(config, ruleId, key, default)` call site in the rule implementation; mirroring
-// them here keeps `gruff-ts init` self-contained. `init-config.test.ts` asserts the values
+// `optionNumber` or `optionBoolean(config, ruleId, key, default)` call site in the rule implementation;
+// mirroring them here keeps `gruff-ts init` self-contained. `init-config.test.ts` asserts the values
 // here match the implementation defaults so drift fails the test suite, not user projects.
-const RULE_OPTION_DEFAULTS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
+const RULE_OPTION_DEFAULTS: Readonly<Record<string, Readonly<Record<string, number | boolean>>>> = {
   "design.large-module-concentration": { minFiles: 4, minLines: 80 },
+  "docs.missing-param-tag": { everyCallable: false },
+  "docs.missing-return-tag": { everyCallable: false },
   "naming.generic-parameter": { minCyclomatic: 8, minLineCount: 30, minParameters: 3 },
 };
 

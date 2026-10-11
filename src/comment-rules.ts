@@ -5,7 +5,7 @@
 import { existsSync } from "node:fs";
 import { dirname as dirnamePath, resolve } from "node:path";
 import { type FunctionBlock } from "./blocks.ts";
-import { combinedContextLineComment, type CommentRecord } from "./comment-scanner.ts";
+import { combinedContextLineComment, type CommentRecord, isOverviewOrDividerCommentAt } from "./comment-scanner.ts";
 import { type SourceFile } from "./discovery.ts";
 import { type ExportedDeclaration, interfaceDeclarations } from "./doc-rules.ts";
 import { type CommentedDeclaration, pushDeclarationContextFindings, pushFunctionContextFindings } from "./context-doc-rules.ts";
@@ -84,7 +84,7 @@ function analyseStandaloneCommentQuality(file: SourceFile, source: string, comme
  */
 function analyseCommentedDeclarationQuality(file: SourceFile, lines: string[], comments: CommentRecord[], declarations: CommentedDeclaration[], findings: Finding[]): void {
   for (const declaration of declarations) {
-    const comment = leadingCommentForLine(lines, comments, declaration.line);
+    const comment = declaration.kind === "function" ? functionLeadingComment(lines, comments, declaration.line) : leadingCommentForLine(lines, comments, declaration.line);
     if (!comment) {
       continue;
     }
@@ -101,7 +101,7 @@ function analyseCommentedDeclarationQuality(file: SourceFile, lines: string[], c
 function analyseFunctionContextCommentQuality(input: FunctionContextCommentQualityInput): void {
   const { file, lines, comments, blocks, config, findings } = input;
   for (const block of blocks) {
-    const comment = leadingCommentForLine(lines, comments, block.declarationLine);
+    const comment = functionLeadingComment(lines, comments, block.declarationLine);
     if (!comment || isRestatingSignatureComment(comment.text, block.name, "function")) {
       continue;
     }
@@ -690,6 +690,13 @@ function leadingCommentForLine(lines: string[], comments: CommentRecord[], line:
     return undefined;
   }
   return undefined;
+}
+
+// `leadingCommentForLine` for a function: a divider or the file's overview above it is not the
+// function's comment (M13-T18), so the comment rules do not judge it as one.
+function functionLeadingComment(lines: string[], comments: CommentRecord[], line: number): CommentRecord | undefined {
+  const comment = leadingCommentForLine(lines, comments, line);
+  return comment && !isOverviewOrDividerCommentAt(lines, comment.line - 1, comment.endLine - 1, line - 1) ? comment : undefined;
 }
 
 // Tighter sibling of `hasOnlyBlankFixturePurposeGap` - exclusive upper bound. Used by
