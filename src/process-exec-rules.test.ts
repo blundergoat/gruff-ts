@@ -81,8 +81,8 @@ export function runUserCommand(command: string, dir: string): void {
   assert.equal(findingsBySite.get("src/shelly.ts:4")?.severity, "warning");
   assert.equal(findingsBySite.get("src/shelly.ts:5")?.severity, "warning");
 
-  // A shell-enabled call whose whole command is one plain literal runs fixed text no input reaches, so it no longer
-  // reports (precision-floor M05); the dynamic shell commands above keep the warning.
+  // execSync with one plain literal command runs fixed text no input reaches, so it stays quiet (precision-floor M05);
+  // the dynamic shell commands above keep the warning.
   assert.equal(findingsBySite.has("src/shelly.ts:6"), false);
 });
 
@@ -188,7 +188,7 @@ const broken = ;
 test("exec and execSync with one plain literal command stay quiet while concatenated commands report", () => {
   // Precision-floor M05: the three literal commands on lines 3-5 are fixed shell text; lines 6-8 splice in input.
   const report = analyseFixture(`import { exec, execSync } from "node:child_process";
-function run(url: string): void {
+function run(url: string, env: NodeJS.ProcessEnv, cwd: string): void {
   execSync("npm root -g", { encoding: "utf8" });
   exec('tsc --emitDeclarationOnly', () => undefined);
   execSync(\`git status --short\`);
@@ -198,11 +198,14 @@ function run(url: string): void {
   exec("git", ["clone", url, "src"]);
   execSync('git clone $REPO /tmp/src', { env: { REPO: url } });
   execSync("npm ci", { cwd: url });
+  execSync("npm ci", { env });
+  execSync("npm ci", { cwd });
+  execSync("npm ci", { "env": env });
 }
 `);
 
-  // Lines 9-11: an argv array after the command (as @actions/exec takes it), a `$` the shell expands, and an env or
-  // cwd option can each change what the fixed text runs, so they keep reporting.
+  // Lines 9-14: an argv array after the command (as @actions/exec takes it), a `$` the shell expands, and an env or
+  // cwd option, keyed, shorthand or quoted, can each change what the fixed text runs, so they keep reporting.
   const lines = report.findings.filter((finding) => finding.ruleId === "security.process-exec").map((finding) => finding.line);
-  assert.deepEqual(lines, [6, 7, 8, 9, 10, 11]);
+  assert.deepEqual(lines, [6, 7, 8, 9, 10, 11, 12, 13, 14]);
 });

@@ -446,7 +446,8 @@ function fixedInnerHtmlAssignmentLines(sourceLines: readonly string[], syntax: T
   }
   const dynamic = new Set<number>();
   const { EqualsToken, FirstCompoundAssignment, LastCompoundAssignment } = typescriptSyntax.SyntaxKind;
-  // Sorts each innerHTML assignment's line into fixed or dynamic; a compound `+=`, `||=` or `??=` always adds markup.
+  // Sorts each innerHTML assignment's line into fixed or dynamic. Only a plain `=` can be fixed: `+=` appends to existing
+  // markup, and the other compound assignments are not modelled, so they stay reportable.
   const visit = (node: TsNode): void => {
     const operator = typescriptSyntax.isBinaryExpression(node) ? node.operatorToken.kind : undefined;
     const isAssignment = operator === EqualsToken
@@ -820,9 +821,10 @@ function isFixedArgvProcessCallSegment(callName: string, rawSource: string, call
 }
 
 // `exec` and `execSync` run their first argument through a shell. A command that is one quoted string or template with
-// no `$` and no backslash is fixed text the shell cannot expand, provided nothing after it changes what runs: only a
-// callback or an options object without `env`, `cwd` or a spread may follow. An array or a name after the command is the
-// argv shape of other `exec` helpers, such as `@actions/exec`, and keeps reporting, as does `exec(\`identify \` + url)`.
+// no `$` and no backslash is fixed text no caller input or environment variable reaches, provided nothing after it
+// changes what runs: only an inline callback or options object without `env`, `cwd` or a spread may follow. An array or
+// a name after the command is the argv shape of other `exec` helpers, such as `@actions/exec`, and keeps reporting, as
+// does `exec(\`identify \` + url)`.
 function isFixedShellCommandCall(callName: string, rawSegment: string): boolean {
   const command = firstProcessCallArgument(rawSegment);
   if ((callName !== "exec" && callName !== "execSync") || !/^(?:"[^"\\$]*"|'[^'\\$]*'|`[^`\\$]*`)$/.test(command)) {
@@ -830,7 +832,8 @@ function isFixedShellCommandCall(callName: string, rawSegment: string): boolean 
   }
   const argsText = rawSegment.slice(rawSegment.indexOf("(") + 1, rawSegment.lastIndexOf(")"));
   const rest = argsText.slice(argsText.indexOf(command) + command.length).replace(/^\s*,?\s*/, "");
-  return rest === "" || (/^(?:\{|\(|async\b|function\b)/.test(rest) && !/\b(?:env|cwd)\s*:|\.\.\./.test(rest));
+  // Any whole-word `env` or `cwd` counts, so shorthand `{ env }` and a quoted `"cwd":` key keep reporting too.
+  return rest === "" || (/^(?:\{|\(|async\b|function\b)/.test(rest) && !/\b(?:env|cwd)\b|\.\.\./.test(rest));
 }
 
 // Agent/tool discovery commonly runs a manifest-backed terminal binary with `--version`. The
