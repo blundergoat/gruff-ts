@@ -11,7 +11,7 @@ import { makeFinding } from "./findings.ts";
 import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts";
 import { type NamingSurface, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { codeLineFlags, type ParsedScript } from "./parsed-script.ts";
-import { processExecMetadata, type ProcessExecArgumentSource, type ProcessExecMetadata } from "./process-exec-metadata.ts";
+import { firstProcessCallArgument, processExecMetadata, type ProcessExecArgumentSource, type ProcessExecMetadata } from "./process-exec-metadata.ts";
 import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
@@ -57,6 +57,8 @@ interface LineRuleContext {
   lineNumber: number;
   config: Config;
   findings: Finding[];
+  // 1-based lines whose only `.innerHTML =` assignments take a plain string or a template without substitutions.
+  fixedInnerHtmlLines: ReadonlySet<number>;
   codeChecks: LineRuleCheck[];
   literalChecks: LineRuleCheck[];
   variables: RegExp;
@@ -152,6 +154,7 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
     lineNumber: 0,
     config,
     findings,
+    fixedInnerHtmlLines: ruleEnabled(config, "security.inner-html") ? fixedInnerHtmlAssignmentLines(sourceLines, syntax) : new Set(),
     codeChecks: CODE_LINE_CHECKS.filter((check) => ruleEnabled(config, check.ruleId)),
     literalChecks: LITERAL_LINE_CHECKS.filter((check) => ruleEnabled(config, check.ruleId)),
     variables: VARIABLE_DECLARATIONS,
@@ -376,6 +379,9 @@ function pushStringTimerFinding(context: LineRuleContext): void {
 // Reports each matching rule's stable, line-anchored finding; the descriptor severity is the default.
 function pushPatternCheckFindings(context: LineRuleContext): void {
   for (const check of context.codeChecks) {
+    if (check.ruleId === "security.inner-html" && isFixedInnerHtmlLine(context)) {
+      continue;
+    }
     if (check.pattern.test(context.codeLine)) {
       context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: ruleSeverity(context.config, check.ruleId, check.severity), pillar: check.pillar }));
     }
@@ -384,13 +390,78 @@ function pushPatternCheckFindings(context: LineRuleContext): void {
     if (isSuppressedByPathContext(check.ruleId, context.file.displayPath)) {
       continue;
     }
-    const isExemptMatch = check.ruleId === "security.disabled-tls-verification"
-      ? (index: number) => isInsideDeepEqualityAssertion(context.codeLines, context.lineNumber - 1, index)
-      : undefined;
+    const isExemptMatch = literalCheckExemption(check.ruleId, context);
     if (rawPatternStartsInCode(context.line, context.codeLine, check.globalPattern ?? check.pattern, isExemptMatch)) {
       context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: ruleSeverity(context.config, check.ruleId, check.severity), pillar: check.pillar }));
     }
   }
+}
+
+// Rule-specific exemptions for a literal-check match whose surrounding code shows it is not the defect: a TLS option
+// inside a deep-equality assertion, and a `javascript:` literal that a comparison only tests against.
+function literalCheckExemption(ruleId: string, context: LineRuleContext): ((index: number) => boolean) | undefined {
+  if (ruleId === "security.disabled-tls-verification") {
+    return (index: number) => isInsideDeepEqualityAssertion(context.codeLines, context.lineNumber - 1, index);
+  }
+  if (ruleId === "security.javascript-url") {
+    return (index: number) => isComparisonOperandLiteral(context.line, index);
+  }
+  return undefined;
+}
+
+// True when the string literal opening at `index` is an operand of `==`, `===`, `!=` or `!==`, as in
+// `if (href === 'javascript:void(0)')`: a defensive check reads the literal and never navigates to it.
+function isComparisonOperandLiteral(rawLine: string, index: number): boolean {
+  if (/[=!]==?\s*$/.test(rawLine.slice(0, index))) {
+    return true;
+  }
+  const quote = rawLine[index] ?? "";
+  let position = index + 1;
+  // Find the literal's closing quote, stepping over escaped characters.
+  while (position < rawLine.length && rawLine[position] !== quote) {
+    position += rawLine[position] === "\\" ? 2 : 1;
+  }
+  return /^\s*[=!]==?(?!=)/.test(rawLine.slice(position + 1));
+}
+
+// A line is exempt from `security.inner-html` only when every `.innerHTML =` on it is a fixed literal and it has no
+// `dangerouslySetInnerHTML`, which the same descriptor reports.
+function isFixedInnerHtmlLine(context: LineRuleContext): boolean {
+  return context.fixedInnerHtmlLines.has(context.lineNumber) && !context.codeLine.includes("dangerouslySetInnerHTML");
+}
+
+// Lines whose `.innerHTML =` assignments all take a plain string or a template without `${`. A clean parse decides
+// on the right-hand node, so a multi-line static template qualifies; an error-recovered parse falls back to a
+// single-line test on the raw text, because the masked code line blanks the literal it would need to read.
+function fixedInnerHtmlAssignmentLines(sourceLines: readonly string[], syntax: TsSourceFile | undefined): Set<number> {
+  const fixed = new Set<number>();
+  if (syntax === undefined) {
+    sourceLines.forEach((line, index) => {
+      if (/^[^]*?\.innerHTML\s*=\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\$]|\\.|\$(?!\{))*`)\s*;?\s*(?:\/\/.*)?$/.test(line)
+        && line.split(".innerHTML").length === 2) {
+        fixed.add(index + 1);
+      }
+    });
+    return fixed;
+  }
+  const dynamic = new Set<number>();
+  const { EqualsToken, FirstCompoundAssignment, LastCompoundAssignment } = typescriptSyntax.SyntaxKind;
+  // Sorts each innerHTML assignment's line into fixed or dynamic; a compound `+=`, `||=` or `??=` always adds markup.
+  const visit = (node: TsNode): void => {
+    const operator = typescriptSyntax.isBinaryExpression(node) ? node.operatorToken.kind : undefined;
+    const isAssignment = operator === EqualsToken
+      || (operator !== undefined && operator >= FirstCompoundAssignment && operator <= LastCompoundAssignment);
+    if (isAssignment && typescriptSyntax.isBinaryExpression(node)
+      && typescriptSyntax.isPropertyAccessExpression(node.left) && node.left.name.text === "innerHTML") {
+      const line = syntax.getLineAndCharacterOfPosition(node.left.name.getStart(syntax)).line + 1;
+      const isFixed = operator === EqualsToken
+        && (typescriptSyntax.isStringLiteral(node.right) || typescriptSyntax.isNoSubstitutionTemplateLiteral(node.right));
+      (isFixed ? fixed : dynamic).add(line);
+    }
+    node.forEachChild(visit);
+  };
+  syntax.forEachChild(visit);
+  return new Set([...fixed].filter((line) => !dynamic.has(line)));
 }
 
 // Deep-equality assertions whose arguments are expected values: chai's `.to.deep.equal`, jest and vitest's `toEqual`,
@@ -725,6 +796,7 @@ function declaredCallableNameStarts(syntax: TsSourceFile): Set<number> {
 function isSafeProcessExecCall(file: SourceFile, callName: string, rawSource: string, callStart: number, rawSegment: string, codeSegment: string): boolean {
   return (
     isFixedArgvProcessCallSegment(callName, rawSource, callStart, rawSegment, codeSegment) ||
+    isFixedShellCommandCall(callName, rawSegment) ||
     isSafeExecWrapperCall(file, callName, codeSegment) ||
     isFixedTestHarnessProcessCall(file, callName, rawSegment, codeSegment)
   );
@@ -745,6 +817,20 @@ function isFixedArgvProcessCallSegment(callName: string, rawSource: string, call
     isFixedTerminalVersionProbe(argsText) ||
     hasConstLiteralCommandVector(rawSource, callStart, argsText)
   );
+}
+
+// `exec` and `execSync` run their first argument through a shell. A command that is one quoted string or template with
+// no `$` and no backslash is fixed text the shell cannot expand, provided nothing after it changes what runs: only a
+// callback or an options object without `env`, `cwd` or a spread may follow. An array or a name after the command is the
+// argv shape of other `exec` helpers, such as `@actions/exec`, and keeps reporting, as does `exec(\`identify \` + url)`.
+function isFixedShellCommandCall(callName: string, rawSegment: string): boolean {
+  const command = firstProcessCallArgument(rawSegment);
+  if ((callName !== "exec" && callName !== "execSync") || !/^(?:"[^"\\$]*"|'[^'\\$]*'|`[^`\\$]*`)$/.test(command)) {
+    return false;
+  }
+  const argsText = rawSegment.slice(rawSegment.indexOf("(") + 1, rawSegment.lastIndexOf(")"));
+  const rest = argsText.slice(argsText.indexOf(command) + command.length).replace(/^\s*,?\s*/, "");
+  return rest === "" || (/^(?:\{|\(|async\b|function\b)/.test(rest) && !/\b(?:env|cwd)\s*:|\.\.\./.test(rest));
 }
 
 // Agent/tool discovery commonly runs a manifest-backed terminal binary with `--version`. The

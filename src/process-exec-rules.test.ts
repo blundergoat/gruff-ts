@@ -81,10 +81,9 @@ export function runUserCommand(command: string, dir: string): void {
   assert.equal(findingsBySite.get("src/shelly.ts:4")?.severity, "warning");
   assert.equal(findingsBySite.get("src/shelly.ts:5")?.severity, "warning");
 
-  // A shell-enabled fixed literal sits between: advisory, keeping the review prompt.
-  const gitStatusFinding = findingsBySite.get("src/shelly.ts:6");
-  assert.equal(gitStatusFinding?.severity, "advisory");
-  assert.match(gitStatusFinding?.message ?? "", /validate arguments are not user-controlled/);
+  // A shell-enabled call whose whole command is one plain literal runs fixed text no input reaches, so it no longer
+  // reports (precision-floor M05); the dynamic shell commands above keep the warning.
+  assert.equal(findingsBySite.has("src/shelly.ts:6"), false);
 });
 
 test("process exec findings include dynamic argument source metadata", () => {
@@ -184,4 +183,26 @@ const broken = ;
   });
   const processExecLines = report.findings.filter((finding) => finding.ruleId === "security.process-exec").map((finding) => finding.line);
   assert.deepEqual(processExecLines, [2]);
+});
+
+test("exec and execSync with one plain literal command stay quiet while concatenated commands report", () => {
+  // Precision-floor M05: the three literal commands on lines 3-5 are fixed shell text; lines 6-8 splice in input.
+  const report = analyseFixture(`import { exec, execSync } from "node:child_process";
+function run(url: string): void {
+  execSync("npm root -g", { encoding: "utf8" });
+  exec('tsc --emitDeclarationOnly', () => undefined);
+  execSync(\`git status --short\`);
+  exec(\`identify \` + url, () => undefined);
+  execSync(\`convert \${url}\`);
+  exec("ls " + url);
+  exec("git", ["clone", url, "src"]);
+  execSync('git clone $REPO /tmp/src', { env: { REPO: url } });
+  execSync("npm ci", { cwd: url });
+}
+`);
+
+  // Lines 9-11: an argv array after the command (as @actions/exec takes it), a `$` the shell expands, and an env or
+  // cwd option can each change what the fixed text runs, so they keep reporting.
+  const lines = report.findings.filter((finding) => finding.ruleId === "security.process-exec").map((finding) => finding.line);
+  assert.deepEqual(lines, [6, 7, 8, 9, 10, 11]);
 });

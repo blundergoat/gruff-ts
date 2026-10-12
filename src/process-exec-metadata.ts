@@ -46,7 +46,7 @@ export function processExecMetadata(callName: string, rawSource: string, callSta
 
 // Extracts the first top-level call argument so commas inside arrays, objects, calls, or strings
 // do not misclassify `spawn("node", ["script,arg"])` as a dynamic command.
-function firstProcessCallArgument(rawSegment: string): string {
+export function firstProcessCallArgument(rawSegment: string): string {
   const argsText = rawSegment.slice(rawSegment.indexOf("(") + 1, rawSegment.lastIndexOf(")"));
   return firstTopLevelArgument(argsText).trim();
 }

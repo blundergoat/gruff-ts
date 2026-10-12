@@ -818,3 +818,27 @@ export function readLabelled(): void {
 `, SWALLOWED_CATCH_ON);
   assert.deepEqual(report.findings.filter((finding) => finding.ruleId === "waste.swallowed-catch").map((finding) => finding.line), [12]);
 });
+
+test("security.inner-html skips fixed literals and security.javascript-url skips comparison operands", () => {
+  // Precision-floor M05: lines 2-6 assign fixed text, including a multi-line static template; line 9's `+=` adds markup;
+  // line 12 only compares.
+  const report = analyseFixture(`function render(target: HTMLElement, message: string, href: string): boolean {
+  target.innerHTML = 'Loading, please wait';
+  target.innerHTML = \`<p>Static</p>\`;
+  target.innerHTML = \`
+    <div class="panel">Ready</div>
+  \`;
+  target.innerHTML = \`<p>\${message}</p>\`;
+  target.innerHTML = message;
+  target.innerHTML = '<h2>Results</h2>'; target.innerHTML += message;
+  const anchor = document.createElement("a");
+  anchor.href = 'javascript:alert(document.cookie)';
+  return href === 'javascript:void(0)' || 'javascript:void(0)' !== href;
+}
+`);
+
+  const innerHtmlLines = report.findings.filter((finding) => finding.ruleId === "security.inner-html").map((finding) => finding.line);
+  const javascriptUrlLines = report.findings.filter((finding) => finding.ruleId === "security.javascript-url").map((finding) => finding.line);
+  assert.deepEqual(innerHtmlLines, [7, 8, 9]);
+  assert.deepEqual(javascriptUrlLines, [11]);
+});
