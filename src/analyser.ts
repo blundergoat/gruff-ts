@@ -11,6 +11,7 @@ import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan }
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError, changedRegionScope, filterChangedFindings, filterScopedDiagnostics, type ChangedRegionScope } from "./changed-regions.ts";
 import { loadConfig, optionBoolean, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
+import { applyInlineSuppressions } from "./inline-suppressions.ts";
 import { applyBuiltInTestPathSkip, partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
@@ -35,7 +36,7 @@ import { scoreReport, summarize } from "./scoring.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
 import { codeLineFlags, maskDecorators, parseScript, type ParsedScript } from "./parsed-script.ts";
 import { maskNonCode, maskTemplateLiteralBodies } from "./source-text.ts";
-import type { AnalysisOptions, AnalysisReport, Config, Finding, OutputFormat, Pillar, RunDiagnostic, ScanSurfaceNote, SkippedPath, SuppressionSummary } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport, Config, Finding, OutputFormat, Pillar, RunDiagnostic, ScanSurfaceNote, SkippedPath, SuppressedFinding, SuppressionSummary } from "./types.ts";
 
 /*
  * Internal hook view contract: both reports come from one current-tree scan so full-file and
@@ -242,11 +243,14 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
   // same identity the baseline does, and a finding hidden from this report keeps the ordinal it was ranked with.
   const spans = declarationSpans(scanned);
   const namedFindings = withBaselineIdentities(testPathSkipped.findings, spans);
-  const baselineResult = applyBaselineOptions(projectRoot, options, namedFindings, spans, unusableBaseline);
+  // Another tool's comment and a repeated claim are judged on named findings, so a suppressed result keeps its identity
+  // in SARIF and the findings left keep the ordinals they had without the comment (FAMILY-CONTRACT.md section 13c).
+  const inline = applyInlineSuppressions(namedFindings, testPathSkipped.suppressions, discovery.files);
+  const baselineResult = applyBaselineOptions(projectRoot, options, inline.findings, spans, unusableBaseline);
   // A collision names two declarations one identity could not tell apart; it suppresses nothing and fails no run.
   diagnostics.push(...baselineResult.diagnostics);
   const notes = [...discovery.notes, ...scanned.notes];
-  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes, suppressions: testPathSkipped.suppressions };
+  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes, suppressions: inline.suppressions, suppressedFindings: inline.suppressed };
 }
 
 /*
@@ -282,6 +286,7 @@ function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResul
     diagnostics: run.diagnostics,
     ...(run.notes.length === 0 ? {} : { notes: run.notes }),
     suppressions: run.suppressions,
+    suppressedFindings: run.suppressedFindings,
     findings,
     ...(suppressedCount === undefined ? {} : { suppressedCount }),
     // Only script files carry code to score, so the ratified denominator is narrower than
@@ -381,9 +386,11 @@ interface AnalysisRun {
   scanned: SourceScanResult;
   baselineResult: BaselineApplication;
   notes: ScanSurfaceNote[];
-  // One audit row per configured sensitive exclusion, counted over every finding the scan produced
+  // Configured sensitive-exclusion rows, then built-in test-path and section 13c rows, counted over the full scan
   // so a changed-region projection cannot understate what a suppression actually hid.
   suppressions: SuppressionSummary[];
+  // Findings section 13c removed, kept so SARIF can show each as suppressed.
+  suppressedFindings: SuppressedFinding[];
 }
 
 // Emits a `missing-path` diagnostic per path that the user requested but discovery could not

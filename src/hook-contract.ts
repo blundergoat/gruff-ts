@@ -85,7 +85,7 @@ interface HookSuppression {
   symbol?: string;
   reason: string;
   suppressed: number;
-  source?: "built-in";
+  source?: "built-in" | "inline" | "duplicate";
 }
 
 // One diagnostic projected into the hook contract: what kind of problem, how much it matters, where, and the

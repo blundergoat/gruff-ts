@@ -425,7 +425,15 @@ function renderSarif(report: AnalysisReport): string {
             toolExecutionNotifications: report.diagnostics.map(sarifDiagnostic),
           },
         ],
-        results: report.findings.map((finding) => sarifResult(finding, ruleIndices)),
+        results: [
+          ...report.findings.map((finding) => sarifResult(finding, ruleIndices)),
+          // A finding another tool's comment or a repeated claim removed stays a result marked suppressed, so a
+          // code-scanning tool shows it as suppressed rather than fixed (FAMILY-CONTRACT.md section 13c).
+          ...(report.suppressedFindings ?? []).map(({ finding, justification }) => ({
+            ...sarifResult(finding, ruleIndices),
+            suppressions: [{ kind: "inSource", justification }],
+          })),
+        ],
         properties: {
           gruffSchemaVersion: report.schemaVersion,
           generatedAt: report.run.generatedAt,
@@ -779,6 +787,10 @@ function renderText(report: AnalysisReport): string {
     lines.push("", `Tip: ${report.findings.length} findings is more than a flat list usefully shows. Try \`gruff-ts summary --top=20\` for a per-rule digest.`);
   }
   lines.push(...renderTextSuppressionLines(report));
+  // ADR-006: an applied baseline is named with how it was chosen, so hidden findings never read as a clean scan.
+  if (report.baseline !== undefined && !report.baseline.generated) {
+    lines.push("", summaryBaselineLine(report.baseline));
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -798,10 +810,10 @@ function renderTextSuppressionLines(report: AnalysisReport): string[] {
   }
   const details = report.suppressions
     .filter((summary) => summary.suppressed > 0)
-    // A built-in row names the file it skipped, because it has no configured entry to point at.
-    .map((summary) => (summary.source === "built-in"
-      ? `builtInTestPath[${summary.paths[0] ?? ""}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`
-      : `sensitiveExclusions[${summary.index}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`))
+    // A built-in or section 13c row names the file it covers, because it has no configured entry to point at.
+    .map((summary) => (summary.source === undefined
+      ? `sensitiveExclusions[${summary.index}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`
+      : `${summary.source === "built-in" ? "builtInTestPath" : summary.source}[${summary.paths[0] ?? ""}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`))
     .join("; ");
   return ["", `Suppressed findings: ${total} via ${details}`];
 }

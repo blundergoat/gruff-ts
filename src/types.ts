@@ -157,8 +157,19 @@ export interface SuppressionSummary {
   symbol: string | null;
   reason: string;
   suppressed: number;
-  /** `built-in` on a row the family test-path skip produced; absent on a configured entry's row. */
-  source?: "built-in";
+  /** `built-in` on a row the family test-path skip produced, `inline` or `duplicate` on a section 13c row; absent on a configured entry's row. */
+  source?: "built-in" | "inline" | "duplicate";
+}
+
+/**
+ * A finding another tool's comment or a repeated claim removed (FAMILY-CONTRACT.md section 13c).
+ *
+ * Invariant: it never reaches the findings list, the score or the exit code; SARIF keeps it as a result marked suppressed.
+ */
+export interface SuppressedFinding {
+  finding: Finding;
+  /** The audit reason a SARIF reader sees on the suppressed result. */
+  justification: string;
 }
 
 /**
@@ -303,9 +314,12 @@ export interface AnalysisReport {
   diagnostics: RunDiagnostic[];
   /** Missing means the scan produced no non-fatal surface notes. */
   notes?: ScanSurfaceNote[];
-  /** One audit row per configured `sensitiveExclusions:` entry, in declaration order; empty when none are configured. */
+  /** Configured audit rows in declaration order, then built-in test-path, inline and duplicate rows;
+   * empty only when nothing is configured and nothing was removed. */
   suppressions: SuppressionSummary[];
   findings: Finding[];
+  /** Findings section 13c removed; never in the JSON envelope, which counts them in `suppressions`, but kept by SARIF. */
+  suppressedFindings?: SuppressedFinding[];
   suppressedCount?: number;
   score: {
     /** Mean of the applicable pillar scores; null when nothing applicable was evaluated. */

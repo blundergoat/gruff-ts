@@ -143,7 +143,7 @@ function pushUrlDependencyFinding(
       ruleId: "security.url-dependency",
       message: `Dependency \`${packageName}\` in \`${section}\` installs from a URL, git, or local file spec.`,
       filePath: file.displayPath,
-      line: jsonKeyLine(source, packageName),
+      line: dependencyEntryLine(source, section, packageName, versionSpec),
       severity: "warning",
       pillar: "security",
       confidence: "medium",
@@ -369,6 +369,16 @@ function parseJsonObject(source: string): Record<string, unknown> | undefined {
 function jsonKeyLine(source: string, key: string): number {
   const escapedKey = escapeRegex(key);
   return firstLine(source, new RegExp(`"${escapedKey}"\\s*:`));
+}
+
+// Finds the line of the `"name": "spec"` entry at or after its section's own key, so a package also named in
+// `overrides` or another section reports where the URL spec is written; falls back to the first key with that name.
+function dependencyEntryLine(source: string, section: string, packageName: string, versionSpec: string): number {
+  const lines = source.split(/\r?\n/);
+  const sectionStart = Math.max(lines.findIndex((line) => new RegExp(`"${escapeRegex(section)}"\\s*:`).test(line)), 0);
+  const entry = new RegExp(`${escapeRegex(JSON.stringify(packageName))}\\s*:\\s*${escapeRegex(JSON.stringify(versionSpec))}`);
+  const offset = lines.slice(sectionStart).findIndex((line) => entry.test(line));
+  return offset >= 0 ? sectionStart + offset + 1 : jsonKeyLine(source, packageName);
 }
 
 // Pattern matches `curl|wget … | sh` or its inline-pipe variants. The negative lookaheads for `|`,

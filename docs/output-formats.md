@@ -54,6 +54,26 @@ a configured row never carries. It adds one row per file and rule it removed,
 because every sensitive-data and security rule skips test, fixture and example files. Text
 output labels them `builtInTestPath[<path>]`.
 
+Another tool's suppression comment that names the same check as a gruff-ts rule
+suppresses that finding where it was written (FAMILY-CONTRACT.md section 13c):
+eslint `no-console`, `eqeqeq`, `no-eval`, `no-new-func`, `no-unused-vars` and
+`@typescript-eslint/no-unused-vars`; biome `lint/security/noGlobalEval` and
+`lint/correctness/noUnusedImports`, or a group holding them such as `lint/security`;
+and zizmor `ignore[unpinned-uses]` and `ignore[dangerous-triggers]`. An eslint
+per-line directive naming no rule covers every eslint row. The comment must be on
+the reported line or alone on the line above it. Type-checker comments such as
+`@ts-expect-error` and file-wide or region directives are never honoured. An
+`eval` call that both `security.eval-call` and `security.unsafe-deserialization`
+report is reported once, under `security.eval-call`.
+
+Each suppression adds one row per file and rule after the built-in rows, numbered
+on from them, with `source: "inline"` and the reason "Another tool's suppression
+comment names this check, so the finding is suppressed where it was written." Each
+merge adds a row with `source: "duplicate"` and the reason "Another rule reports
+the same claim on this line, so the line reports it once." Text output labels them
+`inline[<path>]` and `duplicate[<path>]`, and SARIF keeps each removed finding as a
+result carrying `"suppressions": [{"kind": "inSource", "justification": <reason>}]`.
+
 `paths.details` lists every excluded path with a canonical `reason` and its
 `source` (`config`, `gitignore`, or `default`). Only `config` entries include the
 matching `pattern`. `paths.ignoredPaths` is the exact ordered path projection of

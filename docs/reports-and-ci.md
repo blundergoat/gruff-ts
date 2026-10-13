@@ -64,8 +64,10 @@ non-fatal one leaves the exit code alone.
 
 `gruff.analysis.v3` always carries a `suppressions` array: one row per
 configured `sensitiveExclusions:` entry, then one `source: "built-in"` row per
-file and rule that the built-in test-path skip removed findings from, so it is
-empty only when nothing is configured and the built-in skip removed nothing. A
+file and rule that the built-in test-path skip removed findings from, then one
+`source: "inline"` or `source: "duplicate"` row per file and rule that another
+tool's suppression comment or a repeated claim removed (FAMILY-CONTRACT.md section
+13c), so it is empty only when nothing is configured and nothing was removed. A
 suppressed finding leaves `findings`, the score, and the `--fail-on` exit code,
 but its count is always reported. A malformed entry exits `2` before the scan
 starts. See [Configuration](./configuration.md).

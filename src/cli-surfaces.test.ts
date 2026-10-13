@@ -1014,6 +1014,25 @@ test("report command ignores default baselines", () => {
   }
 });
 
+// ADR-006 contract: `analyse` text names a discovered baseline and its source, and `--no-baseline` declines it.
+// Side effects: writes a temporary project, spawns the CLI three times inside it, then removes it.
+test("analyse text names a discovered default baseline and --no-baseline declines it", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-discovered-baseline-"));
+  const cli = join(REPO_ROOT, "bin/gruff-ts");
+  try {
+    writeFileSync(join(projectRoot, "bad.ts"), "export function unsafe(input: string): unknown {\n  return eval(input);\n}\n");
+    execFileSync("bash", [cli, "analyse", ".", "--fail-on=none", "--no-config", "--generate-baseline", "gruff-baseline.json"], { cwd: projectRoot, encoding: "utf8" });
+
+    const applied = execFileSync("bash", [cli, "analyse", ".", "--fail-on=none", "--no-config"], { cwd: projectRoot, encoding: "utf8" });
+    assert.match(applied, /Baseline: default gruff-baseline\.json; suppressed \d+ findings?/);
+    const declinedOutput = execFileSync("bash", [cli, "analyse", ".", "--fail-on=none", "--no-config", "--format=json", "--no-baseline"], { cwd: projectRoot, encoding: "utf8" });
+    const declined = JSON.parse(declinedOutput) as AnalysisReport;
+    assert.equal(declined.findings.some((finding) => finding.ruleId === "security.eval-call"), true);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
 // Governance controls must reject misspelled values before analysis starts, not silently default.
 // Spawns the CLI once per case and asserts the usage error names the accepted set.
 function assertConstrainedValueRejected(label: string, args: string[]): void {

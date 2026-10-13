@@ -842,3 +842,21 @@ test("security.inner-html skips fixed literals and security.javascript-url skips
   assert.deepEqual(innerHtmlLines, [7, 8, 9]);
   assert.deepEqual(javascriptUrlLines, [11]);
 });
+
+test("security.url-dependency reports the entry that declares the URL spec, not the first key sharing its name", () => {
+  // `left-pad` is also an override key on line 3, above the dependency entry on line 6.
+  const report = analyseProject({
+    "package.json": `{
+  "name": "fixture",
+  "overrides": { "left-pad": "1.3.0" },
+  "devDependencies": { "typescript": "5.6.3" },
+  "dependencies": {
+    "left-pad": "git+https://github.com/example/left-pad.git"
+  }
+}
+`,
+  });
+
+  const lines = report.findings.filter((finding) => finding.ruleId === "security.url-dependency").map((finding) => finding.line);
+  assert.deepEqual(lines, [6]);
+});
