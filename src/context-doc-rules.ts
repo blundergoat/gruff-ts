@@ -87,7 +87,7 @@ function functionContextDocFindings(block: FunctionBlock, commentText: string, c
 
 // Requires "why" context only after callable complexity crosses the configured threshold.
 function complexFunctionContextDocFinding(block: FunctionBlock, commentText: string, config: Config): ContextDocFindingDetails | undefined {
-  if (!isComplexContextCandidate(block, config) || hasComplexWhyMarker(commentText)) {
+  if (!isComplexContextCandidate(block, config) || hasComplexWhyMarker(commentText, block.name)) {
     return undefined;
   }
   return contextDocDetails(block.name, "docs.missing-why-for-complex-code", `Complex function \`${block.name}\` has a comment, but it does not explain why the control flow exists.`, "Explain the tradeoff, compatibility reason, or invariant behind the complex control flow.", "complex-code");
@@ -101,12 +101,13 @@ function sideEffectContextDocFinding(block: FunctionBlock, body: string, comment
   return contextDocDetails(block.name, "docs.missing-side-effect-doc", `Function \`${block.name}\` performs side effects that its comment does not describe.`, "Name the observable side effect such as filesystem, process, environment, or network mutation.", "side-effect");
 }
 
-// Keeps thrown, diagnostic, and recovery behavior visible in maintainer comments.
+// The family's structural form (gruff-php's throws-tag rule, gruff-py's raises-doc rule): a commented function whose code
+// throws needs an `@throws` tag. A comment that describes the error in other words does not satisfy the rule; only the tag does.
 function errorBehaviorContextDocFinding(block: FunctionBlock, body: string, commentText: string): ContextDocFindingDetails | undefined {
-  if (!hasErrorBehaviorSignal(body) || hasErrorBehaviorMarker(commentText)) {
+  if (!/\bthrow\b/.test(body) || /@throws\b/.test(commentText)) {
     return undefined;
   }
-  return contextDocDetails(block.name, "docs.missing-error-behavior-doc", `Function \`${block.name}\` has error behavior that its comment does not describe.`, "Document thrown errors, diagnostics, exits, reports, or recovery behavior.", "error-behavior");
+  return contextDocDetails(block.name, "docs.missing-error-behavior-doc", `Function \`${block.name}\` throws, but its comment has no @throws tag.`, "Add an @throws tag that names each error the function throws and when.", "error-behavior");
 }
 
 // Protects schema and fingerprint invariants from becoming implicit tribal knowledge.
@@ -152,7 +153,7 @@ function isComplexContextCandidate(block: FunctionBlock, config: Config): boolea
   // A legacy span-only caller cannot reparse here, so it receives the same neutral fallback as block rules.
   const sharedComplexityMetrics = block.complexityMetrics ?? baseComplexityMetrics();
   return (
-    block.lineCount > threshold(config, "size.function-length", 200) ||
+    block.codeLineCount > threshold(config, "size.function-length", 200) ||
     sharedComplexityMetrics.cyclomatic > threshold(config, "complexity.cyclomatic", 15) ||
     sharedComplexityMetrics.cognitive > threshold(config, "complexity.cognitive", 15) ||
     sharedComplexityMetrics.maximumControlFlowNesting > 3
@@ -160,21 +161,34 @@ function isComplexContextCandidate(block: FunctionBlock, config: Config): boolea
 }
 
 // Vocabulary list signalling "the comment explains why" - the missing-why rule passes when any
-// listed word appears. Adding entries here loosens the rule; removing them tightens it.
-function hasComplexWhyMarker(text: string): boolean {
-  return /\b(?:because|why|intentional|trade-?off|compat(?:ibility|ible)?|avoid|preserve)\b|\b(?:due to|so that|in order to|required by)\b/i.test(text);
+// listed word appears. Adding entries here loosens the rule; removing them tightens it. Good technical
+// writing often states a constraint or a contrast instead of announcing a cause ("the renderer and the
+// clipboard must count from the same payload walk"), so those words count too, but only in a comment that
+// says more than the function's own name: "Always routes the value." above `routeValue` explains nothing.
+function hasComplexWhyMarker(text: string, functionName: string): boolean {
+  if (/\b(?:because|why|intentional|trade-?off|compat(?:ibility|ible)?|avoid|preserve)\b|\b(?:due to|so that|in order to|required by)\b/i.test(text)) {
+    return true;
+  }
+  return /\b(?:must|never|always|only|otherwise|instead|unless|since|cannot|to avoid|to keep|needs to)\b/i.test(text) && saysMoreThanTheName(text, functionName);
+}
+
+// Threshold of extra words, beyond the function name's own, before a constraint word counts as rationale: four,
+// because a one-line paraphrase of a function name rarely adds that many.
+const RATIONALE_MINIMUM_EXTRA_WORDS = 4;
+
+// True when the comment's prose, with tag lines such as `@param` set aside, keeps at least four words that are not
+// words of the function name, so a one-line paraphrase of the name cannot pass as rationale.
+function saysMoreThanTheName(text: string, functionName: string): boolean {
+  const nameWords = new Set(functionName.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+  const prose = text.split("\n").filter((line) => !/^\s*(?:\*\s*)?@/.test(line)).join(" ");
+  const extraWords = (prose.toLowerCase().match(/[a-z][a-z'-]*/g) ?? []).filter((word) => !nameWords.has(word));
+  return extraWords.length >= RATIONALE_MINIMUM_EXTRA_WORDS;
 }
 
 // Vocabulary for "comment names a side effect". Pairs with `SIDE_EFFECT_BODY_PATTERNS` - if the
 // body matches and none of these words appear, the missing-side-effect rule fires.
 function hasSideEffectMarker(text: string): boolean {
   return /\b(?:writes|reads|persists|mutates|starts|spawns|network|filesystem|environment)\b/i.test(text);
-}
-
-// Vocabulary for "comment names error behaviour". Matches throws/reports/exits/swallows/fallback/
-// recover and the multi-word "returns diagnostic". Pairs with `hasErrorBehaviorSignal`.
-function hasErrorBehaviorMarker(text: string): boolean {
-  return /\b(?:throws|returns diagnostic|reports|exits|swallows|fallback|recover)\b/i.test(text);
 }
 
 // Vocabulary for "comment names a public contract". Seven canonical words; the rule fires when
@@ -187,7 +201,6 @@ const SIDE_EFFECT_BODY_PATTERNS = [
   /\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|mkdir(?:Sync)?|rm(?:Sync)?|rename(?:Sync)?|createWriteStream)\s*\(/,
   /\bprocess\.chdir\s*\(/,
   /\bprocess\.env\.[A-Za-z0-9_]+\s*=/,
-  /\b(?:exec|execFile|spawn)(?:Sync)?\s*\(/,
   /\b(?:response|res)\.(?:write|end|setHeader|writeHead)\s*\(/,
   /\bcreateServer\s*\(|\.listen\s*\(/,
 ] as const;
@@ -196,13 +209,20 @@ const SIDE_EFFECT_BODY_PATTERNS = [
 // pattern (functions starting with write/recordHistory/startDashboard). Either is sufficient
 // evidence that the callable has externally observable effects.
 function hasSideEffectSignal(name: string, body: string): boolean {
-  return SIDE_EFFECT_BODY_PATTERNS.some((pattern) => pattern.test(body)) || /^(?:write|recordHistory|startDashboard)\b/.test(name);
+  return SIDE_EFFECT_BODY_PATTERNS.some((pattern) => pattern.test(body)) || hasProcessExecutionCall(body) || /^(?:write|recordHistory|startDashboard)\b/.test(name);
 }
 
-// Detects throw, catch, process.exit, diagnostic emission, or finding/diagnostic push patterns -
-// the five places error behaviour can hide inside a callable body.
-function hasErrorBehaviorSignal(body: string): boolean {
-  return /\bthrow\b|\bcatch\b|\bprocess\.exit\s*\(|\bdiagnosticType\s*:|\b(?:findings|diagnostics)\.push\s*\(/.test(body);
+// Process execution with the receiver guard `security.process-exec` ships (`src/line-rules.ts`, search:
+// `function isMemberProcessExecFalsePositive`): a bare `exec(cmd)` or a call on a child-process module receiver counts,
+// while any other member call, such as `/re/.exec(line)` or `pattern.exec(text)`, runs a regular expression and
+// changes nothing outside the function. The body is masked, so a regex literal's own text cannot fake a call.
+function hasProcessExecutionCall(body: string): boolean {
+  for (const match of body.matchAll(/\b(?:(child_process|childProcess|cp)\.)?(?:exec|execFile|spawn)(?:Sync)?\s*\(/g)) {
+    if (match[1] !== undefined || body[(match.index ?? 0) - 1] !== ".") {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Searches both the callable name and body for vocabulary tied to the analyser's stable contracts

@@ -17,15 +17,15 @@ import {
   analyseProject,
   COMMENTED_OUT_CACHE_LOAD,
   COMMENTED_OUT_SECRET_LOAD,
+  AWS_ACCESS_KEY_FIXTURE_VALUE,
   evalFindingFiles,
-  HIGH_ENTROPY_FIXTURE_VALUE,
   gitAvailable,
   isGitIgnoredByGit,
   writeFixtureFiles,
 } from "./test-fixtures.ts";
 
 test("analysis finds core TypeScript smells", () => {
-  // Fixture covers core scanner findings across class, eval, parameter-count, and no-assertions paths.
+  // Fixture covers core scanner findings across class, eval, and parameter-count paths.
   const report = analyseFixture(`export class Bad {
   public name = "demo";
   public process(a: boolean, b: string[], c: string, d: string, e: string, f: string, g: string, h: string): void {
@@ -35,15 +35,10 @@ test("analysis finds core TypeScript smells", () => {
     console.log(b, d, e, f, g, h);
   }
 }
-
-test("sleeps without assertion", async () => {
-  await new Promise((resolve) => setTimeout(resolve, 1));
-});
 `);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   assert.equal(ruleIds.has("security.eval-call"), true);
   assert.equal(ruleIds.has("size.parameter-count"), true);
-  assert.equal(ruleIds.has("test-quality.no-assertions"), true);
   assert.equal(ruleIds.has("modernisation.public-property"), true);
 });
 
@@ -58,15 +53,10 @@ test("existing core fixture fingerprints stay stable", () => {
     console.log(b, d, e, f, g, h);
   }
 }
-
-test("sleeps without assertion", async () => {
-  await new Promise((resolve) => setTimeout(resolve, 1));
-});
 `);
   const fingerprints = new Map(report.findings.map((finding) => [finding.ruleId, finding.fingerprint]));
   assert.equal(fingerprints.get("security.eval-call"), "9597745a32e48f52");
   assert.equal(fingerprints.get("size.parameter-count"), "d616356804967e11");
-  assert.equal(fingerprints.get("test-quality.no-assertions"), "abc482609c475b4f");
   assert.equal(fingerprints.get("modernisation.public-property"), "c80058bf4fd46024");
 });
 
@@ -94,17 +84,17 @@ const FIRST_SLICE_RULE_IDS = new Set([
   "naming.identifier-quality",
   "test-quality.trivial-assertion",
   "security.weak-crypto",
-  "sensitive-data.high-entropy-string",
+  "sensitive-data.aws-access-key",
 ]);
 
 test("analysis finds first-slice portable TypeScript rules", () => {
-  const secret = HIGH_ENTROPY_FIXTURE_VALUE;
+  const secret = AWS_ACCESS_KEY_FIXTURE_VALUE;
   // Fixture covers portable source-text, line, function-block, test-block, and sensitive-data seams.
   const report = analyseFixture(`import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 
 const data1 = "placeholder";
-const embeddedToken = "${secret}";
+const embeddedKey = "${secret}";
 
 // ${COMMENTED_OUT_SECRET_LOAD}
 function hashPassword(password: string): string {
@@ -130,7 +120,7 @@ function testBuildsValue(): void {
   const helperTestFindings = report.findings.filter((finding) => finding.pillar === "test-quality" && finding.symbol === "testBuildsValue");
   assert.deepEqual(helperTestFindings, []);
 
-  const secretFinding = report.findings.find((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+  const secretFinding = report.findings.find((finding) => finding.ruleId === "sensitive-data.aws-access-key");
   assert.notEqual(secretFinding, undefined);
   assert.equal(secretFinding?.message.includes(secret), false);
   assert.equal(JSON.stringify(secretFinding?.metadata).includes(secret), false);
@@ -265,6 +255,7 @@ test("loads default gruff-ts yaml config", () => {
 schemaVersion: gruff-ts.config.v0.1
 rules:
   "complexity.cyclomatic":
+    enabled: true
     threshold: 2
     severity: warning
 `,
@@ -399,10 +390,10 @@ const INCLUDE_IGNORED_FIXTURE = {
 
 test("include ignored scans default and Git ignored paths but keeps config policy ignores", () => {
   const normalReport = analyseProject(INCLUDE_IGNORED_FIXTURE, { shouldSkipConfig: false });
-  assert.deepEqual([...evalFindingFiles(normalReport)].sort(), ["visible.ts"]);
+  assert.deepEqual([...evalFindingFiles(normalReport)].sort(), ["node_modules/pkg/index.ts", "visible.ts"]);
   assert.deepEqual(
     normalReport.paths.ignoredPaths.filter((path) => ["ignored.ts", "node_modules", "policy"].includes(path)).sort(),
-    ["ignored.ts", "node_modules", "policy"],
+    ["ignored.ts", "policy"],
   );
 
   const includeReport = analyseProject(INCLUDE_IGNORED_FIXTURE, { shouldIncludeIgnored: true, shouldSkipConfig: false });
@@ -651,6 +642,28 @@ test("unreachable-code ignores reachable switch cases after returns", () => {
 `);
 
   assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unreachable-code"), false);
+
+  // The braced form, as zod's locale files write it (M22 hunt shape), is a branch label too, while a statement
+  // after a `return` inside the same case still fires.
+  const braced = analyseFixture(`function renderIssue(code: string, expected: string): string {
+  switch (code) {
+    case "invalid_type": {
+      return "type " + expected;
+    }
+    case "invalid_value":
+      return "value";
+    case "too_big": {
+      return "big";
+    }
+    default: {
+      return "other";
+      console.log("after return");
+    }
+  }
+}
+`);
+
+  assert.deepEqual(braced.findings.filter((finding) => finding.ruleId === "waste.unreachable-code").map((finding) => finding.line), [13]);
 });
 
 test("function parser ignores calls inside ternary expressions", () => {

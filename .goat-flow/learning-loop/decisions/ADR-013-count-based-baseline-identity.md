@@ -16,7 +16,7 @@ The persistent baseline (`gruff-baseline.json`) keys suppressed findings on `(fi
 
 gruff's faithful analog, adapted to the fact that gruff already has stable rule IDs (PHPStan keys on the message text because it historically lacked stable identifiers):
 
-- Baseline entry shape becomes `{ ruleId, filePath, count }`. `message` MAY be persisted for human review but is NOT part of the match key - the exact stance `applyBaseline` already takes on `message` today (`src/baseline.ts`, search: `ignores it so cosmetic message changes`). `line`, `symbol`, and `fingerprint` are dropped from the entry.
+- Baseline entry shape becomes `{ ruleId, filePath, count }`. `message` MAY be persisted for human review but is NOT part of the match key - the exact stance `applyBaseline` already took on `message` at the time (then in `src/baseline.ts`; the v3 writer now refuses to persist `message` at all: `src/baseline-file.ts`, search: `const FORBIDDEN_OCCURRENCE_KEYS`). `line`, `symbol`, and `fingerprint` are dropped from the entry.
 - Match: group current findings by `(filePath, ruleId)`. In deterministic order, the first `count` of a group are `unchanged`; any surplus beyond `count` are `new`; a baselined group whose current count is lower than `count` is `absent`/stale (PHPStan's "expected N, occurred M").
 - This is a `gruff.baseline.v1` -> `gruff.baseline.v2` format change. The bump and the entry-shape change are an Ask-First boundary per CLAUDE.md. This ADR records the operator's explicit go-ahead for the DIRECTION; the schema-string edit in `src/` is still gated to implementation time.
 
@@ -38,7 +38,7 @@ The prior plan (M24) assumed the opposite - that "a line-moved entry still match
 ## Consequences
 
 - M24 and M01 are re-scoped from `(fingerprint, ruleId, filePath)` matching + line-bearing ordering to `(filePath, ruleId)` + count. M03's flag surface and exit wiring are unchanged; it still gates on M01's `new` set.
-- One-time churn: operators regenerate `gruff-baseline.json` once on upgrade. The v2 loader rejects v1 files - `applyBaseline` already throws on an unknown `schemaVersion` (`src/baseline.ts`, search: `unsupported baseline schema`).
+- One-time churn: operators regenerate `gruff-baseline.json` once on upgrade. The v2 loader rejects v1 files - `applyBaseline` already throws on an unknown `schemaVersion` (`src/baseline-file.ts`, search: `unsupported baseline schema`).
 - A rule that legitimately fires many times in one file (e.g. `docs.missing-public-doc`) is baselined by count. The per-symbol dedupe special-case (`src/baseline.ts`, search: `docs.missing-public-doc`) is a dedupe concern, not a baseline-key concern, and is unaffected.
 - Aligns with the adoption framing M24/M01 already carry (freeze existing debt, block the next one) and does NOT reintroduce the tolerate-N quality gate that ADR-006/ADR-008 rejected: count here freezes EXISTING findings, it does not grant a standing allowance for new ones.
 

@@ -1,20 +1,11 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-08-12
+last_reviewed: 2026-09-26
 ---
 
 # Rule scanner footguns
 
-## Footgun: nested template interpolation can mask the rest of a scanned file
-
-**Status:** active | **Created:** 2026-07-12 | **Evidence:** OBSERVED
-**Evidence context:** Markdown renderer self-scan.
-
-`maskNonCode` (`src/source-text.ts`, search: `function maskNonCode`) tracks template interpolation with one numeric `templateInterpolationDepth`. An inner template literal opened inside an outer `${...}` expression can enter its own `${...}` expression, but closing the inner expression only decrements that shared depth; it does not restore the inner template's quote state. The inner closing backtick can then be treated as a new opener, masking valid code later in the file.
-
-The user-visible symptom is a cascade far from the new line: a valid nested interpolation in `src/report-renderers.ts` made the self-scan claim that later parameters were unused and several later functions were empty even though TypeScript and all 395 tests passed. Precomputing the inner path-symbol label before interpolating it into the outer row reduced the scan from 12 findings to the one independent comment-contract finding.
-
-Until `maskNonCode` gains a template quote stack, avoid a template literal directly inside another template's interpolation in gruff-scanned source. Name the inner user-facing value first, interpolate that variable into the outer string, and run the full self-scan because `tsc` cannot expose this text-mask failure.
+**Scope:** scanner and rule-implementation traps; traps in the rules that read comments live in `comment-rules.md`.
 
 ## Footgun: line-rule emitters hardcode severity, so config `severity:` overrides are silently dropped
 
@@ -91,7 +82,7 @@ The same trap appeared when `naming.class-file-mismatch` changed from every mism
 **Status:** active | **Created:** 2026-06-10 | **Evidence:** OBSERVED
 **Evidence context:** 0.4.0 M01 execution gating.
 
-`src/rule-catalogue.test.ts` extracts implementation defaults with regexes over source text:
+`src/rule-catalogue.test.ts` (search: `thresholds and options`) extracts implementation defaults with regexes over source text:
 `threshold(config, "rule.id", default)` and `optionNumber(config, "rule.id", "key", default)`.
 The extractor deliberately proves descriptor/default drift from readable call sites; it does not
 resolve constants. Replacing threshold or option call-site rule ids with constants makes
@@ -102,46 +93,6 @@ Use constants for gates, findings, and repeated non-contract strings if helpful,
 rule-id string literal at threshold/option call sites that descriptor tests audit. If a threshold
 call must be abstracted, update the extractor/test in the same change instead of assuming the
 catalogue test can infer aliases.
-
-## Footgun: rule-descriptor prose triggers the rule it describes
-
-**Status:** active | **Created:** 2026-05-26 | **Evidence:** OBSERVED
-**Resolution note:** Partially resolved 2026-08-04; the underlying self-referential prose risk remains active.
-**Evidence context:** M01 close-out self-scan.
-
-When M01 added a comment explaining the catch-rationale widening, the comment mentioned `TODO`/`FIXME`/`XXX` to explain which markers were excluded - and `docs.todo-without-tracking` immediately fired on the descriptor itself. Two findings appeared: one in `src/safety-rules.ts` (the function comment) and one in `src/false-positive-fixes.test.ts` (the test's purpose comment).
-
-Several gruff rules scan source-wide and don't distinguish "comment explaining what the rule does" from "actual TODO marker." Affected rules include `docs.todo-without-tracking`, `waste.commented-out-code` (matches code-shaped strings in comments), and `docs.stale-comment` (matches `--unknown-flag` mentions).
-
-Resolved for `docs.todo-without-tracking` on 2026-08-04: the marker must now introduce a comment body line with a marker delimiter (`src/comment-rules.ts`, search: `function leadingTodoMarker`), so mid-sentence, quoted, backticked, and fenced-example mentions stay quiet. `waste.commented-out-code` and `docs.stale-comment` still behave as described above.
-
-Same shape for suppression directives in test fixtures: `docs.suppression-without-rationale` scans comments in the test source, so a test comment or template-literal fixture that contains a raw lint-disable directive can flag the test file instead of only exercising the generated fixture. During M07, `src/scan-surface.test.ts` (search: `const eslintDisable`) had to assemble the directive from split strings and rephrase the surrounding comment to avoid a self-scan finding while still writing a bare directive into the generated source under test.
-
-When writing rule-descriptor prose or test-naming prose that has to mention a trigger token, either:
-- Rephrase to avoid the literal token ("deferred-work markers" rather than "FIXME/XXX").
-- Use a tracking suffix that satisfies the rule (e.g. `// TODO #123` for `docs.todo-without-tracking`).
-
-Skipping the rule for descriptor files is NOT an option - the file-level granularity isn't there, and the broader principle is "every finding stays visible."
-
-
-## Footgun: widening commented-out-code calls needs a prose-shape guard
-
-**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED
-**Evidence context:** review feedback plus focused tests.
-
-`isCommentedOutCode` (`src/findings-helpers.ts`, search: `function isDisabledCall`) used to require a semicolon for disabled calls, so `// cleanup()` and `// service.reset()` were false negatives in semicolonless projects. Dropping the semicolon requirement fixed that, but immediately made prose headings like `// scanSectionAgainstSnapshot (claim patterns)` look like disabled calls. The existing uppercase-heading guard did not cover lower-camel helper names used as section labels.
-
-When widening a disabled-code detector from "strict syntax" to "common style", add a paired prose/heading regression in the same patch. For call-shaped comments, the guard must distinguish `identifier()` / `object.method()` from label text with a space before the parenthetical, while preserving real control-flow comments such as `// if (ready)`. Tests: `src/findings-helpers.test.ts`, search: `service.reset()` and `scanSectionAgainstSnapshot`.
-
-## Footgun: context-doc rules only see the LAST `//` line as the leading comment
-
-**Status:** active | **Created:** 2026-05-25 | **Evidence:** OBSERVED
-
-`leadingCommentForLine` (`src/comment-rules.ts`, search: `function leadingCommentForLine`) reverse-walks `comments[]` and returns the FIRST CommentRecord whose `endLine < declarationLine`. The comment lexer (`src/comment-scanner.ts`, search: `function lineCommentRecord`) emits ONE CommentRecord per `//` line. So a five-line `// ... // ... // ... // ... // ...` block above a function produces five separate records, and the rule only inspects the one immediately before the declaration.
-
-That breaks `docs.missing-invariant-doc` and `docs.missing-why-for-complex-code` (`src/context-doc-rules.ts`, search: `hasInvariantMarker`, `hasComplexWhyMarker`): if the marker word (`invariant`, `contract`, `must`, `stable`, `deterministic`, `schema`, `fingerprint`, or `because`, `why`, `intentional`, `tradeoff`, `compat`, `avoid`, `preserve`) sits on any line OTHER than the last `//`, the rule fires anyway and the author has no obvious clue why.
-
-When documenting a complex function or contract-bearing declaration, either (a) put the marker word on the LAST `//` line above the declaration, or (b) use a `/* ... */` block comment - block comments produce ONE CommentRecord whose `text` is the joined body (search: `function normalizedBlockCommentText`). Block form is preferred for any multi-sentence comment that explains a contract.
 
 ## Footgun: header-shape exemptions that key off the regex match prefix leak to sibling loop forms
 
@@ -185,23 +136,14 @@ The complexity-cluster rule-id set lives in TWO files with identical literals: `
 
 When you add or remove a rule from the complexity cluster (e.g. retiring `design.god-function` per ADR-011, or the inverse), change BOTH literals in the same pass, then grep `CORRELATED_COMPLEXITY_RULE_IDS` to confirm exactly two hits with the same contents. The P5 cluster contract (ADR-009) depends on the two staying in sync.
 
-## Footgun: a removed rule id left in a comment trips `docs.stale-comment` unless the SAME line carries a historical marker
-
-**Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED
-**Evidence context:** design.god-function removal self-scan.
-
-After removing a rule from the catalogue, any committed comment that still names the dotted id (`pillar.name`) becomes an "unknown rule id" to `pushStaleRuleReferenceFindings` (`src/comment-rules.ts`, search: `function pushStaleRuleReferenceFindings`), which checks each id against `DESCRIPTOR_IDS`. The escape hatch is `isHistoricalContextComment` (`src/comment-rules.ts`, search: `function isHistoricalContextComment`): it matches `previously|legacy|compat|migration|ADR` and is checked PER comment line, because the scanner emits one record per `//` line. So the historical marker MUST sit on the SAME `//` line as the removed id - "retired"/"removed" are NOT in the vocabulary, and an `ADR-NNN` reference on the next line does not count.
-
-When a comment explains a retired rule (e.g. an ADR cross-reference about `design.god-function`), keep the id and an `ADR-NNN` (or `legacy`/`migration`) token on one line: `// ... the retired design.god-function (ADR-011) composite ...`. This compounds with the context-doc footgun above (the invariant/why marker must be on the LAST `//` line above the declaration), so one explanatory comment near a contract-owning declaration must satisfy both per-line constraints at once.
-
 ## Footgun: a milestone may name "new" dependency rules that already exist under different ids
 
 **Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED
 **Evidence context:** M25 supply-chain slice in 0.3.0.
 
-The M25 task list named three "new" hardened-dependency rule ids to add - `security.dependency-install-script`, `security.dependency-git-url-reference`, `security.dependency-unpinned-version` - but `src/project-config-rules.ts` already ships the same coverage under older ids: `security.risky-lifecycle-script` (preinstall/install/postinstall/prepare/prepublish hooks), `security.remote-install-script` (`curl|wget … | sh`), `security.url-dependency` (https/git/ssh/github-shorthand specs), and `waste.broad-runtime-version` (`*`/`x`/`latest`/unbounded `>=`/`||`). The capability matrix even rated this row `dependency ◑(3)` - the `(3)` was those existing checks - so "◑ → ✅" meant HARDEN the existing rules, not add parallel ids. Adding the named ids would have produced two findings for one root cause: the exact P5/ADR-011 anti-pattern (a composite restating findings already on the symbol).
+The M25 task list named three "new" hardened-dependency rule ids to add - `security.dependency-install-script`, `security.dependency-git-url-reference`, `security.dependency-unpinned-version` - but `src/project-config-rules.ts` already ships the same coverage under older ids: `security.risky-lifecycle-script` (preinstall/install/postinstall/prepare/prepublish hooks; retired in 0.6.0, ADR-021), `security.remote-install-script` (`curl|wget … | sh`), `security.url-dependency` (https/git/ssh/github-shorthand specs), and `waste.broad-runtime-version` (`*`/`x`/`latest`/unbounded `>=`/`||`). The capability matrix even rated this row `dependency ◑(3)` - the `(3)` was those existing checks - so "◑ → ✅" meant HARDEN the existing rules, not add parallel ids. Adding the named ids would have produced two findings for one root cause: the exact P5/ADR-011 anti-pattern (a composite restating findings already on the symbol).
 
-Before implementing any rule a plan calls "new", `grep -oE '"<pillar>\\.[a-z-]+"' src/rules.ts | sort -u` and read the owning module - a milestone written before the cli.ts split (or before a sibling milestone landed) can predate coverage that now exists. If the gap is real it is usually narrow (here: only `file:` protocol deps escape `isUrlDependency`, and that is low-signal at advisory), so prefer extending the existing rule's predicate over minting a duplicate id.
+Before implementing any rule a plan calls "new", `grep -oE '"<pillar>\\.[a-z-]+"' src/rules.ts | sort -u` and read the owning module - a milestone written before the cli.ts split (or before a sibling milestone landed) can predate coverage that now exists. If the gap is real it is usually narrow (here: only `file:` protocol deps escape `isUrlDependency` (`src/project-config-rules.ts`, search: `function isUrlDependency`), and that is low-signal at advisory), so prefer extending the existing rule's predicate over minting a duplicate id.
 
 ## Footgun: caching a parsed AST by `SourceFile` identity goes stale when the object is reused
 
@@ -221,7 +163,37 @@ Three takeaways: (1) `analyseSecurityFlow` is the only caller and runs once per 
 
 For syntax-only source-to-sink rules, inspect only sink-relevant expression trees. Prune nested function-like nodes while walking arguments, and treat string/no-substitution-template literals as literal text, not source evidence. Add a negative test any time a scanner starts using `node.getText()` over a subtree: one callback-only taint reference and one literal that names the source token. Tests: `src/security-flow-rules.test.ts`, search: `callback-only taint` and `string literals that only mention source tokens`.
 
+## Footgun: setting aside callback text in taint classification hides request data the callback returns
+
+**Status:** active | **Created:** 2026-09-13 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** When a source check sets callback text aside, blank only the reads of names that callback
+declares itself, and keep every function invoked where it is written.
+**Trigger phase:** ACT
+
+M22 stopped `const server = await startHTTPServer((req, res) => ...)` marking `server` as request data. Its first cut
+blanked every nested function in the classified expression, and its second blanked every function declaring `req`,
+`request` or `ctx`. Probes against the pre-repair source showed both silenced real flows into `fs.readFile`:
+`(() => req.query.path)()`, `[0].map(() => req.query.path)`, `retry(async (request) => req.query.path)` and
+`((req) => req.query.path)(req)`. `textOutsideRequestHandlers` (`src/security-flow-rules.ts`, search:
+`function textOutsideRequestHandlers`) now blanks only a handler's reads of its own declared names, and
+`src/security-flow-rules.test.ts` (search: `nested function reads the enclosing request`) pins the shapes. Residuals:
+`requests.map((req) => req.query.id)` is still set aside, and a destructured `({ req })` handler still reports.
+
 ## Resolved Entries
+
+## Footgun: nested template interpolation can mask the rest of a scanned file
+
+**Status:** resolved | **Created:** 2026-07-12 | **Evidence:** ACTUAL_MEASURED
+**Resolved:** 2026-09-13
+**Evidence context:** Markdown renderer self-scan.
+
+`maskNonCode` (`src/source-text.ts`, search: `function maskNonCode`) tracks template interpolation with one numeric `templateInterpolationDepth`. An inner template literal opened inside an outer `${...}` expression can enter its own `${...}` expression, but closing the inner expression only decrements that shared depth; it does not restore the inner template's quote state. The inner closing backtick can then be treated as a new opener, masking valid code later in the file.
+
+The user-visible symptom is a cascade far from the new line: a valid nested interpolation in `src/report-renderers.ts` made the self-scan claim that later parameters were unused and several later functions were empty even though TypeScript and all 395 tests passed. Precomputing the inner path-symbol label before interpolating it into the outer row reduced the scan from 12 findings to the one independent comment-contract finding.
+
+Until `maskNonCode` gains a template quote stack, avoid a template literal directly inside another template's interpolation in gruff-scanned source. Name the inner user-facing value first, interpolate that variable into the outer string, and run the full self-scan because `tsc` cannot expose this text-mask failure.
+
+Resolved 2026-09-13 by the family plan's M22. `maskNonCode` now keeps one brace depth per open interpolation (`src/source-text.ts`, search: `templateInterpolationDepths`), so a nested template's closing brace returns masking to that template's own body. `src/source-text.test.ts` (search: `M22 report repro A`) proves the external report's reproduction and its flattened control report the same, and the six interpolation shapes mask correctly. Across the 12 TypeScript corpus slots, the repair removed 302 false `waste.empty-function` and 207 false `waste.unused-import` findings, among others, and restored 310 findings the desynchronised mask had hidden. A nested template literal no longer needs to be flattened.
 
 ## Footgun: `process-exec` matches `RegExp.exec` source text
 
@@ -232,25 +204,6 @@ For syntax-only source-to-sink rules, inspect only sink-relevant expression tree
 `processExecCandidate` matched bare `exec(`, `spawn(`, or `execFile(` in masked code without requiring a child-process receiver or import context, so ordinary `RegExp.exec(...)` calls were reported as `security.process-exec`. Authors worked around it by avoiding `.exec(` in scanner source, including the bracket dispatch still visible at `src/text-scans.ts` (search: `globalPattern["exec"]`).
 
 Resolved 2026-08-08 on two counts. The symbol is gone: `processExecCandidate` returns zero hits anywhere under `src/`, and the rule now lives in `src/line-rules.ts` (search: `ruleId: "security.process-exec"`) with evidence grading from `src/process-exec-metadata.ts` per ADR-018. The behaviour is gone too: a probe file whose only `exec` call is `pattern.exec(input)` on a `RegExp` scored zero `security.process-exec` findings. The bracket dispatch in `src/text-scans.ts` is now a historical workaround, not a required defence.
-
-## Footgun: fixture-purpose rules read ONLY the last `//` line above a fixture
-
-**Status:** resolved | **Created:** 2026-05-31 | **Evidence:** OBSERVED
-**Resolved:** 2026-08-04
-**Evidence context:** named-profiles self-scan.
-
-`docs.fixture-purpose-missing` (`src/fixture-purpose-rules.ts`, search: `function hasFixturePurposeComment`; search: `function leadingFixturePurposeComment`) checked its marker vocabulary (`fixture`/`covers`/`regression`/`baseline`/`fingerprint`/`because`/...) against only the single `//` line directly above a large template-literal fixture. A marker on an earlier line of a stacked `//` header did not clear it. The rule engages only above `FIXTURE_PURPOSE_MIN_LINES` (12), and an object-literal fixture whose backtick begins after the `const` line is not a candidate.
-
-Observed in `src/changed-region-contract.test.ts` (search: `const REGION_FIXTURE`): a multi-line header with "Fixture purpose:" on its first line kept firing until "This fixture covers ..." moved to the final line.
-
-Resolved 2026-08-04: `hasFixturePurposeComment` now evaluates the joined contiguous `//` run (shared `src/comment-scanner.ts`, search: `combinedContextLineComment`), and a leading or same-line comment of eight or more words clears the rule even without the vocabulary list (search: `FIXTURE_PURPOSE_MIN_WORDS`). Keyword placement games are no longer needed; short comments still need a vocabulary word.
-
-## Footgun: context-doc markers were checked against only the last line of a leading line-comment run
-
-**Status:** resolved | **Created:** 2026-07-12 | **Evidence:** OBSERVED
-**Evidence context:** 0.5.0 self-scan fix-forward across six reword iterations.
-
-The context-doc rules previously tested only the comment record adjacent to a declaration, so marker wording on earlier lines of a contiguous `//` run was invisible. Resolved 2026-07-13: `src/comment-scanner.ts` (search: `function combinedContextLineComment`, moved there 2026-08-04) joins contiguous line-comment text for context-doc evaluation while retaining the final record's anchor. Extended 2026-08-04: magic-threshold and fixture-purpose leading-comment checks now read the joined run too. Stale-reference and restatement checks deliberately keep the final record only, so examples in earlier prose do not become symbols.
 
 ## Footgun: rule-group pass gates silently disable rules missing from the id list
 

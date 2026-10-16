@@ -1,6 +1,6 @@
 ---
 category: fixtures
-last_reviewed: 2026-08-11
+last_reviewed: 2026-10-05
 ---
 
 # Fixture and test-data lessons
@@ -43,16 +43,16 @@ itself dynamic.
 
 **Created:** 2026-05-10
 
-`src/cli.test.ts` writes a fixture and asserts that specific `ruleId`s appear (`security.eval-call`, `size.parameter-count`, `test-quality.no-assertions`, `modernisation.public-property`). If you alter a rule's `ruleId`, threshold, or matcher, the fixture text - not the assertion list - is the part to expand: add a new bad pattern that triggers the renamed rule. Editing the assertion to "make the test pass" with the existing fixture defeats the test's purpose (proving the rule fires at all).
+`src/cli.test.ts` writes a fixture and asserts that specific `ruleId`s appear (`security.eval-call`, `size.parameter-count`, `modernisation.public-property`). If you alter a rule's `ruleId`, threshold, or matcher, the fixture text - not the assertion list - is the part to expand: add a new bad pattern that triggers the renamed rule. Editing the assertion to "make the test pass" with the existing fixture defeats the test's purpose (proving the rule fires at all).
 
 ## Lesson: threshold fixtures must exceed the threshold they are proving
 
 **Created:** 2026-05-13
-**Updated:** 2026-08-11
+**Updated:** 2026-10-05
 
 **What happened:** The first high-entropy sensitive-data fixture initially used a 31-character secret-like value while the rule default required 32 characters, so the targeted test failed after implementation until the fixture value was corrected. A later SHA-512 non-candidate test split its value into two literals, but the second 38-character fragment independently crossed the entropy threshold. The focused test passed because the assembled integrity value was excluded; the repository self-scan still reported the fragment in the test source.
 
-**Evidence:** `src/cli.test.ts` + `(search: "const secret =")` - the first-slice fixture owns the candidate value for `sensitive-data.high-entropy-string`; `src/sensitive-data-rules.test.ts` (search: `SHA512_INTEGRITY_FIXTURE_VALUE`) - every stored fragment is now shorter than the entropy scanner's 24-character candidate floor while their joined value retains the integrity shape.
+**Evidence:** `sensitive-data.high-entropy-string` was retired in 0.6.0 (ADR-021); both anchors are at gruff-ts `2b34759`. ~~`src/cli.test.ts` + `(search: "const secret =")`~~ - the first-slice fixture owned the candidate value for the rule; ~~`src/sensitive-data-rules.test.ts` (search: `SHA512_INTEGRITY_FIXTURE_VALUE`)~~ - every stored fragment was shorter than the entropy scanner's 24-character candidate floor while their joined value retained the integrity shape.
 
 **Prevention:** When adding threshold-backed rule fixtures, count or otherwise prove the fixture value crosses the threshold before treating a missing finding as an implementation bug. When an exclusion fixture is assembled to stay quiet under self-scan, prove both boundaries: the joined value must exercise the exclusion and every source literal must stay below the scanner's candidate floor.
 
@@ -69,12 +69,18 @@ itself dynamic.
 ## Lesson: rule-catalogue coverage fixtures must match scanner limits
 
 **Created:** 2026-05-14
+**Decision changed:** Enable opt-in detectors in coupled positive fixtures and synchronise explicit profile-default expectations when catalogue defaults change.
+**Trigger phase:** ACT
+**Caught at:** VERIFY
+**Latest occurrence:** 2026-10-10
 
 **What happened:** The descriptor self-test first failed for `design.god-function` because the catalogue fixture was not long and complex enough, then failed for `test-quality.magic-number-assertion` because the fixture used `expect(renderCatalogue().length).toBe(42)`, which exceeded the regex assertion matcher’s supported shape.
 
 **Evidence:** `src/cli.test.ts` + `(search: "rule descriptors cover emitted rules and fixture-backed coverage")`; failing runs of `node --import tsx --test src/cli.test.ts` reported missing positive fixture coverage for those rule ids.
 
 **Prevention:** For catalogue coverage, make each fixture intentionally boring and shaped exactly like the scanner pattern: simple variables for assertion arguments, deliberately long blocks for composite size/complexity rules, and no accidental symbol references that mask unused-import coverage.
+
+**Recurrence 2026-10-10:** M15 left the loop-in-test detector on but made its coupled conditional-logic control opt-in. The literal-loop regression lost its required conditional finding, and the profile summary still expected the old off-by-default list. Explicit fixture configuration and the three new catalogue defaults restore those contracts. Evidence: `src/false-positive-fixes.test.ts` (search: `FP-#29`) and `src/profiles.test.ts` (search: `profile summaries report all three built-ins`).
 
 ## Lesson: a test-local fixture writer can hide a break in the real on-disk format
 
@@ -84,12 +90,12 @@ itself dynamic.
 suppression for every finding that reports a column, and the whole baseline suite still passed. The
 local `writeBaseline` helper in `src/hook-contract.test.ts` persists a `stableIdentity` field, so its
 baselines matched by stored identity and never reached the recompute path. The production writer,
-`writeBaseline` in `src/baseline.ts`, persists no such field, so a real baseline recomputes its
+`writeBaseline` (then in `src/baseline.ts`), persisted no such field, so a real baseline recomputed its
 identity from the stored message and stopped matching the now column-bearing live finding.
 
 **Evidence:** `src/hook-contract.test.ts` (search: `function writeBaseline`) writes `stableIdentity`;
-`src/baseline.ts` (search: `function writeBaseline`) writes only fingerprint, ruleId, filePath, line,
-symbol, and message. A worktree at the pre-change commit suppressed the finding; the patched tree
+the production writer then wrote only fingerprint, ruleId, filePath, line, symbol, and message; its v3
+successor is `src/baseline-file.ts` (search: `function writeBaseline`). A worktree at the pre-change commit suppressed the finding; the patched tree
 reported it.
 
 **What to do instead:** When changing anything a persisted artifact is matched on, generate the

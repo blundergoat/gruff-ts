@@ -2,7 +2,7 @@
 import { VERSION } from "./constants.ts";
 import { profileSummaries, type ProfileSummary } from "./profiles.ts";
 import { ruleDescriptors } from "./rules.ts";
-import type { RuleDescriptor } from "./types.ts";
+import type { RuleDescriptor, Severity } from "./types.ts";
 
 type RuleListFormat = "text" | "json";
 type CompletionShell = "bash" | "fish" | "zsh";
@@ -20,6 +20,7 @@ const ANSI_RESET_FG = "\x1b[39m";
 
 const CONSOLE_COMMANDS = [
   { name: "analyse", description: "Run gruff analysis." },
+  { name: "check-ignore", description: "Report whether gruff would ignore each path, with the matching source and pattern. Runs no analysis." },
   { name: "completion", description: "Dump the shell completion script" },
   { name: "dashboard", description: "Serve the local gruff dashboard." },
   { name: "help", description: "Display help for a command" },
@@ -28,6 +29,7 @@ const CONSOLE_COMMANDS = [
   { name: "list", description: "List commands" },
   { name: "list-profiles", description: "List the built-in gruff profiles." },
   { name: "list-rules", description: "List gruff rule metadata." },
+  { name: "migrate-config", description: "Rewrite a 0.5 config for the current schema, writing the result to a different file." },
   { name: "report", description: "Render a gruff report to stdout or a file." },
   {
     name: "summary",
@@ -36,12 +38,53 @@ const CONSOLE_COMMANDS = [
   },
 ] as const;
 
+// Knob names gruff-go already publishes for a single-threshold rule, keyed by rule id. The family
+// listing shape (M09, ratified 2026-09-09) carries every threshold as a named map; a rule whose id
+// has no knob name anywhere in the family publishes the one-key map `{"threshold": N}` so no new
+// permanent public identifier is invented.
+const LISTING_THRESHOLD_KNOB_NAMES: Readonly<Record<string, string>> = {
+  "complexity.cognitive": "maxComplexity",
+  "complexity.cyclomatic": "maxComplexity",
+  "size.file-length": "maxLines",
+  "size.function-length": "maxLines",
+  "size.parameter-count": "maxParameters",
+};
+
+// The record both JSON catalogue surfaces publish: identity under `id`, severity under
+// `defaultSeverity`, and the threshold as a named map under `thresholds`. The internal descriptor
+// keeps its own field names because reports, hooks, and config validation read those; only the two
+// public listing surfaces are projected.
+type ListedRule = Omit<RuleDescriptor, "ruleId" | "severity" | "isEnabledByDefault" | "threshold"> & {
+  id: string;
+  defaultSeverity: Severity;
+  defaultEnabled: boolean;
+  thresholds?: Record<string, number>;
+};
+
+// Projects one internal descriptor into the listed record. Field order is deliberate: identity and
+// scoring first, the threshold map where the scalar used to sit, then every remaining descriptor
+// field unchanged, so a diff of the two shapes reads as the three renames it is.
+function listedRule(descriptor: RuleDescriptor): ListedRule {
+  const { ruleId, pillar, severity, confidence, isEnabledByDefault, threshold, ...rest } = descriptor;
+  const knob = LISTING_THRESHOLD_KNOB_NAMES[ruleId] ?? "threshold";
+  return {
+    id: ruleId,
+    pillar,
+    defaultSeverity: severity,
+    confidence,
+    // Every record publishes the family field, so a rule that is on by default says so rather than leaving it absent.
+    defaultEnabled: isEnabledByDefault !== false,
+    ...(typeof threshold === "number" ? { thresholds: { [knob]: threshold } } : {}),
+    ...rest,
+  };
+}
+
 // Rule catalogue renderer. JSON is the integration surface for docs and audits; text is allowed to
 // stay plain because it is only for terminal inspection and should not become another schema.
 function renderRuleList(format: RuleListFormat): string {
   const descriptors = ruleDescriptors();
   if (format === "json") {
-    return `${JSON.stringify({ tool: { name: "gruff-ts", version: VERSION }, rules: descriptors }, null, 2)}\n`;
+    return `${JSON.stringify({ tool: { name: "gruff-ts", version: VERSION }, rules: descriptors.map(listedRule) }, null, 2)}\n`;
   }
   const lines = ["gruff-ts " + VERSION + ` rules (${descriptors.length})`, ""];
   for (const descriptor of descriptors) {
@@ -83,20 +126,23 @@ function getRuleDescriptor(ruleId: string): RuleDescriptor | undefined {
 
 /*
  * Single-rule detail renderer. Text format prints a labelled section with every populated field;
- * JSON format wraps the descriptor in a tool envelope mirroring the multi-rule shape. Surfaces
- * config keys (`rules.<ruleId>.{enabled,severity,threshold}`) and the option/allowlist hatches
- * because operators looking up one rule shouldn't have to grep `src/config.ts` to find the
- * override knobs they're about to tune.
+ * JSON format wraps the same listed record the catalogue publishes in a tool envelope, so one rule
+ * reads the same shape on both surfaces. Surfaces config keys
+ * (`rules.<ruleId>.{enabled,severity,threshold}`) and the option/allowlist hatches because
+ * operators looking up one rule shouldn't have to grep `src/config.ts` to find the override knobs
+ * they're about to tune.
  */
 function renderRuleDetail(descriptor: RuleDescriptor, format: RuleListFormat): string {
   if (format === "json") {
-    return `${JSON.stringify({ tool: { name: "gruff-ts", version: VERSION }, rule: { ...descriptor, configKeys: ruleConfigKeys(descriptor) } }, null, 2)}\n`;
+    return `${JSON.stringify({ tool: { name: "gruff-ts", version: VERSION }, rule: { ...listedRule(descriptor), configKeys: ruleConfigKeys(descriptor) } }, null, 2)}\n`;
   }
   const lines = [
     `Rule:        ${descriptor.ruleId}`,
     `Pillar:      ${descriptor.pillar}`,
     `Severity:    ${descriptor.severity}`,
     `Confidence:  ${descriptor.confidence}`,
+    // The family's detail-card wording; a rule that ships off (ADR-021) runs only when a config enables it.
+    `Enabled by default: ${descriptor.isEnabledByDefault === false ? "no" : "yes"}`,
     ...(typeof descriptor.threshold === "number" ? [`Threshold:   ${descriptor.threshold}`] : []),
     "",
     `Description: ${descriptor.description}`,
@@ -106,6 +152,9 @@ function renderRuleDetail(descriptor: RuleDescriptor, format: RuleListFormat): s
     ...ruleConfigKeyLines(descriptor),
     ...(descriptor.optionKeys && descriptor.optionKeys.length > 0 ? ["", "Options:", ...descriptor.optionKeys.map((key) => `  rules.${descriptor.ruleId}.options.${key}`)] : []),
     ...(descriptor.allowlistKeys && descriptor.allowlistKeys.length > 0 ? ["", "Allowlists:", ...descriptor.allowlistKeys.map((key) => `  allowlists.${key}`)] : []),
+    ...(descriptor.falsePositiveShapes && descriptor.falsePositiveShapes.length > 0
+      ? ["", "Known false positives:", ...descriptor.falsePositiveShapes.flatMap(({ shape, mitigation }) => [`  ${shape}`, `    -> ${mitigation}`])]
+      : []),
   ];
   return `${lines.join("\n")}\n`;
 }
@@ -127,7 +176,7 @@ function ruleConfigKeyLines(descriptor: RuleDescriptor): string[] {
 // value's type vocabulary, and a default when one is known.
 function ruleConfigKeys(descriptor: RuleDescriptor): Array<{ key: string; type: string; values?: readonly string[]; default?: number | boolean | string }> {
   return [
-    { key: `rules.${descriptor.ruleId}.enabled`, type: "bool", default: true },
+    { key: `rules.${descriptor.ruleId}.enabled`, type: "bool", default: descriptor.isEnabledByDefault !== false },
     { key: `rules.${descriptor.ruleId}.severity`, type: "enum", values: ["advisory", "warning", "error"] as const, default: descriptor.severity },
     ...(typeof descriptor.threshold === "number" ? [{ key: `rules.${descriptor.ruleId}.threshold`, type: "int", default: descriptor.threshold }] : []),
   ];

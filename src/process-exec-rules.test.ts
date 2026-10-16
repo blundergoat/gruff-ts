@@ -32,7 +32,10 @@ function runHarness(full: string, userCommand: string): void {
   });
 
   const processExecFindings = report.findings.filter((finding) => finding.ruleId === "security.process-exec");
-  assert.deepEqual(processExecFindings.map((finding) => `${finding.filePath}:${finding.line}`), ["test/unit/cli-harness.test.ts:7"]);
+  assert.deepEqual(processExecFindings, []);
+  // Security rules skip test files and count the skip; the fixed harness calls are exempt, so only the dynamic one is counted.
+  const harnessRows = report.suppressions.filter((row) => row.rule === "security.process-exec" && row.paths[0] === "test/unit/cli-harness.test.ts");
+  assert.deepEqual(harnessRows.map((row) => row.suppressed), [1]);
 });
 
 test("process exec severity follows shell mode and command-source evidence", () => {
@@ -78,10 +81,9 @@ export function runUserCommand(command: string, dir: string): void {
   assert.equal(findingsBySite.get("src/shelly.ts:4")?.severity, "warning");
   assert.equal(findingsBySite.get("src/shelly.ts:5")?.severity, "warning");
 
-  // A shell-enabled fixed literal sits between: advisory, keeping the review prompt.
-  const gitStatusFinding = findingsBySite.get("src/shelly.ts:6");
-  assert.equal(gitStatusFinding?.severity, "advisory");
-  assert.match(gitStatusFinding?.message ?? "", /validate arguments are not user-controlled/);
+  // execSync with one plain literal command runs fixed text no input reaches, so it stays quiet (precision-floor M05);
+  // the dynamic shell commands above keep the warning.
+  assert.equal(findingsBySite.has("src/shelly.ts:6"), false);
 });
 
 test("process exec findings include dynamic argument source metadata", () => {
@@ -140,4 +142,70 @@ export function runStatus(): void {
   const fixed = fixedReport.findings.find((entry) => entry.ruleId === "security.process-exec");
   assert.equal(fixed?.metadata.argumentSource, "local-const");
   assert.equal(fixed?.severity, "advisory");
+});
+
+// Fixture purpose: Angular case 411 declares fork(...) in an interface. A signature, method or function
+// that shares a child_process name is a declaration, not a call; the real calls beside them, including
+// one on the same line as a same-named method, still report.
+// Stable contract: only a process-call match at a declaration or signature name is exempt.
+test("process exec skips declarations and signatures that share a process function name", () => {
+  // This fixture covers case 411's interface signature beside same-named declarations and real calls.
+  const report = analyseProject({
+    "src/zone.ts": `import { fork } from "node:child_process";
+
+export interface Zone {
+  fork(zoneSpec: object): Zone;
+}
+
+export class Pool {
+  fork(workerPath: string): void { fork(workerPath); }
+}
+
+export function spawn(command: string): void {
+  fork(command);
+}
+`,
+  });
+  const processExecLines = report.findings.filter((finding) => finding.ruleId === "security.process-exec").map((finding) => finding.line);
+  assert.deepEqual(processExecLines, [8, 12]);
+});
+
+// Fixture purpose: an error-recovered syntax tree cannot prove that a name is a declaration, so a file
+// with a parse error keeps the text match and its security finding.
+// Stable contract: the declaration exemption needs a parse without errors.
+test("process exec keeps the text match when the file does not parse", () => {
+  const report = analyseProject({
+    "src/zone.ts": `export interface Zone {
+  fork(zoneSpec: object): Zone;
+}
+const broken = ;
+`,
+  });
+  const processExecLines = report.findings.filter((finding) => finding.ruleId === "security.process-exec").map((finding) => finding.line);
+  assert.deepEqual(processExecLines, [2]);
+});
+
+test("exec and execSync with one plain literal command stay quiet while concatenated commands report", () => {
+  // Precision-floor M05: the three literal commands on lines 3-5 are fixed shell text; lines 6-8 splice in input.
+  const report = analyseFixture(`import { exec, execSync } from "node:child_process";
+function run(url: string, env: NodeJS.ProcessEnv, cwd: string): void {
+  execSync("npm root -g", { encoding: "utf8" });
+  exec('tsc --emitDeclarationOnly', () => undefined);
+  execSync(\`git status --short\`);
+  exec(\`identify \` + url, () => undefined);
+  execSync(\`convert \${url}\`);
+  exec("ls " + url);
+  exec("git", ["clone", url, "src"]);
+  execSync('git clone $REPO /tmp/src', { env: { REPO: url } });
+  execSync("npm ci", { cwd: url });
+  execSync("npm ci", { env });
+  execSync("npm ci", { cwd });
+  execSync("npm ci", { "env": env });
+}
+`);
+
+  // Lines 9-14: an argv array after the command (as @actions/exec takes it), a `$` the shell expands, and an env or
+  // cwd option, keyed, shorthand or quoted, can each change what the fixed text runs, so they keep reporting.
+  const lines = report.findings.filter((finding) => finding.ruleId === "security.process-exec").map((finding) => finding.line);
+  assert.deepEqual(lines, [6, 7, 8, 9, 10, 11, 12, 13, 14]);
 });

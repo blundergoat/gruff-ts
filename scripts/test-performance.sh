@@ -21,7 +21,8 @@ TIME_CMD=""
 TMP_DIR=""
 CURRENT_FIXTURE_DIR=""
 
-DEFAULT_BASELINE_PATH="$(printf '%s/%s/%s\n' ".goat-flow" "scratchpad/perf" "baseline.json")"
+PLATFORM_SLUG="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+DEFAULT_BASELINE_PATH="scripts/performance-baselines/${PLATFORM_SLUG}.json"
 
 usage() {
   cat <<'USAGE'
@@ -82,6 +83,49 @@ safe_remove_dir() {
       die 2 "refusing to remove unexpected path: $path"
       ;;
   esac
+}
+
+sha256_file() {
+  node -e 'const fs=require("node:fs"); const crypto=require("node:crypto"); process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"));' "$1"
+}
+
+runtime_source_identity() {
+  local root="$1"
+  node - "$root" <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const root = process.argv[2];
+const includedPaths = ["bin/gruff-ts", "src", "package.json", "package-lock.json"];
+const files = new Set();
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function visit(candidate) {
+  const details = fs.lstatSync(candidate);
+  if (details.isSymbolicLink() || details.isFile()) {
+    files.add(candidate);
+    return;
+  }
+  for (const entry of fs.readdirSync(candidate).sort()) {
+    visit(path.join(candidate, entry));
+  }
+}
+
+for (const includedPath of includedPaths) {
+  visit(path.join(root, includedPath));
+}
+
+const manifest = [...files].sort().map((file) => ({
+  path: path.relative(root, file).split(path.sep).join("/"),
+  sha256: sha256(fs.lstatSync(file).isSymbolicLink() ? fs.readlinkSync(file) : fs.readFileSync(file)),
+}));
+const digest = sha256(`${JSON.stringify(manifest, null, 2)}\n`);
+process.stdout.write(JSON.stringify({ includedPaths, fileCount: manifest.length, digest }));
+NODE
 }
 
 cleanup() {
@@ -220,6 +264,7 @@ require_tools() {
   command -v jq >/dev/null 2>&1 || die 2 "jq is required"
   command -v awk >/dev/null 2>&1 || die 2 "awk is required"
   command -v node >/dev/null 2>&1 || die 2 "node is required"
+  command -v git >/dev/null 2>&1 || die 2 "git is required for source provenance"
   [[ -f "./bin/gruff-ts" ]] || die 2 "missing ./bin/gruff-ts"
 }
 
@@ -501,6 +546,8 @@ run_matrix() {
   local wi
   local ci
   local format
+  local root uname_string cpu_model node_version tool_version git_commit git_dirty
+  local harness_sha256 wrapper_sha256 runtime_source
 
   if [[ "$CLEANUP" -eq 1 ]]; then
     cleanup_old_fixtures
@@ -519,13 +566,54 @@ run_matrix() {
     done
   done
 
+  root="$(repo_root)"
   generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  uname_string="$(uname -srm 2>/dev/null || echo unknown)"
+  cpu_model="$(awk -F': ' '/^model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null || true)"
+  [[ -n "$cpu_model" ]] || cpu_model="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"
+  node_version="$(node --version)"
+  tool_version="$(./bin/gruff-ts --version 2>&1 | head -1)"
+  git_commit="$(git -C "$root" rev-parse HEAD)"
+  if [[ -z "$(git -C "$root" status --porcelain=v1)" ]]; then
+    git_dirty=false
+  else
+    git_dirty=true
+  fi
+  harness_sha256="$(sha256_file "$root/scripts/test-performance.sh")"
+  wrapper_sha256="$(sha256_file "$root/bin/gruff-ts")"
+  runtime_source="$(runtime_source_identity "$root")"
   jq -s \
     --arg tool "gruff-ts" \
     --arg schemaVersion "$SCHEMA_VERSION" \
     --arg generatedAt "$generated_at" \
+    --arg platform "$PLATFORM_SLUG" \
+    --arg uname "$uname_string" \
+    --arg cpu "$cpu_model" \
+    --arg nodeVersion "$node_version" \
+    --arg toolVersion "$tool_version" \
+    --arg gitCommit "$git_commit" \
+    --argjson gitDirty "$git_dirty" \
+    --arg harnessSha256 "$harness_sha256" \
+    --arg wrapperSha256 "$wrapper_sha256" \
+    --argjson runtimeSource "$runtime_source" \
     --argjson runs "$RUNS" \
-    '{ tool: $tool, schemaVersion: $schemaVersion, generatedAt: $generatedAt, runs: $runs, cells: . }' \
+    '{
+      tool: $tool,
+      schemaVersion: $schemaVersion,
+      generatedAt: $generatedAt,
+      host: {platform: $platform, uname: $uname, cpu: $cpu, node: $nodeVersion},
+      source: {
+        gitCommit: $gitCommit,
+        gitDirty: $gitDirty,
+        runtimeSource: $runtimeSource,
+        artifact: {kind: "live-wrapper", sha256: $wrapperSha256},
+        harnessSha256: $harnessSha256,
+        toolVersion: $toolVersion
+      },
+      runner: {runs: $runs, firstSample: "included"},
+      runs: $runs,
+      cells: .
+    }' \
     "$cells_file" > "$matrix_file"
 
   ensure_parent_dir "$OUT_PATH"

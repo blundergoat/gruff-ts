@@ -46,4 +46,22 @@ function byteColumn(source: string, index: number): number {
   return end - source.lastIndexOf("\n", end - 1);
 }
 
-export { byteColumn, byteLine, countMatches, firstLine };
+// Tiny parenthesis matcher over masked source. Strings and comments are already blanked by
+// `maskNonCode`, so nested call parentheses are the only structure this needs to balance.
+function matchingCloseParen(source: string, openParen: number): number | undefined {
+  let depth = 0;
+  for (let index = openParen; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return undefined;
+}
+
+export { byteColumn, byteLine, countMatches, firstLine, matchingCloseParen };

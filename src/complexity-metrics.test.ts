@@ -66,7 +66,7 @@ function resultCards(items: Array<{ title: string }>): unknown[] {
       fileName: "result-cards.ts",
       config: {
         rules: {
-          "complexity.cyclomatic": { threshold: 99 },
+          "complexity.cyclomatic": { enabled: true, threshold: 99 },
           "complexity.cognitive": { threshold: 2 },
         },
       },
@@ -77,8 +77,8 @@ function resultCards(items: Array<{ title: string }>): unknown[] {
   assert.deepEqual(falseNesting, []);
 });
 
-// Stable fixture contract: a flat switch counts only its non-default choices.
-test("flat switch complexity follows the non-default case policy", () => {
+// Stable fixture contract: a flat switch is one decision however many non-default choices it has.
+test("a flat switch counts as one decision", () => {
   const report = analyseFixture(
     `function routePanel(panel: string): string {
   switch (panel) {
@@ -95,8 +95,8 @@ test("flat switch complexity follows the non-default case policy", () => {
       fileName: "panel-router.ts",
       config: {
         rules: {
-          "complexity.cyclomatic": { threshold: 2 },
-          "complexity.cognitive": { threshold: 3 },
+          "complexity.cyclomatic": { enabled: true, threshold: 1 },
+          "complexity.cognitive": { threshold: 2 },
         },
       },
     },
@@ -107,8 +107,8 @@ test("flat switch complexity follows the non-default case policy", () => {
   assert.deepEqual(
     { cyclomatic: cyclomatic?.metadata, cognitive: cognitive?.metadata },
     {
-      cyclomatic: { complexity: 3, threshold: 2, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, case: 2, maxNesting: 1 } },
-      cognitive: { complexity: 4, threshold: 3, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, case: 2, maxNesting: 1 } },
+      cyclomatic: { complexity: 2, threshold: 1, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, case: 1, maxNesting: 1 }, limitBand: "upper" },
+      cognitive: { complexity: 3, threshold: 2, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, case: 1, maxNesting: 1 }, limitBand: "upper" },
     },
   );
 });
@@ -128,7 +128,7 @@ test("ternary and logical operators count without optional or nullish inflation"
       fileName: "visible-status.ts",
       config: {
         rules: {
-          "complexity.cyclomatic": { threshold: 3 },
+          "complexity.cyclomatic": { enabled: true, threshold: 3 },
           "complexity.cognitive": { threshold: 4 },
         },
       },
@@ -140,8 +140,8 @@ test("ternary and logical operators count without optional or nullish inflation"
   assert.deepEqual(
     { cyclomatic: cyclomatic?.metadata, cognitive: cognitive?.metadata },
     {
-      cyclomatic: { complexity: 4, threshold: 3, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, ternary: 1, logicalAnd: 1, logicalOr: 1, maxNesting: 1 } },
-      cognitive: { complexity: 5, threshold: 4, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, ternary: 1, logicalAnd: 1, logicalOr: 1, maxNesting: 1 } },
+      cyclomatic: { complexity: 4, threshold: 3, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, ternary: 1, logicalAnd: 1, logicalOr: 1, maxNesting: 1 }, limitBand: "lower" },
+      cognitive: { complexity: 5, threshold: 4, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, ternary: 1, logicalAnd: 1, logicalOr: 1, maxNesting: 1 }, limitBand: "lower" },
     },
   );
 });
@@ -165,8 +165,8 @@ test("anonymous callback decisions contribute to the named owner", () => {
       fileName: "item-labels.ts",
       config: {
         rules: {
-          "complexity.cyclomatic": { threshold: 3 },
-          "complexity.cognitive": { threshold: 4 },
+          "complexity.cyclomatic": { enabled: true, threshold: 3 },
+          "complexity.cognitive": { threshold: 3 },
         },
       },
     },
@@ -175,8 +175,9 @@ test("anonymous callback decisions contribute to the named owner", () => {
   const ownerFindings = report.findings.filter((finding) => finding.symbol === "visibleItemLabels" && finding.ruleId.startsWith("complexity."));
   assert.deepEqual(
     ownerFindings.map((finding) => [finding.ruleId, finding.metadata.complexity]),
+    // Both callback ifs are early-exit guards, so they add decisions but no nesting.
     [
-      ["complexity.cognitive", 5],
+      ["complexity.cognitive", 4],
       ["complexity.cyclomatic", 4],
     ],
   );
@@ -201,8 +202,8 @@ function routeVisibleResult(results: string[], isReady: boolean): string {
       fileName: "nested-routing.ts",
       config: {
         rules: {
-          "complexity.cyclomatic": { threshold: 3, severity: "advisory" },
-          "complexity.cognitive": { threshold: 6, severity: "error" },
+          "complexity.cyclomatic": { enabled: true, threshold: 3, severity: "advisory" },
+          "complexity.cognitive": { threshold: 5, severity: "error" },
         },
       },
     },
@@ -226,8 +227,10 @@ function routeVisibleResult(results: string[], isReady: boolean): string {
       filePath: "nested-routing.ts",
       line: 1,
       symbol: "routeVisibleResult",
-      severity: "error",
-      complexity: 7,
+      // The inner if is an early-exit guard, so nesting stops at the loop: 6 against a limit of 5 sits under one and a
+      // half times it, so the configured error severity becomes advisory.
+      severity: "advisory",
+      complexity: 6,
       fingerprint: "77bebc0d6c0c8009",
       stableIdentity: "87f4743c33d7be44",
     },
@@ -268,7 +271,7 @@ test("branch tokens in comments strings and regular expressions stay inert", () 
       fileName: "branch-vocabulary.ts",
       config: {
         rules: {
-          "complexity.cyclomatic": { threshold: 2 },
+          "complexity.cyclomatic": { enabled: true, threshold: 2 },
           "complexity.cognitive": { threshold: 3 },
         },
       },
@@ -322,20 +325,48 @@ test("shared metrics expose the complete counting-policy breakdown", () => {
   const metrics = blocks.find((block) => block.name === "allDecisions")?.complexityMetrics;
 
   assert.deepEqual(metrics, {
-    cyclomatic: 13,
-    cognitive: 14,
+    cyclomatic: 12,
+    cognitive: 13,
     maximumControlFlowNesting: 1,
     breakdown: {
       if: 1,
       loop: 5,
       catch: 1,
-      case: 2,
+      case: 1,
       ternary: 1,
       logicalAnd: 1,
       logicalOr: 1,
       maxNesting: 1,
     },
   });
+});
+
+// Stable fixture contract: an early-exit guard adds its decision but no nesting; any other if still nests.
+test("an early-exit guard adds no nesting level", () => {
+  const blocks = parsedFixtureBlocks(`function guarded(items: number[]): number {
+  for (const item of items) {
+    if (item < 0) continue;
+    if (item === 0) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+function nested(items: number[]): number {
+  for (const item of items) {
+    if (item > 0) {
+      record(item);
+    }
+  }
+  return 1;
+}
+`);
+  const guarded = blocks.find((block) => block.name === "guarded")?.complexityMetrics;
+  const nested = blocks.find((block) => block.name === "nested")?.complexityMetrics;
+
+  assert.deepEqual([guarded?.cyclomatic, guarded?.maximumControlFlowNesting, guarded?.cognitive], [4, 1, 5]);
+  assert.deepEqual([nested?.cyclomatic, nested?.maximumControlFlowNesting, nested?.cognitive], [3, 2, 5]);
 });
 
 // Every callable shape receives its own node, while a nested reported child is pruned from its parent.
@@ -405,10 +436,10 @@ function parent(isReady: boolean): void {
       "child",
     ].map((blockName) => [blockName, metricTupleFor(blocks, blockName)])),
     {
-      declared: [2, 3, 1],
+      declared: [2, 2, 0],
       constructor: [2, 3, 1],
       render: [2, 3, 1],
-      choose: [3, 5, 2],
+      choose: [3, 4, 1],
       arrow: [2, 3, 1],
       recover: [2, 3, 1],
       "shows panel": [2, 3, 1],

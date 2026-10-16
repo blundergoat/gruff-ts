@@ -1,6 +1,6 @@
 ---
 category: sensitive-data
-last_reviewed: 2026-08-13
+last_reviewed: 2026-10-05
 hallucination-risk: high
 ---
 
@@ -20,7 +20,7 @@ When adding or expanding secret-like rules, include non-candidate coverage for d
 **Decision changed:** Treat any change to `redact()` output as a change to hook identity, and check same-line discrimination before shipping it.
 **Trigger phase:** ACT
 
-`stableIdentityComponent` (`src/hook-contract.ts`, search: `function stableIdentityComponent`) keys symbol-less line findings on the finding message, and `pushSensitiveFinding` (`src/sensitive-data-rules.ts`, search: `function pushSensitiveFinding`) builds that message from `redact()` output. Finding identity therefore depends on the redaction format, and nothing in either file states the coupling.
+`matchKeyComponent` (`src/hook-contract.ts`, search: `function matchKeyComponent`) and `stableIdentityFor` (`src/findings.ts`, search: `function stableIdentityFor`) key symbol-less line findings on the finding message, and `pushSensitiveFinding` (`src/sensitive-data-rules.ts`, search: `function pushSensitiveFinding`) builds that message from `redact()` output. Finding identity therefore depends on the redaction format. Both keys now append the match column, which separates same-line occurrences; a finding without a column still depends on the message alone.
 
 Raising the full-mask threshold to 24 characters made every secret shorter than that render as mask-plus-length. AWS access key ids are always 20 characters, so two of them on one line produced the same preview, the same message, and the same identity. The two findings became byte-identical on the `gruff.hook.v1` wire, and a consumer following the contract's own "track by stable identity" guidance collapsed a second real credential into the first.
 
@@ -39,4 +39,44 @@ The coupling crosses milestone boundaries, so the assumption that justified the 
 
 **Evidence:** package-manager lockfiles were excluded from the pillar to stop published integrity digests raising `sensitive-data.high-entropy-string`. Scanning one byte-identical file twice measured the cost: as `appconfig.json` it reported `sensitive-data.api-key-pattern`, `sensitive-data.database-url-password`, and `sensitive-data.high-entropy-string`; as `package-lock.json` it reported nothing. A credential in a `resolved` URL is the documented real-world leak vector for that exact file family, so the silenced siblings were the ones that mattered.
 
-**Prevention:** filter the produced findings by `ruleId` instead of skipping the dispatch, and lock it in with a two-way test: the noisy rule must stay silent on the family and a credential in the same family must still report. `isSubresourceIntegrityHash` (search: `function isSubresourceIntegrityHash`) already existed to exempt digest shapes, so the targeted mechanism usually exists before the blanket one is reached for.
+**Prevention:** filter the produced findings by `ruleId` instead of skipping the dispatch, and lock it in with a two-way test: the noisy rule must stay silent on the family and a credential in the same family must still report. ~~`isSubresourceIntegrityHash` (search: `function isSubresourceIntegrityHash`)~~ already existed to exempt digest shapes, so the targeted mechanism usually exists before the blanket one is reached for. The entropy rule, the digest check and the lockfile skip that replaced the blanket guard were retired in 0.6.0 (ADR-021); the struck anchor is at gruff-ts `2b34759`.
+
+## Footgun: hook metadata can rename and re-expose sensitive measurements
+
+**Status:** active | **Created:** 2026-08-22 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** When removing secret-derived metadata, inspect the hook normalization layer and prove both finding and hook payloads omit the value.
+**Trigger phase:** VERIFY
+
+`pushSensitiveFinding` (`src/sensitive-data-rules.ts`, search: `function pushSensitiveFinding`) builds the safe finding metadata, but
+`thresholdMetadataFor` (`src/hook-contract.ts`, search: `function thresholdMetadataFor`) can translate it into the hook's `measured` field.
+A detector field can therefore disappear from the direct report yet remain part of the hook contract under a different name.
+
+During M00, removing secret `length` metadata caused the focused hook test to fail because it still expected a numeric `metadata.measured`.
+The current absence of `length` makes hook normalization fall back to fixed-marker metadata, but the sensitive rule cases remain coupled.
+
+For any sensitive metadata change, verify JSON report and `gruff.hook.v1` output separately.
+Assert that `length`, `digits`, and `measured` are absent and only the fixed marker plus detector-owned public metadata remain.
+
+## Resolved Entries
+
+## Footgun: an exemption keyed on the text before a literal also matches ternaries and secret-named keys
+
+**Status:** resolved | **Created:** 2026-09-13 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Before exempting a literal by the key it sits under, prove the text is a key (it follows `{` or
+`,`, and only in YAML may it open its line), check every word of the key for a secret label, and never rescan the line
+for each candidate.
+**Trigger phase:** ACT
+
+M22's first location-key exemption for `sensitive-data.high-entropy-string` matched `key : ` against the line text
+before each literal. Two fresh-context reviews, checked against the pre-repair source, showed it silenced secrets the
+port had reported. The silenced shapes were `useCache ? path : "<secret>"`, the same branch after a comment or a
+wrapped `- path`, and keys whose last word names a location, such as `privateKeyBlob`, `apiKeyInput`, `JWTSecretPath`
+and `secretsPath`. The unanchored regex also took 1,821 ms on one generated line of six 20,000-character literals,
+against 355 ms at the pre-repair source. Probe any new syntax-keyed exemption the same way: put secrets the rule
+already reports in every position its pattern can match, and confirm each still reports.
+
+Resolved when the shared entropy policy (commit `933b36e`, 2026-10-01) removed the location-key exemption entirely.
+~~`isExcludedHighEntropyCandidate` (`src/sensitive-data-rules.ts`, search: `function isExcludedHighEntropyCandidate`)~~
+then judged only the whole literal, and ~~`src/sensitive-data-rules.test.ts`
+(search: `shared entropy policy retains opaque findings across key names and syntax positions`)~~ asserted that every
+shape above reports. 0.6.0 retired the rule itself (ADR-021); both anchors are at gruff-ts `2b34759`.

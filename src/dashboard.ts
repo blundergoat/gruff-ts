@@ -2,7 +2,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { chdir, cwd, stdout } from "node:process";
 import { dashboardErrorHtml, dashboardHomeHtml, renderHtml } from "./report-html.ts";
-import type { AnalysisOptions, AnalysisReport } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport, DeepScanBudgetOverride } from "./types.ts";
 
 type DashboardAnalyse = (options: AnalysisOptions) => AnalysisReport;
 
@@ -13,6 +13,7 @@ interface DashboardContext {
   port: number;
   projectRoot: string;
   profile?: string;
+  deepScanBudget?: DeepScanBudgetOverride;
 }
 
 // Per-request projectRoot + scanPath. Sourced from `?projectRoot` and `?path` query parameters and
@@ -26,9 +27,15 @@ interface DashboardRouteInput {
 // Starts a loopback HTTP server. `analyse` is injected (not imported) to avoid a circular import
 // back into `cli.ts`; see `.goat-flow/learning-loop/lessons/verification.md` on the dashboard import cycle.
 // Side effect: opens a listening socket and writes the URL to stdout unless `shouldWriteOutput` is false.
-function startDashboard(host: string, port: number, projectRoot: string, analyse: DashboardAnalyse, shouldWriteOutput = true, profile?: string): void {
+function startDashboard(host: string, port: number, projectRoot: string, analyse: DashboardAnalyse, shouldWriteOutput = true, profile?: string, deepScanBudget?: DeepScanBudgetOverride): void {
   assertLoopbackHost(host);
-  const context: DashboardContext = { host, port, projectRoot, ...(profile !== undefined ? { profile } : {}) };
+  const context: DashboardContext = {
+    host,
+    port,
+    projectRoot,
+    ...(profile !== undefined ? { profile } : {}),
+    ...(deepScanBudget !== undefined ? { deepScanBudget } : {}),
+  };
   const server = createServer((request, response) => handleDashboardRequest(context, analyse, request, response));
   server.listen(port, host, () => {
     if (shouldWriteOutput) {
@@ -39,6 +46,7 @@ function startDashboard(host: string, port: number, projectRoot: string, analyse
 
 // The dashboard accepts filesystem paths from query strings, so loopback binding is its safety
 // boundary. Throws before opening the listener when a caller asks for a public host.
+// @throws {Error} when the host is anything other than 127.0.0.1 or localhost.
 function assertLoopbackHost(host: string): void {
   if (host !== "127.0.0.1" && host !== "localhost") {
     throw new Error("Dashboard host must be 127.0.0.1 or localhost.");
@@ -55,7 +63,7 @@ function handleDashboardRequest(context: DashboardContext, analyse: DashboardAna
     return;
   }
   if (url.pathname === "/scan") {
-    renderDashboardScan(response, dashboardRouteInput(url, context.projectRoot), analyse, context.profile);
+    renderDashboardScan(response, dashboardRouteInput(url, context.projectRoot), analyse, context.profile, context.deepScanBudget);
     return;
   }
   if (url.pathname !== "/") {
@@ -78,7 +86,7 @@ function dashboardRouteInput(url: URL, projectRoot: string): DashboardRouteInput
 // chdirs into the caller-requested project root, runs `analyse`, and always restores the previous
 // cwd in `finally` - leaking the chdir would corrupt subsequent requests. The loopback server must
 // keep serving on analyser failure, so the catch reports the error as a rendered fallback page.
-function renderDashboardScan(response: ServerResponse, input: DashboardRouteInput, analyse: DashboardAnalyse, profile?: string): void {
+function renderDashboardScan(response: ServerResponse, input: DashboardRouteInput, analyse: DashboardAnalyse, profile?: string, deepScanBudget?: DeepScanBudgetOverride): void {
   const previous = cwd();
   try {
     chdir(input.root);
@@ -86,6 +94,7 @@ function renderDashboardScan(response: ServerResponse, input: DashboardRouteInpu
       paths: [input.scanPath],
       shouldSkipConfig: false,
       ...(profile !== undefined ? { profile } : {}),
+      ...(deepScanBudget !== undefined ? { deepScanBudget } : {}),
       format: "html",
       failOn: "none",
       shouldIncludeIgnored: false,
