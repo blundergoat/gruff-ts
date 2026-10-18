@@ -21,6 +21,7 @@ import {
   evalFindingFiles,
   gitAvailable,
   isGitIgnoredByGit,
+  withDefaultOffRulesOn,
   writeFixtureFiles,
 } from "./test-fixtures.ts";
 
@@ -105,7 +106,7 @@ test("trivial assertion", () => {
 function testBuildsValue(): void {
   assert.equal("not a test", "not a test");
 }
-`);
+`, withDefaultOffRulesOn());
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   FIRST_SLICE_RULE_IDS.forEach((ruleId: string) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);

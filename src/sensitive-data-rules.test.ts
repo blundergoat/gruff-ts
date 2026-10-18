@@ -6,8 +6,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { renderReport, ruleDescriptors } from "./cli.ts";
 import {
-  analyseFixture,
-  analyseProject,
+  analyseFixture as analyseFixtureWithDefaults,
+  analyseProject as analyseProjectWithDefaults,
+  type AnalyseFixtureOptions,
+  type AnalyseProjectOptions,
   API_TOKEN_FIXTURE_VALUE,
   AWS_ACCESS_KEY_FIXTURE_VALUE,
   CREDIT_CARD_FIXTURE_VALUE,
@@ -25,7 +27,14 @@ import {
   SLACK_WEBHOOK_FIXTURE_VALUE,
   SSN_FIXTURE_VALUE,
   URL_CREDENTIAL_FIXTURE_VALUE,
+  withDefaultOffRulesOn,
 } from "./test-fixtures.ts";
+
+// These detector tests exercise aws-access-key and database-url-password, which ship off by default since precision-floor
+// M02, so every scan here switches them on; an explicit rule entry in a test still wins.
+const analyseFixture = (source: string, options: AnalyseFixtureOptions = {}) => analyseFixtureWithDefaults(source, withDefaultOffRulesOn(options));
+// The project form of the same switch: every file in the fixture project is scanned with those rules on.
+const analyseProject = (files: Record<string, string>, options: AnalyseProjectOptions = {}) => analyseProjectWithDefaults(files, withDefaultOffRulesOn(options));
 
 const SENSITIVE_DATA_RULE_IDS = ["sensitive-data.api-key-pattern", "sensitive-data.database-url-password", "sensitive-data.pii-pattern"];
 const ALL_RENDER_FORMATS = ["text", "json", "markdown", "github", "html", "sarif", "hotspot"] as const;
@@ -41,7 +50,8 @@ const RAW_SECRET_FIXTURE_VALUES = [
   SSN_FIXTURE_VALUE,
   CREDIT_CARD_FIXTURE_VALUE,
 ];
-const EXPECTED_SECRET_DOTFILE_ANALYSED_FILES = 2;
+// The two secret dotfiles plus the fixture's `.gruff-ts.yaml`, which switches database-url-password on.
+const EXPECTED_SECRET_DOTFILE_ANALYSED_FILES = 3;
 const EXPECTED_NEW_DETECTOR_FINDINGS = 2;
 
 // Build one user-like config file that exercises generic, provider, connection, and identifier markers together.

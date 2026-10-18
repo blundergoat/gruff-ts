@@ -8,7 +8,7 @@ import { cwd } from "node:process";
 import { ruleDescriptors } from "./cli.ts";
 import { loadConfig, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { SECURITY_EXPANSION_RISKY_RULE_IDS, SECURITY_EXPANSION_RULE_QUALITY_DOCTRINE } from "./fixtures/rule-catalogue-security-doctrine.ts";
-import { ruleCatalogueCoverageRuleIds } from "./test-fixtures.ts";
+import { ruleCatalogueCoverageFindings, ruleCatalogueCoverageRuleIds } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
 
 const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "missing-invalid"] as const;
@@ -372,6 +372,32 @@ test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
   descriptors.forEach((descriptor) => {
     assertDescriptorCoverageOrExemption(descriptor, coverageIds);
   });
+});
+
+// The M11 advice table found these pattern-check findings carried no advice of their own; each now carries its rule's remediation.
+const PATTERN_CHECK_RULE_IDS = [
+  "modernisation.date-now-candidate",
+  "modernisation.object-spread-candidate",
+  "modernisation.var-declaration",
+  "security.disabled-tls-verification",
+  "security.document-write",
+  "security.eval-call",
+  "security.inner-html",
+  "security.javascript-url",
+  "security.new-function",
+  "security.sql-concatenation",
+  "security.weak-crypto",
+  "waste.any-type",
+];
+
+test("pattern-check findings carry their catalogue remediation", () => {
+  const remediation = new Map(ruleDescriptors().map((descriptor) => [descriptor.ruleId, descriptor.remediation]));
+  const findings = ruleCatalogueCoverageFindings().filter((finding) => PATTERN_CHECK_RULE_IDS.includes(finding.ruleId));
+
+  assert.deepEqual([...new Set(findings.map((finding) => finding.ruleId))].sort(), PATTERN_CHECK_RULE_IDS);
+  for (const finding of findings) {
+    assert.equal(finding.remediation, remediation.get(finding.ruleId), finding.ruleId);
+  }
 });
 
 test("rule descriptors keep limit knobs out of remediation and allowlist knobs in it", () => {

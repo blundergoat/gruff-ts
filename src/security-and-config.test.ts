@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { AnalysisReport } from "./cli.ts";
 import { exitFor } from "./scoring.ts";
-import { analyseFixture, analyseProject, REPO_ROOT, TS_IGNORE_DIRECTIVE, writeFixtureFiles } from "./test-fixtures.ts";
+import { analyseFixture, analyseProject, REPO_ROOT, TS_IGNORE_DIRECTIVE, withDefaultOffRulesOn, writeFixtureFiles } from "./test-fixtures.ts";
 
 // waste.swallowed-catch ships off by default; these tests switch it on so they still exercise its detector.
 const SWALLOWED_CATCH_ON = { config: { rules: { "waste.swallowed-catch": { enabled: true } } } };
@@ -392,7 +392,7 @@ const SECURITY_RISKY_RULE_IDS = [
 ];
 
 test("risk expansion finds security rules with safe non-candidates", () => {
-  const report = analyseFixture(SECURITY_RISKY_FIXTURE);
+  const report = analyseFixture(SECURITY_RISKY_FIXTURE, withDefaultOffRulesOn());
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   SECURITY_RISKY_RULE_IDS.forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
@@ -477,10 +477,11 @@ function safe(req: any, res: any): void {
   void docs;
 }
 `;
-  // Open-redirect ships off by default (ADR-021): a default run stays silent, and a project that enables it gets it.
+  // Open-redirect ships off by default (ADR-021) and path-traversal since precision-floor M02: a default run stays silent
+  // on open-redirect, and a project that enables them gets both.
   const defaultReport = analyseFixture(source);
   assert.equal(defaultReport.findings.some((finding) => finding.ruleId === "security.open-redirect-candidate"), false);
-  const report = analyseFixture(source, { config: { rules: { "security.open-redirect-candidate": { enabled: true } } } });
+  const report = analyseFixture(source, withDefaultOffRulesOn({ config: { rules: { "security.open-redirect-candidate": { enabled: true } } } }));
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   SOURCE_TO_SINK_RULE_IDS.forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
@@ -532,7 +533,7 @@ function finish(): void {
   doWork();
   return;
 }
-`);
+`, withDefaultOffRulesOn());
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   ["modernisation.date-now-candidate", "modernisation.object-spread-candidate", "waste.useless-catch", "waste.useless-return"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
@@ -689,13 +690,13 @@ test("a bare return that is a catch block's only statement is not a useless retu
     return;
   }
 }
-`);
+`, withDefaultOffRulesOn());
   assert.deepEqual(inCatch.findings.filter((finding) => finding.ruleId === "waste.useless-return"), []);
   const trailing = analyseFixture(`export function finish(work: () => void): void {
   work();
   return;
 }
-`);
+`, withDefaultOffRulesOn());
   assert.equal(trailing.findings.filter((finding) => finding.ruleId === "waste.useless-return").length, 1);
 });
 
@@ -737,7 +738,7 @@ test("security.inner-html skips fixed literals and security.javascript-url skips
   anchor.href = 'javascript:alert(document.cookie)';
   return href === 'javascript:void(0)' || 'javascript:void(0)' !== href;
 }
-`);
+`, withDefaultOffRulesOn());
 
   const innerHtmlLines = report.findings.filter((finding) => finding.ruleId === "security.inner-html").map((finding) => finding.line);
   const javascriptUrlLines = report.findings.filter((finding) => finding.ruleId === "security.javascript-url").map((finding) => finding.line);

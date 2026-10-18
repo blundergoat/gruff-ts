@@ -104,7 +104,7 @@ existing config overrides and baselines keep matching.
 - `waste.unreachable-code` (warning; high confidence): Flags statements after terminating statements.
 - `waste.unused-import` (advisory; medium confidence): Flags named imports with no apparent usage.
 - `waste.useless-catch` (advisory; high confidence): Flags catch blocks that only rethrow the caught value.
-- `waste.useless-return` (advisory; medium confidence): Flags terminal bare return statements in void functions. A bare `return;` that is the only statement of a `catch` block is not reported.
+- `waste.useless-return` (advisory; medium confidence): Flags terminal bare return statements in void functions. A bare `return;` that is the only statement of a `catch` block is not reported. Off by default since 0.6.0, because its 0.6.0 precision sample did not establish the floor: enable it with `rules.waste.useless-return.enabled: true`.
 
 ## Modernisation
 
@@ -136,11 +136,11 @@ existing config overrides and baselines keep matching.
 - `security.github-actions-remote-shell` (warning; medium confidence): Flags workflow run steps that pipe remote downloads to a shell.
 - `security.github-actions-secrets-in-pr` (warning; medium confidence): Flags pull_request_target workflows that reference repository secrets other than GITHUB_TOKEN. The trigger is read from the workflow's `on:` key; a plain `pull_request` run from a fork receives no secrets. An own job or step `if:` guard can silence a secret reference when exact `github.event_name` comparisons prove that scope unreachable for the detected PR event. Comparisons ignore case and support a whole expression wrapper, parentheses, negation, AND and OR. Unknown, malformed or unsupported guards and ambiguous YAML ownership retain warnings; a step guard cannot cover job/workflow env or siblings.
 - `security.github-actions-unpinned-action` (warning; medium confidence): Flags third-party GitHub Actions that are not pinned to a full commit SHA.
-- `security.inner-html` (warning; high confidence): Flags innerHTML assignment unless the value is a plain string or a template without substitutions.
+- `security.inner-html` (warning; high confidence): Flags innerHTML assignment unless the value is a plain string or a template without substitutions. Off by default since 0.6.0, because its 0.6.0 precision sample did not establish the floor: enable it with `rules.security.inner-html.enabled: true`.
 - `security.javascript-url` (error; high confidence): Flags javascript: URL literals that execute script; a literal compared with ==, ===, != or !== stays quiet.
 - `security.new-function` (error; high confidence): Flags Function constructor dynamic code execution.
 - `security.open-redirect-candidate` (warning; medium confidence): Flags external input sent to redirect or navigation sinks. Off by default (ADR-021): enable it with `rules.security.open-redirect-candidate.enabled: true`.
-- `security.path-traversal-candidate` (warning; medium confidence): Flags external input sent to filesystem path sinks.
+- `security.path-traversal-candidate` (warning; medium confidence): Flags external input sent to filesystem path sinks. Off by default since 0.6.0, because its 0.6.0 precision sample did not establish the floor: enable it with `rules.security.path-traversal-candidate.enabled: true`.
 - `security.remote-install-script` (error; medium confidence): Flags package scripts that pipe remote content to a shell.
 - `security.sql-concatenation` (warning; high confidence): Flags SQL text composed with runtime interpolation or concatenation in `query`, `execute`, `raw`, or `prepare` calls. Parameterized value placeholders stay quiet, but unknown runtime identifier interpolation such as table prefixes remains visible unless a project proves and documents a trusted source. The scanner is line-local and does not inspect multi-line SQL templates.
 - `security.ssrf-candidate` (warning; medium confidence): Flags external input sent to network request sinks.
@@ -156,8 +156,8 @@ existing config overrides and baselines keep matching.
 Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carrying explicit fake markers inside the matched value itself (`EXAMPLE`, `REDACTED`, `PLACEHOLDER`, `CHANGEME`, or masked `****`/`XXXX` runs) - the canonical AWS documentation keys end in `EXAMPLE`. A test or fixture file path alone never suppresses a production-shaped secret.
 
 - `sensitive-data.api-key-pattern` (warning; high confidence): Flags vendor API key patterns including GitHub, GitLab, npm, Google API, Slack, Discord, and Stripe/OpenAI-style keys.
-- `sensitive-data.aws-access-key` (warning; high confidence): Flags AWS access key looking values.
-- `sensitive-data.database-url-password` (warning; high confidence): Flags database and HTTP(S) URLs that include passwords or embedded credentials.
+- `sensitive-data.aws-access-key` (warning; high confidence): Flags AWS access key looking values. Off by default since 0.6.0, because its 0.6.0 precision sample did not establish the floor: enable it with `rules.sensitive-data.aws-access-key.enabled: true`.
+- `sensitive-data.database-url-password` (warning; high confidence): Flags database and HTTP(S) URLs that include passwords or embedded credentials. Off by default since 0.6.0, because its 0.6.0 precision sample did not establish the floor: enable it with `rules.sensitive-data.database-url-password.enabled: true`.
 - `sensitive-data.gcp-service-account-key` (warning; high confidence): Flags GCP service-account key files (type service_account alongside a private key).
 - `sensitive-data.jwt-token` (warning; high confidence): Flags JWT-looking token literals. Off by default (ADR-021): enable it with `rules.sensitive-data.jwt-token.enabled: true`.
 - `sensitive-data.phi-pattern` (warning; high confidence): Flags PHI identifiers such as Medicare (MBI) and medical record numbers.

@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fetchText, URL_CREDENTIAL_FIXTURE_VALUE, withDashboard } from "./test-fixtures.ts";
+import { fetchText, M02_DEFAULT_OFF_RULES_ON_YAML, URL_CREDENTIAL_FIXTURE_VALUE, withDashboard } from "./test-fixtures.ts";
 
 test("dashboard root uses parity shell and escapes controls", async () => {
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-dashboard-<bad>-"));
@@ -55,6 +55,8 @@ test("dashboard scan redacts sensitive findings without leaking raw secrets", as
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-dashboard-secret-"));
   try {
     writeFileSync(join(projectRoot, ".env"), `REMOTE_CONTROL_URL=${URL_CREDENTIAL_FIXTURE_VALUE}\n`);
+    // database-url-password ships off by default since precision-floor M02; the project config switches it on.
+    writeFileSync(join(projectRoot, ".gruff-ts.yaml"), M02_DEFAULT_OFF_RULES_ON_YAML);
     await withDashboard(projectRoot, async (baseUrl) => {
       const scanHtml = await fetchText(`${baseUrl}/scan?projectRoot=${encodeURIComponent(projectRoot)}&path=.env`);
       assert.match(scanHtml, /sensitive-data\.database-url-password/);

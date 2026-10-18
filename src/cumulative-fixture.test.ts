@@ -9,6 +9,7 @@ import {
   OPENAI_KEY_FIXTURE_VALUE,
   SSN_FIXTURE_VALUE,
   TS_IGNORE_DIRECTIVE,
+  withDefaultOffRulesOn,
 } from "./test-fixtures.ts";
 
 const expandedRuleIds = new Set([
@@ -77,7 +78,7 @@ const expandedRuleIds = new Set([
 
 test("cumulative expanded fixture covers every new rule with unique fingerprints", () => {
   // The side-effect and invariant rules ship off by default because their keyword lists cannot accept a comment written in other words; this fixture still covers both.
-  const report = analyseProject(cumulativeExpandedFixtureFiles(), { config: { rules: { "docs.missing-side-effect-doc": { enabled: true }, "docs.missing-invariant-doc": { enabled: true }, "waste.swallowed-catch": { enabled: true } } } });
+  const report = analyseProject(cumulativeExpandedFixtureFiles(), withDefaultOffRulesOn({ config: { rules: { "docs.missing-side-effect-doc": { enabled: true }, "docs.missing-invariant-doc": { enabled: true }, "waste.swallowed-catch": { enabled: true } } } }));
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   expandedRuleIds.forEach((ruleId: string) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);

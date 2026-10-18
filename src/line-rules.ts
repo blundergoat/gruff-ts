@@ -10,6 +10,7 @@ import { type SourceFile } from "./discovery.ts";
 import { finding } from "./findings-helpers.ts";
 import { pushIdentifierQualityAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { codeLineFlags, type ParsedScript } from "./parsed-script.ts";
+import { ruleDescriptors } from "./rules.ts";
 import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
@@ -172,6 +173,9 @@ function analyseLineRuleContext(context: LineRuleContext): void {
   }
 }
 
+// Each pattern check's advice is its catalogue remediation, carried on the finding so every output shows it.
+const PATTERN_CHECK_REMEDIATION = new Map(ruleDescriptors().map((descriptor) => [descriptor.ruleId, descriptor.remediation]));
+
 // Code-shape rules: those that must match against the masked code (no comment or literal noise).
 // Targets the eval / new-Function / innerHTML / document.write family of security/waste signals.
 function codeLineChecks(): LineRuleCheck[] {
@@ -230,13 +234,13 @@ function pushPatternCheckFindings(context: LineRuleContext): void {
       continue;
     }
     if (check.pattern.test(context.codeLine)) {
-      context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: ruleSeverity(context.config, check.ruleId, check.severity), pillar: check.pillar }));
+      context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: ruleSeverity(context.config, check.ruleId, check.severity), pillar: check.pillar, remediation: PATTERN_CHECK_REMEDIATION.get(check.ruleId) }));
     }
   }
   for (const check of context.literalChecks) {
     const isExemptMatch = literalCheckExemption(check.ruleId, context);
     if (rawPatternStartsInCode(context.line, context.codeLine, check.globalPattern ?? check.pattern, isExemptMatch)) {
-      context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: ruleSeverity(context.config, check.ruleId, check.severity), pillar: check.pillar }));
+      context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: ruleSeverity(context.config, check.ruleId, check.severity), pillar: check.pillar, remediation: PATTERN_CHECK_REMEDIATION.get(check.ruleId) }));
     }
   }
 }

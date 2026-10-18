@@ -11,7 +11,7 @@ import { chdir, cwd } from "node:process";
 import test from "node:test";
 import { analyse, analyseHookReports } from "./analyser.ts";
 import { renderHookReport } from "./hook-contract.ts";
-import { gitAvailable, REPO_ROOT } from "./test-fixtures.ts";
+import { gitAvailable, M02_DEFAULT_OFF_RULES_ON_YAML, REPO_ROOT } from "./test-fixtures.ts";
 import type { AnalysisOptions, AnalysisReport } from "./types.ts";
 
 const BIN = join(REPO_ROOT, "bin/gruff-ts");
@@ -261,8 +261,8 @@ test("hook keeps multiple same-rule secrets in one file separately actionable an
     `export const firstSecret = "${firstSecret}";`,
     `export const secondSecret = "${secondSecret}";`,
   ].join("\n");
-  withProject({ "secrets.ts": twoSecrets }, (dir) => {
-    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "secrets.ts"]);
+  withProject({ "secrets.ts": twoSecrets, ".gruff-ts.yaml": M02_DEFAULT_OFF_RULES_ON_YAML }, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "secrets.ts"]);
     const secrets = payload.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
     assert.equal(secrets.length, 2);
     // A secret is never named, because a stored identity is what would let a review hide it.
@@ -274,8 +274,8 @@ test("hook keeps multiple same-rule secrets in one file separately actionable an
     assert.equal("length" in (secrets[0]?.metadata ?? {}), false);
 
     // A baseline generated from this very run stores no secret, so both keep reporting until they are fixed.
-    execFileSync("bash", [BIN, "analyse", "--generate-baseline", "gruff-baseline.json", "--fail-on", "none", "--no-config", "."], { cwd: dir, encoding: "utf8" });
-    const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "secrets.ts"]);
+    execFileSync("bash", [BIN, "analyse", "--generate-baseline", "gruff-baseline.json", "--fail-on", "none", "."], { cwd: dir, encoding: "utf8" });
+    const filtered = runHook(dir, ["hook", "--format", "json", "--baseline", "gruff-baseline.json", "secrets.ts"]);
     const remaining = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
     assert.equal(remaining.length, 2);
     assert.equal(remaining.every((finding) => finding.baselineStatus === "notEligible"), true);
@@ -291,8 +291,8 @@ test("hook keeps two same-line secrets independently classifiable", () => {
     "// File overview: hook same-line contract fixture.",
     `export const firstSecret = "${firstSecret}"; export const secondSecret = "${secondSecret}";`,
   ].join("\n");
-  withProject({ "secrets.ts": sameLine }, (dir) => {
-    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "secrets.ts"]);
+  withProject({ "secrets.ts": sameLine, ".gruff-ts.yaml": M02_DEFAULT_OFF_RULES_ON_YAML }, (dir) => {
+    const payload = runHook(dir, ["hook", "--format", "json", "secrets.ts"]);
     const secrets = payload.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
     assert.equal(secrets.length, 2);
     assert.deepEqual(secrets.map((finding) => finding.stableIdentity), [null, null]);
@@ -302,8 +302,8 @@ test("hook keeps two same-line secrets independently classifiable", () => {
     assert.notEqual(secrets[0]?.column, secrets[1]?.column);
 
     // A generated baseline stores neither, so both same-line secrets keep reporting.
-    execFileSync("bash", [BIN, "analyse", "--generate-baseline", "gruff-baseline.json", "--fail-on", "none", "--no-config", "."], { cwd: dir, encoding: "utf8" });
-    const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "gruff-baseline.json", "secrets.ts"]);
+    execFileSync("bash", [BIN, "analyse", "--generate-baseline", "gruff-baseline.json", "--fail-on", "none", "."], { cwd: dir, encoding: "utf8" });
+    const filtered = runHook(dir, ["hook", "--format", "json", "--baseline", "gruff-baseline.json", "secrets.ts"]);
     const remaining = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
     assert.equal(remaining.length, 2);
   });
@@ -613,6 +613,7 @@ test("two secrets on one line reach the hook as separately trackable findings", 
   const secondKey = ["AKIAQ4TWMZPLK", "D8RVNXC"].join("");
   withProject({
     "keys.ts": `const first = "${firstKey}"; const second = "${secondKey}";\n`,
+    ".gruff-ts.yaml": M02_DEFAULT_OFF_RULES_ON_YAML,
   }, (dir) => {
     const payload = runHook(dir, ["hook", "--format", "json"]);
     const secrets = payload.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
@@ -638,13 +639,13 @@ test("hook reads the same generated baseline analyse writes, and it hides no sec
   // Split so this test file carries no scannable key of its own.
   const secret = ["AKIAL5HWQ2NBX", "R7TJMCV"].join("");
   const source = ["// File overview: hook baseline-format fixture.", `export const token = "${secret}";`].join("\n");
-  withProject({ "secret.ts": source }, (dir) => {
-    const before = requiredFinding(runHook(dir, ["hook", "--format", "json", "--no-config", "secret.ts"]), "sensitive-data.aws-access-key");
+  withProject({ "secret.ts": source, ".gruff-ts.yaml": M02_DEFAULT_OFF_RULES_ON_YAML }, (dir) => {
+    const before = requiredFinding(runHook(dir, ["hook", "--format", "json", "secret.ts"]), "sensitive-data.aws-access-key");
     assert.equal(typeof before.column, "number");
     assert.equal(before.stableIdentity, null);
-    execFileSync("bash", [BIN, "analyse", "--generate-baseline", "on-disk-baseline.json", "--fail-on", "none", "--no-config", "."], { cwd: dir, encoding: "utf8" });
+    execFileSync("bash", [BIN, "analyse", "--generate-baseline", "on-disk-baseline.json", "--fail-on", "none", "."], { cwd: dir, encoding: "utf8" });
 
-    const filtered = runHook(dir, ["hook", "--format", "json", "--no-config", "--baseline", "on-disk-baseline.json", "secret.ts"]);
+    const filtered = runHook(dir, ["hook", "--format", "json", "--baseline", "on-disk-baseline.json", "secret.ts"]);
     const secrets = filtered.findings.filter((finding) => finding.ruleId === "sensitive-data.aws-access-key");
     assert.equal(secrets.length, 1);
     assert.equal(secrets[0]?.baselineStatus, "notEligible");

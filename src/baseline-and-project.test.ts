@@ -14,8 +14,10 @@ import {
   AWS_ACCESS_KEY_FIXTURE_VALUE,
   evalFindingFiles,
   gitAvailable,
+  M02_DEFAULT_OFF_RULES_ON_YAML,
   REPO_ROOT,
   TS_IGNORE_DIRECTIVE,
+  withDefaultOffRulesOn,
   writeFixtureFiles,
 } from "./test-fixtures.ts";
 
@@ -280,6 +282,8 @@ function withCommittedGitFixture(prefix: string, files: Record<string, string>, 
 
 /** Writes a temporary project that exercises baseline identity across current rule families. */
 function writeBaselineRoundTripFixture(projectDir: string): void {
+  // aws-access-key ships off by default since precision-floor M02; the config switches it on so a secret is in the scan.
+  writeFileSync(join(projectDir, ".gruff-ts.yaml"), M02_DEFAULT_OFF_RULES_ON_YAML);
   writeFileSync(
     join(projectDir, "bad.ts"),
     `const embeddedKey = "${AWS_ACCESS_KEY_FIXTURE_VALUE}";
@@ -349,7 +353,7 @@ export function fromB(): string {
  * Stable contract: writes stay inside caller-owned fixture directories that the test removes.
  */
 function assertBaselineRoundTrip(baselineDir: string): number {
-  const baseOptions = baselineRoundTripOptions();
+  const baseOptions = { ...baselineRoundTripOptions(), shouldSkipConfig: false };
   const report = analyse(baseOptions);
   assertBaselineRoundTripRuleIds(report);
 
@@ -447,7 +451,7 @@ function assertMutatedBaselineReportsFinding(
   const path = join(baselineDir, fileName);
   const occurrences = (baseline.occurrences ?? []).map((entry, index) => (index === 0 ? mutateFirstRow(entry) : entry));
   writeFileSync(path, JSON.stringify({ ...baseline, occurrences }));
-  const report = analyse({ ...baselineRoundTripOptions(), shouldSkipBaseline: false, baseline: path });
+  const report = analyse({ ...baselineRoundTripOptions(), shouldSkipConfig: false, shouldSkipBaseline: false, baseline: path });
   const unmatched = expectedResolved > 0 ? report.baseline?.resolvedFindings ?? 0 : report.findings.length;
   assert.ok(unmatched > 0, `mutating ${fileName} must leave reviewed debt unmatched`);
 }
@@ -560,7 +564,8 @@ function branchLightly(input: string): string {
   return "c";
 }
 `;
-  assert.equal(analyseFixture(source, { fileName: ".env.ts" }).findings.some((finding) => finding.ruleId === "sensitive-data.aws-access-key"), true);
+  // aws-access-key ships off by default since precision-floor M02, so the baseline switches it on before the config turns it off.
+  assert.equal(analyseFixture(source, withDefaultOffRulesOn({ fileName: ".env.ts" })).findings.some((finding) => finding.ruleId === "sensitive-data.aws-access-key"), true);
   const report = analyseFixture(source, {
     fileName: ".env.ts",
     config: {

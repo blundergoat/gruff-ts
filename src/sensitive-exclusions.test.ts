@@ -9,7 +9,7 @@ import { ConfigLoadError } from "./config-load-error.ts";
 import { isBuiltInTestPath } from "./sensitive-exclusions.ts";
 import { renderHookReport } from "./hook-contract.ts";
 import { renderReport, renderSummary } from "./report-renderers.ts";
-import { AWS_ACCESS_KEY_FIXTURE_VALUE, analyseProject, JWT_FIXTURE_VALUE } from "./test-fixtures.ts";
+import { AWS_ACCESS_KEY_FIXTURE_VALUE, analyseProject, JWT_FIXTURE_VALUE, withDefaultOffRulesOn } from "./test-fixtures.ts";
 import type { AnalysisOptions, AnalysisReport } from "./types.ts";
 
 const AWS_RULE_ID = "sensitive-data.aws-access-key";
@@ -30,11 +30,11 @@ const SENSITIVE_CORPUS: Record<string, string> = {
 
 // Renders one `sensitiveExclusions:` YAML document. Written as text rather than through the fixture
 // object serializer because that serializer emits inline `[...]` arrays and cannot express the
-// ratified sequence-of-mappings shape. jwt-token ships off by default (ADR-021), so the document switches
-// it on to keep a second sensitive rule in the corpus, as the cross-port suite does.
+// ratified sequence-of-mappings shape. jwt-token (ADR-021) and aws-access-key (precision-floor M02) ship off
+// by default, so the document switches both on to keep the corpus's sensitive rules reporting, as the cross-port suite does.
 function sensitiveExclusionConfig(entries: string[]): string {
-  const enableJwt = ["rules:", `  ${JWT_RULE_ID}:`, "    enabled: true"];
-  return ["schemaVersion: gruff-ts.config.v0.1", ...enableJwt, "sensitiveExclusions:", ...entries].join("\n") + "\n";
+  const enableRules = ["rules:", `  ${AWS_RULE_ID}:`, "    enabled: true", `  ${JWT_RULE_ID}:`, "    enabled: true"];
+  return ["schemaVersion: gruff-ts.config.v0.1", ...enableRules, "sensitiveExclusions:", ...entries].join("\n") + "\n";
 }
 
 // Scans the synthetic corpus under one exclusion config and returns the stable report contract.
@@ -74,7 +74,7 @@ function suppressionLine(rendered: string): string {
 }
 
 test("an exact rule and path suppresses that scope, counts it, and leaves siblings reporting", () => {
-  const baseline = analyseProject(SENSITIVE_CORPUS, { shouldSkipConfig: true });
+  const baseline = analyseProject(SENSITIVE_CORPUS, withDefaultOffRulesOn());
   assert.ok(findingCount(baseline, AWS_RULE_ID, AWS_FIXTURE_PATH) >= 1, "fixture must produce the AWS finding it excludes");
 
   const report = analyseWithExclusions([
@@ -143,7 +143,7 @@ test("the built-in test-path skip is counted on analyse text, summary text and t
   const report = analyseProject({
     "src/login.spec.ts": `export const accessKeyId = "${key}";\n`,
     "source.ts": "export const ok = 1;\n",
-  });
+  }, withDefaultOffRulesOn());
   const expected = `builtInTestPath[src/login.spec.ts] ${AWS_RULE_ID}: `;
 
   assert.ok(renderReport(report, "text").includes(expected), renderReport(report, "text"));
@@ -170,7 +170,7 @@ test("the built-in test-path class skips sensitive-data findings in test, fixtur
     "src/login.spec.ts": body,
     "src/config.ts": body,
     "src/latest.ts": body,
-  });
+  }, withDefaultOffRulesOn());
 
   const keyFiles = report.findings.filter((finding) => finding.ruleId === AWS_RULE_ID).map((finding) => finding.filePath).sort();
   assert.deepEqual(keyFiles, ["src/config.ts", "src/latest.ts"]);
@@ -212,7 +212,7 @@ test("a test-file base name may hold a carriage return, as it may in every other
 // Test-path rows must sort by UTF-8 bytes like the other four ports, not by JavaScript's UTF-16 string order.
 test("test-path rows sort by UTF-8 bytes, so a private-use character comes before an emoji", () => {
   const body = `export const accessKeyId = "${["AKIA", "Q7R2M8N4", "P6T9V1X3"].join("")}";\n`;
-  const report = analyseProject({ "src/\u{1F600}.spec.ts": body, "src/\u{E000}.spec.ts": body });
+  const report = analyseProject({ "src/\u{1F600}.spec.ts": body, "src/\u{E000}.spec.ts": body }, withDefaultOffRulesOn());
 
   const testPathRows = report.suppressions.filter((row) => row.source === "built-in").map((row) => row.paths[0]);
   assert.deepEqual(testPathRows, ["src/\u{E000}.spec.ts", "src/\u{1F600}.spec.ts"]);

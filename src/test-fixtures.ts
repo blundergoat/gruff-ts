@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { analyse } from "./cli.ts";
-import type { AnalysisReport, ChangedScopeMode, DeepScanBudgetOverride } from "./types.ts";
+import type { AnalysisReport, ChangedScopeMode, DeepScanBudgetOverride, Finding } from "./types.ts";
 
 export const REPO_ROOT = cwd();
 export const HIGH_ENTROPY_FIXTURE_VALUE = ["Zx7pQ9vLm3N8sT2r", "Y6wK1dF4gH5jC0bR2"].join("");
@@ -57,6 +57,30 @@ export interface AnalyseProjectOptions {
 // Adds a fixture filename override for single-source test scans.
 export interface AnalyseFixtureOptions extends AnalyseProjectOptions {
   fileName?: string;
+}
+
+// Rules precision-floor M02 turned off by default whose detectors the native suites still exercise.
+export const M02_DEFAULT_OFF_RULE_IDS = [
+  "security.inner-html",
+  "security.path-traversal-candidate",
+  "sensitive-data.aws-access-key",
+  "sensitive-data.database-url-password",
+  "waste.useless-return",
+] as const;
+
+// The same switch as a `.gruff-ts.yaml` document, for tests that drive the CLI.
+export const M02_DEFAULT_OFF_RULES_ON_YAML = [
+  "schemaVersion: gruff-ts.config.v0.1",
+  "rules:",
+  ...M02_DEFAULT_OFF_RULE_IDS.flatMap((ruleId) => [`  ${ruleId}:`, "    enabled: true"]),
+].join("\n") + "\n";
+
+// Switches those rules on in a fixture's options. Every other setting stays, and an explicit entry for one of them wins.
+export function withDefaultOffRulesOn<T extends AnalyseFixtureOptions>(options: T = {} as T): T {
+  const config = options.config ?? {};
+  const rules = (config["rules"] ?? {}) as Record<string, Record<string, unknown>>;
+  const switchedOn = Object.fromEntries(M02_DEFAULT_OFF_RULE_IDS.map((ruleId) => [ruleId, { enabled: true, ...rules[ruleId] }]));
+  return { ...options, config: { ...config, rules: { ...rules, ...switchedOn } } };
 }
 
 // Runs one source string through the temporary-project analysis helper.
@@ -307,8 +331,13 @@ export async function fetchText(endpoint: string): Promise<string> {
 
 // Writes a broad temporary catalogue fixture because one scan must cover many rule families.
 export function ruleCatalogueCoverageRuleIds(): Set<string> {
-  const report = analyseProject(catalogueCoverageFiles(), catalogueCoverageOptions());
-  return new Set(report.findings.map((finding) => finding.ruleId));
+  return new Set(ruleCatalogueCoverageFindings().map((finding) => finding.ruleId));
+}
+
+// Every finding the broad catalogue fixture emits, in the report's stable sorted order, for tests that check what a
+// rule's findings carry.
+export function ruleCatalogueCoverageFindings(): Finding[] {
+  return analyseProject(catalogueCoverageFiles(), catalogueCoverageOptions()).findings;
 }
 
 // Assembles the broad catalogue fixture without making the public helper long.
@@ -677,6 +706,12 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
           "docs.missing-invariant-doc": { enabled: true },
           // Off by default: its sample stayed below the waste floor after its repair.
           "waste.swallowed-catch": { enabled: true },
+          // Off by default since precision-floor M02: their 0.6.0 precision samples did not establish the floor.
+          "security.inner-html": { enabled: true },
+          "security.path-traversal-candidate": { enabled: true },
+          "sensitive-data.aws-access-key": { enabled: true },
+          "sensitive-data.database-url-password": { enabled: true },
+          "waste.useless-return": { enabled: true },
         },
       },
     };

@@ -150,13 +150,18 @@ export interface LineFindingArgs {
   line: number;
   severity: Severity;
   pillar: Pillar;
+  // The rule's advice; omitted, the finding carries none and consumers fall back to the catalogue.
+  remediation?: string | undefined;
 }
 
 // Cheapest finding factory: line-anchored, no symbol, confidence "high". Produces the
 // (ruleId, filePath, line) tuple that every per-line emission relies on - this tuple is the
 // stable fingerprint that drives baseline matching and report determinism.
 export function finding(args: LineFindingArgs): Finding {
-  return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.line, severity: args.severity, pillar: args.pillar, confidence: "high" });
+  return makeFinding({
+    ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.line, severity: args.severity, pillar: args.pillar,
+    confidence: "high", ...(args.remediation ? { remediation: args.remediation } : {}),
+  });
 }
 
 // Diff-aware discovery: uses `execFileSync` (not `execSync`) so the `mode` value is passed as

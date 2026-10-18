@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { renderReport } from "./cli.ts";
 import { renderSummary } from "./report-renderers.ts";
-import { analyseFixture, analyseProject } from "./test-fixtures.ts";
+import { analyseFixture, analyseProject, withDefaultOffRulesOn } from "./test-fixtures.ts";
 import { countMatches } from "./text-scans.ts";
 
 // waste.swallowed-catch ships off by default; these tests switch it on so they still exercise its detector.
@@ -22,7 +22,7 @@ test("FP-#10 security.inner-html ignores empty-string DOM clearing", () => {
   container.innerHTML = '';
   container.innerHTML = userInput;
 }
-`);
+`, withDefaultOffRulesOn());
   const findings = report.findings.filter((entry) => entry.ruleId === "security.inner-html");
   assert.equal(findings.length, expectedFindingCount);
   assert.equal(findings[0]?.line, expectedFiringLine);
@@ -44,7 +44,7 @@ test("sensitive-data rules do not report vendor-documented sample values", () =>
 export const liveKey = "${live}";
 export const sampleToken = "${jwt}";
 export const paymentCardNumber = "${card}";
-`);
+`, withDefaultOffRulesOn());
   const reported = report.findings.filter((entry) => entry.ruleId.startsWith("sensitive-data.")).map((entry) => `${entry.ruleId}:${entry.line}`);
   assert.deepEqual(reported, ["sensitive-data.aws-access-key:2"]);
 });
