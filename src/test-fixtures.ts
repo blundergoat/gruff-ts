@@ -663,7 +663,6 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
   return {
       config: {
         rules: {
-          "complexity.cognitive": { threshold: 3, severity: "warning" },
           // Off by default since precision-floor M14; the coverage project switches it on for a positive case.
           "complexity.cyclomatic": { enabled: true, threshold: 2, severity: "warning" },
           "design.large-module-concentration": { threshold: 35, severity: "advisory", options: { minFiles: 4, minLines: 8 } },
@@ -678,10 +677,6 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
           "docs.missing-invariant-doc": { enabled: true },
           // Off by default: its sample stayed below the waste floor after its repair.
           "waste.swallowed-catch": { enabled: true },
-          // Opt-in test-quality detectors retain positive catalogue coverage.
-          "test-quality.conditional-logic": { enabled: true },
-          "test-quality.only-skip": { enabled: true },
-          "test-quality.sleep-in-test": { enabled: true },
         },
       },
     };

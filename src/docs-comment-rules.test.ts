@@ -134,59 +134,6 @@ interface DocumentedShape {
   assert.equal(todoFindings.every((finding) => ["TODO", "FIXME", "HACK"].includes(String(finding.metadata.marker))), true);
 });
 
-test("comment quality stale-comment flags stale references", () => {
-  // Fixture purpose: pairs stale path/rule/flag references with valid changed-region flag names.
-  const report = analyseFixture(`/**
- * Exercises stale comment references.
- */
-// See \`src/missing-file.ts\` before changing this helper.
-// Unknown scanner rule docs.removed-rule should be deleted.
-// Run gruff-ts with --removed-flag when debugging.
-// Run gruff-ts analyse --changed-ranges 2-3 --changed-scope hunk --since main for changed code.
-// legacy migration note mentions \`src/old-file.ts\` intentionally.
-function currentFeature(): void {}
-
-// OldFeature function
-function newFeature(): void {}
-`);
-  const staleFindings = report.findings.filter((finding) => finding.ruleId === "docs.stale-comment");
-  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "path" && finding.message.includes("src/missing-file.ts")), true);
-  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "ruleId" && finding.message.includes("docs.removed-rule")), true);
-  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "cliFlag" && finding.message.includes("--removed-flag")), true);
-  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "cliFlag" && finding.message.includes("--changed-ranges")), false);
-  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "cliFlag" && finding.message.includes("--changed-scope")), false);
-  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "cliFlag" && finding.message.includes("--since")), false);
-  assert.equal(staleFindings.some((finding) => finding.metadata.referenceType === "function" && finding.symbol === "newFeature"), true);
-  assert.equal(staleFindings.some((finding) => finding.message.includes("src/old-file.ts")), false);
-});
-
-test("comment quality stale-comment ignores prose that only looks like a symbol", () => {
-  // Fixture separates ordinary prose comments from a backticked stale-symbol reference.
-  const report = analyseFixture(`/**
- * Read-only filesystem interface for scanner tests.
- */
-interface ReadonlyFS {
-  exists(path: string): boolean;
-}
-
-/**
- * Symlink helper that skips hosts without permissions.
- */
-function symlinkOrSkip(): boolean {
-  return true;
-}
-
-/**
- * \`OldFeature\` helper that documents the replacement.
- */
-function newFeature(): void {}
-`);
-  const staleFindings = report.findings.filter((finding) => finding.ruleId === "docs.stale-comment");
-  assert.equal(staleFindings.some((finding) => finding.symbol === "ReadonlyFS"), false);
-  assert.equal(staleFindings.some((finding) => finding.symbol === "symlinkOrSkip"), false);
-  assert.equal(staleFindings.some((finding) => finding.symbol === "newFeature"), true);
-});
-
 test("comment quality requires tracking for TODO markers", () => {
   const report = analyseFixture(`/**
  * Exercises tracked and untracked task-marker comments.
@@ -252,39 +199,9 @@ const printed = buildPattern("printed");
   assert.deepEqual(suppressionLines, [4, 8, 12, 15]);
 });
 
-test("comment quality restates signature through useless-docblock without duplicates", () => {
-  // Fixture covers useless-docblock detection without duplicate function/interface findings.
-  const report = analyseFixture(`/**
- * Exercises restating comments.
- */
-/** Parses diagnostics. */
-function parseDiagnostics(): void {}
-
-// DiagnosticSourceFile interface
-interface DiagnosticSourceFile {
-  displayPath: string;
-}
-
-// Parser options contract must stay deterministic for callers.
-interface ParserOptions {
-  stable: boolean;
-}
-
-/** updateName */
-export function updateName(name: string): string {
-  return name;
-}
-`);
-  const uselessFindings = report.findings.filter((finding) => finding.ruleId === "docs.useless-docblock");
-  assert.equal(uselessFindings.some((finding) => finding.symbol === "parseDiagnostics"), true);
-  assert.equal(uselessFindings.some((finding) => finding.symbol === "DiagnosticSourceFile"), true);
-  assert.equal(uselessFindings.filter((finding) => finding.symbol === "updateName").length, 1);
-  assert.equal(uselessFindings.some((finding) => finding.symbol === "ParserOptions"), false);
-});
-
-test("documentation context detector matrix covers why side-effect error-behavior invariant magic-threshold", () => {
+test("documentation context detector matrix covers why side-effect error-behavior invariant", () => {
   const routingBranches = branchFixtureLines(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p"]);
-  // Fixture covers context-doc rules for why, side effects, errors, invariants, and thresholds.
+  // Fixture covers context-doc rules for why, side effects, errors and invariants.
   const report = analyseFixture(`/**
  * Exercises maintainer-context documentation rules.
  */
@@ -487,11 +404,8 @@ function documentationContextExpectations(): Array<[string, string, boolean]> {
     ["docs.missing-error-behavior-doc", "parseRequiredWithContext", false],
     ["docs.missing-invariant-doc", "ReportEnvelope", true],
     ["docs.missing-invariant-doc", "StableReportEnvelope", false],
-    ["docs.magic-threshold-without-rationale", "maxRetryLimit", true],
-    ["docs.magic-threshold-without-rationale", "explainedRetryLimit", false],
     ["docs.missing-side-effect-doc", "undocumentedSideEffect", false],
     ["docs.missing-internal-function-doc", "undocumentedSideEffect", true],
-    ["docs.useless-docblock", "restatingComplexFlow", true],
     ["docs.missing-why-for-complex-code", "restatingComplexFlow", false],
   ];
 }
@@ -554,15 +468,12 @@ test("fixture purpose rule still runs when every other comment-quality rule is d
   // Regression: the analyser's comment-quality group gate must include `docs.fixture-purpose-missing`, otherwise disabling the other comment rules
   // silently disables this still-enabled rule too.
   const disabledRuleIds = [
-    "docs.magic-threshold-without-rationale",
     "docs.missing-error-behavior-doc",
     "docs.missing-invariant-doc",
     "docs.missing-side-effect-doc",
     "docs.missing-why-for-complex-code",
-    "docs.stale-comment",
     "docs.suppression-without-rationale",
     "docs.todo-without-tracking",
-    "docs.useless-docblock",
   ];
   const report = analyseFixture(fixturePurposeMatrixSource(), {
     fileName: "fixture-purpose.test.ts",

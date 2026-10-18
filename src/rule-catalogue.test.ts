@@ -12,10 +12,10 @@ import { ruleCatalogueCoverageRuleIds } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
 
 const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "missing-invalid"] as const;
-const EXPECTED_RELEASE_RULE_COUNT = 112;
+const EXPECTED_RELEASE_RULE_COUNT = 82;
 // Every medium- and low-confidence rule carries reviewed false-positive guidance; the high-confidence
 // remainder omits the field. Naming both counts keeps the two guards below arithmetically linked.
-const EXPECTED_GUIDED_RULE_COUNT = 63;
+const EXPECTED_GUIDED_RULE_COUNT = 47;
 
 // Asserts the descriptor's optionKeys list is sorted and unique. Factored out of the descriptor
 // catalogue test body to preserve a stable sort invariant without an inline `if` branch.
@@ -61,15 +61,12 @@ interface RuleQualityDoctrineCase {
 
 const riskyRuleIdsRequiringNoisyValidProof = [
   "docs.fixture-purpose-missing",
-  "docs.magic-threshold-without-rationale",
   "docs.missing-error-behavior-doc",
   "docs.missing-invariant-doc",
   "docs.missing-side-effect-doc",
   "docs.missing-why-for-complex-code",
-  "docs.stale-comment",
   "docs.suppression-without-rationale",
   "docs.todo-without-tracking",
-  "docs.useless-docblock",
   "security.disabled-tls-verification",
   "security.eval-call",
   ...SECURITY_EXPANSION_RISKY_RULE_IDS,
@@ -77,12 +74,9 @@ const riskyRuleIdsRequiringNoisyValidProof = [
   "security.string-timer",
   "security.inner-html",
   "security.javascript-url",
-  "security.process-exec",
   "security.weak-crypto",
   "sensitive-data.api-key-pattern",
-  "test-quality.only-skip",
   "test-quality.static-analysis-redundant-test",
-  "waste.commented-out-code",
 ] as const;
 
 const riskyRuleQualityDoctrine = [
@@ -98,19 +92,6 @@ const riskyRuleQualityDoctrine = [
     missingInvalidFixture: "large scanner-relevant fixture remains reported when unrelated strings and documented fixtures are present",
     falsePositiveEscapeHatch: "scope to test/fixture-like files, require large source-like content or fixture setup signals, and accept purpose vocabulary or a substantive leading explanation with stacked // headers read as one comment",
     fingerprintStability: "anchor to the fixture declaration, helper call, or test invocation line rather than fixture body text",
-  },
-  {
-    ruleId: "docs.magic-threshold-without-rationale",
-    signalSource: "masked executable-line scan for named threshold constants and threshold() defaults",
-    expectedPillar: "documentation",
-    expectedSeverity: "advisory",
-    expectedConfidence: "medium",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "threshold-like numeric constant or config default without nearby rationale",
-    noisyValidFixture: "ordinary numeric literals, test assertions, strings, templates, and rationale-commented thresholds",
-    missingInvalidFixture: "unexplained threshold remains reported when explained thresholds are nearby",
-    falsePositiveEscapeHatch: "skip common safe values and test files, require threshold-like names or threshold() defaults",
-    fingerprintStability: "anchor to the numeric policy line and threshold label without including surrounding prose",
   },
   {
     ruleId: "docs.missing-error-behavior-doc",
@@ -165,19 +146,6 @@ const riskyRuleQualityDoctrine = [
     fingerprintStability: "anchor to the leading comment line plus function symbol",
   },
   {
-    ruleId: "docs.stale-comment",
-    signalSource: "comment-text scanner with declaration, rule, flag, and path cross-checks",
-    expectedPillar: "documentation",
-    expectedSeverity: "advisory",
-    expectedConfidence: "medium",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "comments naming missing files, unknown rule ids, stale flags, or the wrong declaration",
-    noisyValidFixture: "historical comments with legacy or migration context and valid file/rule/flag references",
-    missingInvalidFixture: "stale references still report when valid historical context appears nearby",
-    falsePositiveEscapeHatch: "skip explicitly historical context and only match narrow quoted paths and known rule prefixes",
-    fingerprintStability: "anchor to the comment line rather than the prose body so wording edits do not churn identity",
-  },
-  {
     ruleId: "docs.suppression-without-rationale",
     signalSource: "comment-text scanner over lint, formatter, coverage, and tool suppression markers",
     expectedPillar: "documentation",
@@ -202,19 +170,6 @@ const riskyRuleQualityDoctrine = [
     missingInvalidFixture: "untracked marker remains reported when tracked marker examples are present",
     falsePositiveEscapeHatch: "scan extracted comments only and accept bounded tracking patterns",
     fingerprintStability: "anchor to the marker comment line and keep raw TODO text out of the fingerprint",
-  },
-  {
-    ruleId: "docs.useless-docblock",
-    signalSource: "leading-comment scanner comparing normalized comment words with declaration names",
-    expectedPillar: "documentation",
-    expectedSeverity: "advisory",
-    expectedConfidence: "medium",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "JSDoc or line comment that only repeats the function or interface name",
-    noisyValidFixture: "comments that explain contract, side effects, invariants, fallback, or why context",
-    missingInvalidFixture: "restating comment remains reported beside useful context comments",
-    falsePositiveEscapeHatch: "skip comments with explicit maintainer-context marker phrases",
-    fingerprintStability: "anchor to the declaration comment line and symbol, not the full prose",
   },
   {
     ruleId: "security.eval-call",
@@ -296,19 +251,6 @@ const riskyRuleQualityDoctrine = [
   },
   ...SECURITY_EXPANSION_RULE_QUALITY_DOCTRINE,
   {
-    ruleId: "security.process-exec",
-    signalSource: "masked source executable-line scan with fixed test harness exemption",
-    expectedPillar: "security",
-    expectedSeverity: "warning",
-    expectedConfidence: "high",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "spawn, exec, or execFile called with runtime-controlled command input",
-    noisyValidFixture: "fixed local spawn or execFile command vectors inside test harness files",
-    missingInvalidFixture: "dynamic child-process calls remain reported when fixed harnesses are present",
-    falsePositiveEscapeHatch: "exempt only fixed local command vectors in test-like files",
-    fingerprintStability: "keep the child-process call line as the finding anchor",
-  },
-  {
     ruleId: "security.weak-crypto",
     signalSource: "raw text scan anchored to executable crypto API tokens",
     expectedPillar: "security",
@@ -322,19 +264,6 @@ const riskyRuleQualityDoctrine = [
     fingerprintStability: "keep the weak crypto line as the finding anchor",
   },
   {
-    ruleId: "test-quality.only-skip",
-    signalSource: "test block scan against masked executable body",
-    expectedPillar: "test-quality",
-    expectedSeverity: "advisory",
-    expectedConfidence: "high",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "focused or skipped test marker in executable test code",
-    noisyValidFixture: "focused/skipped marker text inside fixtures and documentation",
-    missingInvalidFixture: "focused or skipped test remains reported when noisy fixtures are present",
-    falsePositiveEscapeHatch: "run against masked test block source only",
-    fingerprintStability: "anchor to the test block start line",
-  },
-  {
     ruleId: "test-quality.static-analysis-redundant-test",
     signalSource: "test block assertion scan for direct typeof-function, self-instance, and visible non-null return assertions",
     expectedPillar: "test-quality",
@@ -346,19 +275,6 @@ const riskyRuleQualityDoctrine = [
     missingInvalidFixture: "shape-only assertion remains reported when behavioral assertions are present in the same test",
     falsePositiveEscapeHatch: "match only direct code-shape assertions and require visible local declarations for non-null return candidates",
     fingerprintStability: "anchor to the flagged assertion line and test block symbol so multiple candidates in one test stay distinct",
-  },
-  {
-    ruleId: "waste.commented-out-code",
-    signalSource: "raw line comment scanner",
-    expectedPillar: "maintainability",
-    expectedSeverity: "advisory",
-    expectedConfidence: "high",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "single-line comment that starts with disabled source syntax",
-    noisyValidFixture: "ordinary prose comments that mention code tokens",
-    missingInvalidFixture: "disabled source line remains reported when prose comments are present",
-    falsePositiveEscapeHatch: "require the uncommented text to look like a statement, declaration, or call",
-    fingerprintStability: "anchor to the commented-out source line",
   },
 ] as const satisfies readonly RuleQualityDoctrineCase[];
 
@@ -390,7 +306,7 @@ test("documentation catalogue covers comment rule pack", () => {
 
 // Pins the public release count so adding or removing a user-visible rule requires an intentional
 // catalogue and documentation update instead of silently changing the published scanner surface.
-test("release catalogue contains exactly 112 rule descriptors", () => {
+test("release catalogue contains exactly 82 rule descriptors", () => {
   const currentRuleCount = ruleDescriptors().length;
   assert.equal(currentRuleCount, EXPECTED_RELEASE_RULE_COUNT);
 });
@@ -422,7 +338,7 @@ test("every medium and low confidence rule carries reviewed false-positive guida
 test("high confidence rules omit falsePositiveShapes rather than publishing an empty array", () => {
   const highConfidence = ruleDescriptors().filter((descriptor) => descriptor.confidence === "high");
 
-  // The 49 high-confidence rules are the complement of the 63 medium/low rules that carry guidance.
+  // The 35 high-confidence rules are the complement of the 47 medium/low rules that carry guidance.
   assert.equal(highConfidence.length, EXPECTED_RELEASE_RULE_COUNT - EXPECTED_GUIDED_RULE_COUNT);
 
   const publishingShapes = highConfidence

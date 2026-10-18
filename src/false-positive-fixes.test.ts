@@ -28,36 +28,6 @@ test("FP-#10 security.inner-html ignores empty-string DOM clearing", () => {
   assert.equal(findings[0]?.line, expectedFiringLine);
 });
 
-test("FP-#3 security.process-exec skips RegExp.exec call sites", () => {
-  // Fixture: rule.pattern.exec is a RegExp call and must not fire; the two user-controlled
-  // child_process calls on lines 5 and 6 must fire as the only real findings.
-  const expectedFindingCount = 2;
-  const expectedFiringLines = [5, 6];
-  const report = analyseFixture(`import { exec, spawn } from "node:child_process";
-function check(rule: { pattern: RegExp }, line: string, cmd: string): void {
-  const match = rule.pattern.exec(line);
-  void match;
-  exec(cmd);
-  spawn(cmd, ["-la"]);
-}
-`);
-  const findings = report.findings.filter((entry) => entry.ruleId === "security.process-exec");
-  assert.equal(findings.length, expectedFindingCount);
-  const lineNumbers = findings.map((entry) => entry.line).sort();
-  assert.deepEqual(lineNumbers, expectedFiringLines);
-});
-
-test("FP-#11 waste.console-log skips CLI/script paths", () => {
-  const cliReport = analyseFixture(`console.log("starting");\n`, { fileName: "src/cli/run.ts" });
-  assert.equal(cliReport.findings.some((entry) => entry.ruleId === "waste.console-log"), false);
-
-  const scriptReport = analyseFixture(`console.log("build");\n`, { fileName: "scripts/build.ts" });
-  assert.equal(scriptReport.findings.some((entry) => entry.ruleId === "waste.console-log"), false);
-
-  const appReport = analyseFixture(`console.log("debug");\n`, { fileName: "src/dashboard/app.ts" });
-  assert.equal(appReport.findings.some((entry) => entry.ruleId === "waste.console-log"), true);
-});
-
 // Vendor-documented samples must never report: AWS's example key, the jwt.io sample token and a published test card.
 //
 // A live-shaped key still reports (FAMILY-CONTRACT.md section 5), and every value is assembled from parts.
@@ -77,37 +47,6 @@ export const paymentCardNumber = "${card}";
 `);
   const reported = report.findings.filter((entry) => entry.ruleId.startsWith("sensitive-data.")).map((entry) => `${entry.ruleId}:${entry.line}`);
   assert.deepEqual(reported, ["sensitive-data.aws-access-key:2"]);
-});
-
-test("FP-#5 waste.empty-function skips interface and type-literal signatures", () => {
-  const report = analyseFixture(`interface StateFS {
-  exists(path: string): boolean;
-  readFile(path: string): string | null;
-}
-
-function realEmpty(): void {}
-
-function realWork(): number {
-  return 1;
-}
-`);
-  const findings = report.findings.filter((entry) => entry.ruleId === "waste.empty-function");
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0]?.symbol, "realEmpty");
-});
-
-test("FP-#7 waste.unused-parameter skips interface signatures", () => {
-  const report = analyseFixture(`interface StateFS {
-  readFile(path: string): string;
-}
-
-function impl(usedParam: number, unusedParam: string): number {
-  return usedParam;
-}
-`);
-  const findings = report.findings.filter((entry) => entry.ruleId === "waste.unused-parameter");
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0]?.metadata?.parameter, "unusedParam");
 });
 
 test("FP-#6 waste.unused-import sees identifiers inside template interpolations", () => {
@@ -171,24 +110,6 @@ test("FP-#4 waste.unreachable-code respects braceless if-return guard clauses", 
 `);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.unreachable-code");
   assert.deepEqual(findings, []);
-});
-
-test("FP-#9 docs.stale-comment only validates flags in gruff-mentioning comments", () => {
-  // Purpose: prove the unknown-CLI-flag check is gated to comments that name the gruff CLI. Other
-  // tools' flags inside other-project comments must not be flagged as unknown gruff options.
-  const externalComments = analyseFixture(`// Run \`npm pack --dry-run\` to preview the tarball.
-// Use \`node --import tsx\` so the loader sees TypeScript files.
-// \`git rev-parse --show-toplevel\` finds the repo root.
-// Pass --agent or --harness to inspect the audit profile.
-export const value = 1;
-`);
-  assert.deepEqual(externalComments.findings.filter((entry) => entry.ruleId === "docs.stale-comment" && entry.metadata?.referenceType === "cliFlag"), []);
-
-  // Counterpart: a comment that names gruff-ts and references a fake gruff-ts flag should still fire.
-  const selfReport = analyseFixture(`// Run gruff-ts with --imaginary-flag to test the gate.
-export const value = 1;
-`);
-  assert.equal(selfReport.findings.some((entry) => entry.ruleId === "docs.stale-comment" && entry.metadata?.referenceType === "cliFlag"), true);
 });
 
 test("FP-#12 waste.unreachable-code recognises multi-line if predicate", () => {
@@ -313,31 +234,6 @@ test("FP-#19 waste.swallowed-catch accepts /* no-op */ rationale", () => {
   assert.deepEqual(findings, []);
 });
 
-test("FP-#21 naming.boolean-prefix accepts imperative-flag verbs", () => {
-  /*
-   * Fixture covers the §2.4 regression from the 2026-05-25 goat-flow feedback: option-bag booleans
-   * frequently use imperative verbs (`checkDrift`, `skipAuto`, `enableX`) which are intent-revealing
-   * despite not matching the adjective/modal default prefix set. The widened default
-   * `booleanPrefixes` now accepts these.
-   */
-  const report = analyseFixture(`export function configure(): void {
-  const checkDrift: boolean = true;
-  const skipAuto: boolean = false;
-  const enableFeature: boolean = true;
-  const allowFallback: boolean = false;
-  const includeMetadata: boolean = true;
-  const excludeTests: boolean = false;
-  const omitHeader: boolean = true;
-  const withCache: boolean = false;
-  const withoutTimeout: boolean = true;
-  void checkDrift; void skipAuto; void enableFeature; void allowFallback;
-  void includeMetadata; void excludeTests; void omitHeader; void withCache; void withoutTimeout;
-}
-`);
-  const findings = report.findings.filter((entry) => entry.ruleId === "naming.boolean-prefix");
-  assert.deepEqual(findings, []);
-});
-
 test("family abbreviation defaults require projects to opt in to fn and cb", () => {
   const abbreviatedParameterSource = `export function bind(fn: (value: number) => number, cb: () => void): (value: number) => number {
   return (value: number) => {
@@ -434,10 +330,10 @@ function helperTwo(): void {}
 });
 
 test("FP-#43 analyse text footer hint appears at threshold and not below", () => {
-  // Synthetic fixture crafted to cross the 50-finding threshold. Each line of `if (x == y)` fires
-  // modernisation.loose-equality, so we generate enough lines to push past 50.
-  const aboveThreshold = analyseFixture(`function noisy(x: unknown, y: unknown): boolean {
-${Array.from({ length: 55 }, () => "  if (x == y) return true;").join("\n")}
+  // Synthetic fixture crafted to cross the 50-finding threshold. Each `var copyN = x;` line fires
+  // modernisation.var-declaration, so we generate enough lines to push past 50.
+  const aboveThreshold = analyseFixture(`function noisy(x: unknown): boolean {
+${Array.from({ length: 55 }, (_, index) => "  var copy" + index + " = x;").join("\n")}
   return false;
 }
 `);
@@ -588,7 +484,6 @@ export { helper } from "./other";
   assert.equal(report.findings.filter((entry) => entry.ruleId === "docs.missing-internal-function-doc" && entry.symbol === "helper").length, 1);
 });
 
-
 test("FP-#34 docs.missing-internal-function-doc fires on internal helper", () => {
   // Internal helpers fire the advisory variant. The body's lack of leading comment is the trigger;
   // a function with even a brief leading comment clears.
@@ -694,10 +589,9 @@ test("FP-#29 test-quality.loop-in-test still flags conditional inside literal-ar
     }
   }
 });
-`, { config: { rules: { "test-quality.conditional-logic": { enabled: true } } } });
+`);
   const findings = report.findings.filter((entry) => entry.ruleId === "test-quality.loop-in-test");
   assert.equal(findings.length, 1);
-  assert.equal(report.findings.some((entry) => entry.ruleId === "test-quality.conditional-logic"), true);
 });
 
 test("FP-#20 waste.swallowed-catch still flags /* silent */ and empty catch", () => {
@@ -718,30 +612,6 @@ test("FP-#20 waste.swallowed-catch still flags /* silent */ and empty catch", ()
 }
 `, SWALLOWED_CATCH_ON);
   assert.equal(emptyReport.findings.some((entry) => entry.ruleId === "waste.swallowed-catch"), true);
-});
-
-// Fixture purpose: a multi-line signature's first line stops at the open paren, so the legacy
-// text heuristic read it as an implementation. The shared parse now answers body presence.
-// Stable contract: bodyless declarations never draw implementation-only findings.
-test("FP-#46 bodyless multi-line signatures skip empty-function and unused-parameter", () => {
-  const signatureReport = analyseFixture(`export interface Repository {
-  findMany(
-    filter: string,
-    limit: number,
-  ): Promise<string[]>;
-}
-`);
-  const implementationOnlyRules = ["waste.empty-function", "waste.unused-parameter"];
-  assert.equal(signatureReport.findings.some((entry) => implementationOnlyRules.includes(entry.ruleId)), false);
-
-  // A real implementation with an empty body and an unused parameter must still fire.
-  const implementationReport = analyseFixture(`export function reallyEmpty(
-  unusedThing: string,
-): void {
-}
-`);
-  assert.equal(implementationReport.findings.some((entry) => entry.ruleId === "waste.empty-function"), true);
-  assert.equal(implementationReport.findings.some((entry) => entry.ruleId === "waste.unused-parameter"), true);
 });
 
 // Fixture purpose: the public-export inventory resolved `export { Foo as Bar }` to the local
@@ -899,11 +769,11 @@ export function second(alpha: number, beta: number): number {
   return alpha + beta;
 }
 
-test("sleeps without assertion", async () => {
-  await new Promise((resolve) => setTimeout(resolve, 1));
+test("mutates global state", () => {
+  process.env.MODE = "test";
 });
 `;
-  const report = analyseFixture(source, { config: { rules: { "test-quality.sleep-in-test": { enabled: true } } } });
+  const report = analyseFixture(source);
   const lines = source.split("\n");
 
   assert.ok(report.findings.length > 0, "the anchor fixture produced no findings, so it proved nothing");
@@ -923,12 +793,12 @@ test("sleeps without assertion", async () => {
   // The anchor is the docblock, never the blank line 4 that separates it from `first`.
   assert.equal(byRule.get("docs.missing-param-tag"), docblockLineOfSecond);
   // The anchor is the callable's own declaration line, never the blank line 9 above it.
-  assert.equal(byRule.get("test-quality.sleep-in-test"), declarationLineOfTestCallable);
+  assert.equal(byRule.get("test-quality.global-state-mutation"), declarationLineOfTestCallable);
 });
 
 // M13-T18: a file overview or a divider above a function is not that function's docblock, so the
 // missing-doc rule reports the function and the docblock rules do not judge that comment.
-const FUNCTION_DOC_RULE_IDS = new Set(["docs.missing-exported-function-doc", "docs.missing-param-tag", "docs.missing-return-tag", "docs.useless-docblock"]);
+const FUNCTION_DOC_RULE_IDS = new Set(["docs.missing-exported-function-doc", "docs.missing-param-tag", "docs.missing-return-tag"]);
 
 // "rule symbol" lines for the function documentation rules in a stable, deterministic order, so each case reads as one list.
 function functionDocFindings(source: string): string[] {

@@ -30,8 +30,7 @@ const KNOWN_ROOT_KEYS: ReadonlySet<string> = new Set([
 ]);
 const KNOWN_PATHS_KEYS: ReadonlySet<string> = new Set(["ignore"]);
 const KNOWN_ALLOWLISTS_KEYS: ReadonlySet<string> = new Set([
-  "acceptedAbbreviations", "bannedGenericNames", "acceptedBooleanNames", "acceptedClassFilePairs", "acceptedCasingPairs",
-  "booleanPrefixes", "hungarianPrefixes", "placeholderNames", "negativeBooleanAllowed", "knownAcronyms", "trackingTokens",
+  "acceptedAbbreviations", "acceptedClassFilePairs", "placeholderNames", "trackingTokens",
   // Recognised only so the loader can refuse it by name with section 5's explanation, rather than as an unknown key.
   "secretPreviews",
 ]);
@@ -49,15 +48,8 @@ function defaultConfig(): Config {
     schemaVersion: "gruff-ts.config.v0.1",
     ignoredPaths: [],
     acceptedAbbreviations: new Set(["age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url"]),
-    bannedGenericNames: new Set(["process", "handle", "doit", "run", "execute", "manage"]),
-    acceptedBooleanNames: new Set(["all", "apply", "check", "dev", "enabled", "force", "fresh", "harness", "json", "ok", "verbose", "yes"]),
     acceptedClassFilePairs: new Set(),
-    acceptedCasingPairs: new Set(),
-    booleanPrefixes: new Set(["is", "has", "can", "should", "does", "did", "was", "will", "may", "in", "scan", "supports", "requires", "allow", "check", "enable", "exclude", "include", "omit", "skip", "with", "without"]),
-    hungarianPrefixes: new Set(["str", "obj", "arr", "bool", "int", "num"]),
     placeholderNames: new Set(["foo", "bar", "baz", "tmp", "temp", "thing", "stuff", "data", "value", "item"]),
-    negativeBooleanAllowed: new Set(["nostore", "nofollow", "noreferrer", "noscript", "noindex"]),
-    knownAcronyms: new Set(["url", "http", "https", "id", "xml", "json", "html", "css", "api", "sql", "db", "io", "ui", "uuid", "ip", "tcp", "udp", "ast", "cli", "npm"]),
     trackingTokens: [],
     minimumSeverity: new Map(),
     rules: new Map(),
@@ -492,15 +484,8 @@ function applyAllowlistConfig(config: Config, parsedConfig: Record<string, unkno
   if (allowlists && "secretPreviews" in allowlists) {
     throw new ConfigLoadError(LEGACY_SECRET_PREVIEWS_ERROR, "Delete the `allowlists.secretPreviews:` entry from `.gruff-ts.yaml`; nothing replaces it.");
   }
-  applyNamingAllowlist(config, allowlists, "bannedGenericNames");
-  applyNamingAllowlist(config, allowlists, "acceptedBooleanNames");
   applyNamingAllowlist(config, allowlists, "acceptedClassFilePairs");
-  applyNamingAllowlist(config, allowlists, "acceptedCasingPairs");
-  applyNamingAllowlist(config, allowlists, "booleanPrefixes");
-  applyNamingAllowlist(config, allowlists, "hungarianPrefixes");
   applyNamingAllowlist(config, allowlists, "placeholderNames");
-  applyNamingAllowlist(config, allowlists, "negativeBooleanAllowed");
-  applyNamingAllowlist(config, allowlists, "knownAcronyms");
   // Tracking tokens are project vocabulary, so none ship by default; each entry is a case-insensitive regular expression.
   if (allowlists && "trackingTokens" in allowlists) {
     config.trackingTokens = arrayValue(allowlists.trackingTokens).filter(isString).map((pattern) => trackingTokenPattern(pattern));
@@ -519,7 +504,7 @@ function trackingTokenPattern(pattern: string): RegExp {
 
 // Applies one naming allowlist as a complete replacement for its built-in values.
 // Missing keys preserve defaults; an explicit empty list lets users remove every built-in entry.
-function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "bannedGenericNames" | "acceptedBooleanNames" | "acceptedClassFilePairs" | "acceptedCasingPairs" | "booleanPrefixes" | "hungarianPrefixes" | "placeholderNames" | "negativeBooleanAllowed" | "knownAcronyms"): void {
+function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "acceptedClassFilePairs" | "placeholderNames"): void {
   // A missing allowlist section or key means the user wants the current defaults unchanged.
   if (!allowlists || !(key in allowlists)) {
     return;

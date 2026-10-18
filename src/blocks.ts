@@ -8,7 +8,7 @@ import { baseComplexityMetrics, complexityMetrics as measureComplexity, type Com
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { ruleDescriptors } from "./rules.ts";
-import { escapeRegex, isGenericName, lineOffset, parameterNames, parameterParts } from "./findings-helpers.ts";
+import { lineOffset, parameterNames } from "./findings-helpers.ts";
 import { bandedFields, GROUP_PARAMETERS, LOWER_BAND_FUNCTION, LOWER_BAND_PARAMETER, SIMPLIFY_PATH, SPLIT_FUNCTION } from "./limit-band.ts";
 import { callableMatchPoints, codeLineFlags, isCallableReturningValue, isPublicExportedClassMethod, measuredOnlyCallablePoints, type CallableMatchPoint, type ParsedScript } from "./parsed-script.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
@@ -85,9 +85,8 @@ export interface BlockRuleContext {
   config: Config;
   findings: Finding[];
   complexityMetrics: ComplexityMetrics;
-  // Retained alias used by the generic-parameter naming gate.
+  // The shared cyclomatic count the cyclomatic finding reports.
   cyclomatic: number;
-  functionBody: string;
 }
 
 // Carry the rule and callable location needed to construct one scan warning.
@@ -153,29 +152,23 @@ export function blockRuleContext(file: SourceFile, block: FunctionBlock, config:
     findings,
     complexityMetrics: sharedComplexityMetrics,
     cyclomatic: sharedComplexityMetrics.cyclomatic,
-    functionBody: functionBodyContent(block.codeBody),
   };
 }
 
 // Run block rules in the fixed order expected by scan consumers and stable finding identities.
 export function analyseBlockRules(context: BlockRuleContext): void {
   analyseBlockMeasures(context);
-  pushGenericFunctionFinding(context);
   pushMissingFunctionDocFinding(context);
-  pushEmptyFunctionFinding(context);
-  pushUnusedParameterFindings(context);
-  pushRedundantVariableFindings(context);
   pushUselessReturnFindings(context);
 }
 
 // Run the size and complexity rules alone, in the order `analyseBlockRules` runs them. Callables that only these rules
-// measure use this entry, so the documentation and naming rules never see them (FAMILY-CONTRACT.md section 12, search
+// measure use this entry, so the documentation and useless-return rules never see them (FAMILY-CONTRACT.md section 12, search
 // `four more function forms`).
 export function analyseBlockMeasures(context: BlockRuleContext): void {
   pushFunctionLengthFinding(context);
   pushParameterCountFinding(context);
   pushCyclomaticFinding(context);
-  pushCognitiveFinding(context);
 }
 
 // Reports a size finding when the scanned function exceeds the configured line limit, which defaults to 200.
@@ -238,35 +231,6 @@ function pushCyclomaticFinding(context: BlockRuleContext): void {
   }
 }
 
-// Default threshold 15.
-// Reports decisions plus shared control-flow nesting to CLI and JSON users.
-function pushCognitiveFinding(context: BlockRuleContext): void {
-  const cognitive = context.complexityMetrics.cognitive;
-  const cognitiveThreshold = threshold(context.config, "complexity.cognitive", 15);
-  // Show a complexity warning when decisions and nesting exceed the configured limit.
-  if (cognitive > cognitiveThreshold) {
-    const band = bandedFields(cognitive, cognitiveThreshold, ruleSeverity(context.config, "complexity.cognitive", "warning"), LOWER_BAND_FUNCTION, SIMPLIFY_PATH);
-    context.findings.push(blockFindingWithMetadata({
-      ruleId: "complexity.cognitive",
-      message: `Function \`${context.block.name}\` has cognitive complexity ${cognitive}.`,
-      file: context.file,
-      block: context.block,
-      severity: band.severity,
-      pillar: "complexity",
-      remediation: band.remediation,
-      metadata: { complexity: cognitive, threshold: cognitiveThreshold, breakdown: context.complexityMetrics.breakdown, limitBand: band.limitBand },
-    }));
-  }
-}
-
-// Reports advice on configured generic names; inherited override names retain the base declaration's warning.
-function pushGenericFunctionFinding(context: BlockRuleContext): void {
-  // A configured generic name needs advice unless the method inherits its name through override.
-  if (context.block.isOverride !== true && isGenericName(context.block.name, context.config.bannedGenericNames)) {
-    context.findings.push(blockFinding({ ruleId: "naming.generic-function", message: `Function \`${context.block.name}\` is too generic to explain intent.`, file: context.file, block: context.block, severity: "advisory", pillar: "naming" }));
-  }
-}
-
 // Reports warnings for missing public descriptions and advice for missing internal descriptions; under either
 // tag rule's `everyCallable` switch, internal descriptions report warnings too.
 // Test titles and existing leading comments already explain the callable.
@@ -317,137 +281,6 @@ function isTagRuleEveryCallable(config: Config): boolean {
     || optionBoolean(config, "docs.missing-return-tag", "everyCallable", false);
 }
 
-// Reports advice about implementations with no executable body; declarations and documented empty test doubles stay quiet.
-function pushEmptyFunctionFinding(context: BlockRuleContext): void {
-  // Type declarations have no implementation to evaluate for an empty-body warning.
-  if (isBodyLessDeclaration(context.block) || isDeclarationFile(context.file)) {
-    return;
-  }
-  // A body with no executable work needs an advisory unless its test-double role is documented.
-  if (isEmptyFunctionBody(context.block.codeBody)) {
-    // A documented empty test double satisfies the fixture's interface without needing executable work.
-    if (isDocumentedEmptyTestDouble(context)) {
-      return;
-    }
-    context.findings.push(blockFinding({ ruleId: "waste.empty-function", message: `Function \`${context.block.name}\` has no executable body.`, file: context.file, block: context.block, severity: "advisory", pillar: "maintainability" }));
-  }
-}
-
-// Empty test doubles can be required by external interfaces when the body carries a rationale.
-function isDocumentedEmptyTestDouble(context: BlockRuleContext): boolean {
-  return isTestOrFixturePath(context.file.displayPath) && hasEmptyTestDoubleRationale(context.block.body);
-}
-
-// Test and fixture paths are the only places where empty protocol stubs are normal.
-function isTestOrFixturePath(path: string): boolean {
-  return /(?:^|\/)(?:__tests__|tests?|spec|__fixtures__|fixtures?|testdata)\//.test(path) || /\.(?:test|spec)\.[cm]?[tj]sx?$/.test(path);
-}
-
-// Requires an explicit no-op/stub/fake rationale so real empty implementations still surface.
-function hasEmptyTestDoubleRationale(source: string): boolean {
-  return /(?:\/\/|\/\*)/.test(source) && /\b(?:intentional no-op|test double|stub|fake|interface contract)\b/i.test(source);
-}
-
-// `_`-prefixed parameters are exempted (the standard "intentionally unused" convention).
-// Reports `waste.unused-parameter` for parameter names that never appear in the callable body.
-function pushUnusedParameterFindings(context: BlockRuleContext): void {
-  // Signature-only declarations have no parameter use to evaluate.
-  if (isBodyLessDeclaration(context.block) || isDeclarationFile(context.file)) {
-    return;
-  }
-  const parameters = parameterNames(context.block.params);
-  // Check each declared input for evidence that the implementation uses it.
-  for (const parameter of parameters) {
-    // Used inputs stay quiet; only an unreferenced parameter contributes this warning.
-    if (!isUnusedParameter(context, parameter, parameters)) {
-      continue;
-    }
-    context.findings.push(unusedParameterFinding(context, parameter.name));
-  }
-}
-
-// Keep signatures out of empty-body and unused-parameter warnings.
-// Prefer the shared syntax result; legacy spans inspect their first meaningful line.
-function isBodyLessDeclaration(block: FunctionBlock): boolean {
-  // The shared parse already knows; the text walk below only covers legacy regex-derived blocks, and it misreads a multi-line signature whose first
-  // line stops at the open paren.
-  if (block.hasBody !== undefined) {
-    return !block.hasBody;
-  }
-  // Inspect the legacy text span for its first meaningful declaration line.
-  for (const rawLine of block.codeBody.split("\n")) {
-    const trimmed = rawLine.trim();
-    // Blank lines and comments describe the declaration but cannot establish an executable body.
-    if (trimmed === "" || trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
-      continue;
-    }
-    return /\)[^{;]*;\s*$/.test(trimmed);
-  }
-  return false;
-}
-
-// Keep declaration-file signatures out of warnings that require an executable implementation.
-function isDeclarationFile(file: SourceFile): boolean {
-  return file.displayPath.endsWith(".d.ts");
-}
-
-// Check body references, template uses and sibling defaults before warning about an unused input.
-// Intentional unused names and constructor properties stay quiet.
-function isUnusedParameter(context: BlockRuleContext, parameter: { name: string; isParameterProperty: boolean }, parameters: ReadonlyArray<{ name: string; raw: string }>): boolean {
-  // An intentional unused name or constructor property keeps the parameter out of this advisory.
-  if (parameter.name.startsWith("_") || parameter.isParameterProperty) {
-    return false;
-  }
-  const reference = new RegExp(`\\b${escapeRegex(parameter.name)}\\b`);
-  // A body reference shows the input is used, so the developer receives no unused-parameter warning.
-  if (reference.test(context.functionBody)) {
-    return false;
-  }
-  // A sibling's default value may use this input even when the body does not.
-  if (parameters.some((sibling) => sibling.name !== parameter.name && reference.test(parameterParts(sibling.raw).initializer))) {
-    return false;
-  }
-  return !new RegExp(`\\$\\{[^}]*\\b${escapeRegex(parameter.name)}\\b[^}]*\\}`).test(context.block.body);
-}
-
-// Build an unused-input advisory at the callable's stable declaration anchor so the developer can review the parameter.
-function unusedParameterFinding(context: BlockRuleContext, parameterName: string): Finding {
-  return makeFinding({
-    ruleId: "waste.unused-parameter",
-    message: `Parameter \`${parameterName}\` does not appear to be used.`,
-    filePath: context.file.displayPath,
-    line: context.block.startLine,
-    severity: "advisory",
-    pillar: "maintainability",
-    confidence: "medium",
-    symbol: context.block.name,
-    remediation: "Remove the parameter or prefix it with _ if it is intentionally unused.",
-    metadata: { parameter: parameterName },
-  });
-}
-
-// Targets `const x = expr; return x;` patterns.
-// The detector walks the function source once and reports each variable whose only use is the trailing return as `waste.redundant-variable`.
-function pushRedundantVariableFindings(context: BlockRuleContext): void {
-  // Each immediate temporary-to-return pattern gets its own editable source location.
-  for (const redundant of redundantVariableReturns(context.block.codeBody)) {
-    context.findings.push(
-      makeFinding({
-        ruleId: "waste.redundant-variable",
-        message: `Variable \`${redundant.name}\` is returned immediately after assignment.`,
-        filePath: context.file.displayPath,
-        line: context.block.startLine + redundant.lineOffset,
-        severity: "advisory",
-        pillar: "maintainability",
-        confidence: "medium",
-        symbol: redundant.name,
-        remediation: "Return the expression directly.",
-        metadata: { variable: redundant.name },
-      }),
-    );
-  }
-}
-
 // Caller adds the block's start line to the relative offset so the finding anchors at the actual trailing statement.
 // Reports `waste.useless-return` when the final statement is a redundant bare exit.
 function pushUselessReturnFindings(context: BlockRuleContext): void {
@@ -467,16 +300,6 @@ function pushUselessReturnFindings(context: BlockRuleContext): void {
       }),
     );
   }
-}
-
-// Strips line and block comments before measuring - a body containing only documentation is still considered empty for the `waste.empty-function`
-// check, since no executable statements run.
-function isEmptyFunctionBody(source: string): boolean {
-  const body = functionBodyContent(source)
-    .replace(/\/\/.*$/gm, "")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .trim();
-  return body === "";
 }
 
 // Extract a brace body or expression-arrow body for downstream scan checks.
@@ -534,18 +357,6 @@ function isOnlyStatementOfCatch(lines: string[], returnIndex: number): boolean {
     }
   }
   return false;
-}
-
-
-// Locate immediate temporary-to-return patterns for the redundant-variable advisory.
-// Keep the declared and returned name identical so each finding points to the variable the developer can remove.
-function redundantVariableReturns(source: string): Array<{ name: string; lineOffset: number }> {
-  const results: Array<{ name: string; lineOffset: number }> = [];
-  // Record each matched temporary with its source offset so the advisory points to the declaration.
-  for (const match of source.matchAll(/\b(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*[^;]+;\s*return\s+\1\s*;/g)) {
-    results.push({ name: match[1] ?? "", lineOffset: lineOffset(source, match.index ?? 0) });
-  }
-  return results.filter((result) => result.name !== "");
 }
 
 // Matches test/it openers, including a discarded registration result.

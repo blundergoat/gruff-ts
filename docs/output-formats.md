@@ -56,8 +56,7 @@ output labels them `builtInTestPath[<path>]`.
 
 Another tool's suppression comment that names the same check as a gruff-ts rule
 suppresses that finding where it was written (FAMILY-CONTRACT.md section 13c):
-eslint `no-console`, `eqeqeq`, `no-eval`, `no-new-func`, `no-unused-vars` and
-`@typescript-eslint/no-unused-vars`; biome `lint/security/noGlobalEval` and
+eslint `no-eval` and `no-new-func`; biome `lint/security/noGlobalEval` and
 `lint/correctness/noUnusedImports`, or a group holding them such as `lint/security`;
 and zizmor `ignore[unpinned-uses]` and `ignore[dangerous-triggers]`. An eslint
 per-line directive naming no rule covers every eslint row. The comment must be on
@@ -79,10 +78,9 @@ result carrying `"suppressions": [{"kind": "inSource", "justification": <reason>
 matching `pattern`. `paths.ignoredPaths` is the exact ordered path projection of
 those detail rows.
 
-Score math clusters correlated `complexity.cognitive`,
-`complexity.cyclomatic`, and `size.function-length` findings once per function
-symbol. The detailed `findings` array still lists each rule finding; only pillar
-penalties and offender scores are de-duplicated.
+Score math clusters correlated `complexity.cyclomatic` and `size.function-length`
+findings once per function symbol. The detailed `findings` array still lists each
+rule finding; only pillar penalties and offender scores are de-duplicated.
 
 ## HTML
 

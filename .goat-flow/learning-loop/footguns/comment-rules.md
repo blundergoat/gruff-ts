@@ -1,6 +1,6 @@
 ---
 category: comment-rules
-last_reviewed: 2026-10-03
+last_reviewed: 2026-10-18
 ---
 
 # Comment and doc rule footguns
@@ -28,15 +28,6 @@ When writing rule-descriptor prose or test-naming prose that has to mention a tr
 
 Skipping the rule for descriptor files is NOT an option - the file-level granularity isn't there, and the broader principle is "every finding stays visible."
 
-## Footgun: widening commented-out-code calls needs a prose-shape guard
-
-**Status:** active | **Created:** 2026-06-01 | **Evidence:** OBSERVED
-**Evidence context:** review feedback plus focused tests.
-
-`isCommentedOutCode` (`src/findings-helpers.ts`, search: `function isDisabledCall`) used to require a semicolon for disabled calls, so `// cleanup()` and `// service.reset()` were false negatives in semicolonless projects. Dropping the semicolon requirement fixed that, but immediately made prose headings like `// scanSectionAgainstSnapshot (claim patterns)` look like disabled calls. The existing uppercase-heading guard did not cover lower-camel helper names used as section labels.
-
-When widening a disabled-code detector from "strict syntax" to "common style", add a paired prose/heading regression in the same patch. For call-shaped comments, the guard must distinguish `identifier()` / `object.method()` from label text with a space before the parenthetical, while preserving real control-flow comments such as `// if (ready)`. Tests: `src/findings-helpers.test.ts`, search: `service.reset()` and `scanSectionAgainstSnapshot`.
-
 ## Footgun: context-doc rules only see the LAST `//` line as the leading comment
 
 **Status:** active | **Created:** 2026-05-25 | **Evidence:** OBSERVED
@@ -47,30 +38,42 @@ That breaks `docs.missing-invariant-doc` and `docs.missing-why-for-complex-code`
 
 When documenting a complex function or contract-bearing declaration, either (a) put the marker word on the LAST `//` line above the declaration, or (b) use a `/* ... */` block comment - block comments produce ONE CommentRecord whose `text` is the joined body (search: `function normalizedBlockCommentText`). Block form is preferred for any multi-sentence comment that explains a contract.
 
+## Resolved Entries
+
+## Footgun: widening commented-out-code calls needs a prose-shape guard
+
+**Status:** resolved | **Created:** 2026-06-01 | **Evidence:** OBSERVED
+**Resolved:** 2026-10-18 - precision-floor M02 retired `waste.commented-out-code` (ADR-021), so the detector and its tests are gone.
+**Evidence context:** review feedback plus focused tests.
+
+`isCommentedOutCode` in `src/findings-helpers.ts` used to require a semicolon for disabled calls, so `// cleanup()` and `// service.reset()` were false negatives in semicolonless projects. Dropping the semicolon requirement fixed that, but immediately made prose headings like `// scanSectionAgainstSnapshot (claim patterns)` look like disabled calls. The existing uppercase-heading guard did not cover lower-camel helper names used as section labels.
+
+When widening a disabled-code detector from "strict syntax" to "common style", add a paired prose/heading regression in the same patch. For call-shaped comments, the guard must distinguish `identifier()` / `object.method()` from label text with a space before the parenthetical, while preserving real control-flow comments such as `// if (ready)`. Tests: `src/findings-helpers.test.ts`, search: `service.reset()` and `scanSectionAgainstSnapshot`.
+
 ## Footgun: a removed rule id left in a comment trips `docs.stale-comment` unless the SAME line carries a historical marker
 
-**Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED
+**Status:** resolved | **Created:** 2026-05-31 | **Evidence:** OBSERVED
+**Resolved:** 2026-10-18 - precision-floor M02 retired `docs.stale-comment` (ADR-021), so a removed rule id in a comment no longer reports.
 **Evidence context:** design.god-function removal self-scan.
 
-After removing a rule from the catalogue, any committed comment that still names the dotted id (`pillar.name`) becomes an "unknown rule id" to `pushStaleRuleReferenceFindings` (`src/comment-rules.ts`, search: `function pushStaleRuleReferenceFindings`), which checks each id against `DESCRIPTOR_IDS`. The escape hatch is `isHistoricalContextComment` (`src/comment-rules.ts`, search: `function isHistoricalContextComment`): it matches `previously|legacy|compat|migration|ADR` and is checked PER comment line, because the scanner emits one record per `//` line. So the historical marker MUST sit on the SAME `//` line as the removed id - "retired"/"removed" are NOT in the vocabulary, and an `ADR-NNN` reference on the next line does not count.
+After removing a rule from the catalogue, any committed comment that still names the dotted id (`pillar.name`) becomes an "unknown rule id" to `pushStaleRuleReferenceFindings` in `src/comment-rules.ts`, which checks each id against `DESCRIPTOR_IDS`. The escape hatch is `isHistoricalContextComment` in the same file: it matches `previously|legacy|compat|migration|ADR` and is checked PER comment line, because the scanner emits one record per `//` line. So the historical marker MUST sit on the SAME `//` line as the removed id - "retired"/"removed" are NOT in the vocabulary, and an `ADR-NNN` reference on the next line does not count.
 
 When a comment explains a retired rule (e.g. an ADR cross-reference about `design.god-function`), keep the id and an `ADR-NNN` (or `legacy`/`migration`) token on one line: `// ... the retired design.god-function (ADR-011) composite ...`. This compounds with the context-doc footgun above (the invariant/why marker must be on the LAST `//` line above the declaration), so one explanatory comment near a contract-owning declaration must satisfy both per-line constraints at once.
 
 ## Footgun: a test comment that quotes a relative fixture path fails the self-scan as a stale reference
 
-**Status:** active | **Created:** 2026-09-26 | **Evidence:** OBSERVED
+**Status:** resolved | **Created:** 2026-09-26 | **Evidence:** OBSERVED
+**Resolved:** 2026-10-18 - precision-floor M02 retired `docs.stale-comment` (ADR-021), so a quoted path that resolves to nothing no longer reports.
 **Decision changed:** In a test comment, describe a path a test creates at runtime in words ("a config named two levels
 up"), or keep it unquoted. Do not quote it in backticks.
 **Trigger phase:** VERIFY
 
-`pushStaleFileReferenceFindings` (`src/comment-rules.ts`, search: `function pushStaleFileReferenceFindings`) reads any
+`pushStaleFileReferenceFindings` in `src/comment-rules.ts` read any
 quoted token that opens with `./`, `../` or a source directory and ends in a known extension as a path, and reports
 `docs.stale-comment` when that path resolves to nothing from the project root or the comment's own directory. A
 path that a test writes into a temporary directory never exists there. M10's D25 test in `src/cli-surfaces.test.ts`
 (search: `an explicit relative config is read from the launch directory`) first quoted its nested `--config` operand
 in a comment. `npm run check` passed, and the preflight's full-project scan then failed on one advisory finding.
-
-## Resolved Entries
 
 ## Footgun: fixture-purpose rules read ONLY the last `//` line above a fixture
 

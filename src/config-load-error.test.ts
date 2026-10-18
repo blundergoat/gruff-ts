@@ -70,11 +70,11 @@ test("rule config rejects unknown ids, alias booleans, and malformed options lou
   assert.throws(() => analyseProject(files, { config: { rules: { "security.eval-call": { enabled: "off" } } } }), /"enabled" must be true or false/);
   assert.throws(() => analyseProject(files, { config: { rules: { "security.eval-call": { enabled: 1 } } } }), /"enabled" must be true or false/);
   // Unknown option keys and non-numeric declared options fail naming the rule's accepted keys.
-  assert.throws(() => analyseProject(files, { config: { rules: { "naming.generic-parameter": { options: { minCyclomatik: 3 } } } } }), /accepts options: minCyclomatic, minLineCount, minParameters/);
-  assert.throws(() => analyseProject(files, { config: { rules: { "naming.generic-parameter": { options: { minCyclomatic: "three" } } } } }), /must be numeric/);
+  assert.throws(() => analyseProject(files, { config: { rules: { "design.large-module-concentration": { options: { minFile: 3 } } } } }), /accepts options: minFiles, minLines/);
+  assert.throws(() => analyseProject(files, { config: { rules: { "design.large-module-concentration": { options: { minFiles: "three" } } } } }), /must be numeric/);
   assert.throws(() => analyseProject(files, { config: { rules: { "security.eval-call": { options: { anything: 1 } } } } }), /accepts no options/);
   // Valid overrides still round-trip: boolean enabled plus a declared numeric option.
-  const valid = analyseProject(files, { config: { rules: { "naming.generic-parameter": { enabled: true, options: { minCyclomatic: 3 } } } } });
+  const valid = analyseProject(files, { config: { rules: { "design.large-module-concentration": { enabled: true, options: { minFiles: 3 } } } } });
   assert.equal(valid.schemaVersion, "gruff.analysis.v3");
 });
 
@@ -93,7 +93,7 @@ test("rule config reads a boolean everyCallable switch per tag rule", () => {
 test("rule config rejects a non-boolean switch and a boolean numeric option", () => {
   const files = { "ok.ts": "// File overview: option type fixture.\nexport const fine = 1;\n" };
   assert.throws(() => analyseProject(files, { config: { rules: { "docs.missing-param-tag": { options: { everyCallable: "yes" } } } } }), /"everyCallable" for docs.missing-param-tag must be true or false; got "yes"/);
-  assert.throws(() => analyseProject(files, { config: { rules: { "naming.generic-parameter": { options: { minCyclomatic: true } } } } }), /"minCyclomatic" for naming.generic-parameter must be numeric; got true/);
+  assert.throws(() => analyseProject(files, { config: { rules: { "design.large-module-concentration": { options: { minFiles: true } } } } }), /"minFiles" for design.large-module-concentration must be numeric; got true/);
 });
 
 test("everyCallable false leaves the tag-rule findings at their defaults", () => {

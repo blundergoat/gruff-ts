@@ -67,35 +67,35 @@ test("list-rules <ruleId> prints labelled per-rule detail in text mode", () => {
   // M08: positional argument switches to single-rule explain mode. The text section carries every
   // populated descriptor field plus the config-key list so an operator can see knobs without
   // grepping `src/config.ts`.
-  const output = execFileSync("./bin/gruff-ts", ["list-rules", "complexity.cognitive"], { encoding: "utf8" });
-  assert.match(output, /Rule:\s+complexity\.cognitive/);
+  const output = execFileSync("./bin/gruff-ts", ["list-rules", "complexity.cyclomatic"], { encoding: "utf8" });
+  assert.match(output, /Rule:\s+complexity\.cyclomatic/);
   assert.match(output, /Pillar:\s+complexity/);
   assert.match(output, /Severity:\s+warning/);
   assert.match(output, /Confidence:\s+high/);
   assert.match(output, /Threshold:\s+15/);
   assert.match(output, /Description: /);
   assert.match(output, /Remediation: /);
-  assert.match(output, /rules\.complexity\.cognitive\.enabled/);
-  assert.match(output, /rules\.complexity\.cognitive\.threshold \(int, default: 15\)/);
+  assert.match(output, /rules\.complexity\.cyclomatic\.enabled/);
+  assert.match(output, /rules\.complexity\.cyclomatic\.threshold \(int, default: 15\)/);
 });
 
 test("list-rules <ruleId> renders JSON envelope with tool + rule + configKeys", () => {
   // JSON variant for docs/integration consumers. Shape: `{ tool: {name, version}, rule: { …listed record, configKeys: [...] } }`,
   // where the listed record is the same family shape the catalogue publishes (`id`, `defaultSeverity`, `thresholds`).
-  const text = execFileSync("./bin/gruff-ts", ["list-rules", "naming.generic-parameter", "--format=json"], { encoding: "utf8" });
+  const text = execFileSync("./bin/gruff-ts", ["list-rules", "design.large-module-concentration", "--format=json"], { encoding: "utf8" });
   const payload = JSON.parse(text);
   assert.equal(payload.tool?.name, "gruff-ts");
-  assert.equal(payload.rule?.id, "naming.generic-parameter");
+  assert.equal(payload.rule?.id, "design.large-module-concentration");
   assert.equal(typeof payload.rule?.defaultSeverity, "string");
   assert.equal("ruleId" in payload.rule, false);
   assert.equal("severity" in payload.rule, false);
-  assert.deepEqual(payload.rule?.optionKeys, ["minCyclomatic", "minLineCount", "minParameters"]);
+  assert.deepEqual(payload.rule?.optionKeys, ["minFiles", "minLines"]);
 
-  const thresholded = JSON.parse(execFileSync("./bin/gruff-ts", ["list-rules", "complexity.cognitive", "--format=json"], { encoding: "utf8" }));
+  const thresholded = JSON.parse(execFileSync("./bin/gruff-ts", ["list-rules", "complexity.cyclomatic", "--format=json"], { encoding: "utf8" }));
   assert.deepEqual(thresholded.rule?.thresholds, { maxComplexity: 15 });
   assert.equal("threshold" in thresholded.rule, false);
   assert.equal(Array.isArray(payload.rule?.configKeys), true);
-  const enabledKey = payload.rule.configKeys.find((entry: { key: string }) => entry.key === "rules.naming.generic-parameter.enabled");
+  const enabledKey = payload.rule.configKeys.find((entry: { key: string }) => entry.key === "rules.design.large-module-concentration.enabled");
   assert.equal(enabledKey?.type, "bool");
 });
 
@@ -108,7 +108,7 @@ test("list-rules <ruleId> shows an off-by-default rule as off in both formats", 
   const enabledKey = payload.rule.configKeys.find((entry: { key: string }) => entry.key === `rules.${offRule}.enabled`);
   assert.equal(enabledKey?.default, false);
   assert.match(execFileSync("./bin/gruff-ts", ["list-rules", offRule], { encoding: "utf8" }), /^Enabled by default: no$/m);
-  assert.match(execFileSync("./bin/gruff-ts", ["list-rules", "naming.generic-parameter"], { encoding: "utf8" }), /^Enabled by default: yes$/m);
+  assert.match(execFileSync("./bin/gruff-ts", ["list-rules", "design.large-module-concentration"], { encoding: "utf8" }), /^Enabled by default: yes$/m);
 });
 
 test("list-rules <ruleId> prints reviewed false-positive guidance in both formats", () => {
@@ -173,7 +173,7 @@ function assertRuleListJsonOutput(): boolean {
   // The family listing shape: `id`, `defaultSeverity`, and a named threshold map under `thresholds`.
   // A rule whose id has a gruff-go knob name borrows it; one with no knob name anywhere publishes
   // the one-key `threshold` map; a rule with no threshold omits the key.
-  assert.equal(ruleListJsonHasThreshold(parsed, "complexity.cognitive", { maxComplexity: 15 }), true);
+  assert.equal(ruleListJsonHasThreshold(parsed, "complexity.cyclomatic", { maxComplexity: 15 }), true);
   assert.equal(ruleListJsonHasThreshold(parsed, "design.deep-relative-import", { threshold: 2 }), true);
   assert.equal(parsed.rules?.find((rule) => rule.id === "security.eval-call")?.thresholds, undefined);
   assert.equal(parsed.rules?.every((rule) => typeof rule.id === "string" && typeof rule.defaultSeverity === "string"), true);

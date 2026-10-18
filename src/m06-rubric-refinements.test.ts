@@ -7,25 +7,23 @@ import { scoreReport } from "./scoring.ts";
 import { analyseFixture } from "./test-fixtures.ts";
 import type { AnalysisReport, Finding } from "./types.ts";
 
-// One long-and-complex function: the size finding plus both complexity findings on the same symbol.
+// One long-and-complex function: the size finding plus the cyclomatic finding on the same symbol.
 // This is the P5 cluster that survives the design.god-function retirement (ADR-009, ADR-011).
 const CLUSTER_FINDINGS: Finding[] = [
-  clusterFinding("complexity.cognitive"),
   clusterFinding("complexity.cyclomatic"),
   clusterFinding("size.function-length", "size"),
 ];
 const FULL_SCORE = 100;
 const WARNING_PENALTY = 4;
 const CLUSTERED_SINGLE_PENALTY = WARNING_PENALTY / CLUSTER_FINDINGS.length;
-const CLUSTERED_COMPLEXITY_PENALTY = CLUSTERED_SINGLE_PENALTY * 2;
 // Under the ratified curve `50 + 50 / (1 + density / 0.1)`, a file's density is its own weight over
 // one file: the clustered stack weighs 4.00, so the file scores 51.22.
 const EXPECTED_CLUSTER_FILE_SCORE = 51.22;
 // Eleven rule-backed pillars average into the composite; the nine without findings count as 100.
-// Over ten evaluated files complexity weighs 8/3 (density 0.27, score 63.64) and size 4/3
-// (density 0.13, score 71.43), so the composite is (63.64 + 71.43 + 900) / 11.
+// Over ten evaluated files complexity and size each weigh 2 (density 0.2, score 66.67), so the
+// composite is (66.67 + 66.67 + 900) / 11.
 const SCOREABLE_PILLAR_COUNT = 11;
-const EXPECTED_CLUSTER_COMPOSITE_SCORE = 94.1;
+const EXPECTED_CLUSTER_COMPOSITE_SCORE = 93.94;
 // Two unclustered warnings weigh 8.00 on one file, which the per-file curve scores 50.62.
 const SEPARATE_COMPLEXITY_SCORE = 50.62;
 
@@ -49,39 +47,18 @@ const COMPLEXITY_CLUSTER_REPORT: AnalysisReport = {
       {
         pillar: "complexity",
         applicable: true,
-        score: FULL_SCORE - CLUSTERED_COMPLEXITY_PENALTY,
+        score: FULL_SCORE - CLUSTERED_SINGLE_PENALTY,
         grade: "A",
-        penalty: CLUSTERED_COMPLEXITY_PENALTY,
-        findings: 2,
+        penalty: CLUSTERED_SINGLE_PENALTY,
+        findings: 1,
       },
       { pillar: "size", applicable: true, score: FULL_SCORE - CLUSTERED_SINGLE_PENALTY, grade: "A", penalty: CLUSTERED_SINGLE_PENALTY, findings: 1 },
     ],
     topOffenders: [
-      { filePath: "bad.ts", score: EXPECTED_CLUSTER_FILE_SCORE, penalty: CLUSTERED_COMPLEXITY_PENALTY, findings: CLUSTER_FINDINGS.length },
+      { filePath: "bad.ts", score: EXPECTED_CLUSTER_FILE_SCORE, penalty: WARNING_PENALTY, findings: CLUSTER_FINDINGS.length },
     ],
   },
 };
-
-test("M06 waste.empty-function accepts documented test double methods only in tests", () => {
-  const testReport = analyseFixture(
-    `class FakeTerminal {
-  clear(): void {
-    /* intentional no-op: interface contract for test double */
-  }
-}
-`,
-    { fileName: "test/unit/dashboard-terminal.test.ts" },
-  );
-  assert.equal(testReport.findings.some((entry) => entry.ruleId === "waste.empty-function" && entry.symbol === "clear"), false);
-
-  const sourceReport = analyseFixture(`class FakeTerminal {
-  clear(): void {
-    /* intentional no-op: interface contract for test double */
-  }
-}
-`);
-  assert.equal(sourceReport.findings.some((entry) => entry.ruleId === "waste.empty-function" && entry.symbol === "clear"), true);
-});
 
 test("M06 modernisation.double-cast marks rationale-backed trust boundaries", () => {
   const report = analyseFixture(`interface ParsedConfig {
@@ -115,8 +92,8 @@ test("M06 text reports correlated complexity while v3 preserves its score values
 });
 
 // P5 (DESIGN-PRINCIPLES): a function that is both long (size.function-length) and complex
-// (complexity.cognitive + complexity.cyclomatic) moves the grade once. The three findings share one
-// max-severity weight, so the file is scored on a weight of 4.00 rather than 12.00 while every
+// (complexity.cyclomatic) moves the grade once. The two findings share one max-severity weight,
+// so the file is scored on a weight of 4.00 rather than 8.00 while every
 // finding stays listed (topOffenders count == CLUSTER_FINDINGS.length). The retired design.god-function (ADR-011)
 // composite is gone, so P5 now rests on this score-clustering invariant alone, not a named rule.
 test("M06 score contract clusters correlated complexity penalties by symbol", () => {
@@ -133,15 +110,15 @@ test("M06 score contract clusters correlated complexity penalties by symbol", ()
       .map((pillar) => ({ pillar: pillar.pillar, penalty: pillar.penalty, findings: pillar.findings }))
       .sort((left, right) => left.pillar.localeCompare(right.pillar)),
     [
-      { pillar: "complexity", penalty: 2.67, findings: 2 },
-      { pillar: "size", penalty: 1.33, findings: 1 },
+      { pillar: "complexity", penalty: 2, findings: 1 },
+      { pillar: "size", penalty: 2, findings: 1 },
     ],
   );
 });
 
 test("M06 score contract keeps different-symbol complexity penalties separate", () => {
   const score = scoreReport([
-    clusterFinding("complexity.cognitive", "complexity", "first"),
+    clusterFinding("complexity.cyclomatic", "complexity", "first"),
     clusterFinding("complexity.cyclomatic", "complexity", "second"),
   ], 10);
 

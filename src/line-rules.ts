@@ -7,18 +7,15 @@
 import { createRequire } from "node:module";
 import { ruleEnabled, ruleSeverity } from "./config.ts";
 import { type SourceFile } from "./discovery.ts";
-import { makeFinding } from "./findings.ts";
-import { escapeRegex, finding, isCommentedOutCode } from "./findings-helpers.ts";
-import { type NamingSurface, pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
+import { finding } from "./findings-helpers.ts";
+import { pushIdentifierQualityAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { codeLineFlags, type ParsedScript } from "./parsed-script.ts";
-import { firstProcessCallArgument, processExecMetadata, type ProcessExecArgumentSource, type ProcessExecMetadata } from "./process-exec-metadata.ts";
 import { analyseReliabilityLine, analyseSwallowedCatches, analyseTypeSafetyLine, analyseUselessCatches } from "./safety-rules.ts";
 import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
-import { byteLine, matchingCloseParen } from "./text-scans.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
-// TypeScript is CommonJS at runtime; the process-exec guard only walks the shared parse (ADR-012).
+// TypeScript is CommonJS at runtime; the inner-html guard only walks the shared parse (ADR-012).
 const require = createRequire(import.meta.url);
 const typescriptSyntax = require("typescript") as typeof import("typescript");
 
@@ -43,8 +40,6 @@ interface LineRuleCheck {
 interface LineRuleContext {
   file: SourceFile;
   line: string;
-  // The raw line above `line`, or "" on the first line; commented-out-code reads it to see a wrapped comment.
-  previousLine: string;
   codeLine: string;
   // Full masked source as one array per line, indexed 0-based. Exposed so per-line rules that need
   // forward look-ahead (for-of body brace-balancing in `pushVariableNameFindings`) can scan beyond
@@ -73,16 +68,9 @@ const VARIABLE_DECLARATIONS = /\b(?:const|let|for\s*\(\s*const|for\s*\(\s*let)\s
 interface LineRuleGates {
   shouldRunTypeSafety: boolean;
   shouldRunReliability: boolean;
-  shouldRunCommentedOutCode: boolean;
-  shouldRunBooleanNaming: boolean;
-  shouldRunHungarianNotation: boolean;
-  shouldRunOptionalChaining: boolean;
-  shouldRunNullishCoalescing: boolean;
-  shouldRunLooseEquality: boolean;
   shouldRunStringTimer: boolean;
   shouldRunSecurityFlow: boolean;
   shouldRunVariableNaming: boolean;
-  shouldRunProcessExec: boolean;
   shouldRunUselessCatch: boolean;
   shouldRunSwallowedCatch: boolean;
 }
@@ -97,11 +85,6 @@ const TYPE_SAFETY_RULE_IDS = [
 const RELIABILITY_RULE_IDS = [
   "security.async-foreach",
   "security.throw-non-error",
-] as const;
-
-const BOOLEAN_NAMING_RULE_IDS = [
-  "naming.boolean-prefix",
-  "naming.negative-boolean",
 ] as const;
 
 const SECURITY_FLOW_LINE_RULE_IDS = [
@@ -120,7 +103,7 @@ const VARIABLE_NAMING_RULE_IDS = [
  * Per-line rule pipeline plus the two multi-line catch detectors. Excludes analyseUnusedImports
  * and analyseUnreachable so the dead-code module can own them; the orchestrator in cli.ts wraps
  * this call with those rules to preserve the stable, deterministic emission order.
- * A parse without errors lets process-exec tell a call from a declaration; an error-recovered tree is
+ * A parse without errors lets inner-html read an assignment's right-hand side; an error-recovered tree is
  * ignored, so that rule keeps its text behavior.
  */
 export function analyseLineRules(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[], parsed?: ParsedScript): void {
@@ -130,23 +113,15 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
   const gates: LineRuleGates = {
     shouldRunTypeSafety: TYPE_SAFETY_RULE_IDS.some((ruleId) => ruleEnabled(config, ruleId)),
     shouldRunReliability: RELIABILITY_RULE_IDS.some((ruleId) => ruleEnabled(config, ruleId)),
-    shouldRunCommentedOutCode: ruleEnabled(config, "waste.commented-out-code"),
-    shouldRunBooleanNaming: BOOLEAN_NAMING_RULE_IDS.some((ruleId) => ruleEnabled(config, ruleId)),
-    shouldRunHungarianNotation: ruleEnabled(config, "naming.hungarian-notation"),
-    shouldRunOptionalChaining: ruleEnabled(config, "modernisation.optional-chaining-candidate"),
-    shouldRunNullishCoalescing: ruleEnabled(config, "modernisation.nullish-coalescing-candidate"),
-    shouldRunLooseEquality: ruleEnabled(config, "modernisation.loose-equality"),
     shouldRunStringTimer: ruleEnabled(config, "security.string-timer"),
     shouldRunSecurityFlow: SECURITY_FLOW_LINE_RULE_IDS.some((ruleId) => ruleEnabled(config, ruleId)),
     shouldRunVariableNaming: VARIABLE_NAMING_RULE_IDS.some((ruleId) => ruleEnabled(config, ruleId)),
-    shouldRunProcessExec: ruleEnabled(config, "security.process-exec"),
     shouldRunUselessCatch: ruleEnabled(config, "waste.useless-catch"),
     shouldRunSwallowedCatch: ruleEnabled(config, "waste.swallowed-catch"),
   };
   const context: LineRuleContext = {
     file,
     line: "",
-    previousLine: "",
     codeLine: "",
     codeLines,
     sourceLines,
@@ -161,7 +136,6 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
     gates,
   };
   sourceLines.forEach((line, index) => {
-    context.previousLine = index > 0 ? (sourceLines[index - 1] ?? "") : "";
     context.line = line;
     context.codeLine = codeLines[index] ?? codeLineForMatching(line);
     context.lineNumber = index + 1;
@@ -169,9 +143,6 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
     analyseLineRuleContext(context);
   });
 
-  if (gates.shouldRunProcessExec) {
-    analyseProcessExecCalls(file, source, codeSource, findings, syntax);
-  }
   if (gates.shouldRunUselessCatch) {
     analyseUselessCatches(file, codeSource, findings);
   }
@@ -188,24 +159,6 @@ function analyseLineRuleContext(context: LineRuleContext): void {
   }
   if (context.gates.shouldRunReliability) {
     analyseReliabilityLine(context.file, context.codeLine, context.lineNumber, context.findings);
-  }
-  if (context.gates.shouldRunCommentedOutCode) {
-    pushCommentedOutCodeFinding(context);
-  }
-  if (context.gates.shouldRunBooleanNaming) {
-    pushBooleanPrefixFinding(context);
-  }
-  if (context.gates.shouldRunHungarianNotation) {
-    pushHungarianNotationFindings(context);
-  }
-  if (context.gates.shouldRunOptionalChaining) {
-    pushOptionalChainingFindings(context);
-  }
-  if (context.gates.shouldRunNullishCoalescing) {
-    pushNullishCoalescingFindings(context);
-  }
-  if (context.gates.shouldRunLooseEquality) {
-    pushLooseEqualityFinding(context);
   }
   if (context.gates.shouldRunStringTimer) {
     pushStringTimerFinding(context);
@@ -227,7 +180,6 @@ function codeLineChecks(): LineRuleCheck[] {
     { ruleId: "security.new-function", pattern: /\bnew\s+Function\s*\(|(?:^|[=(:,])\s*Function\s*\(/, message: "Function constructor executes dynamic code.", severity: "error", pillar: "security" },
     { ruleId: "security.inner-html", pattern: /\.innerHTML\s*=(?!\s*(?:""|''))|\bdangerouslySetInnerHTML\b/, message: "HTML injection sink can introduce XSS.", severity: "warning", pillar: "security" },
     { ruleId: "security.document-write", pattern: /\bdocument\.write\s*\(/, message: "document.write() can introduce injection risks.", severity: "warning", pillar: "security" },
-    { ruleId: "waste.redundant-boolean-cast", pattern: /\b(?:if|while)\s*\(\s*(?:!!\s*[A-Za-z_$][A-Za-z0-9_$.]*|Boolean\s*\()/, message: "Condition contains a redundant boolean cast.", severity: "advisory", pillar: "maintainability" },
   ];
 }
 
@@ -242,7 +194,6 @@ function literalLineChecks(): LineRuleCheck[] {
     { ruleId: "security.sql-concatenation", pattern: /\b(?:query|execute|raw|prepare)\s*\(\s*(?:`[^`]*(?:SELECT|INSERT|UPDATE|DELETE)[^`]*\$\{|["'][^"']*(?:SELECT|INSERT|UPDATE|DELETE)[^"']*["']\s*\+)/i, message: "SQL text is composed with runtime string interpolation.", severity: "warning", pillar: "security" },
     { ruleId: "modernisation.date-now-candidate", pattern: /\bnew\s+Date\s*\(\s*\)\s*\.getTime\s*\(\s*\)|\bNumber\s*\(\s*new\s+Date\s*\(\s*\)\s*\)/, message: "Current-time expression can use Date.now().", severity: "advisory", pillar: "modernisation" },
     { ruleId: "modernisation.object-spread-candidate", pattern: /\bObject\.assign\s*\(\s*\{\s*\}\s*,/, message: "Object.assign clone can usually use object spread.", severity: "advisory", pillar: "modernisation" },
-    { ruleId: "waste.console-log", pattern: /\bconsole\.(log|debug)\s*\(/, message: "console logging is committed in source.", severity: "advisory", pillar: "maintainability" },
     { ruleId: "waste.any-type", pattern: /:\s*any\b|as\s+any\b/, message: "any weakens TypeScript's type guarantees.", severity: "warning", pillar: "maintainability" },
     { ruleId: "modernisation.var-declaration", pattern: /\bvar\s+[A-Za-z_$]/, message: "var declaration should usually be let or const.", severity: "advisory", pillar: "modernisation" },
   ];
@@ -257,110 +208,6 @@ function withGlobalPattern(check: LineRuleCheck): LineRuleCheck {
     ...check,
     globalPattern: check.pattern.flags.includes("g") ? check.pattern : new RegExp(check.pattern.source, `${check.pattern.flags}g`),
   };
-}
-
-/*
- * Targets `// const x = …;`-style commented-out code. The detector is intentionally conservative
- * because clever false positives drown the rule. Reports the stable `waste.commented-out-code` finding.
- */
-function pushCommentedOutCodeFinding(context: LineRuleContext): void {
-  if (isCommentedOutCode(context.line, context.previousLine)) {
-    context.findings.push(finding({ ruleId: "waste.commented-out-code", message: "Comment appears to contain disabled source code.", file: context.file, line: context.lineNumber, severity: "advisory", pillar: "maintainability" }));
-  }
-}
-
-// Detects typed boolean declarations (or those with a literal true/false initializer) and runs
-// the boolean-prefix and negative-boolean checks. Surface is fixed to "declaration".
-function pushBooleanPrefixFinding(context: LineRuleContext): void {
-  const booleanDeclaration = context.codeLine.match(/\b(?:const|let|var|public|private|protected)\s+([A-Za-z_$][A-Za-z0-9_$]*)\??(?:\s*:\s*boolean|\s*=\s*(?:true|false)\b)/);
-  const name = booleanDeclaration?.[1] ?? "";
-  if (!name) {
-    return;
-  }
-  pushBooleanPrefixAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
-  pushNegativeBooleanAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
-}
-
-
-
-// Walks all `strFoo` / `intBar` / `arrBaz` identifiers on the line. The prefix regex is
-// auto-generated from `config.hungarianPrefixes`. Reports `naming.hungarian-notation`.
-function pushHungarianNotationFindings(context: LineRuleContext): void {
-  const regex = hungarianPrefixRegex(context.config.hungarianPrefixes);
-  if (regex === null) {
-    return;
-  }
-  for (const hungarian of context.codeLine.matchAll(regex)) {
-    const name = hungarian[1] ?? "";
-    context.findings.push(
-      makeFinding({
-        ruleId: "naming.hungarian-notation",
-        message: `Identifier \`${name}\` uses type-style Hungarian notation.`,
-        filePath: context.file.displayPath,
-        line: context.lineNumber,
-        severity: "advisory",
-        pillar: "naming",
-        confidence: "medium",
-        symbol: name,
-        remediation: "Name the domain concept instead of the storage type.",
-        metadata: { identifierName: name },
-      }),
-    );
-  }
-}
-
-// Detects `foo && foo.bar` patterns where `foo?.bar` would say the same thing. Backreference
-// in the regex enforces identical identifiers on both sides. Reports `modernisation.optional-chaining-candidate`.
-function pushOptionalChainingFindings(context: LineRuleContext): void {
-  for (const optional of context.codeLine.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*)\s*&&\s*\1\.[A-Za-z_$][A-Za-z0-9_$]*/g)) {
-    const name = optional[1] ?? "";
-    context.findings.push(
-      makeFinding({
-        ruleId: "modernisation.optional-chaining-candidate",
-        message: `Guarded property access on \`${name}\` can usually use optional chaining.`,
-        filePath: context.file.displayPath,
-        line: context.lineNumber,
-        severity: "advisory",
-        pillar: "modernisation",
-        confidence: "medium",
-        symbol: name,
-        remediation: "Use optional chaining for the guarded property access.",
-      }),
-    );
-  }
-}
-
-// Targets `x || defaultValue` patterns where the fallback is a literal - `??` would preserve
-// legitimately-falsy values (0, "", false). Reports `modernisation.nullish-coalescing-candidate`.
-function pushNullishCoalescingFindings(context: LineRuleContext): void {
-  for (const fallback of context.codeLine.matchAll(/=\s*([A-Za-z_$][A-Za-z0-9_$.]*)\s*\|\|\s*(["'`]\s*["'`]|\d+|true|false)/g)) {
-    const name = fallback[1] ?? "";
-    context.findings.push(
-      makeFinding({
-        ruleId: "modernisation.nullish-coalescing-candidate",
-        message: `Fallback for \`${name}\` can usually use nullish coalescing to preserve falsy values.`,
-        filePath: context.file.displayPath,
-        line: context.lineNumber,
-        severity: "advisory",
-        pillar: "modernisation",
-        confidence: "medium",
-        symbol: name,
-        remediation: "Use ?? when only null or undefined should trigger the fallback.",
-      }),
-    );
-  }
-}
-
-/*
- * Loose `==` / `!=` against non-null operands. The `looseEqualityOperator` helper excludes intentional
- * `x == null` checks (which legitimately match null and undefined). Reports the stable
- * `modernisation.loose-equality` finding.
- */
-function pushLooseEqualityFinding(context: LineRuleContext): void {
-  const looseOperator = looseEqualityOperator(context.codeLine);
-  if (looseOperator) {
-    context.findings.push(finding({ ruleId: "modernisation.loose-equality", message: `Loose equality operator ${looseOperator} may coerce values.`, file: context.file, line: context.lineNumber, severity: "advisory", pillar: "modernisation" }));
-  }
 }
 
 /*
@@ -387,9 +234,6 @@ function pushPatternCheckFindings(context: LineRuleContext): void {
     }
   }
   for (const check of context.literalChecks) {
-    if (isSuppressedByPathContext(check.ruleId, context.file.displayPath)) {
-      continue;
-    }
     const isExemptMatch = literalCheckExemption(check.ruleId, context);
     if (rawPatternStartsInCode(context.line, context.codeLine, check.globalPattern ?? check.pattern, isExemptMatch)) {
       context.findings.push(finding({ ruleId: check.ruleId, message: check.message, file: context.file, line: context.lineNumber, severity: ruleSeverity(context.config, check.ruleId, check.severity), pillar: check.pillar }));
@@ -498,15 +342,6 @@ function isInsideDeepEqualityAssertion(codeLines: readonly string[], lineIndex: 
   return false;
 }
 
-// Per-rule path-context allowlist. CLI entry points, build scripts, and server diagnostic modules
-// are expected to write to stdout; the console-log rule would otherwise drown them in advisories.
-function isSuppressedByPathContext(ruleId: string, displayPath: string): boolean {
-  if (ruleId !== "waste.console-log") {
-    return false;
-  }
-  return /(?:^|\/)(?:scripts|bin)\//.test(displayPath) || /(?:^|\/)cli[/.]/i.test(displayPath) || /(?:^|\/)server[/.]/i.test(displayPath);
-}
-
 // Per-line variable-name pass that runs short/identifier-quality checks on both
 // regular `const`/`let` declarations and destructured names. Reports any findings produced.
 // Single-character for-of bindings whose body is ≤ 10 lines are idiomatic (e.g. `for (const f of
@@ -595,14 +430,11 @@ function pushShortVariableFinding(context: LineRuleContext, name: string, loopBo
   pushShortVariableAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration", loopBodyLineCount);
 }
 
-
 // Thin wrapper that fills in `"declaration"` for the surface field; parameter and destructure
 // callers use their own surface labels via the underlying `pushIdentifierQualityAt`.
 function pushIdentifierQualityFinding(context: LineRuleContext, name: string): void {
   pushIdentifierQualityAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
 }
-
-
 
 // True iff the pattern matches somewhere on the raw line *and* the match's start position falls on
 // a code character in `codeLine`. Required for literal-rule checks where the raw line is needed to
@@ -630,42 +462,6 @@ function isNonWhitespaceCharacter(character: string): boolean {
   return character !== "" && character !== " " && character !== "\t" && character !== "\r" && character !== "\n";
 }
 
-// Returns the loose operator (`==` or `!=`) when present and not part of `===`/`!==`/null check.
-// Used by the modernisation rule; sufficient context lookback keeps `x == null` quiet.
-function looseEqualityOperator(codeLine: string): string | undefined {
-  for (const match of codeLine.matchAll(/[=!]=/g)) {
-    const index = match.index ?? 0;
-    const operator = match[0] ?? "";
-    if (!isLooseEqualityCandidate(codeLine, index, operator)) {
-      continue;
-    }
-    return operator;
-  }
-  return undefined;
-}
-
-// Two-pass filter: reject `===`/`!==` (strict equality) and reject `x == null` (intentional double-test).
-function isLooseEqualityCandidate(codeLine: string, index: number, operator: string): boolean {
-  return !isStrictEqualityOperator(codeLine, index, operator) && !isNullEqualityComparison(codeLine, index, operator);
-}
-
-// Looks one char before and after - `===` shows up as `==` plus a trailing `=`. The leading `!` /
-// `=` check catches `!==` and `===` from either side.
-function isStrictEqualityOperator(codeLine: string, index: number, operator: string): boolean {
-  const before = codeLine[index - 1] ?? "";
-  const after = codeLine[index + operator.length] ?? "";
-  return before === "=" || before === "!" || after === "=";
-}
-
-// `x == null` matches both null and undefined and is a documented idiom - exempting it is the
-// rule's intentional false-positive escape hatch. 24-character lookback window is large enough to
-// span `someObject.field == null` without matching unrelated tokens.
-function isNullEqualityComparison(codeLine: string, index: number, operator: string): boolean {
-  const left = codeLine.slice(Math.max(0, index - 24), index).trimEnd();
-  const right = codeLine.slice(index + operator.length, Math.min(codeLine.length, index + operator.length + 24)).trimStart();
-  return /\bnull$/.test(left) || /^null\b/.test(right);
-}
-
 // Two cases: a bare `setTimeout("…")` call, or one accessed via window/self/globalThis. Both
 // invoke `eval`-equivalent string-to-code semantics in browsers.
 function stringTimerCandidate(codeLine: string): boolean {
@@ -673,225 +469,4 @@ function stringTimerCandidate(codeLine: string): boolean {
     /(?:^|[^.\w$])(?:setTimeout|setInterval|execScript)\s*\(\s*["'`]/.test(codeLine) ||
     /\b(?:window|self|globalThis)\.(?:setTimeout|setInterval|execScript)\s*\(\s*["'`]/.test(codeLine)
   );
-}
-
-/*
- * Targets child_process-style calls across single- and multi-line expressions. Stable invariant:
- * masked-source matching keeps fixture strings quiet. Unmatched calls recover by being skipped
- * rather than guessed, while fixed literal-command argv calls stay quiet. With a clean parse, a
- * match that starts at a declared method, function or signature name is skipped: it names a callable
- * rather than running one.
- */
-function analyseProcessExecCalls(file: SourceFile, rawSource: string, codeSource: string, findings: Finding[], syntax: TsSourceFile | undefined): void {
-  const processCallPattern = /\b(?:(child_process|childProcess|cp)\.)?(exec|spawn|execFile|execSync|execFileSync|spawnSync|fork)\s*\(/g;
-  let declaredNameStarts: ReadonlySet<number> | undefined;
-  for (const match of codeSource.matchAll(processCallPattern)) {
-    const start = match.index ?? 0;
-    const callName = match[2] ?? "";
-    if (!callName || isMemberProcessExecFalsePositive(codeSource, start, Boolean(match[1]))) {
-      continue;
-    }
-    declaredNameStarts ??= syntax ? declaredCallableNameStarts(syntax) : new Set<number>();
-    if (declaredNameStarts.has(start)) {
-      continue;
-    }
-    const openParen = start + match[0].length - 1;
-    const closeParen = matchingCloseParen(codeSource, openParen);
-    if (closeParen === undefined) {
-      continue;
-    }
-    const codeSegment = codeSource.slice(start, closeParen + 1);
-    const rawSegment = rawSource.slice(start, closeParen + 1);
-    if (isSafeProcessExecCall(file, callName, rawSource, start, rawSegment, codeSegment)) {
-      continue;
-    }
-    const metadata = processExecMetadata(callName, rawSource, start, rawSegment, codeSegment);
-    const grade = processExecGrade(metadata);
-    findings.push(
-      makeFinding({
-        ruleId: "security.process-exec",
-        message: grade.message,
-        filePath: file.displayPath,
-        line: byteLine(codeSource, start),
-        severity: grade.severity,
-        pillar: "security",
-        confidence: "high",
-        remediation: grade.remediation,
-        metadata: {
-          callName: metadata.callName,
-          argumentSource: metadata.argumentSource,
-          shellEnabled: metadata.isShellEnabled,
-        },
-      }),
-    );
-  }
-}
-
-// Every command-source shape has one compile-time class, so adding a metadata variant cannot fall
-// through to a quieter grade until its security posture is chosen explicitly.
-const PROCESS_EXEC_SOURCE_CLASSES = {
-  literal: "fixed",
-  "process-exec-path": "fixed",
-  "local-const": "fixed",
-  "local-builder": "dynamic",
-  parameter: "dynamic",
-  member: "dynamic",
-  template: "dynamic",
-  unknown: "dynamic",
-} as const satisfies Record<ProcessExecArgumentSource, "dynamic" | "fixed">;
-
-/*
- * Severity follows the evidence the metadata already carries: only a shell-enabled call with a
- * dynamic command keeps the warning. A fixed vector with the shell disabled becomes advisory and
- * its message says what would make it dangerous instead of implying it already is; everything in
- * between stays advisory with the review prompt, so the security pillar is not permanently
- * occupied by calls the reviewer cannot change.
- */
-function processExecGrade(metadata: ProcessExecMetadata): { severity: Severity; message: string; remediation: string } {
-  const sourceClass = PROCESS_EXEC_SOURCE_CLASSES[metadata.argumentSource];
-  if (metadata.isShellEnabled && sourceClass === "dynamic") {
-    return {
-      severity: "warning",
-      message: "Child-process execution is used; validate arguments are not user-controlled.",
-      remediation: "Review the command source and shell mode; prefer fixed command vectors with shell disabled.",
-    };
-  }
-  if (!metadata.isShellEnabled && sourceClass === "fixed") {
-    return {
-      severity: "advisory",
-      message: "Child-process execution uses a fixed command with shell disabled.",
-      remediation: "No action needed while the command stays fixed; revisit if the command or its arguments start deriving from user input or a shell gets enabled.",
-    };
-  }
-  return {
-    severity: "advisory",
-    message: "Child-process execution is used; validate arguments are not user-controlled.",
-    remediation: "Review the command source and shell mode; prefer fixed command vectors with shell disabled.",
-  };
-}
-
-// Excludes ordinary member calls such as `pattern.exec(...)`; module receivers like `cp.exec(...)`
-// remain valid process-exec candidates.
-function isMemberProcessExecFalsePositive(codeSource: string, start: number, hasProcessReceiver: boolean): boolean {
-  return !hasProcessReceiver && codeSource[start - 1] === ".";
-}
-
-// Offsets where a declared method, function, accessor or signature name starts, such as an
-// interface's `fork(zoneSpec: ZoneSpec): Zone;`. A process-call match must start exactly at one to be
-// skipped, so a real call on the same line as a same-named declaration still reports.
-function declaredCallableNameStarts(syntax: TsSourceFile): Set<number> {
-  const starts = new Set<number>();
-  // Records the name offset of every function-like declaration or signature with a plain identifier name.
-  const visit = (node: TsNode): void => {
-    if (typescriptSyntax.isFunctionLike(node) && node.name !== undefined && typescriptSyntax.isIdentifier(node.name)) {
-      starts.add(node.name.getStart(syntax));
-    }
-    node.forEachChild(visit);
-  };
-  syntax.forEachChild(visit);
-  return starts;
-}
-
-// Fixed command vectors and known safe wrappers are intentionally not shell-interpolated, so this
-// rule stays focused on dynamic commands and shell-enabled process calls.
-function isSafeProcessExecCall(file: SourceFile, callName: string, rawSource: string, callStart: number, rawSegment: string, codeSegment: string): boolean {
-  return (
-    isFixedArgvProcessCallSegment(callName, rawSource, callStart, rawSegment, codeSegment) ||
-    isFixedShellCommandCall(callName, rawSegment) ||
-    isSafeExecWrapperCall(file, callName, codeSegment) ||
-    isFixedTestHarnessProcessCall(file, callName, rawSegment, codeSegment)
-  );
-}
-
-// Suppresses argv-form process calls where the command is fixed by a literal, `process.execPath`,
-// a local const literal selector, or a terminal-binary version probe.
-function isFixedArgvProcessCallSegment(callName: string, rawSource: string, callStart: number, rawSegment: string, codeSegment: string): boolean {
-  if (/\bshell\s*:\s*true\b/.test(codeSegment)) {
-    return false;
-  }
-  if (!["spawn", "spawnSync", "execFile", "execFileSync"].includes(callName)) {
-    return false;
-  }
-  const argsText = rawSegment.slice(rawSegment.indexOf("(") + 1, rawSegment.lastIndexOf(")"));
-  return (
-    /^\s*(?:["'][^"']+["']|process\.execPath)\s*(?:,\s*(?:\[|[A-Za-z_$][A-Za-z0-9_$]*)|$)/s.test(argsText) ||
-    isFixedTerminalVersionProbe(argsText) ||
-    hasConstLiteralCommandVector(rawSource, callStart, argsText)
-  );
-}
-
-// `exec` and `execSync` run their first argument through a shell. A command that is one quoted string or template with
-// no `$` and no backslash is fixed text no caller input or environment variable reaches, provided nothing after it
-// changes what runs: only an inline callback or options object without `env`, `cwd` or a spread may follow. An array or
-// a name after the command is the argv shape of other `exec` helpers, such as `@actions/exec`, and keeps reporting, as
-// does `exec(\`identify \` + url)`.
-function isFixedShellCommandCall(callName: string, rawSegment: string): boolean {
-  const command = firstProcessCallArgument(rawSegment);
-  if ((callName !== "exec" && callName !== "execSync") || !/^(?:"[^"\\$]*"|'[^'\\$]*'|`[^`\\$]*`)$/.test(command)) {
-    return false;
-  }
-  const argsText = rawSegment.slice(rawSegment.indexOf("(") + 1, rawSegment.lastIndexOf(")"));
-  const rest = argsText.slice(argsText.indexOf(command) + command.length).replace(/^\s*,?\s*/, "");
-  // Any whole-word `env` or `cwd` counts, so shorthand `{ env }` and a quoted `"cwd":` key keep reporting too.
-  return rest === "" || (/^(?:\{|\(|async\b|function\b)/.test(rest) && !/\b(?:env|cwd)\b|\.\.\./.test(rest));
-}
-
-// Agent/tool discovery commonly runs a manifest-backed terminal binary with `--version`. The
-// argument vector is fixed, and the binary field is a known capability slot rather than request data.
-function isFixedTerminalVersionProbe(argsText: string): boolean {
-  return /^\s*[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\.terminalBinary\s*,\s*\[\s*["']--version["']\s*\]/s.test(argsText);
-}
-
-// The safe-exec module is the wrapper implementation: it validates against an allow-list, rejects
-// unsafe args, sets `shell: false`, and bounds execution. Flagging its one spawn call is noise.
-function isSafeExecWrapperCall(file: SourceFile, callName: string, codeSegment: string): boolean {
-  return /(?:^|\/)safe-exec\.ts$/.test(file.displayPath) && ["spawn", "spawnSync"].includes(callName) && /\bshell\s*:\s*false\b/.test(codeSegment);
-}
-
-// Test harnesses often launch the current Node process or syntax-check a local shell script. Keep
-// dynamic production process calls visible while suppressing those fixed test-driver invocations.
-function isFixedTestHarnessProcessCall(file: SourceFile, callName: string, rawSegment: string, codeSegment: string): boolean {
-  if (!isTestLikeProcessExecPath(file.displayPath) || /\bshell\s*:\s*true\b/.test(codeSegment)) {
-    return false;
-  }
-  const argsText = rawSegment.slice(rawSegment.indexOf("(") + 1, rawSegment.lastIndexOf(")"));
-  if (/^\s*process\.execPath\s*,\s*\[/.test(argsText)) {
-    return true;
-  }
-  return ["exec", "execSync"].includes(callName) && /^\s*(?:"node scripts\/[^"]+"|'node scripts\/[^']+'|`(?:bash -n|wc -l\b)[^`]*`)/s.test(argsText);
-}
-
-// Test-only paths get a few extra fixed-harness exemptions; production paths still report them.
-function isTestLikeProcessExecPath(path: string): boolean {
-  return /(?:^|\/)(?:test|tests)\/|(?:^|\/)[^/]+\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path);
-}
-
-// Handles local command variables such as `const whichCmd = platform ? "where" : "which"` when
-// the call still uses an argv array. Calls or templates in the declaration remain reportable.
-function hasConstLiteralCommandVector(rawSource: string, callStart: number, argsText: string): boolean {
-  const firstArg = argsText.match(/^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*,\s*(?:\[|[A-Za-z_$][A-Za-z0-9_$]*)/s)?.[1];
-  if (!firstArg) {
-    return false;
-  }
-  const declaration = rawSource.slice(0, callStart).match(new RegExp(`\\bconst\\s+${escapeRegex(firstArg)}\\s*=\\s*([^;]+);\\s*$`, "s"));
-  const initializer = declaration?.[1] ?? "";
-  return /["'][^"']+["']/.test(initializer) && !/[`$()[\]{}]/.test(initializer);
-}
-
-
-
-const HUNGARIAN_PREFIX_REGEX_CACHE = new WeakMap<Set<string>, RegExp | null>();
-
-
-// Counterpart to `booleanPrefixRegex` for the `naming.hungarian-notation` rule. Returns a global
-// regex (callers iterate matches) anchored to declaration keywords + visibility modifiers, so a
-// reference to `IUser` inside a comment is not flagged - the regex is part of the stable contract.
-function hungarianPrefixRegex(prefixes: Set<string>): RegExp | null {
-  if (HUNGARIAN_PREFIX_REGEX_CACHE.has(prefixes)) {
-    return HUNGARIAN_PREFIX_REGEX_CACHE.get(prefixes) ?? null;
-  }
-  const escapedPrefixes = [...prefixes].map(escapeRegex);
-  const regex = prefixes.size === 0 ? null : new RegExp(`\\b(?:const|let|var|public|private|protected)\\s+((?:${escapedPrefixes.join("|")})[A-Z][A-Za-z0-9_$]*)`, "g");
-  HUNGARIAN_PREFIX_REGEX_CACHE.set(prefixes, regex);
-  return regex;
 }

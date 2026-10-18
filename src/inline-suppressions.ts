@@ -12,12 +12,8 @@ export const DUPLICATE_SUPPRESSION_REASON = "Another rule reports the same claim
 
 // eslint rules section 13c names for gruff-ts, each with the rule that makes the same claim.
 const ESLINT_RULES: ReadonlyMap<string, string> = new Map([
-  ["no-console", "waste.console-log"],
-  ["eqeqeq", "modernisation.loose-equality"],
   ["no-eval", "security.eval-call"],
   ["no-new-func", "security.new-function"],
-  ["no-unused-vars", "waste.unused-parameter"],
-  ["@typescript-eslint/no-unused-vars", "waste.unused-parameter"],
 ]);
 
 // biome rules section 13c names, each with the rule that makes the same claim.
@@ -49,8 +45,8 @@ const EVAL_CALL = /\beval\s*\(/;
  * Applies FAMILY-CONTRACT.md section 13c after the sensitive exclusions and the test-path skip.
  *
  * A comment naming a check that makes a finding's claim suppresses it where it was written, on the reported line or
- * alone on the line above: eslint's next-line directive naming `no-console` above a `console.log` hides
- * waste.console-log there and nothing else. An `eval` call reported by both security.eval-call and security.unsafe-deserialization reports once,
+ * alone on the line above: eslint's next-line directive naming `no-new-func` above a `new Function` call hides
+ * security.new-function there and nothing else. An `eval` call reported by both security.eval-call and security.unsafe-deserialization reports once,
  * as security.eval-call. Each removal is counted in one audit row per rule and file after the built-in rows, and kept so
  * SARIF can show it as suppressed.
  */

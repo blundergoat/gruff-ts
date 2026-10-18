@@ -1,6 +1,6 @@
 ---
 category: fixtures
-last_reviewed: 2026-10-05
+last_reviewed: 2026-10-18
 ---
 
 # Fixture and test-data lessons
@@ -20,14 +20,12 @@ and `docs.fixture-purpose-missing` because the purpose comment was inside the te
 leading the test declaration.
 
 **Evidence:** `src/security-and-config.test.ts` (search: `CLI severity override keeps new Function below fail-on error`);
-`src/fixture-purpose-rules.ts` (search: `function hasFixturePurposeComment`); `src/line-rules.ts`
-(search: `function isFixedArgvProcessCallSegment`).
+`src/fixture-purpose-rules.ts` (search: `function hasFixturePurposeComment`). The `security.process-exec` check that
+fired here was retired by precision-floor M02 (ADR-021).
 
 **Prevention:** Before closing a new CLI regression, run a changed-range gruff scan on the touched
-test file. Put fixture-purpose comments directly above the `test(...)` declaration, prefer block
-comments when multiple marker words matter, and use fixed literal command vectors such as
-`execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), ...])` instead of making the executable path
-itself dynamic.
+test file. Put fixture-purpose comments directly above the `test(...)` declaration, and prefer block
+comments when multiple marker words matter.
 
 ## Lesson: positive scanner fixtures and repo self-scan do not prove false-positive safety
 

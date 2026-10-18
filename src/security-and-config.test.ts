@@ -12,8 +12,6 @@ import { analyseFixture, analyseProject, REPO_ROOT, TS_IGNORE_DIRECTIVE, writeFi
 // waste.swallowed-catch ships off by default; these tests switch it on so they still exercise its detector.
 const SWALLOWED_CATCH_ON = { config: { rules: { "waste.swallowed-catch": { enabled: true } } } };
 
-const EXPECTED_DYNAMIC_PROCESS_EXEC_LINE = 15;
-
 test("extended type-safety rubric finds explicit unsafety without false positives", () => {
   const unsafeReport = analyseFixture(`export function unsafeApi(input: ${"any"}): ${"any"} {
   // ${TS_IGNORE_DIRECTIVE}
@@ -386,7 +384,6 @@ function safe(userId: string): void {
 const SECURITY_RISKY_RULE_IDS = [
   "security.new-function",
   "security.string-timer",
-  "security.process-exec",
   "security.disabled-tls-verification",
   "security.javascript-url",
   "security.inner-html",
@@ -450,98 +447,6 @@ function safe(db: any, id: string): void {
     sqlFindings.map((finding) => finding.line),
     [2],
   );
-});
-
-test("process exec exempts fixed local test harnesses but reports dynamic commands", () => {
-  const report = analyseProject({
-    "src/harness.test.ts": `import { spawn } from "node:child_process";
-
-const child = spawn("./bin/gruff-ts", ["summary"]);
-void child;
-`,
-    "src/harness-shell.test.ts": `import { spawn } from "node:child_process";
-
-const child = spawn("./bin/gruff-ts", ["summary"], { shell: true });
-void child;
-`,
-    "src/test-fixtures.ts": `import { spawn } from "node:child_process";
-
-export function withHarness(): void {
-  const child = spawn("./bin/gruff-ts", ["dashboard"]);
-  void child;
-}
-`,
-    "src/runner.ts": `import { spawn, execFile, execSync, execFileSync, spawnSync, fork } from "node:child_process";
-
-function run(userCommand: string): void {
-  spawn(userCommand, []);
-  execFile(userCommand, []);
-  execSync(userCommand);
-  execFileSync(userCommand, []);
-  spawnSync(userCommand, []);
-  fork(userCommand);
-  const match = /unsafe/.exec(userCommand);
-  const globalPattern = /unsafe/g;
-  globalPattern["exec"](userCommand);
-  void match;
-}
-`,
-  });
-
-  const processExecFindings = report.findings.filter((finding) => finding.ruleId === "security.process-exec");
-  const expectedRunnerExecFindings = 6;
-  // Security rules skip test files and count the skip, so the shell-enabled harness call shows as one skipped finding.
-  const skippedCount = (filePath: string): number => report.suppressions
-    .filter((row) => row.rule === "security.process-exec" && row.paths[0] === filePath)
-    .reduce((total, row) => total + row.suppressed, 0);
-  assert.equal(processExecFindings.some((finding) => finding.filePath === "src/harness.test.ts"), false);
-  assert.equal(skippedCount("src/harness.test.ts"), 0);
-  assert.equal(processExecFindings.some((finding) => finding.filePath === "src/test-fixtures.ts"), false);
-  assert.equal(processExecFindings.some((finding) => finding.filePath === "src/harness-shell.test.ts"), false);
-  assert.equal(skippedCount("src/harness-shell.test.ts"), 1);
-  assert.equal(processExecFindings.filter((finding) => finding.filePath === "src/runner.ts").length, expectedRunnerExecFindings);
-});
-
-test("process exec exempts fixed command vectors", () => {
-  const report = analyseProject({
-    "src/fixed-git.ts": `import { execFileSync } from "node:child_process";
-
-function changedFiles(mode: string): void {
-  const args = ["diff", "--name-only"];
-  if (mode === "staged") {
-    args.push("--cached");
-  }
-  execFileSync("git", args, { encoding: "utf8" });
-}
-`,
-  });
-
-  assert.equal(report.findings.some((finding) => finding.ruleId === "security.process-exec"), false);
-});
-
-test("process exec exempts multi-line fixed command vectors but keeps dynamic calls", () => {
-  const expectedDynamicFindings = 1;
-  const report = analyseProject({
-    "src/fixed-npm.ts": `import { execFileSync, spawn } from "node:child_process";
-const args = [
-  "pack",
-  "--dry-run",
-  "--json",
-  "--ignore-scripts",
-];
-execFileSync(
-  "npm",
-  args,
-  {
-    encoding: "utf8",
-  },
-);
-spawn(userCommand, ["status"]);
-`,
-  });
-  const processExecFindings = report.findings.filter((finding) => finding.ruleId === "security.process-exec");
-  assert.equal(processExecFindings.length, expectedDynamicFindings);
-  assert.equal(processExecFindings[0]?.line, EXPECTED_DYNAMIC_PROCESS_EXEC_LINE);
 });
 
 const SOURCE_TO_SINK_RULE_IDS = [
@@ -629,12 +534,9 @@ function finish(): void {
 }
 `);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  ["modernisation.loose-equality", "modernisation.date-now-candidate", "modernisation.object-spread-candidate", "waste.redundant-boolean-cast", "waste.useless-catch", "waste.useless-return"].forEach((ruleId) => {
+  ["modernisation.date-now-candidate", "modernisation.object-spread-candidate", "waste.useless-catch", "waste.useless-return"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
-  const expectedBooleanCastFindings = 2;
-  assert.equal(report.findings.filter((finding) => finding.ruleId === "modernisation.loose-equality").length, 1);
-  assert.equal(report.findings.filter((finding) => finding.ruleId === "waste.redundant-boolean-cast").length, expectedBooleanCastFindings);
 });
 
 test("risk expansion finds scoped test-quality rules", () => {
@@ -705,7 +607,7 @@ function testBuildsLibraryValue(): void {
 }
 `);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  ["test-quality.magic-number-assertion", "test-quality.mock-only-test", "test-quality.unused-mock", "test-quality.exception-type-only", "test-quality.global-state-mutation"].forEach((ruleId) => {
+  ["test-quality.unused-mock", "test-quality.global-state-mutation"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
   assert.deepEqual(report.findings.filter((finding) => finding.pillar === "test-quality" && finding.symbol === "testBuildsLibraryValue"), []);

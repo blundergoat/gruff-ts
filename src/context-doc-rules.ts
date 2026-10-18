@@ -148,6 +148,10 @@ function contextDocFinding(input: ContextDocFindingInput): Finding {
   });
 }
 
+// The cognitive-complexity limit that marks a callable complex enough to need a "why" comment. 15 is the retired
+// `complexity.cognitive` rule's default, so default scans keep the same gate; no profile or config value moves it.
+const COMPLEX_CONTEXT_COGNITIVE_LIMIT = 15;
+
 // Uses the same syntax measurement as complexity findings so a reviewer sees one consistent gate.
 function isComplexContextCandidate(block: FunctionBlock, config: Config): boolean {
   // A legacy span-only caller cannot reparse here, so it receives the same neutral fallback as block rules.
@@ -155,7 +159,7 @@ function isComplexContextCandidate(block: FunctionBlock, config: Config): boolea
   return (
     block.codeLineCount > threshold(config, "size.function-length", 200) ||
     sharedComplexityMetrics.cyclomatic > threshold(config, "complexity.cyclomatic", 15) ||
-    sharedComplexityMetrics.cognitive > threshold(config, "complexity.cognitive", 15) ||
+    sharedComplexityMetrics.cognitive > COMPLEX_CONTEXT_COGNITIVE_LIMIT ||
     sharedComplexityMetrics.maximumControlFlowNesting > 3
   );
 }
@@ -212,8 +216,7 @@ function hasSideEffectSignal(name: string, body: string): boolean {
   return SIDE_EFFECT_BODY_PATTERNS.some((pattern) => pattern.test(body)) || hasProcessExecutionCall(body) || /^(?:write|recordHistory|startDashboard)\b/.test(name);
 }
 
-// Process execution with the receiver guard `security.process-exec` ships (`src/line-rules.ts`, search:
-// `function isMemberProcessExecFalsePositive`): a bare `exec(cmd)` or a call on a child-process module receiver counts,
+// Process execution: a bare `exec(cmd)` or a call on a child-process module receiver counts,
 // while any other member call, such as `/re/.exec(line)` or `pattern.exec(text)`, runs a regular expression and
 // changes nothing outside the function. The body is masked, so a regex literal's own text cannot fake a call.
 function hasProcessExecutionCall(body: string): boolean {

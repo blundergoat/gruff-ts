@@ -30,19 +30,19 @@ const MARKDOWN_SAFETY_REPORT: AnalysisReport = {
       stableIdentity: "markdown-finding-stable",
     },
     {
-      ruleId: "complexity.cognitive",
-      message: "Function has cognitive complexity 18.",
+      ruleId: "size.function-length",
+      message: "Function has 240 lines, above the threshold of 200.",
       filePath: "src/cluster`path.ts",
       line: 11,
       severity: "warning",
-      pillar: "complexity",
+      pillar: "size",
       secondaryPillars: [],
       tier: "v0.1",
       confidence: "high",
       symbol: "run``unsafe|<node>[x]",
       metadata: {},
-      fingerprint: "markdown-cognitive",
-      stableIdentity: "markdown-cognitive-stable",
+      fingerprint: "markdown-function-length",
+      stableIdentity: "markdown-function-length-stable",
     },
     {
       ruleId: "complexity.cyclomatic",
@@ -93,7 +93,7 @@ test("markdown finding rows escape repository-controlled structure", () => {
 // A complexity label with longer backtick runs must remain one readable inline-code span.
 test("markdown complexity clusters choose a safe inline-code fence", () => {
   const markdownReport = renderReport(MARKDOWN_SAFETY_REPORT, "markdown");
-  const expectedClusterRow = "- ```src/cluster`path.ts#run``unsafe|<node>[x]```: 2 linked findings (`complexity.cognitive`, `complexity.cyclomatic`)";
+  const expectedClusterRow = "- ```src/cluster`path.ts#run``unsafe|<node>[x]```: 2 linked findings (`complexity.cyclomatic`, `size.function-length`)";
 
   assert.equal(markdownReport.includes(expectedClusterRow), true);
 });

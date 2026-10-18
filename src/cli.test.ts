@@ -39,7 +39,6 @@ test("analysis finds core TypeScript smells", () => {
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   assert.equal(ruleIds.has("security.eval-call"), true);
   assert.equal(ruleIds.has("size.parameter-count"), true);
-  assert.equal(ruleIds.has("modernisation.public-property"), true);
 });
 
 test("existing core fixture fingerprints stay stable", () => {
@@ -57,7 +56,6 @@ test("existing core fixture fingerprints stay stable", () => {
   const fingerprints = new Map(report.findings.map((finding) => [finding.ruleId, finding.fingerprint]));
   assert.equal(fingerprints.get("security.eval-call"), "9597745a32e48f52");
   assert.equal(fingerprints.get("size.parameter-count"), "d616356804967e11");
-  assert.equal(fingerprints.get("modernisation.public-property"), "c80058bf4fd46024");
 });
 
 test("stable identity survives line shifts while fingerprint remains line-sensitive", () => {
@@ -80,7 +78,6 @@ function run(value: string): void {
 });
 
 const FIRST_SLICE_RULE_IDS = new Set([
-  "waste.commented-out-code",
   "naming.identifier-quality",
   "test-quality.trivial-assertion",
   "security.weak-crypto",
@@ -173,22 +170,13 @@ function normalizeStatus(status: string): string {
 `;
 
 const M02_EXPANSION_RULE_IDS = new Set([
-  "waste.commented-out-code",
-  "waste.empty-function",
-  "waste.redundant-variable",
   "waste.unused-import",
-  "waste.unused-parameter",
   "naming.identifier-quality",
-  "naming.boolean-prefix",
-  "naming.hungarian-notation",
   "naming.class-file-mismatch",
   "docs.stale-param-tag",
   "docs.missing-param-tag",
   "docs.missing-return-tag",
-  "docs.useless-docblock",
   "modernisation.readonly-property-candidate",
-  "modernisation.optional-chaining-candidate",
-  "modernisation.nullish-coalescing-candidate",
 ]);
 
 test("core expansion clean fixture stays finding-free", () => {
@@ -233,7 +221,7 @@ function redundantResult(): string {
 test("core expansion finds waste rules", () => {
   const report = analyseFixture(COMPLEXITY_WASTE_FIXTURE);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  ["waste.commented-out-code", "waste.empty-function", "waste.redundant-variable", "waste.unused-import", "waste.unused-parameter"].forEach((ruleId) => {
+  ["waste.unused-import"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
 });
@@ -478,13 +466,13 @@ export function updateName(name: string): string {
 test("core expansion finds naming and documentation rules", () => {
   const report = analyseProject({ "CustomerProfile.ts": NAMING_DOC_FIXTURE, "helpers.ts": "/** Handles payment requests. */\nexport class PaymentController {}\n" });
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  ["naming.boolean-prefix", "naming.hungarian-notation", "naming.class-file-mismatch", "docs.stale-param-tag", "docs.missing-param-tag", "docs.missing-return-tag", "docs.useless-docblock"].forEach((ruleId) => {
+  ["naming.class-file-mismatch", "docs.stale-param-tag", "docs.missing-param-tag", "docs.missing-return-tag"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
 });
 
 test("core expansion finds modernisation rules", () => {
-  // Fixture covers modernization detections for readonly, optional chaining, and nullish coalescing.
+  // Fixture covers the readonly-property modernisation detection.
   const report = analyseFixture(`class AccountReader {
   public displayName: string;
 
@@ -502,7 +490,7 @@ test("core expansion finds modernisation rules", () => {
 }
 `);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  ["modernisation.readonly-property-candidate", "modernisation.optional-chaining-candidate", "modernisation.nullish-coalescing-candidate"].forEach((ruleId) => {
+  ["modernisation.readonly-property-candidate"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
 });
@@ -547,12 +535,10 @@ test("fixture source text remains inert", () => {
   });
   const noisyRules = new Set([
     "docs.missing-public-doc",
-    "modernisation.public-property",
     "modernisation.var-declaration",
     "naming.class-file-mismatch",
     "security.eval-call",
     "security.new-function",
-    "waste.console-log",
   ]);
   assert.deepEqual(
     report.findings.filter((finding) => noisyRules.has(finding.ruleId)).map((finding) => finding.ruleId),
@@ -590,8 +576,6 @@ test("scanner guardrail fixtures keep noisy-valid comments strings regex templat
     "security.eval-call",
     "security.new-function",
     "security.string-timer",
-    "waste.commented-out-code",
-    "waste.console-log",
   ]);
   assert.deepEqual(report.diagnostics, []);
   assert.deepEqual(
@@ -680,36 +664,13 @@ function parseYamlScalar(value: string): string {
 }
 `);
 
+  // Each parser function is reported once, at its own declaration; a call in the ternary is not a callable.
   assert.deepEqual(
-    report.findings.filter((finding) => finding.ruleId === "waste.empty-function" && (finding.symbol === "parseYamlArray" || finding.symbol === "parseYamlScalar")),
-    [],
+    report.findings
+      .filter((finding) => finding.ruleId === "docs.missing-internal-function-doc" && (finding.symbol === "parseYamlArray" || finding.symbol === "parseYamlScalar"))
+      .map((finding) => `${finding.symbol}:${finding.line}`),
+    ["parseYamlArray:5", "parseYamlScalar:9"],
   );
-});
-
-test("function parser handles multiline expression-bodied arrows without empty-body noise", () => {
-  // Fixture covers multiline arrow parsing without treating expression bodies as empty blocks.
-  const report = analyseFixture(`interface AnalysisReport {
-  findings: Array<{ ruleId: string }>;
-}
-
-const identity = (report: AnalysisReport) =>
-  report.findings
-    .map((finding) => finding.ruleId)
-    .join(",");
-
-function emptyWork(): void {}
-
-function unusedParam(value: string): void {
-  return;
-}
-`);
-
-  assert.deepEqual(
-    report.findings.filter((finding) => finding.symbol === "identity" && ["waste.empty-function", "waste.unused-parameter"].includes(finding.ruleId)),
-    [],
-  );
-  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.empty-function" && finding.symbol === "emptyWork"), true);
-  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unused-parameter" && finding.symbol === "unusedParam"), true);
 });
 
 // The strict file-length threshold the determinism test asserts on; named so the assertion compares

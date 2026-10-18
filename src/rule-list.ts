@@ -43,7 +43,6 @@ const CONSOLE_COMMANDS = [
 // has no knob name anywhere in the family publishes the one-key map `{"threshold": N}` so no new
 // permanent public identifier is invented.
 const LISTING_THRESHOLD_KNOB_NAMES: Readonly<Record<string, string>> = {
-  "complexity.cognitive": "maxComplexity",
   "complexity.cyclomatic": "maxComplexity",
   "size.file-length": "maxLines",
   "size.function-length": "maxLines",

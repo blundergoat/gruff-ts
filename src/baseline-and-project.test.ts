@@ -34,7 +34,6 @@ test("expanded scanner keeps pre-expansion fingerprints stable", () => {
   const fingerprints = new Map(report.findings.map((finding) => [finding.ruleId, finding.fingerprint]));
   assert.equal(fingerprints.get("security.eval-call"), "9597745a32e48f52");
   assert.equal(fingerprints.get("size.parameter-count"), "d616356804967e11");
-  assert.equal(fingerprints.get("modernisation.public-property"), "c80058bf4fd46024");
 });
 
 test("baseline round trip suppresses old and new findings by identity tuple", () => {
@@ -104,14 +103,14 @@ function changed(unusedValue: string): void {
     { paths: ["src/example.ts"], changedRanges: "6-6" },
   );
 
-  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unused-parameter" && finding.symbol === "changed"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-internal-function-doc" && finding.symbol === "changed"), true);
   assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.line === 2), false);
 });
 
 test("hunk changed scope excludes unchanged signature findings", () => {
   const report = analyseProject(
     {
-      "src/example.ts": `function changed(unusedValue: string): void {
+      "src/example.ts": `function changed(unusedValue: any): void {
   return;
 }
 `,
@@ -119,7 +118,8 @@ test("hunk changed scope excludes unchanged signature findings", () => {
     { paths: ["src/example.ts"], changedRanges: "2-2", changedScope: "hunk" },
   );
 
-  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unused-parameter"), false);
+  // The default symbol scope keeps this signature-line finding; the hunk scope drops it because line 1 is unchanged.
+  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.any-type"), false);
   assert.equal(report.suppressedCount !== undefined && report.suppressedCount > 0, true);
 });
 
@@ -480,53 +480,6 @@ function unsafe(value: string): void {
     first.findings.map((finding) => [finding.filePath, finding.line, finding.ruleId, finding.fingerprint]),
     second.findings.map((finding) => [finding.filePath, finding.line, finding.ruleId, finding.fingerprint]),
   );
-});
-
-// Fixture for the test-adequacy rule sweep: covers missing-nearby-test, snapshot-only,
-// no-throw-only, plus exemption paths for `.d.ts`, fixtures/, and generated/.
-const TEST_ADEQUACY_FIXTURE = {
-  "src/payments.ts": `export function chargeCard(): string {
-  return "charged";
-}
-`,
-  "src/users.ts": `export function renderUser(): string {
-  return "user";
-}
-`,
-  "src/users.test.ts": `import assert from "node:assert/strict";
-import { renderUser } from "./users";
-
-test("renders user", () => {
-  assert.equal(renderUser(), "user");
-});
-
-test("snapshot only", () => {
-  expect(renderUser()).toMatchSnapshot();
-});
-
-test("no throw only", () => {
-  assert.doesNotThrow(() => renderUser());
-});
-`,
-  "src/types.d.ts": `export interface GeneratedContract {
-  id: string;
-}
-`,
-  "fixtures/sample.ts": `export function fixtureOnly(): string {
-  return "fixture";
-}
-`,
-  "src/generated/client.ts": `export function generatedClient(): string {
-  return "generated";
-}
-`,
-};
-
-test("project test adequacy checks nearby coverage and shallow tests", () => {
-  const report = analyseProject(TEST_ADEQUACY_FIXTURE);
-  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  assert.equal(ruleIds.has("test-quality.snapshot-only-test"), true);
-  assert.equal(ruleIds.has("test-quality.no-throw-only-test"), true);
 });
 
 test("project test adequacy accepts central tests that import the source", () => {

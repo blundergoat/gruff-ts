@@ -1,6 +1,6 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-09-26
+last_reviewed: 2026-10-18
 ---
 
 # Rule scanner footguns
@@ -47,7 +47,7 @@ When implementing or extending this rule, require static evidence before emittin
 
 The fix in `src/dead-code-rules.ts` (search: `isConsequentPending`) tracks open-paren depth across lines plus a `isConsequentPending` flag for the one-line consequent that follows the closing `)`. Both states must be active for `isInConditionalBranch` to be true.
 
-Second occurrence, 2026-08-08: `isBodyLessDeclaration` (`src/blocks.ts`, search: `function isBodyLessDeclaration`) decided whether a callable had an implementation by testing the first non-comment line for `)...;`. A single-line interface method matched, but a multi-line one starts at `findMany(`, so the walker called it an implementation and `waste.empty-function` plus `waste.unused-parameter` fired on a signature that cannot have a body. Reported on PR #9 and reproduced with a two-parameter interface method.
+Second occurrence, 2026-08-08: `isBodyLessDeclaration` in `src/blocks.ts`, removed with both rules it served by precision-floor M02 (ADR-021), decided whether a callable had an implementation by testing the first non-comment line for `)...;`. A single-line interface method matched, but a multi-line one starts at `findMany(`, so the walker called it an implementation and `waste.empty-function` plus `waste.unused-parameter` fired on a signature that cannot have a body. Reported on PR #9 and reproduced with a two-parameter interface method.
 
 That fix threads AST truth instead of improving the heuristic: `CallableMatchPoint` (`src/parsed-script.ts`, search: `function callableNodeHasBody`) carries `hasBody`, and the text walk survives only as the legacy regex-block fallback. When the shared parse already knows a property, a better line heuristic is the wrong repair - it will fail again on the next multi-line shape.
 
@@ -116,17 +116,6 @@ The fix runs `collectReExportedNames` (`src/blocks.ts`, search: `function collec
 
 Two implications: (1) when adding a per-symbol classification rule that depends on "is this exported," do the file-level re-export scan once and thread the result; do not rely on per-line patterns alone. (2) `isPublic` (which considers `public` keyword too) was unaffected, but the moral is identical for any future "this declaration is part of the public surface" gate. Tests: `src/false-positive-fixes.test.ts`, search: `FP-#33b docs.missing-exported-function-doc fires on plain and aliased re-exports`.
 
-## Footgun: `naming.acronym-case` is file-wide, not per-symbol
-
-**Status:** active | **Created:** 2026-05-25 | **Evidence:** OBSERVED
-**Resolution note:** Resolved 2026-08-04 for convention-forced surfaces; other file-wide comparisons remain relevant.
-
-`naming.acronym-case` (`src/class-rules.ts`, search: `ruleId: "naming.acronym-case"`) fired when the same known acronym appeared in more than one casing anywhere in a single source file. Identifier casings like `Html` (titled), `HTML` (all-caps), and `html` (all-lower) were all counted independently; a single file that used `parseHtmlPillarRows` AND a constant named `HTML_PILLAR_HEADERS` got a finding even though both names were internally consistent on their own.
-
-Resolved 2026-08-04: SCREAMING_SNAKE constants and all-lower names are convention-forced surfaces and no longer contribute observations (search: `isConventionForcedAcronymCasing`), so the `parseHtmlPillarRows` + `HTML_PILLAR_HEADERS` mix is quiet. The rule stays file-wide across CHOSEN casings: `parsedHtml` beside `rawHTML` still fires, including across separate function owners.
-
-When extracting helpers in a file that already uses the titled form (`Html`, `Css`, `Sql`, `Url`, etc.), match the existing casing for new identifiers - including SCREAMING_SNAKE_CASE constants. Either rename the constant to `pillarHeaderColumns` (camelCase, no acronym) or accept that the codebase convention is title-cased acronyms even in constants. The rule has no per-symbol override; only file-wide consistency clears it.
-
 ## Footgun: `CORRELATED_COMPLEXITY_RULE_IDS` is defined twice and must be edited in lockstep
 
 **Status:** active | **Created:** 2026-05-31 | **Evidence:** OBSERVED
@@ -181,6 +170,18 @@ blanked every nested function in the classified expression, and its second blank
 
 ## Resolved Entries
 
+## Footgun: `naming.acronym-case` is file-wide, not per-symbol
+
+**Status:** resolved | **Created:** 2026-05-25 | **Evidence:** OBSERVED
+**Resolved:** 2026-10-18 - precision-floor M02 retired `naming.acronym-case` (ADR-021).
+**Resolution note:** Resolved 2026-08-04 for convention-forced surfaces; other file-wide comparisons remain relevant.
+
+`naming.acronym-case` fired when the same known acronym appeared in more than one casing anywhere in a single source file. Identifier casings like `Html` (titled), `HTML` (all-caps), and `html` (all-lower) were all counted independently; a single file that used `parseHtmlPillarRows` AND a constant named `HTML_PILLAR_HEADERS` got a finding even though both names were internally consistent on their own.
+
+Resolved 2026-08-04: SCREAMING_SNAKE constants and all-lower names are convention-forced surfaces and no longer contribute observations (search: `isConventionForcedAcronymCasing`), so the `parseHtmlPillarRows` + `HTML_PILLAR_HEADERS` mix is quiet. The rule stays file-wide across CHOSEN casings: `parsedHtml` beside `rawHTML` still fires, including across separate function owners.
+
+When extracting helpers in a file that already uses the titled form (`Html`, `Css`, `Sql`, `Url`, etc.), match the existing casing for new identifiers - including SCREAMING_SNAKE_CASE constants. Either rename the constant to `pillarHeaderColumns` (camelCase, no acronym) or accept that the codebase convention is title-cased acronyms even in constants. The rule has no per-symbol override; only file-wide consistency clears it.
+
 ## Footgun: nested template interpolation can mask the rest of a scanned file
 
 **Status:** resolved | **Created:** 2026-07-12 | **Evidence:** ACTUAL_MEASURED
@@ -203,7 +204,7 @@ Resolved 2026-09-13 by the family plan's M22. `maskNonCode` now keeps one brace 
 
 `processExecCandidate` matched bare `exec(`, `spawn(`, or `execFile(` in masked code without requiring a child-process receiver or import context, so ordinary `RegExp.exec(...)` calls were reported as `security.process-exec`. Authors worked around it by avoiding `.exec(` in scanner source, including the bracket dispatch still visible at `src/text-scans.ts` (search: `globalPattern["exec"]`).
 
-Resolved 2026-08-08 on two counts. The symbol is gone: `processExecCandidate` returns zero hits anywhere under `src/`, and the rule now lives in `src/line-rules.ts` (search: `ruleId: "security.process-exec"`) with evidence grading from `src/process-exec-metadata.ts` per ADR-018. The behaviour is gone too: a probe file whose only `exec` call is `pattern.exec(input)` on a `RegExp` scored zero `security.process-exec` findings. The bracket dispatch in `src/text-scans.ts` is now a historical workaround, not a required defence.
+Resolved 2026-08-08 on two counts. The symbol is gone: `processExecCandidate` returns zero hits anywhere under `src/`, and the rule moved to `src/line-rules.ts` with evidence grading per ADR-018, until precision-floor M02 retired it on 2026-10-18 (ADR-021). The behaviour is gone too: a probe file whose only `exec` call is `pattern.exec(input)` on a `RegExp` scored zero `security.process-exec` findings. The bracket dispatch in `src/text-scans.ts` is now a historical workaround, not a required defence.
 
 ## Footgun: rule-group pass gates silently disable rules missing from the id list
 

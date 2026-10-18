@@ -48,6 +48,16 @@ only narrows a run, so it does not turn one on.
 The family specification records the retirements as a catalogue transition with no successor, and keeps each rule's
 review record as `retired` (workspace ADR-010).
 
+## Amendment: thirty more rules retired, 2026-10-18
+
+Precision-floor M02, under family lock M116, applies the operator's accepted gruff-ts table: thirty more rules the 0.6.0 precision measurement found right less than half the time are retired. They are `complexity.cognitive`, `docs.magic-threshold-without-rationale`, `docs.stale-comment`, `docs.useless-docblock`, four modernisation rules (`loose-equality`, `nullish-coalescing-candidate`, `optional-chaining-candidate`, `public-property`), seven naming rules (`acronym-case`, `boolean-prefix`, `generic-function`, `generic-parameter`, `hungarian-notation`, `inconsistent-casing`, `negative-boolean`), `security.process-exec`, eight test-quality rules (`conditional-logic`, `exception-type-only`, `magic-number-assertion`, `mock-only-test`, `no-throw-only-test`, `only-skip`, `sleep-in-test`, `snapshot-only-test`) and six waste rules (`commented-out-code`, `console-log`, `empty-function`, `redundant-boolean-cast`, `redundant-variable`, `unused-parameter`).
+
+Each detector goes with the code only it used, including the process-call metadata module, the test-structure syntax module, the identifier-inventory and interface-field walkers and the commented-out-code helpers. The seven allowlist keys only these rules read (`acceptedBooleanNames`, `acceptedCasingPairs`, `bannedGenericNames`, `booleanPrefixes`, `hungarianPrefixes`, `knownAcronyms`, `negativeBooleanAllowed`) are refused like any unknown key, and `init` no longer documents them.
+
+Three retirements touch shared code. The cognitive-complexity metric still decides when `docs.missing-why-for-complex-code` asks for a "why" comment; that gate now uses the retired rule's default limit of 15 as a fixed value, and the rule leaves `gruff.strict`, the hook's threshold metadata and the correlated-complexity cluster (ADR-009). A comment that only restates its signature still keeps the context-documentation rules quiet after `docs.useless-docblock` goes. FAMILY-CONTRACT.md section 13c drops its eslint `no-console`, `eqeqeq` and `no-unused-vars` rows under the operator's approved amendment, so those comments suppress nothing.
+
+A retired id behaves as the first eight do: a `rules:` block that names one exits 2, and `--include-rule` and `--exclude-rule` accept one silently.
+
 ## Failure Mode Comparison
 
 | Option | What fails | Why rejected or accepted |

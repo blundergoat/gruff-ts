@@ -118,7 +118,7 @@ Config discovery checks `.gruff-ts.yaml`, then `.gruff.json`, `.gruff.yaml`, and
 
 ### Naming Allowlist
 
-Tunable config sets such as `acceptedAbbreviations`, `booleanPrefixes`, `knownAcronyms`, `placeholderNames`, and related naming policy lists. They intentionally reflect TypeScript/JavaScript naming conventions.
+Tunable config sets such as `acceptedAbbreviations`, `acceptedClassFilePairs`, and `placeholderNames`. They intentionally reflect TypeScript/JavaScript naming conventions.
 
 ### Project Config Rule
 

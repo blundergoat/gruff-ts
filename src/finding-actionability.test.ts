@@ -281,8 +281,8 @@ test("missing-side-effect-doc treats JSDoc and // runs identically", () => {
 
 // M22 brief shape (`parseUnderline`, 13 of 13 on the reporting repository): a regular expression's `.exec` is a
 // member call, not process execution. A bare `exec(cmd)`, a child-process module call and `execFileSync(cmd)` still
-// report, and a locally declared function named `spawn` stays a residual this receiver guard cannot see. The
-// receiver contract matches `security.process-exec`.
+// report, and a locally declared function named `spawn` stays a residual this receiver guard cannot see. The receiver
+// contract: a bare call or a call on a child-process module counts as execution, and any other member call does not.
 test("missing-side-effect-doc does not read a regular expression's exec as process execution", () => {
   const pure = [
     "/** Overview: repro for docs.missing-side-effect-doc on pure functions. */",
@@ -355,64 +355,6 @@ test("docblock tag rules stay a deliberate JSDoc-only asymmetry", () => {
   assert.equal(ruleFindings(variants.jsdoc, "docs.missing-return-tag").length, 1);
   assert.deepEqual(ruleFindings(variants.lineRun, "docs.missing-param-tag"), []);
   assert.deepEqual(ruleFindings(variants.lineRun, "docs.missing-return-tag"), []);
-});
-
-test("acronym-case allows SCREAMING constants beside camelCase identifiers", () => {
-  // Covers the idiomatic-mix regression: convention-forced casings carry no drift signal.
-  const findings = ruleFindings(`const RAW_HTML_BLOCK_TAGS = /^(?:div|p|ul|table)$/iu;
-
-export function startsHtmlBlock(line: string): boolean {
-  if (line.trim().length === 0) return false;
-  const inHtmlComment = line.startsWith("<!--");
-  if (inHtmlComment) return false;
-  return RAW_HTML_BLOCK_TAGS.test(line.replace(/[<>/]/gu, "").trim());
-}
-`, "naming.acronym-case");
-  assert.deepEqual(findings, []);
-});
-
-test("acronym-case stays quiet when every acronym casing is convention-forced", () => {
-  // Covers the forced-surfaces case: a screaming constant beside a lower_snake name is two conventions.
-  const findings = ruleFindings(`const RAW_HTML_TAGS = "div";
-const parse_html = "p";
-console.log(RAW_HTML_TAGS, parse_html);
-`, "naming.acronym-case");
-  assert.deepEqual(findings, []);
-});
-
-test("acronym-case still fires on chosen-case drift within camel and Pascal names", () => {
-  // Covers detection preservation: the author chose Html once and HTML once in the same file.
-  const findings = ruleFindings(`const parsedHtml = "a";
-const rawHTML = "b";
-console.log(parsedHtml, rawHTML);
-`, "naming.acronym-case");
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0]?.symbol, "rawHTML");
-  assert.deepEqual(findings[0]?.metadata.variants, ["title", "upper"]);
-});
-
-test("delimited casing twins are not an acronym-case concern", () => {
-  // Covers the report's HTML_TAGS/HTML_Tags example: the acronym HTML is upper in BOTH names, so
-  // there is no acronym drift to report. The TAGS/Tags drift is general casing drift; the
-  // inconsistent-casing rule boundary-filters SCREAMING constants (a 0.5.0 decision protecting
-  // DTO-versus-constant pairs), so this half-screaming twin is deliberately quiet there too.
-  const source = `const HTML_TAGS = "a";
-const HTML_Tags = "b";
-console.log(HTML_TAGS, HTML_Tags);
-`;
-  assert.deepEqual(ruleFindings(source, "naming.acronym-case"), []);
-  assert.deepEqual(ruleFindings(source, "naming.inconsistent-casing"), []);
-});
-
-test("magic-threshold rationale on an earlier line of a stacked // run counts", () => {
-  // Covers the stacked-header contract shared with fixture-purpose: rationale vocabulary on the
-  // first line of a // run must clear the threshold finding.
-  const findings = ruleFindings(`// This retry ceiling is tuned for flaky-network reruns, because three
-// attempts cover the recovery cases we have observed.
-const MAX_RETRY_CAP = 3;
-export const usesCap = MAX_RETRY_CAP;
-`, "docs.magic-threshold-without-rationale");
-  assert.deepEqual(findings, []);
 });
 
 test("loop-in-test lets labeled data-driven loops opt out", () => {

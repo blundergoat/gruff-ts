@@ -12,7 +12,6 @@ const LIMITS = {
   "size.function-length": 10,
   "size.parameter-count": 4,
   "complexity.cyclomatic": 4,
-  "complexity.cognitive": 4,
   "size.file-length": 10,
 } as const;
 
@@ -54,7 +53,6 @@ const CASES: Array<{ ruleId: BandedRule; lower: string; upper: string; lowerAdvi
   { ruleId: "size.function-length", lower: functionOfStatements(10), upper: functionOfStatements(18), lowerAdvice: LOWER_BAND_FUNCTION, upperAdvice: SPLIT_FUNCTION, defaultSeverity: "warning" },
   { ruleId: "size.parameter-count", lower: functionWithParameters(5), upper: functionWithParameters(8), lowerAdvice: LOWER_BAND_PARAMETER, upperAdvice: GROUP_PARAMETERS, defaultSeverity: "warning" },
   { ruleId: "complexity.cyclomatic", lower: functionWithBranches(4), upper: functionWithBranches(8), lowerAdvice: LOWER_BAND_FUNCTION, upperAdvice: SIMPLIFY_PATH, defaultSeverity: "warning" },
-  { ruleId: "complexity.cognitive", lower: functionWithBranches(3), upper: functionWithBranches(8), lowerAdvice: LOWER_BAND_FUNCTION, upperAdvice: SIMPLIFY_PATH, defaultSeverity: "warning" },
   { ruleId: "size.file-length", lower: fileOfLines(12), upper: fileOfLines(20), lowerAdvice: LOWER_BAND_FILE, upperAdvice: SPLIT_FILE, defaultSeverity: "error" },
 ];
 
@@ -74,10 +72,10 @@ test("a configured severity does not lift a lower-band finding", () => {
 });
 
 test("the band boundary compares in floating point", () => {
-  // The cognitive default puts the boundary at 22.5, and the parameter-count default puts it at 10.5.
-  const cognitiveLimit = 15;
+  // The cyclomatic default puts the boundary at 22.5, and the parameter-count default puts it at 10.5.
+  const cyclomaticLimit = 15;
   const parameterLimit = 7;
-  const bands = [limitBand(22, cognitiveLimit), limitBand(23, cognitiveLimit), limitBand(10, parameterLimit), limitBand(11, parameterLimit)];
+  const bands = [limitBand(22, cyclomaticLimit), limitBand(23, cyclomaticLimit), limitBand(10, parameterLimit), limitBand(11, parameterLimit)];
   assert.deepEqual(bands, ["lower", "upper", "lower", "upper"]);
 });
 

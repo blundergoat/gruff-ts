@@ -85,13 +85,7 @@ allowlists:
   acceptedAbbreviations:
     - api
     - cli
-  bannedGenericNames: [process, handle, doit, run, execute, manage]
-  acceptedBooleanNames: [all, apply, check, dev, enabled, force, fresh, harness, json, ok, verbose, yes]
-  booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires, allow, check, enable, exclude, include, omit, skip, with, without]
-  hungarianPrefixes: [str, obj, arr, bool, int, num]
   placeholderNames: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]
-  negativeBooleanAllowed: [nostore, nofollow, noreferrer, noscript, noindex]
-  knownAcronyms: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]
 
 sensitiveExclusions:
   - rule: sensitive-data.aws-access-key
@@ -204,37 +198,22 @@ fingerprints:
 | Key | Used by | Default behavior |
 | --- | --- | --- |
 | `acceptedAbbreviations` | `naming.short-variable` | Adds short names that should not be flagged. |
-| `acceptedBooleanNames` | `naming.boolean-prefix` | Replaces the complete set of exact interface/type contract-field names, such as `verbose`, `enabled`, `ok`, and `force`. |
 | `acceptedClassFilePairs` | `naming.class-file-mismatch` | Replaces the exact case-insensitive `fileBase:ClassName` pairs that may use feature-file and class-role naming. Defaults to empty. |
-| `acceptedCasingPairs` | `naming.inconsistent-casing` | Replaces the exact case-insensitive `wire_name:internalName` pairs allowed within one declaration or lexical owner. Either pair order matches. Defaults to empty. |
-| `bannedGenericNames` | `naming.generic-function` | Replaces the built-in generic function-name denylist. |
-| `booleanPrefixes` | `naming.boolean-prefix` | Replaces the accepted boolean-name prefixes such as `is`, `has`, `should`, `may`, `supports`, and `requires`. |
-| `hungarianPrefixes` | `naming.hungarian-notation` | Replaces type-style prefixes to flag. |
-| `placeholderNames` | `naming.identifier-quality`, `naming.generic-parameter` | Replaces placeholder words; numbered suffix checks stay active. |
-| `negativeBooleanAllowed` | `naming.negative-boolean` | Replaces domain terms allowed to start with `no`. |
-| `knownAcronyms` | `naming.acronym-case` | Replaces acronyms checked for mixed casing. |
+| `placeholderNames` | `naming.identifier-quality` | Replaces placeholder words; numbered suffix checks stay active. |
 
 For replace-style allowlists, use an empty list (`[]`) when you intentionally
 want no entries.
 
-When a boolean-prefix finding names `allowlists.acceptedBooleanNames`, copy any
-defaults the project still needs into the configured list before adding the
-external key - the configured list replaces defaults rather than extending
-them. If renaming a JSON, CLI, or DTO key would break consumers, keep a clearer
-internal field and map the external key explicitly at the serialization boundary.
-
-Use exact pair allowlists when both names must coexist:
+Use an exact pair allowlist when a class and its file must keep different names:
 
 ```yaml
 allowlists:
   acceptedClassFilePairs: ["focusModeTranscript:TranscriptFocusController"]
-  acceptedCasingPairs: ["note_id:noteId"]
 ```
 
-The class/file entry uses the extensionless file base before the colon. Casing
-pairs may be written in either order. Both lists are case-insensitive, replace
-the complete configured list, and suppress only the exact pair rather than every
-name sharing the same canonical form.
+The entry uses the extensionless file base before the colon. The list is
+case-insensitive, replaces the complete configured list, and suppresses only the
+exact pair rather than every name sharing the same canonical form.
 
 `allowlists.trackingTokens` lists a project's own tracking references as regular
 expressions. `docs.todo-without-tracking` treats a marker comment that matches
@@ -381,14 +360,8 @@ allowlists:
     - cli
     - env
     - id
-  acceptedBooleanNames:
-    - verbose
-    - enabled
 
 rules:
-  complexity.cognitive:
-    threshold: 15
-    severity: warning
   complexity.cyclomatic:
     threshold: 10
     severity: warning

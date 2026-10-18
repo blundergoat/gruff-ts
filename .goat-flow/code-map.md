@@ -44,14 +44,14 @@ gruff-ts/
 │   ├── hook-contract.ts           = gruff.hook.v2 agent-hook payload, capability handshake, and new-only filtering
 │   ├── analyser.ts                = scan orchestrator: config -> discovery -> shared parse -> rules -> baseline -> report
 │   ├── changed-regions.ts         = --diff/--since/--changed-ranges region parsing and finding attribution
-│   ├── parsed-script.ts           = one TypeScript syntax parse per script, shared by callable, docs, flow, owner, and complexity consumers
+│   ├── parsed-script.ts           = one TypeScript syntax parse per script, shared by callable, docs, flow, and complexity consumers
 │   ├── complexity-metrics.ts      = syntax-aware cyclomatic, cognitive, and nesting measurements with deterministic breakdowns
 │   ├── discovery.ts               = source walk, gitignore handling, supported extensions, and default ignored directories
 │   ├── check-ignore.ts            = check-ignore command core over the shared discovery ignore engine
 │   ├── project-rules.ts           = cross-file imports, cycles, module concentration, and nearby-test analysis
 │   ├── blocks.ts                  = callable-owned size, complexity, waste, naming, and documentation rules
 │   ├── line-rules.ts              = per-line modernisation, naming, security, and waste patterns
-│   ├── class-rules.ts             = declaration rules plus owner-scoped casing and file-wide acronym checks
+│   ├── class-rules.ts             = exported-declaration docs, class/file-name mismatch and readonly candidates
 │   ├── public-exports.ts          = supported public declaration inventory for class/file contract checks
 │   ├── dead-code-rules.ts         = unreachable code, unused imports, and unused private methods
 │   ├── doc-rules.ts               = file overview, public docs, JSDoc tag, and interface rules
@@ -64,7 +64,6 @@ gruff-ts/
 │   ├── security-flow-rules.ts     = syntax-aware source-to-sink candidates and unsafe parser/execution checks
 │   ├── github-actions-rules.ts    = GitHub Actions workflow rules
 │   ├── github-actions-event-guards.ts = bounded event-guard proof that keeps unreachable workflow secret sinks quiet
-│   ├── process-exec-metadata.ts   = safe process-call metadata shared by execution findings
 │   ├── naming-pushers.ts          = shared naming finding emitters and remediation metadata
 │   ├── project-config-rules.ts    = package, TypeScript, workflow, dependency, and config-health rules
 │   ├── sensitive-data-rules.ts    = secret-like detectors with allowlisted redacted previews
@@ -77,7 +76,7 @@ gruff-ts/
 │   ├── baseline.ts                = canonical finding order, dedupe, and score-history recording
 │   ├── scoring.ts                 = report scoring, summaries, and finding exit semantics
 │   ├── pillar-summary.ts          = canonical summary pillar rows and ordering
-│   ├── rules.ts                   = catalogue of exactly 112 descriptors across 11 pillars
+│   ├── rules.ts                   = catalogue of exactly 82 descriptors across 11 pillars
 │   ├── profiles.ts                = built-in rule profile presets that profile: and --profile resolve
 │   ├── selectors.ts               = execution versus presentation rule selectors
 │   ├── rule-list.ts               = list-rules, profile list, and shell completion rendering

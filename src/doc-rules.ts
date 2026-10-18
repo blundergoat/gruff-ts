@@ -1,10 +1,9 @@
 // JSDoc and exported-declaration documentation rules. Covers `docs.missing-public-doc`,
 // `docs.missing-file-overview`, `docs.missing-interface-doc`, and the docblock rule pack
-// (stale/missing @param, missing @returns, useless docblock). Stable, deterministic emission order.
+// (stale/missing @param, missing @returns). Stable, deterministic emission order.
 import { commentTextAtLine, hasLeadingCommentBeforeLine } from "./comment-scanner.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { normalizedIdentifier, splitIdentifierWords } from "./findings-helpers.ts";
 import { documentedDefaultAndLaterExports, documentedExportConstants, documentedExportFunctions, documentedMethods, documentedPrivateCallables, type DocumentedExportFunction, type ParsedScript } from "./parsed-script.ts";
 import { byteLine } from "./text-scans.ts";
 import type { Finding } from "./types.ts";
@@ -18,7 +17,7 @@ export interface ExportedDeclaration {
 }
 
 // Precomputed JSDoc + signature pair used by every docblock rule (stale-param, missing-param,
-// missing-return, useless-docblock) so the parser runs only once per source file.
+// missing-return) so the parser runs only once per source file.
 interface DocumentedCallableBlock {
   doc: string;
   name: string;
@@ -160,7 +159,7 @@ export interface DocTagRuleSwitches {
 /*
  * Docblock rule pack. Walks every documented exported function from the shared syntax tree and
  * fires its sub-rules per block in a stable, deterministic emission order
- * (stale-param → missing-param → missing-return → bare-tag → useless-docblock).
+ * (stale-param → missing-param → missing-return → bare-tag).
  * `everyCallable` turns on the tag rules' widened coverage in `pushEveryCallableTagFindings`. On
  * every block, `docs.missing-return-tag`'s switch also infers a returned value from the body, and
  * each tag rule's switch also reports its tags that have no description (`pushBareTagFindings`).
@@ -173,7 +172,6 @@ export function analyseDocRules(file: SourceFile, findings: Finding[], parsed: P
     pushMissingParamFindings(file, documentedExport, findings);
     pushMissingReturnFinding(file, documentedExport, findings, everyCallable.isReturnTagEveryCallable);
     pushBareTagFindings(file, documentedExport, findings, everyCallable);
-    pushUselessDocblockFinding(file, documentedExport, findings);
   }
   pushEveryCallableTagFindings(file, parsed, everyCallable, findings);
 }
@@ -183,8 +181,8 @@ export function analyseDocRules(file: SourceFile, findings: Finding[], parsed: P
  * default exports, callables exported by a later export statement, documented class and
  * object-literal methods, and documented private and nested functions and callable constants,
  * reported at the same severity as exported function declarations. Each tag rule reads these
- * blocks only when its own `everyCallable` switch is on, and `docs.stale-param-tag` and
- * `docs.useless-docblock` never read them, so the default finding contract stays unchanged.
+ * blocks only when its own `everyCallable` switch is on, and `docs.stale-param-tag` never reads
+ * them, so the default finding contract stays unchanged.
  */
 function pushEveryCallableTagFindings(file: SourceFile, parsed: ParsedScript, everyCallable: DocTagRuleSwitches, findings: Finding[]): void {
   if (!everyCallable.isParamTagEveryCallable && !everyCallable.isReturnTagEveryCallable) {
@@ -332,14 +330,6 @@ function firstBareTag<T extends DocTagOccurrence>(tags: T[]): T | undefined {
   return tags.some((tag) => tag.isDescribed) ? undefined : tags[0];
 }
 
-// Docblock-flavoured useless-docblock rule. Targets `/** Foo */ export function foo` shapes
-// that fail the same restate test as line-comment docs, then reports a stable `docs.useless-docblock`.
-function pushUselessDocblockFinding(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[]): void {
-  if (isUselessDocblock(block.doc, block.name)) {
-    findings.push(docFinding({ ruleId: "docs.useless-docblock", message: `Docblock for \`${block.name}\` only restates the signature.`, file, line: block.line, symbol: block.name }));
-  }
-}
-
 // Single makeFinding factory for every docblock-rule finding. `parameter` is omitted (not set to
 // undefined) under exactOptionalPropertyTypes so the metadata shape stays stable and each
 // baseline fingerprint round-trips cleanly across runs.
@@ -436,25 +426,6 @@ function stripDocParamType(rest: string): string {
   }
   const end = rest.indexOf(String.fromCharCode(125));
   return end === -1 ? "" : rest.slice(end + 1).trim();
-}
-
-// Normalises the docblock to its lowercase word run and compares against the symbol's expanded
-// word list. Empty docblocks are considered useless; the equality fallback on
-// `normalizedIdentifier` catches the case where punctuation alone separates the two.
-function isUselessDocblock(doc: string, symbol: string): boolean {
-  const words = doc
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^\s*\*\s?/, "").trim())
-    .filter((line) => line !== "" && !line.startsWith("@"))
-    .join(" ")
-    .toLowerCase()
-    .replace(/[^a-z0-9 ]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!words) {
-    return true;
-  }
-  return words === splitIdentifierWords(symbol).join(" ") || normalizedIdentifier(words) === normalizedIdentifier(symbol);
 }
 
 // Walks upward from the declaration looking for `/** */` or `*` continuation lines. The boundary

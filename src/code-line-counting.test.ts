@@ -8,7 +8,6 @@ import { analyseFixture, analyseProject } from "./test-fixtures.ts";
 import type { Finding } from "./types.ts";
 
 const FUNCTION_LENGTH_LIMIT = 200;
-const GENERIC_PARAMETER_MIN_LINES = 30;
 const FILE_LENGTH_LIMIT = 1000;
 const SHORT_LOOP_BODY_LINES = 10;
 
@@ -52,14 +51,6 @@ test("function length leaves decorator lines out of a method's count", () => {
   const methodSteps = FUNCTION_LENGTH_LIMIT - 4;
   const source = `function traced(_target: object, _key: string): void {}\n\nexport class Ledger {\n  @traced\n  @traced\n  @traced\n  measure(value: number): number {\n${steps(methodSteps, "    ")}\n    return value;\n  }\n}\n`;
   assert.deepEqual(findingsFor(analyseFixture(source).findings, "size.function-length"), []);
-});
-
-test("the generic-parameter length gate counts code lines, so a JSDoc never makes a placeholder name report", () => {
-  const shortSteps = GENERIC_PARAMETER_MIN_LINES - 6;
-  const documented = analyseFixture(measureFunction(shortSteps, jsdoc(10)));
-  assert.deepEqual(findingsFor(documented.findings, "naming.generic-parameter"), []);
-  const longSteps = GENERIC_PARAMETER_MIN_LINES;
-  assert.equal(findingsFor(analyseFixture(measureFunction(longSteps)).findings, "naming.generic-parameter").length, 1);
 });
 
 test("the context-documentation length gate counts code lines, so documenting a long-looking function stays quiet", () => {

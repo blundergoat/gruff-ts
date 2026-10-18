@@ -14,7 +14,7 @@ import type { AnalysisOptions, AnalysisReport } from "./types.ts";
 
 const AWS_RULE_ID = "sensitive-data.aws-access-key";
 const JWT_RULE_ID = "sensitive-data.jwt-token";
-const NON_SENSITIVE_RULE_ID = "waste.console-log";
+const NON_SENSITIVE_RULE_ID = "waste.any-type";
 const AWS_FIXTURE_PATH = "secrets/aws.env";
 const AWS_SIBLING_FIXTURE_PATH = "secrets/aws-sibling.env";
 const JWT_FIXTURE_PATH = "secrets/jwt.env";

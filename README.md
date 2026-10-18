@@ -25,7 +25,7 @@ Used as a hook on an agent's output, gruff-ts is a forcing function rather than 
 | Runtime dependencies | `commander`, `tsx`, and `typescript` |
 | Package | `@blundergoat/gruff-ts` |
 | Binary | `gruff-ts` |
-| Rule catalogue | 112 rules across 11 pillars |
+| Rule catalogue | 82 rules across 11 pillars |
 | Primary config | `.gruff-ts.yaml`; `.gruff.json`, `.gruff.yaml`, and `.gruff.yml` are fallback files |
 | Analysis schema | `gruff.analysis.v3` |
 | Summary schema | `gruff.summary.v3` |
@@ -177,9 +177,6 @@ allowlists:
   acceptedAbbreviations:
     - api
     - cli
-  acceptedBooleanNames:
-    - verbose
-    - enabled
 
 rules:
   complexity.cyclomatic:
@@ -233,21 +230,21 @@ Semantics:
 
 ## Rules And Pillars
 
-The current catalogue contains 112 rules:
+The current catalogue contains 82 rules:
 
 | Pillar | Rules |
 | --- | ---: |
-| `complexity` | 2 |
+| `complexity` | 1 |
 | `dead-code` | 1 |
 | `design` | 5 |
-| `documentation` | 18 |
-| `maintainability` | 14 |
-| `modernisation` | 14 |
-| `naming` | 10 |
-| `security` | 24 |
+| `documentation` | 15 |
+| `maintainability` | 8 |
+| `modernisation` | 10 |
+| `naming` | 3 |
+| `security` | 23 |
 | `sensitive-data` | 8 |
 | `size` | 3 |
-| `test-quality` | 13 |
+| `test-quality` | 5 |
 
 Use `npx gruff-ts list-rules --format=json` for exact rule IDs, severities, confidence levels, remediation text, thresholds, and options.
 

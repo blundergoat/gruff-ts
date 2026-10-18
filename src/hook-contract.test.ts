@@ -18,7 +18,6 @@ const BIN = join(REPO_ROOT, "bin/gruff-ts");
 const SEVERITIES = new Set(["advisory", "warning", "error"]);
 const SCOPES = new Set(["line", "symbol", "file", "project"]);
 const HOOK_MEASUREMENT_RULE_IDS = new Set([
-  "complexity.cognitive",
   "complexity.cyclomatic",
   "design.deep-relative-import",
   "design.large-module-concentration",

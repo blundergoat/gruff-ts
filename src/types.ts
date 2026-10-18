@@ -109,15 +109,8 @@ export interface Config {
   schemaVersion: "gruff-ts.config.v0.1";
   ignoredPaths: string[];
   acceptedAbbreviations: Set<string>;
-  bannedGenericNames: Set<string>;
-  acceptedBooleanNames: Set<string>;
   acceptedClassFilePairs: Set<string>;
-  acceptedCasingPairs: Set<string>;
-  booleanPrefixes: Set<string>;
-  hungarianPrefixes: Set<string>;
   placeholderNames: Set<string>;
-  negativeBooleanAllowed: Set<string>;
-  knownAcronyms: Set<string>;
   /** Project rationale and tracking references such as milestone ids, from `allowlists.trackingTokens`; none ship by default. */
   trackingTokens: RegExp[];
   /** Per-command `--fail-on` defaults from `failOn:`; an empty map means each command keeps its binary default (ADR-004). */

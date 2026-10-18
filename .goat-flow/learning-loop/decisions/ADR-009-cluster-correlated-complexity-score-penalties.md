@@ -14,6 +14,9 @@ The cluster originally also held the `design.god-function` composite; ADR-011
 retired that rule, so clustering now rests on the real `size.*` + `complexity.*`
 findings the composite only ever re-described.
 
+Precision-floor M02 retired `complexity.cognitive` on 2026-10-18 (ADR-021), so the cluster now holds
+`complexity.cyclomatic` and `size.function-length`.
+
 ## Context
 
 M06 addressed high-volume rubric noise without disabling rules. The complexity

@@ -508,7 +508,6 @@ function hookMetadata(finding: Finding): Record<string, unknown> {
 function thresholdMetadataFor(finding: Finding): Record<string, unknown> | undefined {
   const metadata = finding.metadata;
   switch (finding.ruleId) {
-    case "complexity.cognitive":
     case "complexity.cyclomatic":
       return metricMetadata(metadata.complexity, metadata.threshold, "points");
     case "design.deep-relative-import":

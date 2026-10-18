@@ -10,24 +10,24 @@ import { recordHistory, sortedUniqueFindings } from "./baseline.ts";
 import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan } from "./baseline-identity.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError, changedRegionScope, filterChangedFindings, filterScopedDiagnostics, type ChangedRegionScope } from "./changed-regions.ts";
-import { loadConfig, optionBoolean, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
+import { loadConfig, optionBoolean, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { applyInlineSuppressions } from "./inline-suppressions.ts";
 import { applyBuiltInTestPathSkip, partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { applyConfiguredSeverity, finding, parameterNames, parameterParts } from "./findings-helpers.ts";
+import { applyConfiguredSeverity, finding, parameterNames } from "./findings-helpers.ts";
 import { commentRecords, type CommentRecord } from "./comment-scanner.ts";
 import { analyseArchitectureRules, analyseCircularImportRule, buildProjectIndex, CIRCULAR_IMPORT_RULE_ID, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
 import { analyseBlockMeasures, analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks, measuredOnlyFunctionBlocks } from "./blocks.ts";
 import { bandedFields, LOWER_BAND_FILE, SPLIT_FILE } from "./limit-band.ts";
-import { analyseClassRules, analyseAcronymCase, analyseInconsistentCasing, analyseInterfaceFields, collectDeclaredIdentifiers } from "./class-rules.ts";
+import { analyseClassRules } from "./class-rules.ts";
 import { analyseDeadCode, analyseUnreachable, analyseUnusedImports } from "./dead-code-rules.ts";
 import { analyseCommentQualityRules } from "./comment-rules.ts";
 import { analyseDocRules, analyseFileOverviewDoc, analyseInterfaceDocs } from "./doc-rules.ts";
 import { analyseLineRules } from "./line-rules.ts";
 import { analyseSecurityFlow } from "./security-flow-rules.ts";
-import { pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
+import { pushIdentifierQualityAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { analyseTestBlock } from "./test-block-rules.ts";
 import { analyseGithubActionsRules } from "./github-actions-rules.ts";
 import { analyseProjectConfigRules } from "./project-config-rules.ts";
@@ -667,25 +667,17 @@ const BLOCK_MEASURE_RULE_IDS = [
   "size.function-length",
   "size.parameter-count",
   "complexity.cyclomatic",
-  "complexity.cognitive",
 ] as const;
 
 const BLOCK_RULE_IDS = [
   ...BLOCK_MEASURE_RULE_IDS,
-  "naming.generic-function",
   "docs.missing-exported-function-doc",
   "docs.missing-internal-function-doc",
-  "waste.empty-function",
-  "waste.unused-parameter",
-  "waste.redundant-variable",
   "waste.useless-return",
 ] as const;
 
 const PARAMETER_NAMING_RULE_IDS = [
-  "naming.boolean-prefix",
-  "naming.generic-parameter",
   "naming.identifier-quality",
-  "naming.negative-boolean",
   "naming.short-variable",
 ] as const;
 
@@ -693,39 +685,24 @@ const DOCBLOCK_RULE_IDS = [
   "docs.missing-param-tag",
   "docs.missing-return-tag",
   "docs.stale-param-tag",
-  "docs.useless-docblock",
-] as const;
-
-const INTERFACE_FIELD_RULE_IDS = [
-  "naming.boolean-prefix",
-  "naming.negative-boolean",
 ] as const;
 
 // Every rule id `analyseCommentQualityRules` can emit - including `docs.fixture-purpose-missing`
 // via `pushFixturePurposeFindings` - so the group gate never silences an enabled rule.
 const COMMENT_QUALITY_RULE_IDS = [
   "docs.fixture-purpose-missing",
-  "docs.magic-threshold-without-rationale",
   "docs.missing-error-behavior-doc",
   "docs.missing-invariant-doc",
   "docs.missing-side-effect-doc",
   "docs.missing-why-for-complex-code",
-  "docs.stale-comment",
   "docs.suppression-without-rationale",
   "docs.todo-without-tracking",
-  "docs.useless-docblock",
 ] as const;
 
 const CLASS_RULE_IDS = [
   "docs.missing-public-doc",
   "naming.class-file-mismatch",
-  "modernisation.public-property",
   "modernisation.readonly-property-candidate",
-] as const;
-
-const IDENTIFIER_INVENTORY_RULE_IDS = [
-  "naming.acronym-case",
-  "naming.inconsistent-casing",
 ] as const;
 
 const SECURITY_FLOW_RULE_IDS = [
@@ -749,7 +726,6 @@ const BLOCK_DEPENDENT_RULE_IDS = [
   ...PARAMETER_NAMING_RULE_IDS,
   ...TEST_QUALITY_RULE_IDS,
   ...COMMENT_QUALITY_RULE_IDS,
-  ...IDENTIFIER_INVENTORY_RULE_IDS,
 ];
 
 const TYPESCRIPT_RULE_IDS = [
@@ -902,19 +878,9 @@ function analyseTypeScriptRules(file: SourceFile, source: string, comments: Comm
     }
   });
   runRulePass(config, "docs.missing-interface-doc", () => analyseInterfaceDocs(file, source, codeSource, findings));
-  runRuleGroupPass(config, INTERFACE_FIELD_RULE_IDS, () => analyseInterfaceFields(file, source, codeSource, config, findings));
   runRuleGroupPass(config, COMMENT_QUALITY_RULE_IDS, () => analyseCommentQualityRules({ file, source, codeSource, blocks, comments, config, findings }));
   runRuleGroupPass(config, CLASS_RULE_IDS, () => analyseClassRules(file, source, codeSource, config, findings, parsed));
   runRulePass(config, "dead-code.unused-private-method", () => analyseDeadCode(file, codeSource, findings));
-  runRuleGroupPass(config, IDENTIFIER_INVENTORY_RULE_IDS, () => {
-    // A normal deep script scan always supplies the shared parse; a missing result must not reparse.
-    if (!parsed) {
-      return;
-    }
-    const inventory = collectDeclaredIdentifiers(source, codeSource, parsed);
-    runRulePass(config, "naming.inconsistent-casing", () => analyseInconsistentCasing(file, inventory, config, findings));
-    runRulePass(config, "naming.acronym-case", () => analyseAcronymCase(file, inventory, config, findings));
-  });
 }
 
 // Runs a single-rule pass only when that exact resolved rule id is enabled.
@@ -957,8 +923,8 @@ function analyseBlocks(file: SourceFile, source: string, codeSource: string, blo
 }
 
 /*
- * Per-parameter naming-rule fanout. Each parameter is checked for short-name / placeholder forms;
- * typed booleans get the extra prefix and negative-name checks. Reports findings to the shared sink.
+ * Per-parameter naming-rule fanout. Each parameter is checked for short-name and placeholder forms.
+ * Reports findings to the shared sink.
  */
 function pushParameterNamingFindings(context: BlockRuleContext): void {
   const line = context.block.declarationLine;
@@ -969,13 +935,6 @@ function pushParameterNamingFindings(context: BlockRuleContext): void {
       pushShortVariableAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
     }
     pushIdentifierQualityAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
-    if (isBooleanParameter(parameter.raw)) {
-      pushBooleanPrefixAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
-      pushNegativeBooleanAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
-    }
-    if (isGenericParameterCandidate(context, params.length, parameter.name)) {
-      pushGenericParameterAt(context.file, line, parameter.name, context.findings);
-    }
   }
 }
 
@@ -1016,50 +975,4 @@ function isComparatorCallable(name: string, codeBody: string): boolean {
     /\breturn\s+a\b[\s\S]*?(?:-\s*b\b|[<>]=?\s*b\b)/.test(codeBody) ||
     /\breturn\s+b\b[\s\S]*?(?:-\s*a\b|[<>]=?\s*a\b)/.test(codeBody)
   );
-}
-
-// Generic-parameter rule is context-gated: only fires when the surrounding function is itself
-// large enough to deserve attention (long, complex, or many parameters). Keeps noise down on
-// trivial helpers that legitimately accept a `value` argument.
-function isGenericParameterCandidate(context: BlockRuleContext, paramCount: number, name: string): boolean {
-  if (!context.config.placeholderNames.has(name.toLowerCase())) {
-    return false;
-  }
-  const minParameters = optionNumber(context.config, "naming.generic-parameter", "minParameters", 3);
-  const minLineCount = optionNumber(context.config, "naming.generic-parameter", "minLineCount", 30);
-  const minCyclomatic = optionNumber(context.config, "naming.generic-parameter", "minCyclomatic", 8);
-  return (
-    paramCount >= minParameters ||
-    context.block.codeLineCount >= minLineCount ||
-    context.cyclomatic >= minCyclomatic
-  );
-}
-
-// Only called after `isGenericParameterCandidate` has gated the placeholder check on the function's
-// complexity and length - reaching this helper means the rule decided the finding is wanted.
-// Reports the stable `naming.generic-parameter` finding.
-function pushGenericParameterAt(file: SourceFile, line: number, name: string, findings: Finding[]): void {
-  findings.push(
-    makeFinding({
-      ruleId: "naming.generic-parameter",
-      message: `Parameter \`${name}\` uses a placeholder name in a function that meets context-gating thresholds.`,
-      filePath: file.displayPath,
-      line,
-      severity: "advisory",
-      pillar: "naming",
-      confidence: "medium",
-      symbol: name,
-      remediation: "Use a name that describes the parameter's role.",
-      metadata: { identifierName: name, surface: "parameter" },
-    }),
-  );
-}
-
-// Two positive cases, read from the parameter's own top-level annotation and default: a type that
-// starts with `boolean`, including a union the formatter opened with a leading `|`, or a default that is
-// exactly `true`/`false`. A boolean field inside an inline object type is that object's member, and a cast
-// such as `= true as unknown` is not a boolean default.
-function isBooleanParameter(raw: string): boolean {
-  const { typeText, initializer } = parameterParts(raw);
-  return /^(?:\|\s*)?boolean\b/.test(typeText) || /^(?:true|false)$/.test(initializer);
 }

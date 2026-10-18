@@ -7,7 +7,6 @@ import { type SourceFile } from "./discovery.ts";
 import { escapeRegex } from "./findings-helpers.ts";
 import { pushStaticAnalysisRedundantTestFindings, type StaticAnalysisSourceContext } from "./static-analysis-redundant-rules.ts";
 import { countMatches, matchingCloseParen } from "./text-scans.ts";
-import { testStructureSyntax } from "./test-structure-syntax.ts";
 import type { Finding, Severity } from "./types.ts";
 
 // Provisional rule output gathered during a test-block walk. Built before the surrounding context
@@ -18,17 +17,9 @@ interface TestBlockCheck {
   severity: Severity;
 }
 
-// Captures one assertion matcher plus the capture indexes that hold actual expression and literal.
-interface MagicNumberAssertionPattern {
-  pattern: RegExp;
-  expressionIndex: number;
-  matcherIndex?: number;
-  valueIndex: number;
-}
-
 /*
  * Reached when `block.isTest` is true. Four sub-passes in a stable, deterministic order: assertion
- * quality, mock quality, global-state-mutation, structural rules.
+ * quality, mock quality, global-state-mutation, loop structure.
  */
 export function analyseTestBlock(file: SourceFile, block: FunctionBlock, findings: Finding[], staticContext?: StaticAnalysisSourceContext): void {
   const body = block.codeBody;
@@ -39,54 +30,26 @@ export function analyseTestBlock(file: SourceFile, block: FunctionBlock, finding
   analyseTestStructureChecks(file, block, body, findings);
 }
 
-// Four assertion-shape checks (trivial, snapshot-only, no-throw-only, exception-type-only)
-// plus the magic-number sub-pass. Reports findings with stable test-block metadata.
+// The trivial-assertion check plus the static-analysis redundancy sub-pass. Reports findings with
+// stable test-block metadata.
 function analyseAssertionQuality(file: SourceFile, block: FunctionBlock, body: string, staticContext: StaticAnalysisSourceContext, findings: Finding[]): void {
   for (const check of assertionQualityChecks(block, body)) {
     findings.push(blockFinding({ ruleId: check.ruleId, message: check.message, file, block, severity: check.severity, pillar: "test-quality" }));
   }
-  pushMagicNumberAssertionFindings(file, block, body, findings);
   pushStaticAnalysisRedundantTestFindings(file, block, block.body, body, staticContext, findings);
 }
 
-// Lazy evaluation: only checks whose `active` predicate fired are returned. The five rule IDs are
-// part of the public test-quality pillar; their ordering here is the stable emission order.
+// Lazy evaluation: only checks whose `active` predicate fired are returned. The rule ID is part of
+// the public test-quality pillar; this list's order is the stable emission order.
 function assertionQualityChecks(block: FunctionBlock, body: string): TestBlockCheck[] {
   const testName = block.name;
   const checks: Array<TestBlockCheck & { active: boolean }> = [
     { active: hasTrivialAssertion(body), ruleId: "test-quality.trivial-assertion", message: `Test \`${testName}\` contains an assertion that compares a value to itself.`, severity: "warning" },
-    { active: isSnapshotOnlyTest(body), ruleId: "test-quality.snapshot-only-test", message: `Test \`${testName}\` relies only on snapshot assertions.`, severity: "advisory" },
-    { active: isNoThrowOnlyTest(body), ruleId: "test-quality.no-throw-only-test", message: `Test \`${testName}\` only verifies that code does not throw.`, severity: "advisory" },
-    { active: hasExceptionTypeOnlyAssertion(body), ruleId: "test-quality.exception-type-only", message: `Test \`${testName}\` checks only the exception type.`, severity: "advisory" },
   ];
   return checks.filter((check) => check.active).map(({ active: _active, ...check }) => check);
 }
 
-/*
- * Targets `expect(x).toBe(42)` / `assert.equal(x, 42)` patterns where 42 has no name. Reports
- * `test-quality.magic-number-assertion` with stable literal metadata for downstream review tools.
- */
-function pushMagicNumberAssertionFindings(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
-  if (isConstantContractTestName(block.name)) {
-    return;
-  }
-  for (const assertion of magicNumberAssertions(body)) {
-    findings.push(
-      blockFindingWithMetadata({
-        ruleId: "test-quality.magic-number-assertion",
-        message: `Test \`${block.name}\` asserts against unexplained numeric literal ${assertion.value}.`,
-        file,
-        block,
-        severity: "advisory",
-        pillar: "test-quality",
-        metadata: { value: assertion.value },
-      }),
-    );
-  }
-}
-
-// Two distinct findings emitted from one walk: per-unused-mock and a single mock-only flag.
-// Reports `test-quality.unused-mock` / `test-quality.mock-only-test` with stable test-block metadata.
+// Reports `test-quality.unused-mock` for each mock created but never used, with stable test-block metadata.
 function analyseMockQuality(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
   const unusedMocks = unusedMockVariables(body);
   for (const mock of unusedMocks) {
@@ -102,9 +65,6 @@ function analyseMockQuality(file: SourceFile, block: FunctionBlock, body: string
       }),
     );
   }
-  if (isMockOnlyTest(body)) {
-    findings.push(blockFinding({ ruleId: "test-quality.mock-only-test", message: `Test \`${block.name}\` only verifies mock interaction.`, file, block, severity: "advisory", pillar: "test-quality" }));
-  }
 }
 
 // Reports the stable `test-quality.global-state-mutation` finding contract for state leaks.
@@ -114,31 +74,16 @@ function analyseGlobalStateMutation(file: SourceFile, block: FunctionBlock, body
   }
 }
 
-// Structural checks for fixed waits, loops, conditional assertions and committed focus/skip.
-// Reports each detected structural issue as a stable test-quality finding.
+// Reports the stable `test-quality.loop-in-test` finding for loop logic that hides which iteration failed. The finding
+// is medium confidence: parametrized tests are a legitimate pattern and the label heuristic cannot see every message
+// shape (helper-built messages, labels more than one local away).
 function analyseTestStructureChecks(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
-  const syntax = testStructureSyntax(block.callableNode);
-  const checks: Array<[string, boolean, string]> = [
-    ["test-quality.sleep-in-test", syntax?.hasFixedWait ?? /\b(setTimeout|sleep|waitForTimeout)\s*\(/.test(body), "Test sleeps instead of synchronising on behaviour."],
-    ["test-quality.loop-in-test", controlFlowContainsNonFixtureLoop(body), "Test contains loop logic that hides which iteration failed."],
-    ["test-quality.conditional-logic", syntax?.hasConditionalAssertion ?? controlFlowContainsAssertion(body, /\b(?:if|switch)\b/g), "Test contains conditional logic around assertions."],
-    ["test-quality.only-skip", syntax?.hasCommittedSkip ?? /\.(only|skip)\s*\(/.test(body), "Focused or skipped test is committed."],
-  ];
-  for (const [ruleId, active, message] of checks) {
-    if (!active) {
-      continue;
-    }
-    // Loop findings report at medium confidence: parametrized tests are a legitimate pattern and
-    // the label heuristic cannot see every message shape (helper-built messages, labels more than one local away).
-    if (ruleId === "test-quality.loop-in-test") {
-      findings.push(blockFindingWithMetadata({ ruleId, message, file, block, severity: "advisory", pillar: "test-quality", metadata: {} }));
-      continue;
-    }
-    findings.push(blockFinding({ ruleId, message, file, block, severity: "advisory", pillar: "test-quality" }));
+  if (controlFlowContainsNonFixtureLoop(body)) {
+    findings.push(blockFindingWithMetadata({ ruleId: "test-quality.loop-in-test", message: "Test contains loop logic that hides which iteration failed.", file, block, severity: "advisory", pillar: "test-quality", metadata: {} }));
   }
 }
 
-// Loop variant of `controlFlowContainsAssertion` that suppresses fixture loops (table-test pattern):
+// Detects a loop that wraps an assertion, suppressing fixture loops (table-test pattern):
 // loops over a literal array or `Object.entries|keys|values` of a literal where every code path
 // inside the body reaches an assertion. The existing rule fires on ANY loop wrapping an assertion;
 // this widens the precision so parametric coverage doesn't read as control-flow noise.
@@ -387,19 +332,6 @@ function isFixtureDiscoveryCall(initializer: string): boolean {
   return /\b(?:glob|globSync|readdir|readdirSync|discover[A-Za-z0-9_$]*|find[A-Za-z0-9_$]*|list[A-Za-z0-9_$]*)\s*\(/.test(initializer);
 }
 
-// Structural loop/branch findings now require the control flow to wrap an assertion; setup-only
-// conditionals and fixture-building loops are noisy but not direct test-quality failures.
-function controlFlowContainsAssertion(source: string, pattern: RegExp): boolean {
-  for (const match of source.matchAll(pattern)) {
-    const start = match.index ?? 0;
-    const segment = controlFlowSegment(source, start);
-    if (hasAssertion(segment) && !isInvariantAssertionConditional(source, start, segment)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 // Accepts guard conditionals whose assertion proves a shared invariant rather than branch policy.
 function isInvariantAssertionConditional(source: string, start: number, segment: string): boolean {
   const condition = segment.slice(0, Math.max(0, segment.indexOf("{"))).trim();
@@ -509,118 +441,6 @@ function normalizeAssertionExpression(expression: string): string {
   return expression.trim().replace(/;$/, "");
 }
 
-// Strips every snapshot-shaped assertion plus `expect.assertions(...)` and re-checks whether any
-// assertion remains. A body that empties out is flagged for `test-quality.snapshot-only-test`,
-// since snapshot fixtures alone don't constrain behaviour.
-function isSnapshotOnlyTest(source: string): boolean {
-  if (!/\.\s*toMatch(?:Inline)?Snapshot\s*\(/.test(source)) {
-    return false;
-  }
-  const withoutSnapshots = withoutCallChains(source, /\bexpect\s*(?:<[^;]*?>\s*)?\(/g, /^\s*\.\s*toMatch(?:Inline)?Snapshot\s*\(/)
-    .replace(/\bexpect\.(?:assertions|hasAssertions)\s*\([^)]*\)\s*;?/g, "");
-  return !hasAssertion(withoutSnapshots);
-}
-
-// Same shape as `isSnapshotOnlyTest` but for `doesNotThrow` / `not.toThrow`. A test that asserts
-// only the absence of an exception is weak - `test-quality.no-throw-only-test` reports it so
-// authors can add a real behaviour assertion alongside.
-function isNoThrowOnlyTest(source: string): boolean {
-  if (!/\bassert\.doesNotThrow\s*\(|\.\s*not\s*\.\s*toThrow\s*\(/.test(source)) {
-    return false;
-  }
-  const withoutAssertDoesNotThrow = withoutCallChains(source, /\bassert\.doesNotThrow\s*\(/g);
-  const withoutNoThrow = withoutCallChains(withoutAssertDoesNotThrow, /\bexpect\s*(?:<[^;]*?>\s*)?\(/g, /^\s*\.\s*not\s*\.\s*toThrow\s*\(/)
-    .replace(/\bexpect\.(?:assertions|hasAssertions)\s*\([^)]*\)\s*;?/g, "");
-  return !hasAssertion(withoutNoThrow);
-}
-
-/*
- * Removes each call that `opener` starts, measured to its own closing parenthesis, and when `chainedMatcher` is
- * given only a call whose next link is that matcher, measured to the matcher's closing parenthesis. `source` is
- * masked, so string, template and comment bodies are blank and parentheses are the only structure to balance. A
- * lazy regex cannot do this: it starts at an earlier statement's `expect(` and deletes a real assertion, and it
- * stops at the first `)` inside a nested call or callback. An unclosed call is left in place rather than guessed.
- */
-function withoutCallChains(source: string, opener: RegExp, chainedMatcher?: RegExp): string {
-  let result = "";
-  let copiedUntil = 0;
-  for (const match of source.matchAll(opener)) {
-    const start = match.index ?? 0;
-    if (start < copiedUntil) {
-      continue;
-    }
-    const callClose = matchingCloseParen(source, start + match[0].length - 1);
-    if (callClose === undefined) {
-      continue;
-    }
-    let end = callClose + 1;
-    if (chainedMatcher) {
-      const link = source.slice(end).match(chainedMatcher);
-      const linkClose = link ? matchingCloseParen(source, end + link[0].length - 1) : undefined;
-      if (linkClose === undefined) {
-        continue;
-      }
-      end = linkClose + 1;
-    }
-    const terminator = source.slice(end).match(/^\s*;/)?.[0] ?? "";
-    result += source.slice(copiedUntil, start);
-    copiedUntil = end + terminator.length;
-  }
-  return result + source.slice(copiedUntil);
-}
-
-// Pulls every numeric expected value out of `expect(...).toBe(n)` and `assert.equal(actual, n)`
-// shapes. Small cardinalities and length/count matchers are excluded because the literal often is
-// the test contract; larger opaque values still surface for naming or rationale.
-function magicNumberAssertions(source: string): Array<{ value: number }> {
-  return MAGIC_NUMBER_ASSERTION_PATTERNS.flatMap((candidate) => magicNumberAssertionMatches(source, candidate));
-}
-
-const MAGIC_NUMBER_ASSERTION_PATTERNS: MagicNumberAssertionPattern[] = [
-  { pattern: /\bexpect\s*\(\s*([^)]+?)\s*\)\s*\.\s*(to(?:Be|Equal|HaveLength|HaveCount))\s*\(\s*(-?\d+(?:\.\d+)?)\s*\)/g, expressionIndex: 1, matcherIndex: 2, valueIndex: 3 },
-  { pattern: /\bassert\.(?:equal|strictEqual|deepEqual)\s*\(\s*([^,\n]+?)\s*,\s*(-?\d+(?:\.\d+)?)(?:\s*,|\s*\))/g, expressionIndex: 1, valueIndex: 2 },
-];
-
-// Extracts reportable numeric literals for one assertion grammar while keeping HTTP statuses quiet.
-function magicNumberAssertionMatches(source: string, candidate: MagicNumberAssertionPattern): Array<{ value: number }> {
-  const results: Array<{ value: number }> = [];
-  for (const match of source.matchAll(candidate.pattern)) {
-    const expression = match[candidate.expressionIndex] ?? "";
-    const matcher = candidate.matcherIndex === undefined ? "" : match[candidate.matcherIndex] ?? "";
-    const expectedNumber = Number(match[candidate.valueIndex] ?? "0");
-    if (!isIgnoredMagicNumberAssertion(expression, matcher, expectedNumber)) {
-      results.push({ value: expectedNumber });
-    }
-  }
-  return results;
-}
-
-// Centralises the rule's non-findings so cardinal, count, and HTTP-status exemptions stay aligned.
-function isIgnoredMagicNumberAssertion(expression: string, matcher: string, expectedNumber: number): boolean {
-  return isSmallCardinal(expectedNumber) || isLengthOrCountMatcher(matcher) || isHttpStatusAssertion(expression, expectedNumber);
-}
-
-// Small integer cardinals usually express the expected case count directly.
-function isSmallCardinal(cardinal: number): boolean {
-  return Number.isInteger(cardinal) && cardinal >= -1 && cardinal <= 3;
-}
-
-// Length/count matchers already name the measurement, so the numeric literal is the assertion.
-function isLengthOrCountMatcher(matcher: string): boolean {
-  return matcher === "toHaveLength" || matcher === "toHaveCount";
-}
-
-// Contract-named tests may assert the documented number directly; the name supplies the rationale.
-function isConstantContractTestName(name: string): boolean {
-  return /\b(?:constant|threshold|limit|budget|default|contract)\b/i.test(name);
-}
-
-// HTTP response status codes are intentionally numeric at assertion sites; naming every 200/404
-// would add ceremony without making the test clearer.
-function isHttpStatusAssertion(expression: string, expectedNumber: number): boolean {
-  return Number.isInteger(expectedNumber) && expectedNumber >= 100 && expectedNumber <= 599 && /\b(?:status|statusCode)\b/.test(expression);
-}
-
 // `const mockX = vi.fn(...)` declarations whose binding appears only once in the body - that one
 // occurrence is the declaration itself, so the mock is created but never wired in. Reports the
 // names for `test-quality.unused-mock` to anchor on.
@@ -636,26 +456,6 @@ function unusedMockVariables(source: string): string[] {
     }
   }
   return names;
-}
-
-// Three gates in order: a mock factory must exist, a mock-call matcher must be asserted, and
-// *every* `expect(target)` argument must look like a mock/stub/spy name. All three together
-// signal a test that only verifies its own scaffolding - flagged for `test-quality.mock-only-test`.
-function isMockOnlyTest(source: string): boolean {
-  if (!/\b(?:vi|jest)\.fn\s*\(|\b(?:createMock|mock|sinon\.stub)\s*\(/.test(source)) {
-    return false;
-  }
-  if (!/\.(?:toHaveBeenCalled|toHaveBeenCalledWith|toHaveBeenNthCalledWith|toBeCalled|toBeCalledWith)\s*\(/.test(source)) {
-    return false;
-  }
-  const targets = [...source.matchAll(/\bexpect\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)/g)].map((match) => match[1] ?? "");
-  return targets.length > 0 && targets.every((target) => /(?:mock|stub|spy)$/i.test(target));
-}
-
-// `toThrow(Error)` / `assert.throws(fn, Error)` constrain only the constructor, not the message
-// or properties. Reports `test-quality.exception-type-only` so authors tighten the assertion.
-function hasExceptionTypeOnlyAssertion(source: string): boolean {
-  return /\.toThrow\s*\(\s*(?:Error|[A-Z][A-Za-z0-9_$]*Error)\s*\)/.test(source) || /\bassert\.throws\s*\([^,\n]+,\s*(?:Error|[A-Z][A-Za-z0-9_$]*Error)\s*\)/.test(source);
 }
 
 // Three known anti-patterns: writing to `process.env`, writing to `globalThis.*`, or reassigning

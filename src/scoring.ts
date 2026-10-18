@@ -194,7 +194,7 @@ function findingWeight(finding: Finding): number {
   return severityPenalty(finding.severity) * confidenceWeight(finding.confidence);
 }
 
-const CORRELATED_COMPLEXITY_RULE_IDS = new Set(["complexity.cognitive", "complexity.cyclomatic", "size.function-length"]);
+const CORRELATED_COMPLEXITY_RULE_IDS = new Set(["complexity.cyclomatic", "size.function-length"]);
 
 // Correlated complexity findings describe one hard-to-review function.
 // Invariant: detailed reports keep every rule finding while grade math splits one max-severity penalty.

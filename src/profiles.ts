@@ -81,7 +81,6 @@ const BUILT_IN_PROFILE_SPECS: readonly BuiltInProfile[] = [
     description: "Every pillar enabled with tightened size, complexity, and design thresholds for high-bar repositories.",
     enabledPillars: ALL_PILLARS,
     thresholds: {
-      "complexity.cognitive": 10,
       "design.deep-relative-import": 1,
       "design.large-module-concentration": 40,
       "size.file-length": 400,

@@ -59,10 +59,9 @@ test("renderDefaultConfig explains and seeds the family abbreviation allowlist",
   assert.equal(generatedConfig.includes(expectedFamilyAbbreviationBlock), true);
 });
 
-test("renderDefaultConfig documents exact naming-pair allowlists", () => {
+test("renderDefaultConfig documents the exact class-file pair allowlist", () => {
   const generatedConfig = renderDefaultConfig();
   assert.match(generatedConfig, /acceptedClassFilePairs: \[focusModeTranscript:TranscriptFocusController\]/);
-  assert.match(generatedConfig, /acceptedCasingPairs: \[note_id:noteId\]/);
 });
 
 test("RULE_OPTION_DEFAULTS mirrors live optionNumber and optionBoolean call-site defaults", () => {

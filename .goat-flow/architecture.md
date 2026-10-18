@@ -6,7 +6,7 @@ gruff-ts governs AI-generated code. Its reason for existing is the coding-agent 
 
 ## System Overview
 
-`gruff-ts` is a dependency-light Node.js/ESM CLI that statically analyses TypeScript/JavaScript projects and common config/text assets, then emits findings, reports, baselines, SARIF, and rule catalogue metadata. The current catalogue exposes 112 rules across 11 public pillars. The runtime is split across focused modules under `src/`, with `src/cli.ts` as a thin shell that wires `analyse` from `src/analyser.ts` into the commander program built by `src/cli-program.ts`. The three runtime dependencies have distinct jobs: `commander` owns the CLI, `tsx` launches the shipped TypeScript source, and `typescript` provides syntax-only parsing without type checking or emit. Baseline output is byte-stable; analysis reports are byte-stable after removing only the intentionally volatile `run.generatedAt` timestamp.
+`gruff-ts` is a dependency-light Node.js/ESM CLI that statically analyses TypeScript/JavaScript projects and common config/text assets, then emits findings, reports, baselines, SARIF, and rule catalogue metadata. The current catalogue exposes 82 rules across 11 public pillars. The runtime is split across focused modules under `src/`, with `src/cli.ts` as a thin shell that wires `analyse` from `src/analyser.ts` into the commander program built by `src/cli-program.ts`. The three runtime dependencies have distinct jobs: `commander` owns the CLI, `tsx` launches the shipped TypeScript source, and `typescript` provides syntax-only parsing without type checking or emit. Baseline output is byte-stable; analysis reports are byte-stable after removing only the intentionally volatile `run.generatedAt` timestamp.
 
 Twelve command surfaces are registered in `src/cli-program.ts`:`buildProgram`:
 
@@ -29,10 +29,10 @@ Twelve command surfaces are registered in `src/cli-program.ts`:`buildProgram`:
 
 1. `src/cli-program.ts`:`buildProgram` wires Commander; the `.action(...)` callback for `analyse` calls `normalizeOptions` then the `analyse` callback passed in by `src/cli.ts`.
 2. `src/analyser.ts`:`analyse` loads config, discovers sources, applies optional git scope, parses each script once through `src/parsed-script.ts`:`parseScript`, runs per-file and project rules, applies any requested baseline, sorts and deduplicates findings, optionally records full-scan history, and returns `AnalysisReport`.
-3. `src/analyser.ts`:`analyseSource` fans out to text rules for every supported asset and syntax-aware rules for TypeScript/JavaScript. The shared `ParsedScript` supplies parse diagnostics, callable discovery, security flow, documentation exports, declaration owners, and complexity metrics without another parse.
+3. `src/analyser.ts`:`analyseSource` fans out to text rules for every supported asset and syntax-aware rules for TypeScript/JavaScript. The shared `ParsedScript` supplies parse diagnostics, callable discovery, security flow, documentation exports, and complexity metrics without another parse.
 4. `src/project-rules.ts`:`buildProjectIndex` plus `analyseArchitectureRules` and `analyseTestAdequacyRules` build a deterministic index from already-read discovered files for cross-file rules: relative import depth, simple cycles, large-module concentration, missing-nearby-tests.
-5. `src/parsed-script.ts` discovers callable ranges and match points from one TypeScript syntax tree; `src/blocks.ts` applies size, syntax-aware complexity, naming, and documentation rules to those owned ranges.
-6. `src/class-rules.ts` groups casing candidates by deterministic declaration or lexical owner for `naming.inconsistent-casing`, while `naming.acronym-case` deliberately retains its file-wide comparison.
+5. `src/parsed-script.ts` discovers callable ranges and match points from one TypeScript syntax tree; `src/blocks.ts` applies size, syntax-aware complexity, documentation, and useless-return rules to those owned ranges.
+6. `src/class-rules.ts` applies the class-level rules: exported-declaration docs, class/file-name mismatch, and readonly-property candidates.
 7. `src/report-renderers.ts`:`renderReport` switches on `OutputFormat`; severity-to-exit mapping lives in `src/scoring.ts`:`exitFor` (2 if any run-invalidating diagnostic, 1 if `--fail-on` tripped, else 0; `bounded-deep-scan` and `baseline-collision` set `invalidatesRun: false` and never force 2).
 
 ## Trust Boundaries

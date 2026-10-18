@@ -19,7 +19,6 @@ const RULE_OPTION_DEFAULTS: Readonly<Record<string, Readonly<Record<string, numb
   "design.large-module-concentration": { minFiles: 4, minLines: 80 },
   "docs.missing-param-tag": { everyCallable: false },
   "docs.missing-return-tag": { everyCallable: false },
-  "naming.generic-parameter": { minCyclomatic: 8, minLineCount: 30, minParameters: 3 },
 };
 
 // Default starter list copied from `defaultConfig()` in config.ts. Generated separately because
@@ -268,38 +267,13 @@ function renderAllowlistsSection(): string {
     "  acceptedAbbreviations:",
     // Each family term is visible so a user can review or replace the complete list in generated YAML.
     ...DEFAULT_ACCEPTED_ABBREVIATIONS.map((abbreviation) => `    - ${abbreviation}`),
-    "  # Names that trigger naming.generic-function. Each key replaces the built-in",
-    "  # default when present; an empty list disables that rule's blacklist branch.",
-    "  # Default: [process, handle, doit, run, execute, manage]",
-    "  # bannedGenericNames: [process, handle, doit, run, execute, manage]",
-    "  # Exact public/CLI/DTO boolean names accepted by naming.boolean-prefix.",
-    "  # Default: [all, apply, check, dev, enabled, force, fresh, harness, json, ok, verbose, yes]",
-    "  # acceptedBooleanNames: [all, apply, check, dev, enabled, force, fresh, harness, json, ok, verbose, yes]",
     "  # Exact fileBase:ClassName pairs accepted by naming.class-file-mismatch.",
     "  # Default: []",
     "  # acceptedClassFilePairs: [focusModeTranscript:TranscriptFocusController]",
-    "  # Exact wire_name:internalName alias pairs accepted within one naming owner.",
-    "  # Default: []",
-    "  # acceptedCasingPairs: [note_id:noteId]",
-    "  # Accepted prefixes for boolean identifiers. Names without one of these",
-    "  # prefixes trigger naming.boolean-prefix.",
-    "  # Default: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires, allow, check, enable, exclude, include, omit, skip, with, without]",
-    "  # booleanPrefixes: [is, has, can, should, does, did, was, will, may, in, scan, supports, requires, allow, check, enable, exclude, include, omit, skip, with, without]",
-    "  # Hungarian type-style prefixes flagged by naming.hungarian-notation.",
-    "  # Default: [str, obj, arr, bool, int, num]",
-    "  # hungarianPrefixes: [str, obj, arr, bool, int, num]",
     "  # Placeholder words flagged as generic by naming.identifier-quality. The",
     "  # numbered-suffix branch (foo1, value2) stays active even when this is empty.",
     "  # Default: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]",
     "  # placeholderNames: [foo, bar, baz, tmp, temp, thing, stuff, data, value, item]",
-    "  # Negative-framed boolean names that should NOT trigger naming.negative-boolean.",
-    "  # Defaults are HTTP-header conventions; add project terms as needed.",
-    "  # Default: [nostore, nofollow, noreferrer, noscript, noindex]",
-    "  # negativeBooleanAllowed: [nostore, nofollow, noreferrer, noscript, noindex]",
-    "  # Known acronyms whose mixed casings trigger naming.acronym-case. Stored",
-    "  # case-insensitively; match is against canonical lowercase.",
-    "  # Default: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]",
-    "  # knownAcronyms: [url, http, https, id, xml, json, html, css, api, sql, db, io, ui, uuid, ip, tcp, udp, ast, cli, npm]",
   ].join("\n");
 }
 

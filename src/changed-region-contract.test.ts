@@ -151,8 +151,8 @@ test("symbol scope widens an interior function-body edit to its signature findin
   const full = fullRegion();
   const scoped = scopeRegion("7-7", "symbol");
 
-  // Editing the body (line 7) keeps the unused-parameter finding anchored on chargeCard's signature.
-  assert.equal(scoped.findings.some((finding) => finding.ruleId === "waste.unused-parameter" && finding.symbol === "chargeCard"), true);
+  // Editing the body (line 7) keeps the missing-doc finding anchored on chargeCard's signature.
+  assert.equal(scoped.findings.some((finding) => finding.ruleId === "docs.missing-internal-function-doc" && finding.symbol === "chargeCard"), true);
   // Other symbols' findings stay suppressed.
   assert.equal(scoped.findings.some((finding) => finding.ruleId === "docs.missing-interface-doc"), false);
   assert.equal(scoped.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
