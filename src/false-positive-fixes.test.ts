@@ -309,8 +309,8 @@ test("FP-#25 naming.short-variable still flags non-for-of short declaration", ()
 test("FP-#41 summary renders per-severity rule rows with description", () => {
   // M07: top-N rules block carries per-severity split + one-line description so an operator
   // triaging a noisy run can see whether the top entry is errors or advisories at a glance.
-  const report = analyseFixture(`function helperOne(): void { eval("noop"); }
-function helperTwo(): void { eval("noop"); }
+  const report = analyseFixture(`function helperOne(): void { eval(input); }
+function helperTwo(): void { eval(input); }
 `);
   const summary = renderSummary(report);
   // The eval calls fire security.eval-call as error-severity findings; the row should show the err
@@ -367,7 +367,7 @@ ${Array.from({ length: 55 }, () => "  if (x == y) return true;").join("\n")}
 test("FP-#45 v3 analysis omits retired topRules while preserving score values", () => {
   // M05 removes the independent machine-summary ranking. Human summary rule rows remain, while
   // analysis JSON carries the native score once in the canonical composite container.
-  const report = analyseFixture(`function helperOne(): void { eval("noop"); }
+  const report = analyseFixture(`function helperOne(): void { eval(input); }
 `);
   const json = JSON.parse(renderReport(report, "json"));
   const scoreKeys = Object.keys(json.score).sort();
@@ -380,8 +380,8 @@ test("FP-#38 summary renderers include per-severity grade breakdown lines", () =
   // errors in the headline. The breakdown lines surface the difference. Text + markdown surfaces
   // both render the three lines; HTML renders three grade pills. M05's JSON adapter keeps those
   // presentation rows out of the machine score (covered by FP-#40 below).
-  const report = analyseFixture(`function helperOne(): void { eval("noop"); }
-function helperTwo(): void { eval("noop"); }
+  const report = analyseFixture(`function helperOne(): void { eval(input); }
+function helperTwo(): void { eval(input); }
 `);
   const textOutput = renderReport(report, "text");
   assert.match(textOutput, /Composite: [A-F] \(\d+\.\d{2} \/ 100\)/);
@@ -405,8 +405,8 @@ function helperTwo(): void { eval("noop"); }
 test("FP-#39 top-offender lines use quality N.N/100 wording in summary", () => {
   // §3.3: the trailing `score 0.0` was opaque - the new wording (`quality 0.0/100`) reads as a
   // labelled quality metric so an operator scanning the top-offender list knows what the number is.
-  const report = analyseFixture(`function helperOne(): void { eval("noop"); }
-function helperTwo(): void { eval("noop"); }
+  const report = analyseFixture(`function helperOne(): void { eval(input); }
+function helperTwo(): void { eval(input); }
 `);
   const summary = renderSummary(report);
   assert.match(summary, /quality \d+\.\d\/100/);
@@ -416,7 +416,7 @@ function helperTwo(): void { eval("noop"); }
 test("FP-#40 v3 adapter preserves score values while changing only their container shape", () => {
   // M05 owns the machine hard break, while M06 still owns score arithmetic. The adapter nests the
   // existing composite value and grade without adding a second calculation or legacy score alias.
-  const report = analyseFixture(`function helperOne(): void { eval("noop"); }
+  const report = analyseFixture(`function helperOne(): void { eval(input); }
 `);
   const json = JSON.parse(renderReport(report, "json"));
   assert.equal(json.schemaVersion, "gruff.analysis.v3");

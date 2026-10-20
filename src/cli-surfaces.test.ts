@@ -324,7 +324,7 @@ test("summary CLI reports generated and applied baseline metadata", () => {
   try {
     const samplePath = join(projectRoot, "sample.ts");
     const baselinePath = join(projectRoot, "gruff-baseline.json");
-    writeFileSync(samplePath, "eval('bad');\n");
+    writeFileSync(samplePath, "eval(input);\n");
     const generated = execFileSync(
       "./bin/gruff-ts",
       ["summary", samplePath, "--generate-baseline", baselinePath, "--fail-on=none", "--no-config"],

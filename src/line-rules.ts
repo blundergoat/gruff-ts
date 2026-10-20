@@ -16,7 +16,7 @@ import { analyseSecurityFlowLine } from "./security-flow-rules.ts";
 import { codeLineForMatching } from "./source-text.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
-// TypeScript is CommonJS at runtime; the inner-html guard only walks the shared parse (ADR-012).
+// TypeScript is CommonJS at runtime; literal guards only walk the shared parse (ADR-012).
 const require = createRequire(import.meta.url);
 const typescriptSyntax = require("typescript") as typeof import("typescript");
 
@@ -55,6 +55,8 @@ interface LineRuleContext {
   findings: Finding[];
   // 1-based lines whose only `.innerHTML =` assignments take a plain string or a template without substitutions.
   fixedInnerHtmlLines: ReadonlySet<number>;
+  // 1-based lines whose eval calls all take one fixed string or substitution-free template.
+  fixedEvalLines: ReadonlySet<number>;
   codeChecks: LineRuleCheck[];
   literalChecks: LineRuleCheck[];
   variables: RegExp;
@@ -104,8 +106,8 @@ const VARIABLE_NAMING_RULE_IDS = [
  * Per-line rule pipeline plus the two multi-line catch detectors. Excludes analyseUnusedImports
  * and analyseUnreachable so the dead-code module can own them; the orchestrator in cli.ts wraps
  * this call with those rules to preserve the stable, deterministic emission order.
- * A parse without errors lets inner-html read an assignment's right-hand side; an error-recovered tree is
- * ignored, so that rule keeps its text behavior.
+ * A parse without errors lets literal guards read assignment values and call arguments; an error-recovered
+ * tree keeps the rules' text behavior.
  */
 export function analyseLineRules(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[], parsed?: ParsedScript): void {
   const syntax = parsed?.diagnostics.length === 0 ? parsed.sourceFile : undefined;
@@ -131,6 +133,7 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
     config,
     findings,
     fixedInnerHtmlLines: ruleEnabled(config, "security.inner-html") ? fixedInnerHtmlAssignmentLines(sourceLines, syntax) : new Set(),
+    fixedEvalLines: ruleEnabled(config, "security.eval-call") ? fixedEvalCallLines(syntax) : new Set(),
     codeChecks: CODE_LINE_CHECKS.filter((check) => ruleEnabled(config, check.ruleId)),
     literalChecks: LITERAL_LINE_CHECKS.filter((check) => ruleEnabled(config, check.ruleId)),
     variables: VARIABLE_DECLARATIONS,
@@ -230,6 +233,9 @@ function pushStringTimerFinding(context: LineRuleContext): void {
 // Reports each matching rule's stable, line-anchored finding; the descriptor severity is the default.
 function pushPatternCheckFindings(context: LineRuleContext): void {
   for (const check of context.codeChecks) {
+    if (check.ruleId === "security.eval-call" && context.fixedEvalLines.has(context.lineNumber)) {
+      continue;
+    }
     if (check.ruleId === "security.inner-html" && isFixedInnerHtmlLine(context)) {
       continue;
     }
@@ -270,6 +276,35 @@ function isComparisonOperandLiteral(rawLine: string, index: number): boolean {
     position += rawLine[position] === "\\" ? 2 : 1;
   }
   return /^\s*[=!]==?(?!=)/.test(rawLine.slice(position + 1));
+}
+
+// Only literal arguments qualify. Unknown calls on the same line keep the line reportable; an error-recovered
+// parse supplies no syntax, so the existing masked-text check remains the fallback.
+function fixedEvalCallLines(syntax: TsSourceFile | undefined): Set<number> {
+  const fixed = new Set<number>();
+  const dynamic = new Set<number>();
+  // Keep text fallback when parser line boundaries differ from the LF-based finding locations.
+  if (syntax === undefined || /\r(?!\n)|[\u2028\u2029]/.test(syntax.text)) {
+    return fixed;
+  }
+  // Records fixed and dynamic eval calls under node, so a literal call cannot hide an unknown call on the same line.
+  const visit = (node: TsNode): void => {
+    if (typescriptSyntax.isCallExpression(node)) {
+      const callee = node.expression;
+      const name = typescriptSyntax.isIdentifier(callee) ? callee
+        : typescriptSyntax.isPropertyAccessExpression(callee) ? callee.name : undefined;
+      if (name?.text === "eval") {
+        const line = syntax.getLineAndCharacterOfPosition(name.getStart(syntax)).line + 1;
+        const argument = node.arguments[0];
+        const isFixed = node.arguments.length === 1 && argument !== undefined
+          && (typescriptSyntax.isStringLiteral(argument) || typescriptSyntax.isNoSubstitutionTemplateLiteral(argument));
+        (isFixed ? fixed : dynamic).add(line);
+      }
+    }
+    node.forEachChild(visit);
+  };
+  syntax.forEachChild(visit);
+  return new Set([...fixed].filter((line) => !dynamic.has(line)));
 }
 
 // A line is exempt from `security.inner-html` only when every `.innerHTML =` on it is a fixed literal and it has no

@@ -121,7 +121,7 @@ test("a script file over the default line budget keeps text rules and reports a 
   // analysed, still run size/sensitive-data/text rules, but skip deep script passes (the eval
   // call below would otherwise produce security.eval-call).
   const filler = Array.from({ length: 20_001 }, (_, index) => `export const filler${index} = ${index};`).join("\n");
-  const hugeSource = `${filler}\nconst secret = "${GOOGLE_API_KEY_FIXTURE_VALUE}";\neval("payload");\n`;
+  const hugeSource = `${filler}\nconst secret = "${GOOGLE_API_KEY_FIXTURE_VALUE}";\neval(input);\n`;
   const report = analyseProject(
     { "huge.ts": hugeSource },
     { paths: ["huge.ts"], config: { rules: { "size.file-length": { severity: "warning" } } } },
@@ -142,7 +142,7 @@ test("a smaller sibling file still receives full deep analysis next to a bounded
   // The budget is per file: the eval in the small file keeps firing while the huge file is bounded.
   const filler = Array.from({ length: 20_001 }, (_, index) => `export const filler${index} = ${index};`).join("\n");
   const report = analyseProject({
-    "huge.ts": `${filler}\neval("payload");\n`,
+    "huge.ts": `${filler}\neval(input);\n`,
     "small.ts": `/** Small fixture. */\nexport function run(input: string): void {\n  eval(input);\n}\n`,
   });
   const evalFindings = report.findings.filter((finding) => finding.ruleId === "security.eval-call");

@@ -16,7 +16,7 @@ import { analyseProject, writeFixtureFiles } from "./test-fixtures.ts";
 
 // A small file carrying one naming smell, one security smell, and one maintainability smell, used to
 // prove which pillars a profile enables.
-const PROFILE_PILLAR_FIXTURE = { "bad.ts": `const xy = 1;\neval("danger");\nconsole.log(xy);\n` };
+const PROFILE_PILLAR_FIXTURE = { "bad.ts": `const xy = 1;\neval(input);\nconsole.log(xy);\n` };
 
 test("profile minimal enables only the security and sensitive-data pillars", () => {
   const report = analyseProject(PROFILE_PILLAR_FIXTURE, { profile: "gruff.minimal" });
@@ -44,7 +44,7 @@ test("profile child overrides a parent threshold", () => {
 });
 
 test("profile child disables a rule the parent enabled", () => {
-  const evalFixture = { "bad.ts": `eval("danger");\n` };
+  const evalFixture = { "bad.ts": `eval(input);\n` };
   const disablingConfig = { profile: { extends: "gruff.recommended", rules: { "security.eval-call": { enabled: false } } } };
   assert.equal(analyseProject(evalFixture, { profile: "gruff.recommended" }).findings.some((finding) => finding.ruleId === "security.eval-call"), true, "recommended flags eval");
   assert.equal(analyseProject(evalFixture, { config: disablingConfig }).findings.some((finding) => finding.ruleId === "security.eval-call"), false, "child disable suppresses eval");

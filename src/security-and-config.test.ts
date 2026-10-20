@@ -777,3 +777,35 @@ test("security.url-dependency reports the entry that declares the URL spec, not 
   const lines = report.findings.filter((finding) => finding.ruleId === "security.url-dependency").map((finding) => finding.line);
   assert.deepEqual(lines, [6]);
 });
+
+// Contract: fixed V8 and browser stubs stay quiet; unknown input keeps the line reportable, including mixed calls.
+test("eval-call keeps dynamic inputs and excludes fixed code strings", () => {
+  const report = analyseFixture([
+    "function evaluate(input: string): void {",
+    "  eval(input);",
+    "  eval(\"(o) => %HasFastProperties(o)\");",
+    "  window.eval(input);",
+    "  window.eval(\"Date.now = () => 0\");",
+    "  eval(`1 + 1`);",
+    "  eval(`print(${input})`);",
+    "  eval(\"fixed\"); eval(input);",
+    "  const text = \"fixed\";",
+    "  eval(text);",
+    "}",
+  ].join("\n"));
+  assert.deepEqual(report.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.line), [2, 4, 7, 8, 10]);
+});
+
+test("eval-call retains text fallback when parsing fails", () => {
+  const report = analyseFixture("function evaluate(): void {\n  eval(\"fixed\");\n");
+  assert.deepEqual(report.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.line), [2]);
+});
+
+// Contract: parser-only line boundaries must not let a fixed call hide unknown input on the reported line.
+test("eval-call retains text fallback for non-LF line separators", () => {
+  const lines = ["\r", "\u2028", "\u2029"].map((separator) => {
+    const report = analyseFixture(`eval("fixed");${separator}eval(input);`);
+    return report.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.line);
+  });
+  assert.deepEqual(lines, [[1], [1], [1]]);
+});

@@ -166,7 +166,7 @@ test("hook symbol scope keeps eval findings inside generic multi-line callables"
 
 test("hook projects bounded deep-scan diagnostics without making them fatal", () => {
   const filler = Array.from({ length: 20_001 }, (_, index) => `export const filler${index} = ${index};`).join("\n");
-  withProject({ "huge.ts": `${filler}\neval("payload");\n` }, (dir) => {
+  withProject({ "huge.ts": `${filler}\neval(input);\n` }, (dir) => {
     const full = runHook(dir, ["hook", "--format", "json", "--no-config", "huge.ts"]);
     assert.equal("notes" in full, false);
     assert.deepEqual(full.diagnostics?.map((diagnostic) => ({ type: diagnostic.type, severity: diagnostic.severity, file: diagnostic.file, invalidatesRun: diagnostic.invalidatesRun })), [
@@ -583,7 +583,7 @@ test("hook exits zero with findings", () => {
 test("hook reports ignored paths and config errors in-band", () => {
   withProject({
     ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\npaths:\n  ignore:\n    - ignored.ts\n",
-    "ignored.ts": "eval('ignored');\n",
+    "ignored.ts": "eval(input);\n",
   }, (dir) => {
     const payload = runHook(dir, ["hook", "--format", "json", "ignored.ts"]);
 
@@ -593,7 +593,7 @@ test("hook reports ignored paths and config errors in-band", () => {
 
   withProject({
     ".gruff-ts.yaml": "paths:\n  ignore: []\n",
-    "bad.ts": "eval('bad');\n",
+    "bad.ts": "eval(input);\n",
   }, (dir) => {
     const result = spawnSync("bash", [BIN, "hook", "--format", "json", "bad.ts"], { cwd: dir, encoding: "utf8" });
     const payload = JSON.parse(result.stdout) as HookPayload;
@@ -808,7 +808,7 @@ function hookFindingKeys(payload: HookPayload): string[] {
 
 // Builds source with an eval call on the given line, padded with filler consts.
 function evalSource(evalLine: number): string {
-  return Array.from({ length: Math.max(1, evalLine) }, (_, index) => (index + 1 === evalLine ? "eval('shifted');" : `const filler${index} = ${index};`)).join("\n");
+  return Array.from({ length: Math.max(1, evalLine) }, (_, index) => (index + 1 === evalLine ? "eval(input);" : `const filler${index} = ${index};`)).join("\n");
 }
 
 // Builds a file of the given length with a one-line overview and an optional eval call.
@@ -819,7 +819,7 @@ function longSource(lines: number, evalLine: number): string {
       return "// File overview: hook contract fixture.";
     }
     if (line === evalLine) {
-      return "eval('hook');";
+      return "eval(input);";
     }
     return `const filler${line} = ${line};`;
   }).join("\n");

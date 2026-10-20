@@ -302,7 +302,7 @@ allowlists:
 test("loads explicit yaml config path", () => {
   const report = analyseProject(
     {
-      "bad.ts": `eval("console.log(1)");
+      "bad.ts": `eval(input);
 `,
       "custom-gruff.yaml": `
 schemaVersion: gruff-ts.config.v0.1
@@ -319,14 +319,14 @@ rules:
 // Fixture files for the nested-gitignore discovery test.
 const NESTED_GITIGNORE_FIXTURE = {
   ".gitignore": "ignored.ts\nignored-dir/\n*.ignored.ts\n!keep.ignored.ts\n",
-  "tracked.ts": `eval("tracked");\n`,
-  "ignored.ts": `eval("ignored");\n`,
-  "skip.ignored.ts": `eval("skip");\n`,
-  "keep.ignored.ts": `eval("keep");\n`,
-  "ignored-dir/bad.ts": `eval("dir");\n`,
+  "tracked.ts": `eval(input);\n`,
+  "ignored.ts": `eval(input);\n`,
+  "skip.ignored.ts": `eval(input);\n`,
+  "keep.ignored.ts": `eval(input);\n`,
+  "ignored-dir/bad.ts": `eval(input);\n`,
   "nested/.gitignore": "*.ts\n!allowed.ts\n",
-  "nested/blocked.ts": `eval("blocked");\n`,
-  "nested/allowed.ts": `eval("allowed");\n`,
+  "nested/blocked.ts": `eval(input);\n`,
+  "nested/allowed.ts": `eval(input);\n`,
 };
 
 test("directory discovery respects root and nested gitignore rules", () => {
@@ -371,10 +371,10 @@ test("gitignore fixture expectations match git check-ignore when git is availabl
 const INCLUDE_IGNORED_FIXTURE = {
   ".gitignore": "ignored.ts\n",
   ".gruff-ts.yaml": `\nschemaVersion: gruff-ts.config.v0.1\npaths:\n  ignore:\n    - "policy/**"\n`,
-  "visible.ts": `eval("visible");\n`,
-  "ignored.ts": `eval("ignored");\n`,
-  "node_modules/pkg/index.ts": `eval("dependency");\n`,
-  "policy/bad.ts": `eval("policy");\n`,
+  "visible.ts": `eval(input);\n`,
+  "ignored.ts": `eval(input);\n`,
+  "node_modules/pkg/index.ts": `eval(input);\n`,
+  "policy/bad.ts": `eval(input);\n`,
 };
 
 test("include ignored scans default and Git ignored paths but keeps config policy ignores", () => {
@@ -412,7 +412,7 @@ test("explicit file inputs are scanned even when gitignored", () => {
   const report = analyseProject(
     {
       ".gitignore": "ignored.ts\n",
-      "ignored.ts": `eval("ignored");
+      "ignored.ts": `eval(input);
 `,
     },
     { shouldSkipConfig: true, paths: ["ignored.ts"] },
@@ -426,7 +426,7 @@ test("explicit file inputs are scanned even when gitignored", () => {
 test("loads default gruff-ts yaml config over no config", () => {
   const report = analyseProject(
     {
-      "bad.ts": `eval("console.log(1)");
+      "bad.ts": `eval(input);
 `,
       ".gruff-ts.yaml": `
 schemaVersion: gruff-ts.config.v0.1
