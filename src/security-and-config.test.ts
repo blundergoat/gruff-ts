@@ -405,6 +405,20 @@ test("risk expansion finds security rules with safe non-candidates", () => {
   assert.equal(report.findings.filter((finding) => finding.ruleId === "security.javascript-url").length, 1);
 });
 
+test("weak-crypto preserves weak-hash findings and excludes HMAC-SHA1", () => {
+  const report = analyseFixture(`import * as crypto from "node:crypto";
+function cryptoChecks(data: string, key: string): void {
+  crypto.createHash("md5").update(data);
+  crypto.createHash("sha1").update(data);
+  crypto.createHmac("sha1", key).update(data);
+}
+`);
+  assert.deepEqual(
+    report.findings.filter((finding) => finding.ruleId === "security.weak-crypto").map((finding) => finding.line),
+    [3, 4],
+  );
+});
+
 test("sql-concatenation flags query execute and raw attack shapes", () => {
   // This fixture covers SQL sink variants, unknown runtime prefix interpolation, and safe parameterized counterparts.
   const report = analyseFixture(`function unsafe(db: any, client: any, knex: any, name: string, prefix: string, userPrefix: string, id: string): void {
