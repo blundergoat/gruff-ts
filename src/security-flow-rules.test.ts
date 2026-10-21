@@ -186,6 +186,47 @@ test("flags external input reaching unsafe deserialization and dynamic code-load
   assert.ok(!JSON.stringify(unsafeFindings).includes("req.body"));
 });
 
+// Invariant: a request-controlled filename is path evidence, not deserialized-content evidence.
+// Direct-source initializers exercise masking; lexical controls keep real readers exempt.
+test("keeps file-read filenames separate from deserialized contents", () => {
+  const cases = [
+    { source: 'import fs from "node:fs";\nfunction parse(req) {\n const key = req.body.key;\n return yaml.load(fs.readFileSync("./data/static/codefixes/" + key + ".info.yml", "utf8"));\n}', pathFindings: 1 },
+    { source: 'import fs from "node:fs/promises";\nasync function parse(req) {\n const key = req.body.key;\n return yaml.load(await fs.readFile("./data/static/codefixes/" + key + ".info.yml", { encoding: "utf8" }));\n}', pathFindings: 1 },
+    { source: 'import * as files from "fs";\nfunction parse(req) {\n const key = req.query.path;\n const raw = files.readFileSync(key);\n const alias = raw;\n return yaml.load(alias);\n}', pathFindings: 1 },
+    { source: 'import { readFile as readLocal } from "fs/promises";\nasync function parse(req) {\n const key = req.query.path;\n const raw = await readLocal(key);\n return yaml.load(raw);\n}', pathFindings: 0 },
+    { source: 'import * as files from "node:fs";\nfunction parse(req) {\n const raw = files.readFileSync(req.query.path);\n const alias = raw;\n return yaml.load(alias);\n}', pathFindings: 0 },
+    { source: 'import { readFile as readLocal } from "node:fs/promises";\nasync function parse(req) {\n const raw = await readLocal(req.query.path);\n return yaml.load(raw);\n}', pathFindings: 0 },
+    { source: 'import fs from "node:fs";\nfunction parse(req) {\n if (true) { let fs = {}; }\n function helper() { var fs = {}; }\n return yaml.load(fs.readFileSync(req.query.path));\n}', pathFindings: 0 },
+    { source: 'import fs from "node:fs";\nfunction parse(req) {\n const payload = req.body.yaml;\n const text = trusted.payload + fs.readFileSync(req.query.path);\n return yaml.load(text);\n}', pathFindings: 0 },
+    { source: 'import fs from "node:fs";\nfunction parse(req) {\n const payload = req.body.yaml;\n const alias = payload;\n const text = alias + fs.readFileSync(req.query.path);\n return yaml.load(text);\n}', pathFindings: 0 },
+  ];
+  for (const { source, pathFindings } of cases) {
+    const findings = analyseSecurityFixture(source);
+    assert.equal(findings.filter((finding) => finding.ruleId === "security.unsafe-deserialization").length, 0, source);
+    assert.equal(findings.filter((finding) => finding.ruleId === "security.path-traversal-candidate").length, pathFindings, source);
+  }
+});
+
+// Each reproduced warning loss must survive the filename exemption through the content map.
+test("retains deserialization content taint for shadowed readers and mixed content", () => {
+  const cases = [
+    'function parse(req) { return yaml.load(fs.readFileSync(req.body.code)); }',
+    'import fs from "node:fs";\nfunction parse(req, fs) { return yaml.load(fs.readFileSync(req.body.code)); }',
+    'import { readFileSync as readLocal } from "node:fs";\nfunction parse(req, readLocal) { return yaml.load(readLocal(req.body.code)); }',
+    'import fs from "node:fs";\nfunction parse(req) { return yaml.load(req.body.yaml + fs.readFileSync(req.query.path)); }',
+    'import fs from "node:fs";\nfunction parse(req) {\n if (true) { var fs = { readFileSync(value) { return value; } }; }\n const text = fs.readFileSync(req.body.yaml);\n return yaml.load(text);\n}',
+    'import { readFileSync as readLocal } from "node:fs";\nfunction parse(req) {\n if (true) { var readLocal = value => value; }\n const text = readLocal(req.body.yaml);\n return yaml.load(text);\n}',
+    'import fs from "node:fs";\nconst Reader = class fs {\n static readFileSync(value) { return value; }\n static parse(req) {\n const text = fs.readFileSync(req.body.yaml);\n return yaml.load(text);\n }\n};',
+    'import fs from "node:fs";\nfunction parse(req) {\n fs.readFileSync = value => value;\n const text = fs.readFileSync(req.body.yaml);\n return yaml.load(text);\n}',
+    'import fs from "node:fs";\nfunction parse(req) {\n fs["readFileSync"] = value => value;\n const text = fs.readFileSync(req.body.yaml);\n return yaml.load(text);\n}',
+    'import fs from "node:fs";\nfunction parse(req) {\n const payload = req.body.yaml;\n const text = payload + fs.readFileSync(req.query.path);\n return yaml.load(text);\n}',
+  ];
+  for (const source of cases) {
+    const findings = analyseSecurityFixture(source);
+    assert.equal(findings.filter((finding) => finding.ruleId === "security.unsafe-deserialization").length, 1, source);
+  }
+});
+
 test("keeps safe yaml schema and escaped regexp flows quiet", () => {
   const findings = analyseSecurityFixture(
     [

@@ -1,5 +1,4 @@
-// Conservative source-to-sink security candidates. These are deliberately same-line checks: they
-// report only when an external-input token is visibly inside a known risky sink expression.
+// Conservative security candidates from same-line source tokens and bounded local AST flow.
 import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { parseScript } from "./parsed-script.ts";
@@ -50,6 +49,9 @@ interface SourceToken {
   kind: string;
   pattern: RegExp;
 }
+
+// Each imported reader records function scopes whose hoisted locals hide its import.
+type FileReadBindings = ReadonlyMap<string, ReadonlySet<TsNode>>;
 
 // One source-to-sink heuristic: a risky call pattern plus the remediation attached to its finding.
 interface SecurityFlowRule {
@@ -171,6 +173,13 @@ interface TaintRecord {
   depth: number;
 }
 
+// Deserialization needs content provenance while the other sinks still inspect path influence.
+interface FlowInputs {
+  tainted: Map<string, TaintRecord>;
+  contentTainted: Map<string, TaintRecord>;
+  fileReadCallees: FileReadBindings;
+}
+
 // Bundles the syntax context each sink matcher needs so all text extraction remains anchored
 // to the parsed source file instead of raw substrings.
 interface AstSinkInput {
@@ -239,6 +248,108 @@ const AST_FLOW_SINKS: readonly AstFlowSink[] = [
 
 const MAX_ALIAS_DEPTH = 2;
 const MAX_SCOPE_NODES = 4000;
+
+// Only imported filesystem readers establish a filename/content boundary. A similarly named
+// application helper may return request content, so its arguments must retain ordinary taint.
+function importedFileReadCallees(parsedSource: TsSourceFile): ReadonlySet<string> {
+  const callees = new Set<string>();
+  for (const statement of parsedSource.statements) {
+    if (!typescriptSyntax.isImportDeclaration(statement) || !typescriptSyntax.isStringLiteral(statement.moduleSpecifier)) continue;
+    const moduleName = statement.moduleSpecifier.text;
+    if (!/^(?:node:)?fs(?:\/promises)?$/.test(moduleName)) continue;
+    const clause = statement.importClause;
+    if (!clause || clause.isTypeOnly) continue;
+    const methods = moduleName.endsWith("/promises") ? ["readFile"] : ["readFile", "readFileSync"];
+    for (const name of fileReadBindingNames(clause, methods)) callees.add(name);
+  }
+  return callees;
+}
+
+// Type-only and unrelated exports cannot establish a runtime file-reader binding.
+function fileReadBindingNames(clause: import("typescript").ImportClause, methods: readonly string[]): string[] {
+  const names: string[] = [];
+  if (clause.name) for (const method of methods) names.push(`${clause.name.text}.${method}`);
+  const bindings = clause.namedBindings;
+  if (!bindings) return names;
+  if (typescriptSyntax.isNamespaceImport(bindings)) {
+    for (const method of methods) names.push(`${bindings.name.text}.${method}`);
+  } else {
+    for (const binding of bindings.elements) {
+      if (!binding.isTypeOnly && methods.includes(binding.propertyName?.text ?? binding.name.text)) names.push(binding.name.text);
+    }
+  }
+  return names;
+}
+
+// A local binding makes the imported name inconclusive, so retain its content taint.
+function isImportedFileRead(node: TsNode, parsedSource: TsSourceFile, bindings: FileReadBindings): boolean {
+  if (!typescriptSyntax.isCallExpression(node)) return false;
+  const callee = node.expression.getText(parsedSource);
+  return bindings.has(callee) && !isFileReadBindingShadowed(node, callee, bindings);
+}
+
+// Because a reader exemption suppresses content evidence, an incomplete scope or a visible
+// replacement must leave the binding unproven. Index each scope once to bound repeated calls.
+function fileReadBindingsForScopes(parsedSource: TsSourceFile, scopes: readonly TsNode[]): FileReadBindings {
+  const bindings = new Map([...importedFileReadCallees(parsedSource)].map((callee) => [callee, new Set<TsNode>()]));
+  if (bindings.size === 0) return bindings;
+  const writes: TsNode[] = [];
+  for (const scope of scopes) {
+    if (!indexFileReadScope(scope, bindings, writes)) return new Map();
+  }
+  for (const write of writes) {
+    const callee = writtenFileReadCallee(write, parsedSource);
+    if (callee && bindings.has(callee) && !isFileReadBindingShadowed(write, callee, bindings)) bindings.delete(callee);
+  }
+  return bindings;
+}
+
+// Sibling blocks share a function's var bindings, but nested functions and static blocks do not.
+// Return false when truncation could conceal a binding or method replacement.
+function indexFileReadScope(scope: TsNode, bindings: Map<string, Set<TsNode>>, writes: TsNode[]): boolean {
+  let budget = MAX_SCOPE_NODES;
+  walk(scope, (node) => {
+    if (budget-- <= 0) return false;
+    if ((isFunctionLike(node) || typescriptSyntax.isClassStaticBlockDeclaration(node)) && node !== scope) return false;
+    recordHoistedFileReadBindings(node, scope, bindings);
+    if (typescriptSyntax.isBinaryExpression(node) && node.operatorToken.kind >= typescriptSyntax.SyntaxKind.FirstAssignment && node.operatorToken.kind <= typescriptSyntax.SyntaxKind.LastAssignment) {
+      writes.push(node.left);
+    }
+    return;
+  });
+  return budget >= 0;
+}
+
+// Only var lists hoist through sibling blocks; let and const remain lexical declarations.
+function recordHoistedFileReadBindings(node: TsNode, scope: TsNode, bindings: Map<string, Set<TsNode>>): void {
+  if (!typescriptSyntax.isVariableDeclarationList(node) || (node.flags & typescriptSyntax.NodeFlags.BlockScoped)) return;
+  for (const [callee, shadowedScopes] of bindings) {
+    if (variableDeclarationListBindsName(node, callee.split(".", 1)[0] ?? "")) shadowedScopes.add(scope);
+  }
+}
+
+// A string-literal element write changes the same method as its dotted spelling.
+function writtenFileReadCallee(node: TsNode, parsedSource: TsSourceFile): string | undefined {
+  if (typescriptSyntax.isParenthesizedExpression(node)) return writtenFileReadCallee(node.expression, parsedSource);
+  if (typescriptSyntax.isPropertyAccessExpression(node)) return node.getText(parsedSource);
+  if (typescriptSyntax.isElementAccessExpression(node) && typescriptSyntax.isStringLiteral(node.argumentExpression)) {
+    return `${node.expression.getText(parsedSource)}.${node.argumentExpression.text}`;
+  }
+  return undefined;
+}
+
+// Reader-specific guards also cover hoisted vars and named class expressions. Redirect
+// matching keeps its existing lexical policy; this stricter check only grants reader exemptions.
+function isFileReadBindingShadowed(node: TsNode, callee: string, bindings: FileReadBindings): boolean {
+  if (isImportedCalleeShadowed(node, callee)) return true;
+  const shadowedScopes = bindings.get(callee);
+  const rootName = callee.split(".", 1)[0];
+  for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+    if (shadowedScopes?.has(ancestor)) return true;
+    if (typescriptSyntax.isClassExpression(ancestor) && ancestor.name?.text === rootName) return true;
+  }
+  return false;
+}
 
 // Framework redirects are plain imported functions, so their local alias is the syntax-only
 // evidence that distinguishes them from unrelated helpers named `redirect`.
@@ -309,13 +420,17 @@ export function analyseSecurityFlow(file: SourceFile, source: string, findings: 
   try {
     const frameworkRedirectCallees = importedFrameworkRedirectCallees(parsedSource);
     const scopes: TsNode[] = [parsedSource];
+    const staticBlocks: TsNode[] = [];
     walk(parsedSource, (node) => {
       if (isFunctionLike(node)) {
         scopes.push(node);
+      } else if (typescriptSyntax.isClassStaticBlockDeclaration(node)) {
+        staticBlocks.push(node);
       }
     });
+    const fileReadCallees = fileReadBindingsForScopes(parsedSource, [...scopes, ...staticBlocks]);
     for (const scope of scopes) {
-      analyseFlowScope(parsedSource, scope, frameworkRedirectCallees, file, flowFindings);
+      analyseFlowScope(parsedSource, scope, frameworkRedirectCallees, fileReadCallees, file, flowFindings);
     }
   } catch {
     return;
@@ -338,10 +453,13 @@ function analyseFlowScope(
   parsedSource: TsSourceFile,
   scopeOwner: TsNode,
   frameworkRedirectCallees: ReadonlySet<string>,
+  fileReadCallees: FileReadBindings,
   file: SourceFile,
   findings: Finding[],
 ): void {
   const tainted = new Map<string, TaintRecord>();
+  const contentTainted = new Map<string, TaintRecord>();
+  const inputs = { tainted, contentTainted, fileReadCallees };
   const unsafeXmlParsers = new Set<string>();
   let budget = MAX_SCOPE_NODES;
   walk(scopeOwner, (node) => {
@@ -354,7 +472,8 @@ function analyseFlowScope(
     }
     recordUnsafeXmlParser(parsedSource, node, unsafeXmlParsers);
     recordTaint(parsedSource, node, tainted);
-    reportSink(parsedSource, node, tainted, unsafeXmlParsers, frameworkRedirectCallees, file, findings);
+    recordTaint(parsedSource, node, contentTainted, fileReadCallees);
+    reportSink(parsedSource, node, inputs, unsafeXmlParsers, frameworkRedirectCallees, file, findings);
     return;
   });
 }
@@ -363,13 +482,13 @@ function analyseFlowScope(
 // or one hop from another tainted local (`const alias = tainted`), bounded by
 // MAX_ALIAS_DEPTH. Function-valued initialisers are skipped so a source token
 // inside a callback body never taints the function variable itself.
-function recordTaint(parsedSource: TsSourceFile, node: TsNode, tainted: Map<string, TaintRecord>): void {
+function recordTaint(parsedSource: TsSourceFile, node: TsNode, tainted: Map<string, TaintRecord>, fileReads?: FileReadBindings): void {
   if (typescriptSyntax.isVariableDeclaration(node)) {
-    recordVariableTaint(parsedSource, node, tainted);
+    recordVariableTaint(parsedSource, node, tainted, fileReads);
     return;
   }
   if (typescriptSyntax.isBinaryExpression(node) && node.operatorToken.kind === typescriptSyntax.SyntaxKind.EqualsToken && typescriptSyntax.isIdentifier(node.left)) {
-    const nextRecord = taintRecordFromExpression(parsedSource, node.right, tainted);
+    const nextRecord = taintRecordFromExpression(parsedSource, node.right, tainted, fileReads);
     if (nextRecord) {
       tainted.set(node.left.text, nextRecord);
     } else {
@@ -380,11 +499,11 @@ function recordTaint(parsedSource: TsSourceFile, node: TsNode, tainted: Map<stri
 
 // Records taint introduced by declarations, including simple object/array destructuring from
 // external-input expressions. Non-identifier binding details are intentionally skipped.
-function recordVariableTaint(parsedSource: TsSourceFile, node: import("typescript").VariableDeclaration, tainted: Map<string, TaintRecord>): void {
+function recordVariableTaint(parsedSource: TsSourceFile, node: import("typescript").VariableDeclaration, tainted: Map<string, TaintRecord>, fileReads?: FileReadBindings): void {
   if (!node.initializer) {
     return;
   }
-  const record = taintRecordFromExpression(parsedSource, node.initializer, tainted);
+  const record = taintRecordFromExpression(parsedSource, node.initializer, tainted, fileReads);
   if (!record) {
     return;
   }
@@ -395,19 +514,19 @@ function recordVariableTaint(parsedSource: TsSourceFile, node: import("typescrip
   taintBindingNames(node.name, record, tainted);
 }
 
-// Derives the bounded taint record for one expression and keeps alias depth deterministic.
-function taintRecordFromExpression(parsedSource: TsSourceFile, expression: TsNode, tainted: Map<string, TaintRecord>): TaintRecord | undefined {
+// Derives bounded provenance. Content aliases outside a masked reader still contribute to a
+// compound value; advancing the alias depth prevents this traversal from extending the flow limit.
+function taintRecordFromExpression(parsedSource: TsSourceFile, expression: TsNode, tainted: Map<string, TaintRecord>, fileReads?: FileReadBindings): TaintRecord | undefined {
   if (isFunctionLike(expression)) {
     return undefined;
   }
-  const kind = sourceKindOf(parsedSource, expression);
+  const kind = sourceKindOf(parsedSource, expression, fileReads);
   if (kind !== undefined) {
     return { line: lineIndexOf(parsedSource, expression), kind, depth: 1 };
   }
-  if (!typescriptSyntax.isIdentifier(expression)) {
-    return undefined;
-  }
-  const upstream = tainted.get(expression.text);
+  const upstream = typescriptSyntax.isIdentifier(expression)
+    ? tainted.get(expression.text)
+    : fileReads ? taintedExpression(expression, parsedSource, tainted, fileReads, MAX_ALIAS_DEPTH - 1) : undefined;
   if (upstream?.depth !== undefined && upstream.depth < MAX_ALIAS_DEPTH) {
     return { line: upstream.line, kind: upstream.kind, depth: upstream.depth + 1 };
   }
@@ -444,24 +563,26 @@ function recordUnsafeXmlParser(parsedSource: TsSourceFile, node: TsNode, unsafeX
 function reportSink(
   parsedSource: TsSourceFile,
   node: TsNode,
-  tainted: Map<string, TaintRecord>,
+  inputs: FlowInputs,
   unsafeXmlParsers: ReadonlySet<string>,
   frameworkRedirectCallees: ReadonlySet<string>,
   file: SourceFile,
   findings: Finding[],
 ): void {
-  reportRedirectAssignmentSink(parsedSource, node, tainted, file, findings);
+  reportRedirectAssignmentSink(parsedSource, node, inputs.tainted, file, findings);
   const call = callLikeExpression(node);
   if (!call) {
     return;
   }
   const callee = call.expression.getText(parsedSource);
-  const isFrameworkRedirectCallee = frameworkRedirectCallees.has(callee) && !isFrameworkRedirectShadowed(call, callee);
+  const isFrameworkRedirectCallee = frameworkRedirectCallees.has(callee) && !isImportedCalleeShadowed(call, callee);
   const sink = AST_FLOW_SINKS.find((candidate) => candidate.isSink({ callee, call, sourceFile: parsedSource, unsafeXmlParsers, isFrameworkRedirectCallee }));
   if (!sink) {
     return;
   }
-  const hit = taintedInput(call, parsedSource, tainted);
+  // A request-controlled filename proves path influence, not control of the bytes read.
+  const contentOnly = sink.ruleId === "security.unsafe-deserialization";
+  const hit = taintedInput(call, parsedSource, contentOnly ? inputs.contentTainted : inputs.tainted, contentOnly ? inputs.fileReadCallees : undefined);
   if (!hit) {
     return;
   }
@@ -473,9 +594,9 @@ function reportSink(
   findings.push(flowFinding(file, sinkLine, sink.ruleId, sink.sinkKind, hit.kind, hit.depth));
 }
 
-// Imported redirect aliases stop being sink evidence inside a lexical scope that declares the
-// alias again. Syntax-only binding checks cover parameters and local value declarations.
-function isFrameworkRedirectShadowed(call: TsCallLikeExpression, callee: string): boolean {
+// Imported callees lose their binding evidence inside a lexical scope that declares the
+// name again. Syntax-only binding checks cover parameters and local value declarations.
+function isImportedCalleeShadowed(call: TsNode, callee: string): boolean {
   const rootName = callee.split(".", 1)[0];
   if (!rootName) {
     return false;
@@ -593,9 +714,9 @@ function callLikeExpression(node: TsNode): TsCallLikeExpression | undefined {
 
 // Finds the first tainted identifier or direct external-input expression in sink arguments.
 // Because sanitizer wrappers deliberately consume user input, their subtrees are pruned.
-function taintedInput(call: TsCallLikeExpression, parsedSource: TsSourceFile, tainted: Map<string, TaintRecord>): TaintRecord | undefined {
+function taintedInput(call: TsCallLikeExpression, parsedSource: TsSourceFile, tainted: Map<string, TaintRecord>, fileReads?: FileReadBindings): TaintRecord | undefined {
   for (const argument of call.arguments ?? []) {
-    const found = taintedExpression(argument, parsedSource, tainted);
+    const found = taintedExpression(argument, parsedSource, tainted, fileReads);
     if (found) {
       return found;
     }
@@ -604,7 +725,7 @@ function taintedInput(call: TsCallLikeExpression, parsedSource: TsSourceFile, ta
 }
 
 // Finds taint inside one sink-relevant expression while pruning callbacks passed as ancillary args.
-function taintedExpression(expression: TsNode, parsedSource: TsSourceFile, tainted: Map<string, TaintRecord>): TaintRecord | undefined {
+function taintedExpression(expression: TsNode, parsedSource: TsSourceFile, tainted: Map<string, TaintRecord>, fileReads?: FileReadBindings, maxAliasDepth = MAX_ALIAS_DEPTH): TaintRecord | undefined {
   let found: TaintRecord | undefined;
   if (isFunctionLike(expression)) {
     return undefined;
@@ -616,17 +737,16 @@ function taintedExpression(expression: TsNode, parsedSource: TsSourceFile, taint
     if (node !== expression && isFunctionLike(node)) {
       return false;
     }
+    if (fileReads && isImportedFileRead(node, parsedSource, fileReads)) return false;
     if (isSafeWrapperExpression(parsedSource, node)) {
       return false;
     }
-    if (typescriptSyntax.isIdentifier(node)) {
-      const record = tainted.get(node.text);
-      if (record) {
-        found = record;
-        return false;
-      }
+    const record = taintedIdentifierRecord(node, tainted, maxAliasDepth, fileReads !== undefined);
+    if (record) {
+      found = record;
+      return false;
     }
-    const kind = sourceKindOf(parsedSource, node);
+    const kind = sourceKindOf(parsedSource, node, fileReads);
     if (kind !== undefined) {
       found = { line: lineIndexOf(parsedSource, node), kind, depth: 0 };
       return false;
@@ -634,6 +754,16 @@ function taintedExpression(expression: TsNode, parsedSource: TsSourceFile, taint
     return;
   });
   return found;
+}
+
+// Content propagation follows values, so an object's property spelling cannot stand in for
+// a tainted local. Other detectors retain their existing identifier policy.
+function taintedIdentifierRecord(node: TsNode, tainted: Map<string, TaintRecord>, maxAliasDepth: number, contentOnly: boolean): TaintRecord | undefined {
+  if (!typescriptSyntax.isIdentifier(node)) return undefined;
+  const propertyKey = isPropertyAccessName(node) || (typescriptSyntax.isPropertyAssignment(node.parent) && node.parent.name === node);
+  if (contentOnly && propertyKey) return undefined;
+  const record = tainted.get(node.text);
+  return record && record.depth <= maxAliasDepth ? record : undefined;
 }
 
 // Unsafe-deserialization sinks execute or inflate attacker-controlled serialized/code content.
@@ -706,14 +836,24 @@ function isUnsafeXmlParserConstruction(parsedSource: TsSourceFile, expr: TsNode)
 
 // Classifies an initialiser expression as an external-input source. Mirrors the
 // same-line SOURCE_TOKENS patterns, applied to the expression's source text.
-function sourceKindOf(parsedSource: TsSourceFile, expr: TsNode): string | undefined {
+function sourceKindOf(parsedSource: TsSourceFile, expr: TsNode, fileReads?: FileReadBindings): string | undefined {
   if (isSafeWrapperExpression(parsedSource, expr)) {
     return undefined;
   }
   if (isSourceTextLiteral(expr)) {
     return undefined;
   }
-  const text = textOutsideRequestHandlers(parsedSource, expr);
+  let text = textOutsideRequestHandlers(parsedSource, expr);
+  if (fileReads?.size) {
+    const start = expr.getStart(parsedSource);
+    walk(expr, (node) => {
+      if (!isImportedFileRead(node, parsedSource, fileReads)) return;
+      const from = node.getStart(parsedSource) - start;
+      const endOffset = node.getEnd() - start;
+      text = text.slice(0, from) + " ".repeat(endOffset - from) + text.slice(endOffset);
+      return false;
+    });
+  }
   for (const token of SOURCE_TOKENS) {
     if (token.pattern.test(text)) {
       return token.kind;
