@@ -380,13 +380,13 @@ function analyzerInfo(): { name: "gruff-ts"; version: string } {
 }
 
 // Builds the hook finding list: changed-region scoping drops inherited file findings, new-only filtering
-// re-admits file/project findings absent from the base identities, and a baseline hides what it reviewed.
+// re-admits file/project findings the base did not hold, and a baseline hides what it reviewed.
 // Invariant: suppressed.count arithmetic must stay exact across every filtering stage.
 function hookFindings(
   currentReport: AnalysisReport,
   scopedReport: AnalysisReport,
   input: HookReportInput,
-  baseIdentities: Set<string> | undefined,
+  baseIdentities: Map<string, number> | undefined,
   statuses: HookBaselineStatuses,
 ): Finding[] {
   const hasChangedRegion = input.hasChangedRegion;
@@ -394,11 +394,12 @@ function hookFindings(
   // An applied baseline is a prior base as much as a diff ref is: it already knows what the file used to carry.
   const hasPriorBase = baseIdentities !== undefined || input.baselinePath !== undefined;
   const scopedFindings = scopedReport.findings.filter((finding) => !hasChangedRegion || scopeForFinding(finding) !== "file");
+  const covered = baseCoveredOccurrences(currentReport, baseIdentities);
   const withNewFileAndProject = hasChangedRegion && hasPriorBase
-    ? [...scopedFindings, ...newFileAndProjectFindings(currentReport, scopedFindings, baseIdentities)]
+    ? [...scopedFindings, ...newFileAndProjectFindings(currentReport, scopedFindings, covered)]
     : scopedFindings;
   const afterNewOnly = baseIdentities
-    ? withNewFileAndProject.filter((finding) => !baseIdentities.has(hookMatchKey(finding)))
+    ? withNewFileAndProject.filter((finding) => !spendCoveredOccurrence(covered, finding))
     : withNewFileAndProject;
   // An occurrence the user already reviewed is debt, not this edit's doing, so it stays out of the agent's way.
   return afterNewOnly.filter((finding) => statuses.get(finding) !== "unchanged");
@@ -406,14 +407,51 @@ function hookFindings(
 
 // Collects file- and project-scope findings that are new since the base, excluding any already
 // emitted, deduped by fingerprint.
-function newFileAndProjectFindings(currentReport: AnalysisReport, scopedFindings: Finding[], baseIdentities: Set<string> | undefined): Finding[] {
+function newFileAndProjectFindings(currentReport: AnalysisReport, scopedFindings: Finding[], covered: Map<string, number>): Finding[] {
   const alreadyIncluded = new Set(scopedFindings.map((finding) => finding.fingerprint));
   return currentReport.findings.filter((finding) => {
     const scope = scopeForFinding(finding);
-    // A base that already knew about the finding says this edit did not introduce it, so it stays suppressed.
-    const knownAtBase = baseIdentities !== undefined && baseIdentities.has(hookMatchKey(finding));
-    return (scope === "file" || scope === "project") && !knownAtBase && !alreadyIncluded.has(finding.fingerprint);
+    if ((scope !== "file" && scope !== "project") || alreadyIncluded.has(finding.fingerprint)) {
+      return false;
+    }
+    // A base that already held this occurrence says this edit did not introduce it, so it stays suppressed.
+    return !spendCoveredOccurrence(covered, finding);
   });
+}
+
+// Picks the current occurrences the base already held, keyed by fingerprint. Each base key's count is spent once per
+// occurrence, lowest line first as baseline matching spends a reviewed count, so a duplicate an edit added stays visible.
+// Stable contract: without a base nothing is covered, and the covered total for a key never exceeds its base count.
+function baseCoveredOccurrences(currentReport: AnalysisReport, baseCounts: Map<string, number> | undefined): Map<string, number> {
+  const covered = new Map<string, number>();
+  if (baseCounts === undefined) {
+    return covered;
+  }
+  const remaining = new Map(baseCounts);
+  const byLine = [...currentReport.findings].sort((left, right) => (left.line ?? 0) - (right.line ?? 0) || (left.column ?? 0) - (right.column ?? 0));
+  for (const finding of byLine) {
+    const key = hookMatchKey(finding);
+    const count = remaining.get(key) ?? 0;
+    // A key the base never held, or whose base occurrences are spent, leaves this occurrence new.
+    if (count === 0) {
+      continue;
+    }
+    remaining.set(key, count - 1);
+    covered.set(finding.fingerprint, (covered.get(finding.fingerprint) ?? 0) + 1);
+  }
+  return covered;
+}
+
+// Spends one covered occurrence of a finding's fingerprint, telling whether the base held this occurrence.
+// Stable contract: each covered occurrence hides exactly one finding, so file/project re-admission and the new-only
+// filter never spend the same base occurrence twice.
+function spendCoveredOccurrence(covered: Map<string, number>, finding: Finding): boolean {
+  const count = covered.get(finding.fingerprint) ?? 0;
+  if (count === 0) {
+    return false;
+  }
+  covered.set(finding.fingerprint, count - 1);
+  return true;
 }
 
 // Counts the file/project findings the hook drops under changed-region attribution, excluding any
@@ -574,42 +612,46 @@ function matchKeyComponent(finding: Finding, scope: HookScope): string {
   return finding.column === undefined ? messageComponent : `${messageComponent}\0column:${finding.column}`;
 }
 
-// Builds the base key set a diff or since ref contributes to new-only filtering; undefined when neither
-// is requested, because an empty set and "no base at all" mean different things to the filter.
+// Builds the base key counts a diff or since ref contributes to new-only filtering; undefined when neither
+// is requested, because an empty map and "no base at all" mean different things to the filter.
 // Stable contract: undefined means no base was replayed, so the filter admits everything rather than suppressing blindly.
-function hookDiffBaseIdentities(runAnalyse: HookAnalysisRunner, input: HookReportInput, currentReport: AnalysisReport): Set<string> | undefined {
+function hookDiffBaseIdentities(runAnalyse: HookAnalysisRunner, input: HookReportInput, currentReport: AnalysisReport): Map<string, number> | undefined {
   if (input.diffBase === undefined) {
     return undefined;
   }
   return keysFromDiffBase(runAnalyse, input.currentOptions, input.diffBase, currentReport);
 }
 
-// Replays the diff base ref and returns its findings' port-local hook keys for new-only filtering.
+// Replays the diff base ref and counts its findings' port-local hook keys for new-only filtering.
 // Writes a temp tree, spawns git to materialize base files, and must clean both up afterward.
 function keysFromDiffBase(
   runAnalyse: HookAnalysisRunner,
   options: AnalysisOptions,
   diffBase: string,
   currentReport: AnalysisReport,
-): Set<string> {
+): Map<string, number> {
   const ref = diffBaseRef(diffBase);
   if (ref === undefined) {
-    return new Set();
+    return new Map();
   }
   const files = [...new Set(currentReport.findings.flatMap(findingBasePaths))];
   if (files.length === 0) {
-    return new Set();
+    return new Map();
   }
   const tempRoot = mkdtempSync(join(tmpdir(), "gruff-ts-hook-base-"));
   const previous = cwd();
   try {
     const baseFiles = materializeBaseFiles(ref, files, tempRoot);
     if (baseFiles.length === 0) {
-      return new Set();
+      return new Map();
     }
     chdir(tempRoot);
     const baseReport = runAnalyse(baseAnalysisOptions(options, baseFiles, previous));
-    return new Set(baseReport.findings.map(hookMatchKey));
+    const counts = new Map<string, number>();
+    for (const key of baseReport.findings.map(hookMatchKey)) {
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
   } finally {
     chdir(previous);
     rmSync(tempRoot, { recursive: true, force: true });

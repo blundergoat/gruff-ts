@@ -441,6 +441,40 @@ test("hook diff new-only uses stableIdentity for file-scope findings", () => {
   });
 });
 
+// Two `.forEach(async` lines share one hook key: `security.async-foreach` names no symbol, no column and one message.
+// Stable contract: a base holding the key once covers exactly one current occurrence, the lowest line, so an edit's added
+// duplicate stays visible, and equal counts still hide both.
+test("hook diff new-only keeps each occurrence beyond the base count", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  const declaration = "const tasks: Array<() => Promise<void>> = [];\n";
+  const loop = "tasks.forEach(async (task) => { await task(); });\n";
+  /**
+   * Lists the lines of the `security.async-foreach` findings one hook run reported.
+   * Stable contract: lines come back in report order, so each assertion names the exact surviving occurrences.
+   * @param report - the parsed hook payload
+   * @returns the finding lines in report order
+   */
+  const asyncForEachLines = (report: HookPayload): number[] =>
+    report.findings.filter((finding) => finding.ruleId === "security.async-foreach").map((finding) => finding.line ?? 0);
+  withProject({ "tasks.ts": `${declaration}${loop}` }, (dir) => {
+    initGitCommit(dir);
+    writeProjectFile(dir, "tasks.ts", `${declaration}${loop}${loop}`);
+
+    const surplus = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "working-tree", "tasks.ts"]);
+    assert.deepEqual(asyncForEachLines(surplus), [3]);
+  });
+
+  withProject({ "tasks.ts": `${declaration}${loop}${loop}` }, (dir) => {
+    initGitCommit(dir);
+    writeProjectFile(dir, "tasks.ts", `${declaration}${loop}tasks.forEach(async (next) => { await next(); });\n`);
+
+    const equal = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "working-tree", "tasks.ts"]);
+    assert.deepEqual(asyncForEachLines(equal), []);
+  });
+});
+
 test("hook unstaged new-only compares against the index", () => {
   if (!gitAvailable()) {
     return;
