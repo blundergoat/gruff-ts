@@ -877,3 +877,129 @@ export function joinBelowDivider(left: string): string {
     "docs.missing-return-tag joinBelowDivider",
   ]);
 });
+
+// T-10: a readonly candidate must be a private field whose rewrite to `readonly` compiles, so the
+// rule reports only fields their class assigns through `this` in its own constructor.
+// The symbols each readonly-candidate finding names, in a stable, deterministic order.
+function readonlyCandidates(source: string): string[] {
+  return analyseFixture(source)
+    .findings.filter((entry) => entry.ruleId === "modernisation.readonly-property-candidate")
+    .map((entry) => entry.symbol ?? "")
+    .sort();
+}
+
+test("T-10 readonly candidates skip a field a method reassigns", () => {
+  // The T-10 reproduction: `timerId` is reassigned in schedule(), so only `label` can become readonly.
+  const candidates = readonlyCandidates(`/** Retries a connection on a timer. */
+export class Reconnector {
+  private timerId: number | null;
+  private label: string;
+
+  constructor(private readonly delayMs: number) {
+    this.timerId = null;
+    this.label = "idle";
+  }
+
+  schedule(): void {
+    this.timerId = setTimeout(() => this.schedule(), this.delayMs);
+  }
+
+  describe(): string {
+    return this.label + ":" + this.timerId;
+  }
+}
+`);
+  assert.deepEqual(candidates, ["label"]);
+});
+
+test("T-10 every write form outside the constructor disqualifies a field", () => {
+  // Each field but `kept` has one write the constructor exemption does not cover, including a write
+  // from a callback inside the constructor and a write to another instance of the same class.
+  const candidates = readonlyCandidates(`export class Counter {
+  private kept: number;
+  private total: number;
+  private hits: number;
+  private first: string;
+  private named: string;
+  private cleared: string;
+  private looped: string;
+  private deferred: string;
+  private shared: string;
+
+  constructor(items: string[]) {
+    this.kept = 0;
+    this.total = 0;
+    this.hits = 0;
+    this.first = "";
+    this.named = "";
+    this.cleared = "";
+    this.looped = "";
+    this.deferred = "";
+    this.shared = "";
+    items.forEach(() => { this.deferred = "seen"; });
+  }
+
+  update(items: string[], other: Counter, source: { named: string }): void {
+    this.total += items.length;
+    this.hits++;
+    [this.first] = items;
+    ({ named: this.named } = source);
+    delete (this as { cleared?: string }).cleared;
+    for (this.looped of items) {
+      void this.looped;
+    }
+    other.shared = this.kept.toString();
+  }
+}
+`);
+  assert.deepEqual(candidates, ["kept"]);
+});
+
+test("T-10 a class writing through this[...] or Object.assign(this, ...) reports no field", () => {
+  // Neither write names its member in the syntax tree, so no field in either class is provably unwritten.
+  const candidates = readonlyCandidates(`export class ByKey {
+  private label: string;
+
+  constructor(key: "label", value: string) {
+    this.label = "";
+    this[key] = value;
+  }
+}
+
+export class Merged {
+  private label: string;
+
+  constructor(init: Partial<Merged>) {
+    this.label = "";
+    Object.assign(this, init);
+  }
+}
+`);
+  assert.deepEqual(candidates, []);
+});
+
+test("T-10 public, protected, static and unparseable fields are not readonly candidates", () => {
+  // Another file can write a public or protected field; a static field is not a constructor assignment;
+  // a file the parser reports errors for has unknown writes. Only the private instance field reports.
+  const candidates = readonlyCandidates(`export class Visibility {
+  public shown: string;
+  protected inherited: string;
+  private static count: number;
+  private hidden: string;
+
+  constructor() {
+    this.shown = "";
+    this.inherited = "";
+    this.hidden = "";
+  }
+}
+`);
+  assert.deepEqual(candidates, ["hidden"]);
+  assert.deepEqual(readonlyCandidates(`export class Broken {
+  private label: string;
+
+  constructor() {
+    this.label = "";
+  }
+`), []);
+});

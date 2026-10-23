@@ -136,8 +136,9 @@ test("profile summaries report all three built-ins with monotonic enabled counts
   // Rules that ship off by default run under no preset until a config enables them, so they are not counted: two from
   // ADR-021, the side-effect and invariant rules, whose keyword lists cannot accept a comment written in other words,
   // waste.swallowed-catch, whose measured precision stayed below the waste floor after its repair,
-  // complexity.cyclomatic, below the 0.60 floor after its precision-floor M14 repair, and five whose 0.6.0 precision
-  // samples did not establish the floor (precision-floor M02).
+  // complexity.cyclomatic, below the 0.60 floor after its precision-floor M14 repair, five whose 0.6.0 precision
+  // samples did not establish the floor (precision-floor M02), and security.unsafe-deserialization, which no
+  // finding survived its precision-floor M02 repair to measure.
   const offByDefault = ruleDescriptors().filter((descriptor) => descriptor.isEnabledByDefault === false).map((descriptor) => descriptor.ruleId);
   assert.deepEqual(offByDefault.sort(), [
     "complexity.cyclomatic",
@@ -146,6 +147,7 @@ test("profile summaries report all three built-ins with monotonic enabled counts
     "security.inner-html",
     "security.open-redirect-candidate",
     "security.path-traversal-candidate",
+    "security.unsafe-deserialization",
     "sensitive-data.aws-access-key",
     "sensitive-data.database-url-password",
     "sensitive-data.jwt-token",

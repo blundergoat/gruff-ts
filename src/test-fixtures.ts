@@ -63,6 +63,7 @@ export interface AnalyseFixtureOptions extends AnalyseProjectOptions {
 export const M02_DEFAULT_OFF_RULE_IDS = [
   "security.inner-html",
   "security.path-traversal-candidate",
+  "security.unsafe-deserialization",
   "sensitive-data.aws-access-key",
   "sensitive-data.database-url-password",
   "waste.useless-return",
@@ -712,6 +713,8 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
           "sensitive-data.aws-access-key": { enabled: true },
           "sensitive-data.database-url-password": { enabled: true },
           "waste.useless-return": { enabled: true },
+          // Off by default since precision-floor M02: no finding survived its repair, so it is unmeasured.
+          "security.unsafe-deserialization": { enabled: true },
         },
       },
     };

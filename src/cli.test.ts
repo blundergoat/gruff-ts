@@ -475,7 +475,7 @@ test("core expansion finds naming and documentation rules", () => {
 test("core expansion finds modernisation rules", () => {
   // Fixture covers the readonly-property modernisation detection.
   const report = analyseFixture(`class AccountReader {
-  public displayName: string;
+  private displayName: string;
 
   public constructor(displayName: string) {
     this.displayName = displayName;

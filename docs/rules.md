@@ -112,7 +112,7 @@ existing config overrides and baselines keep matching.
 - `modernisation.double-cast` (warning; medium confidence): Flags casts through unknown or any into another type.
 - `modernisation.non-null-assertion` (warning; medium confidence): Flags non-null assertions that bypass null checks.
 - `modernisation.object-spread-candidate` (advisory; medium confidence): Flags Object.assign({}, ...) cloning that can use object spread.
-- `modernisation.readonly-property-candidate` (advisory; medium confidence): Flags class properties that appear readonly-worthy.
+- `modernisation.readonly-property-candidate` (advisory; medium confidence): Flags private class fields their class assigns only in its own constructor, so marking them `readonly` compiles. Public and protected fields are not reported, because another file can write them. Nor is a field the class writes anywhere else, including another instance's field and a callback inside the constructor, any field of a class that writes through `this[...]` or `Object.assign(this, ...)`, or any field in a file that does not parse cleanly.
 - `modernisation.ts-comment-without-rationale` (warning; medium confidence): Flags TypeScript suppression comments without a rationale; the rationale may follow the `@ts-` directive or sit in the `//` comment lines directly above it, and a match for `allowlists.trackingTokens` counts as one.
 - `modernisation.tsconfig-exact-optional-disabled` (warning; high confidence): Flags tsconfig files without exactOptionalPropertyTypes enabled.
 - `modernisation.tsconfig-index-safety-disabled` (warning; high confidence): Flags tsconfig files without noUncheckedIndexedAccess enabled.
@@ -131,7 +131,7 @@ existing config overrides and baselines keep matching.
 - `security.disabled-tls-verification` (error; high confidence): Flags code that disables TLS certificate verification.
 - `security.document-write` (warning; high confidence): Flags document.write usage.
 - `security.dynamic-regexp` (warning; medium confidence): Flags external input used to construct regular expressions.
-- `security.eval-call` (error; high confidence): Flags eval() dynamic code execution.
+- `security.eval-call` (error; high confidence): Flags eval() dynamic code execution. An `eval` whose only argument is one fixed string or a template without `${}` is not reported, unless another `eval` on the same line takes other input.
 - `security.github-actions-pull-request-target` (warning; medium confidence): Flags pull_request_target workflows paired with risky execution or trust context.
 - `security.github-actions-remote-shell` (warning; medium confidence): Flags workflow run steps that pipe remote downloads to a shell.
 - `security.github-actions-secrets-in-pr` (warning; medium confidence): Flags pull_request_target workflows that reference repository secrets other than GITHUB_TOKEN. The trigger is read from the workflow's `on:` key; a plain `pull_request` run from a fork receives no secrets. An own job or step `if:` guard can silence a secret reference when exact `github.event_name` comparisons prove that scope unreachable for the detected PR event. Comparisons ignore case and support a whole expression wrapper, parentheses, negation, AND and OR. Unknown, malformed or unsupported guards and ambiguous YAML ownership retain warnings; a step guard cannot cover job/workflow env or siblings.
@@ -146,9 +146,9 @@ existing config overrides and baselines keep matching.
 - `security.ssrf-candidate` (warning; medium confidence): Flags external input sent to network request sinks.
 - `security.string-timer` (warning; high confidence): Flags string callbacks passed to timers.
 - `security.throw-non-error` (warning; medium confidence): Flags thrown non-Error values.
-- `security.unsafe-deserialization` (warning; medium confidence): Flags external input reaching unsafe deserialization or dynamic code-loading sinks.
+- `security.unsafe-deserialization` (warning; medium confidence): Flags external input reaching unsafe deserialization or dynamic code-loading sinks. Bytes read by an imported, unshadowed Node `fs` call are not external input even when the input chose the file name. Off by default since 0.6.0, because no finding survived its 0.6.0 repair to measure: enable it with `rules.security.unsafe-deserialization.enabled: true`.
 - `security.url-dependency` (warning; medium confidence): Flags dependencies installed from URL, git, or local file specs.
-- `security.weak-crypto` (warning; high confidence): Flags weak crypto primitives such as md5, sha1, or createCipher.
+- `security.weak-crypto` (warning; high confidence): Flags weak crypto primitives such as md5, sha1, or createCipher. An HMAC built on SHA-1, `createHmac("sha1", ...)`, is not reported; an MD5 HMAC and MD5 or SHA-1 hashes still are.
 - `security.xxe-candidate` (warning; medium confidence): Flags external XML reaching parsers configured to expand entities.
 
 ## Sensitive Data

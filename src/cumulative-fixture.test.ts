@@ -183,7 +183,7 @@ import { readFileSync, statSync, writeFileSync } from "node:fs";
 // eslint-disable-next-line no-console
 export class WidgetRecord {
   public active = true;
-  public name: string;
+  private name: string;
 
   public constructor(name: string) {
     this.name = name;
