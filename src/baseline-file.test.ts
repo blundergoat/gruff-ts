@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { applyBaseline, migrateBaseline, requireOverwritableDefaultPath, writeBaseline } from "./baseline-file.ts";
-import { baselineSubject, computeIdentityFor, findingIdentities, normaliseMeasuredValues } from "./baseline-identity.ts";
+import { baselineSubject, computeIdentityFor, declarationPositionFromSpans, findingIdentities, normaliseMeasuredValues } from "./baseline-identity.ts";
 import type { Finding } from "./types.ts";
 
 // The digests the family case file pins for other ports; reproducing them is the only proof the rule is one rule.
@@ -87,6 +87,43 @@ test("a line-shifted finding stays hidden and a new sibling does not", () => {
     assert.equal(application.counts.unchanged, 1);
     assert.equal(application.counts.new, 1);
   });
+});
+
+// The ordinal counts every same-named declaration the parser saw, not only the ones that warned. Ranking findings
+// alone gave the reviewed second `process` ordinal 1 while the first was clean; the day the first started warning it
+// took ordinal 1 and the stored review, and the reviewed one came back as new.
+// Stable contract: a stored review stays on its own declaration whatever the other declarations' findings do.
+test("an earlier same-named declaration that starts warning does not inherit the later one's review", () => {
+  withProject((dir) => {
+    const path = join(dir, "baseline.json");
+    const spansBefore = new Map([["src/app.ts", [{ name: "process", startLine: 2, endLine: 2 }, { name: "process", startLine: 3, endLine: 3 }]]]);
+    writeBaseline(path, [finding({ line: 3 })], declarationPositionFromSpans(spansBefore));
+    const document = JSON.parse(readFileSync(path, "utf8")) as { occurrences: Array<{ subject: string }> };
+    assert.deepEqual(document.occurrences.map((entry) => entry.subject), ["process#2"]);
+
+    // Removing the comment above the first declaration moves both up a line and makes the first one warn.
+    const spansAfter = new Map([["src/app.ts", [{ name: "process", startLine: 1, endLine: 1 }, { name: "process", startLine: 2, endLine: 2 }]]]);
+    const earlier = finding({ line: 1 });
+    const reviewed = finding({ line: 2 });
+    const application = applyBaseline(path, [earlier, reviewed], declarationPositionFromSpans(spansAfter));
+
+    assert.deepEqual(application.findings, [earlier]);
+    assert.equal(application.counts.unchanged, 1);
+    assert.equal(application.counts.new, 1);
+  });
+});
+
+// A later consumer handed a filtered subset (inline suppressions removed, one hook view) must not re-rank it: the
+// identity the analyser stamped over the whole scan is reused, and two findings on it count instead of colliding.
+// Stable contract: a stamped identity and subject pass through unchanged, so filtering never moves an ordinal.
+test("a finding the analyser already named keeps that identity in every later consumer", () => {
+  const stamped = { ...finding({ line: 40 }), baselineIdentity: "abcdef0123456789", baselineSubject: "process#2" };
+  const sameDeclaration = { ...finding({ line: 41 }), baselineIdentity: "abcdef0123456789", baselineSubject: "process#2" };
+  const identities = findingIdentities([stamped, sameDeclaration]);
+
+  assert.deepEqual(identities.map((named) => named?.subject), ["process#2", "process#2"]);
+  assert.equal(identities[0]?.identity, "abcdef0123456789");
+  assert.equal(identities[0]?.declarationKey, identities[1]?.declarationKey);
 });
 
 test("a second occurrence beyond the reviewed count is new and the lowest line is spent", () => {

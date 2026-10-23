@@ -38,6 +38,55 @@ test("expanded scanner keeps pre-expansion fingerprints stable", () => {
   assert.equal(fingerprints.get("size.parameter-count"), "d616356804967e11");
 });
 
+// The real analyser and baseline together: the review stored on the second of two same-named functions stays on it
+// after the first loses its comment, so the newly warning first function is the one reported.
+// Stable contract: the baseline written by one run keeps each review on its own declaration in the next.
+// Side effects: writes a temporary project and baseline to the filesystem and changes the working directory, both restored.
+test("an earlier same-named function that starts warning is reported instead of inheriting the review", () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "gruff-ts-ordinal-"));
+  const baselineDir = mkdtempSync(join(tmpdir(), "gruff-ts-ordinal-baseline-"));
+  const previous = cwd();
+  try {
+    writeFileSync(join(projectDir, "pair.js"), "// Explains the first helper's role for the maintainer.\nfunction process(a) { return a; }\nfunction process(b) { return b; }\n");
+    chdir(projectDir);
+    const baselinePath = join(baselineDir, "baseline.json");
+    analyse({ ...baselineRoundTripOptions(), generateBaseline: baselinePath });
+    writeFileSync(join(projectDir, "pair.js"), "function process(a) { return a; }\nfunction process(b) { return b; }\n");
+    const report = analyse({ ...baselineRoundTripOptions(), shouldSkipBaseline: false, baseline: baselinePath });
+    const visible = report.findings.filter((finding) => finding.ruleId === "docs.missing-internal-function-doc").map((finding) => finding.line);
+    assert.deepEqual(visible, [1]);
+  } finally {
+    chdir(previous);
+    rmSync(projectDir, { recursive: true, force: true });
+    rmSync(baselineDir, { recursive: true, force: true });
+  }
+});
+
+// Two IIFEs are both named `<iife>`, and only the size and complexity rules measure them. Their spans take ordinal
+// slots too, so the second IIFE's stored review stays on it when the first one starts exceeding the parameter limit.
+// Stable contract: a measured-only callable's ordinal counts every same-named callable, whichever ones warned.
+// Side effects: writes a temporary project and baseline to the filesystem and changes the working directory, both restored.
+test("an earlier IIFE that starts warning is reported instead of inheriting the later IIFE's review", () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "gruff-ts-iife-"));
+  const baselineDir = mkdtempSync(join(tmpdir(), "gruff-ts-iife-baseline-"));
+  const previous = cwd();
+  const wide = "(function (a, b, c, d, e, f, g, h, i) { return a + b + c + d + e + f + g + h + i; })(1, 2, 3, 4, 5, 6, 7, 8, 9);\n";
+  try {
+    writeFileSync(join(projectDir, "pair.js"), `(function (a, b) { return a + b; })(1, 2);\n${wide}`);
+    chdir(projectDir);
+    const baselinePath = join(baselineDir, "baseline.json");
+    analyse({ ...baselineRoundTripOptions(), generateBaseline: baselinePath });
+    writeFileSync(join(projectDir, "pair.js"), `${wide}${wide}`);
+    const report = analyse({ ...baselineRoundTripOptions(), shouldSkipBaseline: false, baseline: baselinePath });
+    const visible = report.findings.filter((finding) => finding.ruleId === "size.parameter-count").map((finding) => finding.line);
+    assert.deepEqual(visible, [1]);
+  } finally {
+    chdir(previous);
+    rmSync(projectDir, { recursive: true, force: true });
+    rmSync(baselineDir, { recursive: true, force: true });
+  }
+});
+
 test("baseline round trip suppresses old and new findings by identity tuple", () => {
   const projectDir = mkdtempSync(join(tmpdir(), "gruff-ts-"));
   const baselineDir = mkdtempSync(join(tmpdir(), "gruff-ts-baseline-"));

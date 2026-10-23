@@ -478,9 +478,12 @@ function declarationSpans(scanned: SourceScanResult): Map<string, DeclarationSpa
   const spansByFile = new Map<string, DeclarationSpan[]>();
   for (const [displayPath, entry] of scanned.sources) {
     const blocks = functionBlocks(entry.source, entry.source, entry.parsed);
+    // The callables only the size and complexity rules measure, such as two IIFEs both named `<iife>`, are declarations
+    // too; read them from the masked source those rules use, so the names and lines match their findings.
+    const measuredOnly = entry.parsed ? measuredOnlyFunctionBlocks(entry.source, maskNonCode(entry.source), entry.parsed) : [];
     spansByFile.set(
       displayPath,
-      blocks.map((block) => ({ name: block.name, startLine: block.startLine, endLine: block.startLine + block.lineCount - 1 })),
+      [...blocks, ...measuredOnly].map((block) => ({ name: block.name, startLine: block.startLine, endLine: block.startLine + block.lineCount - 1 })),
     );
   }
   return spansByFile;

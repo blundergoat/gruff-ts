@@ -6,7 +6,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { applyBaseline, BaselineFileError, migrateBaseline, requireOverwritableDefaultPath, sensitiveCountOf, writeBaseline, type BaselineCollision } from "./baseline-file.ts";
-import { declarationPositionFromSpans, type DeclarationSpan } from "./baseline-identity.ts";
+import { type DeclarationPositionResolver, declarationPositionFromSpans, type DeclarationSpan } from "./baseline-identity.ts";
 import { DEFAULT_BASELINE } from "./baseline.ts";
 import { absolutize, displayPath } from "./discovery.ts";
 import type { AnalysisOptions, AnalysisReport, Finding, RunDiagnostic } from "./types.ts";
@@ -87,7 +87,7 @@ export function applyBaselineOptions(projectRoot: string, options: AnalysisOptio
  * With `--migrate-baseline` the reviews of a 0.5 file are carried across instead, leaving that file untouched.
  * Stable contract: generation hides nothing, so the user sees every finding they have just accepted.
  */
-function generateBaselineResult(projectRoot: string, options: AnalysisOptions, findings: Finding[], declarationPosition: (finding: Finding) => number): BaselineApplication {
+function generateBaselineResult(projectRoot: string, options: AnalysisOptions, findings: Finding[], declarationPosition: DeclarationPositionResolver): BaselineApplication {
   const baselinePath = absolutize(projectRoot, options.generateBaseline ?? DEFAULT_BASELINE);
   // A generate at the shared default path never destroys a 0.5 baseline by accident; --force is the way to mean it.
   requireOverwritableDefaultPath(baselinePath, options.shouldForceBaselineOverwrite === true);
@@ -117,7 +117,7 @@ function generateBaselineResult(projectRoot: string, options: AnalysisOptions, f
  * becomes a baseline-error diagnostic so the run reports the reason instead of silently showing every finding.
  * Stable contract: the reported counts come from the same application that filtered the findings, so they cannot disagree.
  */
-function applySelectedBaseline(projectRoot: string, selected: BaselineSelection, findings: Finding[], declarationPosition: (finding: Finding) => number): BaselineApplication {
+function applySelectedBaseline(projectRoot: string, selected: BaselineSelection, findings: Finding[], declarationPosition: DeclarationPositionResolver): BaselineApplication {
   const application = applyBaseline(selected.path, findings, declarationPosition);
   return {
     findings: application.findings,

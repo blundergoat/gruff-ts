@@ -46,6 +46,19 @@ export interface DeclarationSpan {
   endLine: number;
 }
 
+/*
+ * Maps a finding to the line its declaration starts on and, when the parse is available, lists the start line of
+ * every same-named declaration in its file.
+ *
+ * The list is what makes the ordinal count declarations rather than findings. Without it a clean earlier
+ * declaration takes no slot, so the day it first warns it takes the later declaration's ordinal and stored review.
+ * Stable contract: with the list present, a declaration's ordinal does not depend on which findings this run emitted.
+ */
+export interface DeclarationPositionResolver {
+  (finding: Finding): number;
+  sameNamedPositions?: (finding: Finding) => readonly number[];
+}
+
 /** Raised when a finding cannot be given a durable name, so the run reports a baseline failure instead of guessing. */
 export class BaselineIdentityError extends Error {}
 
@@ -120,12 +133,18 @@ export function computeIdentityFor(toolLanguage: string, ruleId: string, path: s
  * identity can never be computed two different ways. A sensitive finding maps to undefined and joins no group.
  * Stable contract: generation and matching call this one function, so a written identity and a matched identity cannot diverge.
  */
-export function findingIdentities(findings: Finding[], declarationPosition: (finding: Finding) => number = declarationPositionByLine): Array<FindingIdentity | undefined> {
+export function findingIdentities(findings: Finding[], declarationPosition: DeclarationPositionResolver = declarationPositionByLine): Array<FindingIdentity | undefined> {
   const ordinals = symbolOrdinals(findings, declarationPosition);
   return findings.map((finding, index) => {
     // A sensitive finding is skipped before any hashing, so no secret ever reaches a stored identity.
     if (!isBaselineEligible(finding)) {
       return undefined;
+    }
+    // The analyser names every finding once, over the whole scan. Reusing that name keeps one finding one identity
+    // in every later consumer, which would otherwise re-rank only the subset it was handed (the inline-filtered
+    // list, a hook view) and could give a declaration a different ordinal.
+    if (finding.baselineIdentity !== undefined && finding.baselineSubject !== undefined) {
+      return { identity: finding.baselineIdentity, subject: finding.baselineSubject, declarationKey: storedDeclarationKey(finding, finding.baselineSubject) };
     }
     const subject = baselineSubject(finding, ordinals[index] ?? 0);
     // A finding whose own text cannot name it joins a sensitive finding in carrying no identity: it is still
@@ -147,7 +166,7 @@ export function findingIdentities(findings: Finding[], declarationPosition: (fin
  * takes the next one, which is what stops one review from covering both.
  * Stable contract: the ordinal counts declarations, not lines, so it survives an edit that only moves the finding.
  */
-function symbolOrdinals(findings: Finding[], declarationPosition: (finding: Finding) => number): number[] {
+function symbolOrdinals(findings: Finding[], declarationPosition: DeclarationPositionResolver): number[] {
   const positionsBySymbol = new Map<string, Set<number>>();
   for (const finding of findings) {
     const symbol = namedSymbol(finding);
@@ -155,6 +174,10 @@ function symbolOrdinals(findings: Finding[], declarationPosition: (finding: Find
       const key = `${finding.filePath}\0${symbol}`;
       const positions = positionsBySymbol.get(key) ?? new Set<number>();
       positions.add(declarationPosition(finding));
+      // Every same-named declaration the parser saw takes a slot, whether or not it warned this run.
+      for (const position of declarationPosition.sameNamedPositions?.(finding) ?? []) {
+        positions.add(position);
+      }
       positionsBySymbol.set(key, positions);
     }
   }
@@ -176,8 +199,14 @@ function symbolOrdinals(findings: Finding[], declarationPosition: (finding: Find
  * by count; keying them by message would report two measurements of one file as an unresolvable collision.
  * Stable contract: equal keys under one identity are an ordinary count; different keys are the collision the run reports.
  */
-function declarationKey(finding: Finding, declarationPosition: (finding: Finding) => number): string {
+function declarationKey(finding: Finding, declarationPosition: DeclarationPositionResolver): string {
   return namedSymbol(finding) === undefined ? "declaration:file" : `declaration:${declarationPosition(finding)}`;
+}
+
+// The same key for a reused identity: its subject already names one declaration, and no position is re-derived.
+// Stable contract: two findings carrying one stored subject share a key, so they are counted, never reported as a collision.
+function storedDeclarationKey(finding: Finding, subject: string): string {
+  return namedSymbol(finding) === undefined ? "declaration:file" : `declaration:subject:${subject}`;
 }
 
 // Reads a finding's symbol only when it actually names one, so an empty string never becomes a declaration.
@@ -195,8 +224,14 @@ function namedSymbol(finding: Finding): string | undefined {
  * its ordinal, which is the whole point of a line-free identity.
  * Stable contract: the position is the declaration's own start line, so the resulting identity is deterministic across runs.
  */
-export function declarationPositionFromSpans(spansByFile: Map<string, DeclarationSpan[]>): (finding: Finding) => number {
-  return (finding: Finding) => {
+export function declarationPositionFromSpans(spansByFile: Map<string, DeclarationSpan[]>): DeclarationPositionResolver {
+  /**
+   * Places one finding on the declaration that encloses it.
+   * Stable contract: the position is a declaration start line, so the identity it feeds is deterministic across runs.
+   * @param finding - the finding to place; its symbol's last segment picks the declaration name
+   * @returns the enclosing same-named declaration's start line, or the finding's own line when none encloses it
+   */
+  const resolver: DeclarationPositionResolver = (finding: Finding) => {
     const line = finding.line ?? 1;
     const symbol = namedSymbol(finding);
     // Without a symbol there is no declaration to rank, and every symbol-less finding of one file shares a key anyway.
@@ -207,6 +242,16 @@ export function declarationPositionFromSpans(spansByFile: Map<string, Declaratio
     const enclosing = (spansByFile.get(finding.filePath) ?? []).find((span) => span.name === wanted && span.startLine <= line && line <= span.endLine);
     return enclosing?.startLine ?? line;
   };
+  resolver.sameNamedPositions = (finding: Finding) => {
+    const symbol = namedSymbol(finding);
+    // A qualified symbol such as `Widget.process` keeps ranking among its findings: spans carry only the short name,
+    // so counting every `process` in the file would merge two classes' methods into one sequence.
+    if (symbol === undefined || symbol.includes(".")) {
+      return [];
+    }
+    return (spansByFile.get(finding.filePath) ?? []).filter((span) => span.name === symbol).map((span) => span.startLine);
+  };
+  return resolver;
 }
 
 // Ranks a symbol on its own line when no parsed declarations are available, as a direct API call has.

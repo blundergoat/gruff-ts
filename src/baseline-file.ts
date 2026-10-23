@@ -7,7 +7,7 @@
 // review from hiding a secret. A 0.5 baseline is refused with the command that carries its reviews forward.
 import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
-import { findingIdentities, TOOL_LANGUAGE, type FindingIdentity } from "./baseline-identity.ts";
+import { type DeclarationPositionResolver, findingIdentities, TOOL_LANGUAGE, type FindingIdentity } from "./baseline-identity.ts";
 import type { Finding } from "./types.ts";
 
 // The family baseline this port writes and reads; a file naming anything else is refused rather than guessed at.
@@ -103,7 +103,7 @@ interface BaselineDocument {
  * Returns how many rows the file holds, which is what the report shows the user after a generate run.
  * Stable contract: rows are written in ascending identity order, so two identical runs produce one identical file.
  */
-export function writeBaseline(path: string, findings: Finding[], declarationPosition?: (finding: Finding) => number): number {
+export function writeBaseline(path: string, findings: Finding[], declarationPosition?: DeclarationPositionResolver): number {
   const document = baselineDocument(findings, declarationPosition);
   writeFileSync(path, `${JSON.stringify(document, null, 2)}\n`);
   return document.occurrences.length;
@@ -111,7 +111,7 @@ export function writeBaseline(path: string, findings: Finding[], declarationPosi
 
 // Counts the secrets a generated baseline recorded without storing, so the run can report what it set aside.
 // Stable contract: the count is derived from the same document a write would produce, so the two can never disagree.
-export function sensitiveCountOf(findings: Finding[], declarationPosition?: (finding: Finding) => number): number {
+export function sensitiveCountOf(findings: Finding[], declarationPosition?: DeclarationPositionResolver): number {
   return baselineDocument(findings, declarationPosition).sensitive.counts.total;
 }
 
@@ -123,7 +123,7 @@ export function sensitiveCountOf(findings: Finding[], declarationPosition?: (fin
  * rest are new. The reviewed count is spent lowest line first, so two ports hide the same occurrences.
  * Stable contract: only an unchanged finding is hidden; a collision, a secret, and every new occurrence still fail the run.
  */
-export function applyBaseline(path: string, findings: Finding[], declarationPosition?: (finding: Finding) => number): BaselineApplication {
+export function applyBaseline(path: string, findings: Finding[], declarationPosition?: DeclarationPositionResolver): BaselineApplication {
   const document = readBaselineDocument(path);
   const reviewed = new Map(document.occurrences.map((entry) => [entry.identity, entry]));
   const identities = findingIdentities(findings, declarationPosition);
@@ -157,7 +157,7 @@ export function applyBaseline(path: string, findings: Finding[], declarationPosi
  * Throws when the input is missing, is not a 0.5 baseline, or resolves to the same file as the output, so the retreat path is never overwritten.
  * @throws {BaselineFileError} when output is the input file or the parsed input is not a 0.5 baseline, or {Error} when the input is not JSON or changed during migration.
  */
-export function migrateBaseline(inputPath: string, outputPath: string, findings: Finding[], declarationPosition?: (finding: Finding) => number): BaselineMigration {
+export function migrateBaseline(inputPath: string, outputPath: string, findings: Finding[], declarationPosition?: DeclarationPositionResolver): BaselineMigration {
   requireDistinctPaths(inputPath, outputPath);
   const original = readFileSync(inputPath);
   const accepted = acceptedByLegacy(legacyRows(inputPath, original), findings);
@@ -215,7 +215,7 @@ function existingSchemaVersion(outputPath: string): string | undefined {
 
 // Builds the document a generated baseline writes, ordered so two identical runs produce one identical file.
 // Stable contract: one row per identity, deterministic order, and no stored identity for any sensitive finding.
-function baselineDocument(findings: Finding[], declarationPosition?: (finding: Finding) => number): BaselineDocument {
+function baselineDocument(findings: Finding[], declarationPosition?: DeclarationPositionResolver): BaselineDocument {
   const identities = findingIdentities(findings, declarationPosition);
   const rows = new Map<string, BaselineEntry>();
   const sensitiveByRule: Record<string, number> = {};
