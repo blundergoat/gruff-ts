@@ -614,11 +614,6 @@ export function unsafePublicApi(input: any): any {
 function catalogueTestCoverageSource(): string {
   return `import assert from "node:assert/strict";
 
-// These independently named cases provide positive coverage for the opt-in group detector.
-${"test"}("first conversion", () => { const result = convert(1); assert.equal(result, 2); });
-${"test"}("second conversion", () => { const result = convert(2); assert.equal(result, 3); });
-${"test"}("third conversion", () => { const result = convert(3); assert.equal(result, 4); });
-
 const fixturePurposeReport = analyseFixture(${"`"}
 ${largeFixtureSourceLines("catalogueFixtureValue").join("\n")}
 ${"`"});
@@ -698,8 +693,6 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
   return {
       config: {
         rules: {
-          // The new group detector stays off by default until independent calibration clears its floor.
-          "test-quality.duplicate-test-body": { enabled: true },
           // Off by default since precision-floor M14; the coverage project switches it on for a positive case.
           "complexity.cyclomatic": { enabled: true, threshold: 2, severity: "warning" },
           "design.large-module-concentration": { threshold: 35, severity: "advisory", options: { minFiles: 4, minLines: 8 } },

@@ -60,7 +60,6 @@ gruff-ts/
 │   ├── context-doc-rules.ts       = maintainer-context documentation rubrics
 │   ├── fixture-purpose-rules.ts   = fixture-purpose rubric pack
 │   ├── test-block-rules.ts        = setup, assertion, mock, sleep, loop, and structural test rules
-│   ├── duplicate-test-group-rules.ts = opt-in complete test groups from the shared AST, preserving lexical containers and literal boundaries
 │   ├── safety-rules.ts            = type-safety, async reliability, catch, and throw rules
 │   ├── security-flow-rules.ts     = syntax-aware source-to-sink candidates and unsafe parser/execution checks
 │   ├── github-actions-rules.ts    = GitHub Actions workflow rules
@@ -77,7 +76,7 @@ gruff-ts/
 │   ├── baseline.ts                = canonical finding order, dedupe, and score-history recording
 │   ├── scoring.ts                 = report scoring, summaries, and finding exit semantics
 │   ├── pillar-summary.ts          = canonical summary pillar rows and ordering
-│   ├── rules.ts                   = catalogue of exactly 83 descriptors across 11 pillars
+│   ├── rules.ts                   = catalogue of exactly 82 descriptors across 11 pillars
 │   ├── profiles.ts                = built-in rule profile presets that profile: and --profile resolve
 │   ├── selectors.ts               = execution versus presentation rule selectors
 │   ├── rule-list.ts               = list-rules, profile list, and shell completion rendering

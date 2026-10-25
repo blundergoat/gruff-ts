@@ -29,7 +29,6 @@ import { analyseLineRules } from "./line-rules.ts";
 import { analyseSecurityFlow } from "./security-flow-rules.ts";
 import { pushIdentifierQualityAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { analyseTestBlock } from "./test-block-rules.ts";
-import { analyseDuplicateTestGroups } from "./duplicate-test-group-rules.ts";
 import { analyseGithubActionsRules } from "./github-actions-rules.ts";
 import { analyseProjectConfigRules } from "./project-config-rules.ts";
 import { ruleDescriptors } from "./rules.ts";
@@ -859,11 +858,6 @@ function analyseTypeScriptRules(file: SourceFile, source: string, comments: Comm
   const blocks = isAnyRuleEnabled(config, BLOCK_DEPENDENT_RULE_IDS) ? functionBlocks(source, codeSource, parsed) : [];
   runRulePass(config, "docs.missing-file-overview", () => analyseFileOverviewDoc(file, source, findings));
   analyseBlocks(file, source, codeSource, blocks, config, findings);
-  runRulePass(config, "test-quality.duplicate-test-body", () => {
-    if (parsed) {
-      analyseDuplicateTestGroups(file, parsed, findings);
-    }
-  });
   // Callables only the size and complexity rules measure; the documentation and naming rules never see them.
   runRuleGroupPass(config, BLOCK_MEASURE_RULE_IDS, () => {
     if (parsed) {
