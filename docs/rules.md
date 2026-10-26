@@ -1,6 +1,6 @@
 # Rules
 
-`gruff-ts` exposes 82 rules across 11 pillars. This list is maintained by hand
+`gruff-ts` exposes 83 rules across 11 pillars. This list is maintained by hand
 against the public rule catalogue used by `gruff-ts list-rules`; severity,
 confidence, thresholds, and option names are the defaults before project config
 overrides.
@@ -45,7 +45,7 @@ itself suppress any rule family.
 - security: 23
 - sensitive-data: 8
 - size: 3
-- test-quality: 5
+- test-quality: 6
 
 **Two bands for size and complexity.** Every `size.*` and `complexity.*` finding reports in one of two bands (FAMILY-CONTRACT.md
 section 12, "Size and complexity findings in two bands"). Under one and a half times its limit, the finding is an advisory notice
@@ -172,6 +172,7 @@ Pattern detectors (AWS keys, API keys, credential URLs, JWTs) skip values carryi
 
 ## Test Quality
 
+- `test-quality.duplicate-test-body` (advisory; low confidence; default-off): Flags groups of at least three tests in one lexical container with matching bodies of at least three statements, the contracted TypeScript minimum, after eligible literal normalization. Enable with `rules.test-quality.duplicate-test-body.enabled: true`. Each finding lists every member and recommends the test runner's table form with a descriptive label per row. Matching retains identifiers, operations, modifier/options values, whitespace-bearing strings, key/index literals, decorator arguments, and every literal and JSDoc block of a function, class, interface, type, enum or namespace declared in the body, while `const` bindings normalize like other values; separate suite declarations, bodies below the three-statement minimum, pairs and existing table forms do not qualify. This is a consolidation candidate whose independent precision measurement is pending.
 - `test-quality.global-state-mutation` (warning; high confidence): Flags tests mutating process or global runtime state.
 - `test-quality.loop-in-test` (advisory; medium confidence): Flags test-body loops whose assertions do not identify the failing iteration.
 - `test-quality.static-analysis-redundant-test` (advisory; high confidence): Flags tests that primarily assert code shape rather than behavior, with review guidance for importability sentinels.

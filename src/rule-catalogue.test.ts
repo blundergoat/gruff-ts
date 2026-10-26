@@ -12,10 +12,10 @@ import { ruleCatalogueCoverageFindings, ruleCatalogueCoverageRuleIds } from "./t
 import type { AnalysisOptions } from "./types.ts";
 
 const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "missing-invalid"] as const;
-const EXPECTED_RELEASE_RULE_COUNT = 82;
+const EXPECTED_RELEASE_RULE_COUNT = 83;
 // Every medium- and low-confidence rule carries reviewed false-positive guidance; the high-confidence
 // remainder omits the field. Naming both counts keeps the two guards below arithmetically linked.
-const EXPECTED_GUIDED_RULE_COUNT = 47;
+const EXPECTED_GUIDED_RULE_COUNT = 48;
 
 // Asserts the descriptor's optionKeys list is sorted and unique. Factored out of the descriptor
 // catalogue test body to preserve a stable sort invariant without an inline `if` branch.
@@ -306,7 +306,7 @@ test("documentation catalogue covers comment rule pack", () => {
 
 // Pins the public release count so adding or removing a user-visible rule requires an intentional
 // catalogue and documentation update instead of silently changing the published scanner surface.
-test("release catalogue contains exactly 82 rule descriptors", () => {
+test("release catalogue contains exactly 83 rule descriptors", () => {
   const currentRuleCount = ruleDescriptors().length;
   assert.equal(currentRuleCount, EXPECTED_RELEASE_RULE_COUNT);
 });
@@ -338,7 +338,7 @@ test("every medium and low confidence rule carries reviewed false-positive guida
 test("high confidence rules omit falsePositiveShapes rather than publishing an empty array", () => {
   const highConfidence = ruleDescriptors().filter((descriptor) => descriptor.confidence === "high");
 
-  // The 35 high-confidence rules are the complement of the 47 medium/low rules that carry guidance.
+  // The 35 high-confidence rules are the complement of the 48 medium/low rules that carry guidance.
   assert.equal(highConfidence.length, EXPECTED_RELEASE_RULE_COUNT - EXPECTED_GUIDED_RULE_COUNT);
 
   const publishingShapes = highConfidence
