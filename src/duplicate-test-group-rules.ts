@@ -1,5 +1,5 @@
 // Finds complete, file-local duplicate test groups without changing legacy callable discovery.
-// Matching follows FAMILY-CONTRACT section 16; candidates stay advisory and opt-in.
+// Matching follows FAMILY-CONTRACT section 16; candidates stay advisory and default-on.
 import { createRequire } from "node:module";
 import type { Node, Expression, CallExpression, ArrowFunction, FunctionExpression, SourceFile as SyntaxFile } from "typescript";
 import type { SourceFile } from "./discovery.ts";

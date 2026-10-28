@@ -294,9 +294,9 @@ rules:
     enabled: true
     threshold: 7
     severity: warning
-  # test-quality/advisory: Groups of matching test bodies; opt-in pending independent calibration.
+  # test-quality/advisory: Groups of matching test bodies; calibrated for default use.
   test-quality.duplicate-test-body:
-    enabled: false
+    enabled: true
   # test-quality/warning: Flags tests mutating process or global runtime state.
   test-quality.global-state-mutation:
     enabled: true

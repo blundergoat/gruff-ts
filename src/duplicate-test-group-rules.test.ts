@@ -39,14 +39,18 @@ function groups(source: string, fileName = "suite.test.ts") {
   }).findings.filter((finding) => finding.ruleId === RULE_ID);
 }
 
-test("duplicate test groups are default-off and reuse the shared parse when enabled", () => {
+test("duplicate test groups are default-on, allow opt-out and reuse the shared parse", () => {
   const source = registrations(MATCHING_BODIES);
   const before = parsedScriptParseCount();
-  assert.equal(analyseFixture(source, { fileName: "suite.test.ts" }).findings.some((finding) => finding.ruleId === RULE_ID), false);
+  assert.equal(analyseFixture(source, { fileName: "suite.test.ts" }).findings.some((finding) => finding.ruleId === RULE_ID), true);
   assert.equal(parsedScriptParseCount() - before, 1);
   const enabledBefore = parsedScriptParseCount();
   assert.equal(groups(source).length, 1);
   assert.equal(parsedScriptParseCount() - enabledBefore, 1);
+  const disabled = analyseFixture(source, {
+    fileName: "suite.test.ts", config: { rules: { [RULE_ID]: { enabled: false } } },
+  });
+  assert.equal(disabled.findings.some((finding) => finding.ruleId === RULE_ID), false);
 });
 
 test("one finding lists the complete ordered group and uses the first native anchor", () => {
