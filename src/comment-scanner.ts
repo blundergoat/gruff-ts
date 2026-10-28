@@ -325,6 +325,75 @@ export function hasLeadingCommentBeforeLines(lines: string[], line: number): boo
   return index >= 0 && commentTextAtLine(lines, index) !== undefined;
 }
 
+// The missing-function-doc form of `hasLeadingCommentBeforeLines`: a divider or the file's overview
+// right above the function is not the function's own comment (M13-T18).
+export function hasFunctionLeadingCommentBeforeLines(lines: string[], line: number): boolean {
+  let endIndex = line - 2;
+  while (endIndex >= 0 && (lines[endIndex] ?? "").trim() === "") {
+    endIndex -= 1;
+  }
+  if (endIndex < 0 || commentTextAtLine(lines, endIndex) === undefined) {
+    return false;
+  }
+  return !isOverviewOrDividerCommentAt(lines, commentStartIndex(lines, endIndex), endIndex, line - 1);
+}
+
+// The opener line of the comment that ends on `endIndex`: the line itself for `//` and one-line
+// `/* */` comments, else the nearest `/*` above a `*/` closer.
+function commentStartIndex(lines: string[], endIndex: number): number {
+  for (let index = endIndex; index >= 0; index -= 1) {
+    const trimmedLine = (lines[index] ?? "").trim();
+    if (trimmedLine.startsWith("//") || trimmedLine.startsWith("/*")) {
+      return index;
+    }
+  }
+  return endIndex;
+}
+
+/*
+ * Whether a comment above a function documents something else, so it is not the function's own
+ * comment (M13-T18): a divider, or the file's overview. The indices are zero-based lines: the
+ * comment's first and last line, then the function's declaration line.
+ */
+export function isOverviewOrDividerCommentAt(lines: string[], startIndex: number, endIndex: number, declarationIndex: number): boolean {
+  const commentText = lines.slice(startIndex, endIndex + 1).join("\n");
+  return isDividerComment(commentText) || (isFileOverviewComment(commentText, lines.slice(endIndex + 1, declarationIndex)) && isFileOpeningLine(lines, startIndex));
+}
+
+// A one-line comment whose text opens with a run of three or more `-`, `=`, `*`, `_`, `#`, `~`, `+`
+// or `/`, such as `// ---- helpers` or `/* ==== */`, divides sections; it does not describe the
+// function below it.
+export function isDividerComment(commentText: string): boolean {
+  if (commentText.includes("\n")) {
+    return false;
+  }
+  const text = commentText.trim().replace(/^\/\/|^\/\*\*?/, "").replace(/\*\/$/, "").trim();
+  return /^[-=*_#~+/]{3,}/.test(text);
+}
+
+// The file's opening comment is the file's overview, not the next function's comment, when a blank
+// line separates the two or the comment carries a file-level tag. `gapLines` are the lines between them.
+export function isFileOverviewComment(commentText: string, gapLines: string[]): boolean {
+  return gapLines.some((gapLine) => gapLine.trim() === "") || /@(?:file|fileoverview|overview|packageDocumentation|module|license)\b/.test(commentText);
+}
+
+// True when only a shebang, blank lines and other comments come before line `startIndex`, so a
+// comment that starts there opens the file. Stops at the first code line.
+function isFileOpeningLine(lines: string[], startIndex: number): boolean {
+  let isInBlockComment = false;
+  for (let index = 0; index < startIndex; index += 1) {
+    const trimmedLine = (lines[index] ?? "").trim();
+    if (isInBlockComment || trimmedLine.startsWith("/*")) {
+      isInBlockComment = !trimmedLine.endsWith("*/");
+      continue;
+    }
+    if (trimmedLine !== "" && !trimmedLine.startsWith("//") && !(index === 0 && trimmedLine.startsWith("#!"))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Three comment shapes resolved here: `//` line comments, `/* … */` opener lines, and lines that
 // only contain the `*/` closer (call delegates upward to find the opener). Returns undefined for
 // non-comment lines and for empty comments, so callers can use truthiness as the "has text" gate.

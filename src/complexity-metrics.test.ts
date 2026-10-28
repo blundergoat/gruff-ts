@@ -49,8 +49,7 @@ function visibleAccountLabels(settings?: {
 
 // Stable fixture contract: nested presentation objects and callback braces add no decision paths.
 test("object literals and callback braces do not add control-flow nesting", () => {
-  const report = analyseFixture(
-    `/** Builds cards displayed in the search results panel. */
+  const source = `/** Builds cards displayed in the search results panel. */
 function resultCards(items: Array<{ title: string }>): unknown[] {
   return items.map((item) => ({
     title: item.title,
@@ -61,26 +60,25 @@ function resultCards(items: Array<{ title: string }>): unknown[] {
     },
   }));
 }
-`,
-    {
-      fileName: "result-cards.ts",
-      config: {
-        rules: {
-          "complexity.cyclomatic": { threshold: 99 },
-          "complexity.cognitive": { threshold: 2 },
-        },
+`;
+  const report = analyseFixture(source, {
+    fileName: "result-cards.ts",
+    config: {
+      rules: {
+        "complexity.cyclomatic": { enabled: true, threshold: 99 },
       },
     },
-  );
+  });
 
-  const falseNesting = report.findings.filter((finding) => finding.ruleId === "complexity.cognitive" || finding.ruleId === "docs.missing-why-for-complex-code");
+  const falseNesting = report.findings.filter((finding) => finding.ruleId === "docs.missing-why-for-complex-code");
   assert.deepEqual(falseNesting, []);
+  // The cognitive metric still sets the documentation gate, so its value stays pinned on the parsed block.
+  assert.deepEqual(metricTupleFor(parsedFixtureBlocks(source), "resultCards"), [1, 1, 0]);
 });
 
-// Stable fixture contract: a flat switch counts only its non-default choices.
-test("flat switch complexity follows the non-default case policy", () => {
-  const report = analyseFixture(
-    `function routePanel(panel: string): string {
+// Stable fixture contract: a flat switch is one decision however many non-default choices it has.
+test("a flat switch counts as one decision", () => {
+  const source = `function routePanel(panel: string): string {
   switch (panel) {
     case "account":
       return "account";
@@ -90,66 +88,60 @@ test("flat switch complexity follows the non-default case policy", () => {
       return "home";
   }
 }
-`,
-    {
-      fileName: "panel-router.ts",
-      config: {
-        rules: {
-          "complexity.cyclomatic": { threshold: 2 },
-          "complexity.cognitive": { threshold: 3 },
-        },
+`;
+  const report = analyseFixture(source, {
+    fileName: "panel-router.ts",
+    config: {
+      rules: {
+        "complexity.cyclomatic": { enabled: true, threshold: 1 },
       },
     },
-  );
+  });
 
   const cyclomatic = report.findings.find((finding) => finding.ruleId === "complexity.cyclomatic");
-  const cognitive = report.findings.find((finding) => finding.ruleId === "complexity.cognitive");
   assert.deepEqual(
-    { cyclomatic: cyclomatic?.metadata, cognitive: cognitive?.metadata },
+    { cyclomatic: cyclomatic?.metadata },
     {
-      cyclomatic: { complexity: 3, threshold: 2, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, case: 2, maxNesting: 1 } },
-      cognitive: { complexity: 4, threshold: 3, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, case: 2, maxNesting: 1 } },
+      cyclomatic: { complexity: 2, threshold: 1, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, case: 1, maxNesting: 1 }, limitBand: "upper" },
     },
   );
+  // The cognitive metric still sets the documentation gate, so its value stays pinned on the parsed block.
+  assert.deepEqual(metricTupleFor(parsedFixtureBlocks(source), "routePanel"), [2, 3, 1]);
 });
 
 // Stable fixture contract: ternary and logical nodes count while optional and nullish nodes do not.
 test("ternary and logical operators count without optional or nullish inflation", () => {
-  const report = analyseFixture(
-    `function visibleStatus(
+  const source = `function visibleStatus(
   account: { active?: boolean; label?: string } | undefined,
   hasBackup: boolean,
   fallback: string,
 ): string {
   return ((account?.active && hasBackup) || (account?.label ?? fallback)) ? "visible" : "hidden";
 }
-`,
-    {
-      fileName: "visible-status.ts",
-      config: {
-        rules: {
-          "complexity.cyclomatic": { threshold: 3 },
-          "complexity.cognitive": { threshold: 4 },
-        },
+`;
+  const report = analyseFixture(source, {
+    fileName: "visible-status.ts",
+    config: {
+      rules: {
+        "complexity.cyclomatic": { enabled: true, threshold: 3 },
       },
     },
-  );
+  });
 
   const cyclomatic = report.findings.find((finding) => finding.ruleId === "complexity.cyclomatic");
-  const cognitive = report.findings.find((finding) => finding.ruleId === "complexity.cognitive");
   assert.deepEqual(
-    { cyclomatic: cyclomatic?.metadata, cognitive: cognitive?.metadata },
+    { cyclomatic: cyclomatic?.metadata },
     {
-      cyclomatic: { complexity: 4, threshold: 3, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, ternary: 1, logicalAnd: 1, logicalOr: 1, maxNesting: 1 } },
-      cognitive: { complexity: 5, threshold: 4, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, ternary: 1, logicalAnd: 1, logicalOr: 1, maxNesting: 1 } },
+      cyclomatic: { complexity: 4, threshold: 3, breakdown: { ...EMPTY_COMPLEXITY_BREAKDOWN, ternary: 1, logicalAnd: 1, logicalOr: 1, maxNesting: 1 }, limitBand: "lower" },
     },
   );
+  // The cognitive metric still sets the documentation gate, so its value stays pinned on the parsed block.
+  assert.deepEqual(metricTupleFor(parsedFixtureBlocks(source), "visibleStatus"), [4, 5, 1]);
 });
 
 // Stable fixture contract: an unenumerated callback remains owned by its nearest reported function.
 test("anonymous callback decisions contribute to the named owner", () => {
-  const report = analyseFixture(
-    `function visibleItemLabels(items: Array<{ isVisible: boolean; label?: string }>): string[] {
+  const source = `function visibleItemLabels(items: Array<{ isVisible: boolean; label?: string }>): string[] {
   return items.map((item) => {
     if (item.isVisible && item.label) {
       return item.label;
@@ -160,32 +152,29 @@ test("anonymous callback decisions contribute to the named owner", () => {
     return "hidden";
   });
 }
-`,
-    {
-      fileName: "item-labels.ts",
-      config: {
-        rules: {
-          "complexity.cyclomatic": { threshold: 3 },
-          "complexity.cognitive": { threshold: 4 },
-        },
+`;
+  const report = analyseFixture(source, {
+    fileName: "item-labels.ts",
+    config: {
+      rules: {
+        "complexity.cyclomatic": { enabled: true, threshold: 3 },
       },
     },
-  );
+  });
 
   const ownerFindings = report.findings.filter((finding) => finding.symbol === "visibleItemLabels" && finding.ruleId.startsWith("complexity."));
   assert.deepEqual(
     ownerFindings.map((finding) => [finding.ruleId, finding.metadata.complexity]),
-    [
-      ["complexity.cognitive", 5],
-      ["complexity.cyclomatic", 4],
-    ],
+    // Both callback ifs are early-exit guards, so they add decisions but no nesting.
+    [["complexity.cyclomatic", 4]],
   );
+  // The cognitive metric still sets the documentation gate, so its value stays pinned on the parsed block.
+  assert.deepEqual(metricTupleFor(parsedFixtureBlocks(source), "visibleItemLabels"), [4, 4, 0]);
 });
 
 // Stable fixture contract: genuine branching preserves its report measurements and identity tuple.
 test("nested branching retains findings, documentation pressure, and identity", () => {
-  const report = analyseFixture(
-    `/** Routes the first visible result into the report panel. */
+  const source = `/** Routes the first visible result into the report panel. */
 function routeVisibleResult(results: string[], isReady: boolean): string {
   if (isReady) {
     for (const result of results) {
@@ -196,17 +185,15 @@ function routeVisibleResult(results: string[], isReady: boolean): string {
   }
   return "empty";
 }
-`,
-    {
-      fileName: "nested-routing.ts",
-      config: {
-        rules: {
-          "complexity.cyclomatic": { threshold: 3, severity: "advisory" },
-          "complexity.cognitive": { threshold: 6, severity: "error" },
-        },
+`;
+  const report = analyseFixture(source, {
+    fileName: "nested-routing.ts",
+    config: {
+      rules: {
+        "complexity.cyclomatic": { enabled: true, threshold: 3, severity: "advisory" },
       },
     },
-  );
+  });
 
   const retainedFindings = report.findings
     .filter((finding) => finding.ruleId.startsWith("complexity.") || finding.ruleId === "docs.missing-why-for-complex-code")
@@ -221,16 +208,6 @@ function routeVisibleResult(results: string[], isReady: boolean): string {
       stableIdentity: finding.stableIdentity,
     }));
   assert.deepEqual(retainedFindings, [
-    {
-      ruleId: "complexity.cognitive",
-      filePath: "nested-routing.ts",
-      line: 1,
-      symbol: "routeVisibleResult",
-      severity: "error",
-      complexity: 7,
-      fingerprint: "77bebc0d6c0c8009",
-      stableIdentity: "87f4743c33d7be44",
-    },
     {
       ruleId: "complexity.cyclomatic",
       filePath: "nested-routing.ts",
@@ -252,31 +229,32 @@ function routeVisibleResult(results: string[], isReady: boolean): string {
       stableIdentity: "b4d40522be965aa8",
     },
   ]);
+  // The cognitive metric still sets the documentation gate, so its value stays pinned on the parsed block.
+  assert.deepEqual(metricTupleFor(parsedFixtureBlocks(source), "routeVisibleResult"), [4, 6, 2]);
 });
 
 // Stable fixture contract: branch-shaped prose and literals remain inert during a CLI scan.
 test("branch tokens in comments strings and regular expressions stay inert", () => {
-  const report = analyseFixture(
-    `function branchVocabulary(): string {
+  const source = `function branchVocabulary(): string {
   // Words such as if, for, case, and catch explain a help screen.
   const helpText = "if (ready) { for (;;) { switch (value) { case 1: } } }";
   const helpPattern = /if|for|while|catch|case|\\?\\?|&&|\\|\\|/;
   return helpPattern.test(helpText) ? "matched" : "unmatched";
 }
-`,
-    {
-      fileName: "branch-vocabulary.ts",
-      config: {
-        rules: {
-          "complexity.cyclomatic": { threshold: 2 },
-          "complexity.cognitive": { threshold: 3 },
-        },
+`;
+  const report = analyseFixture(source, {
+    fileName: "branch-vocabulary.ts",
+    config: {
+      rules: {
+        "complexity.cyclomatic": { enabled: true, threshold: 2 },
       },
     },
-  );
+  });
 
   const complexityFindings = report.findings.filter((finding) => finding.ruleId.startsWith("complexity."));
   assert.deepEqual(complexityFindings, []);
+  // The cognitive metric still sets the documentation gate, so its value stays pinned on the parsed block.
+  assert.deepEqual(metricTupleFor(parsedFixtureBlocks(source), "branchVocabulary"), [2, 3, 1]);
 });
 
 // Stable fixture contract: every decision counts once, including the catch recover path.
@@ -322,20 +300,48 @@ test("shared metrics expose the complete counting-policy breakdown", () => {
   const metrics = blocks.find((block) => block.name === "allDecisions")?.complexityMetrics;
 
   assert.deepEqual(metrics, {
-    cyclomatic: 13,
-    cognitive: 14,
+    cyclomatic: 12,
+    cognitive: 13,
     maximumControlFlowNesting: 1,
     breakdown: {
       if: 1,
       loop: 5,
       catch: 1,
-      case: 2,
+      case: 1,
       ternary: 1,
       logicalAnd: 1,
       logicalOr: 1,
       maxNesting: 1,
     },
   });
+});
+
+// Stable fixture contract: an early-exit guard adds its decision but no nesting; any other if still nests.
+test("an early-exit guard adds no nesting level", () => {
+  const blocks = parsedFixtureBlocks(`function guarded(items: number[]): number {
+  for (const item of items) {
+    if (item < 0) continue;
+    if (item === 0) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+function nested(items: number[]): number {
+  for (const item of items) {
+    if (item > 0) {
+      record(item);
+    }
+  }
+  return 1;
+}
+`);
+  const guarded = blocks.find((block) => block.name === "guarded")?.complexityMetrics;
+  const nested = blocks.find((block) => block.name === "nested")?.complexityMetrics;
+
+  assert.deepEqual([guarded?.cyclomatic, guarded?.maximumControlFlowNesting, guarded?.cognitive], [4, 1, 5]);
+  assert.deepEqual([nested?.cyclomatic, nested?.maximumControlFlowNesting, nested?.cognitive], [3, 2, 5]);
 });
 
 // Every callable shape receives its own node, while a nested reported child is pruned from its parent.
@@ -405,10 +411,10 @@ function parent(isReady: boolean): void {
       "child",
     ].map((blockName) => [blockName, metricTupleFor(blocks, blockName)])),
     {
-      declared: [2, 3, 1],
+      declared: [2, 2, 0],
       constructor: [2, 3, 1],
       render: [2, 3, 1],
-      choose: [3, 5, 2],
+      choose: [3, 4, 1],
       arrow: [2, 3, 1],
       recover: [2, 3, 1],
       "shows panel": [2, 3, 1],

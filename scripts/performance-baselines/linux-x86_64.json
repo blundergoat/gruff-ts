@@ -1,0 +1,482 @@
+{
+  "tool": "gruff-ts",
+  "schemaVersion": "gruff-perf.v1",
+  "generatedAt": "2026-08-22T05:47:37Z",
+  "host": {
+    "platform": "linux-x86_64",
+    "uname": "Linux 6.6.87.2-microsoft-standard-WSL2 x86_64",
+    "cpu": "Intel(R) Core(TM) Ultra 9 275HX",
+    "node": "v22.22.1"
+  },
+  "source": {
+    "gitCommit": "400ae4d63c8c961f19ae3d926240c77ec3b5b379",
+    "gitDirty": true,
+    "runtimeSource": {
+      "includedPaths": [
+        "bin/gruff-ts",
+        "src",
+        "package.json",
+        "package-lock.json"
+      ],
+      "fileCount": 96,
+      "digest": "edce86488889995c60b8071e9d851dc167626aca50b5cffa2788b407c3a4fe40"
+    },
+    "artifact": {
+      "kind": "live-wrapper",
+      "sha256": "839222e0f131c27ed897761acbe6552a9a526db81c34709aabcfe167b61ad6cb"
+    },
+    "harnessSha256": "5bb786bfd3ffa0f19c23b4a6089a9035941c09b200f5012c69e55510ca29d1e0",
+    "toolVersion": "gruff-ts 0.5.0"
+  },
+  "runner": {
+    "runs": 5,
+    "firstSample": "included"
+  },
+  "runs": 5,
+  "cells": [
+    {
+      "workload": "fixtures/sample.ts",
+      "target": "fixtures/sample.ts",
+      "config": "--no-config",
+      "format": "json",
+      "runs": 5,
+      "wall_seconds": {
+        "mean": 0.536000,
+        "min": 0.510000,
+        "max": 0.570000,
+        "stddev": 0.021541,
+        "samples": [
+          0.570000,
+          0.510000,
+          0.520000,
+          0.550000,
+          0.530000
+        ]
+      },
+      "max_rss_kb": {
+        "mean": 205276.800000,
+        "min": 203904.000000,
+        "max": 207840.000000,
+        "stddev": 1361.811499,
+        "samples": [
+          204648.000000,
+          204632.000000,
+          207840.000000,
+          205360.000000,
+          203904.000000
+        ]
+      },
+      "findings": {
+        "count": 20,
+        "deterministic": true
+      }
+    },
+    {
+      "workload": "fixtures/sample.ts",
+      "target": "fixtures/sample.ts",
+      "config": "--no-config",
+      "format": "text",
+      "runs": 5,
+      "wall_seconds": {
+        "mean": 0.536000,
+        "min": 0.520000,
+        "max": 0.550000,
+        "stddev": 0.013565,
+        "samples": [
+          0.550000,
+          0.540000,
+          0.520000,
+          0.520000,
+          0.550000
+        ]
+      },
+      "max_rss_kb": {
+        "mean": 205575.200000,
+        "min": 204168.000000,
+        "max": 207824.000000,
+        "stddev": 1554.108671,
+        "samples": [
+          207824.000000,
+          204168.000000,
+          204412.000000,
+          207084.000000,
+          204388.000000
+        ]
+      },
+      "findings": {
+        "count": 40,
+        "deterministic": true
+      }
+    },
+    {
+      "workload": "fixtures/sample.ts",
+      "target": "fixtures/sample.ts",
+      "config": "default",
+      "format": "json",
+      "runs": 5,
+      "wall_seconds": {
+        "mean": 0.360000,
+        "min": 0.350000,
+        "max": 0.370000,
+        "stddev": 0.006325,
+        "samples": [
+          0.370000,
+          0.360000,
+          0.360000,
+          0.360000,
+          0.350000
+        ]
+      },
+      "max_rss_kb": {
+        "mean": 168456.000000,
+        "min": 166176.000000,
+        "max": 170128.000000,
+        "stddev": 1757.774957,
+        "samples": [
+          166176.000000,
+          166468.000000,
+          169496.000000,
+          170012.000000,
+          170128.000000
+        ]
+      },
+      "findings": {
+        "count": 0,
+        "deterministic": true
+      }
+    },
+    {
+      "workload": "fixtures/sample.ts",
+      "target": "fixtures/sample.ts",
+      "config": "default",
+      "format": "text",
+      "runs": 5,
+      "wall_seconds": {
+        "mean": 0.364000,
+        "min": 0.350000,
+        "max": 0.380000,
+        "stddev": 0.010198,
+        "samples": [
+          0.350000,
+          0.360000,
+          0.380000,
+          0.360000,
+          0.370000
+        ]
+      },
+      "max_rss_kb": {
+        "mean": 168748.800000,
+        "min": 166792.000000,
+        "max": 170516.000000,
+        "stddev": 1498.334862,
+        "samples": [
+          169876.000000,
+          169412.000000,
+          167148.000000,
+          166792.000000,
+          170516.000000
+        ]
+      },
+      "findings": {
+        "count": 0,
+        "deterministic": true
+      }
+    },
+    {
+      "workload": "src",
+      "target": "src",
+      "config": "--no-config",
+      "format": "json",
+      "runs": 5,
+      "wall_seconds": {
+        "mean": 1.444000,
+        "min": 1.420000,
+        "max": 1.470000,
+        "stddev": 0.016248,
+        "samples": [
+          1.440000,
+          1.470000,
+          1.450000,
+          1.440000,
+          1.420000
+        ]
+      },
+      "max_rss_kb": {
+        "mean": 256263.200000,
+        "min": 254944.000000,
+        "max": 257704.000000,
+        "stddev": 1138.466056,
+        "samples": [
+          254944.000000,
+          257704.000000,
+          255624.000000,
+          257552.000000,
+          255492.000000
+        ]
+      },
+      "findings": {
+        "count": 31,
+        "deterministic": true
+      }
+    },
+    {
+      "workload": "src",
+      "target": "src",
+      "config": "--no-config",
+      "format": "text",
+      "runs": 5,
+      "wall_seconds": {
+        "mean": 1.476000,
+        "min": 1.450000,
+        "max": 1.510000,
+        "stddev": 0.024980,
+        "samples": [
+          1.450000,
+          1.470000,
+          1.450000,
+          1.500000,
+          1.510000
+        ]
+      },
+      "max_rss_kb": {
+        "mean": 255848.000000,
+        "min": 254596.000000,
+        "max": 257160.000000,
+        "stddev": 927.223813,
+        "samples": [
+          255952.000000,
+          256468.000000,
+          255064.000000,
+          257160.000000,
+          254596.000000
+        ]
+      },
+      "findings": {
+        "count": 62,
+        "deterministic": true
+      }
+    },
+    {
+      "workload": "src",
+      "target": "src",
+      "config": "default",
+      "format": "json",
+      "runs": 5,
+      "wall_seconds": {
+        "mean": 1.400000,
+        "min": 1.370000,
+        "max": 1.420000,
+        "stddev": 0.020976,
+        "samples": [
+          1.410000,
+          1.420000,
+          1.420000,
+          1.380000,
+          1.370000
+        ]
+      },
+      "max_rss_kb": {
+        "mean": 256212.000000,
+        "min": 255264.000000,
+        "max": 256880.000000,
+        "stddev": 643.291536,
+        "samples": [
+          256392.000000,
+          255676.000000,
+          255264.000000,
+          256880.000000,
+          256848.000000
+        ]
+      },
+      "findings": {
+        "count": 31,
+        "deterministic": true
+      }
+    },
+    {
+      "workload": "src",
+      "target": "src",
+      "config": "default",
+      "format": "text",
+      "runs": 5,
+      "wall_seconds": {
+        "mean": 1.404000,
+        "min": 1.370000,
+        "max": 1.450000,
+        "stddev": 0.030725,
+        "samples": [
+          1.380000,
+          1.390000,
+          1.370000,
+          1.430000,
+          1.450000
+        ]
+      },
+      "max_rss_kb": {
+        "mean": 255922.400000,
+        "min": 254328.000000,
+        "max": 257980.000000,
+        "stddev": 1213.847041,
+        "samples": [
+          254328.000000,
+          255204.000000,
+          257980.000000,
+          255904.000000,
+          256196.000000
+        ]
+      },
+      "findings": {
+        "count": 62,
+        "deterministic": true
+      }
+    },
+    {
+      "workload": "synthetic-large",
+      "target": "/tmp/gruff-perf-fixture-26004",
+      "config": "--no-config",
+      "format": "json",
+      "runs": 5,
+      "wall_seconds": {
+        "mean": 0.986000,
+        "min": 0.960000,
+        "max": 1.010000,
+        "stddev": 0.017436,
+        "samples": [
+          1.010000,
+          1.000000,
+          0.960000,
+          0.980000,
+          0.980000
+        ]
+      },
+      "max_rss_kb": {
+        "mean": 246700.000000,
+        "min": 244928.000000,
+        "max": 248512.000000,
+        "stddev": 1426.685109,
+        "samples": [
+          246272.000000,
+          248512.000000,
+          248216.000000,
+          244928.000000,
+          245572.000000
+        ]
+      },
+      "findings": {
+        "count": 400,
+        "deterministic": true
+      }
+    },
+    {
+      "workload": "synthetic-large",
+      "target": "/tmp/gruff-perf-fixture-26004",
+      "config": "--no-config",
+      "format": "text",
+      "runs": 5,
+      "wall_seconds": {
+        "mean": 0.986000,
+        "min": 0.960000,
+        "max": 1.010000,
+        "stddev": 0.018547,
+        "samples": [
+          0.970000,
+          0.960000,
+          0.990000,
+          1.000000,
+          1.010000
+        ]
+      },
+      "max_rss_kb": {
+        "mean": 246348.800000,
+        "min": 245012.000000,
+        "max": 247068.000000,
+        "stddev": 794.921480,
+        "samples": [
+          246796.000000,
+          245012.000000,
+          247068.000000,
+          245868.000000,
+          247000.000000
+        ]
+      },
+      "findings": {
+        "count": 800,
+        "deterministic": true
+      }
+    },
+    {
+      "workload": "synthetic-large",
+      "target": "/tmp/gruff-perf-fixture-26004",
+      "config": "default",
+      "format": "json",
+      "runs": 5,
+      "wall_seconds": {
+        "mean": 0.916000,
+        "min": 0.910000,
+        "max": 0.920000,
+        "stddev": 0.004899,
+        "samples": [
+          0.920000,
+          0.910000,
+          0.920000,
+          0.920000,
+          0.910000
+        ]
+      },
+      "max_rss_kb": {
+        "mean": 245106.400000,
+        "min": 243272.000000,
+        "max": 247008.000000,
+        "stddev": 1417.751685,
+        "samples": [
+          243272.000000,
+          247008.000000,
+          244304.000000,
+          244436.000000,
+          246512.000000
+        ]
+      },
+      "findings": {
+        "count": 400,
+        "deterministic": true
+      }
+    },
+    {
+      "workload": "synthetic-large",
+      "target": "/tmp/gruff-perf-fixture-26004",
+      "config": "default",
+      "format": "text",
+      "runs": 5,
+      "wall_seconds": {
+        "mean": 0.912000,
+        "min": 0.880000,
+        "max": 0.970000,
+        "stddev": 0.030594,
+        "samples": [
+          0.900000,
+          0.900000,
+          0.970000,
+          0.910000,
+          0.880000
+        ]
+      },
+      "max_rss_kb": {
+        "mean": 245154.400000,
+        "min": 243372.000000,
+        "max": 246796.000000,
+        "stddev": 1380.888062,
+        "samples": [
+          246796.000000,
+          245676.000000,
+          246252.000000,
+          243676.000000,
+          243372.000000
+        ]
+      },
+      "findings": {
+        "count": 800,
+        "deterministic": true
+      }
+    }
+  ]
+}

@@ -18,6 +18,8 @@ export interface ProjectSource {
   file: SourceFile;
   lines: string[];
   templateMaskedLines: string[];
+  // Code lines only, so a module's share of production source does not grow with its documentation.
+  codeLineCount: number;
 }
 
 // Project-wide aggregate built once per scan and reused by every architecture rule (cycle detection,
@@ -245,7 +247,7 @@ function exceedsLargeModuleThresholds(largest: ModuleLineCount, sharePercent: nu
 function productionModuleLineCounts(index: ProjectIndex): ModuleLineCount[] {
   return index.scriptSources
     .filter((source) => isProductionSourcePath(source.file.displayPath))
-    .map((source) => ({ source, lines: source.lines.length }))
+    .map((source) => ({ source, lines: source.codeLineCount }))
     .sort((left, right) => right.lines - left.lines || left.source.file.displayPath.localeCompare(right.source.file.displayPath));
 }
 

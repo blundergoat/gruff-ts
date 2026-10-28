@@ -186,6 +186,47 @@ test("flags external input reaching unsafe deserialization and dynamic code-load
   assert.ok(!JSON.stringify(unsafeFindings).includes("req.body"));
 });
 
+// Invariant: a request-controlled filename is path evidence, not deserialized-content evidence.
+// Direct-source initializers exercise masking; lexical controls keep real readers exempt.
+test("keeps file-read filenames separate from deserialized contents", () => {
+  const cases = [
+    { source: 'import fs from "node:fs";\nfunction parse(req) {\n const key = req.body.key;\n return yaml.load(fs.readFileSync("./data/static/codefixes/" + key + ".info.yml", "utf8"));\n}', pathFindings: 1 },
+    { source: 'import fs from "node:fs/promises";\nasync function parse(req) {\n const key = req.body.key;\n return yaml.load(await fs.readFile("./data/static/codefixes/" + key + ".info.yml", { encoding: "utf8" }));\n}', pathFindings: 1 },
+    { source: 'import * as files from "fs";\nfunction parse(req) {\n const key = req.query.path;\n const raw = files.readFileSync(key);\n const alias = raw;\n return yaml.load(alias);\n}', pathFindings: 1 },
+    { source: 'import { readFile as readLocal } from "fs/promises";\nasync function parse(req) {\n const key = req.query.path;\n const raw = await readLocal(key);\n return yaml.load(raw);\n}', pathFindings: 0 },
+    { source: 'import * as files from "node:fs";\nfunction parse(req) {\n const raw = files.readFileSync(req.query.path);\n const alias = raw;\n return yaml.load(alias);\n}', pathFindings: 0 },
+    { source: 'import { readFile as readLocal } from "node:fs/promises";\nasync function parse(req) {\n const raw = await readLocal(req.query.path);\n return yaml.load(raw);\n}', pathFindings: 0 },
+    { source: 'import fs from "node:fs";\nfunction parse(req) {\n if (true) { let fs = {}; }\n function helper() { var fs = {}; }\n return yaml.load(fs.readFileSync(req.query.path));\n}', pathFindings: 0 },
+    { source: 'import fs from "node:fs";\nfunction parse(req) {\n const payload = req.body.yaml;\n const text = trusted.payload + fs.readFileSync(req.query.path);\n return yaml.load(text);\n}', pathFindings: 0 },
+    { source: 'import fs from "node:fs";\nfunction parse(req) {\n const payload = req.body.yaml;\n const alias = payload;\n const text = alias + fs.readFileSync(req.query.path);\n return yaml.load(text);\n}', pathFindings: 0 },
+  ];
+  for (const { source, pathFindings } of cases) {
+    const findings = analyseSecurityFixture(source);
+    assert.equal(findings.filter((finding) => finding.ruleId === "security.unsafe-deserialization").length, 0, source);
+    assert.equal(findings.filter((finding) => finding.ruleId === "security.path-traversal-candidate").length, pathFindings, source);
+  }
+});
+
+// Each reproduced warning loss must survive the filename exemption through the content map.
+test("retains deserialization content taint for shadowed readers and mixed content", () => {
+  const cases = [
+    'function parse(req) { return yaml.load(fs.readFileSync(req.body.code)); }',
+    'import fs from "node:fs";\nfunction parse(req, fs) { return yaml.load(fs.readFileSync(req.body.code)); }',
+    'import { readFileSync as readLocal } from "node:fs";\nfunction parse(req, readLocal) { return yaml.load(readLocal(req.body.code)); }',
+    'import fs from "node:fs";\nfunction parse(req) { return yaml.load(req.body.yaml + fs.readFileSync(req.query.path)); }',
+    'import fs from "node:fs";\nfunction parse(req) {\n if (true) { var fs = { readFileSync(value) { return value; } }; }\n const text = fs.readFileSync(req.body.yaml);\n return yaml.load(text);\n}',
+    'import { readFileSync as readLocal } from "node:fs";\nfunction parse(req) {\n if (true) { var readLocal = value => value; }\n const text = readLocal(req.body.yaml);\n return yaml.load(text);\n}',
+    'import fs from "node:fs";\nconst Reader = class fs {\n static readFileSync(value) { return value; }\n static parse(req) {\n const text = fs.readFileSync(req.body.yaml);\n return yaml.load(text);\n }\n};',
+    'import fs from "node:fs";\nfunction parse(req) {\n fs.readFileSync = value => value;\n const text = fs.readFileSync(req.body.yaml);\n return yaml.load(text);\n}',
+    'import fs from "node:fs";\nfunction parse(req) {\n fs["readFileSync"] = value => value;\n const text = fs.readFileSync(req.body.yaml);\n return yaml.load(text);\n}',
+    'import fs from "node:fs";\nfunction parse(req) {\n const payload = req.body.yaml;\n const text = payload + fs.readFileSync(req.query.path);\n return yaml.load(text);\n}',
+  ];
+  for (const source of cases) {
+    const findings = analyseSecurityFixture(source);
+    assert.equal(findings.filter((finding) => finding.ruleId === "security.unsafe-deserialization").length, 1, source);
+  }
+});
+
 test("keeps safe yaml schema and escaped regexp flows quiet", () => {
   const findings = analyseSecurityFixture(
     [
@@ -305,6 +346,87 @@ test("does not treat callback-only taint references as sink arguments", () => {
     "function handler(req) {\n  const target = req.query.path;\n  return fs.readFile('./config.json', () => console.log(target));\n}\n",
   );
   assert.equal(findings.length, 0);
+});
+
+// M22 hunt shape (axios `http.test.js`): a server started with a request callback is not request data, so a later
+// call to that server's own loopback address is not an SSRF sink fed by external input.
+test("does not taint a local with a request token read only inside a callback argument", () => {
+  const findings = analyseSecurityFixture([
+    "async function supportsBasicAuth() {",
+    "  const server = await startHTTPServer(",
+    "    (req, res) => {",
+    "      res.end(req.headers.authorization);",
+    "    },",
+    "    { port: 4444 },",
+    "  );",
+    "  await axios.get(`http://localhost:${server.address().port}/`);",
+    "}",
+    "",
+  ].join("\n"));
+  assert.deepEqual(findings, []);
+});
+
+// M22 hunt shape, Promise-executor variant: the executor and the request handler inside it both run in their own
+// scopes, so the awaited promise's value is not tainted by the `req` they read.
+test("does not taint a local with a request token read only inside a Promise executor", () => {
+  const findings = analyseSecurityFixture([
+    "async function relay() {",
+    "  const server = await new Promise((resolve) => {",
+    "    const created = http.createServer((req, res) => {",
+    "      res.end(req.headers.host);",
+    "    });",
+    "    created.listen(0, () => resolve(created));",
+    "  });",
+    "  await axios.get(`http://localhost:${server.address().port}/`);",
+    "}",
+    "",
+  ].join("\n"));
+  assert.deepEqual(findings, []);
+});
+
+// Blanking a callback must not hide a source read by the expression itself: every rule sharing the classifier keeps
+// its finding when the request token sits outside the callback, including juice-shop's `req.body.imageUrl` upload.
+test("still taints a local whose own expression reads external input beside a callback", () => {
+  const findings = analyseSecurityFixture([
+    "function profileImageUrlUpload(req, res) {",
+    "  const url = req.body.imageUrl;",
+    "  const picked = choose(req.query.path, () => req.body.ignored);",
+    "  const target = choose(req.query.next, () => undefined);",
+    "  const pattern = build(req.query.pattern, (value) => value);",
+    "  fetch(url);",
+    "  fs.readFile(picked);",
+    "  res.redirect(target);",
+    "  new RegExp(pattern);",
+    "}",
+    "",
+  ].join("\n"));
+  assert.deepEqual(
+    findings.map((finding) => finding.ruleId).sort(),
+    ["security.dynamic-regexp", "security.open-redirect-candidate", "security.path-traversal-candidate", "security.ssrf-candidate"],
+  );
+});
+
+// M22 code review shape: only a handler's reads of the `req`, `request` or `ctx` it declares itself are set aside. A
+// callback that names its parameter `request` or `ctx` but reads the enclosing `req`, and a function run where it is
+// written, as an immediately invoked arrow, a rebinding call or an array callback, return the enclosing request's data
+// into the value, so the sink it reaches must still report.
+test("still taints a local whose nested function reads the enclosing request", () => {
+  const findings = analyseSecurityFixture([
+    "function handler(req) {",
+    "  const invoked = (() => req.query.path)();",
+    "  const mapped = [0].map(() => req.query.next).join('/');",
+    "  const renamed = retry(async (request) => req.query.file);",
+    "  const context = retry(async (ctx) => { ctx.log(1); return req.query.dir; });",
+    "  const rebound = ((req) => req.query.name)(req);",
+    "  fs.readFile(invoked);",
+    "  fs.readFile(mapped);",
+    "  fs.readFile(renamed);",
+    "  fs.readFile(context);",
+    "  fs.readFile(rebound);",
+    "}",
+    "",
+  ].join("\n"));
+  assert.deepEqual(findings.map((finding) => `${finding.ruleId}@${finding.line}`), [7, 8, 9, 10, 11].map((line) => `security.path-traversal-candidate@${line}`));
 });
 
 test("keeps taint intra-procedural across nested functions", () => {

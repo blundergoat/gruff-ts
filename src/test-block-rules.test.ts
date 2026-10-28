@@ -1,11 +1,14 @@
-// Focused unit tests for the per-test-block rule pass without routing through full project scans.
+// Exercises the test-block rules that developers see after scanning their test files.
+
+// These focused fixtures isolate assertion and structure decisions from project discovery.
+// Full analysis-path cases in false-positive-fixes.test.ts also cover source masking.
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { FunctionBlock } from "./blocks.ts";
-import { loadConfig } from "./config.ts";
 import type { SourceFile } from "./discovery.ts";
 import { analyseTestBlock } from "./test-block-rules.ts";
-import type { AnalysisOptions, Config, Finding } from "./types.ts";
+import { analyseFixture } from "./test-fixtures.ts";
+import type { Finding } from "./types.ts";
 
 const SOURCE_FILE: SourceFile = {
   absolutePath: "/tmp/test-block-rules.test.ts",
@@ -13,20 +16,32 @@ const SOURCE_FILE: SourceFile = {
   isScript: true,
 };
 
-const BASE_OPTIONS: AnalysisOptions = {
-  paths: [],
-  shouldSkipConfig: true,
-  format: "json",
-  failOn: "none",
-  shouldIncludeIgnored: false,
-  changedScope: "symbol",
-  shouldSkipBaseline: true,
-};
-
 const TEST_START_LINE = 3;
-const EXPECTED_MAGIC_VALUE = 42;
 const EXPECTED_STATIC_REDUNDANT_FINDINGS = 4;
 const STATIC_REDUNDANT_RULE_ID = "test-quality.static-analysis-redundant-test";
+
+// This fixture matrix protects the checks enabled when a registration result is discarded.
+const DISCARDED_REGISTRATION_CASES = [
+    { body: "assert.equal(result, result);", ruleId: "test-quality.trivial-assertion" },
+];
+// Check both observed registration forms so discarding their result cannot hide a test from scan rules.
+for (const registration of ["it", "test"]) {
+  // Try every quality-control body so the void prefix preserves its warning and source identity.
+  for (const { body, ruleId } of DISCARDED_REGISTRATION_CASES) {
+    // Compare complete quality findings so anchors and identities stay stable with the void prefix.
+    test(`discarding ${registration} preserves ${ruleId}`, () => {
+      const source = `// File overview: test registration result fixture.
+${registration}("request behavior", () => {
+  ${body}
+});
+`;
+      const ordinary = analyseFixture(source).findings.filter((finding) => finding.ruleId.startsWith("test-quality."));
+      const discarded = analyseFixture(source.replace(`${registration}(`, `void ${registration}(`)).findings.filter((finding) => finding.ruleId.startsWith("test-quality."));
+      assert.equal(ordinary.some((finding) => finding.ruleId === ruleId), true, ruleId);
+      assert.deepEqual(discarded, ordinary, `${registration}: ${ruleId}`);
+    });
+  }
+}
 
 const ASSERTION_AND_MOCK_CALLBACK = `
   const unusedMock = jest.fn();
@@ -34,21 +49,6 @@ const ASSERTION_AND_MOCK_CALLBACK = `
   assert.ok(true);
   assert.equal(total, 42);
   expect(() => fail()).toThrow(Error);
-`;
-
-const HTTP_STATUS_ASSERTION_CALLBACK = `
-  const res = await fetch(baseUrl);
-  assert.equal(res.status, 200);
-  expect(response.statusCode).toBe(404);
-  assert.equal(retryBudgetMs, 125);
-`;
-
-const CARDINAL_ASSERTION_CALLBACK = `
-  expect(items).toHaveLength(4);
-  expect(groups).toHaveCount(5);
-  assert.equal(results.length, 2);
-  expect(total).toBe(3);
-  assert.equal(retryBudgetMs, 125);
 `;
 
 const SETUP_BLOAT_CALLBACK = `
@@ -188,68 +188,47 @@ const MIXED_STATIC_AND_BEHAVIOR_CALLBACK = `
 
 test("analyseTestBlock reports assertion and mock quality findings", () => {
   const findings = analyseTestCallback(ASSERTION_AND_MOCK_CALLBACK);
-  const magicFinding = findings.find((finding) => finding.ruleId === "test-quality.magic-number-assertion");
 
   assert.deepEqual(ruleIds(findings), [
     "test-quality.trivial-assertion",
-    "test-quality.exception-type-only",
-    "test-quality.magic-number-assertion",
     "test-quality.unused-mock",
   ]);
-  assert.deepEqual(magicFinding?.metadata, { value: EXPECTED_MAGIC_VALUE });
-});
-
-test("analyseTestBlock ignores HTTP status magic numbers but keeps other numeric assertions", () => {
-  const findings = analyseTestCallback(HTTP_STATUS_ASSERTION_CALLBACK);
-
-  assert.deepEqual(
-    findings.filter((finding) => finding.ruleId === "test-quality.magic-number-assertion").map((finding) => finding.metadata),
-    [{ value: 125 }],
-  );
-});
-
-test("analyseTestBlock ignores cardinal and length/count assertions", () => {
-  const findings = analyseTestCallback(CARDINAL_ASSERTION_CALLBACK);
-
-  assert.deepEqual(
-    findings.filter((finding) => finding.ruleId === "test-quality.magic-number-assertion").map((finding) => finding.metadata),
-    [{ value: 125 }],
-  );
-});
-
-test("analyseTestBlock ignores numeric assertions in named constant-contract tests", () => {
-  const findings = analyseTestCallback(
-    `
-  assert.equal(DEFAULT_RETRY_BUDGET_MS, 125);
-  expect(config.maxAttempts).toBe(7);
-`,
-    SOURCE_FILE.displayPath,
-    "documents default threshold contract",
-  );
-
-  assert.deepEqual(findings.filter((finding) => finding.ruleId === "test-quality.magic-number-assertion"), []);
 });
 
 test("analyseTestBlock reports structural test smells once per block", () => {
   const findings = analyseTestCallback(STRUCTURAL_CALLBACK);
 
   assert.deepEqual(ruleIds(findings), [
-    "test-quality.sleep-in-test",
     "test-quality.loop-in-test",
-    "test-quality.conditional-logic",
-    "test-quality.only-skip",
   ]);
 });
 
-test("analyseTestBlock reports conditional assertions inside type guards", () => {
+test("test-quality findings carry actionable advice in report JSON", () => {
+  const bodies = [
+    STRUCTURAL_CALLBACK,
+    ASSERTION_AND_MOCK_CALLBACK,
+    ...DISCARDED_REGISTRATION_CASES.map((entry) => entry.body),
+    "process.env.MODE = 'test'; assert.ok(result);",
+  ];
+  const findings = bodies.flatMap((body) => analyseTestCallback(body));
+  const rules = ["global-state-mutation", "loop-in-test", "trivial-assertion"];
+  for (const rule of rules) {
+    const finding = findings.find((entry) => entry.ruleId === `test-quality.${rule}`);
+    assert.ok(finding, rule);
+    assert.ok(finding.remediation, `${rule} must carry advice in JSON`);
+    assert.doesNotMatch(finding.remediation, /raise.*limit|ignore.*path|split.*separate tests|name expected values/i, rule);
+  }
+});
+
+test("an unlabeled loop with a should.be assertion still reports loop-in-test", () => {
+  // An assertion inside a loop can still hide which item failed, even though the test is not assertion-free.
   const findings = analyseTestCallback(`
-  const result: unknown = getResult();
-  if (typeof result === "string") {
-    assert.equal(result, "ok");
+  for (const item of items) {
+    item.should.be.equal(1);
   }
 `);
 
-  assert.equal(findings.some((finding) => finding.ruleId === "test-quality.conditional-logic"), true);
+  assert.equal(findings.some((finding) => finding.ruleId === "test-quality.loop-in-test"), true);
 });
 
 test("analyseTestBlock ignores setup-only loops and conditionals", () => {
@@ -347,7 +326,8 @@ test("analyseTestBlock reports only the redundant assertion in mixed behavior te
   );
 });
 
-// Runs one callback-shaped fixture through the test-block rule pass. Invariant: default rule config is used.
+// Scan one callback fixture under the default-rule contract; an empty result means no quality warning.
+// An empty prefix adds no source declarations ahead of the test.
 function analyseTestCallback(callbackBody: string, displayPath = SOURCE_FILE.displayPath, testName = "fixture", staticSourcePrefix = ""): Finding[] {
   const findings: Finding[] = [];
   const block = testBlockFixture(callbackBody, testName);
@@ -360,7 +340,8 @@ function analyseTestCallback(callbackBody: string, displayPath = SOURCE_FILE.dis
   return findings;
 }
 
-// Builds the minimal FunctionBlock contract that analyseTestBlock consumes.
+// Build the minimal callable contract used to check developer-visible test warnings.
+// An empty callback body represents a test with no executable work; its parameter list is intentionally empty.
 function testBlockFixture(callbackBody: string, testName: string): FunctionBlock {
   const body = `test(${JSON.stringify(testName)}, () => {` + callbackBody + "});";
   return {
@@ -368,6 +349,7 @@ function testBlockFixture(callbackBody: string, testName: string): FunctionBlock
     params: "",
     startLine: TEST_START_LINE,
     lineCount: body.split(/\r?\n/).length,
+    codeLineCount: body.split(/\r?\n/).length,
     body,
     codeBody: body,
     isPublic: false,
@@ -378,12 +360,79 @@ function testBlockFixture(callbackBody: string, testName: string): FunctionBlock
   };
 }
 
-// Reuses the production config defaults instead of copying rule defaults into tests.
-function defaultTestConfig(): Config {
-  return loadConfig(".", BASE_OPTIONS);
-}
-
-// Returns rule IDs in emitted order. Invariant: ordering regressions remain visible.
+// Return warning IDs in their stable emitted order; an empty list means the scanned fixture produced no warnings.
 function ruleIds(findings: Finding[]): string[] {
   return findings.map((finding) => finding.ruleId);
+}
+
+// M22 brief shape (`test-quality.loop-in-test`, 18 of 18 on the reporting repository): a prettier-wrapped per-case message and a message built from a
+//
+// loop-derived local both identify the failing row.
+// A looped assertion with no message, and one whose message names no loop binding, still fire: the rule's contract is an identifiable row.
+test("M22 loop-in-test reads wrapped and derived-local per-case messages", () => {
+  const report = analyseFixture([
+    "/** Overview: repro for loop-in-test line-wrapping blindness. */",
+    "import assert from \"node:assert/strict\";",
+    "import { describe, it } from \"node:test\";",
+    "const ITEMS = [\"alpha\", \"beta\", \"gamma\"];",
+    "describe(\"s\", () => {",
+    "  it(\"single-line message is seen\", () => {",
+    "    for (const item of ITEMS) {",
+    "      assert.ok(item.length > 0, `${item}: empty`);",
+    "    }",
+    "  });",
+    "  it(\"identical message, prettier-wrapped, is seen\", () => {",
+    "    for (const item of ITEMS) {",
+    "      assert.ok(",
+    "        item.length > 0,",
+    "        `${item}: empty`,",
+    "      );",
+    "    }",
+    "  });",
+    "  it(\"derived local message is seen\", () => {",
+    "    for (const item of ITEMS) {",
+    "      const label = `prefix/${item}`;",
+    "      assert.ok(item.length > 0, `${label}: empty`);",
+    "    }",
+    "  });",
+    "  it(\"no message still fires\", () => {",
+    "    for (const item of ITEMS) {",
+    "      assert.ok(item.length > 0);",
+    "    }",
+    "  });",
+    "  it(\"message naming no binding still fires\", () => {",
+    "    for (const item of ITEMS) {",
+    "      const size = ITEMS.length;",
+    "      assert.ok(item.length > 0, `${size}: empty`);",
+    "    }",
+    "  });",
+    "});",
+    "",
+  ].join("\n"), { fileName: "loops.test.ts" });
+  const loopTests = report.findings.filter((entry) => entry.ruleId === "test-quality.loop-in-test").map((entry) => entry.symbol).sort();
+
+  assert.deepEqual(loopTests, ["message naming no binding still fires", "no message still fires"]);
+});
+
+// Each case distinguishes a supported label or guard from the nearest unsafe mutation.
+const M15_STRUCTURE_CASES: ReadonlyArray<{ name: string; body: string; rule: string; reports: boolean }> = [
+  { name: "bare case message", body: "for (const item of items) { assert.ok(valid(item), item); }", rule: "loop-in-test", reports: false },
+  { name: "concatenated case message", body: "for (const item of items) { assert.ok(valid(item), 'case: ' + item); }", rule: "loop-in-test", reports: false },
+  { name: "call-built case message", body: "for (const item of items) { assert.ok(valid(item), describeCase(item)); }", rule: "loop-in-test", reports: false },
+  { name: "case expected operand", body: "for (const item of items) { assert.equal(actual(), item); }", rule: "loop-in-test", reports: false },
+  { name: "expect case expected operand", body: "for (const item of items) { expect(actual()).toBe(item); }", rule: "loop-in-test", reports: false },
+  { name: "C-style case message", body: "for (let index = 0; index < items.length; index++) { assert.ok(valid(items[index]), `case ${index}`); }", rule: "loop-in-test", reports: false },
+  { name: "for-in case message", body: "for (const key in items) { assert.ok(valid(items[key]), key); }", rule: "loop-in-test", reports: false },
+  { name: "actual alone lacks case context", body: "for (const item of items) { assert.ok(valid(item)); }", rule: "loop-in-test", reports: true },
+  { name: "constant message lacks case context", body: "for (const item of items) { assert.ok(valid(item), 'item'); }", rule: "loop-in-test", reports: true },
+  { name: "label cannot hide branch policy", body: "for (const item of items) { if (item.ok) { assert.ok(valid(item), item); } }", rule: "loop-in-test", reports: true },
+];
+
+// Full analysis covers masking and shared-node ownership as well as each detector predicate.
+for (const { name, body, rule, reports } of M15_STRUCTURE_CASES) {
+  test(`M15 structure: ${name}`, () => {
+    const report = analyseFixture(`import assert from "node:assert/strict";\nimport { it } from "node:test";\nit("${name}", async (t) => { ${body} });`, { fileName: "m15-structure.test.ts" });
+    const actual = report.findings.some((finding) => finding.ruleId === `test-quality.${rule}`);
+    assert.equal(actual, reports, name);
+  });
 }

@@ -9,15 +9,17 @@ import { makeFinding } from "./findings.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
 // Splits only at top-level commas, then strips parameter-property modifiers and `...rest`.
-// Destructured parameters remain intentionally invisible to per-parameter rules.
-export function parameterNames(params: string): Array<{ name: string; raw: string }> {
+// Destructured parameters remain intentionally invisible to per-parameter rules. `isParameterProperty` keeps what
+// the stripped modifiers meant: a constructor parameter that declares and assigns a class member.
+export function parameterNames(params: string): Array<{ name: string; raw: string; isParameterProperty: boolean }> {
   return splitTopLevelParameters(params)
     .map((parameter) => parameter.trim())
     .filter(Boolean)
     .map((raw) => {
-      const stripped = raw.replace(/^(?:(?:public|private|protected|readonly|override)\s+)*/, "").replace(/^\.\.\./, "");
+      const modifiers = raw.match(/^(?:(?:public|private|protected|readonly|override)\s+)*/)?.[0] ?? "";
+      const stripped = raw.slice(modifiers.length).replace(/^\.\.\./, "");
       const name = stripped.match(/^([A-Za-z_$][A-Za-z0-9_$]*)\s*(?=[?:=]|$)/)?.[1] ?? "";
-      return { name, raw: stripped };
+      return { name, raw: stripped, isParameterProperty: modifiers !== "" };
     })
     .filter((parameter) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(parameter.name));
 }
@@ -129,6 +131,11 @@ function opensTypeArgumentList(params: string, index: number, parameterStart: nu
  * Invariant: the fingerprint hashes (ruleId, filePath, line, symbol), so overrides never churn identity.
  */
 export function applyConfiguredSeverity(config: Config, finding: Finding): Finding {
+  // A lower-band size or complexity finding is advisory whatever severity the user configured (FAMILY-CONTRACT.md
+  // section 12, search `Size and complexity findings in two bands`).
+  if (finding.metadata.limitBand === "lower") {
+    return finding;
+  }
   const severity = ruleSeverity(config, finding.ruleId, finding.severity);
   return severity === finding.severity ? finding : { ...finding, severity };
 }
@@ -143,13 +150,18 @@ export interface LineFindingArgs {
   line: number;
   severity: Severity;
   pillar: Pillar;
+  // The rule's advice; omitted, the finding carries none and consumers fall back to the catalogue.
+  remediation?: string | undefined;
 }
 
 // Cheapest finding factory: line-anchored, no symbol, confidence "high". Produces the
 // (ruleId, filePath, line) tuple that every per-line emission relies on - this tuple is the
 // stable fingerprint that drives baseline matching and report determinism.
 export function finding(args: LineFindingArgs): Finding {
-  return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.line, severity: args.severity, pillar: args.pillar, confidence: "high" });
+  return makeFinding({
+    ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.line, severity: args.severity, pillar: args.pillar,
+    confidence: "high", ...(args.remediation ? { remediation: args.remediation } : {}),
+  });
 }
 
 // Diff-aware discovery: uses `execFileSync` (not `execSync`) so the `mode` value is passed as
@@ -203,63 +215,6 @@ export function splitIdentifierWords(identifier: string): string[] {
 // negative input - callers occasionally pass `match.index` which is typed as optional.
 export function lineOffset(source: string, index: number): number {
   return source.slice(0, Math.max(0, index)).split("\n").length - 1;
-}
-
-// Detector for `waste.commented-out-code`: require a parseable disabled-code shape rather than a
-// bare keyword so prose such as "import cycle" or section headings don't look executable.
-export function isCommentedOutCode(line: string): boolean {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith("//")) {
-    return false;
-  }
-  const uncommented = trimmed.replace(/^\/\/+\s?/, "");
-  if (isCommentSeparatorOrAnchor(uncommented)) {
-    return false;
-  }
-  return isDisabledDeclaration(uncommented) || isDisabledControlFlow(uncommented) || isDisabledCall(uncommented);
-}
-
-// Skips prose examples, labels, search anchors, and section dividers that often begin with code words.
-function isCommentSeparatorOrAnchor(uncommented: string): boolean {
-  const text = uncommented.trim();
-  return (
-    text === "" ||
-    /^[-=*_#]{3,}$/.test(text) ||
-    /^[A-Za-z_$][A-Za-z0-9_$]*\s*:\s*['"`[{]/.test(text) ||
-    /\b(?:search|grep|anchor|example|for example|e\.g\.)\s*:/.test(text) ||
-    /^(?!(?:if|for|while|switch)\b)[A-Za-z_$][A-Za-z0-9_$]*\s+\([^;{}]*[A-Za-z][^;{}]*\)$/.test(text) ||
-    /^[A-Z][A-Za-z0-9_$]*(?:\s|\s*\([^)]*\)$)/.test(text)
-  );
-}
-
-// Declarations must carry their syntactic partner (`=`, `{`, `from`, etc.) to count as disabled code.
-function isDisabledDeclaration(uncommented: string): boolean {
-  return (
-    /^(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=/.test(uncommented) ||
-    /^(?:async\s+)?function\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\(/.test(uncommented) ||
-    /^class\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s+extends\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\{?/.test(uncommented) ||
-    /^interface\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\{?/.test(uncommented) ||
-    /^type\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=/.test(uncommented) ||
-    /^enum\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\{?/.test(uncommented) ||
-    /^import\s+(?:["'][^"']+["']|.+\s+from\s+["'][^"']+["'])/.test(uncommented) ||
-    /^export\s+(?:\{|\*|(?:default\s+)?(?:const|let|var|function|class|interface|type|enum)\b)/.test(uncommented)
-  );
-}
-
-// Control-flow comments need real syntax such as parentheses or an expression after `return`/`throw`.
-function isDisabledControlFlow(uncommented: string): boolean {
-  return /^(?:if|for|while|switch)\s*\(/.test(uncommented) || /^(?:return|throw|await)\s+\S/.test(uncommented);
-}
-
-// Keep single-line disabled calls; heading/prose guards above filter labels such as `Rules (...)`.
-function isDisabledCall(uncommented: string): boolean {
-  return /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?\s*\([^)]*\);?$/.test(uncommented);
-}
-
-// Lowercase membership test against the configured banned-names set. Drives the
-// `naming.identifier-quality` predicate so the rule stays a single Set lookup per identifier.
-export function isGenericName(name: string, bannedNames: Set<string>): boolean {
-  return bannedNames.has(name.toLowerCase());
 }
 
 // Escapes the standard regex metacharacters so user-supplied strings (rule IDs, identifiers,

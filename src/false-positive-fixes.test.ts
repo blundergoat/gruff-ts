@@ -1,12 +1,16 @@
-// Lock-in tests for the 11 false-positive fixes triaged after the M38 goat-flow report.
-// Each test pairs a fixture that USED to trigger a false positive with a fixture that should
-// still legitimately fire - so future refactors cannot silently un-fix any of them.
+// Keeps source-backed false-positive repairs visible to developers running Gruff on their tests.
+
+// Each case pairs a benign source shape with nearby code that must still report.
+// The fixture runs through the public analysis path so masking and block discovery are covered.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderReport } from "./cli.ts";
 import { renderSummary } from "./report-renderers.ts";
-import { analyseFixture, analyseProject, HIGH_ENTROPY_FIXTURE_VALUE } from "./test-fixtures.ts";
+import { analyseFixture, analyseProject, withDefaultOffRulesOn } from "./test-fixtures.ts";
 import { countMatches } from "./text-scans.ts";
+
+// waste.swallowed-catch ships off by default; these tests switch it on so they still exercise its detector.
+const SWALLOWED_CATCH_ON = { config: { rules: { "waste.swallowed-catch": { enabled: true } } } };
 
 test("FP-#10 security.inner-html ignores empty-string DOM clearing", () => {
   // Fixture clears via "" and '', then assigns user input on line 4 - only the line-4 assignment
@@ -18,117 +22,31 @@ test("FP-#10 security.inner-html ignores empty-string DOM clearing", () => {
   container.innerHTML = '';
   container.innerHTML = userInput;
 }
-`);
+`, withDefaultOffRulesOn());
   const findings = report.findings.filter((entry) => entry.ruleId === "security.inner-html");
   assert.equal(findings.length, expectedFindingCount);
   assert.equal(findings[0]?.line, expectedFiringLine);
 });
 
-test("FP-#3 security.process-exec skips RegExp.exec call sites", () => {
-  // Fixture: rule.pattern.exec is a RegExp call and must not fire; the two user-controlled
-  // child_process calls on lines 5 and 6 must fire as the only real findings.
-  const expectedFindingCount = 2;
-  const expectedFiringLines = [5, 6];
-  const report = analyseFixture(`import { exec, spawn } from "node:child_process";
-function check(rule: { pattern: RegExp }, line: string, cmd: string): void {
-  const match = rule.pattern.exec(line);
-  void match;
-  exec(cmd);
-  spawn(cmd, ["-la"]);
-}
-`);
-  const findings = report.findings.filter((entry) => entry.ruleId === "security.process-exec");
-  assert.equal(findings.length, expectedFindingCount);
-  const lineNumbers = findings.map((entry) => entry.line).sort();
-  assert.deepEqual(lineNumbers, expectedFiringLines);
-});
-
-test("FP-#8 test-quality.no-assertions recognises custom helpers", () => {
-  // Purpose: prove the no-assertions detector accepts assertFoo, fooCheck, `.rejects.` matchers,
-  // and still flags the one test in the fixture that genuinely lacks any assertion.
-  const report = analyseFixture(`function assertLocalPathError(err: unknown): void { void err; }
-function bashCheck(out: string): void { void out; }
-
-test("uses custom assertion helper", () => {
-  assertLocalPathError(getSomething());
-});
-
-test("uses Check-suffixed helper", () => {
-  bashCheck(runScript());
-});
-
-test("uses rejects matcher", async () => {
-  await expect(doIt()).rejects.toThrow();
-});
-
-test("genuinely has no assertion", () => {
-  doWork();
-});
-`);
-  const noAssertion = report.findings.filter((entry) => entry.ruleId === "test-quality.no-assertions");
-  assert.equal(noAssertion.length, 1);
-  assert.match(noAssertion[0]?.message ?? "", /genuinely has no assertion/);
-});
-
-test("FP-#11 waste.console-log skips CLI/script paths", () => {
-  const cliReport = analyseFixture(`console.log("starting");\n`, { fileName: "src/cli/run.ts" });
-  assert.equal(cliReport.findings.some((entry) => entry.ruleId === "waste.console-log"), false);
-
-  const scriptReport = analyseFixture(`console.log("build");\n`, { fileName: "scripts/build.ts" });
-  assert.equal(scriptReport.findings.some((entry) => entry.ruleId === "waste.console-log"), false);
-
-  const appReport = analyseFixture(`console.log("debug");\n`, { fileName: "src/dashboard/app.ts" });
-  assert.equal(appReport.findings.some((entry) => entry.ruleId === "waste.console-log"), true);
-});
-
-test("FP-#2 sensitive-data.high-entropy-string suppresses repo path-shape strings", () => {
-  // Purpose: prove path-shape strings clear the entropy gate but a real secret value still fires.
-  const realSecret = HIGH_ENTROPY_FIXTURE_VALUE;
-  const report = analyseFixture(`const ref = ".goat-flow/tasks/0.1/M38-css-metrics-and-todo-density-calibration.md";
-const otherRef = "src/cli/audit/check-content-quality.ts";
-const adrRef = "ADR-025-block-all-git-push.md";
-const absoluteTaskRef = "/repo/.goat-flow/tasks/1.7.0/M00-side-menu-navigation.md";
-const secret = "${realSecret}";
-void ref;
-void otherRef;
-void adrRef;
-void absoluteTaskRef;
-void secret;
-`);
-  const findings = report.findings.filter((entry) => entry.ruleId === "sensitive-data.high-entropy-string");
-  const expectedFindingCount = 1;
-  assert.equal(findings.length, expectedFindingCount);
-});
-
-test("FP-#5 waste.empty-function skips interface and type-literal signatures", () => {
-  const report = analyseFixture(`interface StateFS {
-  exists(path: string): boolean;
-  readFile(path: string): string | null;
-}
-
-function realEmpty(): void {}
-
-function realWork(): number {
-  return 1;
-}
-`);
-  const findings = report.findings.filter((entry) => entry.ruleId === "waste.empty-function");
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0]?.symbol, "realEmpty");
-});
-
-test("FP-#7 waste.unused-parameter skips interface signatures", () => {
-  const report = analyseFixture(`interface StateFS {
-  readFile(path: string): string;
-}
-
-function impl(usedParam: number, unusedParam: string): number {
-  return usedParam;
-}
-`);
-  const findings = report.findings.filter((entry) => entry.ruleId === "waste.unused-parameter");
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0]?.metadata?.parameter, "unusedParam");
+// Vendor-documented samples must never report: AWS's example key, the jwt.io sample token and a published test card.
+//
+// A live-shaped key still reports (FAMILY-CONTRACT.md section 5), and every value is assembled from parts.
+test("sensitive-data rules do not report vendor-documented sample values", () => {
+  const example = ["AKIA", "IOSFODNN7", "EXAMPLE"].join("");
+  const live = ["AKIA", "Q7R2M8N4", "P6T9V1X3"].join("");
+  const jwt = [
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+    "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ",
+    "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+  ].join(".");
+  const card = ["4111", "1111", "1111", "1111"].join(" ");
+  const report = analyseFixture(`export const exampleKey = "${example}";
+export const liveKey = "${live}";
+export const sampleToken = "${jwt}";
+export const paymentCardNumber = "${card}";
+`, withDefaultOffRulesOn());
+  const reported = report.findings.filter((entry) => entry.ruleId.startsWith("sensitive-data.")).map((entry) => `${entry.ruleId}:${entry.line}`);
+  assert.deepEqual(reported, ["sensitive-data.aws-access-key:2"]);
 });
 
 test("FP-#6 waste.unused-import sees identifiers inside template interpolations", () => {
@@ -192,24 +110,6 @@ test("FP-#4 waste.unreachable-code respects braceless if-return guard clauses", 
 `);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.unreachable-code");
   assert.deepEqual(findings, []);
-});
-
-test("FP-#9 docs.stale-comment only validates flags in gruff-mentioning comments", () => {
-  // Purpose: prove the unknown-CLI-flag check is gated to comments that name the gruff CLI. Other
-  // tools' flags inside other-project comments must not be flagged as unknown gruff options.
-  const externalComments = analyseFixture(`// Run \`npm pack --dry-run\` to preview the tarball.
-// Use \`node --import tsx\` so the loader sees TypeScript files.
-// \`git rev-parse --show-toplevel\` finds the repo root.
-// Pass --agent or --harness to inspect the audit profile.
-export const value = 1;
-`);
-  assert.deepEqual(externalComments.findings.filter((entry) => entry.ruleId === "docs.stale-comment" && entry.metadata?.referenceType === "cliFlag"), []);
-
-  // Counterpart: a comment that names gruff-ts and references a fake gruff-ts flag should still fire.
-  const selfReport = analyseFixture(`// Run gruff-ts with --imaginary-flag to test the gate.
-export const value = 1;
-`);
-  assert.equal(selfReport.findings.some((entry) => entry.ruleId === "docs.stale-comment" && entry.metadata?.referenceType === "cliFlag"), true);
 });
 
 test("FP-#12 waste.unreachable-code recognises multi-line if predicate", () => {
@@ -289,7 +189,7 @@ test("FP-#16 waste.swallowed-catch accepts /* ignore */ rationale", () => {
     /* ignore */
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.swallowed-catch");
   assert.deepEqual(findings, []);
 });
@@ -302,7 +202,7 @@ test("FP-#17 waste.swallowed-catch accepts /* cleanup */ rationale", () => {
     /* cleanup */
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.swallowed-catch");
   assert.deepEqual(findings, []);
 });
@@ -315,7 +215,7 @@ test("FP-#18 waste.swallowed-catch accepts /* teardown */ rationale", () => {
     /* teardown */
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.swallowed-catch");
   assert.deepEqual(findings, []);
 });
@@ -329,33 +229,8 @@ test("FP-#19 waste.swallowed-catch accepts /* no-op */ rationale", () => {
   }
   return undefined;
 }
-`);
+`, SWALLOWED_CATCH_ON);
   const findings = report.findings.filter((entry) => entry.ruleId === "waste.swallowed-catch");
-  assert.deepEqual(findings, []);
-});
-
-test("FP-#21 naming.boolean-prefix accepts imperative-flag verbs", () => {
-  /*
-   * Fixture covers the §2.4 regression from the 2026-05-25 goat-flow feedback: option-bag booleans
-   * frequently use imperative verbs (`checkDrift`, `skipAuto`, `enableX`) which are intent-revealing
-   * despite not matching the adjective/modal default prefix set. The widened default
-   * `booleanPrefixes` now accepts these.
-   */
-  const report = analyseFixture(`export function configure(): void {
-  const checkDrift: boolean = true;
-  const skipAuto: boolean = false;
-  const enableFeature: boolean = true;
-  const allowFallback: boolean = false;
-  const includeMetadata: boolean = true;
-  const excludeTests: boolean = false;
-  const omitHeader: boolean = true;
-  const withCache: boolean = false;
-  const withoutTimeout: boolean = true;
-  void checkDrift; void skipAuto; void enableFeature; void allowFallback;
-  void includeMetadata; void excludeTests; void omitHeader; void withCache; void withoutTimeout;
-}
-`);
-  const findings = report.findings.filter((entry) => entry.ruleId === "naming.boolean-prefix");
   assert.deepEqual(findings, []);
 });
 
@@ -434,8 +309,8 @@ test("FP-#25 naming.short-variable still flags non-for-of short declaration", ()
 test("FP-#41 summary renders per-severity rule rows with description", () => {
   // M07: top-N rules block carries per-severity split + one-line description so an operator
   // triaging a noisy run can see whether the top entry is errors or advisories at a glance.
-  const report = analyseFixture(`function helperOne(): void { eval("noop"); }
-function helperTwo(): void { eval("noop"); }
+  const report = analyseFixture(`function helperOne(): void { eval(input); }
+function helperTwo(): void { eval(input); }
 `);
   const summary = renderSummary(report);
   // The eval calls fire security.eval-call as error-severity findings; the row should show the err
@@ -455,10 +330,10 @@ function helperTwo(): void {}
 });
 
 test("FP-#43 analyse text footer hint appears at threshold and not below", () => {
-  // Synthetic fixture crafted to cross the 50-finding threshold. Each line of `if (x == y)` fires
-  // modernisation.loose-equality, so we generate enough lines to push past 50.
-  const aboveThreshold = analyseFixture(`function noisy(x: unknown, y: unknown): boolean {
-${Array.from({ length: 55 }, () => "  if (x == y) return true;").join("\n")}
+  // Synthetic fixture crafted to cross the 50-finding threshold. Each `var copyN = x;` line fires
+  // modernisation.var-declaration, so we generate enough lines to push past 50.
+  const aboveThreshold = analyseFixture(`function noisy(x: unknown): boolean {
+${Array.from({ length: 55 }, (_, index) => "  var copy" + index + " = x;").join("\n")}
   return false;
 }
 `);
@@ -489,26 +364,24 @@ ${Array.from({ length: 55 }, () => "  if (x == y) return true;").join("\n")}
   assert.equal(/Tip: \d+ findings/.test(json), false);
 });
 
-test("FP-#45 summary topRules JSON shape is unchanged by M07", () => {
-  // Negative: the JSON output preserves the `{name, count}` shape for topRules. M07 enriches the
-  // text/summary rule row block but keeps the JSON contract byte-stable.
-  const report = analyseFixture(`function helperOne(): void { eval("noop"); }
+test("FP-#45 v3 analysis omits retired topRules while preserving score values", () => {
+  // M05 removes the independent machine-summary ranking. Human summary rule rows remain, while
+  // analysis JSON carries the native score once in the canonical composite container.
+  const report = analyseFixture(`function helperOne(): void { eval(input); }
 `);
   const json = JSON.parse(renderReport(report, "json"));
-  // Note: renderReport "json" uses the analysis schema; the summary JSON is renderSummaryJson which
-  // isn't directly callable from renderReport. The analyse JSON has no topRules block, so we only
-  // assert the analyse JSON's score block is unchanged here.
   const scoreKeys = Object.keys(json.score).sort();
-  assert.deepEqual(scoreKeys, ["composite", "grade", "pillars", "topOffenders"]);
+  assert.deepEqual(scoreKeys, ["clusters", "composite", "evaluatedFiles", "pillars", "ruleAttribution", "scoredPillars", "topOffenders"]);
+  assert.deepEqual(json.score.composite, { grade: report.score.grade, score: report.score.composite });
 });
 
 test("FP-#38 summary renderers include per-severity grade breakdown lines", () => {
   // §3.2(a): an F composite driven entirely by advisories reads identically to an F driven by
   // errors in the headline. The breakdown lines surface the difference. Text + markdown surfaces
-  // both render the three lines; HTML renders three grade pills. JSON stays unchanged (covered by
-  // FP-#40 below).
-  const report = analyseFixture(`function helperOne(): void { eval("noop"); }
-function helperTwo(): void { eval("noop"); }
+  // both render the three lines; HTML renders three grade pills. M05's JSON adapter keeps those
+  // presentation rows out of the machine score (covered by FP-#40 below).
+  const report = analyseFixture(`function helperOne(): void { eval(input); }
+function helperTwo(): void { eval(input); }
 `);
   const textOutput = renderReport(report, "text");
   assert.match(textOutput, /Composite: [A-F] \(\d+\.\d{2} \/ 100\)/);
@@ -532,24 +405,24 @@ function helperTwo(): void { eval("noop"); }
 test("FP-#39 top-offender lines use quality N.N/100 wording in summary", () => {
   // §3.3: the trailing `score 0.0` was opaque - the new wording (`quality 0.0/100`) reads as a
   // labelled quality metric so an operator scanning the top-offender list knows what the number is.
-  const report = analyseFixture(`function helperOne(): void { eval("noop"); }
-function helperTwo(): void { eval("noop"); }
+  const report = analyseFixture(`function helperOne(): void { eval(input); }
+function helperTwo(): void { eval(input); }
 `);
   const summary = renderSummary(report);
   assert.match(summary, /quality \d+\.\d\/100/);
   assert.equal(/findings, score \d+\.\d/.test(summary), false);
 });
 
-test("FP-#40 JSON output schema and shape unchanged by M05", () => {
-  // Negative coverage: M05 is renderer-only. JSON output must still be `gruff.analysis.v2`, no new
-  // severity-grade fields appear in the score block, and the existing keys (composite, grade,
-  // pillars, topOffenders) are the only top-level entries.
-  const report = analyseFixture(`function helperOne(): void { eval("noop"); }
+test("FP-#40 v3 adapter preserves score values while changing only their container shape", () => {
+  // M05 owns the machine hard break, while M06 still owns score arithmetic. The adapter nests the
+  // existing composite value and grade without adding a second calculation or legacy score alias.
+  const report = analyseFixture(`function helperOne(): void { eval(input); }
 `);
   const json = JSON.parse(renderReport(report, "json"));
-  assert.equal(json.schemaVersion, "gruff.analysis.v2");
+  assert.equal(json.schemaVersion, "gruff.analysis.v3");
   const scoreKeys = Object.keys(json.score).sort();
-  assert.deepEqual(scoreKeys, ["composite", "grade", "pillars", "topOffenders"]);
+  assert.deepEqual(scoreKeys, ["clusters", "composite", "evaluatedFiles", "pillars", "ruleAttribution", "scoredPillars", "topOffenders"]);
+  assert.deepEqual(json.score.composite, { grade: report.score.grade, score: report.score.composite });
 });
 
 test("FP-#32 docs.missing-exported-function-doc fires on export function", () => {
@@ -610,7 +483,6 @@ export { helper } from "./other";
   assert.equal(report.findings.some((entry) => entry.ruleId === "docs.missing-exported-function-doc" && entry.symbol === "helper"), false);
   assert.equal(report.findings.filter((entry) => entry.ruleId === "docs.missing-internal-function-doc" && entry.symbol === "helper").length, 1);
 });
-
 
 test("FP-#34 docs.missing-internal-function-doc fires on internal helper", () => {
   // Internal helpers fire the advisory variant. The body's lack of leading comment is the trigger;
@@ -720,7 +592,6 @@ test("FP-#29 test-quality.loop-in-test still flags conditional inside literal-ar
 `);
   const findings = report.findings.filter((entry) => entry.ruleId === "test-quality.loop-in-test");
   assert.equal(findings.length, 1);
-  assert.equal(report.findings.some((entry) => entry.ruleId === "test-quality.conditional-logic"), true);
 });
 
 test("FP-#20 waste.swallowed-catch still flags /* silent */ and empty catch", () => {
@@ -733,38 +604,14 @@ test("FP-#20 waste.swallowed-catch still flags /* silent */ and empty catch", ()
     /* silent */
   }
 }
-`);
+`, SWALLOWED_CATCH_ON);
   assert.equal(silentReport.findings.some((entry) => entry.ruleId === "waste.swallowed-catch"), true);
 
   const emptyReport = analyseFixture(`function h(handle: { close(): void }): void {
   try { handle.close(); } catch {}
 }
-`);
+`, SWALLOWED_CATCH_ON);
   assert.equal(emptyReport.findings.some((entry) => entry.ruleId === "waste.swallowed-catch"), true);
-});
-
-// Fixture purpose: a multi-line signature's first line stops at the open paren, so the legacy
-// text heuristic read it as an implementation. The shared parse now answers body presence.
-// Stable contract: bodyless declarations never draw implementation-only findings.
-test("FP-#46 bodyless multi-line signatures skip empty-function and unused-parameter", () => {
-  const signatureReport = analyseFixture(`export interface Repository {
-  findMany(
-    filter: string,
-    limit: number,
-  ): Promise<string[]>;
-}
-`);
-  const implementationOnlyRules = ["waste.empty-function", "waste.unused-parameter"];
-  assert.equal(signatureReport.findings.some((entry) => implementationOnlyRules.includes(entry.ruleId)), false);
-
-  // A real implementation with an empty body and an unused parameter must still fire.
-  const implementationReport = analyseFixture(`export function reallyEmpty(
-  unusedThing: string,
-): void {
-}
-`);
-  assert.equal(implementationReport.findings.some((entry) => entry.ruleId === "waste.empty-function"), true);
-  assert.equal(implementationReport.findings.some((entry) => entry.ruleId === "waste.unused-parameter"), true);
 });
 
 // Fixture purpose: the public-export inventory resolved `export { Foo as Bar }` to the local
@@ -907,4 +754,252 @@ export function doubleTotal(total: number): number {
 }
 `);
   assert.equal(localReport.findings.some((entry) => entry.ruleId === "naming.short-variable"), false);
+});
+
+test("M07 block anchors land on the declaration, never on the blank line above it", () => {
+  // The prefix walk absorbs decorators, docblocks and blank lines so a block includes its leading
+  // documentation. Before M07 it also STOPPED on the blank separator, so a finding pointed at empty
+  // space belonging to the declaration above - un-triageable, and un-suppressible by line.
+  const source = `export function first(): number {
+  return 1;
+}
+
+/** Doc line for second. */
+export function second(alpha: number, beta: number): number {
+  return alpha + beta;
+}
+
+test("mutates global state", () => {
+  process.env.MODE = "test";
+});
+`;
+  const report = analyseFixture(source);
+  const lines = source.split("\n");
+
+  assert.ok(report.findings.length > 0, "the anchor fixture produced no findings, so it proved nothing");
+
+  // The claim is about the source text at the reported line, not about which rules happened to fire.
+  for (const finding of report.findings) {
+    const text = finding.line === undefined ? "x" : (lines[finding.line - 1] ?? "");
+    assert.equal(text.trim() === "", false, `${finding.ruleId} anchors on blank line ${String(finding.line)}`);
+  }
+
+  const byRule = new Map(report.findings.map((finding) => [finding.ruleId, finding.line]));
+  // Named so the assertions below read as source positions rather than bare numbers: `second` is preceded
+  // by a blank line and a docblock, and the test callable is preceded by a blank line only.
+  const docblockLineOfSecond = 5;
+  const declarationLineOfTestCallable = 10;
+
+  // The anchor is the docblock, never the blank line 4 that separates it from `first`.
+  assert.equal(byRule.get("docs.missing-param-tag"), docblockLineOfSecond);
+  // The anchor is the callable's own declaration line, never the blank line 9 above it.
+  assert.equal(byRule.get("test-quality.global-state-mutation"), declarationLineOfTestCallable);
+});
+
+// M13-T18: a file overview or a divider above a function is not that function's docblock, so the
+// missing-doc rule reports the function and the docblock rules do not judge that comment.
+const FUNCTION_DOC_RULE_IDS = new Set(["docs.missing-exported-function-doc", "docs.missing-param-tag", "docs.missing-return-tag"]);
+
+// "rule symbol" lines for the function documentation rules in a stable, deterministic order, so each case reads as one list.
+function functionDocFindings(source: string): string[] {
+  return analyseFixture(source)
+    .findings.filter((entry) => FUNCTION_DOC_RULE_IDS.has(entry.ruleId))
+    .map((entry) => `${entry.ruleId} ${entry.symbol ?? ""}`)
+    .sort();
+}
+
+test("M13-T18 a file overview above the first function is not its docblock", () => {
+  // A blank line after it, or a file-level tag, marks the opening comment as the file's overview.
+  const afterBlankLine = functionDocFindings(`/** Label helpers shared by the report renderers. */
+
+export function joinAfterOverview(left: string): string {
+  return left.trim();
+}
+`);
+  const tagged = functionDocFindings(`/** @file Label helpers shared by the report renderers. */
+export function joinAfterFileTag(left: string): string {
+  return left.trim();
+}
+`);
+  assert.deepEqual(afterBlankLine, ["docs.missing-exported-function-doc joinAfterOverview"]);
+  assert.deepEqual(tagged, ["docs.missing-exported-function-doc joinAfterFileTag"]);
+});
+
+test("M13-T18 a divider comment above a function is not its docblock", () => {
+  const findings = functionDocFindings(`// Fixture module for divider comments.
+import { join } from "node:path";
+
+// ---- helpers
+export function afterLineDivider(left: string): string {
+  return join(left);
+}
+
+/* ==== */
+export function afterBlockDivider(left: string): string {
+  return join(left);
+}
+
+// -----
+export function afterDashDivider(left: string): string {
+  return join(left);
+}
+
+/** ---- */
+export function afterDocDivider(left: string): string {
+  return join(left);
+}
+`);
+  assert.deepEqual(findings, [
+    "docs.missing-exported-function-doc afterBlockDivider",
+    "docs.missing-exported-function-doc afterDashDivider",
+    "docs.missing-exported-function-doc afterDocDivider",
+    "docs.missing-exported-function-doc afterLineDivider",
+  ]);
+});
+
+test("M13-T18 a function's own docblock still counts at the top of a file and below a divider", () => {
+  // Control: the tag rules still read each docblock, and the missing-doc rule stays quiet.
+  const findings = functionDocFindings(`/** Joins one label for the report header. */
+export function joinAtTop(left: string): string {
+  return left.trim();
+}
+
+// ---- helpers
+/** Joins one label for the report footer. */
+export function joinBelowDivider(left: string): string {
+  return left.trim();
+}
+`);
+  assert.deepEqual(findings, [
+    "docs.missing-param-tag joinAtTop",
+    "docs.missing-param-tag joinBelowDivider",
+    "docs.missing-return-tag joinAtTop",
+    "docs.missing-return-tag joinBelowDivider",
+  ]);
+});
+
+// T-10: a readonly candidate must be a private field whose rewrite to `readonly` compiles, so the
+// rule reports only fields their class assigns through `this` in its own constructor.
+// The symbols each readonly-candidate finding names, in a stable, deterministic order.
+function readonlyCandidates(source: string): string[] {
+  return analyseFixture(source)
+    .findings.filter((entry) => entry.ruleId === "modernisation.readonly-property-candidate")
+    .map((entry) => entry.symbol ?? "")
+    .sort();
+}
+
+test("T-10 readonly candidates skip a field a method reassigns", () => {
+  // The T-10 reproduction: `timerId` is reassigned in schedule(), so only `label` can become readonly.
+  const candidates = readonlyCandidates(`/** Retries a connection on a timer. */
+export class Reconnector {
+  private timerId: number | null;
+  private label: string;
+
+  constructor(private readonly delayMs: number) {
+    this.timerId = null;
+    this.label = "idle";
+  }
+
+  schedule(): void {
+    this.timerId = setTimeout(() => this.schedule(), this.delayMs);
+  }
+
+  describe(): string {
+    return this.label + ":" + this.timerId;
+  }
+}
+`);
+  assert.deepEqual(candidates, ["label"]);
+});
+
+test("T-10 every write form outside the constructor disqualifies a field", () => {
+  // Each field but `kept` has one write the constructor exemption does not cover, including a write
+  // from a callback inside the constructor and a write to another instance of the same class.
+  const candidates = readonlyCandidates(`export class Counter {
+  private kept: number;
+  private total: number;
+  private hits: number;
+  private first: string;
+  private named: string;
+  private cleared: string;
+  private looped: string;
+  private deferred: string;
+  private shared: string;
+
+  constructor(items: string[]) {
+    this.kept = 0;
+    this.total = 0;
+    this.hits = 0;
+    this.first = "";
+    this.named = "";
+    this.cleared = "";
+    this.looped = "";
+    this.deferred = "";
+    this.shared = "";
+    items.forEach(() => { this.deferred = "seen"; });
+  }
+
+  update(items: string[], other: Counter, source: { named: string }): void {
+    this.total += items.length;
+    this.hits++;
+    [this.first] = items;
+    ({ named: this.named } = source);
+    delete (this as { cleared?: string }).cleared;
+    for (this.looped of items) {
+      void this.looped;
+    }
+    other.shared = this.kept.toString();
+  }
+}
+`);
+  assert.deepEqual(candidates, ["kept"]);
+});
+
+test("T-10 a class writing through this[...] or Object.assign(this, ...) reports no field", () => {
+  // Neither write names its member in the syntax tree, so no field in either class is provably unwritten.
+  const candidates = readonlyCandidates(`export class ByKey {
+  private label: string;
+
+  constructor(key: "label", value: string) {
+    this.label = "";
+    this[key] = value;
+  }
+}
+
+export class Merged {
+  private label: string;
+
+  constructor(init: Partial<Merged>) {
+    this.label = "";
+    Object.assign(this, init);
+  }
+}
+`);
+  assert.deepEqual(candidates, []);
+});
+
+test("T-10 public, protected, static and unparseable fields are not readonly candidates", () => {
+  // Another file can write a public or protected field; a static field is not a constructor assignment;
+  // a file the parser reports errors for has unknown writes. Only the private instance field reports.
+  const candidates = readonlyCandidates(`export class Visibility {
+  public shown: string;
+  protected inherited: string;
+  private static count: number;
+  private hidden: string;
+
+  constructor() {
+    this.shown = "";
+    this.inherited = "";
+    this.hidden = "";
+  }
+}
+`);
+  assert.deepEqual(candidates, ["hidden"]);
+  assert.deepEqual(readonlyCandidates(`export class Broken {
+  private label: string;
+
+  constructor() {
+    this.label = "";
+  }
+`), []);
 });

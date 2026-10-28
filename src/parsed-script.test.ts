@@ -96,21 +96,6 @@ export function manyParams(a: string, b: string, c: string, d: string, e: string
   assert.equal(finding?.metadata.parameters, DECLARED_PLAIN_PARAMETERS);
 });
 
-test("parameter text keeps names that follow end-of-line comments", () => {
-  const report = analyseFixture(`function inspect(
-  first: string, // Retained parameter.
-  second: string,
-): string {
-  return first;
-}
-`);
-  const unusedParameters = report.findings
-    .filter((finding) => finding.ruleId === "waste.unused-parameter")
-    .map((finding) => finding.metadata.parameter);
-
-  assert.deepEqual(unusedParameters, ["second"]);
-});
-
 test("AST export classification handles split declarations and same-name class methods", () => {
   const splitExportBlocks = discoveredBlocks("split-export.ts", `export async function
 publicApi(): Promise<void> {

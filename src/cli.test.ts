@@ -17,15 +17,16 @@ import {
   analyseProject,
   COMMENTED_OUT_CACHE_LOAD,
   COMMENTED_OUT_SECRET_LOAD,
+  AWS_ACCESS_KEY_FIXTURE_VALUE,
   evalFindingFiles,
-  HIGH_ENTROPY_FIXTURE_VALUE,
   gitAvailable,
   isGitIgnoredByGit,
+  withDefaultOffRulesOn,
   writeFixtureFiles,
 } from "./test-fixtures.ts";
 
 test("analysis finds core TypeScript smells", () => {
-  // Fixture covers core scanner findings across class, eval, parameter-count, and no-assertions paths.
+  // Fixture covers core scanner findings across class, eval, and parameter-count paths.
   const report = analyseFixture(`export class Bad {
   public name = "demo";
   public process(a: boolean, b: string[], c: string, d: string, e: string, f: string, g: string, h: string): void {
@@ -35,16 +36,10 @@ test("analysis finds core TypeScript smells", () => {
     console.log(b, d, e, f, g, h);
   }
 }
-
-test("sleeps without assertion", async () => {
-  await new Promise((resolve) => setTimeout(resolve, 1));
-});
 `);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   assert.equal(ruleIds.has("security.eval-call"), true);
   assert.equal(ruleIds.has("size.parameter-count"), true);
-  assert.equal(ruleIds.has("test-quality.no-assertions"), true);
-  assert.equal(ruleIds.has("modernisation.public-property"), true);
 });
 
 test("existing core fixture fingerprints stay stable", () => {
@@ -58,16 +53,10 @@ test("existing core fixture fingerprints stay stable", () => {
     console.log(b, d, e, f, g, h);
   }
 }
-
-test("sleeps without assertion", async () => {
-  await new Promise((resolve) => setTimeout(resolve, 1));
-});
 `);
   const fingerprints = new Map(report.findings.map((finding) => [finding.ruleId, finding.fingerprint]));
   assert.equal(fingerprints.get("security.eval-call"), "9597745a32e48f52");
   assert.equal(fingerprints.get("size.parameter-count"), "d616356804967e11");
-  assert.equal(fingerprints.get("test-quality.no-assertions"), "abc482609c475b4f");
-  assert.equal(fingerprints.get("modernisation.public-property"), "c80058bf4fd46024");
 });
 
 test("stable identity survives line shifts while fingerprint remains line-sensitive", () => {
@@ -90,21 +79,20 @@ function run(value: string): void {
 });
 
 const FIRST_SLICE_RULE_IDS = new Set([
-  "waste.commented-out-code",
   "naming.identifier-quality",
   "test-quality.trivial-assertion",
   "security.weak-crypto",
-  "sensitive-data.high-entropy-string",
+  "sensitive-data.aws-access-key",
 ]);
 
 test("analysis finds first-slice portable TypeScript rules", () => {
-  const secret = HIGH_ENTROPY_FIXTURE_VALUE;
+  const secret = AWS_ACCESS_KEY_FIXTURE_VALUE;
   // Fixture covers portable source-text, line, function-block, test-block, and sensitive-data seams.
   const report = analyseFixture(`import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 
 const data1 = "placeholder";
-const embeddedToken = "${secret}";
+const embeddedKey = "${secret}";
 
 // ${COMMENTED_OUT_SECRET_LOAD}
 function hashPassword(password: string): string {
@@ -118,7 +106,7 @@ test("trivial assertion", () => {
 function testBuildsValue(): void {
   assert.equal("not a test", "not a test");
 }
-`);
+`, withDefaultOffRulesOn());
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   FIRST_SLICE_RULE_IDS.forEach((ruleId: string) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
@@ -130,7 +118,7 @@ function testBuildsValue(): void {
   const helperTestFindings = report.findings.filter((finding) => finding.pillar === "test-quality" && finding.symbol === "testBuildsValue");
   assert.deepEqual(helperTestFindings, []);
 
-  const secretFinding = report.findings.find((finding) => finding.ruleId === "sensitive-data.high-entropy-string");
+  const secretFinding = report.findings.find((finding) => finding.ruleId === "sensitive-data.aws-access-key");
   assert.notEqual(secretFinding, undefined);
   assert.equal(secretFinding?.message.includes(secret), false);
   assert.equal(JSON.stringify(secretFinding?.metadata).includes(secret), false);
@@ -183,22 +171,13 @@ function normalizeStatus(status: string): string {
 `;
 
 const M02_EXPANSION_RULE_IDS = new Set([
-  "waste.commented-out-code",
-  "waste.empty-function",
-  "waste.redundant-variable",
   "waste.unused-import",
-  "waste.unused-parameter",
   "naming.identifier-quality",
-  "naming.boolean-prefix",
-  "naming.hungarian-notation",
   "naming.class-file-mismatch",
   "docs.stale-param-tag",
   "docs.missing-param-tag",
   "docs.missing-return-tag",
-  "docs.useless-docblock",
   "modernisation.readonly-property-candidate",
-  "modernisation.optional-chaining-candidate",
-  "modernisation.nullish-coalescing-candidate",
 ]);
 
 test("core expansion clean fixture stays finding-free", () => {
@@ -243,7 +222,7 @@ function redundantResult(): string {
 test("core expansion finds waste rules", () => {
   const report = analyseFixture(COMPLEXITY_WASTE_FIXTURE);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  ["waste.commented-out-code", "waste.empty-function", "waste.redundant-variable", "waste.unused-import", "waste.unused-parameter"].forEach((ruleId) => {
+  ["waste.unused-import"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
 });
@@ -265,6 +244,7 @@ test("loads default gruff-ts yaml config", () => {
 schemaVersion: gruff-ts.config.v0.1
 rules:
   "complexity.cyclomatic":
+    enabled: true
     threshold: 2
     severity: warning
 `,
@@ -322,7 +302,7 @@ allowlists:
 test("loads explicit yaml config path", () => {
   const report = analyseProject(
     {
-      "bad.ts": `eval("console.log(1)");
+      "bad.ts": `eval(input);
 `,
       "custom-gruff.yaml": `
 schemaVersion: gruff-ts.config.v0.1
@@ -339,14 +319,14 @@ rules:
 // Fixture files for the nested-gitignore discovery test.
 const NESTED_GITIGNORE_FIXTURE = {
   ".gitignore": "ignored.ts\nignored-dir/\n*.ignored.ts\n!keep.ignored.ts\n",
-  "tracked.ts": `eval("tracked");\n`,
-  "ignored.ts": `eval("ignored");\n`,
-  "skip.ignored.ts": `eval("skip");\n`,
-  "keep.ignored.ts": `eval("keep");\n`,
-  "ignored-dir/bad.ts": `eval("dir");\n`,
+  "tracked.ts": `eval(input);\n`,
+  "ignored.ts": `eval(input);\n`,
+  "skip.ignored.ts": `eval(input);\n`,
+  "keep.ignored.ts": `eval(input);\n`,
+  "ignored-dir/bad.ts": `eval(input);\n`,
   "nested/.gitignore": "*.ts\n!allowed.ts\n",
-  "nested/blocked.ts": `eval("blocked");\n`,
-  "nested/allowed.ts": `eval("allowed");\n`,
+  "nested/blocked.ts": `eval(input);\n`,
+  "nested/allowed.ts": `eval(input);\n`,
 };
 
 test("directory discovery respects root and nested gitignore rules", () => {
@@ -391,18 +371,18 @@ test("gitignore fixture expectations match git check-ignore when git is availabl
 const INCLUDE_IGNORED_FIXTURE = {
   ".gitignore": "ignored.ts\n",
   ".gruff-ts.yaml": `\nschemaVersion: gruff-ts.config.v0.1\npaths:\n  ignore:\n    - "policy/**"\n`,
-  "visible.ts": `eval("visible");\n`,
-  "ignored.ts": `eval("ignored");\n`,
-  "node_modules/pkg/index.ts": `eval("dependency");\n`,
-  "policy/bad.ts": `eval("policy");\n`,
+  "visible.ts": `eval(input);\n`,
+  "ignored.ts": `eval(input);\n`,
+  "node_modules/pkg/index.ts": `eval(input);\n`,
+  "policy/bad.ts": `eval(input);\n`,
 };
 
 test("include ignored scans default and Git ignored paths but keeps config policy ignores", () => {
   const normalReport = analyseProject(INCLUDE_IGNORED_FIXTURE, { shouldSkipConfig: false });
-  assert.deepEqual([...evalFindingFiles(normalReport)].sort(), ["visible.ts"]);
+  assert.deepEqual([...evalFindingFiles(normalReport)].sort(), ["node_modules/pkg/index.ts", "visible.ts"]);
   assert.deepEqual(
     normalReport.paths.ignoredPaths.filter((path) => ["ignored.ts", "node_modules", "policy"].includes(path)).sort(),
-    ["ignored.ts", "node_modules", "policy"],
+    ["ignored.ts", "policy"],
   );
 
   const includeReport = analyseProject(INCLUDE_IGNORED_FIXTURE, { shouldIncludeIgnored: true, shouldSkipConfig: false });
@@ -432,7 +412,7 @@ test("explicit file inputs are scanned even when gitignored", () => {
   const report = analyseProject(
     {
       ".gitignore": "ignored.ts\n",
-      "ignored.ts": `eval("ignored");
+      "ignored.ts": `eval(input);
 `,
     },
     { shouldSkipConfig: true, paths: ["ignored.ts"] },
@@ -446,7 +426,7 @@ test("explicit file inputs are scanned even when gitignored", () => {
 test("loads default gruff-ts yaml config over no config", () => {
   const report = analyseProject(
     {
-      "bad.ts": `eval("console.log(1)");
+      "bad.ts": `eval(input);
 `,
       ".gruff-ts.yaml": `
 schemaVersion: gruff-ts.config.v0.1
@@ -487,15 +467,15 @@ export function updateName(name: string): string {
 test("core expansion finds naming and documentation rules", () => {
   const report = analyseProject({ "CustomerProfile.ts": NAMING_DOC_FIXTURE, "helpers.ts": "/** Handles payment requests. */\nexport class PaymentController {}\n" });
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  ["naming.boolean-prefix", "naming.hungarian-notation", "naming.class-file-mismatch", "docs.stale-param-tag", "docs.missing-param-tag", "docs.missing-return-tag", "docs.useless-docblock"].forEach((ruleId) => {
+  ["naming.class-file-mismatch", "docs.stale-param-tag", "docs.missing-param-tag", "docs.missing-return-tag"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
 });
 
 test("core expansion finds modernisation rules", () => {
-  // Fixture covers modernization detections for readonly, optional chaining, and nullish coalescing.
+  // Fixture covers the readonly-property modernisation detection.
   const report = analyseFixture(`class AccountReader {
-  public displayName: string;
+  private displayName: string;
 
   public constructor(displayName: string) {
     this.displayName = displayName;
@@ -511,7 +491,7 @@ test("core expansion finds modernisation rules", () => {
 }
 `);
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  ["modernisation.readonly-property-candidate", "modernisation.optional-chaining-candidate", "modernisation.nullish-coalescing-candidate"].forEach((ruleId) => {
+  ["modernisation.readonly-property-candidate"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
 });
@@ -556,12 +536,10 @@ test("fixture source text remains inert", () => {
   });
   const noisyRules = new Set([
     "docs.missing-public-doc",
-    "modernisation.public-property",
     "modernisation.var-declaration",
     "naming.class-file-mismatch",
     "security.eval-call",
     "security.new-function",
-    "waste.console-log",
   ]);
   assert.deepEqual(
     report.findings.filter((finding) => noisyRules.has(finding.ruleId)).map((finding) => finding.ruleId),
@@ -599,8 +577,6 @@ test("scanner guardrail fixtures keep noisy-valid comments strings regex templat
     "security.eval-call",
     "security.new-function",
     "security.string-timer",
-    "waste.commented-out-code",
-    "waste.console-log",
   ]);
   assert.deepEqual(report.diagnostics, []);
   assert.deepEqual(
@@ -651,6 +627,28 @@ test("unreachable-code ignores reachable switch cases after returns", () => {
 `);
 
   assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unreachable-code"), false);
+
+  // The braced form, as zod's locale files write it (M22 hunt shape), is a branch label too, while a statement
+  // after a `return` inside the same case still fires.
+  const braced = analyseFixture(`function renderIssue(code: string, expected: string): string {
+  switch (code) {
+    case "invalid_type": {
+      return "type " + expected;
+    }
+    case "invalid_value":
+      return "value";
+    case "too_big": {
+      return "big";
+    }
+    default: {
+      return "other";
+      console.log("after return");
+    }
+  }
+}
+`);
+
+  assert.deepEqual(braced.findings.filter((finding) => finding.ruleId === "waste.unreachable-code").map((finding) => finding.line), [13]);
 });
 
 test("function parser ignores calls inside ternary expressions", () => {
@@ -667,36 +665,13 @@ function parseYamlScalar(value: string): string {
 }
 `);
 
+  // Each parser function is reported once, at its own declaration; a call in the ternary is not a callable.
   assert.deepEqual(
-    report.findings.filter((finding) => finding.ruleId === "waste.empty-function" && (finding.symbol === "parseYamlArray" || finding.symbol === "parseYamlScalar")),
-    [],
+    report.findings
+      .filter((finding) => finding.ruleId === "docs.missing-internal-function-doc" && (finding.symbol === "parseYamlArray" || finding.symbol === "parseYamlScalar"))
+      .map((finding) => `${finding.symbol}:${finding.line}`),
+    ["parseYamlArray:5", "parseYamlScalar:9"],
   );
-});
-
-test("function parser handles multiline expression-bodied arrows without empty-body noise", () => {
-  // Fixture covers multiline arrow parsing without treating expression bodies as empty blocks.
-  const report = analyseFixture(`interface AnalysisReport {
-  findings: Array<{ ruleId: string }>;
-}
-
-const identity = (report: AnalysisReport) =>
-  report.findings
-    .map((finding) => finding.ruleId)
-    .join(",");
-
-function emptyWork(): void {}
-
-function unusedParam(value: string): void {
-  return;
-}
-`);
-
-  assert.deepEqual(
-    report.findings.filter((finding) => finding.symbol === "identity" && ["waste.empty-function", "waste.unused-parameter"].includes(finding.ruleId)),
-    [],
-  );
-  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.empty-function" && finding.symbol === "emptyWork"), true);
-  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unused-parameter" && finding.symbol === "unusedParam"), true);
 });
 
 // The strict file-length threshold the determinism test asserts on; named so the assertion compares

@@ -2,9 +2,8 @@
  * Shared pillar-row construction + grade helper. Lives in its own module so the text/markdown
  * renderers (`report-renderers.ts`), the HTML renderer (`report-html.ts`), and the score builder
  * (`scoring.ts`) can all source the same `buildPillarRows` and `grade` logic without forming a
- * dependency cycle between the renderer modules. Every row this module emits feeds the cross-port
- * `gruff.summary.v2` Pillars table contract, so the schema invariant - findings DESC, pillar ASC,
- * and a clean A/100 fallback per pillar - must stay byte-stable across runs.
+ * dependency cycle between renderer modules. Every row feeds the cross-port human Pillars table,
+ * so findings-descending/pillar-ascending order and a clean A/100 fallback must stay byte-stable.
  */
 import { ruleDescriptors } from "./rules.ts";
 import type { AnalysisReport, Finding, Pillar } from "./types.ts";
@@ -35,12 +34,10 @@ interface PillarSeverityCounts {
 }
 
 /*
- * Builds the canonical cross-port pillar row list shared by `gruff.summary.v2` text, JSON, and
- * HTML renderers. The shape is intentionally a single deterministic list - one row per applicable
- * pillar even when the run has zero findings - because cross-port consumers diff this output
- * byte-for-byte and a missing row would read as a contract drift. Pillars without findings default
- * to a clean A/100 row to preserve that invariant. Sort order is `findings DESC, pillar ASC` to
- * keep the public Pillars-table contract deterministic across runs.
+ * Builds the canonical pillar rows shared by text, Markdown, and HTML renderers. The shape is one
+ * deterministic row per applicable pillar, even when a run has no findings, because cross-port
+ * consumers compare this human-readable table byte-for-byte. Pillars without findings default to
+ * a clean A/100 row. Sort order is `findings DESC, pillar ASC`.
  */
 function buildPillarRows(report: AnalysisReport): PillarRow[] {
   const scoreByPillar = new Map(report.score.pillars.map((entry) => [entry.pillar, entry] as const));
@@ -65,11 +62,9 @@ function countSeverityByPillar(findings: Finding[]): Map<Pillar, PillarSeverityC
 
 /*
  * Assembles one PillarRow from the optional analyser score entry and optional severity tally.
- * Defaults preserve the clean A/100 row contract when a pillar produced no findings, keeping the
- * `gruff.summary.v2` per-pillar shape deterministic across runs. Invariant: `findings` is derived
- * from the severity tally (not `scoreEntry.findings`) so the row's total and its per-severity
- * columns share a single source and can never disagree - the Finding list is the schema's single
- * source of truth for what was actually reported in this run.
+ * Defaults preserve the clean A/100 row contract when a pillar produced no findings. Invariant:
+ * `findings` is derived from the severity tally rather than `scoreEntry.findings`, so the total and
+ * per-severity columns share one source and cannot disagree.
  */
 function buildPillarRow(pillar: Pillar, scoreEntry: AnalysisReport["score"]["pillars"][number] | undefined, severities: PillarSeverityCounts | undefined): PillarRow {
   const score = scoreEntry?.score ?? 100;
@@ -96,9 +91,8 @@ function comparePillarRows(leftRow: PillarRow, rightRow: PillarRow): number {
   return leftRow.pillar.localeCompare(rightRow.pillar);
 }
 
-// Pillar applicability is sourced from the rule catalogue: a pillar is applicable when at least
-// one rule declares it. This keeps the cross-port `gruff.summary.v2` contract stable - every
-// pillar that *could* fire shows up even when the current run produced zero findings for it.
+// Pillar applicability comes from the rule catalogue. This keeps the cross-port human table stable:
+// every pillar that could fire appears even when the current run produced no findings for it.
 function applicablePillarSet(): Set<Pillar> {
   const pillars = new Set<Pillar>();
   for (const descriptor of ruleDescriptors()) {

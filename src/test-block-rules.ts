@@ -1,12 +1,12 @@
-// Per-test-block rule pass: assertion quality (no-assertions, trivial, snapshot-only,
-// no-throw-only, exception-type-only, magic-number), mock quality (unused-mock, mock-only-test),
-// global-state-mutation, and structural checks (sleep/loop/conditional/only-skip).
-// Invoked from the analyseBlocks orchestrator when `block.isTest` is true.
+// Reports test-quality findings developers can act on in each parsed test block.
+
+// Assertion and mock checks run before global-state and structural checks.
+// The block orchestrator calls this file when it finds a test body.
 import { blockFinding, blockFindingWithMetadata, type FunctionBlock, hasAssertion } from "./blocks.ts";
 import { type SourceFile } from "./discovery.ts";
 import { escapeRegex } from "./findings-helpers.ts";
 import { pushStaticAnalysisRedundantTestFindings, type StaticAnalysisSourceContext } from "./static-analysis-redundant-rules.ts";
-import { countMatches } from "./text-scans.ts";
+import { countMatches, matchingCloseParen } from "./text-scans.ts";
 import type { Finding, Severity } from "./types.ts";
 
 // Provisional rule output gathered during a test-block walk. Built before the surrounding context
@@ -17,17 +17,9 @@ interface TestBlockCheck {
   severity: Severity;
 }
 
-// Captures one assertion matcher plus the capture indexes that hold actual expression and literal.
-interface MagicNumberAssertionPattern {
-  pattern: RegExp;
-  expressionIndex: number;
-  matcherIndex?: number;
-  valueIndex: number;
-}
-
 /*
  * Reached when `block.isTest` is true. Four sub-passes in a stable, deterministic order: assertion
- * quality, mock quality, global-state-mutation, structural rules.
+ * quality, mock quality, global-state-mutation, loop structure.
  */
 export function analyseTestBlock(file: SourceFile, block: FunctionBlock, findings: Finding[], staticContext?: StaticAnalysisSourceContext): void {
   const body = block.codeBody;
@@ -38,55 +30,26 @@ export function analyseTestBlock(file: SourceFile, block: FunctionBlock, finding
   analyseTestStructureChecks(file, block, body, findings);
 }
 
-// Five assertion-shape checks (no-assertions, trivial, snapshot-only, no-throw-only, exception-type-only)
-// plus the magic-number sub-pass. Reports findings with stable test-block metadata.
+// The trivial-assertion check plus the static-analysis redundancy sub-pass. Reports findings with
+// stable test-block metadata.
 function analyseAssertionQuality(file: SourceFile, block: FunctionBlock, body: string, staticContext: StaticAnalysisSourceContext, findings: Finding[]): void {
   for (const check of assertionQualityChecks(block, body)) {
     findings.push(blockFinding({ ruleId: check.ruleId, message: check.message, file, block, severity: check.severity, pillar: "test-quality" }));
   }
-  pushMagicNumberAssertionFindings(file, block, body, findings);
   pushStaticAnalysisRedundantTestFindings(file, block, block.body, body, staticContext, findings);
 }
 
-// Lazy evaluation: only checks whose `active` predicate fired are returned. The five rule IDs are
-// part of the public test-quality pillar; their ordering here is the stable emission order.
+// Lazy evaluation: only checks whose `active` predicate fired are returned. The rule ID is part of
+// the public test-quality pillar; this list's order is the stable emission order.
 function assertionQualityChecks(block: FunctionBlock, body: string): TestBlockCheck[] {
   const testName = block.name;
   const checks: Array<TestBlockCheck & { active: boolean }> = [
-    { active: !hasAssertion(body), ruleId: "test-quality.no-assertions", message: `Test \`${testName}\` does not appear to make an assertion.`, severity: "warning" },
     { active: hasTrivialAssertion(body), ruleId: "test-quality.trivial-assertion", message: `Test \`${testName}\` contains an assertion that compares a value to itself.`, severity: "warning" },
-    { active: isSnapshotOnlyTest(body), ruleId: "test-quality.snapshot-only-test", message: `Test \`${testName}\` relies only on snapshot assertions.`, severity: "advisory" },
-    { active: isNoThrowOnlyTest(body), ruleId: "test-quality.no-throw-only-test", message: `Test \`${testName}\` only verifies that code does not throw.`, severity: "advisory" },
-    { active: hasExceptionTypeOnlyAssertion(body), ruleId: "test-quality.exception-type-only", message: `Test \`${testName}\` checks only the exception type.`, severity: "advisory" },
   ];
   return checks.filter((check) => check.active).map(({ active: _active, ...check }) => check);
 }
 
-/*
- * Targets `expect(x).toBe(42)` / `assert.equal(x, 42)` patterns where 42 has no name. Reports
- * `test-quality.magic-number-assertion` with stable literal metadata for downstream review tools.
- */
-function pushMagicNumberAssertionFindings(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
-  if (isConstantContractTestName(block.name)) {
-    return;
-  }
-  for (const assertion of magicNumberAssertions(body)) {
-    findings.push(
-      blockFindingWithMetadata({
-        ruleId: "test-quality.magic-number-assertion",
-        message: `Test \`${block.name}\` asserts against unexplained numeric literal ${assertion.value}.`,
-        file,
-        block,
-        severity: "advisory",
-        pillar: "test-quality",
-        metadata: { value: assertion.value },
-      }),
-    );
-  }
-}
-
-// Two distinct findings emitted from one walk: per-unused-mock and a single mock-only flag.
-// Reports `test-quality.unused-mock` / `test-quality.mock-only-test` with stable test-block metadata.
+// Reports `test-quality.unused-mock` for each mock created but never used, with stable test-block metadata.
 function analyseMockQuality(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
   const unusedMocks = unusedMockVariables(body);
   for (const mock of unusedMocks) {
@@ -102,9 +65,6 @@ function analyseMockQuality(file: SourceFile, block: FunctionBlock, body: string
       }),
     );
   }
-  if (isMockOnlyTest(body)) {
-    findings.push(blockFinding({ ruleId: "test-quality.mock-only-test", message: `Test \`${block.name}\` only verifies mock interaction.`, file, block, severity: "advisory", pillar: "test-quality" }));
-  }
 }
 
 // Reports the stable `test-quality.global-state-mutation` finding contract for state leaks.
@@ -114,30 +74,16 @@ function analyseGlobalStateMutation(file: SourceFile, block: FunctionBlock, body
   }
 }
 
-// Pattern-driven checks for sleep/loop/conditional logic plus the `.only`/`.skip` commit gate.
-// Reports each detected structural issue as a stable test-quality finding.
+// Reports the stable `test-quality.loop-in-test` finding for loop logic that hides which iteration failed. The finding
+// is medium confidence: parametrized tests are a legitimate pattern and the label heuristic cannot see every message
+// shape (helper-built messages, labels more than one local away).
 function analyseTestStructureChecks(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
-  const checks: Array<[string, boolean, string]> = [
-    ["test-quality.sleep-in-test", /\b(setTimeout|sleep|waitForTimeout)\s*\(/.test(body), "Test sleeps instead of synchronising on behaviour."],
-    ["test-quality.loop-in-test", controlFlowContainsNonFixtureLoop(body), "Test contains loop logic that hides which iteration failed."],
-    ["test-quality.conditional-logic", controlFlowContainsAssertion(body, /\b(?:if|switch)\b/g), "Test contains conditional logic around assertions."],
-    ["test-quality.only-skip", /\.(only|skip)\s*\(/.test(body), "Focused or skipped test is committed."],
-  ];
-  for (const [ruleId, active, message] of checks) {
-    if (!active) {
-      continue;
-    }
-    // Loop findings report at medium confidence: parametrized tests are a legitimate pattern and
-    // the label heuristic cannot see every message shape (multi-line assertion calls, helpers).
-    if (ruleId === "test-quality.loop-in-test") {
-      findings.push(blockFindingWithMetadata({ ruleId, message, file, block, severity: "advisory", pillar: "test-quality", metadata: {} }));
-      continue;
-    }
-    findings.push(blockFinding({ ruleId, message, file, block, severity: "advisory", pillar: "test-quality" }));
+  if (controlFlowContainsNonFixtureLoop(body)) {
+    findings.push(blockFindingWithMetadata({ ruleId: "test-quality.loop-in-test", message: "Test contains loop logic that hides which iteration failed.", file, block, severity: "advisory", pillar: "test-quality", metadata: {} }));
   }
 }
 
-// Loop variant of `controlFlowContainsAssertion` that suppresses fixture loops (table-test pattern):
+// Detects a loop that wraps an assertion, suppressing fixture loops (table-test pattern):
 // loops over a literal array or `Object.entries|keys|values` of a literal where every code path
 // inside the body reaches an assertion. The existing rule fires on ANY loop wrapping an assertion;
 // this widens the precision so parametric coverage doesn't read as control-flow noise.
@@ -160,44 +106,121 @@ function controlFlowContainsNonFixtureLoop(source: string): boolean {
 }
 
 /*
- * A data-driven loop whose assertions each carry a per-case template message referencing a
+ * A data-driven loop whose assertions each carry a per-case message or expected value naming a
  * loop-bound name keeps a failing row identifiable - the failure mode this rule exists to catch -
- * so it opts out even when the case table is built dynamically. Multi-line assertion calls fall
- * outside the statement split and stay reported; the rule's medium confidence reflects that.
+ * so it opts out even when the case table is built dynamically. Each assertion is measured as a
+ * whole call chain, so a message the formatter wrapped onto its own line still counts, and a
+ * message built from a `const` the loop body derives from a bound name counts as naming it.
  */
 function isLabeledCaseLoop(segment: string): boolean {
   const parts = loopSegmentParts(segment);
   if (!parts) {
     return false;
   }
+  if (hasUnsafeFixtureLoopBranch("", parts.body)) {
+    return false;
+  }
   const boundNames = loopBoundNames(parts.header);
   if (boundNames.length === 0) {
     return false;
   }
-  const assertionStatements = parts.body.split(/[;\n]/).map((statement) => statement.trim()).filter((statement) => statement.length > 0 && hasAssertion(statement));
-  if (assertionStatements.length === 0) {
+  const assertionCalls = assertionCallChains(parts.body);
+  if (assertionCalls.length === 0) {
     return false;
   }
-  return assertionStatements.every((statement) => hasLoopCaseLabel(statement, boundNames));
+  const labelNames = [...boundNames, ...loopDerivedLocalNames(parts.body, boundNames)];
+  return assertionCalls.every((call) => hasLoopCaseLabel(call, labelNames));
 }
 
-// Identifier names bound by a for..of header - `for (const { name, input } of cases)` binds both.
+// Only call forms with supported per-case label arguments can clear a loop warning; `.should.be` matchers have no proved label form.
+const ASSERTION_CALL_OPENER = /\b(?:assert(?:\.[A-Za-z]+|[A-Z][A-Za-z0-9_$]*)?|expect(?:\.(?:assertions|hasAssertions)|[A-Z][A-Za-z0-9_$]*)?|[A-Za-z_$][A-Za-z0-9_$]*Check)\s*(?:<[^;]*?>\s*)?\(/g;
+// One chained call such as `.toBe(` after a closed call.
+const CHAINED_CALL_LINK = /^\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*\s*(?:<[^;]*?>\s*)?\(/;
+
+// Every assertion call in a masked loop body, measured from its callee through the closing parenthesis of its last
+// chained call, so `assert.ok(\n  value,\n  `${item}: empty`,\n)` is one call however the formatter wrapped it. An
+// assertion nested inside another's arguments belongs to the outer call; an unclosed call is skipped, not guessed.
+function assertionCallChains(body: string): string[] {
+  const calls: string[] = [];
+  let measuredUntil = 0;
+  for (const match of body.matchAll(ASSERTION_CALL_OPENER)) {
+    const start = match.index ?? 0;
+    if (start < measuredUntil) {
+      continue;
+    }
+    let close = matchingCloseParen(body, start + match[0].length - 1);
+    if (close === undefined) {
+      continue;
+    }
+    for (let link = body.slice(close + 1).match(CHAINED_CALL_LINK); link; link = body.slice(close + 1).match(CHAINED_CALL_LINK)) {
+      const linkClose = matchingCloseParen(body, close + link[0].length);
+      if (linkClose === undefined) {
+        break;
+      }
+      close = linkClose;
+    }
+    calls.push(body.slice(start, close + 1));
+    measuredUntil = close + 1;
+  }
+  return calls;
+}
+
+// `const` locals the loop body assigns from an expression naming a loop-bound name, such as
+// `const label = `prefix/${item}``. One level only: a local derived from another derived local is not followed, so
+// this stays a name check rather than a dataflow pass.
+function loopDerivedLocalNames(body: string, boundNames: string[]): string[] {
+  const derived: string[] = [];
+  for (const match of body.matchAll(/\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\n]+)/g)) {
+    const initializer = match[2] ?? "";
+    if (boundNames.some((name) => new RegExp(`\\b${escapeRegex(name)}\\b`).test(initializer))) {
+      derived.push(match[1] ?? "");
+    }
+  }
+  return derived.filter(Boolean);
+}
+
+// Identifier names bound by for-of, for-in or C-style headers.
 // While-loops bind nothing here, so they never take the labeled opt-out.
 function loopBoundNames(header: string): string[] {
-  const binding = header.match(/\b(?:const|let|var)\s+([^)]*?)\s+of\b/)?.[1] ?? "";
+  const binding = header.match(/\b(?:const|let|var)\s+([^)]*?)\s+(?:of|in)\b/)?.[1]
+    ?? header.match(/\b(?:let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/)?.[1]
+    ?? "";
   return [...binding.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)].map((match) => match[0] ?? "").filter(Boolean);
 }
 
-// The per-case label: a template interpolation in the assertion statement naming a bound
-// identifier. Masked source keeps `${...}` expressions intact, so this works on codeBody.
+// Messages can name a case through any expression; an exact bound expected value also identifies it.
+// The actual operand alone cannot clear the warning because it may omit the failing case from output.
 function hasLoopCaseLabel(statement: string, boundNames: string[]): boolean {
-  for (const interpolation of statement.matchAll(/\$\{([^}]*)\}/g)) {
-    const expressionText = interpolation[1] ?? "";
-    if (boundNames.some((name) => new RegExp(`\\b${escapeRegex(name)}\\b`).test(expressionText))) {
-      return true;
+  const argumentsList = assertionArguments(statement);
+  const isBinaryAssert = /^assert\.(?:(?:not)?(?:strictEqual|deepStrictEqual|equal|deepEqual)|throws|rejects|match|doesNotMatch)\b/i.test(statement);
+  const isExpect = /^expect\s*\(/.test(statement);
+  const message = argumentsList[isBinaryAssert ? 2 : 1] ?? "";
+  const matcher = isExpect ? statement.slice((matchingCloseParen(statement, statement.indexOf("(")) ?? statement.length) + 1) : "";
+  const expected = isBinaryAssert ? argumentsList[1] ?? "" : isExpect ? assertionArguments(matcher)[0] ?? "" : "";
+  return boundNames.some((name) => new RegExp(`\\b${escapeRegex(name)}\\b`).test(message) || expected.trim() === name);
+}
+
+// Masked literals preserve delimiter positions, so only top-level commas separate arguments.
+function assertionArguments(statement: string): string[] {
+  const open = statement.indexOf("(");
+  const close = matchingCloseParen(statement, open);
+  if (open < 0 || close === undefined) {
+    return [];
+  }
+  const argumentsList: string[] = [];
+  let depth = 0;
+  let start = open + 1;
+  for (let index = start; index < close; index += 1) {
+    const character = statement[index] ?? "";
+    if ("([{".includes(character)) depth += 1;
+    else if (")]}".includes(character)) depth -= 1;
+    else if (character === "," && depth === 0) {
+      argumentsList.push(statement.slice(start, index));
+      start = index + 1;
     }
   }
-  return false;
+  argumentsList.push(statement.slice(start, close));
+  return argumentsList;
 }
 
 // A "fixture loop" is the table-test pattern: iterable is an inline fixture OR a local const-bound
@@ -309,19 +332,6 @@ function isFixtureDiscoveryCall(initializer: string): boolean {
   return /\b(?:glob|globSync|readdir|readdirSync|discover[A-Za-z0-9_$]*|find[A-Za-z0-9_$]*|list[A-Za-z0-9_$]*)\s*\(/.test(initializer);
 }
 
-// Structural loop/branch findings now require the control flow to wrap an assertion; setup-only
-// conditionals and fixture-building loops are noisy but not direct test-quality failures.
-function controlFlowContainsAssertion(source: string, pattern: RegExp): boolean {
-  for (const match of source.matchAll(pattern)) {
-    const start = match.index ?? 0;
-    const segment = controlFlowSegment(source, start);
-    if (hasAssertion(segment) && !isInvariantAssertionConditional(source, start, segment)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 // Accepts guard conditionals whose assertion proves a shared invariant rather than branch policy.
 function isInvariantAssertionConditional(source: string, start: number, segment: string): boolean {
   const condition = segment.slice(0, Math.max(0, segment.indexOf("{"))).trim();
@@ -431,85 +441,6 @@ function normalizeAssertionExpression(expression: string): string {
   return expression.trim().replace(/;$/, "");
 }
 
-// Strips every snapshot-shaped assertion plus `expect.assertions(...)` and re-checks whether any
-// assertion remains. A body that empties out is flagged for `test-quality.snapshot-only-test`,
-// since snapshot fixtures alone don't constrain behaviour.
-function isSnapshotOnlyTest(source: string): boolean {
-  if (!/\.\s*toMatch(?:Inline)?Snapshot\s*\(/.test(source)) {
-    return false;
-  }
-  const withoutSnapshots = source
-    .replace(/\bexpect\s*\([\s\S]*?\)\s*\.\s*toMatch(?:Inline)?Snapshot\s*\([^)]*\)\s*;?/g, "")
-    .replace(/\bexpect\.(?:assertions|hasAssertions)\s*\([^)]*\)\s*;?/g, "");
-  return !hasAssertion(withoutSnapshots);
-}
-
-// Same shape as `isSnapshotOnlyTest` but for `doesNotThrow` / `not.toThrow`. A test that asserts
-// only the absence of an exception is weak - `test-quality.no-throw-only-test` reports it so
-// authors can add a real behaviour assertion alongside.
-function isNoThrowOnlyTest(source: string): boolean {
-  if (!/\bassert\.doesNotThrow\s*\(|\.\s*not\s*\.\s*toThrow\s*\(/.test(source)) {
-    return false;
-  }
-  const withoutNoThrow = source
-    .replace(/\bassert\.doesNotThrow\s*\([\s\S]*?\)\s*;?/g, "")
-    .replace(/\bexpect\s*\([\s\S]*?\)\s*\.\s*not\s*\.\s*toThrow\s*\([^)]*\)\s*;?/g, "")
-    .replace(/\bexpect\.(?:assertions|hasAssertions)\s*\([^)]*\)\s*;?/g, "");
-  return !hasAssertion(withoutNoThrow);
-}
-
-// Pulls every numeric expected value out of `expect(...).toBe(n)` and `assert.equal(actual, n)`
-// shapes. Small cardinalities and length/count matchers are excluded because the literal often is
-// the test contract; larger opaque values still surface for naming or rationale.
-function magicNumberAssertions(source: string): Array<{ value: number }> {
-  return MAGIC_NUMBER_ASSERTION_PATTERNS.flatMap((candidate) => magicNumberAssertionMatches(source, candidate));
-}
-
-const MAGIC_NUMBER_ASSERTION_PATTERNS: MagicNumberAssertionPattern[] = [
-  { pattern: /\bexpect\s*\(\s*([^)]+?)\s*\)\s*\.\s*(to(?:Be|Equal|HaveLength|HaveCount))\s*\(\s*(-?\d+(?:\.\d+)?)\s*\)/g, expressionIndex: 1, matcherIndex: 2, valueIndex: 3 },
-  { pattern: /\bassert\.(?:equal|strictEqual|deepEqual)\s*\(\s*([^,\n]+?)\s*,\s*(-?\d+(?:\.\d+)?)(?:\s*,|\s*\))/g, expressionIndex: 1, valueIndex: 2 },
-];
-
-// Extracts reportable numeric literals for one assertion grammar while keeping HTTP statuses quiet.
-function magicNumberAssertionMatches(source: string, candidate: MagicNumberAssertionPattern): Array<{ value: number }> {
-  const results: Array<{ value: number }> = [];
-  for (const match of source.matchAll(candidate.pattern)) {
-    const expression = match[candidate.expressionIndex] ?? "";
-    const matcher = candidate.matcherIndex === undefined ? "" : match[candidate.matcherIndex] ?? "";
-    const expectedNumber = Number(match[candidate.valueIndex] ?? "0");
-    if (!isIgnoredMagicNumberAssertion(expression, matcher, expectedNumber)) {
-      results.push({ value: expectedNumber });
-    }
-  }
-  return results;
-}
-
-// Centralises the rule's non-findings so cardinal, count, and HTTP-status exemptions stay aligned.
-function isIgnoredMagicNumberAssertion(expression: string, matcher: string, expectedNumber: number): boolean {
-  return isSmallCardinal(expectedNumber) || isLengthOrCountMatcher(matcher) || isHttpStatusAssertion(expression, expectedNumber);
-}
-
-// Small integer cardinals usually express the expected case count directly.
-function isSmallCardinal(cardinal: number): boolean {
-  return Number.isInteger(cardinal) && cardinal >= -1 && cardinal <= 3;
-}
-
-// Length/count matchers already name the measurement, so the numeric literal is the assertion.
-function isLengthOrCountMatcher(matcher: string): boolean {
-  return matcher === "toHaveLength" || matcher === "toHaveCount";
-}
-
-// Contract-named tests may assert the documented number directly; the name supplies the rationale.
-function isConstantContractTestName(name: string): boolean {
-  return /\b(?:constant|threshold|limit|budget|default|contract)\b/i.test(name);
-}
-
-// HTTP response status codes are intentionally numeric at assertion sites; naming every 200/404
-// would add ceremony without making the test clearer.
-function isHttpStatusAssertion(expression: string, expectedNumber: number): boolean {
-  return Number.isInteger(expectedNumber) && expectedNumber >= 100 && expectedNumber <= 599 && /\b(?:status|statusCode)\b/.test(expression);
-}
-
 // `const mockX = vi.fn(...)` declarations whose binding appears only once in the body - that one
 // occurrence is the declaration itself, so the mock is created but never wired in. Reports the
 // names for `test-quality.unused-mock` to anchor on.
@@ -525,26 +456,6 @@ function unusedMockVariables(source: string): string[] {
     }
   }
   return names;
-}
-
-// Three gates in order: a mock factory must exist, a mock-call matcher must be asserted, and
-// *every* `expect(target)` argument must look like a mock/stub/spy name. All three together
-// signal a test that only verifies its own scaffolding - flagged for `test-quality.mock-only-test`.
-function isMockOnlyTest(source: string): boolean {
-  if (!/\b(?:vi|jest)\.fn\s*\(|\b(?:createMock|mock|sinon\.stub)\s*\(/.test(source)) {
-    return false;
-  }
-  if (!/\.(?:toHaveBeenCalled|toHaveBeenCalledWith|toHaveBeenNthCalledWith|toBeCalled|toBeCalledWith)\s*\(/.test(source)) {
-    return false;
-  }
-  const targets = [...source.matchAll(/\bexpect\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)/g)].map((match) => match[1] ?? "");
-  return targets.length > 0 && targets.every((target) => /(?:mock|stub|spy)$/i.test(target));
-}
-
-// `toThrow(Error)` / `assert.throws(fn, Error)` constrain only the constructor, not the message
-// or properties. Reports `test-quality.exception-type-only` so authors tighten the assertion.
-function hasExceptionTypeOnlyAssertion(source: string): boolean {
-  return /\.toThrow\s*\(\s*(?:Error|[A-Z][A-Za-z0-9_$]*Error)\s*\)/.test(source) || /\bassert\.throws\s*\([^,\n]+,\s*(?:Error|[A-Z][A-Za-z0-9_$]*Error)\s*\)/.test(source);
 }
 
 // Three known anti-patterns: writing to `process.env`, writing to `globalThis.*`, or reassigning

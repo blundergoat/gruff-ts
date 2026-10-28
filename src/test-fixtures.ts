@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { analyse } from "./cli.ts";
-import type { AnalysisReport, ChangedScopeMode } from "./types.ts";
+import type { AnalysisReport, ChangedScopeMode, DeepScanBudgetOverride, Finding } from "./types.ts";
 
 export const REPO_ROOT = cwd();
 export const HIGH_ENTROPY_FIXTURE_VALUE = ["Zx7pQ9vLm3N8sT2r", "Y6wK1dF4gH5jC0bR2"].join("");
@@ -23,8 +23,8 @@ export const DISCORD_WEBHOOK_FIXTURE_VALUE = [
 ].join("/");
 export const NPM_AUTH_TOKEN_FIXTURE_VALUE = ["npmAuthToken", "AbCdEfGhIjKlMnOp", "QrStUvWxYz123456"].join("");
 export const SSN_FIXTURE_VALUE = ["123", "45", "6789"].join("-");
-export const CREDIT_CARD_FIXTURE_VALUE = ["4111", "1111", "1111", "1111"].join(" ");
-export const INVALID_CREDIT_CARD_FIXTURE_VALUE = ["4111", "1111", "1111", "1112"].join(" ");
+export const CREDIT_CARD_FIXTURE_VALUE = ["4539", "5787", "6362", "1486"].join(" ");
+export const INVALID_CREDIT_CARD_FIXTURE_VALUE = ["4539", "5787", "6362", "1487"].join(" ");
 export const MBI_FIXTURE_VALUE = ["1EG4", "TE5", "MK73"].join("");
 export const MRN_FIXTURE_VALUE = "00489912";
 export const GCP_PRIVATE_KEY_ID_FIXTURE_VALUE = ["a1b2c3d4e5f6a7b8c9d0", "e1f2a3b4c5d6e7f8a9b0"].join("");
@@ -51,11 +51,37 @@ export interface AnalyseProjectOptions {
   since?: string;
   changedRanges?: string;
   changedScope?: ChangedScopeMode;
+  deepScanBudget?: DeepScanBudgetOverride;
 }
 
 // Adds a fixture filename override for single-source test scans.
 export interface AnalyseFixtureOptions extends AnalyseProjectOptions {
   fileName?: string;
+}
+
+// Rules precision-floor M02 turned off by default whose detectors the native suites still exercise.
+export const M02_DEFAULT_OFF_RULE_IDS = [
+  "security.inner-html",
+  "security.path-traversal-candidate",
+  "security.unsafe-deserialization",
+  "sensitive-data.aws-access-key",
+  "sensitive-data.database-url-password",
+  "waste.useless-return",
+] as const;
+
+// The same switch as a `.gruff-ts.yaml` document, for tests that drive the CLI.
+export const M02_DEFAULT_OFF_RULES_ON_YAML = [
+  "schemaVersion: gruff-ts.config.v0.1",
+  "rules:",
+  ...M02_DEFAULT_OFF_RULE_IDS.flatMap((ruleId) => [`  ${ruleId}:`, "    enabled: true"]),
+].join("\n") + "\n";
+
+// Switches those rules on in a fixture's options. Every other setting stays, and an explicit entry for one of them wins.
+export function withDefaultOffRulesOn<T extends AnalyseFixtureOptions>(options: T = {} as T): T {
+  const config = options.config ?? {};
+  const rules = (config["rules"] ?? {}) as Record<string, Record<string, unknown>>;
+  const switchedOn = Object.fromEntries(M02_DEFAULT_OFF_RULE_IDS.map((ruleId) => [ruleId, { enabled: true, ...rules[ruleId] }]));
+  return { ...options, config: { ...config, rules: { ...rules, ...switchedOn } } };
 }
 
 // Runs one source string through the temporary-project analysis helper.
@@ -122,7 +148,7 @@ export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions)
 
 // Assembles the optional scan fields with conditional spreads so each stays omitted (not undefined)
 // under exactOptionalPropertyTypes, keeping analyseProjectInCurrentDirectory a flat literal.
-function optionalFixtureScanFields(options: AnalyseProjectOptions): Partial<Pick<Parameters<typeof analyse>[0], "config" | "profile" | "diff" | "diffPatch" | "since" | "changedRanges">> {
+function optionalFixtureScanFields(options: AnalyseProjectOptions): Partial<Pick<Parameters<typeof analyse>[0], "config" | "profile" | "diff" | "diffPatch" | "since" | "changedRanges" | "deepScanBudget">> {
   return {
     ...(typeof options.configPath === "string" ? { config: options.configPath } : {}),
     ...(typeof options.profile === "string" ? { profile: options.profile } : {}),
@@ -130,6 +156,7 @@ function optionalFixtureScanFields(options: AnalyseProjectOptions): Partial<Pick
     ...(typeof options.diffPatch === "string" ? { diffPatch: options.diffPatch } : {}),
     ...(typeof options.since === "string" ? { since: options.since } : {}),
     ...(typeof options.changedRanges === "string" ? { changedRanges: options.changedRanges } : {}),
+    ...(options.deepScanBudget !== undefined ? { deepScanBudget: options.deepScanBudget } : {}),
   };
 }
 
@@ -209,6 +236,7 @@ export function gitAvailable(): boolean {
 }
 
 // Reads `git check-ignore` and throws only for unexpected git failures.
+// @throws {Error} when `git check-ignore` cannot run or exits with a status other than 0 (ignored) or 1 (not ignored).
 export function isGitIgnoredByGit(projectRoot: string, path: string): boolean {
   try {
     execFileSync("git", ["check-ignore", "--quiet", path], { cwd: projectRoot });
@@ -274,6 +302,7 @@ export async function freePort(): Promise<number> {
 }
 
 // Polls a dashboard endpoint until it responds or reports the captured server output.
+// @throws {Error} when the endpoint has not answered OK within 5 seconds, with the last error and server output.
 export async function waitForEndpoint(endpoint: string, output: string): Promise<void> {
   const deadline = Date.now() + 5000;
   const processOutput = output;
@@ -303,8 +332,13 @@ export async function fetchText(endpoint: string): Promise<string> {
 
 // Writes a broad temporary catalogue fixture because one scan must cover many rule families.
 export function ruleCatalogueCoverageRuleIds(): Set<string> {
-  const report = analyseProject(catalogueCoverageFiles(), catalogueCoverageOptions());
-  return new Set(report.findings.map((finding) => finding.ruleId));
+  return new Set(ruleCatalogueCoverageFindings().map((finding) => finding.ruleId));
+}
+
+// Every finding the broad catalogue fixture emits, in the report's stable sorted order, for tests that check what a
+// rule's findings carry.
+export function ruleCatalogueCoverageFindings(): Finding[] {
+  return analyseProject(catalogueCoverageFiles(), catalogueCoverageOptions()).findings;
 }
 
 // Assembles the broad catalogue fixture without making the public helper long.
@@ -580,6 +614,11 @@ export function unsafePublicApi(input: any): any {
 function catalogueTestCoverageSource(): string {
   return `import assert from "node:assert/strict";
 
+// These independently named cases provide positive coverage for the opt-in group detector.
+${"test"}("first conversion", () => { const input = 1; const result = convert(input); assert.equal(result, 2); });
+${"test"}("second conversion", () => { const input = 2; const result = convert(input); assert.equal(result, 3); });
+${"test"}("third conversion", () => { const input = 3; const result = convert(input); assert.equal(result, 4); });
+
 const fixturePurposeReport = analyseFixture(${"`"}
 ${largeFixtureSourceLines("catalogueFixtureValue").join("\n")}
 ${"`"});
@@ -659,12 +698,30 @@ function catalogueCoverageOptions(): AnalyseProjectOptions {
   return {
       config: {
         rules: {
-          "complexity.cognitive": { threshold: 3, severity: "warning" },
-          "complexity.cyclomatic": { threshold: 2, severity: "warning" },
+          // The new group detector stays off by default until independent calibration clears its floor.
+          "test-quality.duplicate-test-body": { enabled: true },
+          // Off by default since precision-floor M14; the coverage project switches it on for a positive case.
+          "complexity.cyclomatic": { enabled: true, threshold: 2, severity: "warning" },
           "design.large-module-concentration": { threshold: 35, severity: "advisory", options: { minFiles: 4, minLines: 8 } },
           "size.file-length": { threshold: 8, severity: "warning" },
           "size.function-length": { threshold: 8, severity: "warning" },
           "size.parameter-count": { threshold: 3, severity: "warning" },
+          // Off by default (ADR-021); the coverage project switches them on so each still has a positive case.
+          "security.open-redirect-candidate": { enabled: true },
+          "sensitive-data.jwt-token": { enabled: true },
+          // Off by default: their keyword lists cannot accept a comment written in other words.
+          "docs.missing-side-effect-doc": { enabled: true },
+          "docs.missing-invariant-doc": { enabled: true },
+          // Off by default: its sample stayed below the waste floor after its repair.
+          "waste.swallowed-catch": { enabled: true },
+          // Off by default since precision-floor M02: their 0.6.0 precision samples did not establish the floor.
+          "security.inner-html": { enabled: true },
+          "security.path-traversal-candidate": { enabled: true },
+          "sensitive-data.aws-access-key": { enabled: true },
+          "sensitive-data.database-url-password": { enabled: true },
+          "waste.useless-return": { enabled: true },
+          // Off by default since precision-floor M02: no finding survived its repair, so it is unmeasured.
+          "security.unsafe-deserialization": { enabled: true },
         },
       },
     };

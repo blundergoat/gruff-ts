@@ -1,5 +1,6 @@
 // GitHub Actions workflow security heuristics, path-gated to committed workflow files.
 import type { SourceFile } from "./discovery.ts";
+import { unreachableWorkflowSecretLines } from "./github-actions-event-guards.ts";
 import { makeFinding } from "./findings.ts";
 import type { Finding } from "./types.ts";
 
@@ -20,11 +21,6 @@ interface WorkflowFindingInput {
   symbol?: string;
   remediation: string;
   metadata: Record<string, unknown>;
-}
-
-// Shared indentation state for YAML block scans; deleting `indent` exits the current block.
-interface IndentedBlockState {
-  indent?: number;
 }
 
 // Active `run: |` / `run: >` block scalar. The start line is the finding anchor, while `lines`
@@ -62,17 +58,6 @@ const WRITE_PERMISSION_SCOPES = new Set([
   "statuses",
 ]);
 
-// These two scopes mint a short-lived OIDC token or a build attestation. Neither grants write access
-// to any repository resource, and GitHub documents both as the recommended alternative to storing
-// long-lived credentials, so a workflow that requests them is not over-permissioned. Reporting them
-// pushed users away from keyless auth and toward the static secrets this pillar exists to remove.
-// They still reach `broadPermissionSignal`, where a pull_request_target workflow hands that minting
-// power to untrusted pull-request code.
-const CAPABILITY_PERMISSION_SCOPES = new Set([
-  "attestations",
-  "id-token",
-]);
-
 // Stable rule contract: workflow-only checks ignore non-workflow YAML so example docs avoid findings.
 function analyseGithubActionsRules(file: SourceFile, source: string, findings: Finding[]): void {
   if (!isGithubWorkflowPath(file.displayPath)) {
@@ -80,7 +65,6 @@ function analyseGithubActionsRules(file: SourceFile, source: string, findings: F
   }
   const lines = workflowLines(source);
   analysePullRequestTarget(file, lines, findings);
-  analyseBroadPermissions(file, lines, findings);
   analyseUnpinnedActions(file, lines, findings);
   analyseRemoteShell(file, lines, findings);
   analyseSecretsInPullRequest(file, lines, findings);
@@ -161,69 +145,6 @@ function pullRequestTargetRiskContext(lines: readonly WorkflowLine[]): string[] 
     }
   }
   return [...contexts].sort();
-}
-
-// Stable permissions contract: helpers keep YAML block state explicit because nested scopes affect anchors.
-function analyseBroadPermissions(file: SourceFile, lines: readonly WorkflowLine[], findings: Finding[]): void {
-  const state: IndentedBlockState = {};
-  for (const line of lines) {
-    const scope = broadPermissionScope(line, state);
-    if (scope) {
-      pushBroadPermissionFinding(file, findings, line, scope);
-    }
-  }
-}
-
-// Reports one finding per broad permission scope; stable scope symbols keep remediation targeted.
-function pushBroadPermissionFinding(file: SourceFile, findings: Finding[], line: WorkflowLine, scope: string): void {
-  findings.push(
-    workflowFinding(file, {
-      ruleId: "security.github-actions-broad-permissions",
-      message: `Workflow grants broad write permission \`${scope}\`.`,
-      line: line.lineNumber,
-      symbol: scope,
-      remediation: "Reduce workflow permissions to read-only by default and grant write scopes only to trusted jobs.",
-      metadata: { permission: scope },
-    }),
-  );
-}
-
-// Returns the broad permission scope for either inline permissions or an active permissions block.
-function broadPermissionScope(line: WorkflowLine, state: IndentedBlockState): string | undefined {
-  if (isCommentOrBlank(line)) {
-    return undefined;
-  }
-  closeBlockWhenOutdented(state, line);
-  const inline = line.trimmed.match(/^permissions:\s*(write-all)\b/i);
-  if (inline?.[1]) {
-    return "write-all";
-  }
-  if (/^permissions:\s*$/i.test(line.trimmed)) {
-    state.indent = line.indent;
-    return undefined;
-  }
-  if (state.indent === undefined || line.indent <= state.indent) {
-    return undefined;
-  }
-  return scopedWritePermission(line);
-}
-
-// Clears YAML block state once the scanner reaches a sibling or parent indentation level.
-function closeBlockWhenOutdented(state: IndentedBlockState, line: WorkflowLine): void {
-  if (state.indent !== undefined && line.indent <= state.indent) {
-    delete state.indent;
-  }
-}
-
-// Extracts the write scopes that grant a repository resource, which is what this rule reports.
-function scopedWritePermission(line: WorkflowLine): string | undefined {
-  const scoped = line.trimmed.match(/^([a-z-]+):\s*write\b/i);
-  const scope = scoped?.[1] ?? "";
-  // A capability scope grants no repository resource, so requesting one is not a broad permission.
-  if (CAPABILITY_PERMISSION_SCOPES.has(scope)) {
-    return undefined;
-  }
-  return WRITE_PERMISSION_SCOPES.has(scope) ? scope : undefined;
 }
 
 // Lightweight permission signal used by the pull_request_target risk-context gate.
@@ -375,32 +296,73 @@ function isRemoteShellCommand(command: string): boolean {
   return /\b(?:curl|wget)\b[^|]*https?:\/\/[^|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)\b/i.test(command);
 }
 
-// Stable secret-exposure contract: reports secrets.NAME only when the workflow is pull-request triggered.
+// Stable secret-exposure contract: reports secrets.NAME only when the workflow's `on:` declares pull_request_target,
+// the one pull-request event that runs with the repository's secrets. A plain pull_request run from a fork gets none.
 function analyseSecretsInPullRequest(file: SourceFile, lines: readonly WorkflowLine[], findings: Finding[]): void {
-  if (!hasPullRequestStyleEvent(lines)) {
+  if (!declaredWorkflowEvents(lines).has("pull_request_target")) {
     return;
   }
+  const unreachable = unreachableWorkflowSecretLines(lines.map((line) => line.raw).join("\n"), ["pull_request_target"]);
   for (const line of lines) {
     const secretName = secretReference(line);
-    if (!secretName) {
+    if (!secretName || unreachable.has(line.lineNumber)) {
       continue;
     }
     findings.push(
       workflowFinding(file, {
         ruleId: "security.github-actions-secrets-in-pr",
-        message: `Pull request workflow references secret \`${secretName}\`.`,
+        message: `pull_request_target workflow references secret \`${secretName}\`.`,
         line: line.lineNumber,
         symbol: secretName,
         remediation: "Avoid exposing secrets to pull request workflows unless the code path is trusted and tightly gated.",
-        metadata: { event: "pull_request", secretName },
+        metadata: { event: "pull_request_target", secretName },
       }),
     );
   }
 }
 
-// Treats pull_request and pull_request_target as PR-style contexts for secret exposure checks.
-function hasPullRequestStyleEvent(lines: readonly WorkflowLine[]): boolean {
-  return lines.some((line) => !isCommentOrBlank(line) && /\bpull_request(?:_target)?\b/.test(line.trimmed));
+// Returns the events the workflow's top-level `on:` key declares, in scalar, flow-sequence, flow-mapping, block-mapping or
+// block-sequence form. An `if:` expression or a step input that names an event elsewhere is not a trigger.
+function declaredWorkflowEvents(lines: readonly WorkflowLine[]): Set<string> {
+  const events = new Set<string>();
+  let eventIndent: number | undefined;
+  let inOnBlock = false;
+  for (const line of lines) {
+    if (isCommentOrBlank(line)) {
+      continue;
+    }
+    if (line.indent === 0) {
+      const onKey = line.trimmed.match(/^["']?on["']?\s*:\s*(.*)$/);
+      inOnBlock = onKey !== null && stripInlineComment(onKey[1] ?? "").trim() === "";
+      eventIndent = undefined;
+      if (onKey && !inOnBlock) {
+        addFlowEvents(events, stripInlineComment(onKey[1] ?? "").trim());
+      }
+      continue;
+    }
+    if (!inOnBlock) {
+      continue;
+    }
+    // The first nested line fixes the event level; deeper lines configure one event, such as its branches.
+    eventIndent ??= line.indent;
+    if (line.indent === eventIndent) {
+      const event = line.trimmed.match(/^(?:-\s*)?["']?([A-Za-z_]+)["']?\s*(?::|$)/)?.[1];
+      if (event) {
+        events.add(event);
+      }
+    }
+  }
+  return events;
+}
+
+// Adds the events of a scalar, `[a, b]` flow sequence or `{a: x, b: y}` flow mapping.
+function addFlowEvents(events: Set<string>, declaration: string): void {
+  for (const flowEntry of declaration.replace(/^[[{]/, "").replace(/[\]}]$/, "").split(",")) {
+    const event = (flowEntry.split(":")[0] ?? "").trim().replace(/^["']|["']$/g, "");
+    if (event) {
+      events.add(event);
+    }
+  }
 }
 
 // Extracts the secret symbol while keeping the raw expression out of finding metadata.
@@ -408,8 +370,14 @@ function secretReference(line: WorkflowLine): string | undefined {
   if (isCommentOrBlank(line)) {
     return undefined;
   }
-  const match = line.trimmed.match(/\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)\b/);
-  return match?.[1];
+  // `secrets.GITHUB_TOKEN` is the token GitHub mints for each run, scoped by the job's `permissions:`, so it is not a
+  // repository secret; any other name on the line still is.
+  for (const match of line.trimmed.matchAll(/\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
+    if (match[1] !== "GITHUB_TOKEN") {
+      return match[1];
+    }
+  }
+  return undefined;
 }
 
 // Skips blank/comment-only YAML lines before applying simple text heuristics.

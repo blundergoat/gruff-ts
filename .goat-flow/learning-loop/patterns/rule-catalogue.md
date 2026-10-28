@@ -1,6 +1,6 @@
 ---
 category: rule-catalogue
-last_reviewed: 2026-08-14
+last_reviewed: 2026-10-03
 ---
 
 # Rule catalogue patterns
@@ -49,7 +49,7 @@ last_reviewed: 2026-08-14
 
 **Verification:** `grep -rn "<rule-id>" src/ docs/ .gruff-ts.yaml .goat-flow/learning-loop/` should return ONLY incidental string matches (comment context). Root the `.goat-flow/` half at `learning-loop/` or deeper: a recursive grep started at `.goat-flow/` silently returns zero hits because its `.gitignore` opens with `*`. That grep searches for the rule ID, so it cannot see a stale COUNT - `npm run check` is what catches those, via `documented rule counts match the live catalogue` (`src/release-truth.test.ts`), which compares every published total and per-pillar table against `ruleDescriptors()` and names the surfaces to sweep on failure. The descriptor-coverage and YAML-parity tests in `src/rule-catalogue.test.ts` and `src/init-config.test.ts` cross-check that the YAML, registry, and implementation agree. Watch for `tests N pass N fail 0`.
 
-**Footgun reminder:** removing a rule is a stealth breaking change for consumers (orphans `gruff.baseline.v1` entries, no-ops user-side `.gruff-ts.yaml` overrides, breaks CI grep checks). The analysis schema is `gruff.analysis.v2` and is NOT bumped — the user has to explicitly ask, per CLAUDE.md Hard Rules. Read the live literal from `src/types.ts` rather than trusting any doc, this line included: an earlier revision of this pattern still said `gruff.analysis.v1` long after the v2 bump shipped.
+**Footgun reminder:** removing a rule is a breaking change for consumers. Any user config whose `rules:` block still names the id stops loading, because the loader rejects unknown ids (`src/config.ts`, search: `Unknown rule id:`). Baseline rows for the rule go stale, and CI grep checks break. Removing a rule does NOT bump the analysis schema - the user has to explicitly ask, per CLAUDE.md Hard Rules. This line names no schema version on purpose: earlier revisions quoted one and went stale twice. Read the live literal from `src/types.ts`; `src/release-truth.test.ts` holds the current-contract docs to it.
 
 ## Pattern: preserving user customisations across config regeneration
 **Created:** 2026-05-24
@@ -80,16 +80,16 @@ function readExistingIgnoredPaths(projectRoot: string): readonly string[] {
 }
 ```
 
-The sketch above is the original 2026-05-24 shape and is kept because it shows the pattern at its simplest. The live reader is now `readExistingPreservedConfig` (`src/init-config.ts`, search: `function readExistingPreservedConfig`), which returns a `PreservedInitConfig` carrying both `ignoredPaths` and a `minimumSeverity` map rather than a bare string array. Preserve the shape, not the signature.
+The sketch above is the original 2026-05-24 shape and is kept because it shows the pattern at its simplest. The live reader is now `readExistingPreservedConfig` (`src/init-config.ts`, search: `function readExistingPreservedConfig`), which delegates to `extractPreservedConfigFields` (`src/config-preservation.ts`, search: `export function extractPreservedConfigFields`) and returns a `PreservedInitConfig` carrying `ignoredPaths`, `failOn`, and `sensitiveExclusions`. Preserve the shape, not the signature.
 
 Three invariants:
 
-1. **Default parameter on the renderer.** `renderDefaultConfig(ignoredPaths: readonly string[] = [])` keeps every existing caller working unchanged (tests calling `renderDefaultConfig()` still produce the fresh-project output). The new path is opt-in by passing the preserved value.
+1. **Default parameters on the renderer.** Every preserved field is an optional `renderDefaultConfig` parameter that defaults to empty, so tests calling `renderDefaultConfig()` still produce the fresh-project output. The preserved path is opt-in by passing the extracted values.
 
-2. **Read via `loadConfig`, not bespoke YAML parsing.** Reusing `loadConfig` (`src/config.ts`) keeps the YAML grammar single-sourced — a future grammar tweak (new scalar form, inline-array support) flows through automatically. Wrap in try/catch and fall back to `[]` so a malformed-but-clobbered config does not block regeneration.
+2. **Read permissively, never through the strict loader.** `extractPreservedConfigFields` parses with the shared YAML subset (`parseConfigFile`), so the grammar stays single-sourced, but skips `loadConfig`'s schema validation: there is no `schemaVersion` gate, and malformed entries are dropped one by one. Routing this read through `loadConfig` once threw on every pre-`schemaVersion` config, and the catch-all fallback silently erased the user's entries (`.goat-flow/learning-loop/footguns/schema-and-cli.md`, search: `routing migration-path reads through the strict schema validator`). Keep the outer try/catch that falls back to empty preserved fields when the file itself cannot be read or parsed.
 
 3. **Render real block sequences, not inline `[a, b]`.** `JSON.stringify(value)` produces a YAML-safe double-quoted scalar that round-trips through `loadConfig`. Inline arrays are valid YAML but visually break the comments-above-list style the init renderer uses.
 
-**Extending to other fields:** the same shape applies to `allowlists.acceptedAbbreviations`, `allowlists.bannedGenericNames`, per-rule overrides, etc. The current implementation only preserves `paths.ignore` because that was the regression the user hit; extending requires (a) a parallel `readExistingAcceptedAbbreviations`-style helper, (b) a renderer parameter with `[]` default, (c) a test in `src/init-config.test.ts` mirroring `test("gruff-ts init --force preserves the existing paths.ignore entries")`, and (d) keying the preservation gate on `existingConfigPath !== undefined` (precedence-aware via `defaultConfigPath`), not `targetExists` — otherwise `init --force` against a `.gruff.yaml`/`.yml`/`.json` incumbent silently drops the field (the 2026-05-24 regression, covered by `test("gruff-ts init --force preserves paths.ignore from a non-canonical supported config")`).
+**Extending to other fields:** the same shape applies to `allowlists.acceptedAbbreviations`, `allowlists.bannedGenericNames`, per-rule overrides, etc. Today only `paths.ignore`, `failOn`, and `sensitiveExclusions` survive regeneration; extending requires (a) a permissive extractor in `src/config-preservation.ts` beside `extractIgnoredPaths`, (b) a matching `PreservedInitConfig` field and renderer parameter that defaults to empty, (c) a test in `src/init-config.test.ts` mirroring `test("gruff-ts init --force preserves the existing paths.ignore entries")`, and (d) keying the preservation gate on `existingConfigPath !== undefined` (precedence-aware via `defaultConfigPath`), not `targetExists` — otherwise `init --force` against a `.gruff.yaml`/`.yml`/`.json` incumbent silently drops the field (the 2026-05-24 regression, covered by `test("gruff-ts init --force preserves paths.ignore from a non-canonical supported config")`).
 
 **Footgun this defuses:** `gruff-ts init --force regenerates the whole YAML and can wipe user customisations` in `.goat-flow/learning-loop/footguns/schema-and-cli.md`. Cross-link if the preservation surface area grows.

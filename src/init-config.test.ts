@@ -19,7 +19,7 @@ test("renderDefaultConfig includes every descriptor rule id", () => {
   assertDefaultConfigIncludesEveryDescriptor(yaml);
 });
 
-test("renderDefaultConfig emits every descriptor rule as enabled:true", () => {
+test("renderDefaultConfig seeds each rule's enabled state from its registry default", () => {
   const yaml = renderDefaultConfig();
   assertDefaultConfigOptInStates(yaml);
 });
@@ -54,25 +54,29 @@ test("renderDefaultConfig explains and seeds the family abbreviation allowlist",
     "    - tx",
     "    - ui",
     "    - url",
-    "  secretPreviews: []",
   ].join("\n");
 
   assert.equal(generatedConfig.includes(expectedFamilyAbbreviationBlock), true);
 });
 
-test("renderDefaultConfig documents exact naming-pair allowlists", () => {
+test("renderDefaultConfig documents the exact class-file pair allowlist", () => {
   const generatedConfig = renderDefaultConfig();
   assert.match(generatedConfig, /acceptedClassFilePairs: \[focusModeTranscript:TranscriptFocusController\]/);
-  assert.match(generatedConfig, /acceptedCasingPairs: \[note_id:noteId\]/);
 });
 
-test("RULE_OPTION_DEFAULTS mirrors live optionNumber call-site defaults", () => {
+test("RULE_OPTION_DEFAULTS mirrors live optionNumber and optionBoolean call-site defaults", () => {
   // The init renderer hardcodes option defaults because RuleDescriptor only carries optionKeys,
   // not values. Drift between this table and the rule implementations would make `gruff-ts init`
   // produce subtly-wrong starter config; assert parity by parsing the call sites directly.
   const implementationSources = ["src/analyser.ts", "src/project-rules.ts"].map((path) => readFileSync(join(REPO_ROOT, path), "utf8")).join("\n");
-  const implementationDefaults = parseOptionNumberDefaults(implementationSources);
+  const implementationDefaults = parseOptionDefaults(implementationSources);
   assert.deepEqual(normalizeOptionDefaults(RULE_OPTION_DEFAULTS), implementationDefaults);
+});
+
+test("renderDefaultConfig seeds the tag rules' everyCallable switch off", () => {
+  const generatedConfig = renderDefaultConfig();
+  assert.match(generatedConfig, /\n {2}docs\.missing-param-tag:\n {4}enabled: true\n {4}options:\n {6}everyCallable: false\n/);
+  assert.match(generatedConfig, /\n {2}docs\.missing-return-tag:\n {4}enabled: true\n {4}options:\n {6}everyCallable: false\n/);
 });
 
 // Guards the init contract: the generated allowlist must mirror the runtime defaults, so a fresh
@@ -285,7 +289,8 @@ function assertDefaultConfigIncludesEveryDescriptor(yaml: string): void {
 function assertDefaultConfigOptInStates(yaml: string): void {
   for (const descriptor of ruleDescriptors()) {
     const block = renderedRuleBlock(yaml, descriptor.ruleId);
-    assert.equal(renderedRuleField(block, "enabled"), "true", `enabled mismatch for ${descriptor.ruleId}`);
+    // A rule its descriptor turns off is seeded off, so a fresh init does not quietly turn it back on.
+    assert.equal(renderedRuleField(block, "enabled"), String(descriptor.isEnabledByDefault !== false), `enabled mismatch for ${descriptor.ruleId}`);
   }
 }
 
@@ -308,7 +313,7 @@ function assertLoadedConfigContainsEveryRule(ruleOverrides: Config["rules"]): vo
   for (const descriptor of ruleDescriptors()) {
     const ruleOverride = ruleOverrides.get(descriptor.ruleId);
     assert.notEqual(ruleOverride, undefined, `loadConfig dropped ${descriptor.ruleId}`);
-    assert.equal(ruleOverride?.enabled, true, `enabled state mismatch for ${descriptor.ruleId}`);
+    assert.equal(ruleOverride?.enabled, descriptor.isEnabledByDefault !== false, `enabled state mismatch for ${descriptor.ruleId}`);
   }
 }
 
@@ -329,25 +334,26 @@ function renderedRuleField(block: string, key: string): string | undefined {
   return match?.[1];
 }
 
-// Extracts `optionNumber(<varName>.config | config, "ruleId", "key", <number>)` defaults from
-// rule implementation sources. Mirrors the parsing approach used by rule-catalogue.test.ts.
-function parseOptionNumberDefaults(source: string): Map<string, Map<string, number>> {
-  const usages = new Map<string, Map<string, number>>();
-  for (const match of source.matchAll(/optionNumber\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)",\s*(-?\d+(?:\.\d+)?)\)/g)) {
+// Extracts `optionNumber` and `optionBoolean(<varName>.config | config, "ruleId", "key", <default>)` defaults
+// from rule implementation sources. Mirrors the parsing approach used by rule-catalogue.test.ts.
+function parseOptionDefaults(source: string): Map<string, Map<string, number | boolean>> {
+  const usages = new Map<string, Map<string, number | boolean>>();
+  for (const match of source.matchAll(/option(?:Number|Boolean)\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)",\s*(-?\d+(?:\.\d+)?|true|false)\)/g)) {
     const ruleId = match[1] ?? "";
     const key = match[2] ?? "";
-    const defaultValue = Number(match[3] ?? "0");
-    const ruleDefaults = usages.get(ruleId) ?? new Map<string, number>();
+    const rawDefault = match[3] ?? "0";
+    const defaultValue = rawDefault === "true" || rawDefault === "false" ? rawDefault === "true" : Number(rawDefault);
+    const ruleDefaults = usages.get(ruleId) ?? new Map<string, number | boolean>();
     ruleDefaults.set(key, defaultValue);
     usages.set(ruleId, ruleDefaults);
   }
   return sortNestedMap(usages);
 }
 
-// Converts the readonly hardcoded table into the same Map<ruleId, Map<key, number>> shape so the
+// Converts the readonly hardcoded table into the same Map<ruleId, Map<key, value>> shape so the
 // drift assertion compares like-for-like with deepEqual.
-function normalizeOptionDefaults(defaults: Readonly<Record<string, Readonly<Record<string, number>>>>): Map<string, Map<string, number>> {
-  const result = new Map<string, Map<string, number>>();
+function normalizeOptionDefaults(defaults: Readonly<Record<string, Readonly<Record<string, number | boolean>>>>): Map<string, Map<string, number | boolean>> {
+  const result = new Map<string, Map<string, number | boolean>>();
   for (const [ruleId, options] of Object.entries(defaults)) {
     result.set(ruleId, new Map(Object.entries(options)));
   }
@@ -355,10 +361,44 @@ function normalizeOptionDefaults(defaults: Readonly<Record<string, Readonly<Reco
 }
 
 // Deterministic key ordering so deepEqual does not fail on insertion-order differences.
-function sortNestedMap(input: Map<string, Map<string, number>>): Map<string, Map<string, number>> {
+function sortNestedMap(input: Map<string, Map<string, number | boolean>>): Map<string, Map<string, number | boolean>> {
   return new Map(
     [...input.entries()]
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([ruleId, options]) => [ruleId, new Map([...options.entries()].sort(([left], [right]) => left.localeCompare(right)))]),
   );
 }
+
+// Regression guard for the M02 surface: regeneration must never silently re-enable a sensitive
+// finding a reviewer accepted in writing. Losing the entry would also lose its rationale, which is
+// the one thing that made the suppression reviewable (FAMILY-CONTRACT.md, search:
+// `### 13a. Sensitive exclusions`). Creates a temporary project root, writes a config into it, runs
+// the real `init --force` binary against it, and removes the root afterwards.
+test("gruff-ts init --force preserves reviewed sensitive exclusions", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-init-preserve-exclusions-"));
+  try {
+    const configPath = join(projectRoot, DEFAULT_CONFIG_FILE_NAME);
+    writeFileSync(
+      configPath,
+      [
+        "schemaVersion: gruff-ts.config.v0.1",
+        "sensitiveExclusions:",
+        "  - rule: sensitive-data.aws-access-key",
+        "    path: src/fixtures/sample.ts",
+        "    reason: Synthetic key used by the loader fixture.",
+        "",
+      ].join("\n"),
+    );
+
+    const overwritten = execFileSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "init", "--force"], { cwd: projectRoot, encoding: "utf8" });
+    assert.match(overwritten, /^Overwrote /);
+
+    const newContent = readFileSync(configPath, "utf8");
+    assert.match(newContent, /^sensitiveExclusions:$/mu);
+    assert.match(newContent, /  - rule: "sensitive-data\.aws-access-key"/);
+    assert.match(newContent, /    path: "src\/fixtures\/sample\.ts"/);
+    assert.match(newContent, /    reason: "Synthetic key used by the loader fixture\."/);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});

@@ -1,7 +1,6 @@
 // Fixture data covers security rule-quality doctrine added by the M40/M42 scanner expansion.
 export const SECURITY_EXPANSION_RISKY_RULE_IDS = [
   "security.dynamic-regexp",
-  "security.github-actions-broad-permissions",
   "security.github-actions-pull-request-target",
   "security.github-actions-remote-shell",
   "security.github-actions-secrets-in-pr",
@@ -26,19 +25,6 @@ export const SECURITY_EXPANSION_RULE_QUALITY_DOCTRINE = [
     missingInvalidFixture: "external regular expression construction remains reported when safe literal patterns are nearby",
     falsePositiveEscapeHatch: "require an external-input token inside the same constructor call segment",
     fingerprintStability: "anchor to the constructor line and keep raw pattern text out of metadata",
-  },
-  {
-    ruleId: "security.github-actions-broad-permissions",
-    signalSource: "path-gated GitHub Actions workflow scan for permissions: write-all and selected write scopes",
-    expectedPillar: "security",
-    expectedSeverity: "warning",
-    expectedConfidence: "medium",
-    fixtureCategories: ["valid", "invalid", "noisy-valid", "missing-invalid"],
-    invalidFixture: "workflow permissions block granting write-all or repository write scopes",
-    noisyValidFixture: "read-only permissions, non-workflow YAML examples, and ordinary prose mentioning write access",
-    missingInvalidFixture: "broad workflow write permissions remain reported beside read-only workflow permissions",
-    falsePositiveEscapeHatch: "run only on .github/workflows YAML and require a permissions key or scoped write line",
-    fingerprintStability: "anchor to the permission line with the scope symbol",
   },
   {
     ruleId: "security.github-actions-pull-request-target",

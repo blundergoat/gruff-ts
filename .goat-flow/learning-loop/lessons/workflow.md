@@ -27,7 +27,7 @@ last_reviewed: 2026-08-12
 
 **M26 execution recurrence, 2026-08-09:** Strict validation was deferred until proof closeout and found legacy M25 still `in-progress` while M26 was in its testing gate. M26's implementation evidence remained green, but its lifecycle paused until the operator classified M25 as blocked and operator-owned.
 
-**Evidence:** `.agents/skills/goat-plan/SKILL.md` (search: `Always include outcome, Status, agent-time estimate`) requires the estimate on every milestone; `.agents/skills/goat-plan/references/milestone-examples.md` (search: `must exactly reproduce each category`) requires task, proof, mid-proof, and admin arithmetic to match the headline.
+**Evidence:** `.agents/skills/goat-plan/SKILL.md` (search: `Include outcome, Status, agent-time estimate`) requires the estimate on every milestone; `.agents/skills/goat-plan/references/milestone-examples.md` (search: `must reproduce product/proof/other categories and headline`) requires task, proof, mid-proof, and admin arithmetic to match the headline.
 
 **Prevention:** Before changing a milestone to `in-progress` or `testing-gate`, run strict validation and inspect every active-status error across the whole active plan, including legacy `Status:` fields. For plan writes, also use derived current-format estimates and honest Actual provenance; if legacy siblings keep the directory red, prove the named milestone has zero format errors and report the remaining scope.
 
