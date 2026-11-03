@@ -442,10 +442,12 @@ export function analyseSecurityFlow(file: SourceFile, source: string, findings: 
 
 /**
  * Walk one function or the module top level and record bounded local taint evidence.
- * Invariant: nested functions are pruned so captured variables never imply inter-procedural flow.
+ * Invariant: each scope starts with fresh taint maps and its walk skips nested functions, so nested-function sinks never see outer tainted locals.
  *
  * @param parsedSource - syntax tree that owns positions and text extraction
  * @param scopeOwner - top-level source file or function-like node to scan
+ * @param frameworkRedirectCallees - local names of framework redirect functions this file imports; an unshadowed call to one is a redirect sink
+ * @param fileReadCallees - imported file readers and the scopes shadowing each; an unshadowed read keeps a tainted filename out of content taint
  * @param file - discovered file used for stable finding locations
  * @param findings - accumulator that receives sink findings for this scope
  */
@@ -950,6 +952,7 @@ function isFunctionLike(node: TsNode): boolean {
  * @param sinkKind - sink category for machine-readable metadata
  * @param sourceKind - external input category for machine-readable metadata
  * @param flowDepth - bounded alias distance between source and sink
+ * @returns a medium-confidence security warning on the one-based sink line, with the rule's own message and remediation or generic cross-line text
  */
 function flowFinding(file: SourceFile, lineIndex: number, ruleId: string, sinkKind: string, sourceKind: string, flowDepth: number): Finding {
   const base = securityRuleDetails(ruleId);

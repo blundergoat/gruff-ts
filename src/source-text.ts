@@ -19,6 +19,7 @@ interface DiagnosticSourceFile {
  *
  * @param file - Source metadata used to skip non-script inputs and report paths.
  * @param source - Raw file text to parse for syntax diagnostics.
+ * @returns One summarized parse-error diagnostic when the script fails to parse; empty for non-script inputs and clean parses.
  */
 function parseDiagnostics(file: DiagnosticSourceFile, source: string): RunDiagnostic[] {
   return parseScript(file, source)?.diagnostics ?? [];

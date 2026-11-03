@@ -72,16 +72,16 @@ interface PreservedSensitiveExclusionEntry {
 const EMPTY_PRESERVED_CONFIG: PreservedInitConfig = { ignoredPaths: [], failOn: new Map(), sensitiveExclusions: [] };
 
 /**
- * Render the default .gruff-ts.yaml content from the rule descriptor registry. Output order is
- * schemaVersion → failOn → paths → allowlists → rules so the highest-impact CI behaviour
- * (gating threshold per command) sits near the top of the file. Sections are separated by blank
- * lines for readability.
+ * Render the default .gruff-ts.yaml content from the rule descriptor registry. Output order is schemaVersion → failOn → paths → allowlists →
+ * sensitiveExclusions → rules so the highest-impact CI behaviour (gating threshold per command) sits near the top of the file. Sections are separated
+ * by blank lines for readability.
  *
  * @param ignoredPaths Optional `paths.ignore` entries to inject verbatim (block-sequence form).
  *   The `gruff-ts init --force` flow forwards the existing file's entries so user-curated
  *   exclusions survive regeneration; an empty list emits `ignore: []` for fresh projects.
  * @param preservedFailOn Optional carry-over of the existing config's `failOn:` block.
- *   Empty Map falls back to canonical defaults (advisory / advisory / none).
+ *   A command missing from the map gets its default: advisory for analyse, none for summary and report.
+ * @param preservedSensitiveExclusions - existing reviewed suppressions, re-emitted below the guidance comments; an empty list emits only the comments
  * @returns A YAML document string terminated by a trailing newline.
  */
 function renderDefaultConfig(

@@ -158,7 +158,13 @@ function dropEmptiedParent(migrated: string[], lines: string[], index: number): 
   migrated.pop();
 }
 
-/** True when a line belongs to a block opened at the given indent, so blank lines inside one do not end it. */
+/**
+ * True when a line belongs to a block opened at the given indent, so blank lines inside one do not end it.
+ *
+ * @param line - the input line to test
+ * @param indent - leading-whitespace width of the block's header line
+ * @returns true when the line is non-blank and indented deeper than `indent`; a blank line returns false
+ */
 function isDeeperThan(line: string, indent: number): boolean {
   return line.trim().length > 0 && line.length - line.trimStart().length > indent;
 }

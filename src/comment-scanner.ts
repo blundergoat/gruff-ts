@@ -48,7 +48,15 @@ const COMMENT_SCAN_HANDLERS: CommentScanHandler[] = [
   scanRegexStartStep,
 ];
 
-/** Runs the first lexer step that can consume the current source character. */
+/**
+ * Runs the first lexer step that can consume the current source character.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the current character in `source`
+ * @param state - lexer state, updated by whichever step runs; an unconsumed non-whitespace character becomes `previousCode`
+ * @param records - comment records found so far; the comment step appends to it
+ * @returns index of the last consumed character, after which `commentRecords` resumes; `index` when no step consumed the character
+ */
 function advanceCommentRecordScan(source: string, index: number, state: CommentScanState, records: CommentRecord[]): number {
   for (const handler of COMMENT_SCAN_HANDLERS) {
     const nextIndex = handler(source, index, state, records);
@@ -60,7 +68,11 @@ function advanceCommentRecordScan(source: string, index: number, state: CommentS
   return index;
 }
 
-/** Creates a fresh comment lexer state for a single source file scan. */
+/**
+ * Creates a fresh comment lexer state for a single source file scan.
+ *
+ * @returns state at line 1 with no open string, template or regex and no previous code character
+ */
 function initialCommentScanState(): CommentScanState {
   return {
     quote: undefined,
@@ -73,7 +85,14 @@ function initialCommentScanState(): CommentScanState {
   };
 }
 
-/** Consumes newlines and resets quote/regex state that cannot cross lines. */
+/**
+ * Consumes newlines and resets quote/regex state that cannot cross lines.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the current character
+ * @param state - lexer state; on a newline its line count advances, a non-template quote closes and regex state clears
+ * @returns `index` when the character is a newline, or undefined to pass it to the next step
+ */
 function scanCommentLineBreak(source: string, index: number, state: CommentScanState): number | undefined {
   if ((source[index] ?? "") !== "\n") {
     return undefined;
@@ -82,7 +101,11 @@ function scanCommentLineBreak(source: string, index: number, state: CommentScanS
   return index;
 }
 
-/** Advances the lexer after a newline has been consumed. */
+/**
+ * Advances the lexer after a newline has been consumed.
+ *
+ * @param state - lexer state to update: the line count goes up by one, any quote except a template backtick closes, and the regex flags clear
+ */
 function advanceCommentScanLine(state: CommentScanState): void {
   state.line += 1;
   if (state.quote !== "`") {
@@ -93,12 +116,25 @@ function advanceCommentScanLine(state: CommentScanState): void {
   state.isRegexCharClass = false;
 }
 
-/** Keeps quoted text from being reported as a real source comment. */
+/**
+ * Keeps quoted text from being reported as a real source comment.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the current character
+ * @param state - lexer state; inside a string or template, the character updates its quote and escape flags
+ * @returns `index` when the lexer is inside a string or template, so the character is neither code nor a comment; otherwise undefined
+ */
 function scanQuotedCommentStep(source: string, index: number, state: CommentScanState): number | undefined {
   return scanActiveQuotedCommentState(state, source[index] ?? "") ? index : undefined;
 }
 
-/** Updates quote escape/close state when the lexer is inside a string. */
+/**
+ * Updates quote escape/close state when the lexer is inside a string.
+ *
+ * @param state - lexer state whose quote and escape flags change: a backslash escapes the next character, an unescaped closing quote ends the string
+ * @param character - the current source character
+ * @returns true when a quote was open, so the character belongs to the string; false when none was open
+ */
 function scanActiveQuotedCommentState(state: CommentScanState, character: string): boolean {
   if (!state.quote) {
     return false;
@@ -109,12 +145,25 @@ function scanActiveQuotedCommentState(state: CommentScanState, character: string
   return true;
 }
 
-/** Keeps regex literal bodies from being reported as real source comments. */
+/**
+ * Keeps regex literal bodies from being reported as real source comments.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the current character
+ * @param state - lexer state; inside a regex literal, the character updates its escape, character-class and close flags
+ * @returns `index` when the lexer is inside a regex literal, otherwise undefined
+ */
 function scanRegexCommentStep(source: string, index: number, state: CommentScanState): number | undefined {
   return scanActiveRegexCommentState(state, source[index] ?? "") ? index : undefined;
 }
 
-/** Updates regex escape, character-class, and close state. */
+/**
+ * Updates regex escape, character-class, and close state.
+ *
+ * @param state - lexer state whose regex flags change: an unescaped `/` outside a character class ends the literal
+ * @param character - the current source character
+ * @returns true when a regex literal was open, so the character belongs to it; false when none was open
+ */
 function scanActiveRegexCommentState(state: CommentScanState, character: string): boolean {
   if (!state.isRegex) {
     return false;
@@ -126,7 +175,15 @@ function scanActiveRegexCommentState(state: CommentScanState, character: string)
   return true;
 }
 
-/** Records a line or block comment and returns the consumed source index. */
+/**
+ * Records a line or block comment and returns the consumed source index.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the current character, a possible `//` or `/*` start
+ * @param state - lexer state; its line moves to the comment's last line
+ * @param records - comment records found so far; a comment starting here is appended
+ * @returns index of the comment's last character, or undefined when none starts here; a line comment stops before its newline for the line count
+ */
 function scanCommentRecordStep(source: string, index: number, state: CommentScanState, records: CommentRecord[]): number | undefined {
   const record = commentRecordAt(source, index, state.line);
   if (!record) {
@@ -137,7 +194,14 @@ function scanCommentRecordStep(source: string, index: number, state: CommentScan
   return record.kind === "line" ? record.endIndex - 1 : record.endIndex;
 }
 
-/** Detects whether the current slash pair begins a source comment. */
+/**
+ * Detects whether the current slash pair begins a source comment.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the possible `//` or `/*` start
+ * @param line - one-based line number of `index`, stored as the record's first line
+ * @returns a line or block comment record starting at `index`, or undefined when the two characters there are neither `//` nor `/*`
+ */
 function commentRecordAt(source: string, index: number, line: number): CommentRecord | undefined {
   const character = source[index] ?? "";
   const next = source[index + 1] ?? "";
@@ -150,12 +214,25 @@ function commentRecordAt(source: string, index: number, line: number): CommentRe
   return undefined;
 }
 
-/** Opens string/template quote state when the current character starts a literal. */
+/**
+ * Opens string/template quote state when the current character starts a literal.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the current character
+ * @param state - lexer state; a quote character opens a string or template in it
+ * @returns `index` when the character is a double quote, single quote or backtick, otherwise undefined
+ */
 function scanQuoteStartStep(source: string, index: number, state: CommentScanState): number | undefined {
   return openCommentScanQuote(state, source[index] ?? "") ? index : undefined;
 }
 
-/** Mutates quote state after a quote-start character is found. */
+/**
+ * Mutates quote state after a quote-start character is found.
+ *
+ * @param state - lexer state; a quote character becomes its open quote and `previousCode`, with the escape flag cleared
+ * @param character - the current source character
+ * @returns true when the character opened a string or template; false for any other character, leaving the state unchanged
+ */
 function openCommentScanQuote(state: CommentScanState, character: string): boolean {
   if (character !== "\"" && character !== "'" && character !== "`") {
     return false;
@@ -166,12 +243,27 @@ function openCommentScanQuote(state: CommentScanState, character: string): boole
   return true;
 }
 
-/** Opens regex state for slash tokens that follow expression-start syntax. */
+/**
+ * Opens regex state for slash tokens that follow expression-start syntax.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the current character
+ * @param state - lexer state; a slash that `openCommentScanRegex` accepts opens a regex literal in it
+ * @returns `index` when `openCommentScanRegex` accepts the character as a regex start, otherwise undefined
+ */
 function scanRegexStartStep(source: string, index: number, state: CommentScanState): number | undefined {
   return openCommentScanRegex(state, source, index, source[index] ?? "") ? index : undefined;
 }
 
-/** Mutates regex state after a regex literal start is found. */
+/**
+ * Mutates regex state after a regex literal start is found.
+ *
+ * @param state - lexer state; a regex start sets the regex flag, clears its escape and character-class flags and makes `/` the previous code
+ * @param source - the whole file text; up to 40 characters before `index` are checked for a preceding `return`
+ * @param index - position of the current character
+ * @param character - the current source character
+ * @returns true when the character is a `/` that `isCommentRegexStart` accepts as a regex start; false otherwise, leaving the state unchanged
+ */
 function openCommentScanRegex(state: CommentScanState, source: string, index: number, character: string): boolean {
   if (character !== "/" || !isCommentRegexStart(state.previousCode, source.slice(Math.max(0, index - 40), index))) {
     return false;
@@ -183,7 +275,12 @@ function openCommentScanRegex(state: CommentScanState, source: string, index: nu
   return true;
 }
 
-/** Remembers the last non-whitespace code token for regex/comment disambiguation. */
+/**
+ * Remembers the last non-whitespace code character for regex/comment disambiguation.
+ *
+ * @param state - lexer state whose `previousCode` becomes `character` unless it is whitespace
+ * @param character - the source character no other lexer step consumed
+ */
 function updateCommentScanPreviousCode(state: CommentScanState, character: string): void {
   if (/\S/.test(character)) {
     state.previousCode = character;
