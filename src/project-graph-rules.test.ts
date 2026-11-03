@@ -266,7 +266,12 @@ export interface B {
   assert.equal(report.findings.some((finding) => finding.ruleId === "design.circular-import"), false);
 });
 
-/** Contract helper that returns only circular-import findings from the supplied report. */
+/**
+ * Contract helper that returns only circular-import findings from the supplied report.
+ *
+ * @param report - analysis of a project fixture
+ * @returns the report's `design.circular-import` findings in report order; empty when none fired
+ */
 function circularImportFindings(report: AnalysisReport): AnalysisReport["findings"] {
   return report.findings.filter((finding) => finding.ruleId === "design.circular-import");
 }

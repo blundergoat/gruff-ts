@@ -22,6 +22,8 @@ const FILTERED_HISTORY_CASES = [
 /**
  * Gives one test a committed temporary project matching a user's normal CLI working directory.
  * Stable contract: filesystem writes and git subprocesses stay inside the root removed afterward.
+ *
+ * @param run - test body, given the root of a temporary git repository whose one commit holds `clean.ts`; the root is removed afterwards
  */
 function withHistoryProject(run: (projectRoot: string) => void): void {
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-history-scope-"));

@@ -156,7 +156,11 @@ test("list-rules (no argument) output is byte-identical across runs", () => {
   assert.equal(firstRun, secondRun);
 });
 
-/** Spawns the rule catalogue command and verifies representative metadata. */
+/**
+ * Spawns the rule catalogue command and verifies representative metadata.
+ *
+ * @returns true once every check passes; a failed check throws instead of returning false
+ */
 function assertRuleListTextOutput(): boolean {
   const text = execFileSync("./bin/gruff-ts", ["list-rules"], { encoding: "utf8" });
   assert.match(text, new RegExp(`gruff-ts ${VERSION_PATTERN} rules \\(\\d+\\)`));
@@ -165,7 +169,11 @@ function assertRuleListTextOutput(): boolean {
   return true;
 }
 
-/** Verifies the JSON rule catalogue stays deterministic and complete enough for consumers. */
+/**
+ * Verifies the JSON rule catalogue stays deterministic and complete enough for consumers.
+ *
+ * @returns true once every check passes; a failed check throws instead of returning false
+ */
 function assertRuleListJsonOutput(): boolean {
   const parsed = readDeterministicRuleListJson();
   assert.equal(parsed.schemaVersion, undefined);
@@ -198,7 +206,11 @@ type RuleListJsonPayload = {
   rules?: RuleListJsonRule[];
 };
 
-/** Reads two JSON catalogue renders and proves the bytes are stable. */
+/**
+ * Reads two JSON catalogue renders and proves the bytes are stable.
+ *
+ * @returns the first render parsed and cast to the listing shape without validation
+ */
 function readDeterministicRuleListJson(): RuleListJsonPayload {
   const firstJsonText = execFileSync("./bin/gruff-ts", ["list-rules", "--format=json"], { encoding: "utf8" });
   const secondJsonText = execFileSync("./bin/gruff-ts", ["list-rules", "--format=json"], { encoding: "utf8" });
@@ -206,12 +218,26 @@ function readDeterministicRuleListJson(): RuleListJsonPayload {
   return JSON.parse(firstJsonText) as RuleListJsonPayload;
 }
 
-/** Checks one rule's threshold map without making the catalogue test branch-heavy. */
+/**
+ * Checks one rule's threshold map without making the catalogue test branch-heavy.
+ *
+ * @param payload - catalogue whose rules are searched for the id and threshold map
+ * @param ruleId - id of the rule to find
+ * @param thresholds - expected threshold map, compared as JSON text, so its key order must match too
+ * @returns true when a rule with that id has exactly this threshold map; false when none does or the catalogue has no rules
+ */
 function ruleListJsonHasThreshold(payload: RuleListJsonPayload, ruleId: string, thresholds: Record<string, number>): boolean {
   return payload.rules?.some((rule) => rule.id === ruleId && JSON.stringify(rule.thresholds) === JSON.stringify(thresholds)) ?? false;
 }
 
-/** Checks one rule option key without making the catalogue test branch-heavy. */
+/**
+ * Checks one rule option key without making the catalogue test branch-heavy.
+ *
+ * @param payload - catalogue whose rules are searched for the id and option key
+ * @param ruleId - id of the rule to find
+ * @param optionKey - option name that rule must list in `optionKeys`
+ * @returns true when a rule with that id lists the option; false when none does or the catalogue has no rules
+ */
 function ruleListJsonHasOptionKey(payload: RuleListJsonPayload, ruleId: string, optionKey: string): boolean {
   return payload.rules?.some((rule) => rule.id === ruleId && rule.optionKeys?.includes(optionKey)) ?? false;
 }
@@ -306,10 +332,14 @@ test("summary JSON is the exact v3 analysis projection", () => {
   pillars.forEach(assertPillarRowShape);
 });
 
-/** Validates one pillar row from the `gruff.summary.v3` JSON output. Accepts the raw parsed
+/**
+ * Validates one pillar row from the `gruff.summary.v3` JSON output. Accepts the raw parsed
  * value so the test does not need a typed interface mirroring the wire schema - the schema
  * contract lives in `renderSummaryJson`, this helper just confirms the row carries the
- * documented keys with the documented value types. */
+ * documented keys with the documented value types.
+ *
+ * @param rawRow - one `score.pillars` element; the test fails unless it is an object with string `pillar` and numeric `score`, `penalty`, `findings`
+ */
 function assertPillarRowShape(rawRow: unknown): void {
   assert.ok(rawRow && typeof rawRow === "object");
   const row = rawRow as Record<string, unknown>;
@@ -844,8 +874,12 @@ interface ParsedHtmlPillarRow {
 
 const pillarHeaderColumns = ["pillar", "grade", "score", "findings", "advisory", "warning", "error"] as const;
 
-/** Confirms every required column header is present with the expected `class="num"` decoration
- * and that headers appear in the canonical cross-port order. */
+/**
+ * Confirms every required column header is present with the expected `class="num"` decoration
+ * and that headers appear in the canonical cross-port order.
+ *
+ * @param section - HTML of the pillars section; the test fails unless every column header is present and its plain-text headers read in order
+ */
 function assertHtmlPillarHeaders(section: string): void {
   pillarHeaderColumns.forEach((header, index) => {
     const numericColumnAttribute = index === 0 ? "" : ' class="num"';
@@ -855,8 +889,13 @@ function assertHtmlPillarHeaders(section: string): void {
   assert.deepEqual(headerOrder, [...pillarHeaderColumns]);
 }
 
-/** Extracts the body rows from the HTML pillar section into a typed shape so individual
- * assertions only reference field names, never regex group indices. */
+/**
+ * Extracts the body rows from the HTML pillar section into a typed shape so individual
+ * assertions only reference field names, never regex group indices.
+ *
+ * @param section - HTML of the report's pillars section, whose first table row is the header
+ * @returns a row per matched table row after the first, from its cells in order; a skipped cell shifts values left, missing ones are undefined or NaN
+ */
 function parseHtmlPillarRows(section: string): ParsedHtmlPillarRow[] {
   const rowMatches = [...section.matchAll(/<tr>(?:(?!<\/?thead).)*?<\/tr>/g)].slice(1);
   return rowMatches.map((entry) => {
@@ -873,8 +912,12 @@ function parseHtmlPillarRows(section: string): ParsedHtmlPillarRow[] {
   });
 }
 
-/** Verifies the cross-port sort contract: findings DESC, then pillar ASC. Helper exists so the
- * test body reads as a list of high-level assertions without inline loops. */
+/**
+ * Verifies the cross-port sort contract: findings DESC, then pillar ASC. Helper exists so the
+ * test body reads as a list of high-level assertions without inline loops.
+ *
+ * @param rows - parsed HTML pillar rows in rendered order; the test fails at the first neighbouring pair out of order
+ */
 function assertHtmlPillarRowsSorted(rows: ParsedHtmlPillarRow[]): void {
   for (let i = 1; i < rows.length; i += 1) {
     const previous = rows[i - 1];
@@ -888,7 +931,11 @@ function assertHtmlPillarRowsSorted(rows: ParsedHtmlPillarRow[]): void {
   }
 }
 
-/** Score column is rendered with two decimal places everywhere. */
+/**
+ * Score column is rendered with two decimal places everywhere.
+ *
+ * @param rows - parsed HTML pillar rows; the test fails unless every score is digits, a point and exactly two digits
+ */
 function assertHtmlPillarScoresWellFormed(rows: ParsedHtmlPillarRow[]): void {
   rows.forEach((row) => {
     assert.match(row.score ?? "", /^\d+\.\d{2}$/);
@@ -966,8 +1013,12 @@ function parseMarkdownPillarRow(line: string): ParsedMarkdownPillarRow {
   };
 }
 
-/** Validates the cross-port sort contract: findings DESC, then pillar ASC. Lifted out so the body
- * of the markdown test reads as a list of high-level assertions. */
+/**
+ * Validates the cross-port sort contract: findings DESC, then pillar ASC. Lifted out so the body
+ * of the markdown test reads as a list of high-level assertions.
+ *
+ * @param rows - parsed markdown pillar rows in rendered order; the test fails at the first neighbouring pair out of order
+ */
 function assertPillarSortOrder(rows: ParsedMarkdownPillarRow[]): void {
   for (let i = 1; i < rows.length; i += 1) {
     const previous = rows[i - 1];

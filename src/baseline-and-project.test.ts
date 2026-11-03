@@ -329,7 +329,11 @@ function withCommittedGitFixture(prefix: string, files: Record<string, string>, 
   }
 }
 
-/** Writes a temporary project that exercises baseline identity across current rule families. */
+/**
+ * Writes a temporary project that exercises baseline identity across current rule families.
+ *
+ * @param projectDir - empty temporary directory that receives the fixture project, whose config turns on the default-off rules it needs
+ */
 function writeBaselineRoundTripFixture(projectDir: string): void {
   // aws-access-key ships off by default since precision-floor M02; the config switches it on so a secret is in the scan.
   writeFileSync(join(projectDir, ".gruff-ts.yaml"), M02_DEFAULT_OFF_RULES_ON_YAML);
@@ -400,6 +404,9 @@ export function fromB(): string {
 /**
  * Verifies generated, suppressed, and mismatched baselines as a CLI user would encounter them.
  * Stable contract: writes stay inside caller-owned fixture directories that the test removes.
+ *
+ * @param baselineDir - temporary directory for the generated baseline and two mutated copies; the current directory must be the fixture project
+ * @returns the number of findings in the scan without a baseline, which the caller requires to be above zero
  */
 function assertBaselineRoundTrip(baselineDir: string): number {
   const baseOptions = { ...baselineRoundTripOptions(), shouldSkipConfig: false };
@@ -424,7 +431,11 @@ function assertBaselineRoundTrip(baselineDir: string): number {
   return report.findings.length;
 }
 
-/** Returns stable analysis options for baseline identity assertions. */
+/**
+ * Returns stable analysis options for baseline identity assertions.
+ *
+ * @returns JSON scan options for the current directory with config and baseline skipped, ignored paths excluded and fail threshold `none`
+ */
 function baselineRoundTripOptions() {
   return {
     paths: ["."],
@@ -437,7 +448,11 @@ function baselineRoundTripOptions() {
   };
 }
 
-/** Proves the baseline fixture still covers each representative rule family in the stable contract. */
+/**
+ * Proves the baseline fixture still covers each representative rule family in the stable contract.
+ *
+ * @param report - analysis of the round-trip fixture; the test fails unless its findings include all eight listed rule ids
+ */
 function assertBaselineRoundTripRuleIds(report: AnalysisReport): void {
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   for (const ruleId of [
@@ -468,12 +483,23 @@ type BaselineRoundTripFile = {
   occurrences?: BaselineRoundTripEntry[];
 };
 
-/** Reads baseline JSON through the fixture-specific shape used by these assertions. */
+/**
+ * Reads baseline JSON through the fixture-specific shape used by these assertions.
+ *
+ * @param path - baseline file written by a `generateBaseline` scan
+ * @returns the parsed JSON cast to the fixture's baseline shape without validation; malformed JSON throws from `JSON.parse`
+ */
 function readBaselineRoundTripFile(path: string): BaselineRoundTripFile {
   return JSON.parse(readFileSync(path, "utf8")) as BaselineRoundTripFile;
 }
 
-/** Narrows the first reviewed row, whose stable contract is an identity and a count and nothing positional. */
+/**
+ * Narrows the first reviewed row, whose stable contract is an identity and a count and nothing positional.
+ *
+ * @param baseline - parsed baseline file, which must name schema `gruff.baseline.v3` and tool language `ts`
+ * @param target - first occurrence row, which must exist with a 16-hex-digit identity, a numeric count and a string subject
+ * @returns nothing; once the checks pass, TypeScript treats `target` as a defined row for the caller
+ */
 function assertBaselineEntryMetadata(baseline: BaselineRoundTripFile, target: BaselineRoundTripEntry | undefined): asserts target is BaselineRoundTripEntry {
   assert.equal(baseline.schemaVersion, "gruff.baseline.v3");
   assert.equal(baseline.toolLanguage, "ts");
@@ -484,11 +510,17 @@ function assertBaselineEntryMetadata(baseline: BaselineRoundTripFile, target: Ba
 }
 
 /**
- * Confirms a changed reviewed row no longer covers the original finding, which is the stable contract a
- * line-free identity rests on.
+ * Exercises the line-free identity contract: rescans with a baseline whose first row is changed and asserts the report
+ * still shows visible findings or, when `expectedResolved` is above zero, resolved baseline debt.
  *
  * Writes the mutated baseline to disk first: a different identity covers nothing, and a count the run cannot
  * fill leaves the row partly resolved, which is how a user sees debt they have since fixed.
+ *
+ * @param baselineDir - temporary directory that receives the mutated baseline file
+ * @param fileName - name of the mutated baseline file inside `baselineDir`
+ * @param baseline - the generated baseline; the written copy changes only its first occurrence row
+ * @param mutateFirstRow - returns the replacement for the first occurrence row
+ * @param expectedResolved - above zero: require some `resolvedFindings` instead of visible findings; its value is never compared
  */
 function assertMutatedBaselineReportsFinding(
   baselineDir: string,

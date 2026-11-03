@@ -30,6 +30,12 @@ const HALF_WAY_SCORE = 75;
  * Invariant: the returned finding always carries the severity and confidence the caller asked for,
  * and omits `symbol` entirely rather than setting it undefined, which `exactOptionalPropertyTypes`
  * rejects.
+ *
+ * @param ruleId - rule id the finding carries; its message reads "<ruleId> fired."
+ * @param pillar - pillar whose score the finding counts against
+ * @param severity - severity that sets the finding's weight
+ * @param options - optional confidence (default `high`), file path (default `src/a.ts`), line (default 1) and symbol
+ * @returns the finding `makeFinding` builds from these values
  */
 function contractFinding(
   ruleId: string,
