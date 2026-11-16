@@ -210,7 +210,7 @@ test("changed-region symbol scope includes export default class bodies", () => {
     { paths: ["src/service.ts"], changedRanges: "3-3" },
   );
 
-  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-internal-function-doc" && finding.symbol === "run"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-exported-function-doc" && finding.symbol === "run"), true);
 });
 
 test("working-tree diff treats untracked files as whole-file changed", () => {

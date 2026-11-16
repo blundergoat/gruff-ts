@@ -17,8 +17,8 @@ const DEFAULT_CONFIG_FILE_NAME = ".gruff-ts.yaml";
 // here match the implementation defaults so drift fails the test suite, not user projects.
 const RULE_OPTION_DEFAULTS: Readonly<Record<string, Readonly<Record<string, number | boolean>>>> = {
   "design.large-module-concentration": { minFiles: 4, minLines: 80 },
-  "docs.missing-param-tag": { everyCallable: false },
-  "docs.missing-return-tag": { everyCallable: false },
+  "docs.missing-param-tag": { everyCallable: true },
+  "docs.missing-return-tag": { everyCallable: true },
 };
 
 // Default starter list copied from `defaultConfig()` in config.ts. Generated separately because

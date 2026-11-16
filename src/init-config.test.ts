@@ -73,10 +73,10 @@ test("RULE_OPTION_DEFAULTS mirrors live optionNumber and optionBoolean call-site
   assert.deepEqual(normalizeOptionDefaults(RULE_OPTION_DEFAULTS), implementationDefaults);
 });
 
-test("renderDefaultConfig seeds the tag rules' everyCallable switch off", () => {
+test("renderDefaultConfig seeds the tag rules' everyCallable switch on", () => {
   const generatedConfig = renderDefaultConfig();
-  assert.match(generatedConfig, /\n {2}docs\.missing-param-tag:\n {4}enabled: true\n {4}options:\n {6}everyCallable: false\n/);
-  assert.match(generatedConfig, /\n {2}docs\.missing-return-tag:\n {4}enabled: true\n {4}options:\n {6}everyCallable: false\n/);
+  assert.match(generatedConfig, /\n {2}docs\.missing-param-tag:\n {4}enabled: true\n {4}options:\n {6}everyCallable: true\n/);
+  assert.match(generatedConfig, /\n {2}docs\.missing-return-tag:\n {4}enabled: true\n {4}options:\n {6}everyCallable: true\n/);
 });
 
 // Guards the init contract: the generated allowlist must mirror the runtime defaults, so a fresh

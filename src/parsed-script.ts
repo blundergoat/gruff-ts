@@ -557,8 +557,8 @@ function collectDocumented(parsed: ParsedScript, project: (sourceFile: TsSourceF
 
 // Projects one function declaration into the documented-export shape, or undefined when it is not
 // an exported named function with a JSDoc block. `export default function` never matched the
-// legacy pattern, so the default pass still excludes it; the tag rules' `everyCallable` switches
-// cover it through `documentedDefaultAndLaterExports`.
+// legacy pattern, so the pass with both tag switches off still excludes it; the tag rules' `everyCallable`
+// switches, on by default, cover it through `documentedDefaultAndLaterExports`.
 function documentedExportFunction(sourceFile: TsSourceFile, node: TsNode): DocumentedExportFunction | undefined {
   if (!typescriptSyntax.isFunctionDeclaration(node) || !node.name) {
     return undefined;

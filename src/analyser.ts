@@ -881,8 +881,8 @@ function analyseTypeScriptRules(file: SourceFile, source: string, comments: Comm
   runRuleGroupPass(config, DOCBLOCK_RULE_IDS, () => {
     if (parsed) {
       analyseDocRules(file, findings, parsed, {
-        isParamTagEveryCallable: optionBoolean(config, "docs.missing-param-tag", "everyCallable", false),
-        isReturnTagEveryCallable: optionBoolean(config, "docs.missing-return-tag", "everyCallable", false),
+        isParamTagEveryCallable: optionBoolean(config, "docs.missing-param-tag", "everyCallable", true),
+        isReturnTagEveryCallable: optionBoolean(config, "docs.missing-return-tag", "everyCallable", true),
       });
     }
   });

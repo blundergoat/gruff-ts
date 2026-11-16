@@ -147,7 +147,7 @@ export function interfaceDeclarations(source: string, codeSource: string): Expor
 
 /**
  * The tag rules' `rules.<id>.options.everyCallable` switches, read once per file from the user's config.
- * Both default to false, which keeps the pack on documented exported function declarations.
+ * Both default to true; setting both false keeps the pack on documented exported function declarations.
  */
 export interface DocTagRuleSwitches {
   /** `docs.missing-param-tag`'s `everyCallable` option. */

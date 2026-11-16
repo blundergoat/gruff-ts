@@ -231,8 +231,7 @@ function pushCyclomaticFinding(context: BlockRuleContext): void {
   }
 }
 
-// Reports warnings for missing public descriptions and advice for missing internal descriptions; under either
-// tag rule's `everyCallable` switch, internal descriptions report warnings too.
+// Reports warnings for missing public descriptions and advice for missing internal descriptions.
 // Test titles and existing leading comments already explain the callable.
 function pushMissingFunctionDocFinding(context: BlockRuleContext): void {
   // A test title or an existing leading description already explains this callable, so no missing-doc warning is needed.
@@ -241,9 +240,7 @@ function pushMissingFunctionDocFinding(context: BlockRuleContext): void {
   }
   const isExportedApi = context.block.isExported || isEveryCallablePublicMethod(context);
   const ruleId = isExportedApi ? "docs.missing-exported-function-doc" : "docs.missing-internal-function-doc";
-  // Under either tag rule's `everyCallable` switch an internal callable keeps its rule and wording
-  // but reports at the exported severity (operator decision D8).
-  const severity = isExportedApi || isTagRuleEveryCallable(context.config) ? "warning" : "advisory";
+  const severity = isExportedApi ? "warning" : "advisory";
   context.findings.push(blockFinding({ ruleId, message: missingFunctionDocMessage(context.block, isExportedApi ? "Exported" : "Internal"), file: context.file, block: context.block, severity, pillar: "documentation" }));
 }
 
@@ -274,11 +271,11 @@ function isEveryCallablePublicMethod(context: BlockRuleContext): boolean {
   return isTagRuleEveryCallable(context.config) && context.block.callableNode !== undefined && isPublicExportedClassMethod(context.block.callableNode);
 }
 
-// Whether either tag rule's `everyCallable` switch is on. Both are off by default, so the default
-// missing-doc rules and tiers stay unchanged.
+// Whether either tag rule's `everyCallable` switch is on. Both are on by default; setting both false
+// keeps a public method of an exported class in the internal tier.
 function isTagRuleEveryCallable(config: Config): boolean {
-  return optionBoolean(config, "docs.missing-param-tag", "everyCallable", false)
-    || optionBoolean(config, "docs.missing-return-tag", "everyCallable", false);
+  return optionBoolean(config, "docs.missing-param-tag", "everyCallable", true)
+    || optionBoolean(config, "docs.missing-return-tag", "everyCallable", true);
 }
 
 // Caller adds the block's start line to the relative offset so the finding anchors at the actual trailing statement.

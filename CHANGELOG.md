@@ -25,12 +25,15 @@
 - **Missing-doc messages say what the comment should cover** - `docs.missing-exported-function-doc` and
   `docs.missing-internal-function-doc` add "describe parameter `a`", "describe the return value" and "say when it throws", each
   only when the signature or body calls for it.
-- **`everyCallable` widens the JSDoc tag rules, off by default** - With `rules.docs.missing-param-tag.options.everyCallable: true`
-  or the same option on `docs.missing-return-tag`, the rule also checks arrow and function-expression constants, class and
-  object-literal methods, default exports and functions exported later, and private and nested functions, and it reports a tag
-  with no description. The return rule then reads an unannotated body for a returned value, `docs.stale-param-tag` names every
-  stale parameter in one finding, and an undocumented private function or public method of an exported class reports at the
-  exported severity, warning. Nothing changes until a configuration turns it on.
+- **BREAKING: the JSDoc tag rules check every documented callable by default** - `docs.missing-param-tag` and
+  `docs.missing-return-tag` turn `everyCallable` on by default, so they also check arrow and function-expression constants, class
+  and object-literal methods, default exports and functions exported later, and private and nested functions, and they report a tag
+  with no description. The return rule also reads an unannotated body for a returned value, `docs.stale-param-tag` names every
+  stale parameter in one finding, and an undocumented public method of an exported class reports as
+  `docs.missing-exported-function-doc` at warning; an undocumented private function stays `docs.missing-internal-function-doc` at
+  advisory. A configuration that omits the option takes the new default, and `init` writes it as true. Set
+  `rules.docs.missing-param-tag.options.everyCallable: false` and the same option on `docs.missing-return-tag` to keep the earlier
+  scope.
 - **File overviews and dividers no longer count as a function's docblock** - A function whose only comment above it is the file's opening
   comment (followed by a blank line, or tagged `@file`, `@fileoverview`, `@overview`, `@packageDocumentation`, `@module` or `@license`)
   or a one-line divider such as `// ---- helpers` or `/* ==== */` now gets `docs.missing-exported-function-doc` or

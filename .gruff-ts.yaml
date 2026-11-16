@@ -126,12 +126,16 @@ rules:
   # documentation/advisory: Flags documented exports with parameters missing @param tags; with `everyCallable`, also JSDoc-documented private and nested functions, class and object methods, default exports and single `const` function values, and a @param tag with no description.
   docs.missing-param-tag:
     enabled: true
+    options:
+      everyCallable: true
   # documentation/advisory: Flags exported class, type, and enum APIs without a nearby doc comment.
   docs.missing-public-doc:
     enabled: true
   # documentation/advisory: Flags documented non-void exports without @returns; with `everyCallable`, also JSDoc-documented private and nested functions, class and object methods, default exports and single `const` function values, an unannotated body that returns a value, and a @returns tag with no description.
   docs.missing-return-tag:
     enabled: true
+    options:
+      everyCallable: true
   # documentation/advisory: Flags commented functions that perform observable side effects without naming them.
   docs.missing-side-effect-doc:
     enabled: true
