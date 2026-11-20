@@ -26,23 +26,26 @@ export interface DisplaySelectors {
   hidePillars: string[];
 }
 
-// True when the user actually asked to narrow what runs; an untouched run keeps the whole catalogue.
+// Returns whether selectors contains rule or pillar include/exclude entries; false preserves the configured rule enablement.
 export function isExecutionRequested(selectors: ExecutionSelectors): boolean {
   return selectors.includeRules.length > 0 || selectors.excludeRules.length > 0
     || selectors.includePillars.length > 0 || selectors.excludePillars.length > 0;
 }
 
-// True when the user actually asked to narrow the report; an untouched run shows everything it found.
+// Returns true when the effective selectors specify a severity floor or a rule or pillar filter.
+// With every selector unset or empty, the display keeps all findings it receives.
 export function isDisplayRequested(selectors: DisplaySelectors): boolean {
   return selectors.minSeverity !== undefined || selectors.showRules.length > 0 || selectors.hideRules.length > 0
     || selectors.showPillars.length > 0 || selectors.hidePillars.length > 0;
 }
 
-/*
- * Turns off every rule the execution selectors exclude, before anything is scanned.
+/**
+ * Turns off rules excluded by execution selectors before scanning because a rule that never runs cannot lower the score.
+ * Display filters only change which findings are shown.
  *
- * Disabling in the config rather than filtering afterwards is what makes the score honest: a rule that never ran
- * cannot penalise the project, which is the whole difference between `--include-rule` and `--show-rule`.
+ * @param config - analysis settings whose rule map is updated in place
+ * @param selectors - execution filters for rules and pillars. Missing or inactive selectors leave the config unchanged.
+ * @returns - Nothing. Disables excluded rules in the config while preserving their other settings.
  */
 export function applyExecutionSelectors(config: Config, selectors: ExecutionSelectors | undefined): void {
   // A run that named no selector keeps the catalogue the user's config already chose.
@@ -58,7 +61,7 @@ export function applyExecutionSelectors(config: Config, selectors: ExecutionSele
   }
 }
 
-// Decides whether one catalogue rule survives the execution selectors: an include list narrows, an exclude list cuts.
+// Returns whether ruleId and its pillar pass selectors: every nonempty include list must match, and either exclude list vetoes.
 function executionAllows(selectors: ExecutionSelectors, ruleId: string, pillar: Pillar): boolean {
   if (selectors.includeRules.length > 0 && !selectors.includeRules.includes(ruleId)) {
     return false;
@@ -69,13 +72,13 @@ function executionAllows(selectors: ExecutionSelectors, ruleId: string, pillar: 
   return !selectors.excludeRules.includes(ruleId) && !selectors.excludePillars.includes(pillar);
 }
 
-/*
- * Hides from the report every finding the presentation selectors exclude, leaving the score untouched.
+/**
+ * Select which findings appear in the report. Stable contract: the score and exit code are already decided.
  *
- * The configured `minimumSeverity:` floor applies when the user passed no `--min-severity`; typing the flag is the
- * user overriding their own project default for this one run.
- *
- * Stable contract: this runs after the score and the exit code are decided, so hiding a finding never improves either.
+ * @param findings - scored findings available for display
+ * @param selectors - display restrictions for this run, including any explicit minimum severity
+ * @param configuredFloor - project minimum severity used when the run supplies none
+ * @returns A filtered list when an effective restriction is active, or the original list when none is active.
  */
 export function applyDisplaySelectors(findings: Finding[], selectors: DisplaySelectors, configuredFloor: Severity | undefined): Finding[] {
   const floor = selectors.minSeverity ?? configuredFloor;
@@ -87,7 +90,8 @@ export function applyDisplaySelectors(findings: Finding[], selectors: DisplaySel
   return findings.filter((finding) => displayAllows(effective, finding));
 }
 
-// Decides whether one finding is shown: it must clear the floor, survive the hide lists, and be in any show list.
+// Uses the severity floor and the rule and pillar lists in selectors to decide whether to show a finding.
+// To return true, the finding must meet any configured floor, match each nonempty show list, and match neither hide list.
 function displayAllows(selectors: DisplaySelectors, finding: Finding): boolean {
   if (selectors.minSeverity !== undefined && SEVERITY_RANK[finding.severity] < SEVERITY_RANK[selectors.minSeverity]) {
     return false;

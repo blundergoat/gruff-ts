@@ -33,26 +33,26 @@ interface BaselineSelection {
   label: string;
 }
 
-/*
- * Three-way baseline dispatcher. `--generate-baseline` wins (writes a new file, returns findings unchanged);
- * `--no-baseline` skips entirely; otherwise look for an explicit or default baseline and hide the reviewed debt.
+/* --generate-baseline takes precedence over --no-baseline so that generation can write without applying an existing baseline. */
+/**
+ * Apply the stable baseline selection contract to hide reviewed findings. Generation writes a baseline and keeps all findings.
  *
- * `declarationSpans` names the declarations this run parsed, so two findings inside one function share an
- * identity while a second same-named function takes its own; an empty map ranks by line instead.
- * Stable contract: generation wins over application, and a run with no baseline returns the findings untouched.
+ * @param projectRoot - Directory used to resolve relative baseline paths and locate the default file.
+ * @param options - Selects generation, migration, skipping or baseline application and supplies any explicit paths.
+ * @param findings - Findings to record in the generated baseline or compare against the selected baseline.
+ * @param declarationSpans - Supplies start lines so that same-named declarations rank separately. Unmatched findings use their own lines.
+ * @param unusableBaseline - Diagnose mode turns a baseline file error into a fatal diagnostic and keeps all findings. Throw mode is the default.
+ * @returns Findings, diagnostics and optional baseline metadata. Skipping or finding no baseline keeps all findings and yields no diagnostics.
+ * @throws {BaselineFileError} - When generation or application raises a baseline file error in throw mode.
+ * @throws {Error} - When another generation or application error propagates in either mode.
  */
-// `unusableBaseline` decides what a baseline file that cannot be applied does: a hook run throws so it can publish its
-// own fatal payload, and a direct analysis records a fatal `baseline-error` diagnostic and keeps its report.
-// Stable contract: an unusable baseline never suppresses anything, so every finding stays in the report it gates.
-// @throws {BaselineFileError} when baseline generation or application fails in "throw" mode, or {Error} on other failures.
 export function applyBaselineOptions(projectRoot: string, options: AnalysisOptions, findings: Finding[], declarationSpans = new Map<string, DeclarationSpan[]>(), unusableBaseline: "throw" | "diagnose" = "throw"): BaselineApplication {
   const declarationPosition = declarationPositionFromSpans(declarationSpans);
   if (options.generateBaseline) {
     try {
       return generateBaselineResult(projectRoot, options, findings, declarationPosition);
     } catch (error) {
-      // A generate or migration the retreat path forbids writes nothing, so like an unusable baseline it keeps every
-      // finding visible and invalidates the run with exit 2, instead of escaping as a stack trace with exit 1.
+      // A baseline file error in diagnose mode keeps all findings visible and invalidates the run with a diagnostic.
       if (unusableBaseline === "diagnose" && error instanceof BaselineFileError) {
         return { findings, diagnostics: [{ diagnosticType: "baseline-error", message: error.message }] };
       }
@@ -72,8 +72,7 @@ export function applyBaselineOptions(projectRoot: string, options: AnalysisOptio
   try {
     return applySelectedBaseline(projectRoot, selected, findings, declarationPosition);
   } catch (error) {
-    // A baseline that cannot be used leaves every finding visible and invalidates the run, so it exits 2 rather than
-    // reading as a clean scan or as findings that met `--fail-on` (exit 1).
+    // In diagnose mode, a baseline file error keeps all findings visible and reports the selection label in the fatal diagnostic.
     if (unusableBaseline === "diagnose" && error instanceof BaselineFileError) {
       return { findings, diagnostics: [{ diagnosticType: "baseline-error", message: error.message.replaceAll(selected.path, selected.label) }] };
     }
@@ -82,10 +81,9 @@ export function applyBaselineOptions(projectRoot: string, options: AnalysisOptio
 }
 
 /*
- * Writes the baseline file and returns the report-shaped metadata. `suppressed: 0` because generation does not
- * hide anything: every current finding is captured and still shown, so the user sees what they just accepted.
- * With `--migrate-baseline` the reviews of a 0.5 file are carried across instead, leaving that file untouched.
- * Stable contract: generation hides nothing, so the user sees every finding they have just accepted.
+ * Writes eligible baseline entries or carries forward matching reviews with --migrate-baseline while preserving the input file.
+ * Uses projectRoot for relative paths, options for write and migration controls, and declarationPosition to locate enclosing declarations.
+ * Stable contract: returns every finding with write metadata, zero suppressions, and an empty diagnostics list.
  */
 function generateBaselineResult(projectRoot: string, options: AnalysisOptions, findings: Finding[], declarationPosition: DeclarationPositionResolver): BaselineApplication {
   const baselinePath = absolutize(projectRoot, options.generateBaseline ?? DEFAULT_BASELINE);
@@ -110,12 +108,15 @@ function generateBaselineResult(projectRoot: string, options: AnalysisOptions, f
   };
 }
 
-/*
- * Loads the baseline and hides the occurrences the user already reviewed.
+/**
+ * Apply the selected baseline and derive report counts from the same result so that they agree with the filtered findings.
  *
- * A collision becomes a non-fatal diagnostic rather than a suppression, and a file that cannot be read at all
- * becomes a baseline-error diagnostic so the run reports the reason instead of silently showing every finding.
- * Stable contract: the reported counts come from the same application that filtered the findings, so they cannot disagree.
+ * @param projectRoot - base used to display the selected baseline path
+ * @param selected - baseline path to read and selection source to record
+ * @param findings - current findings to match against reviewed counts
+ * @param declarationPosition - resolves declaration positions for stable baseline identities
+ * @returns Visible findings, baseline metadata, and non-fatal diagnostics for any collisions.
+ * @throws {BaselineFileError} - the selected baseline cannot be read or applied.
  */
 function applySelectedBaseline(projectRoot: string, selected: BaselineSelection, findings: Finding[], declarationPosition: DeclarationPositionResolver): BaselineApplication {
   const application = applyBaseline(selected.path, findings, declarationPosition);
@@ -135,12 +136,8 @@ function applySelectedBaseline(projectRoot: string, selected: BaselineSelection,
   };
 }
 
-/*
- * Names one identity that covered two declarations, so the user can see which review would have covered the
- * wrong finding. Neither finding is suppressed and the run is not invalidated.
- * The run reports the collision rather than throwing, and the diagnostic is non-fatal, so a collision alone
- * never fails a run.
- */
+// Returns a non-fatal diagnostic naming the colliding review's identity, rule, path, and reported subjects.
+// Under the baseline contract, findings sharing the identity stay visible, so their severities can still affect the run's result.
 function collisionDiagnostic(collision: BaselineCollision): RunDiagnostic {
   return {
     diagnosticType: "baseline-collision",
@@ -150,8 +147,9 @@ function collisionDiagnostic(collision: BaselineCollision): RunDiagnostic {
   };
 }
 
-// Picks an explicit `--baseline` path first, then the conventional `gruff-baseline.json` at the
-// project root. Returning undefined means "no baseline" - the stable contract preserves report shape.
+// Return the baseline path, source and display label selected by options, resolving relative paths against projectRoot.
+// Without an explicit path, select gruff-baseline.json only if it exists at projectRoot.
+// Return undefined otherwise. The no-baseline contract keeps all findings visible.
 function selectedBaseline(projectRoot: string, options: AnalysisOptions): BaselineSelection | undefined {
   if (options.baseline) {
     return { path: absolutize(projectRoot, options.baseline), source: "explicit", label: options.baseline };

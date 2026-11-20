@@ -11,12 +11,18 @@ import type { Config, Finding } from "./types.ts";
  */
 export type NamingSurface = "declaration" | "parameter" | "destructure";
 
-/*
- * Allows the standard `i`, `j`, `k` loop counters and anything on `acceptedAbbreviations`. Reports
- * `naming.short-variable` for any other one or two character name as a stable advisory finding.
- * `loopBodyLineCount` is the for-of caller's signal: when the binding came from a `for (const X of
- * Y) { … }` head and the body spans ≤ 10 lines, the rule suppresses the finding because the name's
- * lifetime is locally obvious. Other call sites (declaration, parameter, destructure) pass undefined.
+/**
+ * Checks whether a short name qualifies for a naming.short-variable advisory.
+ * Names longer than two characters and i, j and k are exempt.
+ *
+ * @param file - supplies the display path for the advisory
+ * @param line - source line to report with the advisory
+ * @param name - identifier to check for sufficient length or an exemption
+ * @param config - supplies accepted abbreviations, checked against the lowercased name
+ * @param findings - receives the stable advisory when the name fails the check
+ * @param surface - records whether the name came from a declaration, parameter or destructure
+ * @param loopBodyLineCount - for-of body code-line count. At most 10 exempts the name. Undefined gives no loop exemption.
+ * @returns - returns nothing. Appends an advisory to findings when the name is too short and has no exemption.
  */
 export function pushShortVariableAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface, loopBodyLineCount?: number): void {
   if (loopBodyLineCount !== undefined && loopBodyLineCount <= 10) {
@@ -41,10 +47,16 @@ export function pushShortVariableAt(file: SourceFile, line: number, name: string
   );
 }
 
-/*
- * Reports `naming.identifier-quality` when a name resolves to a generic variant via
- * `identifierQualityVariant` (placeholder names from config, or built-in low-info forms like `data`).
- * The stable `variant` metadata lets downstream tools group by category.
+/**
+ * Checks for generic or numbered placeholder names, including built-in numbered stems.
+ *
+ * @param file - supplies the display path for the advisory
+ * @param line - source line to report with the advisory
+ * @param name - identifier to check against the placeholder rules
+ * @param config - supplies configured placeholders for full-name and numbered-stem checks
+ * @param findings - receives the advisory with stable variant metadata when a placeholder matches
+ * @param surface - records whether the name came from a declaration, parameter or destructure
+ * @returns - returns nothing. Appends one advisory for a matched placeholder and leaves findings unchanged otherwise.
  */
 export function pushIdentifierQualityAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
   const variant = identifierQualityVariant(name, config.placeholderNames);
@@ -67,9 +79,9 @@ export function pushIdentifierQualityAt(file: SourceFile, line: number, name: st
   );
 }
 
-// Returns `"generic"` for low-information names from the configured set, `"numbered"` for
-// numbered placeholder stems such as `foo1` / `mock2`, or undefined when the name is acceptable.
-// Domain tokens with meaningful digits (`adr020`, `step0`, `V110`) are not placeholder names.
+// Returns generic when the lowercased name is in placeholderNames. Otherwise checks for a numbered placeholder.
+// A numbered name ends in digits after a stem made of ASCII letters, underscores or dollar signs.
+// Returns numbered when that lowercased stem is in either placeholder set. Undefined means no identifier-quality advisory.
 function identifierQualityVariant(name: string, placeholderNames: Set<string>): string | undefined {
   if (placeholderNames.has(name.toLowerCase())) {
     return "generic";

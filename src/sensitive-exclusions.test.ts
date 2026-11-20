@@ -28,26 +28,25 @@ const SENSITIVE_CORPUS: Record<string, string> = {
   [JWT_FIXTURE_PATH]: `SESSION_TOKEN=${JWT_FIXTURE_VALUE}\n`,
 };
 
-// Renders one `sensitiveExclusions:` YAML document. Written as text rather than through the fixture
-// object serializer because that serializer emits inline `[...]` arrays and cannot express the
-// ratified sequence-of-mappings shape. jwt-token (ADR-021) and aws-access-key (precision-floor M02) ship off
-// by default, so the document switches both on to keep the corpus's sensitive rules reporting, as the cross-port suite does.
+// Returns fixture YAML with a schema header and already-indented entries. An empty array leaves the sensitiveExclusions key without list items.
+// Text rendering supports mappings that the fixture object's inline-array serializer cannot express.
+// Enables the default-off AWS access-key and JWT rules so the corpus produces findings to exclude. ADR-021 governs the JWT default.
 function sensitiveExclusionConfig(entries: string[]): string {
   const enableRules = ["rules:", `  ${AWS_RULE_ID}:`, "    enabled: true", `  ${JWT_RULE_ID}:`, "    enabled: true"];
   return ["schemaVersion: gruff-ts.config.v0.1", ...enableRules, "sensitiveExclusions:", ...entries].join("\n") + "\n";
 }
 
-// Scans the synthetic corpus under one exclusion config and returns the stable report contract.
-// `shouldSkipConfig: false` is explicit because the fixture helper otherwise skips config loading
-// when no config object was passed.
+// Returns the corpus report under the analysis schema. Pass indented YAML exclusion entries. Invalid config can throw ConfigLoadError.
+// Writes a temporary project, scans from its directory, then restores the working directory and removes the project even if scanning fails.
+// Forces config loading because the fixture skips it when neither a config object nor a config path is supplied.
 function analyseWithExclusions(entries: string[]): AnalysisReport {
   return analyseProject({ ...SENSITIVE_CORPUS, ".gruff-ts.yaml": sensitiveExclusionConfig(entries) }, { shouldSkipConfig: false });
 }
 
-// Collects the config error one rejection case produces, so each assertion can name the key the
-// diagnostic must mention. Throws an assertion failure when the config loaded instead of being
-// rejected, or when it failed with something other than a ConfigLoadError.
-// @throws {AssertionError} when the config is accepted, or the scan fails with anything but a ConfigLoadError.
+// Returns the ConfigLoadError from already-indented YAML exclusion entries so tests can check the diagnostic.
+// The scan writes a temporary project and changes into it, then restores the working directory and removes the fixture.
+//
+// @throws {AssertionError} - when the scan succeeds or throws a different error type.
 function exclusionConfigError(entries: string[]): ConfigLoadError {
   try {
     analyseWithExclusions(entries);
@@ -58,15 +57,15 @@ function exclusionConfigError(entries: string[]): ConfigLoadError {
   throw new assert.AssertionError({ message: "expected the config to be rejected" });
 }
 
-// Counts findings for one rule in one file, which is what an acceptance case asserts survived. The
-// rule-plus-path pair is the same scope contract an exclusion entry declares.
+// Counts findings in the supplied report for one rule and file so tests can check suppression and continued reporting.
+// The test contract is a count by rule and path. Zero means the report has no finding for that pair.
 function findingCount(report: AnalysisReport, ruleId: string, filePath: string): number {
   return report.findings.filter((finding) => finding.ruleId === ruleId && finding.filePath === filePath).length;
 }
 
-// Pulls the single `Suppressed findings:` row out of a rendered text surface so two surfaces can be
-// compared as text rather than as recomputed totals. Fails the case when the surface published no
-// row at all, which is the silent-filtering failure the audit rule exists to catch.
+// Returns the first Suppressed findings: row in rendered text so the summary and report can be compared directly.
+//
+// @throws {AssertionError} - when no row begins with Suppressed findings:
 function suppressionLine(rendered: string): string {
   const line = rendered.split("\n").find((candidate) => candidate.startsWith("Suppressed findings:"));
   assert.ok(line !== undefined, "the surface applied an exclusion without publishing a suppression row");

@@ -9,19 +9,22 @@ import { scoreReport } from "./scoring.ts";
 import { analyseFixture } from "./test-fixtures.ts";
 import type { Finding } from "./types.ts";
 
-// Filters one scan down to a single rule so every case reads as fixture + expectation.
+// Scans source as fileName and returns only findings for ruleId, or an empty array when none match.
+// Missing or empty fileName selects bad.ts; scanning creates and removes a temporary project and restores the working directory.
 function ruleFindings(source: string, ruleId: string, fileName?: string) {
   const report = analyseFixture(source, fileName ? { fileName } : {});
   return report.findings.filter((entry) => entry.ruleId === ruleId);
 }
 
-// Runs a rule that ships off by default with it switched on, so detector-logic tests still exercise it.
+// Scans source in a temporary project with ruleId explicitly enabled, then returns only that rule's findings.
+// Creates and removes fixture files and restores the working directory; returns an empty array when the rule reports nothing.
 function enabledRuleFindings(source: string, ruleId: string) {
   const report = analyseFixture(source, { config: { rules: { [ruleId]: { enabled: true } } } });
   return report.findings.filter((entry) => entry.ruleId === ruleId);
 }
 
-// Minimal real finding for direct scoring-math tests; distinct lines keep each fingerprint unique.
+// Builds a finding for scoring tests; ruleId, pillar and severity set its classification, and line distinguishes its fingerprint.
+// Returns a medium-confidence finding for src/sample.ts with a generated message.
 function scoredFinding(ruleId: string, pillar: Finding["pillar"], severity: Finding["severity"], line: number): Finding {
   return makeFinding({ ruleId, message: `${ruleId} fired.`, filePath: "src/sample.ts", line, severity, pillar, confidence: "medium" });
 }
@@ -254,10 +257,9 @@ test("fixture-purpose-missing is cleared by the remediation vocabulary above the
   assert.deepEqual(findings, []);
 });
 
-// Matrix fixtures for the comment-style coupling report: a JSDoc block and an equivalent // run
-// above the same declaration must trigger the same context-doc rules. The docblock tag pack
-// (missing-param-tag / missing-return-tag) is the one deliberate asymmetry, pinned further down,
-// because // comments cannot carry @param or @returns tags at all.
+// Builds JSDoc and line comment fixture sources from jsdocLines, placing each header directly above body.
+// Returns jsdoc and lineRun with trailing newlines so tests can compare both styles, including tag findings expected only for JSDoc.
+// Empty jsdocLines produces an empty JSDoc block and no line comment header.
 function commentStyleVariants(jsdocLines: string[], body: string): { jsdoc: string; lineRun: string } {
   return {
     jsdoc: ["/**", ...jsdocLines.map((line) => ` * ${line}`), " */", body, ""].join("\n"),
@@ -445,7 +447,8 @@ function resetState() {
 }
 `;
 
-// One scan of the fixture, as missing-doc messages keyed by symbol.
+// Scans SIGNATURE_MESSAGE_SOURCE in a temporary project and returns missing function-documentation messages keyed by symbol.
+// Creates and removes fixture files and restores the working directory; missing symbols use undefined and later duplicate keys win.
 function signatureMessages(): Map<string | undefined, string> {
   const missingDocRules = new Set(["docs.missing-exported-function-doc", "docs.missing-internal-function-doc"]);
   const findings = analyseFixture(SIGNATURE_MESSAGE_SOURCE).findings.filter((entry) => missingDocRules.has(entry.ruleId));

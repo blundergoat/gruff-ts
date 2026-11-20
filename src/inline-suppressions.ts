@@ -78,7 +78,8 @@ export function applyInlineSuppressions(
   };
 }
 
-// Reads each discovered file's lines once, on demand, by the display path a finding carries; an unreadable file has none.
+// Returns a cached line reader for the discovered files, keyed by the display paths on findings.
+// Unknown or unreadable paths return an empty list, leaving their findings eligible to report.
 function sourceLineReader(files: readonly SourceFile[]): (displayPath: string) => readonly string[] {
   const absolutePathByDisplayPath = new Map(files.map((file) => [file.displayPath, file.absolutePath]));
   const linesByDisplayPath = new Map<string, readonly string[]>();
@@ -92,7 +93,7 @@ function sourceLineReader(files: readonly SourceFile[]): (displayPath: string) =
     try {
       read = absolutePath === undefined ? [] : readFileSync(absolutePath, "utf8").split(/\r?\n/);
     } catch {
-      // A file that vanished since discovery has no comment to read, so nothing in it is suppressed.
+      // Missing or unreadable source leaves findings visible; this optional suppression lookup stays silent rather than failing the scan.
       read = [];
     }
     linesByDisplayPath.set(displayPath, read);
@@ -156,8 +157,9 @@ function isIgnoredByZizmor(line: string, ruleId: string): boolean {
   return false;
 }
 
-// Merges security.unsafe-deserialization into security.eval-call on a line that calls `eval`.
-// Invariant: each eval-call finding absorbs at most one repeat, so two calls on one line keep two findings.
+// Returns kept findings and justified removals after checking for duplicate claims about eval calls.
+// The lines callback supplies source by display path. A repeat stays in kept if its line is missing or fails the eval call pattern.
+// Invariant: each security.eval-call finding stays in kept and can justify one security.unsafe-deserialization removal on its file and line.
 function mergeRepeatedClaims(
   findings: readonly Finding[],
   lines: (displayPath: string) => readonly string[],
@@ -188,6 +190,7 @@ function mergeRepeatedClaims(
 
 // Folds removed findings into one audit row per file and rule, in UTF-8 byte order of path and then rule.
 // Invariant: the rows are deterministic, and their indexes run contiguously from firstIndex.
+// Each row carries the supplied source label and reason; no removed findings produces an empty list.
 function auditRows(removed: readonly SuppressedFinding[], source: "inline" | "duplicate", reason: string, firstIndex: number): SuppressionSummary[] {
   const counts = new Map<string, { path: string; rule: string; count: number }>();
   for (const { finding } of removed) {
@@ -208,7 +211,7 @@ function auditRows(removed: readonly SuppressedFinding[], source: "inline" | "du
   }));
 }
 
-// Orders two strings by their UTF-8 bytes, the order every port publishes audit rows in.
+// Returns a negative, zero or positive number when left sorts before, equals or follows right by UTF-8 bytes for audit ordering.
 function compareUtf8Bytes(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }

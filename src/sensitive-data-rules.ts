@@ -95,15 +95,14 @@ const STOCK_DEVELOPMENT_WORDS = new Set([
 // Loopback hosts, on which a stock pair is a development default rather than a live weakness.
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
 
-// Recognizes a stock development pair such as `postgres:postgres` on a loopback host or a single-label service name
-// such as `db`. The same pair on any other host still reports, because a default credential on a reachable host is a
-// live weakness (FAMILY-CONTRACT.md section 5). The host is read from the text after the match, so the detector's
-// pattern still stops at `@` and no host can reach the example markers.
+// Returns whether matchedSensitiveText contains stock credentials and the host extracted from textAfterAt qualifies for the development exemption.
+// Credentials and hosts are compared case-insensitively. A host qualifies if listed in LOOPBACK_HOSTS or nonempty with no dot or colon.
+// Other hosts remain reportable under FAMILY-CONTRACT.md section 5; the match stops at @ to keep hosts out of example checks.
 function isStockDevelopmentUrl(matchedSensitiveText: string, textAfterAt: string): boolean {
   const userInfo = /:\/\/([^\/\s:@]+):([^\/\s@]+)@$/.exec(matchedSensitiveText);
   const user = userInfo?.[1]?.toLowerCase() ?? "";
   const password = userInfo?.[2]?.toLowerCase() ?? "";
-  // Both halves must be stock words; one real word keeps the finding.
+  // Any username or password outside the stock-word set keeps the finding.
   if (!STOCK_DEVELOPMENT_WORDS.has(user) || !STOCK_DEVELOPMENT_WORDS.has(password)) {
     return false;
   }
@@ -114,14 +113,14 @@ function isStockDevelopmentUrl(matchedSensitiveText: string, textAfterAt: string
   return LOOPBACK_HOSTS.has(host) || (host !== "" && !host.includes(".") && !host.includes(":"));
 }
 
-// Recognizes explicit example markers inside the matched value, such as a URL password written as `REDACTED`.
-// File paths never make production-shaped credentials disappear from the user's report.
+// Returns true when the matched credential contains an example marker or matches a supported mask.
+// The detector uses this result to skip placeholder matches before creating findings.
 function isExplicitExampleCredential(matchedSensitiveText: string): boolean {
   return /EXAMPLE|REDACTED|PLACEHOLDER|CHANGEME/i.test(matchedSensitiveText) || isMaskedCredential(matchedSensitiveText);
 }
 
-// Recognizes an AWS key whose whole body is a run of X, written to show where a key goes (FAMILY-CONTRACT.md
-// section 5). Only the whole body counts: a real key may contain a run of X, and hiding it would hide a live credential.
+// Returns true for a matched AWS access key with an all-X body, as required by FAMILY-CONTRACT.md section 5.
+// A real key can contain runs of X, so the mask must cover the entire body.
 function isMaskedAwsAccessKey(matchedSensitiveText: string): boolean {
   return /^(?:AKIA|ASIA)X{16}$/.test(matchedSensitiveText);
 }
@@ -131,8 +130,9 @@ function isMaskedCredential(matchedSensitiveText: string): boolean {
   return /\*{4}|X{4}/.test(matchedSensitiveText);
 }
 
-// Finds medical-record numbers only when an MRN label gives users reliable health-data context.
-// Stable contract: bare numbers remain quiet, while each labelled identifier receives its own fixed-marker finding.
+// Scans the source text for labelled medical-record numbers, using the file to locate each result.
+// Stable contract: a supported label is required, and only the first matching identifier on each line is reported.
+// Returns nothing. Appends fixed-marker findings to the caller's list.
 function analysePhiLabelledIdentifiers(file: SensitiveSourceFile, source: string, findings: Finding[]): void {
   const lines = source.split(/\r?\n/);
   // Each source line may represent a separate record the user accidentally embedded in code or a fixture.
@@ -156,11 +156,11 @@ function analysePhiLabelledIdentifiers(file: SensitiveSourceFile, source: string
   }
 }
 
-// Finds a GCP service-account document only when its type and private-key evidence appear together.
-// Stable contract: users receive one marker at the type field, while matched identifiers and key material stay hidden.
+// Scans source for file and appends a GCP service-account finding to findings only when type and private-key evidence coexist.
+// Stable contract: users receive one marker at the type field, while matched identifiers and key material stay hidden. Returns nothing.
 function analyseGcpServiceAccountKeys(file: SensitiveSourceFile, source: string, findings: Finding[]): void {
   const typeMatch = source.match(/"type"\s*:\s*"service_account"/);
-  // Users see a finding only when the document contains both the service-account type and private-key evidence.
+  // Private-key evidence anywhere in the source can corroborate the type field, regardless of field order.
   if (!typeMatch || !/"private_key"\s*:\s*"|BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY/.test(source)) {
     return;
   }
@@ -176,17 +176,16 @@ function analyseGcpServiceAccountKeys(file: SensitiveSourceFile, source: string,
   });
 }
 
-// Finds payment-card values only after network shape, length, checksum, and context checks pass.
+// Scans source for card candidates in file and returns nothing. Appends to findings only after network, length, checksum and context checks pass.
 // Stable contract: canonical grouping supplies context; bare digit runs need card vocabulary before users see a finding.
 function analysePaymentCardNumbers(file: SensitiveSourceFile, source: string, findings: Finding[]): void {
   const lines = source.split(/\r?\n/);
   // Each digit run is checked independently because a user can paste more than one card-like value into a line or file.
   for (const match of source.matchAll(/\b(?:\d[ -]?){12,18}\d\b/g)) {
-    // A missing regex capture becomes an empty candidate, which cannot pass the network and checksum gates.
     const matchedDigitRun = match[0] ?? "";
     const normalizedCardNumber = normalizedPaymentCardNumber(matchedDigitRun);
     const line = byteLine(source, match.index ?? 0);
-    // The helper owns the shape/checksum/vocabulary gates; anything failing them is not a card.
+    // After the card number passes validation, canonical grouping supplies context. A run without that grouping needs card vocabulary on its line.
     if (!isReportablePaymentCardCandidate(matchedDigitRun, normalizedCardNumber, lines[line - 1] ?? "")) {
       continue;
     }
@@ -204,18 +203,17 @@ function analysePaymentCardNumbers(file: SensitiveSourceFile, source: string, fi
   }
 }
 
-// Decides whether one digit run is credible card data for the user's report.
-// Valid cards need canonical grouping or explicit card vocabulary because ordinary statistics can pass Luhn.
+// Returns whether matchedDigitRun is reportable: normalizedCardNumber must pass supported network, length and checksum checks.
+// The run must also have canonical grouping, or contextLine must contain card vocabulary; ordinary statistics can pass Luhn.
 function isReportablePaymentCardCandidate(matchedDigitRun: string, normalizedCardNumber: string, contextLine: string): boolean {
-  // Invalid network shape, length, or checksum means the user entered an ordinary number rather than reportable card data.
   if (!isPaymentCardNumber(normalizedCardNumber)) {
     return false;
   }
   return hasCanonicalPaymentCardGrouping(matchedDigitRun, normalizedCardNumber) || hasPaymentCardContext(contextLine);
 }
 
-// Accept one consistent separator and the display grouping used by the detected card network.
-// Arbitrary chunks such as 8-8 remain statistics unless their source line supplies card context.
+// Returns whether matchedDigitRun uses a consistent separator and the grouping expected for the network and length of normalizedCardNumber.
+// Noncanonical chunks such as 8-8 supply no grouping context; the caller can still accept them when the line contains card vocabulary.
 function hasCanonicalPaymentCardGrouping(matchedDigitRun: string, normalizedCardNumber: string): boolean {
   // Missing separators mean a bare number needs explicit card vocabulary elsewhere on the line.
   const separators = matchedDigitRun.match(/[ -]/g) ?? [];
@@ -233,12 +231,12 @@ function hasCanonicalPaymentCardGrouping(matchedDigitRun: string, normalizedCard
 }
 
 // Recognizes card vocabulary around an otherwise ambiguous digit run.
-// Identifier forms such as `cardNumber` count, while `pan` stays word-bounded to avoid unrelated UI text.
+// Identifier forms such as cardNumber count. PAN must be a whole word to avoid matching unrelated words such as panel.
 function hasPaymentCardContext(lineText: string): boolean {
   return /(?:\bpan\b|card|payment|credit|debit|visa|master|amex|discover|jcb|diners)/i.test(lineText);
 }
 
-// Finds npm auth values in user configuration even when the token lacks an `npm_` prefix.
+// Scans source for npm auth values in file and returns nothing. Appends to findings for recognized values, including tokens without the npm_ prefix.
 // Stable contract: scoped and registry `_authToken` lines remain reportable when the general provider pattern cannot classify their prefix.
 function analyseNpmAuthTokens(file: SensitiveSourceFile, source: string, findings: Finding[]): void {
   const lines = source.split(/\r?\n/);
@@ -262,7 +260,7 @@ function analyseNpmAuthTokens(file: SensitiveSourceFile, source: string, finding
   }
 }
 
-// Returns the token portion of a scoped or registry-prefixed npm auth line.
+// Returns the matched literal token from a bare, scoped, or registry-prefixed npm auth line.
 // Missing output means the user's line has no supported literal token for this detector.
 function npmAuthTokenValue(line: string): string | undefined {
   const match = line.match(/(?:^|:)_authToken\s*=\s*([A-Za-z0-9_-]{20,})\b/);
@@ -313,21 +311,21 @@ const DOCUMENTED_SAMPLE_DIGESTS = new Set([
 ]);
 
 // Reports whether a matched value is, exactly and whole, a vendor-documented sample such as AWS's example key.
-// A card is compared as digits, so its spaced and dashed spellings match the number its network publishes.
+// When metadata identifies a credit card, compare digits only; absent or other metadata keeps the original text for comparison.
 function isDocumentedSample(matchedSensitiveText: string, metadata: Record<string, unknown> | undefined): boolean {
   const comparedText = metadata?.["piiKind"] === "credit-card" ? matchedSensitiveText.replace(/\D/g, "") : matchedSensitiveText;
   return DOCUMENTED_SAMPLE_DIGESTS.has(createHash("sha256").update(comparedText, "utf8").digest("hex"));
 }
 
-// Reports one user-visible finding with a detector-owned marker and an optional match column.
-// The matched value only selects a public category and recognises a vendor-documented sample; every other occurrence reaches the report.
+// Appends to args.findings using args for report fields and location, unless its matched value is a vendor-documented sample.
+// Returns nothing. The redaction contract uses matched text only to choose the public marker and check for a documented sample.
 function pushSensitiveFinding(args: SensitiveFindingArgs): void {
   // A pasted documentation sample, e.g. AWS's example key id from its docs, is not a credential, so the user sees nothing.
   if (isDocumentedSample(args.matchedSensitiveText, args.metadata)) {
     return;
   }
   const displayMarker = fixedMarkerForSensitiveFinding(args);
-  // Missing location and metadata fields remain absent or empty so report consumers can distinguish unavailable user context.
+  // An unavailable column is omitted. The fixed marker replaces any supplied preview and preserves the other metadata.
   args.findings.push(
     makeFinding({
       ruleId: args.ruleId,
@@ -345,7 +343,8 @@ function pushSensitiveFinding(args: SensitiveFindingArgs): void {
 }
 
 // Selects the fixed category marker users see for one sensitive finding.
-// Detector-owned rule and metadata categories may classify the match, but no matched characters or lengths are returned.
+// Uses args.ruleId, matched text and optional metadata to avoid exposing the value. Only an approved public URL scheme may be retained.
+// The stable fallback for unknown rules is the generic marker. Without metadata, PII uses the SSN marker and API keys are classified by prefix.
 function fixedMarkerForSensitiveFinding(args: SensitiveFindingArgs): string {
   switch (args.ruleId) {
     case "sensitive-data.aws-access-key":
@@ -370,7 +369,7 @@ function fixedMarkerForSensitiveFinding(args: SensitiveFindingArgs): string {
 }
 
 // Builds the fixed connection-string marker users see, retaining only the detector-approved public scheme.
-// Missing classification returns the generic marker and never echoes any URL characters.
+// The matched URL supplies the allowed scheme, which the marker shows in lowercase.
 function fixedConnectionStringMarker(matchedUrl: string): string {
   const acceptedScheme = matchedUrl.match(/^(https?|postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|amqp|amqps|mssql):\/\//i)?.[1]?.toLowerCase();
   // A missing detector-approved scheme gives users a generic marker rather than echoing any URL text.
@@ -380,14 +379,13 @@ function fixedConnectionStringMarker(matchedUrl: string): string {
   return `[redacted:connection-string:${acceptedScheme}]`;
 }
 
-// Builds the fixed provider marker users see for recognizable API-key families.
-// Unknown or shared prefixes use the generic marker so no matched token characters are exposed.
+// Returns a fixed provider marker for matchedToken; optional metadata identifies npm auth lines whose token lacks a public prefix.
+// Without npm auth metadata, use a recognized prefix or the generic marker to avoid exposing matched token characters.
 function fixedApiKeyMarker(matchedToken: string, metadata: Record<string, unknown> | undefined): string {
   // An npm auth line may omit the public `npm_` prefix, but its detector-owned key name still identifies the category.
   if (metadata?.keyName === "_authToken" || matchedToken.startsWith("npm_")) {
     return "[redacted:npm-token]";
   }
-  // A GitHub public prefix gives users the provider category without disclosing any token payload.
   if (/^(?:ghp_|github_pat_|gh[ousr]_)/.test(matchedToken)) {
     return "[redacted:github-token]";
   }
@@ -395,19 +393,16 @@ function fixedApiKeyMarker(matchedToken: string, metadata: Record<string, unknow
   if (/^(?:xox[baprs]-|https:\/\/hooks\.slack\.com\/services\/)/.test(matchedToken)) {
     return "[redacted:slack-token]";
   }
-  // The public live-key prefix distinguishes Stripe production credentials for rotation guidance.
+  // The public live-key prefix selects the Stripe live-key label. Stripe test-key matches use the generic marker.
   if (matchedToken.startsWith("sk_live_")) {
     return "[redacted:stripe-live-key]";
   }
-  // The public Google prefix selects a provider marker without revealing the remaining key.
   if (matchedToken.startsWith("AIza")) {
     return "[redacted:google-api-key]";
   }
-  // The public Anthropic prefix selects a provider marker without revealing the remaining key.
   if (matchedToken.startsWith("sk-ant-")) {
     return "[redacted:anthropic-api-key]";
   }
-  // The public GitLab prefix selects a provider marker without revealing the remaining token.
   if (matchedToken.startsWith("glpat-")) {
     return "[redacted:gitlab-token]";
   }
@@ -415,7 +410,7 @@ function fixedApiKeyMarker(matchedToken: string, metadata: Record<string, unknow
 }
 
 // Removes spaces and hyphens before validating a payment-card value the user may have pasted.
-// The normalized digits are used only for network and checksum checks, never report output.
+// Returns candidateText without those separators for network, checksum and grouping checks, never for report output.
 function normalizedPaymentCardNumber(candidateText: string): string {
   return candidateText.replace(/[ -]/g, "");
 }
@@ -426,7 +421,7 @@ function isPaymentCardNumber(cardNumber: string): boolean {
   return /^[0-9]+$/.test(cardNumber) && cardNumber.length >= 13 && cardNumber.length <= 19 && hasKnownPaymentCardPrefix(cardNumber) && passesLuhnCheck(cardNumber);
 }
 
-// Checks a normalized card value against the supported issuer prefixes.
+// Returns whether normalized cardNumber has both a supported issuer prefix and a length accepted for that issuer.
 // Network-specific helpers keep user-facing false-positive tuning isolated and readable.
 function hasKnownPaymentCardPrefix(cardNumber: string): boolean {
   return isVisaPaymentCard(cardNumber)
@@ -437,36 +432,36 @@ function hasKnownPaymentCardPrefix(cardNumber: string): boolean {
     || isJcbPaymentCard(cardNumber);
 }
 
-// Visa cards start with 4 and commonly use 13, 16, or 19 digits.
+// Returns whether digit-only cardNumber starts with 4 and has a supported Visa length of 13, 16 or 19 digits.
 function isVisaPaymentCard(cardNumber: string): boolean {
   return cardNumber.startsWith("4") && isPaymentCardLength(cardNumber, [13, 16, 19]);
 }
 
-// Mastercard cards use 51-55 and 2221-2720 IIN ranges with 16 digits.
+// Returns whether digit-only cardNumber has 16 digits and a Mastercard prefix in 51-55 or 2221-2720.
 function isMastercardPaymentCard(cardNumber: string): boolean {
   const firstTwoDigits = Number(cardNumber.slice(0, 2));
   const firstFourDigits = Number(cardNumber.slice(0, 4));
   return (isInRange(firstTwoDigits, 51, 55) || isInRange(firstFourDigits, 2221, 2720)) && isPaymentCardLength(cardNumber, [16]);
 }
 
-// American Express cards use 34/37 prefixes with 15 digits.
+// Returns whether digit-only cardNumber has an American Express prefix (34 or 37) and 15 digits.
 function isAmericanExpressPaymentCard(cardNumber: string): boolean {
   return (cardNumber.startsWith("34") || cardNumber.startsWith("37")) && isPaymentCardLength(cardNumber, [15]);
 }
 
-// Discover cards use 6011, 65, or 644-649 prefixes with 16 or 19 digits.
+// Returns whether digit-only cardNumber has 16 or 19 digits and a supported Discover prefix: 6011, 65 or 644-649.
 function isDiscoverPaymentCard(cardNumber: string): boolean {
   const firstThreeDigits = Number(cardNumber.slice(0, 3));
   return (cardNumber.startsWith("6011") || cardNumber.startsWith("65") || isInRange(firstThreeDigits, 644, 649)) && isPaymentCardLength(cardNumber, [16, 19]);
 }
 
-// Diners Club cards use 300-305, 36, 38, or 39 prefixes with 14 digits.
+// Returns whether digit-only cardNumber has 14 digits and a Diners Club prefix: 300-305, 36, 38 or 39.
 function isDinersPaymentCard(cardNumber: string): boolean {
   const firstThreeDigits = Number(cardNumber.slice(0, 3));
   return (isInRange(firstThreeDigits, 300, 305) || cardNumber.startsWith("36") || cardNumber.startsWith("38") || cardNumber.startsWith("39")) && isPaymentCardLength(cardNumber, [14]);
 }
 
-// JCB cards use 3528-3589 prefixes with 16-19 digits.
+// Returns whether digit-only cardNumber has 16-19 digits and a JCB prefix from 3528 through 3589.
 function isJcbPaymentCard(cardNumber: string): boolean {
   const firstFourDigits = Number(cardNumber.slice(0, 4));
   return isInRange(firstFourDigits, 3528, 3589) && isPaymentCardLength(cardNumber, [16, 17, 18, 19]);
@@ -493,9 +488,8 @@ function passesLuhnCheck(cardNumber: string): boolean {
 }
 
 // Calculates one digit's Luhn contribution while validating a possible payment-card value.
-// Even-positioned digits from the right remain unchanged; alternating digits are doubled and folded.
+// indexFromRight is zero-based, so the rightmost digit is unchanged; odd indexes double digit and subtract nine when needed.
 function luhnDigitContribution(digit: number, indexFromRight: number): number {
-  // Even positions from the right contribute their original digit to the user's card-validity decision.
   if (indexFromRight % 2 === 0) {
     return digit;
   }

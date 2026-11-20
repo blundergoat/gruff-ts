@@ -31,20 +31,17 @@ type ContextDocFindingInput = ContextDocFindingDetails & {
   comment: CommentRecord;
 };
 
-// Materialises one finding per missing context class. Each callable can theoretically produce
-// four (complex, side-effect, error-behavior, invariant) - the four classes are independent signals.
-// Reports each detected gap as a stable doc-context finding.
+// Returns nothing. Appends stable findings for missing context in block to findings, using comment as the review text and finding location.
+// Uses file for report paths and config for complexity thresholds; checks rationale, side effects, errors and invariants independently.
 export function pushFunctionContextFindings(file: SourceFile, block: FunctionBlock, comment: CommentRecord, config: Config, findings: Finding[]): void {
   for (const detail of functionContextDocFindings(block, comment.text, config)) {
     findings.push(contextDocFinding({ file, comment, ...detail }));
   }
 }
 
-/*
- * Interface-only context-doc rule. The caller is responsible for skipping signature-restatement
- * comments so the useless-docblock rule's stable finding doesn't get duplicated by this one.
- * Reports `docs.missing-invariant-doc` for interfaces that carry public-contract signals.
- */
+// Returns nothing. Appends an invariant-doc finding to findings when an interface declaration signals a contract that comment leaves unmarked.
+// Uses file for the report location, lines for interface text, and comment for the finding line and review text.
+// Other declaration kinds add nothing. The caller skips signature-restatement comments to avoid duplicate findings.
 export function pushDeclarationContextFindings(file: SourceFile, lines: string[], declaration: CommentedDeclaration, comment: CommentRecord, findings: Finding[]): void {
   if (declaration.kind !== "interface") {
     return;
@@ -61,8 +58,8 @@ export function pushDeclarationContextFindings(file: SourceFile, lines: string[]
   );
 }
 
-// Evaluates four context classes independently - collected into a list rather than emitted directly
-// so the caller can apply a single stable mapping over them.
+// Returns context-doc finding details for block by checking commentText against complexity, side-effect, error and invariant requirements.
+// Uses config for configurable complexity limits; an empty list means none of these checks found a gap.
 function functionContextDocFindings(block: FunctionBlock, commentText: string, config: Config): ContextDocFindingDetails[] {
   const details: ContextDocFindingDetails[] = [];
   const body = block.codeBody;
@@ -85,7 +82,8 @@ function functionContextDocFindings(block: FunctionBlock, commentText: string, c
   return details;
 }
 
-// Requires "why" context only after callable complexity crosses the configured threshold.
+// Checks block against config's length and cyclomatic limits and the fixed cognitive and nesting limits.
+// Returns missing-why finding details when commentText lacks a rationale marker for a complex block, or undefined otherwise.
 function complexFunctionContextDocFinding(block: FunctionBlock, commentText: string, config: Config): ContextDocFindingDetails | undefined {
   if (!isComplexContextCandidate(block, config) || hasComplexWhyMarker(commentText, block.name)) {
     return undefined;
@@ -93,7 +91,8 @@ function complexFunctionContextDocFinding(block: FunctionBlock, commentText: str
   return contextDocDetails(block.name, "docs.missing-why-for-complex-code", `Complex function \`${block.name}\` has a comment, but it does not explain why the control flow exists.`, "Explain the tradeoff, compatibility reason, or invariant behind the complex control flow.", "complex-code");
 }
 
-// Documents externally observable mutations when the comment does not mention them.
+// Returns missing-side-effect finding details for block when body or its name signals an effect and commentText lacks a marker.
+// Returns undefined when no effect signal exists or commentText already contains a side-effect marker.
 function sideEffectContextDocFinding(block: FunctionBlock, body: string, commentText: string): ContextDocFindingDetails | undefined {
   if (!hasSideEffectSignal(block.name, body) || hasSideEffectMarker(commentText)) {
     return undefined;
@@ -101,8 +100,8 @@ function sideEffectContextDocFinding(block: FunctionBlock, body: string, comment
   return contextDocDetails(block.name, "docs.missing-side-effect-doc", `Function \`${block.name}\` performs side effects that its comment does not describe.`, "Name the observable side effect such as filesystem, process, environment, or network mutation.", "side-effect");
 }
 
-// The family's structural form (gruff-php's throws-tag rule, gruff-py's raises-doc rule): a commented function whose code
-// throws needs an `@throws` tag. A comment that describes the error in other words does not satisfy the rule; only the tag does.
+// Returns missing-error-behavior finding details for block when body matches throw at word boundaries and commentText lacks an @throws marker.
+// Returns undefined when body has no such match or commentText contains the marker.
 function errorBehaviorContextDocFinding(block: FunctionBlock, body: string, commentText: string): ContextDocFindingDetails | undefined {
   if (!/\bthrow\b/.test(body) || /@throws\b/.test(commentText)) {
     return undefined;
@@ -110,7 +109,8 @@ function errorBehaviorContextDocFinding(block: FunctionBlock, body: string, comm
   return contextDocDetails(block.name, "docs.missing-error-behavior-doc", `Function \`${block.name}\` throws, but its comment has no @throws tag.`, "Add an @throws tag that names each error the function throws and when.", "error-behavior");
 }
 
-// Protects schema and fingerprint invariants from becoming implicit tribal knowledge.
+// Returns missing-invariant finding details for block when its name or body signals a public contract and commentText lacks a marker.
+// Returns undefined when no contract signal exists or commentText already contains an invariant marker.
 function invariantContextDocFinding(block: FunctionBlock, commentText: string): ContextDocFindingDetails | undefined {
   if (!hasInvariantFunctionSignal(block) || hasInvariantMarker(commentText)) {
     return undefined;
@@ -118,8 +118,8 @@ function invariantContextDocFinding(block: FunctionBlock, commentText: string): 
   return contextDocDetails(block.name, "docs.missing-invariant-doc", `Function \`${block.name}\` maintains a public contract that its comment does not describe.`, "Document the schema, fingerprint, baseline, sorting, or determinism invariant.", "invariant");
 }
 
-// Bundles the per-context-class metadata so the four detector helpers share one stable shape.
-// `contextClass` is the discriminator surfaced in finding metadata.
+// Returns context-doc finding details: symbol names the declaration, ruleId selects the rule, and message explains the gap.
+// Uses remediation as repair advice and contextClass as the missing-context discriminator in metadata.
 function contextDocDetails(symbol: string, ruleId: string, message: string, remediation: string, contextClass: string): ContextDocFindingDetails {
   return {
     symbol,
@@ -130,8 +130,7 @@ function contextDocDetails(symbol: string, ruleId: string, message: string, reme
   };
 }
 
-// Anchors every context-doc finding at the comment line (not the declaration line) so the
-// reviewer's eye lands on the documentation that needs editing. Reports a stable finding.
+// Returns a stable finding from input's file, comment and rule details, anchored at the comment for documentation review.
 function contextDocFinding(input: ContextDocFindingInput): Finding {
   const { file, comment, symbol, ruleId, message, remediation, metadata } = input;
   return makeFinding({
@@ -152,7 +151,7 @@ function contextDocFinding(input: ContextDocFindingInput): Finding {
 // `complexity.cognitive` rule's default, so default scans keep the same gate; no profile or config value moves it.
 const COMPLEX_CONTEXT_COGNITIVE_LIMIT = 15;
 
-// Uses the same syntax measurement as complexity findings so a reviewer sees one consistent gate.
+// Returns whether block exceeds a length or cyclomatic limit from config, the fixed cognitive limit, or nesting depth three.
 function isComplexContextCandidate(block: FunctionBlock, config: Config): boolean {
   // A legacy span-only caller cannot reparse here, so it receives the same neutral fallback as block rules.
   const sharedComplexityMetrics = block.complexityMetrics ?? baseComplexityMetrics();
@@ -164,11 +163,8 @@ function isComplexContextCandidate(block: FunctionBlock, config: Config): boolea
   );
 }
 
-// Vocabulary list signalling "the comment explains why" - the missing-why rule passes when any
-// listed word appears. Adding entries here loosens the rule; removing them tightens it. Good technical
-// writing often states a constraint or a contrast instead of announcing a cause ("the renderer and the
-// clipboard must count from the same payload walk"), so those words count too, but only in a comment that
-// says more than the function's own name: "Always routes the value." above `routeValue` explains nothing.
+// Returns whether text contains an accepted rationale marker for the callable named functionName.
+// Direct markers pass alone; constraint markers also require at least four word occurrences absent from the name.
 function hasComplexWhyMarker(text: string, functionName: string): boolean {
   if (/\b(?:because|why|intentional|trade-?off|compat(?:ibility|ible)?|avoid|preserve)\b|\b(?:due to|so that|in order to|required by)\b/i.test(text)) {
     return true;
@@ -180,8 +176,8 @@ function hasComplexWhyMarker(text: string, functionName: string): boolean {
 // because a one-line paraphrase of a function name rarely adds that many.
 const RATIONALE_MINIMUM_EXTRA_WORDS = 4;
 
-// True when the comment's prose, with tag lines such as `@param` set aside, keeps at least four words that are not
-// words of the function name, so a one-line paraphrase of the name cannot pass as rationale.
+// True when the comment's prose, with tag lines such as @param set aside, keeps at least four words that are not
+// words of the function name, a prerequisite for accepting constraint words as rationale.
 function saysMoreThanTheName(text: string, functionName: string): boolean {
   const nameWords = new Set(functionName.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
   const prose = text.split("\n").filter((line) => !/^\s*(?:\*\s*)?@/.test(line)).join(" ");
@@ -189,14 +185,13 @@ function saysMoreThanTheName(text: string, functionName: string): boolean {
   return extraWords.length >= RATIONALE_MINIMUM_EXTRA_WORDS;
 }
 
-// Vocabulary for "comment names a side effect". Pairs with `SIDE_EFFECT_BODY_PATTERNS` - if the
-// body matches and none of these words appear, the missing-side-effect rule fires.
+// Returns true when the callable's comment contains a whole-word side effect marker, regardless of case.
+// A side effect signal with no marker qualifies for the missing-side-effect finding.
 function hasSideEffectMarker(text: string): boolean {
   return /\b(?:writes|reads|persists|mutates|starts|spawns|network|filesystem|environment)\b/i.test(text);
 }
 
-// Vocabulary for "comment names a public contract". Seven canonical words; the rule fires when
-// the callable carries invariant signals (Finding/baseline/fingerprint references) but none of these.
+// Returns whether the supplied comment text contains a word that counts as a public contract marker.
 function hasInvariantMarker(text: string): boolean {
   return /\b(?:invariant|contract|must|stable|deterministic|schema|fingerprint)\b/i.test(text);
 }
@@ -216,9 +211,9 @@ function hasSideEffectSignal(name: string, body: string): boolean {
   return SIDE_EFFECT_BODY_PATTERNS.some((pattern) => pattern.test(body)) || hasProcessExecutionCall(body) || /^(?:write|recordHistory|startDashboard)\b/.test(name);
 }
 
-// Process execution: a bare `exec(cmd)` or a call on a child-process module receiver counts,
-// while any other member call, such as `/re/.exec(line)` or `pattern.exec(text)`, runs a regular expression and
-// changes nothing outside the function. The body is masked, so a regex literal's own text cannot fake a call.
+// Checks masked body text so that literal contents cannot count as process calls.
+// Returns true for bare exec, execFile or spawn spellings, including Sync forms, or matches with child_process, childProcess or cp.
+// A preceding dot excludes bare matches such as /re/.exec(line). Returns false when no match qualifies.
 function hasProcessExecutionCall(body: string): boolean {
   for (const match of body.matchAll(/\b(?:(child_process|childProcess|cp)\.)?(?:exec|execFile|spawn)(?:Sync)?\s*\(/g)) {
     if (match[1] !== undefined || body[(match.index ?? 0) - 1] !== ".") {
@@ -229,16 +224,15 @@ function hasProcessExecutionCall(body: string): boolean {
 }
 
 // Searches both the callable name and body for vocabulary tied to the analyser's stable contracts
-// (fingerprint, schemaVersion, baseline, AnalysisReport, Finding, dedupe, sort). Any match
-// triggers the invariant-doc rule's expectation that the comment will name an invariant.
+// (fingerprint, schemaVersion, baseline, AnalysisReport, Finding, stable sort, deterministic, dedupe, sort).
+// Returns true on a case-insensitive match so the caller can check the comment for an invariant marker.
 function hasInvariantFunctionSignal(block: FunctionBlock): boolean {
   const signalText = [block.name, block.codeBody].join("\n");
   return /\b(?:fingerprint|schemaVersion|baseline|AnalysisReport|Finding|stable sort|deterministic|dedupe|sort)\b/i.test(signalText);
 }
 
-// Same idea as `hasInvariantFunctionSignal` but reads the interface body via `declarationBlockText`.
-// The contract vocabulary is slightly wider (`Baseline`, `report`) because interfaces often shape
-// public report types.
+// Returns whether declaration.name or the text collected from lines at declaration.line contains public-contract vocabulary.
+// A match makes the interface eligible for an invariant-documentation check.
 function hasInvariantInterfaceSignal(lines: string[], declaration: CommentedDeclaration): boolean {
   const blockText = declarationBlockText(lines, declaration.line);
   const signalText = `${declaration.name}\n${blockText}`;

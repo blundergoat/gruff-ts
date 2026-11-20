@@ -79,8 +79,9 @@ export function baseComplexityMetrics(): ComplexityMetrics {
   };
 }
 
-// Measures one parsed callable without reparsing the source or walking another reported callable.
-// It reports one deterministic breakdown to CLI complexity findings and documentation checks.
+// Measures the supplied parsed callable for complexity findings and documentation checks.
+// The ownership set identifies separately reported nested callables to skip.
+// Returns cyclomatic and cognitive complexity, maximum nesting and a breakdown of the counts.
 export function complexityMetrics(callableNode: TypeScriptNode, ownedCallableNodes: ReadonlySet<TypeScriptNode>): ComplexityMetrics {
   const accumulator: ComplexityAccumulator = {
     ifCount: 0,
@@ -121,9 +122,10 @@ export function complexityMetrics(callableNode: TypeScriptNode, ownedCallableNod
   };
 }
 
-// Walks one node using the counting law, carrying only control-flow depth between syntax children.
+// Measures the supplied syntax node and its owned descendants from the current control-flow depth.
+// Returns nothing. Updates counts and maximum nesting in the walk context, pruning reported nested callables to preserve separate totals.
 function walkComplexityNode(node: TypeScriptNode, controlFlowDepth: number, context: ComplexityWalkContext): void {
-  // When M07 reports a nested callable separately, its body belongs to that report block, not this parent.
+  // A separately reported nested callable contributes to its own measurements.
   if (node !== context.callableNode && context.ownedCallableNodes.has(node)) {
     return;
   }
@@ -138,9 +140,8 @@ function walkComplexityNode(node: TypeScriptNode, controlFlowDepth: number, cont
     walkNestedControlFlow(node, controlFlowDepth, context);
     return;
   }
-  // A switch is one dispatch decision however many cases it has, and one control-flow nesting level.
+  // A switch adds one nesting level. A switch with any case clause also adds one dispatch decision.
   if (typescriptSyntax.isSwitchStatement(node)) {
-    // A switch with only a default clause chooses nothing, so it adds no decision.
     if (node.caseBlock.clauses.some((clause) => typescriptSyntax.isCaseClause(clause))) {
       context.accumulator.caseCount += 1;
     }
@@ -159,7 +160,7 @@ function walkComplexityNode(node: TypeScriptNode, controlFlowDepth: number, cont
     walkNestedControlFlow(node, controlFlowDepth, context);
     return;
   }
-  // Logical operators count as decisions but do not deepen control flow.
+  // Logical AND and OR add decisions at the current nesting depth.
   if (typescriptSyntax.isBinaryExpression(node)) {
     walkBinaryExpression(node, controlFlowDepth, context);
     return;
@@ -168,18 +169,17 @@ function walkComplexityNode(node: TypeScriptNode, controlFlowDepth: number, cont
   walkChildrenAtDepth(node, controlFlowDepth, context);
 }
 
-// Counts an if and keeps an `else if` at peer depth while ordinary else bodies stay nested.
-// Returning early is the flattening the cognitive advice asks for, so a guard adds its decision but no nesting level.
+// Returns nothing. Records the supplied if statement and its branches in the walk context's complexity totals.
+// Uses the incoming depth for an early-exit guard and else-if peers. Other branch bodies add a nesting level.
 function walkIfStatement(node: import("typescript").IfStatement, controlFlowDepth: number, context: ComplexityWalkContext): void {
   context.accumulator.ifCount += 1;
   const nestedDepth = isEarlyExitGuard(node) ? controlFlowDepth : enterControlFlow(controlFlowDepth, context.accumulator);
   walkComplexityNode(node.expression, nestedDepth, context);
   walkComplexityNode(node.thenStatement, nestedDepth, context);
-  // A source without an else branch has no further control-flow subtree for the user to review.
   if (!node.elseStatement) {
     return;
   }
-  // An `else if` is another peer decision, not an extra nesting layer created by AST parentage.
+  // Visit an else-if at the incoming depth so the chain stays a set of peer decisions.
   if (typescriptSyntax.isIfStatement(node.elseStatement)) {
     walkComplexityNode(node.elseStatement, controlFlowDepth, context);
     return;
@@ -187,32 +187,33 @@ function walkIfStatement(node: import("typescript").IfStatement, controlFlowDept
   walkComplexityNode(node.elseStatement, nestedDepth, context);
 }
 
-// Counts each logical binary node once; all other binary operators, including `??`, stay neutral.
+// Returns nothing. Counts a logical AND or OR in the supplied walk context. Other binary operators add no decision of their own.
+// Visits both operands of the expression at the supplied control-flow depth.
 function walkBinaryExpression(node: import("typescript").BinaryExpression, controlFlowDepth: number, context: ComplexityWalkContext): void {
-  // A user's logical AND adds one decision without changing nesting depth.
   if (node.operatorToken.kind === typescriptSyntax.SyntaxKind.AmpersandAmpersandToken) {
     context.accumulator.logicalAndCount += 1;
   }
-  // A user's logical OR adds one decision without changing nesting depth.
   if (node.operatorToken.kind === typescriptSyntax.SyntaxKind.BarBarToken) {
     context.accumulator.logicalOrCount += 1;
   }
   walkChildrenAtDepth(node, controlFlowDepth, context);
 }
 
-// Enters one control construct, records the deepest user-visible level, and walks its children there.
+// Visits the construct's children one level deeper than the supplied depth.
+// Returns nothing. Updates maximum nesting and accumulates the children's decisions in the walk context.
 function walkNestedControlFlow(node: TypeScriptNode, controlFlowDepth: number, context: ComplexityWalkContext): void {
   const nestedDepth = enterControlFlow(controlFlowDepth, context.accumulator);
   walkChildrenAtDepth(node, nestedDepth, context);
 }
 
-// Visits every syntax child at an unchanged depth so punctuation and ordinary braces stay free.
+// Visits the supplied node's children at the given depth so ordinary braces add no nesting.
+// Returns nothing. Uses the supplied walk context to enforce callable ownership and accumulate the children's measurements.
 function walkChildrenAtDepth(node: TypeScriptNode, controlFlowDepth: number, context: ComplexityWalkContext): void {
   // Every child stays with the nearest reported callable unless the ownership guard prunes it.
   node.forEachChild((child) => walkComplexityNode(child, controlFlowDepth, context));
 }
 
-// Advances and records control-flow depth for an if, loop, switch, catch, or ternary.
+// Returns the current control-flow depth plus one and raises the supplied accumulator's maximum if the new depth exceeds it.
 function enterControlFlow(controlFlowDepth: number, accumulator: ComplexityAccumulator): number {
   const nestedDepth = controlFlowDepth + 1;
   accumulator.maximumControlFlowNesting = Math.max(accumulator.maximumControlFlowNesting, nestedDepth);
@@ -241,8 +242,7 @@ function isLoopStatement(node: TypeScriptNode): boolean {
     || typescriptSyntax.isDoStatement(node);
 }
 
-// Builds the fixed zero-valued metadata shape used when a source has no decisions.
-// It never throws because no source or parser state is read here.
+// Returns a fresh zeroed breakdown for the base measurement used when a callable has no computed metrics.
 function emptyBreakdown(): ComplexityBreakdown {
   return {
     if: 0,

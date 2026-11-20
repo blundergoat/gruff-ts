@@ -93,7 +93,7 @@ test("cumulative expanded fixture covers every new rule with unique fingerprints
   assert.match(sampleMessages.get("security.new-function") ?? "", /dynamic code/);
 });
 
-// Builds the synthetic project for the cumulative rule-coverage assertion.
+// Returns synthetic file contents keyed by path for the cumulative rule-coverage and fingerprint uniqueness assertions.
 function cumulativeExpandedFixtureFiles(): Record<string, string> {
   return {
     "Widget.ts": cumulativeWidgetSource(),

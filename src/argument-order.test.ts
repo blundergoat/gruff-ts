@@ -31,8 +31,8 @@ const ORDER_CASES = [
   { command: "check-ignore", flags: ["--no-config", "--format", "json"] },
 ] as const;
 
-// Builds a one-file project the ordering comparison can scan, runs the callback in it, then removes it.
-// Writes only inside a fresh temporary directory, which is removed again whether the callback threw or not.
+// Writes a probe script and README to a temporary project and passes that directory to the argument-order callback.
+// Returns nothing. Attempts to remove the fixture even if setup or the callback throws.
 function withProbeProject(run: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-argument-order-"));
   try {
@@ -44,8 +44,9 @@ function withProbeProject(run: (dir: string) => void): void {
   }
 }
 
-// Runs one gruff-ts invocation in a project directory and returns what a user would see.
-// Spawns the built binary; it reads the project and writes nothing outside whatever the command itself writes.
+// Spawns gruff-ts with interaction disabled in the supplied project directory, passing args as the command arguments.
+// Returns the exit status, or null if no numeric exit status is available, and joins stdout and stderr with missing streams treated as empty.
+// Masks timestamps so the argument-order comparison can use the combined output.
 function runInProject(dir: string, args: string[]): { status: number | null; output: string } {
   const result = spawnSync("bash", [BIN, "--no-interaction", ...args], { cwd: dir, encoding: "utf8" });
 

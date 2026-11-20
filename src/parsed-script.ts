@@ -59,10 +59,11 @@ export function parsedScriptParseCount(): number {
 /**
  * Parses one script into the shared boundary result. Non-script inputs return undefined so a
  * config or text file never parses; diagnostics always cover the whole file (never range-filtered).
+ * Each script input increments the process-wide parse count exposed by parsedScriptParseCount.
  *
  * @param file - display path plus the script flag from discovery; a false script flag skips parsing
  * @param source - decoded file text; empty script text produces a source file with no diagnostics
- * @returns shared parse result; undefined means the input was a config or text file
+ * @returns - shared parse result. No diagnostics means a clean parse. Undefined means the script flag was false.
  */
 export function parseScript(file: ParsedScriptInput, source: string): ParsedScript | undefined {
   // Config and text inputs do not enter the script parser, so callers receive no parse result.
@@ -82,18 +83,17 @@ export function parseScript(file: ParsedScriptInput, source: string): ParsedScri
 }
 
 /**
- * Blanks every decorator in `text` with spaces, keeping newlines and offsets, so a line that holds only decorators reads
- * as blank.
+ * Masks decorators with spaces while preserving line breaks and offsets, so decorator-only lines read as blank.
  *
  * @param text - the parsed source text, or a same-length masking of it such as the source with its comments blanked
  * @param parsed - the shared parse of that source
- * @returns `text` with each decorator's characters replaced by spaces
+ * @returns Text with decorator characters replaced by spaces except for CR and LF.
  */
 export function maskDecorators(text: string, parsed: ParsedScript): string {
   const characters = text.split("");
-  // Walks every node once; decorators can sit on classes, members and parameters at any depth.
+  // Returns nothing. Visits node and its descendants and blanks decorator spans in the shared buffer to preserve source offsets.
   const visit = (node: TsNode): void => {
-    // A decorator's span runs from its `@` to the end of its expression, arguments included.
+    // A decorator's span runs from its at sign to the end of its expression, arguments included.
     if (node.kind === typescriptSyntax.SyntaxKind.Decorator) {
       blankRange(characters, node.getStart(parsed.sourceFile), node.end);
     }
@@ -104,13 +104,13 @@ export function maskDecorators(text: string, parsed: ParsedScript): string {
 }
 
 /**
- * Flags each line that carries code, for the function-block, for-of body and module line counts (FAMILY-CONTRACT section 12,
- * search `Code lines in every line count`). A line is not code when it is blank or holds only comments or decorators; the
- * text of string and template literals still counts as code.
+ * Flags lines for the function-block, for-of body and module counts in FAMILY-CONTRACT section 12.
+ * Blank lines and comment-only lines do not count. With a parse, decorator-only lines do not count either.
+ * Nonblank string and template text outside those masked spans counts as code.
  *
- * @param source - decoded file text
- * @param parsed - the shared parse of `source`; without it decorators are not recognised and count as code
- * @returns one flag per line of `source`, 0-based, true where the line carries code
+ * @param source - decoded file text whose comment ranges and line boundaries determine the flags
+ * @param parsed - the shared parse of source; without it decorators are not recognised and count as code
+ * @returns - one flag per LF- or CRLF-delimited line in source order. Empty source returns one false flag.
  */
 export function codeLineFlags(source: string, parsed?: ParsedScript): boolean[] {
   const characters = source.split("");
@@ -122,7 +122,8 @@ export function codeLineFlags(source: string, parsed?: ParsedScript): boolean[] 
   return code.split(/\r?\n/).map((line) => line.trim() !== "");
 }
 
-// Replaces one half-open character range with spaces, keeping line breaks so line numbers do not move.
+// Returns nothing and replaces characters in place with spaces from start up to but excluding end, bounded by the array length.
+// Preserves CR and LF so line numbers stay fixed for LF- and CRLF-delimited text.
 function blankRange(characters: string[], start: number, end: number): void {
   for (let index = start; index < end && index < characters.length; index += 1) {
     if (characters[index] !== "\n" && characters[index] !== "\r") {
@@ -131,8 +132,8 @@ function blankRange(characters: string[], start: number, end: number): void {
   }
 }
 
-// Maps extensions onto the matching TypeScript parser mode so TSX/JSX syntax parses as syntax.
-// The single copy: source-text and security-flow used to carry one each.
+// Returns the TypeScript parser mode selected by path's case-sensitive extension so JSX and TSX are parsed correctly.
+// Recognises .tsx, .jsx, .js, .mjs and .cjs; all other paths use TS mode.
 export function scriptKindFor(path: string): import("typescript").ScriptKind {
   if (path.endsWith(".tsx")) {
     return typescriptSyntax.ScriptKind.TSX;
@@ -212,34 +213,32 @@ export interface CallableMatchPoint {
 }
 
 /**
- * Enumerates callable declarations from the shared syntax tree: function declarations (including
- * generic and multi-line signatures the regex missed), class/object methods and constructors,
- * interface/type-literal method signatures, const/let arrow and function initializers (including
- * parenless single-argument arrows), and test/it callbacks. At most one point per source line is
- * returned (source order wins) - the legacy scanner's one-block-per-line invariant.
+ * Returns cached callable points, building the shared syntax index on first access. Ties go to the first point recorded on the line.
+ * Covers named functions, identifier-named methods and signatures, constructors, and identifier-bound const or let function values.
+ * Bare test and it calls need a literal title and a function callback. These callbacks take priority over other points on the same line.
  *
- * @param parsed Shared parse result for the script.
- * @returns Match points sorted by line, ready for the block parser.
+ * @param parsed - script parse whose syntax tree is indexed
+ * @returns - cached points sorted by zero-based source line; empty when no supported callable is found
  */
 export function callableMatchPoints(parsed: ParsedScript): CallableMatchPoint[] {
   return parsedSyntaxIndex(parsed).callablePoints;
 }
 
 /**
- * Enumerates the callable forms only the size and complexity rules measure (FAMILY-CONTRACT.md section 12, search
- * `four more function forms`): an object-literal `key: function` method, a function assigned to a member, a `var`
- * function expression and an immediately invoked function. Each takes a function expression or an arrow function.
- * Which callables the documentation rules see is unchanged.
+ * List the four callable forms reserved for size and complexity checks in FAMILY-CONTRACT.md section 12.
+ * Covers function or arrow expressions in non-computed properties, member assignments, identifier-bound var initializers and immediate calls.
+ * Uses the shared syntax index and caches it on first access for this parse.
  *
- * @param parsed Shared parse result for the script.
- * @returns Points in source order; empty when the script uses none of these forms.
+ * @param parsed - script parse whose syntax index supplies the callable locations
+ * @returns the cached match points in source order, empty when the script uses none of those forms
  */
 export function measuredOnlyCallablePoints(parsed: ParsedScript): CallableMatchPoint[] {
   return parsedSyntaxIndex(parsed).measuredOnlyPoints;
 }
 
-// Builds one deterministic syntax index per parsed script so every block rule shares one walk.
-// Stable contract: repeated consumers receive the same ordered rows.
+// Returns the index for parsed's syntax tree so that block rules share one walk.
+// Caches the index by parse identity and reuses it on later calls.
+// The stable index holds ordinary callable points sorted by line and measure-only points in traversal order.
 function parsedSyntaxIndex(parsed: ParsedScript): ParsedSyntaxIndex {
   const cachedIndex = parsedSyntaxIndexes.get(parsed);
   // Multiple rule consumers reach the same file, so a completed projection is reused verbatim.
@@ -248,11 +247,10 @@ function parsedSyntaxIndex(parsed: ParsedScript): ParsedSyntaxIndex {
   }
   const callablePointsByLine = new Map<number, CallableMatchPoint>();
   const measuredOnlyPoints: CallableMatchPoint[] = [];
-  // One depth-first walk visits the user's syntax tree.
+  // Returns nothing. Visits node and its descendants to populate the shared callable map and list of measure-only points.
   const visitSyntaxNode = (node: TsNode): void => {
     recordCallablePoint(callablePointsByLine, matchPointFor(parsed.sourceFile, node));
     const measuredOnlyPoint = measuredOnlyPointFor(parsed.sourceFile, node);
-    // Most nodes are not one of the measure-only forms.
     if (measuredOnlyPoint) {
       measuredOnlyPoints.push(measuredOnlyPoint);
     }
@@ -267,22 +265,22 @@ function parsedSyntaxIndex(parsed: ParsedScript): ParsedSyntaxIndex {
   return syntaxIndex;
 }
 
-// Applies the established one-block-per-line policy while the shared syntax index is built.
+// Returns nothing. Updates callablePointsByLine with callablePoint under the one-block-per-line policy. Undefined leaves the map unchanged.
 function recordCallablePoint(callablePointsByLine: Map<number, CallableMatchPoint>, callablePoint: CallableMatchPoint | undefined): void {
   // Most syntax nodes are not callable declarations, so they add no report block.
   if (!callablePoint) {
     return;
   }
   const existingPoint = callablePointsByLine.get(callablePoint.lineIndex);
-  // Test callbacks outrank same-line declarations; otherwise the first source declaration wins.
+  // A test callback replaces a non-test point on the same line. Otherwise the first recorded point stays.
   if (!existingPoint || (callablePoint.isTestCallable && !existingPoint.isTestCallable)) {
     callablePointsByLine.set(callablePoint.lineIndex, callablePoint);
   }
 }
 
-// Classifies one AST node into a callable match point, or undefined for non-callable nodes.
-// Accessors and anonymous/default-export-anonymous functions stay excluded: the legacy scanner
-// never discovered them, and naming policy for those shapes is deferred to a separate decision.
+// Returns a match point for node when it is a named function, identifier-named method or signature, or constructor.
+// Also covers identifier-bound const or let function values and bare test or it calls with a literal title and a function callback.
+// Uses sourceFile for positions and parameter text. Unsupported shapes, including accessors and anonymous declarations, return undefined.
 function matchPointFor(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
   if (typescriptSyntax.isFunctionDeclaration(node) && node.name) {
     return declarationPoint(sourceFile, node.name.getStart(sourceFile), node, node.name.text, node.parameters);
@@ -291,7 +289,7 @@ function matchPointFor(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoi
     return declarationPoint(sourceFile, node.name.getStart(sourceFile), node, node.name.text, node.parameters);
   }
   if (typescriptSyntax.isConstructorDeclaration(node)) {
-    // Constructors carry no name node; the parameter-list position sits on the declaration line.
+    // Constructors have no name node, so the match point uses the parameter-list position as its anchor.
     return declarationPoint(sourceFile, node.parameters.pos, node, "constructor", node.parameters);
   }
   if (typescriptSyntax.isVariableDeclaration(node)) {
@@ -303,12 +301,14 @@ function matchPointFor(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoi
   return undefined;
 }
 
-// Finds the point for one of the four measure-only forms; a node is at most one of them.
+// Projects node into a size/complexity-only match point for a var binding, object key, member assignment or immediate invocation.
+// Uses sourceFile for positions and parameter text; returns undefined when no supported function-value form matches.
 function measuredOnlyPointFor(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
   return varFunctionPoint(sourceFile, node) ?? keyFunctionPoint(sourceFile, node) ?? memberFunctionPoint(sourceFile, node) ?? invokedFunctionPoint(sourceFile, node);
 }
 
-// `var render = function () {}`, named after the variable.
+// Returns a match point for node when it is an identifier-named var binding initialized with a function expression or arrow.
+// Uses sourceFile for positions and parameter text and names the point after the variable; returns undefined for other shapes.
 function varFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
   if (!typescriptSyntax.isVariableDeclaration(node) || !typescriptSyntax.isIdentifier(node.name) || !isFunctionValue(node.initializer) || !isVarList(node.parent)) {
     return undefined;
@@ -316,7 +316,9 @@ function varFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatch
   return declarationPoint(sourceFile, node.name.getStart(sourceFile), node.initializer, node.name.text, node.initializer.parameters);
 }
 
-// `{ paint: function () {} }`, named after the key, qualified by the object's variable or assignment target when it has one.
+// Projects node into a match point for a non-computed object property whose value is a function expression or arrow.
+// Uses sourceFile for positions and parameter text; prefixes the key with the object's variable or assignment target when known.
+// Keeps the bare key without an owner name and returns undefined when node does not match.
 function keyFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
   if (!typescriptSyntax.isPropertyAssignment(node) || !isFunctionValue(node.initializer) || typescriptSyntax.isComputedPropertyName(node.name)) {
     return undefined;
@@ -326,7 +328,8 @@ function keyFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatch
   return declarationPoint(sourceFile, node.name.getStart(sourceFile), node.initializer, name, node.initializer.parameters);
 }
 
-// `Calendar.render = function () {}`, named after the member it is assigned to.
+// Returns a match point when node assigns a function expression or arrow to a property or element access.
+// Uses sourceFile for source positions, parameter text and the target name; returns undefined for other node shapes.
 function memberFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
   if (!typescriptSyntax.isBinaryExpression(node) || node.operatorToken.kind !== typescriptSyntax.SyntaxKind.EqualsToken || !isMember(node.left) || !isFunctionValue(node.right)) {
     return undefined;
@@ -334,7 +337,8 @@ function memberFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMa
   return declarationPoint(sourceFile, node.left.getStart(sourceFile), node.right, compactText(sourceFile, node.left), node.right.parameters);
 }
 
-// `(function () {})()`, named after the function when it has a name and `<iife>` otherwise.
+// Returns a match point when node directly invokes a function expression or arrow; sourceFile supplies positions and parameter text.
+// Uses the function expression's name or <iife> when unnamed; returns undefined for all other nodes.
 function invokedFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
   const callee = typescriptSyntax.isCallExpression(node) ? withoutParentheses(node.expression) : undefined;
   if (!isFunctionValue(callee)) {
@@ -344,22 +348,23 @@ function invokedFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableM
   return declarationPoint(sourceFile, callee.getStart(sourceFile), callee, name, callee.parameters);
 }
 
-// A function expression or arrow function is the value each measure-only form binds or invokes.
+// Returns true and narrows node for a function expression or arrow function; undefined and all other node kinds return false.
 function isFunctionValue(node: TsNode | undefined): node is import("typescript").FunctionExpression | import("typescript").ArrowFunction {
   return node !== undefined && (typescriptSyntax.isFunctionExpression(node) || typescriptSyntax.isArrowFunction(node));
 }
 
-// `const` and `let` initializers are already ordinary blocks (search `variableInitializerPoint`); only `var` is added.
+// Returns whether node is a var declaration list; const and let lists are excluded because variableInitializerPoint already handles them.
 function isVarList(node: TsNode): boolean {
   return typescriptSyntax.isVariableDeclarationList(node) && (node.flags & typescriptSyntax.NodeFlags.BlockScoped) === 0;
 }
 
-// A property or element access is the member a function can be assigned to.
+// Returns whether node is a property or element access, the member targets accepted for function assignments.
 function isMember(node: TsNode): boolean {
   return typescriptSyntax.isPropertyAccessExpression(node) || typescriptSyntax.isElementAccessExpression(node);
 }
 
-// The name an object literal is bound to, when it is a variable's initializer or the right side of an assignment.
+// Returns the binding name for objectLiteral, or reads its assignment target from sourceFile and removes all whitespace for the label.
+// Returns undefined unless the object directly initializes an identifier binding or is the right-hand side of a simple equals assignment.
 function objectLiteralName(sourceFile: TsSourceFile, objectLiteral: TsNode): string | undefined {
   const owner = objectLiteral.parent;
   if (typescriptSyntax.isVariableDeclaration(owner) && typescriptSyntax.isIdentifier(owner.name)) {
@@ -371,12 +376,12 @@ function objectLiteralName(sourceFile: TsSourceFile, objectLiteral: TsNode): str
   return undefined;
 }
 
-// Source text with its whitespace removed, so a member written across lines names its function on one.
+// Returns node's text from sourceFile with all whitespace removed, keeping multiline member names on one line.
 function compactText(sourceFile: TsSourceFile, node: TsNode): string {
   return node.getText(sourceFile).replace(/\s+/g, "");
 }
 
-// Looks through the parentheses an immediately invoked function is usually wrapped in.
+// Returns node with all outer parentheses removed, exposing an immediate call's callee; returns node itself when it is not parenthesized.
 function withoutParentheses(node: TsNode): TsNode {
   let inner = node;
   while (typescriptSyntax.isParenthesizedExpression(inner)) {
@@ -385,14 +390,15 @@ function withoutParentheses(node: TsNode): TsNode {
   return inner;
 }
 
-// Builds the point for a named declaration: the anchor line is the name's line, matching where
-// the legacy line-oriented patterns fired; the end line is the declaration's final token.
+// Builds a callable match point for callableNode in sourceFile, using position to choose the reported line.
+// name is the reported label and parameters supply displayed parameter text and count.
+// The point records name and declaration lines, the final-token line, visibility and body flags; all line indexes are zero-based.
 function declarationPoint(sourceFile: TsSourceFile, position: number, callableNode: TsNode, name: string, parameters: readonly TsNode[]): CallableMatchPoint {
   const visibilityNode = callableVisibilityNode(callableNode);
   const isDirectlyExported = hasNodeModifier(visibilityNode, typescriptSyntax.SyntaxKind.ExportKeyword);
   const lineIndex = sourceFile.getLineAndCharacterOfPosition(position).line;
-  // `getStart` skips leading documentation, so this lands on the first modifier or keyword. Clamped
-  // to `lineIndex` so the declaration anchor can only ever move earlier than the reported name line.
+  // getStart skips leading documentation, so this finds the start of the declaration syntax.
+  // Clamp the declaration anchor because a callable expression can start on a later line than its reported label.
   const declarationStartLine = sourceFile.getLineAndCharacterOfPosition(visibilityNode.getStart(sourceFile)).line;
   return {
     lineIndex,
@@ -411,8 +417,8 @@ function declarationPoint(sourceFile: TsSourceFile, position: number, callableNo
   };
 }
 
-// Variable-backed callables inherit export modifiers and module scope from their statement;
-// declaration-shaped callables already carry both facts on their own node.
+// Returns the enclosing variable statement for a variable-backed callableNode so visibility checks see its export and module scope.
+// Returns callableNode itself for declaration-shaped callables or when the expected variable-statement ancestry is absent.
 function callableVisibilityNode(callableNode: TsNode): TsNode {
   const declaration = callableNode.parent;
   if (!typescriptSyntax.isVariableDeclaration(declaration)) {
@@ -426,21 +432,21 @@ function callableVisibilityNode(callableNode: TsNode): TsNode {
   return typescriptSyntax.isVariableStatement(statement) ? statement : callableNode;
 }
 
-// Reads a modifier only when the syntax node can own modifiers.
+// Returns whether node carries modifierKind; nodes that cannot own modifiers or lack the requested modifier return false.
 function hasNodeModifier(node: TsNode, modifierKind: import("typescript").SyntaxKind): boolean {
   const modifiers = typescriptSyntax.canHaveModifiers(node) ? typescriptSyntax.getModifiers(node) : undefined;
   return modifiers?.some((modifier) => modifier.kind === modifierKind) === true;
 }
 
 // Arrow functions and function expressions always carry a body, so only declaration-shaped nodes
-// can answer false here: a method signature has no `body` property at all, and an overload or
+// can answer false here: a method signature has no body property at all, and an overload or
 // abstract member leaves it undefined.
 function callableNodeHasBody(callableNode: TsNode): boolean {
   return (callableNode as { body?: unknown }).body !== undefined;
 }
 
-// const/let initializer arrows and function expressions become blocks named after the variable;
-// `var` stays excluded because the legacy pattern never matched it.
+// Returns a variable-named match point for node when it is a const or let declaration with a function expression or arrow initializer.
+// Uses sourceFile for positions and parameter text; var declarations, destructured bindings and other initializers return undefined.
 function variableInitializerPoint(sourceFile: TsSourceFile, node: import("typescript").VariableDeclaration): CallableMatchPoint | undefined {
   if (!typescriptSyntax.isIdentifier(node.name) || !node.initializer) {
     return undefined;
@@ -455,8 +461,9 @@ function variableInitializerPoint(sourceFile: TsSourceFile, node: import("typesc
   return declarationPoint(sourceFile, node.name.getStart(sourceFile), node.initializer, node.name.text, node.initializer.parameters);
 }
 
-// `test("name", () => …)` / `it("name", …)` callbacks become blocks named by the test title,
-// anchored at the call line - the legacy scanner's highest-priority pattern.
+// Returns a match point for a bare test or it call in node with a literal string or substitution-free template title and a function or arrow.
+// Uses sourceFile for positions and parameter text, and the title as the name; returns undefined when this shape does not match.
+// Anchors the point at the call line so recordCallablePoint gives it priority over other declarations on that line.
 function testCallbackPoint(sourceFile: TsSourceFile, node: import("typescript").CallExpression): CallableMatchPoint | undefined {
   if (!typescriptSyntax.isIdentifier(node.expression) || (node.expression.text !== "test" && node.expression.text !== "it")) {
     return undefined;
@@ -471,7 +478,7 @@ function testCallbackPoint(sourceFile: TsSourceFile, node: import("typescript").
   const lineIndex = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line;
   return {
     lineIndex,
-    // A test callback is anchored at its call expression, which is already the declaration line.
+    // Keep the declaration anchor at the call start when the callback begins on a later line.
     declarationLineIndex: lineIndex,
     endLineIndex: sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line,
     name: title.text,
@@ -487,8 +494,8 @@ function testCallbackPoint(sourceFile: TsSourceFile, node: import("typescript").
   };
 }
 
-// Joins each AST parameter span without the inter-parameter trivia where an end-of-line comment
-// could otherwise swallow the following name after newlines are flattened.
+// Returns sourceFile text for parameters joined by comma-space with newlines flattened; an empty list returns an empty string.
+// Omits inter-parameter trivia so a line comment between parameters cannot swallow the next name after flattening.
 function parametersText(sourceFile: TsSourceFile, parameters: readonly TsNode[]): string {
   return parameters
     .map((parameter) => sourceFile.text.slice(parameter.getStart(sourceFile), parameter.getEnd()))
@@ -516,11 +523,10 @@ export interface DocumentedExportFunction {
 }
 
 /**
- * Enumerates every exported function declaration that carries a leading JSDoc block. Anchoring to
- * the syntax tree means prose containing the word `export` inside a comment can no longer suppress
- * detection, and `export async function` plus generic and multi-line signatures are covered.
+ * Lists named, non-default exported function declarations with callable JSDoc in the shared syntax tree.
+ * Recognises async, generic and multiline declarations without treating comment text as declarations.
  *
- * @param parsed Shared parse result for the script.
+ * @param parsed - shared syntax tree searched for qualifying function declarations
  * @returns Documented exported functions in source order; empty when the file has none.
  */
 export function documentedExportFunctions(parsed: ParsedScript): DocumentedExportFunction[] {
@@ -528,22 +534,22 @@ export function documentedExportFunctions(parsed: ParsedScript): DocumentedExpor
 }
 
 /**
- * Enumerates every exported `const` bound to an arrow function or function expression whose
- * statement carries a leading JSDoc block, for the tag rules' `everyCallable` switches. The JSDoc
- * attaches to the variable statement, so the parameters and return type come from the initializer.
+ * Lists exported statements with the parser's const flag and one identifier bound to an arrow or function expression for everyCallable tag checks.
+ * The statement supplies its final callable JSDoc. The initializer supplies the parameters and return type.
  *
- * @param parsed Shared parse result for the script.
+ * @param parsed - shared syntax tree searched for documented exported callable constants
  * @returns Documented exported callable constants in source order; empty when the file has none.
  */
 export function documentedExportConstants(parsed: ParsedScript): DocumentedExportFunction[] {
   return collectDocumented(parsed, documentedExportConstant);
 }
 
-// Full-depth walk so namespaced exports keep their docblock coverage too. `project` decides which
-// nodes count and returns undefined for the rest, so results stay in source order.
+// Walks the parsed syntax tree at every depth so that namespaced exports keep their docblock coverage.
+// The projection receives the source file and each node. It returns a record to include or undefined to skip that node.
+// Returns the collected records in source order, or an empty array when the projection accepts no nodes.
 function collectDocumented(parsed: ParsedScript, project: (sourceFile: TsSourceFile, node: TsNode) => DocumentedExportFunction | undefined): DocumentedExportFunction[] {
   const results: DocumentedExportFunction[] = [];
-  // Records each projected node, then recurses so nested namespaces are reached too.
+  // Returns nothing. Adds the record for node, if present, to the shared results and visits children so that nested namespace exports are covered.
   const visit = (node: TsNode): void => {
     const documented = project(parsed.sourceFile, node);
     if (documented) {
@@ -555,10 +561,9 @@ function collectDocumented(parsed: ParsedScript, project: (sourceFile: TsSourceF
   return results;
 }
 
-// Projects one function declaration into the documented-export shape, or undefined when it is not
-// an exported named function with a JSDoc block. `export default function` never matched the
-// legacy pattern, so the pass with both tag switches off still excludes it; the tag rules' `everyCallable`
-// switches, on by default, cover it through `documentedDefaultAndLaterExports`.
+// Projects node into a documentation record for a named, non-default exported function with callable JSDoc.
+// Uses sourceFile for documentation text and locations; returns undefined when node fails these conditions.
+// With both tag switches off, default exports stay excluded; everyCallable covers them through documentedDefaultAndLaterExports.
 function documentedExportFunction(sourceFile: TsSourceFile, node: TsNode): DocumentedExportFunction | undefined {
   if (!typescriptSyntax.isFunctionDeclaration(node) || !node.name) {
     return undefined;
@@ -570,16 +575,15 @@ function documentedExportFunction(sourceFile: TsSourceFile, node: TsNode): Docum
   return documentedCallable(sourceFile, node, node.name.text, node);
 }
 
-// Projects one exported `const name = (...) => ...` or `const name = function (...) {...}`
-// statement, or undefined for any other node. The JSDoc is read from the statement because that
-// is where the parser attaches it.
+// Returns a documentation record for an exported node with the const flag and one identifier bound to an arrow or function expression.
+// Uses sourceFile for the statement's JSDoc text and positions. Returns undefined for other shapes or missing or unusable callable JSDoc.
 function documentedExportConstant(sourceFile: TsSourceFile, node: TsNode): DocumentedExportFunction | undefined {
   const declaration = soleConstDeclaration(node);
   return declaration && hasExportFlag(declaration) ? documentedConstantCallable(sourceFile, node, declaration) : undefined;
 }
 
-// Projects the one binding of a `const` statement when it is an identifier bound to an arrow
-// function or function expression, or undefined otherwise. The JSDoc comes from the statement.
+// Returns a documentation row for declaration's identifier-bound arrow or function initializer, using statement as the JSDoc host.
+// sourceFile supplies text and positions. Missing callable shape or usable JSDoc returns undefined; callers supply the sole const binding.
 function documentedConstantCallable(sourceFile: TsSourceFile, statement: TsNode, declaration: import("typescript").VariableDeclaration): DocumentedExportFunction | undefined {
   const initializer = declaration.initializer;
   if (!initializer || !typescriptSyntax.isIdentifier(declaration.name)) {
@@ -591,9 +595,8 @@ function documentedConstantCallable(sourceFile: TsSourceFile, statement: TsNode,
   return documentedCallable(sourceFile, statement, declaration.name.text, initializer);
 }
 
-// Returns the declaration of a `const` statement that declares exactly one binding.
-// A statement such as `const a = ..., b = ...` is skipped because one docblock above it cannot be
-// said to document both callables.
+// Returns the sole variable declaration when node is a const statement; returns undefined for other nodes or multiple declarations.
+// A shared docblock cannot distinguish several declarations; callers check the returned declaration's binding shape.
 function soleConstDeclaration(node: TsNode): import("typescript").VariableDeclaration | undefined {
   if (!typescriptSyntax.isVariableStatement(node) || (node.declarationList.flags & typescriptSyntax.NodeFlags.Const) === 0) {
     return undefined;
@@ -608,15 +611,12 @@ function hasExportFlag(declaration: import("typescript").Declaration): boolean {
 }
 
 /**
- * Enumerates the documented callables that reach the module surface through a default export or a
- * later export statement, for the tag rules' `everyCallable` switches: an `export default function`
- * (an anonymous one is named `default`, the name importers see), an `export default` arrow function
- * (also named `default`), and a top-level function declaration or single-binding `const` callable
- * without its own `export` modifier that a later `export { name }` or `export default name`
- * statement names. Callables named by a later statement keep their declared local name.
+ * Returns documented default function declarations, bare default arrows and qualifying top-level local callables named by separate exports.
+ * Anonymous default functions and default arrows are named default; separately exported bindings keep their local names.
+ * Separate exports match named functions or single const-flagged callable bindings. An export modifier rules out this match.
  *
- * @param parsed Shared parse result for the script.
- * @returns Documented default and later-exported callables in source order; empty when the file has none.
+ * @param parsed - script tree whose module-level statements and exports are inspected
+ * @returns - documentation rows in source order; empty when no eligible callable has usable JSDoc
  */
 export function documentedDefaultAndLaterExports(parsed: ParsedScript): DocumentedExportFunction[] {
   const laterExportedNames = laterExportedLocalNames(parsed.sourceFile);
@@ -631,8 +631,8 @@ export function documentedDefaultAndLaterExports(parsed: ParsedScript): Document
   return results;
 }
 
-// Projects an `export default function` declaration or an `export default` arrow function, or
-// undefined for any other statement. A parenthesised default expression is not unwrapped.
+// Returns a record for statement when it is a default function declaration or bare default arrow. sourceFile supplies JSDoc text and positions.
+// Returns undefined for other shapes, parenthesised expressions, or missing or unusable JSDoc.
 function documentedDefaultExport(sourceFile: TsSourceFile, statement: TsNode): DocumentedExportFunction | undefined {
   if (typescriptSyntax.isFunctionDeclaration(statement)) {
     const isDefault = (typescriptSyntax.getCombinedModifierFlags(statement) & typescriptSyntax.ModifierFlags.Default) !== 0;
@@ -644,9 +644,9 @@ function documentedDefaultExport(sourceFile: TsSourceFile, statement: TsNode): D
   return documentedCallable(sourceFile, statement, "default", statement.expression);
 }
 
-// Projects a top-level function declaration or single-binding `const` callable that lacks its own
-// `export` modifier but is named by a later export statement, or undefined for anything else.
-// Declarations with the modifier already reach the default pass or the exported-constant list.
+// Projects top-level statement into a documentation record for a function or single-binding const callable named in laterExportedNames.
+// Uses sourceFile for text and locations; returns undefined for other shapes, own export modifiers, or missing callable JSDoc.
+// Declarations with export modifiers are handled by the exported-callable passes.
 function documentedLaterExport(sourceFile: TsSourceFile, statement: TsNode, laterExportedNames: ReadonlySet<string>): DocumentedExportFunction | undefined {
   if (typescriptSyntax.isFunctionDeclaration(statement)) {
     const name = statement.name?.text;
@@ -659,11 +659,10 @@ function documentedLaterExport(sourceFile: TsSourceFile, statement: TsNode, late
   return documentedConstantCallable(sourceFile, statement, declaration);
 }
 
-// Local names that an `export default name` or `export { name }` / `export { name as alias }`
-// statement exposes. Export statements may sit anywhere at the top level, so all are read first.
+// Returns local names exposed by sourceFile's top-level default exports, export-equals assignments, and value export lists.
+// Reads exports before matching declarations so statement order does not hide a binding; returns an empty set when none qualify.
 function laterExportedLocalNames(sourceFile: TsSourceFile): Set<string> {
   const names = new Set<string>();
-  // Collects the local name from every default-name export and every local export list.
   for (const statement of sourceFile.statements) {
     if (typescriptSyntax.isExportAssignment(statement) && typescriptSyntax.isIdentifier(statement.expression)) {
       names.add(statement.expression.text);
@@ -675,8 +674,8 @@ function laterExportedLocalNames(sourceFile: TsSourceFile): Set<string> {
   return names;
 }
 
-// The local names in one `export { ... }` statement; empty for any other statement, a re-export
-// from another module, or a type-only export, none of which name a local value.
+// Returns original local names from an export { ... } statement, using the binding name for each alias.
+// Other statement forms and re-exports return an empty list. Type-only lists and specifiers contribute no names.
 function localExportListNames(statement: TsNode): string[] {
   if (!typescriptSyntax.isExportDeclaration(statement) || statement.moduleSpecifier || statement.isTypeOnly || !statement.exportClause || !typescriptSyntax.isNamedExports(statement.exportClause)) {
     return [];
@@ -685,13 +684,11 @@ function localExportListNames(statement: TsNode): string[] {
 }
 
 /**
- * Enumerates the documented private and nested callables for the tag rules' `everyCallable`
- * switches: every function declaration and single-binding `const` arrow or function-expression
- * callable, at any depth, that has no `export` modifier of its own and is not a top-level callable
- * named by a later export statement. Exported forms reach the default pass,
- * `documentedExportConstants` or `documentedDefaultAndLaterExports`, so none is reported twice.
+ * Lists private and nested functions and single-binding const arrow or function-expression callables with JSDoc for everyCallable checks.
+ * Excludes direct exports and top-level names from local value export lists or bare-identifier export assignments.
+ * Exported forms belong to the exported-callable passes so each declaration is documented once.
  *
- * @param parsed Shared parse result for the script.
+ * @param parsed - shared syntax tree searched for eligible declarations
  * @returns Documented private and nested callables in source order; empty when the file has none.
  */
 export function documentedPrivateCallables(parsed: ParsedScript): DocumentedExportFunction[] {
@@ -699,11 +696,11 @@ export function documentedPrivateCallables(parsed: ParsedScript): DocumentedExpo
   return collectDocumented(parsed, (sourceFile, node) => documentedPrivateCallable(sourceFile, node, laterExportedNames));
 }
 
-// Projects a function declaration or single-binding `const` callable without its own `export`
-// modifier, or undefined for anything else. A top-level one named by a later export statement is
-// left to `documentedLaterExport`; a nested one of that name is a different binding, so it counts.
+// Returns a documentation record for node when it is a private function declaration or single-binding const callable with usable JSDoc.
+// sourceFile supplies text and identifies top-level nodes. laterExportedNames lists top-level bindings handled by documentedLaterExport.
+// Returns undefined for ineligible nodes or missing usable JSDoc. A nested binding can reuse a top-level export's name.
 function documentedPrivateCallable(sourceFile: TsSourceFile, node: TsNode, laterExportedNames: ReadonlySet<string>): DocumentedExportFunction | undefined {
-  // Only a top-level binding can be the one a later export statement names.
+  // Returns true when name matches a separate export of this top-level binding. Nested names are independent bindings for private checks.
   const isLaterExported = (name: string): boolean => node.parent === sourceFile && laterExportedNames.has(name);
   if (typescriptSyntax.isFunctionDeclaration(node)) {
     const name = node.name?.text;
@@ -717,13 +714,11 @@ function documentedPrivateCallable(sourceFile: TsSourceFile, node: TsNode, later
 }
 
 /**
- * Enumerates every class and object-literal method that carries a leading JSDoc block, for the tag
- * rules' `everyCallable` switches. Static and private methods count too; constructors, accessors
- * and arrow-valued properties are not method declarations and stay out. Each method is named bare
- * (`join`, `pickFirst`), as the size and missing-doc rules name it; same-named methods of two owners
- * in one file stay apart through the finding identity's declaration ordinal.
+ * Lists class and object-literal methods with identifier or private-identifier names and callable JSDoc for everyCallable tag checks.
+ * Includes static and private methods; excludes constructors, accessors, arrow-valued properties, and computed or literal names.
+ * Bare method names use the declaration ordinal to distinguish same-named methods in one file.
  *
- * @param parsed Shared parse result for the script.
+ * @param parsed - shared syntax tree searched for qualifying methods
  * @returns Documented methods in source order; empty when the file has none.
  */
 export function documentedMethods(parsed: ParsedScript): DocumentedExportFunction[] {
@@ -731,13 +726,11 @@ export function documentedMethods(parsed: ParsedScript): DocumentedExportFunctio
 }
 
 /**
- * Reports whether a callable is a public method of an exported class: a method declaration with
- * no `private` or `protected` modifier and no `#private` name, declared in a class that carries
- * the `export` modifier. The tag rules' `everyCallable` switches report such an undocumented
- * method at the exported severity (operator decision D8).
+ * Recognizes methods on class declarations with their own export modifier, excluding private, protected and private-identifier methods.
+ * The missing-function-documentation check uses this classification to apply exported severity when either everyCallable tag switch is enabled.
  *
- * @param callableNode Shared-parse node of one analysed callable.
- * @returns True when the callable belongs to an exported class's public surface.
+ * @param callableNode - shared-parse node inspected for public exported-method status
+ * @returns True when the method qualifies for exported severity under these syntax checks.
  */
 export function isPublicExportedClassMethod(callableNode: TsNode): boolean {
   if (!typescriptSyntax.isMethodDeclaration(callableNode) || typescriptSyntax.isPrivateIdentifier(callableNode.name)) {
@@ -749,19 +742,20 @@ export function isPublicExportedClassMethod(callableNode: TsNode): boolean {
   return typescriptSyntax.isClassDeclaration(callableNode.parent) && hasNodeModifier(callableNode.parent, typescriptSyntax.SyntaxKind.ExportKeyword);
 }
 
-// Projects one method declaration with an identifier or `#private` name, or undefined for any
-// other node. Computed and literal method names have no plain name to report, so they stay out.
+// Projects node into a documentation record for an identifier-named or private-identifier method with callable JSDoc.
+// Uses sourceFile for text and locations; returns undefined for other nodes, computed or literal names, or missing callable JSDoc.
 function documentedMethod(sourceFile: TsSourceFile, node: TsNode): DocumentedExportFunction | undefined {
   if (!typescriptSyntax.isMethodDeclaration(node) || (!typescriptSyntax.isIdentifier(node.name) && !typescriptSyntax.isPrivateIdentifier(node.name))) {
     return undefined;
   }
-  // A method is named bare, as gruff-ts's size and missing-doc rules name it; two same-named methods in one file
-  // stay apart through the finding identity's declaration ordinal.
+  // Use the unqualified name so identifier-named methods match the names used by the size and missing-doc rules.
+  // The finding fingerprint uses the JSDoc line to distinguish same-named methods documented on different lines.
   return documentedCallable(sourceFile, node, node.name.text, node);
 }
 
-// Shared projection: the JSDoc comes from `docHost` (the declaration itself, or the statement that
-// holds a callable constant) while the parameters and return type come from `callable`.
+// Returns a documentation row named name using sourceFile positions, docHost's final JSDoc, and callable's parameters and return facts.
+// Returns undefined when docHost has no JSDoc or its final block is an overview or divider rather than callable documentation.
+// Only identifier parameter names are included; an absent return annotation produces an empty returnTypeText.
 function documentedCallable(sourceFile: TsSourceFile, docHost: TsNode, name: string, callable: import("typescript").SignatureDeclarationBase): DocumentedExportFunction | undefined {
   const jsDocs = (docHost as { jsDoc?: readonly import("typescript").JSDoc[] }).jsDoc;
   const jsDoc = jsDocs?.[jsDocs.length - 1];
@@ -780,8 +774,8 @@ function documentedCallable(sourceFile: TsSourceFile, docHost: TsNode, name: str
   };
 }
 
-// A divider, or the file's overview that TypeScript attaches to the first statement, is not this
-// callable's docblock (M13-T18). Only the first statement can carry the file's opening comment.
+// Returns whether jsDoc is a divider or the file overview attached to its first statement, so it is excluded as callable documentation.
+// Uses sourceFile for comment text and intervening lines, and docHost as the declaration carrying jsDoc.
 function isOverviewOrDividerJsDoc(sourceFile: TsSourceFile, docHost: TsNode, jsDoc: import("typescript").JSDoc): boolean {
   const commentText = sourceFile.text.slice(jsDoc.getStart(sourceFile), jsDoc.getEnd());
   if (isDividerComment(commentText)) {
@@ -791,12 +785,12 @@ function isOverviewOrDividerJsDoc(sourceFile: TsSourceFile, docHost: TsNode, jsD
   return sourceFile.statements[0] === docHost && isFileOverviewComment(commentText, gapLines);
 }
 
-/*
- * Return-value inference for `docs.missing-return-tag`'s `everyCallable` switch, read from the
- * syntax alone. A concise arrow body returns its expression; a block body returns a value when one
- * of its own `return` statements carries one. A bare `return;`, `return undefined;` and
- * `return void x;` hand back nothing. Returns inside nested functions and classes belong to those
- * callables and are skipped. Bodiless signatures (overloads, `declare`, abstract methods) return false.
+/**
+ * Checks a callable body for everyCallable return-tag inference. Concise arrows use their expression and blocks skip nested functions and classes.
+ * Bare returns, the undefined identifier and void expressions do not count as returned values.
+ *
+ * @param callable - signature whose own body supplies the return evidence
+ * @returns true for a syntactic value return and false for a bodiless signature or a body without a value return
  */
 function isBodyReturningValue(callable: import("typescript").SignatureDeclarationBase): boolean {
   const body = (callable as { body?: TsNode }).body;
@@ -806,9 +800,9 @@ function isBodyReturningValue(callable: import("typescript").SignatureDeclaratio
   return typescriptSyntax.isBlock(body) ? hasOwnValueReturn(body) : isValueExpression(body);
 }
 
-// Whether a callable hands back a value, for the missing-doc message (M13-T29, operator decision D3).
-// A declared type wins: `void`, `undefined`, `never`, an `asserts` predicate and a promise of `void`
-// or `undefined` return nothing. Without a declared type, `isBodyReturningValue` reads the body.
+// Returns whether callableNode is function-like and its declared type or body indicates a value for the missing-doc message.
+// Non-callables return false; explicit void, undefined, never, asserts predicates, and Promise<void> or Promise<undefined> count as no value.
+// Without a declared return type, the result comes from the callable's own body.
 export function isCallableReturningValue(callableNode: TsNode): boolean {
   if (!typescriptSyntax.isFunctionLike(callableNode)) {
     return false;
@@ -820,8 +814,8 @@ export function isCallableReturningValue(callableNode: TsNode): boolean {
   return !/^(?:void|undefined|never|asserts\b.*|Promise< ?(?:void|undefined) ?>)$/.test(returnType);
 }
 
-// Depth-first search for a value-carrying `return` of the enclosing callable. It stops at function
-// and class boundaries, so a callback's or nested method's return does not count.
+// Searches the subtree rooted at node for a value-carrying return and reports whether one exists.
+// Start at the callable body; function and class boundaries stop the search so nested callables do not contribute.
 function hasOwnValueReturn(node: TsNode): boolean {
   if (typescriptSyntax.isReturnStatement(node)) {
     return node.expression !== undefined && isValueExpression(node.expression);
@@ -832,7 +826,7 @@ function hasOwnValueReturn(node: TsNode): boolean {
   return node.forEachChild((child) => (hasOwnValueReturn(child) ? true : undefined)) ?? false;
 }
 
-// `undefined` and a `void` expression evaluate to nothing, so returning one is the same as a bare `return;`.
+// Returns whether expression counts as a value for return-tag inference; an undefined identifier or void expression returns false.
 function isValueExpression(expression: TsNode): boolean {
   return !typescriptSyntax.isVoidExpression(expression) && !(typescriptSyntax.isIdentifier(expression) && expression.text === "undefined");
 }

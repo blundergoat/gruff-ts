@@ -58,7 +58,8 @@ const WRITE_PERMISSION_SCOPES = new Set([
   "statuses",
 ]);
 
-// Stable rule contract: workflow-only checks ignore non-workflow YAML so example docs avoid findings.
+// Use the file's display path to decide whether to check its YAML source, so example YAML outside workflows stays exempt.
+// The stable rule contract leaves the caller's findings unchanged for other paths. The function returns nothing and appends any workflow findings.
 function analyseGithubActionsRules(file: SourceFile, source: string, findings: Finding[]): void {
   if (!isGithubWorkflowPath(file.displayPath)) {
     return;
@@ -70,7 +71,7 @@ function analyseGithubActionsRules(file: SourceFile, source: string, findings: F
   analyseSecretsInPullRequest(file, lines, findings);
 }
 
-// Matches committed GitHub Actions workflow locations and nothing under docs or examples.
+// Returns whether displayPath names a YAML file directly under the root .github/workflows directory, ignoring case.
 function isGithubWorkflowPath(displayPath: string): boolean {
   return /^\.github\/workflows\/[^/]+\.ya?ml$/i.test(displayPath);
 }
@@ -96,7 +97,8 @@ function leadingSpaceCount(line: string): number {
   return match?.[0].length ?? 0;
 }
 
-// Stable finding contract: reports pull_request_target only when trusted-context risk is visible nearby.
+// Checks workflow lines for a pull_request_target match and a trusted-context risk signal anywhere in the workflow.
+// Returns nothing and appends a warning to findings when both exist. Uses file and the first matching event line for a stable anchor.
 function analysePullRequestTarget(file: SourceFile, lines: readonly WorkflowLine[], findings: Finding[]): void {
   const eventLine = lines.find((line) => hasPullRequestTargetEvent(line));
   if (!eventLine || !hasPullRequestTargetRiskContext(lines)) {
@@ -114,17 +116,18 @@ function analysePullRequestTarget(file: SourceFile, lines: readonly WorkflowLine
   );
 }
 
-// Detects the event token in compact or expanded YAML event forms.
+// Returns true when a nonblank, noncomment workflow line contains the whole pull_request_target token, using the line's text alone.
 function hasPullRequestTargetEvent(line: WorkflowLine): boolean {
   return !isCommentOrBlank(line) && /\bpull_request_target\b/.test(line.trimmed);
 }
 
-// Separates the boolean gate from metadata collection so the event-alone case stays quiet.
+// Returns whether workflow lines contain any recognized risk signal, so an event-only workflow produces no pull_request_target warning.
 function hasPullRequestTargetRiskContext(lines: readonly WorkflowLine[]): boolean {
   return pullRequestTargetRiskContext(lines).length > 0;
 }
 
-// Collects stable risk labels used in metadata and tests.
+// Scans workflow lines for checkout, run steps, secret references and broad write permissions.
+// Returns unique risk labels in stable sorted order for finding metadata. An empty list means no risk signal was recognised.
 function pullRequestTargetRiskContext(lines: readonly WorkflowLine[]): string[] {
   const contexts = new Set<string>();
   for (const line of lines) {
@@ -147,7 +150,7 @@ function pullRequestTargetRiskContext(lines: readonly WorkflowLine[]): string[] 
   return [...contexts].sort();
 }
 
-// Lightweight permission signal used by the pull_request_target risk-context gate.
+// Returns whether line signals write-all permissions or a write grant for a recognized scope, for the pull_request_target risk check.
 function broadPermissionSignal(line: WorkflowLine): boolean {
   if (/^permissions:\s*write-all\b/i.test(line.trimmed)) {
     return true;
@@ -156,7 +159,8 @@ function broadPermissionSignal(line: WorkflowLine): boolean {
   return WRITE_PERMISSION_SCOPES.has(scoped?.[1] ?? "");
 }
 
-// Stable supply-chain contract: reports third-party action refs unless pinned to a full commit SHA.
+// Scans workflow lines for third-party action references and uses file for warning paths.
+// Returns nothing and appends warnings to findings for refs outside the stable pinning contract of 40 hexadecimal characters.
 function analyseUnpinnedActions(file: SourceFile, lines: readonly WorkflowLine[], findings: Finding[]): void {
   for (const line of lines) {
     const action = thirdPartyActionUse(line);
@@ -176,7 +180,8 @@ function analyseUnpinnedActions(file: SourceFile, lines: readonly WorkflowLine[]
   }
 }
 
-// Parses `uses:` entries while exempting GitHub-owned and local reusable actions.
+// Returns the action path, owner, and ref from line's recognized external uses entry, or undefined when it is absent or unsupported.
+// Local paths and owners actions or github return undefined because they are exempt from third-party pin checks.
 function thirdPartyActionUse(line: WorkflowLine): { action: string; owner: string; ref: string } | undefined {
   if (isCommentOrBlank(line)) {
     return undefined;
@@ -194,12 +199,13 @@ function thirdPartyActionUse(line: WorkflowLine): { action: string; owner: strin
   return { action, owner, ref };
 }
 
-// Full 40-character SHAs are the stable pinning target for third-party actions.
+// Returns whether action ref is exactly 40 hexadecimal characters, the required commit-pin form for third-party actions.
 function isPinnedToFullSha(ref: string): boolean {
   return /^[0-9a-f]{40}$/i.test(ref);
 }
 
-// Stable run-step contract: helpers separate YAML block state from shell matching to preserve anchors.
+// Checks run commands extracted from lines for a download piped to a shell. Uses file for the workflow's report path.
+// Returns nothing and appends matching warnings to findings. YAML block parsing preserves a stable source anchor for each command.
 function analyseRemoteShell(file: SourceFile, lines: readonly WorkflowLine[], findings: Finding[]): void {
   for (const command of runCommands(lines)) {
     if (isRemoteShellCommand(command.command)) {
@@ -208,7 +214,8 @@ function analyseRemoteShell(file: SourceFile, lines: readonly WorkflowLine[], fi
   }
 }
 
-// Reports workflow-specific remote-shell findings at the risky command line for stable anchors.
+// Returns nothing and appends a workflow remote-shell warning to findings for a matched run command.
+// Uses file for the report path and the supplied command line for a stable source anchor.
 function pushRemoteShellFinding(file: SourceFile, findings: Finding[], line: WorkflowLine): void {
   findings.push(
     workflowFinding(file, {
@@ -222,8 +229,8 @@ function pushRemoteShellFinding(file: SourceFile, findings: Finding[], line: Wor
   );
 }
 
-// Extracts both inline `run: command` values and multiline block-scalar bodies. The returned order
-// follows workflow source order so multiple remote-shell findings remain deterministic.
+// Returns inline and block-scalar run commands with their source lines, or an empty list if none are recognized.
+// Block bodies use trimmed lines, and workflow source order keeps remote-shell findings deterministic.
 function runCommands(lines: readonly WorkflowLine[]): WorkflowCommand[] {
   const commands: WorkflowCommand[] = [];
   const state: RunBlockState = { lines: [] };
@@ -238,16 +245,16 @@ function runCommands(lines: readonly WorkflowLine[]): WorkflowCommand[] {
   return commands;
 }
 
-// Ends a block scalar when YAML indentation returns to the parent/sibling level. The current line
-// is then processed again by the caller as a possible next command.
+// Returns nothing. When line closes an active run block by indentation, appends its command if it has a start line and clears state.
+// Otherwise leaves state and commands unchanged; after a flush, the caller considers line as a possible next command.
 function flushClosedRunBlock(line: WorkflowLine, state: RunBlockState, commands: WorkflowCommand[]): void {
   if (state.indent !== undefined && line.indent <= state.indent) {
     flushRunBlock(state, commands);
   }
 }
 
-// Captures a line belonging to the active run block. The normalized trimmed text is enough for the
-// remote-shell heuristic because it only needs command tokens and pipe placement.
+// Appends line's trimmed text to state.lines when it is deeper than the active run key; returns true if captured, false otherwise.
+// False leaves state unchanged. The remote-shell check uses this normalized text, which can omit content after a space and hash.
 function runBlockLine(line: WorkflowLine, state: RunBlockState): boolean {
   if (state.indent === undefined || line.indent <= state.indent) {
     return false;
@@ -256,8 +263,8 @@ function runBlockLine(line: WorkflowLine, state: RunBlockState): boolean {
   return true;
 }
 
-// Starts a new `run` block or records an inline command. Blank and comment-only lines are ignored
-// here because they cannot carry a workflow step key.
+// Returns nothing. Reads line as a run entry, resetting state for a block scalar or appending the inline value and line to commands.
+// Blank, comment-only, and non-run lines leave state and commands unchanged.
 function startOrPushRunCommand(line: WorkflowLine, state: RunBlockState, commands: WorkflowCommand[]): void {
   if (isCommentOrBlank(line)) {
     return;
@@ -275,8 +282,8 @@ function startOrPushRunCommand(line: WorkflowLine, state: RunBlockState, command
   }
 }
 
-// Emits the pending block-scalar command and clears all mutable state. Missing `startLine` is
-// treated as empty state so partially initialized blocks cannot throw.
+// Appends state's pending block text and start line to commands, then removes its indentation and start line and clears its lines.
+// Returns nothing. Missing indentation or startLine skips command emission and still clears state.
 function flushRunBlock(state: RunBlockState, commands: WorkflowCommand[]): void {
   if (state.indent !== undefined && state.startLine) {
     commands.push({ command: state.lines.join("\n"), line: state.startLine });
@@ -286,18 +293,19 @@ function flushRunBlock(state: RunBlockState, commands: WorkflowCommand[]): void 
   state.lines = [];
 }
 
-// Recognizes YAML block scalar headers including chomping/indent indicators such as `|-`, `>2`, or `|+4`.
+// Returns whether the run value in command matches the block scalar header pattern, including forms such as |-, >2, or |+4.
 function isRunBlockScalar(command: string): boolean {
   return /^[|>](?:[+-]?\d*|\d*[+-]?)?\s*$/.test(command);
 }
 
-// Mirrors package script remote-installer semantics for curl/wget piped to a shell.
+// Returns whether command text matches a curl or wget HTTP(S) download piped to sh, bash, or zsh, with optional sudo.
 function isRemoteShellCommand(command: string): boolean {
   return /\b(?:curl|wget)\b[^|]*https?:\/\/[^|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)\b/i.test(command);
 }
 
-// Stable secret-exposure contract: reports secrets.NAME only when the workflow's `on:` declares pull_request_target,
-// the one pull-request event that runs with the repository's secrets. A plain pull_request run from a fork gets none.
+// Checks lines for named secret references only when the workflow declares pull_request_target. Uses file for finding paths.
+// Returns nothing and appends at most one match per line to findings under the stable rule contract.
+// Skips GITHUB_TOKEN and lines identified as unreachable for this event.
 function analyseSecretsInPullRequest(file: SourceFile, lines: readonly WorkflowLine[], findings: Finding[]): void {
   if (!declaredWorkflowEvents(lines).has("pull_request_target")) {
     return;
@@ -321,8 +329,9 @@ function analyseSecretsInPullRequest(file: SourceFile, lines: readonly WorkflowL
   }
 }
 
-// Returns the events the workflow's top-level `on:` key declares, in scalar, flow-sequence, flow-mapping, block-mapping or
-// block-sequence form. An `if:` expression or a step input that names an event elsewhere is not a trigger.
+// Returns recognized event names from the top-level on key in the workflow lines.
+// Reads scalar and simple flow declarations, plus indented block sequences and mappings. Event names elsewhere do not count as triggers.
+// Returns an empty set when no event is recognized, so that the pull_request_target secret check is skipped.
 function declaredWorkflowEvents(lines: readonly WorkflowLine[]): Set<string> {
   const events = new Set<string>();
   let eventIndent: number | undefined;
@@ -355,7 +364,7 @@ function declaredWorkflowEvents(lines: readonly WorkflowLine[]): Set<string> {
   return events;
 }
 
-// Adds the events of a scalar, `[a, b]` flow sequence or `{a: x, b: y}` flow mapping.
+// Returns nothing and adds event names from declaration to events, skipping empty entries in the scalar or simple flow sequence or mapping.
 function addFlowEvents(events: Set<string>, declaration: string): void {
   for (const flowEntry of declaration.replace(/^[[{]/, "").replace(/[\]}]$/, "").split(",")) {
     const event = (flowEntry.split(":")[0] ?? "").trim().replace(/^["']|["']$/g, "");
@@ -365,13 +374,14 @@ function addFlowEvents(events: Set<string>, declaration: string): void {
   }
 }
 
-// Extracts the secret symbol while keeping the raw expression out of finding metadata.
+// Returns the first name from a case-sensitive secrets.NAME match in trimmed line text, excluding GITHUB_TOKEN.
+// Returning the name alone keeps the raw expression out of finding metadata.
+// Returns undefined for blank or comment-only lines, no matching reference, or references only to GITHUB_TOKEN.
 function secretReference(line: WorkflowLine): string | undefined {
   if (isCommentOrBlank(line)) {
     return undefined;
   }
-  // `secrets.GITHUB_TOKEN` is the token GitHub mints for each run, scoped by the job's `permissions:`, so it is not a
-  // repository secret; any other name on the line still is.
+  // Excluding GITHUB_TOKEN does not end the search because a later reference on the same line can name another secret.
   for (const match of line.trimmed.matchAll(/\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
     if (match[1] !== "GITHUB_TOKEN") {
       return match[1];
@@ -380,12 +390,13 @@ function secretReference(line: WorkflowLine): string | undefined {
   return undefined;
 }
 
-// Skips blank/comment-only YAML lines before applying simple text heuristics.
+// Returns whether line's trimmed YAML text is empty or comment-only, allowing callers to skip it during text heuristics.
 function isCommentOrBlank(line: WorkflowLine): boolean {
   return line.trimmed.length === 0 || line.trimmed.startsWith("#");
 }
 
-// Centralizes workflow finding metadata so every rule emits the same pillar/severity contract.
+// Returns a workflow finding using file for the report path and input for the rule, line, message and evidence.
+// Uses a stable security warning contract across workflow rules and omits the symbol when input supplies none or an empty string.
 function workflowFinding(file: SourceFile, input: WorkflowFindingInput): Finding {
   return makeFinding({
     ruleId: input.ruleId,

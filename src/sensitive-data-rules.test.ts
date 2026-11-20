@@ -30,10 +30,13 @@ import {
   withDefaultOffRulesOn,
 } from "./test-fixtures.ts";
 
-// These detector tests exercise aws-access-key and database-url-password, which ship off by default since precision-floor
-// M02, so every scan here switches them on; an explicit rule entry in a test still wins.
+// Returns the analysis report for source. Use options to supply scan config and choose a filename, which defaults to bad.ts.
+// Enables the AWS access-key and database-URL rules unless options explicitly overrides either rule.
+// Writes the temporary fixture, scans from its directory, then restores the working directory and removes the fixture tree.
 const analyseFixture = (source: string, options: AnalyseFixtureOptions = {}) => analyseFixtureWithDefaults(source, withDefaultOffRulesOn(options));
-// The project form of the same switch: every file in the fixture project is scanned with those rules on.
+// Scans files supplied as project-relative paths and contents, returning an analysis report using options for fixture and scan settings.
+// When loaded, the fixture config enables the shared default-off rules, including AWS access-key and database-URL. Rule overrides in options win.
+// Writes the temporary project and scans from its directory, then restores the working directory and removes the project even if scanning fails.
 const analyseProject = (files: Record<string, string>, options: AnalyseProjectOptions = {}) => analyseProjectWithDefaults(files, withDefaultOffRulesOn(options));
 
 const SENSITIVE_DATA_RULE_IDS = ["sensitive-data.api-key-pattern", "sensitive-data.database-url-password", "sensitive-data.pii-pattern"];
@@ -390,7 +393,8 @@ const mixed = "${AWS_ACCESS_KEY_FIXTURE_VALUE}"; const other = "${GOOGLE_API_KEY
 // runtime template, the family redaction corpus's connection string at `db.example.invalid`, the sample fixture and a
 // JSDoc documentation-host URL all still report at error: the documentation-host half waits for ratified host semantics.
 test("M22 database-url-password skips template literal types and keeps every runtime credential", () => {
-  // Assembled from parts so this test file never holds a credential-shaped literal of its own.
+  // Returns a synthetic URL with scheme as its protocol, user as username, secret as password and rest as its host/path suffix.
+  // The parts are joined at runtime so this helper contains no complete credential-shaped literal.
   const credential = (scheme: string, user: string, secret: string, rest: string): string => [scheme, "://", user, ":", secret, "@", rest].join("");
   const report = analyseFixture([
     "export type MongoUrl =",
@@ -436,7 +440,7 @@ test("sensitive-data findings default to the warning their descriptors publish",
 // straight after the user. A literal password written beside a `${string}` user, or before a `:${string}` suffix,
 // still reports, because the type shapes the rest of the URL, not the secret.
 test("M22 database-url-password still reports a literal password beside a type-level user", () => {
-  // Assembled from parts so this test file never holds a credential-shaped literal of its own.
+  // Returns a synthetic PostgreSQL URL with user as username and secret as password, assembling parts without a full credential literal.
   const credential = (user: string, secret: string): string => ["postgres://", user, ":", secret, "@db.internal/app"].join("");
   const report = analyseFixture([
     "export type Shaped = `" + credential("${string}", "${number}") + "`;",

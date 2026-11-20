@@ -25,15 +25,15 @@ interface FindingInput {
   metadata?: Record<string, unknown>;
 }
 
-// Builds the complete finding shown in reports and computes its baseline and cross-edit identifiers.
-// Stable contract: missing optional values stay omitted so JSON users can distinguish unavailable context from an empty value.
+// Builds a report finding from findingInput, which supplies the rule, location, message, severity and supporting evidence.
+// Returns the finding with a stable baseline fingerprint and cross-edit identity.
 function makeFinding(findingInput: FindingInput): Finding {
-  // Missing line or symbol values occupy stable empty slots so unavailable user context never becomes the text `undefined`.
+  // Missing line or symbol values occupy stable empty slots so that the fields keep their positions in the fingerprint input.
   const fingerprint = createHash("sha256")
     .update([findingInput.ruleId, findingInput.filePath, findingInput.line ?? "", findingInput.symbol ?? ""].join("\0"))
     .digest("hex")
     .slice(0, 16);
-  // Empty optional evidence stays absent from JSON so users and integrations can distinguish it from an available value.
+  // Omits missing or zero coordinates and empty optional text so consumers can treat them as unavailable. Missing metadata becomes an empty object.
   return {
     ruleId: findingInput.ruleId,
     message: findingInput.message,

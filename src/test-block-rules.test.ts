@@ -326,8 +326,9 @@ test("analyseTestBlock reports only the redundant assertion in mixed behavior te
   );
 });
 
-// Scan one callback fixture under the default-rule contract; an empty result means no quality warning.
-// An empty prefix adds no source declarations ahead of the test.
+// Returns the default-contract test-quality findings for callbackBody. An empty list means no check reported a finding.
+// displayPath and testName set the file and test labels in the findings.
+// staticSourcePrefix adds preceding declarations for static analysis. With an empty prefix, source numbering starts at the fixture's test line.
 function analyseTestCallback(callbackBody: string, displayPath = SOURCE_FILE.displayPath, testName = "fixture", staticSourcePrefix = ""): Finding[] {
   const findings: Finding[] = [];
   const block = testBlockFixture(callbackBody, testName);
@@ -340,7 +341,7 @@ function analyseTestCallback(callbackBody: string, displayPath = SOURCE_FILE.dis
   return findings;
 }
 
-// Build the minimal callable contract used to check developer-visible test warnings.
+// Build and return a FunctionBlock for callbackBody under testName so tests can inspect developer-visible test-quality findings.
 // An empty callback body represents a test with no executable work; its parameter list is intentionally empty.
 function testBlockFixture(callbackBody: string, testName: string): FunctionBlock {
   const body = `test(${JSON.stringify(testName)}, () => {` + callbackBody + "});";
@@ -360,7 +361,7 @@ function testBlockFixture(callbackBody: string, testName: string): FunctionBlock
   };
 }
 
-// Return warning IDs in their stable emitted order; an empty list means the scanned fixture produced no warnings.
+// Returns the scanned findings' rule IDs in stable input order for exact fixture assertions. An empty list means no findings were supplied.
 function ruleIds(findings: Finding[]): string[] {
   return findings.map((finding) => finding.ruleId);
 }

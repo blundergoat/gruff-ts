@@ -76,7 +76,8 @@ export const M02_DEFAULT_OFF_RULES_ON_YAML = [
   ...M02_DEFAULT_OFF_RULE_IDS.flatMap((ruleId) => [`  ${ruleId}:`, "    enabled: true"]),
 ].join("\n") + "\n";
 
-// Switches those rules on in a fixture's options. Every other setting stays, and an explicit entry for one of them wins.
+// Returns a copy of options with the rules in M02_DEFAULT_OFF_RULE_IDS enabled; explicit rule settings win.
+// Other settings stay unchanged; omitted options start from an empty configuration.
 export function withDefaultOffRulesOn<T extends AnalyseFixtureOptions>(options: T = {} as T): T {
   const config = options.config ?? {};
   const rules = (config["rules"] ?? {}) as Record<string, Record<string, unknown>>;
@@ -84,7 +85,8 @@ export function withDefaultOffRulesOn<T extends AnalyseFixtureOptions>(options: 
   return { ...options, config: { ...config, rules: { ...rules, ...switchedOn } } };
 }
 
-// Runs one source string through the temporary-project analysis helper.
+// Return an analysis report for source, using options.fileName or bad.ts and forwarding only config, configPath and shouldSkipConfig.
+// The delegated scan writes a temporary project and changes into it before restoring the working directory and removing the project.
 export function analyseFixture(source: string, options: AnalyseFixtureOptions = {}) {
   return analyseProject(
     { [options.fileName ?? "bad.ts"]: source },
@@ -96,8 +98,9 @@ export function analyseFixture(source: string, options: AnalyseFixtureOptions = 
   );
 }
 
-// Creates a temporary project, runs analysis inside it, and removes the fixture tree. It mutates the
-// filesystem and process cwd; explicit options preserve absent-vs-undefined typing.
+// Writes the supplied path-to-content map into a temporary project and returns its analysis report.
+// options controls executable files, fixture config, and scan settings. Omit it to scan the project root with config loading disabled.
+// Changes the process working directory for the scan, then restores it and removes the fixture tree in cleanup.
 export function analyseProject(files: Record<string, string>, options: AnalyseProjectOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-"));
   const previous = cwd();
@@ -113,9 +116,11 @@ export function analyseProject(files: Record<string, string>, options: AnalysePr
 
 /**
  * Writes fixture files, executability bits, and optional config for project tests.
- * @param dir Temporary project root to populate.
- * @param files Project-relative file paths and source text to write.
- * @param options Fixture config, executability, and path options.
+ *
+ * @param dir - Temporary project root to populate.
+ * @param files - Project-relative file paths and source text to write.
+ * @param options - Selects executable files and supplies config for .gruff-ts.yaml when present.
+ * @returns Nothing. Populates the project on disk for the fixture scan.
  */
 export function setupAnalyseProjectDirectory(dir: string, files: Record<string, string>, options: AnalyseProjectOptions): void {
   writeFixtureFiles(dir, files);
@@ -130,7 +135,9 @@ export function setupAnalyseProjectDirectory(dir: string, files: Record<string, 
 /**
  * Runs analyse after the fixture helper has switched into the temp project root, returning a stable report.
  * The explicit option assembly preserves exact optional property types because absent and undefined differ.
- * @param options Normalized fixture scan options.
+ * Skips baselines so reviewed findings stay visible. By default, config is enabled only with config or a nonempty configPath.
+ *
+ * @param options - selects scan settings. Omitted paths scan the working directory. shouldSkipConfig can override the config default.
  * @returns The analysis report produced from the current temporary project.
  */
 export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions): AnalysisReport {
@@ -146,8 +153,8 @@ export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions)
   });
 }
 
-// Assembles the optional scan fields with conditional spreads so each stays omitted (not undefined)
-// under exactOptionalPropertyTypes, keeping analyseProjectInCurrentDirectory a flat literal.
+// Returns optional analyse arguments from fixture options, mapping configPath to config.
+// Absent values are omitted to preserve exactOptionalPropertyTypes.
 function optionalFixtureScanFields(options: AnalyseProjectOptions): Partial<Pick<Parameters<typeof analyse>[0], "config" | "profile" | "diff" | "diffPatch" | "since" | "changedRanges" | "deepScanBudget">> {
   return {
     ...(typeof options.configPath === "string" ? { config: options.configPath } : {}),
@@ -171,14 +178,15 @@ export function yamlConfigFixture(configObject: Record<string, unknown>): string
   return yamlConfigObject({ schemaVersion: "gruff-ts.config.v0.1", ...configObject }, 0);
 }
 
-// Serializes nested config objects using the fixture YAML subset.
+// Returns fixture YAML for configObject's entries using indent leading spaces; an empty object returns an empty string.
 export function yamlConfigObject(configObject: Record<string, unknown>, indent: number): string {
   return Object.entries(configObject)
     .map(([key, nested]) => yamlConfigEntry(key, nested, indent))
     .join("");
 }
 
-// Serializes one YAML key with either nested indentation or a scalar value.
+// Returns a fixture YAML entry for key and nestedValue, prefixed with indent spaces and ending with a newline.
+// Non-null, non-array objects use nested entries. An object with no entries emits just the key and colon. Other values use the scalar serializer.
 export function yamlConfigEntry(key: string, nestedValue: unknown, indent: number): string {
   const prefix = " ".repeat(indent);
   if (isYamlConfigObject(nestedValue)) {
@@ -187,7 +195,8 @@ export function yamlConfigEntry(key: string, nestedValue: unknown, indent: numbe
   return prefix + key + ": " + yamlConfigScalar(nestedValue) + "\n";
 }
 
-// Converts fixture config scalar values into the YAML text used by tests.
+// Returns fixture YAML for scalarValue, including nested arrays, quoted strings, numbers and booleans.
+// Null, undefined and all other values become the empty mapping {}.
 export function yamlConfigScalar(scalarValue: unknown): string {
   if (Array.isArray(scalarValue)) {
     return `[${scalarValue.map(yamlConfigScalar).join(", ")}]`;
@@ -201,12 +210,13 @@ export function yamlConfigScalar(scalarValue: unknown): string {
   return "{}";
 }
 
-// Narrows YAML fixture values to plain objects before recursive serialization.
+// Returns whether configValue is a non-null, non-array object that the fixture serializer will treat as a mapping.
 export function isYamlConfigObject(configValue: unknown): configValue is Record<string, unknown> {
   return typeof configValue === "object" && configValue !== null && !Array.isArray(configValue);
 }
 
-// Writes temporary fixture files and creates their parent directories.
+// Writes each relative path and its source text from files under fixture root dir, creating parent directories as needed.
+// Returns nothing after populating the fixture directory on disk.
 export function writeFixtureFiles(dir: string, files: Record<string, string>): void {
   for (const [fileName, source] of Object.entries(files)) {
     const path = join(dir, fileName);
@@ -215,17 +225,18 @@ export function writeFixtureFiles(dir: string, files: Record<string, string>): v
   }
 }
 
-// Builds enough simple declarations to cross the fixture-purpose line threshold.
+// Returns declaration lines named with prefix and an index, enough to cross the fixture-purpose line threshold.
 export function largeFixtureSourceLines(prefix: string): string[] {
   return Array.from({ length: 13 }, (_, index) => "const " + prefix + index + " = " + index + ";");
 }
 
-// Collects eval finding files so security assertions stay tied to stable analyzer output.
+// Returns the distinct file paths in the report with a security.eval-call finding, using the analyzer's stable rule ID for test assertions.
 export function evalFindingFiles(report: AnalysisReport): Set<string> {
   return new Set(report.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.filePath));
 }
 
-// Reads `git --version`; fallback false keeps gitignore parity tests optional.
+// Spawns git --version and returns true on success. A launch or command failure returns false so Git-dependent tests can skip.
+// The probe stays quiet because an unusable Git command is an expected skip condition for these tests.
 export function gitAvailable(): boolean {
   try {
     execFileSync("git", ["--version"], { stdio: "ignore" });
@@ -235,7 +246,7 @@ export function gitAvailable(): boolean {
   }
 }
 
-// Reads `git check-ignore` and throws only for unexpected git failures.
+// Spawns git check-ignore from projectRoot to check path. Returns true if Git reports the path ignored and false if it reports no match.
 // @throws {Error} when `git check-ignore` cannot run or exits with a status other than 0 (ignored) or 1 (not ignored).
 export function isGitIgnoredByGit(projectRoot: string, path: string): boolean {
   try {
@@ -250,7 +261,8 @@ export function isGitIgnoredByGit(projectRoot: string, path: string): boolean {
   }
 }
 
-// Starts a dashboard server for one test and always closes it afterward.
+// Starts a dashboard for the supplied project root and passes its base URL to the test callback after the health check.
+// Resolves with no value after the callback and cleanup. Cleanup requests shutdown and waits up to one second for exit, even on failure.
 export async function withDashboard(projectRoot: string, run: (endpoint: string) => Promise<void>): Promise<void> {
   const port = await freePort();
   const child = spawn("./bin/gruff-ts", ["dashboard", "--host", "127.0.0.1", "--port", String(port), "--project-root", projectRoot], {
@@ -283,7 +295,8 @@ export async function withDashboard(projectRoot: string, run: (endpoint: string)
   }
 }
 
-// Asks the OS for an unused loopback port for dashboard tests. Starts loopback server state for the dashboard.
+// Starts a temporary loopback listener to obtain a port for dashboard tests. The promise resolves with the port after closing the listener.
+// The caller receives an unreserved port. The promise rejects on a listener error or if no TCP address is available.
 export async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createNetServer();
@@ -301,8 +314,9 @@ export async function freePort(): Promise<number> {
   });
 }
 
-// Polls a dashboard endpoint until it responds or reports the captured server output.
-// @throws {Error} when the endpoint has not answered OK within 5 seconds, with the last error and server output.
+// Polls the dashboard URL in endpoint. It saves the latest failure for the final diagnostic so that transient failures stay quiet.
+// The promise resolves with nothing on an OK response. output supplies the captured server text for a failure.
+// @throws {Error} - after the five-second retry window without an OK response. An in-flight fetch can finish after that window.
 export async function waitForEndpoint(endpoint: string, output: string): Promise<void> {
   const deadline = Date.now() + 5000;
   const processOutput = output;
@@ -322,7 +336,7 @@ export async function waitForEndpoint(endpoint: string, output: string): Promise
   throw new Error(`timed out waiting for ${endpoint}: ${String(lastError)}\n${processOutput}`);
 }
 
-// Fetches response text and fails the test with status details on non-OK responses.
+// Returns the response body from endpoint for test assertions; a non-OK status fails with the endpoint, status and body.
 export async function fetchText(endpoint: string): Promise<string> {
   const response = await fetch(endpoint);
   const text = await response.text();
@@ -330,18 +344,18 @@ export async function fetchText(endpoint: string): Promise<string> {
   return text;
 }
 
-// Writes a broad temporary catalogue fixture because one scan must cover many rule families.
+// Writes a broad temporary catalogue fixture because one scan must cover many rule families. Returns the distinct rule IDs the scan emits.
 export function ruleCatalogueCoverageRuleIds(): Set<string> {
   return new Set(ruleCatalogueCoverageFindings().map((finding) => finding.ruleId));
 }
 
-// Every finding the broad catalogue fixture emits, in the report's stable sorted order, for tests that check what a
-// rule's findings carry.
+// Returns every finding from the broad catalogue fixture in stable sorted report order for assertions about finding fields.
+// Writes a temporary fixture project, changes into it for the scan, then restores the working directory and removes the project.
 export function ruleCatalogueCoverageFindings(): Finding[] {
   return analyseProject(catalogueCoverageFiles(), catalogueCoverageOptions()).findings;
 }
 
-// Assembles the broad catalogue fixture without making the public helper long.
+// Return project-relative paths and file contents for the catalogue fixture, including source, tests, credentials and configuration.
 function catalogueCoverageFiles(): Record<string, string> {
   return {
       "src/catalogue.ts": catalogueRuntimeCoverageSource(),
@@ -421,7 +435,7 @@ API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
     };
 }
 
-// Covers workflow-security descriptors in the broad catalogue fixture.
+// Returns GitHub Actions YAML with risky settings and steps for workflow-security catalogue coverage.
 function githubActionsCoverageWorkflowSource(): string {
   return `on:
   pull_request_target:
@@ -437,7 +451,7 @@ jobs:
 `;
 }
 
-// Provides the source file that exercises runtime, naming, docs, security, and waste rules.
+// Returns synthetic module text for catalogue coverage of runtime, naming, schema documentation, security, and waste rules.
 function catalogueRuntimeCoverageSource(): string {
   return `import { createHash } from "node:crypto";
 import { exec, spawn } from "node:child_process";
@@ -693,34 +707,32 @@ ${"test"}("setup bloat and control flow", () => {
 `;
 }
 
-// Keeps catalogue coverage thresholds local to the synthetic fixture scan.
+// Return scan options that enable optional catalogue checks and lower thresholds for the synthetic fixture's positive cases.
 function catalogueCoverageOptions(): AnalyseProjectOptions {
   return {
       config: {
         rules: {
-          // The new group detector stays off by default until independent calibration clears its floor.
+          // Pin duplicate-body detection on so the repeated conversion cases stay covered if the catalogue default changes.
           "test-quality.duplicate-test-body": { enabled: true },
-          // Off by default since precision-floor M14; the coverage project switches it on for a positive case.
+          // Off by default; the coverage project switches it on for a positive case.
           "complexity.cyclomatic": { enabled: true, threshold: 2, severity: "warning" },
           "design.large-module-concentration": { threshold: 35, severity: "advisory", options: { minFiles: 4, minLines: 8 } },
           "size.file-length": { threshold: 8, severity: "warning" },
           "size.function-length": { threshold: 8, severity: "warning" },
           "size.parameter-count": { threshold: 3, severity: "warning" },
-          // Off by default (ADR-021); the coverage project switches them on so each still has a positive case.
+          // ADR-021 keeps the open-redirect and JWT checks opt-in. Enable both here to exercise their positive fixture cases.
           "security.open-redirect-candidate": { enabled: true },
           "sensitive-data.jwt-token": { enabled: true },
           // Off by default: their keyword lists cannot accept a comment written in other words.
           "docs.missing-side-effect-doc": { enabled: true },
           "docs.missing-invariant-doc": { enabled: true },
-          // Off by default: its sample stayed below the waste floor after its repair.
+          // Exercise the fixture's empty catch block with swallowed-catch detection enabled.
           "waste.swallowed-catch": { enabled: true },
-          // Off by default since precision-floor M02: their 0.6.0 precision samples did not establish the floor.
           "security.inner-html": { enabled: true },
           "security.path-traversal-candidate": { enabled: true },
           "sensitive-data.aws-access-key": { enabled: true },
           "sensitive-data.database-url-password": { enabled: true },
           "waste.useless-return": { enabled: true },
-          // Off by default since precision-floor M02: no finding survived its repair, so it is unmeasured.
           "security.unsafe-deserialization": { enabled: true },
         },
       },

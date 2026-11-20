@@ -103,13 +103,12 @@ const KNOWN_RULE_IDS: ReadonlySet<string> = new Set(DESCRIPTORS.map((descriptor)
 // targets a rule inside one of the preset's enabled pillars (a dead override otherwise).
 const RULE_PILLARS: ReadonlyMap<string, Pillar> = new Map(DESCRIPTORS.map((descriptor) => [descriptor.ruleId, descriptor.pillar]));
 
-/*
- * Expands one compact preset into a flattened ProfileDefinition: a rule-id keyed delta from the
- * descriptor defaults. Rules outside the enabled pillars get an explicit `{ enabled: false }`; enabled
- * rules with a threshold/severity override get that override; enabled rules at their default are
- * OMITTED so the delta stays minimal and `recommended` flattens to an empty map (the parity contract).
- * Throws if any override key is unknown or targets a disabled pillar - this is the load-time
- * validation the kill criteria require.
+/**
+ * Builds a bundled preset's profile delta so that applying it limits the scan to the selected pillars.
+ *
+ * @param spec - bundled preset supplying the profile name, enabled pillars and rule overrides
+ * @returns the named profile delta with disabled rules outside those pillars, threshold or severity overrides within them and no ignored paths
+ * @throws {Error} - if an override names an unknown rule or a rule whose pillar the preset does not enable
  */
 function profileDefinitionFromSpec(spec: BuiltInProfile): ProfileDefinition {
   assertOverrideKeys(spec);
@@ -128,8 +127,8 @@ function profileDefinitionFromSpec(spec: BuiltInProfile): ProfileDefinition {
   return { name: spec.name, rules, ignoredPaths: [] };
 }
 
-// Builds the override entry for an enabled rule, or undefined when the rule sits at its descriptor
-// default (so the flattened delta omits it). Threshold and severity are independent optional knobs.
+// Returns the enabled override for ruleId using threshold and severity from spec.
+// Returns undefined when spec provides neither override, so the flattened profile omits that rule.
 function enabledRuleSetting(spec: BuiltInProfile, ruleId: string): ProfileRuleSetting | undefined {
   const threshold = spec.thresholds[ruleId];
   const severity = spec.severities[ruleId];
@@ -143,12 +142,12 @@ function enabledRuleSetting(spec: BuiltInProfile, ruleId: string): ProfileRuleSe
   };
 }
 
-/*
- * Validates a preset's override keys at load time. Every key in `thresholds`/`severities` must be a
- * real rule id (caught by `KNOWN_RULE_IDS`) and must live in one of the preset's enabled pillars - a
- * threshold on a disabled rule would never fire and signals a preset authoring mistake. Throws a plain
- * Error (not ConfigLoadError) because this is an internal contract on bundled presets, not user input.
- * @throws {Error} when an override key names an unknown rule id, or a rule whose pillar the preset does not enable.
+/**
+ * Validates bundled preset overrides at load time; failures throw Error rather than ConfigLoadError.
+ *
+ * @param spec - preset whose override keys must name catalogue rules in its enabled pillars
+ * @returns - nothing after validating the preset's override keys
+ * @throws {Error} - when an override names an unknown rule or a rule outside the preset's enabled pillars
  */
 function assertOverrideKeys(spec: BuiltInProfile): void {
   const enabledPillars = new Set<Pillar>(spec.enabledPillars);
@@ -174,10 +173,10 @@ export const BUILT_IN_PROFILES: ReadonlyMap<string, ProfileDefinition> = new Map
 
 /**
  * Reports whether a rule id is part of gruff's catalogue. Used by the profile resolver to reject a
- * user profile that names a rule outside `RULE_DESCRIPTORS` before any scan runs.
+ * user profile that names a rule outside RULE_DESCRIPTORS before any scan runs.
  *
- * @param ruleId Candidate rule id from a user profile's `rules:` block.
- * @returns True when the id is a known rule, false otherwise.
+ * @param ruleId - candidate rule id from a user profile's rules block
+ * @returns - true when the id is a known rule, false otherwise
  */
 export function isKnownRuleId(ruleId: string): boolean {
   return KNOWN_RULE_IDS.has(ruleId);
@@ -187,8 +186,8 @@ export function isKnownRuleId(ruleId: string): boolean {
  * Returns the pillar a rule id belongs to, for config sections that accept only one pillar's rules.
  * Reuses the preset-validation map so pillar-scoped config checks read the same canonical catalogue.
  *
- * @param ruleId Candidate rule id from a user's configuration.
- * @returns The rule's pillar, or undefined when the id is outside the catalogue.
+ * @param ruleId - candidate rule id from a user's configuration
+ * @returns - the rule's pillar, or undefined when the id is outside the catalogue
  */
 export function rulePillar(ruleId: string): Pillar | undefined {
   return RULE_PILLARS.get(ruleId);
@@ -196,11 +195,10 @@ export function rulePillar(ruleId: string): Pillar | undefined {
 
 /**
  * Reports whether a configured value is a pillar name rather than a rule id.
- * Config sections that suppress findings use this to reject a whole-pillar selector written where
- * one exact rule id belongs, because a pillar name would silently widen the user's declared scope.
+ * Sensitive exclusion validation uses this check to report a pillar name where one exact rule id is required.
  *
- * @param candidate Value the user wrote where a rule id is required.
- * @returns True when the value names one of gruff's pillars.
+ * @param candidate - value the user wrote where a rule id is required
+ * @returns - true when the value names one of gruff's pillars
  */
 export function isPillarName(candidate: string): boolean {
   return ALL_PILLARS.some((pillar) => pillar === candidate);
@@ -211,10 +209,10 @@ export function isPillarName(candidate: string): boolean {
 const RULE_OPTION_KEYS: ReadonlyMap<string, readonly string[]> = new Map(DESCRIPTORS.map((descriptor) => [descriptor.ruleId, descriptor.optionKeys ?? []]));
 
 /**
- * Returns the option keys a rule accepts under `rules.<id>.options`.
+ * Returns the option keys accepted in a rule's options configuration.
  *
- * @param ruleId Rule id already validated against the catalogue.
- * @returns The declared option keys; an empty array means the rule accepts no options.
+ * @param ruleId - rule id already validated against the catalogue
+ * @returns - the declared option keys, or an empty array for an unknown rule or a rule with no options
  */
 export function ruleOptionKeys(ruleId: string): readonly string[] {
   return RULE_OPTION_KEYS.get(ruleId) ?? [];
@@ -223,16 +221,16 @@ export function ruleOptionKeys(ruleId: string): readonly string[] {
 /**
  * Returns the built-in profile names in catalogue order for error messages and CLI hints.
  *
- * @returns The bundled profile names, e.g. `["gruff.minimal", "gruff.recommended", "gruff.strict"]`.
+ * @returns - bundled profile names in catalogue order
  */
 export function builtInProfileNames(): string[] {
   return BUILT_IN_PROFILE_SPECS.map((spec) => spec.name);
 }
 
 /**
- * Builds the one-line digest of every built-in profile for the `list-profiles` command.
+ * Collects the built-in profile summaries used by the text and JSON formats of list-profiles.
  *
- * @returns Per-profile summaries with enabled/total rule counts, pillar selection, and threshold count.
+ * @returns - per-profile summaries with enabled/total rule counts, pillar selection, and threshold count
  */
 export function profileSummaries(): ProfileSummary[] {
   const totalRuleCount = DESCRIPTORS.length;
@@ -249,8 +247,8 @@ export function profileSummaries(): ProfileSummary[] {
   });
 }
 
-// Counts the rules a flattened profile runs: its explicit setting wins, and a rule it leaves alone keeps its
-// descriptor default, so a rule that ships off by default (ADR-021) counts only where the profile enables it.
+// Returns the enabled-rule count for the flattened profile, using descriptor defaults for unset rules or when no profile is supplied.
+// A rule that ships off by default counts only when the profile explicitly enables it.
 function countEnabledRules(definition: ProfileDefinition | undefined): number {
   return DESCRIPTORS.filter((descriptor) => definition?.rules.get(descriptor.ruleId)?.enabled ?? descriptor.isEnabledByDefault !== false).length;
 }

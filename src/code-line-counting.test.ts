@@ -11,23 +11,24 @@ const FUNCTION_LENGTH_LIMIT = 200;
 const FILE_LENGTH_LIMIT = 1000;
 const SHORT_LOOP_BODY_LINES = 10;
 
-// Builds `count` straight-line statements, each one code line.
+// Returns count statement lines for a code-line fixture, each prefixed with indent; zero count returns an empty string.
 function steps(count: number, indent = "  "): string {
   return Array.from({ length: count }, (_, index) => `${indent}const step${index} = value + ${index};`).join("\n");
 }
 
-// Builds a JSDoc block with `noteLines` extra note lines, all of them documentation.
+// Returns JSDoc fixture text with noteLines extra notes, using indent before its delimiters and nonblank lines.
 function jsdoc(noteLines: number, indent = ""): string {
   const notes = Array.from({ length: noteLines }, (_, index) => `${indent} * Note ${index} explains one step.`).join("\n");
   return `${indent}/**\n${indent} * Measures a value.\n${notes}\n${indent} * @param value - the input\n${indent} * @returns the input\n${indent} */`;
 }
 
-// Builds `count` comment-only lines.
+// Returns count comment-only fixture lines joined by newlines, prefixing each with indent; zero count returns an empty string.
 function comments(count: number, indent = "  "): string {
   return Array.from({ length: count }, (_, index) => `${indent}// Step ${index} is explained here.`).join("\n");
 }
 
-// A function whose code lines are its declaration, `bodySteps` statements, the return and the closing brace.
+// Returns source for a line-count fixture: bodySteps declarations, a return and the function's opening and closing lines.
+// documentation is placed before the declaration; inlineComments precedes the statements. Empty values add no comments.
 function measureFunction(bodySteps: number, documentation = "", inlineComments = ""): string {
   return `${documentation}\nexport function measure(value: number): number {\n${inlineComments}\n${steps(bodySteps)}\n  return value;\n}\n`;
 }
@@ -63,7 +64,7 @@ test("file length leaves decorator lines out, and code over the limit still repo
   const decorated = Array.from({ length: 10 }, (_, index) => `  @tag\n  @tag\n  value${index} = ${index};`).join("\n");
   const header = `function tag(_target: object, _key: string): void {}\n\nexport class Ledger {\n${decorated}\n}\n`;
   const headerCodeLines = 13;
-  // Adds `count` one-line exports, each a code line.
+  // Returns count one-line export declarations joined by newlines for code-line fixtures; zero count returns an empty string.
   const filler = (count: number) => Array.from({ length: count }, (_, index) => `export const filler${index} = ${index};`).join("\n");
   const atLimit = analyseFixture(`${header}${filler(FILE_LENGTH_LIMIT - headerCodeLines)}\n`);
   assert.deepEqual(findingsFor(atLimit.findings, "size.file-length"), []);
@@ -72,7 +73,8 @@ test("file length leaves decorator lines out, and code over the limit still repo
 });
 
 test("module concentration measures code lines, so a documented module's share does not grow", () => {
-  // Builds a production module of `lines` code lines, optionally led by documentation.
+  // Returns production-module fixture source with lines one-line exports named from the name prefix.
+  // documentation is prepended verbatim; callers supply its separating newline when needed.
   const module = (name: string, lines: number, documentation = "") =>
     `${documentation}${Array.from({ length: lines }, (_, index) => `export const ${name}${index} = ${index};`).join("\n")}\n`;
   const notes = Array.from({ length: 12 }, (_, index) => `// Note ${index} about the core module.`).join("\n") + "\n";
@@ -83,7 +85,7 @@ test("module concentration measures code lines, so a documented module's share d
 });
 
 test("a for-of body's span counts code lines, so comments never cost a short loop variable its leniency", () => {
-  // Builds a function whose for-of body holds `statements` code lines plus the given comments.
+  // Returns a for-of function's source for code-line tests, with statements code lines in the loop and inlineComments before them.
   const loop = (statements: number, inlineComments: string) =>
     `export function weigh(files: readonly string[]): number {\n  let total = 0;\n  for (const f of files) {\n${inlineComments}\n${Array.from({ length: statements }, (_, index) => `    total += f.length + ${index};`).join("\n")}\n  }\n  return total;\n}\n`;
   const shortBody = SHORT_LOOP_BODY_LINES - 2;

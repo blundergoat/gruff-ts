@@ -170,7 +170,7 @@ function assertRuleListTextOutput(): boolean {
 }
 
 /**
- * Verifies the JSON rule catalogue stays deterministic and complete enough for consumers.
+ * Verifies deterministic JSON catalogue output, shared rule fields, and representative rule metadata.
  *
  * @returns true once every check passes; a failed check throws instead of returning false
  */
@@ -178,9 +178,8 @@ function assertRuleListJsonOutput(): boolean {
   const parsed = readDeterministicRuleListJson();
   assert.equal(parsed.schemaVersion, undefined);
   assert.equal(parsed.tool?.name, "gruff-ts");
-  // The family listing shape: `id`, `defaultSeverity`, and a named threshold map under `thresholds`.
-  // A rule whose id has a gruff-go knob name borrows it; one with no knob name anywhere publishes
-  // the one-key `threshold` map; a rule with no threshold omits the key.
+  // Checks example threshold maps and requires thresholds to be absent if security.eval-call is listed.
+  // Every rule must have string id and defaultSeverity fields and omit the legacy top-level keys.
   assert.equal(ruleListJsonHasThreshold(parsed, "complexity.cyclomatic", { maxComplexity: 15 }), true);
   assert.equal(ruleListJsonHasThreshold(parsed, "design.deep-relative-import", { threshold: 2 }), true);
   assert.equal(parsed.rules?.find((rule) => rule.id === "security.eval-call")?.thresholds, undefined);
@@ -207,7 +206,7 @@ type RuleListJsonPayload = {
 };
 
 /**
- * Reads two JSON catalogue renders and proves the bytes are stable.
+ * Starts the CLI twice in synchronous calls to render the rule catalogue as UTF-8 JSON and asserts that the output text matches.
  *
  * @returns the first render parsed and cast to the listing shape without validation
  */
@@ -235,7 +234,7 @@ function ruleListJsonHasThreshold(payload: RuleListJsonPayload, ruleId: string, 
  *
  * @param payload - catalogue whose rules are searched for the id and option key
  * @param ruleId - id of the rule to find
- * @param optionKey - option name that rule must list in `optionKeys`
+ * @param optionKey - option name that rule must list in optionKeys
  * @returns true when a rule with that id lists the option; false when none does or the catalogue has no rules
  */
 function ruleListJsonHasOptionKey(payload: RuleListJsonPayload, ruleId: string, optionKey: string): boolean {
@@ -333,12 +332,10 @@ test("summary JSON is the exact v3 analysis projection", () => {
 });
 
 /**
- * Validates one pillar row from the `gruff.summary.v3` JSON output. Accepts the raw parsed
- * value so the test does not need a typed interface mirroring the wire schema - the schema
- * contract lives in `renderSummaryJson`, this helper just confirms the row carries the
- * documented keys with the documented value types.
+ * Checks the fields of a parsed pillar row against the schema contract in renderSummaryJson.
  *
- * @param rawRow - one `score.pillars` element; the test fails unless it is an object with string `pillar` and numeric `score`, `penalty`, `findings`
+ * @param rawRow - a score.pillars element that must be an object with a string pillar and numeric score, penalty and findings fields
+ * @returns Nothing. It asserts that the row is an object with the expected field types.
  */
 function assertPillarRowShape(rawRow: unknown): void {
   assert.ok(rawRow && typeof rawRow === "object");
@@ -455,8 +452,8 @@ test("machine json is the same from inside the project, a sibling and a subdirec
     writeFileSync(join(root, "project", "probe.ts"), "export function probe(rx: number): number {\n  return rx + rx;\n}\n");
     writeFileSync(join(root, "stray.ts"), "export function stray(unused: number): void {}\n");
     const bin = join(REPO_ROOT, "bin/gruff-ts");
-    // Spawns the built binary for one command from one launch directory and keeps only the sections the launch
-    // directory must not change.
+    // Spawns the CLI for command from directory, passing target as the scan path, and asserts that the run succeeds.
+    // Returns JSON text for the report sections expected to stay stable. Missing sections serialize as null array entries.
     const stable = (command: string, directory: string, target: string): string => {
       const result = spawnSync("bash", [bin, command, target, "--no-config", "--fail-on", "none", "--format", "json"], { cwd: directory, encoding: "utf8" });
       assert.equal(result.status, 0, `${command} ${target}: ${result.stderr}`);
@@ -744,11 +741,11 @@ type SarifResult = {
   locations: Array<{ physicalLocation: { artifactLocation: { uri: string } } }>;
 };
 
-// Asserts a single SARIF result's invariant shape: rule-index/ruleId stable identity, fingerprint
-// presence, and POSIX-style normalised URI. Factored out of the test body so the loop carries no
-// inline conditional branches.
+// Checks sarifResult's gruffFingerprint policy and uses rules as the indexed catalogue for rule identity.
+// A resolved ruleIndex must agree with ruleId; missing or out-of-range indices fall back to ruleId and pass this check.
+// Returns nothing after checking that the first URI has no leading ./ and contains no backslash. A missing URI passes as an empty string.
 function assertSarifResultShape(rules: Array<{ id: string }>, sarifResult: SarifResult): void {
-  // An ordinary result carries the ratified identity; a secret carries no fingerprints at all.
+  // Sensitive results must have an undefined gruffFingerprint value. Other results must provide a string.
   const isSensitive = sarifResult.ruleId.startsWith("sensitive-data.") || sarifResult.properties?.pillar === "sensitive-data";
   assert.equal(typeof sarifResult.partialFingerprints?.gruffFingerprint, isSensitive ? "undefined" : "string");
   const indexedRule = typeof sarifResult.ruleIndex === "number" ? rules[sarifResult.ruleIndex] : undefined;
@@ -875,10 +872,11 @@ interface ParsedHtmlPillarRow {
 const pillarHeaderColumns = ["pillar", "grade", "score", "findings", "advisory", "warning", "error"] as const;
 
 /**
- * Confirms every required column header is present with the expected `class="num"` decoration
- * and that headers appear in the canonical cross-port order.
+ * Confirms every required pillar header is present in the canonical cross-port order.
+ * The first header has no class attribute. The remaining headers carry class="num".
  *
  * @param section - HTML of the pillars section; the test fails unless every column header is present and its plain-text headers read in order
+ * @returns nothing. It checks the header markup and order with assertions.
  */
 function assertHtmlPillarHeaders(section: string): void {
   pillarHeaderColumns.forEach((header, index) => {
@@ -913,10 +911,10 @@ function parseHtmlPillarRows(section: string): ParsedHtmlPillarRow[] {
 }
 
 /**
- * Verifies the cross-port sort contract: findings DESC, then pillar ASC. Helper exists so the
- * test body reads as a list of high-level assertions without inline loops.
+ * Verifies the cross-port sort contract. Larger finding counts come first, with ascending pillar names so that ties have a deterministic order.
  *
  * @param rows - parsed HTML pillar rows in rendered order; the test fails at the first neighbouring pair out of order
+ * @returns Nothing. Checks adjacent rows, treating missing pillar names as empty strings. Fewer than two rows require no comparison.
  */
 function assertHtmlPillarRowsSorted(rows: ParsedHtmlPillarRow[]): void {
   for (let i = 1; i < rows.length; i += 1) {
@@ -932,9 +930,10 @@ function assertHtmlPillarRowsSorted(rows: ParsedHtmlPillarRow[]): void {
 }
 
 /**
- * Score column is rendered with two decimal places everywhere.
+ * Check the text shown in the score column of each supplied pillar row.
  *
  * @param rows - parsed HTML pillar rows; the test fails unless every score is digits, a point and exactly two digits
+ * @returns Nothing. Fails on a missing or malformed score. An empty row list makes no assertions.
  */
 function assertHtmlPillarScoresWellFormed(rows: ParsedHtmlPillarRow[]): void {
   rows.forEach((row) => {
@@ -986,10 +985,9 @@ interface ParsedMarkdownPillarRow {
   error: number;
 }
 
-/* Extracts every data row between the separator and the next blank line into a typed shape so the
- * markdown table test can focus on assertions instead of cell parsing. Why this lives outside the
- * test body: the per-row cell destructuring otherwise pushes the test past the cyclomatic and
- * cognitive thresholds, hiding the actual contract assertions inside parsing noise. */
+// Parses pipe-prefixed lines after the pillar separator in the rendered Markdown report for row assertions.
+// Returns rows before the next double newline or the end of the report. It returns an empty array if no captured line starts with a pipe.
+// Asserts that the required pillar separator is present.
 function parseMarkdownPillarRows(rendered: string): ParsedMarkdownPillarRow[] {
   const tableMatch = rendered.match(/\| --- \| --- \| ---: \| ---: \| ---: \| ---: \| ---: \|\n([\s\S]*?)(?:\n\n|$)/);
   assert.ok(tableMatch, "pillar data rows not found");
@@ -997,8 +995,8 @@ function parseMarkdownPillarRows(rendered: string): ParsedMarkdownPillarRow[] {
   return dataRows.map(parseMarkdownPillarRow);
 }
 
-/* Splits a single `| cell | cell | … |` line into the typed row contract. Defaults are conservative
- * empty/zero values because the upstream regex already verified the table has the right shape. */
+// Parses line from the Markdown pillar table into text fields and numeric counts for assertions.
+// Returns empty strings for missing text cells, zero for missing or blank counts and NaN for counts that cannot be converted to numbers.
 function parseMarkdownPillarRow(line: string): ParsedMarkdownPillarRow {
   const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
   const [pillar = "", gradeText = "", score = "", findings = "0", advisory = "0", warning = "0", error = "0"] = cells;
@@ -1014,10 +1012,10 @@ function parseMarkdownPillarRow(line: string): ParsedMarkdownPillarRow {
 }
 
 /**
- * Validates the cross-port sort contract: findings DESC, then pillar ASC. Lifted out so the body
- * of the markdown test reads as a list of high-level assertions.
+ * Validates the cross-port sort contract: findings DESC, then pillar ASC.
  *
  * @param rows - parsed markdown pillar rows in rendered order; the test fails at the first neighbouring pair out of order
+ * @returns nothing. Asserts the sort order of neighboring rows and makes no pairwise checks for fewer than two rows.
  */
 function assertPillarSortOrder(rows: ParsedMarkdownPillarRow[]): void {
   for (let i = 1; i < rows.length; i += 1) {
@@ -1084,8 +1082,8 @@ test("analyse text names a discovered default baseline and --no-baseline decline
   }
 });
 
-// Governance controls must reject misspelled values before analysis starts, not silently default.
-// Spawns the CLI once per case and asserts the usage error names the accepted set.
+// Spawns the CLI with args to check rejection of an invalid constrained value. The label identifies the case in assertion failures.
+// Returns nothing. It asserts that status differs from zero and stderr contains the 'must be one of:' marker.
 function assertConstrainedValueRejected(label: string, args: string[]): void {
   const result = spawnSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), ...args], { encoding: "utf8" });
   assert.notEqual(result.status, 0, `${label} must fail fast`);

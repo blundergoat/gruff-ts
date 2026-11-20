@@ -16,10 +16,8 @@ const SCOREABLE_PILLARS: readonly Pillar[] = [...new Set(ruleDescriptors().map((
 const SCORE_FLOOR = 50;
 const DENSITY_SCALE = 0.1;
 
-// Applies the ratified pillar curve to one summed weight. Dividing by the evaluated-file count
-// before transforming is what makes a duplicated project score the same as the original: twice the
-// findings over twice the code is one ratio. Returns null when nothing was evaluated, because an
-// empty scan has no health to report and a number here would present it as perfect.
+// Returns a pillar or file score using the shared density curve. weight is the summed penalty, and evaluatedFiles is the file count.
+// Scaling the penalty and file count together preserves the score. A nonpositive file count returns null because there is no score to include.
 function curveScore(weight: number, evaluatedFiles: number): number | null {
   if (evaluatedFiles <= 0) {
     return null;
@@ -35,14 +33,9 @@ function roundScore(rawScore: number): number {
   return rounded === 0 ? 0 : rounded;
 }
 
-// Builds the native per-pillar and per-file score breakdown. The v3 JSON adapter preserves these
-// values while reshaping the composite and offender paths for the family envelope. The composite is
-// the mean over every rule-backed pillar, with a clean pillar counting as 100, so removing a finding
-// can never decrease it. Every scoreable pillar gets a row now, not only the finding-bearing ones,
-// so a reader can tell a reachable clean pillar from one no rule can reach.
-// `topOffenders` is the full file list sorted worst-first; renderers cap it themselves.
-// Invariant: every scoreable pillar appears exactly once, a clean pillar scores 100, and the
-// composite is null only when no pillar could be scored at all.
+// Returns the native score breakdown, using the scan findings as penalties and the evaluated-file count to normalize pillar scores.
+// Invariant: each rule-backed or finding-bearing pillar appears once. With evaluated files, a clean pillar scores 100.
+// The composite averages numeric pillar scores. Only files with findings are listed, lowest score first or unscored when no files were evaluated.
 function scoreReport(findings: Finding[], evaluatedFiles: number): AnalysisReport["score"] {
   const byPillar = new Map<Pillar, Finding[]>();
   const byFile = new Map<string, Finding[]>();
@@ -59,8 +52,7 @@ function scoreReport(findings: Finding[], evaluatedFiles: number): AnalysisRepor
     return { pillar, applicable: true, score, grade: score === null ? null : grade(score), penalty, findings: pillarFindings.length };
   });
   const applicableScores = pillars.flatMap((pillar) => (pillar.score === null ? [] : [pillar.score]));
-  // No pillar had an opinion, so there is no composite. Returning 100 here is what let an empty
-  // directory grade A before the M06 break.
+  // Without evaluated files, pillars and the composite have null scores and grades because the scan has no measurement.
   const composite =
     applicableScores.length === 0 ? null : roundScore(applicableScores.reduce((sum, score) => sum + score, 0) / applicableScores.length);
   const topOffenders = [...byFile.entries()]
@@ -82,11 +74,9 @@ function scoreReport(findings: Finding[], evaluatedFiles: number): AnalysisRepor
   };
 }
 
-// Lists every correlated concept that billed one shared weight, so a reader can see which findings
-// the grade counted once rather than inferring it from a total lower than the sum of its parts.
-// Invariant: every published cluster holds two or more findings sharing one file and symbol, its
-// weight never exceeds what those findings would carry unclustered, and the rows are sorted by file
-// then symbol so two runs over unchanged input publish the same bytes.
+// Return cluster rows for groups of at least two supplied correlated findings sharing a file and symbol. No qualifying group means no rows.
+// Sum the supplied penalties, using the normal finding weight for a missing entry, so readers can see the group's charge.
+// Stable file and symbol order keeps unchanged cluster rows comparable across runs.
 function correlatedClusters(findings: Finding[], penalties: ReadonlyMap<Finding, number>): AnalysisReport["score"]["clusters"] {
   const groups = new Map<string, Finding[]>();
   for (const finding of findings) {
@@ -108,8 +98,9 @@ function correlatedClusters(findings: Finding[], penalties: ReadonlyMap<Finding,
     .sort((left, right) => left.file.localeCompare(right.file) || left.symbol.localeCompare(right.symbol));
 }
 
-// Reports how much weight each native rule removed from the score. The key is the native ruleId: a
-// conceptId may group reporting, but the ratified contract never makes it the attribution key.
+// Return finding counts and rounded scoring penalties by native rule ID, in stable rule ID order.
+// Tally the supplied findings using the precomputed penalties, or the normal finding weight for entries missing from the map.
+// Rules with no findings have no row. The attribution contract keeps the native rule ID even when reporting groups concepts.
 function ruleAttribution(findings: Finding[], penalties: ReadonlyMap<Finding, number>): AnalysisReport["score"]["ruleAttribution"] {
   const totals = new Map<string, { findings: number; weight: number }>();
   for (const finding of findings) {
@@ -122,8 +113,8 @@ function ruleAttribution(findings: Finding[], penalties: ReadonlyMap<Finding, nu
 }
 
 // Severity tallies emitted in native analysis state. The four-key shape
-// (advisory/warning/error/total) is nested under `summary.findings` by the v3 machine adapter, and
-// `total` must match the findings array length.
+// (advisory/warning/error/total) is nested under summary.findings by the v3 machine adapter, and
+// total must match the findings array length.
 function summarize(findings: Finding[]) {
   return {
     advisory: findings.filter((finding) => finding.severity === "advisory").length,
@@ -133,14 +124,14 @@ function summarize(findings: Finding[]) {
   };
 }
 
-/*
- * Process exit contract: 2 when diagnostics were emitted (parse/IO failures the user must know about),
- * 1 when any finding crosses both `failOn` and `minConfidence`, 0 otherwise. CI scripts and the dashboard
- * runner depend on this three-value invariant; reshuffling the precedence is a stable-contract regression.
+/**
+ * Apply the three-value exit contract used by CI and the dashboard, with invalidating diagnostics taking precedence over findings.
+ * Diagnostics invalidate the run by default. An explicit false leaves the finding gate in effect.
  *
- * The two floors are independent: severity says how much a finding matters, confidence says how sure the
- * analyser is, and either one alone can keep a finding away from the gate. `minConfidence` defaults to `low`,
- * which admits everything and leaves a caller that never asked for a confidence floor unaffected.
+ * @param report - Analysis results whose diagnostics and findings determine the exit status.
+ * @param failOn - Minimum severity for a finding to fail the gate. The none setting disables the finding gate.
+ * @param minConfidence - Confidence floor a finding must also meet. The default low admits all finding confidence levels.
+ * @returns 2 for any run-invalidating diagnostic, otherwise 1 if any finding meets both floors, otherwise 0.
  */
 function exitFor(report: AnalysisReport, failOn: FailThreshold, minConfidence: Confidence = "low"): number {
   if (report.diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false)) {
@@ -149,8 +140,8 @@ function exitFor(report: AnalysisReport, failOn: FailThreshold, minConfidence: C
   return report.findings.some((finding) => reachesGate(finding, failOn, minConfidence)) ? 1 : 0;
 }
 
-// True when one finding clears both floors, which is the only way a run fails on findings.
-// Stable contract: severity and confidence are independent, so either floor alone can keep a finding away from the gate.
+// Return whether finding reaches the severity floor failOn and the confidence floor minConfidence; both must pass.
+// failOn set to none always returns false, so findings cannot fail the run.
 function reachesGate(finding: Finding, failOn: FailThreshold, minConfidence: Confidence): boolean {
   return thresholdTriggered(failOn, finding.severity) && CONFIDENCE_GATE_RANK[finding.confidence] >= CONFIDENCE_GATE_RANK[minConfidence];
 }
@@ -158,8 +149,9 @@ function reachesGate(finding: Finding, failOn: FailThreshold, minConfidence: Con
 // Confidence ladder for the gate; a finding at or above the requested rank can reach it.
 const CONFIDENCE_GATE_RANK: Record<Confidence, number> = { low: 0, medium: 1, high: 2 };
 
-// Severity ladder: "none" never triggers, "advisory" triggers on anything, "warning" needs at least
-// warning, "error" needs error. Order is intentional - `failOn=warning` must still trigger on errors.
+// Returns whether the finding's severity reaches the configured failure threshold.
+// None never triggers, and advisory includes every severity.
+// Warning includes warnings and errors because it is a floor. Error includes only errors.
 function thresholdTriggered(thresholdValue: FailThreshold, severity: Severity): boolean {
   if (thresholdValue === "none") {
     return false;
@@ -174,15 +166,13 @@ function thresholdTriggered(thresholdValue: FailThreshold, severity: Severity): 
 }
 
 // Ratified family severity weights, identical in all five ports. Changing them is a family
-// decision. The error weight rose from 8 and the advisory weight fell from 1.5 at the M06 break,
-// so every historical score and every grade letter in `scores.jsonl` moves.
+// decision. Return severity's scoring weight: 12 for error, 4 for warning, or 1 for advisory.
 function severityPenalty(severity: Severity): number {
   return severity === "error" ? 12 : severity === "warning" ? 4 : 1;
 }
 
-// Ratified confidence weights. gruff-ts had no confidence dimension before M06: a low-confidence
-// heuristic finding weighed exactly as much as a high-confidence one, so a noisy rule could drag a
-// pillar as hard as a certain defect. The ratified density multiplies severity by confidence.
+// Return confidence's multiplier: 1 for high, 0.75 for medium, or 0.5 for low.
+// The scoring density multiplies severity by this weight so uncertain findings cost less.
 function confidenceWeight(confidence: Confidence): number {
   return confidence === "high" ? 1 : confidence === "medium" ? 0.75 : 0.5;
 }
@@ -196,8 +186,8 @@ function findingWeight(finding: Finding): number {
 
 const CORRELATED_COMPLEXITY_RULE_IDS = new Set(["complexity.cyclomatic", "size.function-length"]);
 
-// Correlated complexity findings describe one hard-to-review function.
-// Invariant: detailed reports keep every rule finding while grade math splits one max-severity penalty.
+// Returns a scoring penalty map keyed by the input findings. Unclustered findings and singleton clusters keep their own weight.
+// Invariant: findings in a complexity cluster share its highest weight equally so that one function incurs one combined penalty.
 function scoringPenaltyMap(findings: Finding[]): Map<Finding, number> {
   const penalties = new Map<Finding, number>();
   const clusters = new Map<string, Finding[]>();
@@ -218,10 +208,9 @@ function scoringPenaltyMap(findings: Finding[]): Map<Finding, number> {
   return penalties;
 }
 
-// The ratified contract keys clustering on project-relative file and qualified symbol without line
-// identity, because correlated rules disagree about which line to report and a line in the key splits
-// one root cause into two.
-// Invariant: symbol grouping prevents unrelated functions in the same file from sharing score relief.
+// Return the file-and-symbol key for a finding from a correlated complexity rule.
+// Return undefined if the symbol is missing or the rule is outside that set, so the finding keeps its own penalty.
+// The stable key excludes the line because related rules can report the same function at different lines.
 function complexityClusterKey(finding: Finding): string | undefined {
   if (!finding.symbol || !CORRELATED_COMPLEXITY_RULE_IDS.has(finding.ruleId)) {
     return undefined;
@@ -229,18 +218,17 @@ function complexityClusterKey(finding: Finding): string | undefined {
   return `${finding.filePath}\0${finding.symbol}`;
 }
 
-// Invariant: one finding uses one precomputed score penalty or the normal severity weight fallback.
+// Invariant: returns the finding's precomputed penalty, including zero, or its severity and confidence weight when the map has no entry.
 function findingPenalty(penalties: ReadonlyMap<Finding, number>, finding: Finding): number {
   return penalties.get(finding) ?? findingWeight(finding);
 }
 
-/*
- * Per-severity grade breakdown for the human summary block. The composite headline alone hides the
- * fact that an F can be driven entirely by advisories (goat-flow scan: F at 12.9 with 0 errors / 276
- * warnings / 1367 advisories). Mirrors the existing pillar formula `100 - count * severityPenalty`
- * so the math stays consistent with how a single-rule pillar would score. The report-shape
- * invariant matters: severity breakdowns and correlated complexity clustering must not add native
- * score fields or change the `gruff.analysis.v3` machine envelope.
+/**
+ * Shows how each severity scores in the human summary. Each bucket applies its severity penalty with a zero floor.
+ * The breakdown belongs to the summary and keeps the gruff.analysis.v3 report schema stable.
+ *
+ * @param findings - findings to count by their reported severity
+ * @returns - count, score and letter grade for each severity. A bucket with no findings scores 100.
  */
 function severityGradeBreakdown(findings: Finding[]): {
   error: { grade: string; score: number; count: number };
@@ -258,16 +246,15 @@ function severityGradeBreakdown(findings: Finding[]): {
   };
 }
 
-// Single severity bucket using the same `score = max(0, 100 - count * penalty)` formula as the
-// pillar reduce in `scoreReport`. Returns the bucket plus its grade letter so renderers don't have
-// to import `grade` separately.
+// Return a grade, score, and count for count findings at the supplied severity, using a linear severity-only penalty clamped at zero.
+// This summary bucket does not use the project density curve or confidence weights.
 function severityBucket(severity: Severity, count: number): { grade: string; score: number; count: number } {
   const score = Math.max(0, 100 - count * severityPenalty(severity));
   return { grade: grade(score), score, count };
 }
 
-// Renders one canonical composite line. A run that evaluated nothing has no composite, and every
-// gruff-ts surface says so in the same words rather than printing a number that reads as a grade.
+// Format one composite line for text reports, with a shared message for runs that evaluated nothing.
+// composite is the numeric score and gradeLetter its label; either null value returns the nothing-evaluated message.
 function compositeLine(composite: number | null, gradeLetter: string | null): string {
   return composite === null || gradeLetter === null
     ? "Composite: n/a (nothing evaluated)"

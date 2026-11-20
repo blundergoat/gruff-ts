@@ -270,7 +270,7 @@ export interface B {
  * Contract helper that returns only circular-import findings from the supplied report.
  *
  * @param report - analysis of a project fixture
- * @returns the report's `design.circular-import` findings in report order; empty when none fired
+ * @returns - the report's design.circular-import findings in report order, or an empty array when none fired
  */
 function circularImportFindings(report: AnalysisReport): AnalysisReport["findings"] {
   return report.findings.filter((finding) => finding.ruleId === "design.circular-import");

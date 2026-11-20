@@ -16,9 +16,10 @@ const PRELUDE = "prepare();";
 
 /**
  * Builds independently named registrations with caller-controlled bodies and call forms.
+ *
  * @param bodies - syntax to compare inside block callbacks, after the shared prelude statement
  * @param callee - supported runner root or modifier chain
- * @param options - optional argument preceding each callback
+ * @param options - argument source including its trailing comma, or empty to place the callback immediately after the title
  * @returns source text containing all registrations in source order
  */
 function registrations(bodies: string[], callee = "test", options = ""): string {
@@ -28,6 +29,8 @@ function registrations(bodies: string[], callee = "test", options = ""): string 
 /**
  * Runs the real parser, dispatch and finding construction with the pilot enabled.
  * Contract: fixture callers receive only this rule's deterministic native findings.
+ * Analysis creates and removes a temporary project and temporarily changes process cwd.
+ *
  * @param source - test-file contents
  * @param fileName - grammar-selecting fixture path, including TSX when JSX text is exercised
  * @returns only this pilot's native findings

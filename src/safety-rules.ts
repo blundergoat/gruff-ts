@@ -7,8 +7,9 @@ import { makeFinding } from "./findings.ts";
 import { byteLine } from "./text-scans.ts";
 import type { Finding } from "./types.ts";
 
-// Four-rule TypeScript safety pass: directive comment, non-null assertion, double cast, exported any.
-// Stable, deterministic ordering keeps the per-line findings in a known sequence.
+// Check a TypeScript line for directive rationale, non-null assertions, double casts, and exported any in that stable order.
+// Use file and lineNumber for location, line for comments, codeLine for code, and sourceLines for preceding comments when supplied.
+// trackingTokens can add accepted rationale patterns. Returns nothing and appends matches to the supplied findings array.
 export function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: string, lineNumber: number, findings: Finding[], sourceLines: readonly string[] = [], trackingTokens: readonly RegExp[] = []): void {
   pushTsDirectiveFinding(file, line, lineNumber, findings, sourceLines, trackingTokens);
   pushNonNullAssertionFindings(file, codeLine, lineNumber, findings);
@@ -16,16 +17,17 @@ export function analyseTypeSafetyLine(file: SourceFile, line: string, codeLine: 
   pushExportedAnyFinding(file, codeLine, lineNumber, findings);
 }
 
-// Two reliability rules per line: async-forEach, non-Error throw. Order is
-// the stable contract - reshuffling shifts per-block emission and churns baselines.
+// Returns nothing. Checks codeLine for async forEach callbacks and non-Error throws and appends any findings.
+// file supplies the reported path and lineNumber its one-based line; checks run in that order for stable emission.
 export function analyseReliabilityLine(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   pushAsyncForEachFinding(file, codeLine, lineNumber, findings);
   pushNonErrorThrowFinding(file, codeLine, lineNumber, findings);
 }
 
 /*
- * `catch (e) { throw e; }` patterns. The backreference enforces "same binding name" so a real
- * `catch (e) { throw new Wrapped(e); }` does not trip. Reports the stable `waste.useless-catch` finding.
+ * Flag catches that only rethrow their untyped identifier binding because they add no handling. Wrapped rethrows do not match.
+ * Returns nothing. Appends a stable waste.useless-catch finding for each match.
+ * file supplies the path; source supplies catch text and line offsets; findings receives each match.
  */
 export function analyseUselessCatches(file: SourceFile, source: string, findings: Finding[]): void {
   for (const match of source.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)\s*\{\s*throw\s+\1\s*;?\s*\}/g)) {
@@ -46,10 +48,15 @@ export function analyseUselessCatches(file: SourceFile, source: string, findings
   }
 }
 
-/*
- * Empty / comment-only catch bodies. Strips comments before testing, because a catch body with
- * only `// intentional` is still a swallowed catch but a real `console.error` is not. Reports
- * the stable `waste.swallowed-catch` finding.
+/**
+ * Flag empty or comment-only catches because a discarded error can hide a failure unless the comment explains the ignore.
+ *
+ * @param file - Source file supplying the display path for each finding.
+ * @param rawSource - Original source used to read catch comments and locate matches.
+ * @param codeSource - Corresponding code text used to locate catches and check their bodies.
+ * @param findings - Caller-owned array that receives stable waste.swallowed-catch findings.
+ * @param trackingTokens - Extra patterns for rationale references. Omit to use the built-in heuristic alone.
+ * @returns Nothing. Appends a finding for each matching catch without a recognised rationale.
  */
 export function analyseSwallowedCatches(file: SourceFile, rawSource: string, codeSource: string, findings: Finding[], trackingTokens: readonly RegExp[] = []): void {
   for (const match of codeSource.matchAll(/\bcatch\s*(?:\(([^)]*)\))?\s*\{([\s\S]*?)\}/g)) {
@@ -76,6 +83,8 @@ export function analyseSwallowedCatches(file: SourceFile, rawSource: string, cod
 }
 
 // Maps a catch-body match from masked code back to raw source so rationale comments remain visible.
+// rawSource and codeSource must share offsets, and match selects the catch.
+// An invalid brace range or empty body returns empty text, leaving no rationale to inspect.
 function rawCatchBody(rawSource: string, codeSource: string, match: RegExpMatchArray): string {
   const start = match.index ?? 0;
   const openBrace = codeSource.indexOf("{", start);
@@ -83,10 +92,9 @@ function rawCatchBody(rawSource: string, codeSource: string, match: RegExpMatchA
   return openBrace === -1 || closeBrace <= openBrace ? "" : rawSource.slice(openBrace + 1, closeBrace);
 }
 
-// A comment-only catch is intentional when its comment says why, judged by shape rather than a codebase-specific phrase
-// list: two or more words, a rationale or tracking reference, or one of the generic intent markers (ignore, no-op, cleanup,
-// teardown, best-effort, non-fatal, optional) with hyphens normalised. `/* silent */` names no intent and still reports, and a
-// deferred-work marker (TODO, FIXME, XXX) is a placeholder however long it is.
+// Checks the catch body's comments for signs of intent, using trackingTokens to recognise tracking references.
+// Returns true for a rationale match, at least two words or a recognised intent marker. Blank text and TODO, FIXME or XXX return false.
+// A bare /* silent */ has one word, so it needs a rationale match to qualify.
 function hasIntentionalCatchRationale(body: string, trackingTokens: readonly RegExp[]): boolean {
   const commentText = (body.match(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g) ?? []).map((comment) => comment.replace(/^\/\/+|^\/\*+|\*+\/$/g, "")).join(" ");
   if (commentText.trim() === "" || /\b(?:TODO|FIXME|XXX)\b/.test(commentText)) {
@@ -96,14 +104,20 @@ function hasIntentionalCatchRationale(body: string, trackingTokens: readonly Reg
   return hasSuppressionRationale(commentText, trackingTokens) || words.length >= 2 || /\b(?:ignored?|no-?op|cleanup|teardown|best[- ]effort|non[- ]fatal|optional)\b/i.test(commentText);
 }
 
-/*
- * `@ts-ignore` / `@ts-expect-error` without an explanatory note. `tsDirectiveWithoutRationale`
- * applies the rationale heuristic. Reports the stable `modernisation.ts-comment-without-rationale`
- * finding.
+/**
+ * Flag @ts-ignore and @ts-expect-error without a recognised reason on the line or in the line comments directly above it.
+ *
+ * @param file - Source file supplying the display path for the finding.
+ * @param line - Raw source line to check for a directive and its suffix rationale.
+ * @param lineNumber - Source line used to locate the directive and look up preceding comments.
+ * @param findings - Caller-owned array that receives the stable modernisation.ts-comment-without-rationale finding.
+ * @param sourceLines - Raw file lines used to check comments immediately above the directive.
+ * @param trackingTokens - Additional patterns accepted as tracking references in the rationale.
+ * @returns Nothing. Appends a finding only when a directive lacks a recognised rationale.
  */
 function pushTsDirectiveFinding(file: SourceFile, line: string, lineNumber: number, findings: Finding[], sourceLines: readonly string[], trackingTokens: readonly RegExp[]): void {
   const directive = tsDirectiveWithoutRationale(line, trackingTokens);
-  // A rationale may also sit in the `//` comment lines directly above the directive.
+  // A recognised rationale in the contiguous line comments above the directive suppresses this finding.
   if (!directive || hasDirectiveRationale(lineCommentsAbove(sourceLines, lineNumber - 1), trackingTokens)) {
     return;
   }
@@ -122,8 +136,8 @@ function pushTsDirectiveFinding(file: SourceFile, line: string, lineNumber: numb
   );
 }
 
-// Walks every `foo.bar!` non-null assertion on the line. The lookahead enforces a real expression
-// boundary so `!=` doesn't get misread. Reports `modernisation.non-null-assertion` with stable metadata.
+// Scan codeLine for identifier and dotted-property assertions at recognised boundaries to avoid reading != as an assertion.
+// Use file and lineNumber for location. Returns nothing and appends a stable modernisation.non-null-assertion finding to findings per match.
 function pushNonNullAssertionFindings(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   for (const match of codeLine.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)!(?=\.|\[|\)|,|;|\s+(?:as|in|instanceof)\b|\s*$)/g)) {
     const expression = match[1] ?? "";
@@ -144,9 +158,9 @@ function pushNonNullAssertionFindings(file: SourceFile, codeLine: string, lineNu
   }
 }
 
-// `as unknown as Foo` and `as any as Foo` double-cast patterns. Why: the rationale branch keeps
-// boundary casts visible without scoring a documented TS2352/validator hop like an unexplained
-// bypass because typed parser migrations often land later; invariant: never throws and emits stable metadata.
+// Scan codeLine for double casts through unknown or any. Use rawLine for rationale and file and lineNumber for the finding location.
+// A recognised rationale lowers a match to advisory to preserve visibility for documented boundary casts. Other matches are warnings.
+// Returns nothing and appends a modernisation.double-cast finding with stable metadata to findings for each match.
 function pushDoubleCastFindings(file: SourceFile, rawLine: string, codeLine: string, lineNumber: number, findings: Finding[]): void {
   for (const match of codeLine.matchAll(/\bas\s+(unknown|any)\s+as\s+([^;,\n]+)/g)) {
     const sourceType = match[1] ?? "";
@@ -176,10 +190,14 @@ function hasDoubleCastTrustBoundaryRationale(rawLine: string): boolean {
   );
 }
 
-/*
- * `any` in an exported declaration's public surface. Only one finding per line because a single
- * `export` with multiple any-typed fields is one design problem, not many. Reports the stable
- * `waste.exported-any` finding.
+/**
+ * Flag possible exported uses of any. Emit one finding per matching line to avoid repeating the same declaration.
+ *
+ * @param file - Source file supplying the display path for the finding.
+ * @param codeLine - Code to check for a named export declaration and an any token on the same line.
+ * @param lineNumber - Source line attached to the result.
+ * @param findings - Caller-owned array that receives the stable waste.exported-any finding on a match.
+ * @returns Nothing. Appends at most one finding and leaves the array alone when no export matches.
  */
 function pushExportedAnyFinding(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   const exportedAny = exportedAnySymbol(codeLine);
@@ -202,8 +220,8 @@ function pushExportedAnyFinding(file: SourceFile, codeLine: string, lineNumber: 
   );
 }
 
-// `arr.forEach(async …)` is a near-universal anti-pattern: the array iterator does not await the
-// returned promise, so errors swallow silently. Reports the stable `security.async-foreach` finding.
+// Scan codeLine for async forEach callbacks because forEach does not await them and their rejections can go unhandled.
+// Use file and lineNumber to locate the result. Returns nothing and appends a stable security.async-foreach finding to findings on a match.
 function pushAsyncForEachFinding(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   if (!/\.forEach\s*\(\s*async\b/.test(codeLine)) {
     return;
@@ -223,10 +241,14 @@ function pushAsyncForEachFinding(file: SourceFile, codeLine: string, lineNumber:
   );
 }
 
-/*
- * `throw "string"` / `throw { …object }` / `throw 42`. JavaScript permits it but the stack trace
- * is missing and the caller can't pattern-match an Error subclass. Reports the stable
- * `security.throw-non-error` finding.
+/**
+ * Flag literal non-Error throw candidates because these values lack the usual Error stack and subclass contract.
+ *
+ * @param file - Source file supplying the display path for the finding.
+ * @param codeLine - Code checked for a literal-looking thrown expression.
+ * @param lineNumber - One-based source line attached to the finding.
+ * @param findings - Accumulator for security.throw-non-error findings.
+ * @returns Nothing. Appends one finding on a match and leaves the accumulator unchanged otherwise.
  */
 function pushNonErrorThrowFinding(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   const thrown = nonErrorThrowExpression(codeLine);
@@ -248,9 +270,9 @@ function pushNonErrorThrowFinding(file: SourceFile, codeLine: string, lineNumber
   );
 }
 
-// Returns the directive name only when the suffix following a TypeScript suppression directive
-// has no meaningful rationale. Heuristic is intentionally lenient - three real words usually means
-// the maintainer wrote a reason.
+// Return a directive-name object for an @ts-ignore or @ts-expect-error in line without an accepted suffix rationale. Return undefined otherwise.
+// Three runs of at least three ASCII letters or a built-in rationale marker qualify.
+// trackingTokens adds accepted rationale patterns; testing a stateful pattern may change its lastIndex.
 function tsDirectiveWithoutRationale(line: string, trackingTokens: readonly RegExp[]): { directive: string } | undefined {
   const match = line.match(/@ts-(ignore|expect-error)\b(.*)$/);
   if (!match?.[1]) {
@@ -263,16 +285,16 @@ function tsDirectiveWithoutRationale(line: string, trackingTokens: readonly RegE
   return { directive: `@ts-${match[1]}` };
 }
 
-// Two-way pass: an explicit suppression rationale token (tracking URL / issue ID / owner / date)
-// or at least three real English-shaped words. The disjunction keeps maintainers from having to
-// remember a specific format.
+// Return whether directiveSuffix has a rationale marker or at least three runs of three or more ASCII letters after separator trimming.
+// trackingTokens adds accepted rationale patterns; testing a stateful pattern may change its lastIndex.
 function hasDirectiveRationale(directiveSuffix: string, trackingTokens: readonly RegExp[]): boolean {
   const cleaned = directiveSuffix.replace(/^[-:\s]+/, "").trim();
   const words = cleaned.match(/[A-Za-z]{3,}/g) ?? [];
   return hasSuppressionRationale(cleaned, trackingTokens) || words.length >= 3;
 }
 
-// Joins the `//` comment lines directly above a line, nearest last, so a rationale written above a directive reads with it.
+// Joins consecutive line comments above the target in source order so a rationale can sit above the directive.
+// lines supplies source text; index is the target's zero-based position. Return empty text when no preceding comments exist.
 function lineCommentsAbove(lines: readonly string[], index: number): string {
   const texts: string[] = [];
   for (let current = index - 1; current >= 0; current -= 1) {
@@ -285,8 +307,8 @@ function lineCommentsAbove(lines: readonly string[], index: number): string {
   return texts.join(" ");
 }
 
-// Two-shot scan: line must have both `export` and `any` before the regex is invoked, because the
-// regex is expensive and most lines do not have both.
+// Return an export declaration's name from codeLine only when it also contains any; return undefined when no such match exists.
+// This line scan does not establish whether any belongs to the public type.
 function exportedAnySymbol(codeLine: string): string | undefined {
   if (!/\bexport\b/.test(codeLine) || !/\bany\b/.test(codeLine)) {
     return undefined;
@@ -309,7 +331,7 @@ function nonErrorThrowExpression(codeLine: string): string | undefined {
   return /^(?:["'`]|\d|\{|\[|true\b|false\b|null\b|undefined\b)/.test(expression) ? expression.slice(0, 40) : undefined;
 }
 
-// Strips both line and block comments before testing for emptiness. A catch body holding only a
+// Return true when body is empty after removing line and block comments and whitespace. A catch body holding only a
 // throwaway placeholder comment reads as a deliberate swallow but documents nothing about the
 // recovery path - that is still the rule's signal.
 function isSwallowedCatchBody(body: string): boolean {

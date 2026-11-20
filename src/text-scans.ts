@@ -1,5 +1,5 @@
-// Empty-match guard (`lastIndex += 1`) prevents zero-width patterns like /(?=)/g from looping forever.
-// Caller's RegExp is never mutated - `globalRegExp` clones it when the global flag is missing.
+// Returns the number of pattern matches in source for occurrence-based rules, or zero when none match. The caller's pattern is unchanged.
+// Empty matches count toward the total. The scan advances its index by one code unit to avoid retrying a zero-width match.
 function countMatches(source: string, pattern: RegExp): number {
   const globalPattern = globalRegExp(pattern);
   let count = 0;
@@ -14,20 +14,18 @@ function countMatches(source: string, pattern: RegExp): number {
   return count;
 }
 
-// Clones into a new `g`-flagged RegExp when needed. Mutating the caller's pattern (via `lastIndex`)
-// would silently break any further use on the calling side - rule descriptors share patterns at module scope.
+// Returns a new global copy of pattern, preserving its other flags so scans cannot mutate the caller's RegExp.
 function globalRegExp(pattern: RegExp): RegExp {
   return new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
 }
 
-// One-based line number of the first matching line, defaulting to 1 when no match exists so
-// findings always have a valid anchor. Used by rules that need a stable file-level location.
+// Returns the one-based first source line accepted by pattern.test, or 1 when none pass, to anchor file-level findings.
+// Uses pattern's current state; global or sticky patterns may change lastIndex and affect which line is accepted.
 function firstLine(source: string, pattern: RegExp): number {
   return source.split(/\r?\n/).findIndex((line) => pattern.test(line)) + 1 || 1;
 }
 
-// One-based line number containing byte offset `index`. Used to anchor findings extracted from
-// regex match indices; off-by-one would shift every reported line in the resulting reports.
+// Returns the one-based line at UTF-16 index in source for regex-derived finding locations; negative indices use the start of source.
 function byteLine(source: string, index: number): number {
   const end = Math.max(0, index);
   let line = 1;
@@ -46,8 +44,8 @@ function byteColumn(source: string, index: number): number {
   return end - source.lastIndexOf("\n", end - 1);
 }
 
-// Tiny parenthesis matcher over masked source. Strings and comments are already blanked by
-// `maskNonCode`, so nested call parentheses are the only structure this needs to balance.
+// Returns the closing-parenthesis index paired with the opening at openParen in masked source, or undefined if none is found.
+// Callers mask strings and comments so parentheses inside them do not affect the nesting count.
 function matchingCloseParen(source: string, openParen: number): number | undefined {
   let depth = 0;
   for (let index = openParen; index < source.length; index += 1) {

@@ -301,7 +301,8 @@ const CENTRAL_TEST_PROJECT = {
 };
 const CENTRAL_TEST_DIFF_PATCH = 'diff --git a/src/cli/audit/check-agent-setup.ts b/src/cli/audit/check-agent-setup.ts\n--- a/src/cli/audit/check-agent-setup.ts\n+++ b/src/cli/audit/check-agent-setup.ts\n@@ -1,3 +1,3 @@\n export function checkAgentSetup(): string {\n-  return "old";\n+  return "ok";\n }\n';
 
-// Stable contract: extracts line anchors for eval findings so hunk-filtering tests stay deterministic.
+// Returns eval finding lines from the analysis report in ascending order so hunk-filtering comparisons stay stable.
+// Uses zero for an eval finding without a line and returns an empty list when the report contains no eval findings.
 function evalFindingLines(report: AnalysisReport): number[] {
   return report.findings
     .filter((finding) => finding.ruleId === "security.eval-call")
@@ -309,8 +310,9 @@ function evalFindingLines(report: AnalysisReport): number[] {
     .sort((left, right) => left - right);
 }
 
-// Writes a temporary git repository, commits the initial files, and restores cwd afterwards.
-// Spawns only fixed `git` argv calls so the diff-mode regression can observe real index state.
+// Creates a temporary Git repository whose name starts with prefix and commits the supplied fixture files.
+// Spawns fixed Git commands so diff tests can observe real index state, then passes the repository path to run while it is the current directory.
+// Returns nothing. Once cwd is captured, cleanup attempts to restore it before removing the fixture, even if setup or the callback fails.
 function withCommittedGitFixture(prefix: string, files: Record<string, string>, run: (projectDir: string) => void): void {
   const projectDir = mkdtempSync(join(tmpdir(), prefix));
   const previous = cwd();
@@ -333,9 +335,10 @@ function withCommittedGitFixture(prefix: string, files: Record<string, string>, 
  * Writes a temporary project that exercises baseline identity across current rule families.
  *
  * @param projectDir - empty temporary directory that receives the fixture project, whose config turns on the default-off rules it needs
+ * @returns Nothing. Populates the directory for the baseline schema and suppression checks.
  */
 function writeBaselineRoundTripFixture(projectDir: string): void {
-  // aws-access-key ships off by default since precision-floor M02; the config switches it on so a secret is in the scan.
+  // Enable the default-off AWS key rule to supply a sensitive finding for the count comparison after baseline application.
   writeFileSync(join(projectDir, ".gruff-ts.yaml"), M02_DEFAULT_OFF_RULES_ON_YAML);
   writeFileSync(
     join(projectDir, "bad.ts"),
@@ -402,7 +405,7 @@ export function fromB(): string {
 }
 
 /**
- * Verifies generated, suppressed, and mismatched baselines as a CLI user would encounter them.
+ * Check generated baseline metadata, suppression counts and positive unmatched debt after baseline-row mutations.
  * Stable contract: writes stay inside caller-owned fixture directories that the test removes.
  *
  * @param baselineDir - temporary directory for the generated baseline and two mutated copies; the current directory must be the fixture project
@@ -420,12 +423,12 @@ function assertBaselineRoundTrip(baselineDir: string): number {
   const [target] = occurrences;
   assertBaselineEntryMetadata(baseline, target);
 
-  // A secret is never baselinable, so it stays visible and blocking while every ordinary finding is hidden.
+  // Require the remaining finding count to equal the sensitive-data count and the suppressed count to cover the remainder.
   const sensitiveFindings = report.findings.filter((finding) => finding.pillar === "sensitive-data");
   const suppressed = analyse({ ...baseOptions, shouldSkipBaseline: false, baseline: baselinePath });
   assert.equal(suppressed.baseline?.suppressed, report.findings.length - sensitiveFindings.length);
   assert.equal(suppressed.findings.length, sensitiveFindings.length);
-  // The reviewed identity carries no line, so an edit that only moves the finding leaves it suppressed.
+  // Change the first identity and then its count; require visible findings for the first mutation and resolved debt for the second.
   assertMutatedBaselineReportsFinding(baselineDir, "wrong-identity.json", baseline, (entry) => ({ ...entry, identity: "0".repeat(16) }));
   assertMutatedBaselineReportsFinding(baselineDir, "spent-count.json", baseline, (entry) => ({ ...entry, count: entry.count + 1 }), target.count + 1);
   return report.findings.length;
@@ -434,7 +437,7 @@ function assertBaselineRoundTrip(baselineDir: string): number {
 /**
  * Returns stable analysis options for baseline identity assertions.
  *
- * @returns JSON scan options for the current directory with config and baseline skipped, ignored paths excluded and fail threshold `none`
+ * @returns Current-directory JSON options that skip config and baseline, omit ignored paths, use symbol diff scope, and set fail threshold to none.
  */
 function baselineRoundTripOptions() {
   return {
@@ -452,6 +455,7 @@ function baselineRoundTripOptions() {
  * Proves the baseline fixture still covers each representative rule family in the stable contract.
  *
  * @param report - analysis of the round-trip fixture; the test fails unless its findings include all eight listed rule ids
+ * @returns Nothing. Asserts that each required rule ID is present in the report.
  */
 function assertBaselineRoundTripRuleIds(report: AnalysisReport): void {
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
@@ -494,7 +498,7 @@ function readBaselineRoundTripFile(path: string): BaselineRoundTripFile {
 }
 
 /**
- * Narrows the first reviewed row, whose stable contract is an identity and a count and nothing positional.
+ * Assert baseline schema and language plus target's identity format, numeric count and string subject; then narrow target.
  *
  * @param baseline - parsed baseline file, which must name schema `gruff.baseline.v3` and tool language `ts`
  * @param target - first occurrence row, which must exist with a 16-hex-digit identity, a numeric count and a string subject
@@ -510,17 +514,14 @@ function assertBaselineEntryMetadata(baseline: BaselineRoundTripFile, target: Ba
 }
 
 /**
- * Exercises the line-free identity contract: rescans with a baseline whose first row is changed and asserts the report
- * still shows visible findings or, when `expectedResolved` is above zero, resolved baseline debt.
+ * Exercise the line-free baseline identity contract by rescanning with a modified baseline and checking for unmatched reviewed debt.
  *
- * Writes the mutated baseline to disk first: a different identity covers nothing, and a count the run cannot
- * fill leaves the row partly resolved, which is how a user sees debt they have since fixed.
- *
- * @param baselineDir - temporary directory that receives the mutated baseline file
- * @param fileName - name of the mutated baseline file inside `baselineDir`
- * @param baseline - the generated baseline; the written copy changes only its first occurrence row
- * @param mutateFirstRow - returns the replacement for the first occurrence row
- * @param expectedResolved - above zero: require some `resolvedFindings` instead of visible findings; its value is never compared
+ * @param baselineDir - temporary directory that receives the modified baseline file
+ * @param fileName - name of the baseline copy to write and rescan against
+ * @param baseline - generated baseline to copy, with absent occurrences treated as an empty list
+ * @param mutateFirstRow - supplies a replacement for the first occurrence row when there is one
+ * @param expectedResolved - a positive value selects the resolved count check. Zero or less selects the visible finding count.
+ * @returns Nothing. Writes the baseline copy and asserts that the selected count is positive, treating an absent resolved count as zero.
  */
 function assertMutatedBaselineReportsFinding(
   baselineDir: string,

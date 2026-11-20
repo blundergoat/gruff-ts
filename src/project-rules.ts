@@ -84,8 +84,8 @@ interface ArchitectureRuleOptions {
   shouldSkipCircularImports?: boolean;
 }
 
-// Sorts sources by display path so every cross-file rule sees the same order regardless of which
-// filesystem yielded what entries first - the stable input ordering is what keeps reports deterministic.
+// Builds and returns a ProjectIndex from projectSources, copying and sorting sources by display path without reordering the input array.
+// The index includes script sources, their path set and import edges so cross-file rules share a deterministic view.
 export function buildProjectIndex(projectSources: ProjectSource[]): ProjectIndex {
   const sources = [...projectSources].sort((left, right) => left.file.displayPath.localeCompare(right.file.displayPath));
   const scriptSources = sources.filter((source) => source.file.isScript);
@@ -97,8 +97,9 @@ export function buildProjectIndex(projectSources: ProjectSource[]): ProjectIndex
   return { sources, scriptSources, sourcePaths, importsByFile };
 }
 
-// Three architecture rules, evaluated in their stable contract order: deep imports, cycles, then
-// large-module concentration. Reordering shuffles the deterministic fingerprint output.
+// Runs enabled deep-import, cycle and large-module checks in that stable order.
+// The index supplies sources and import edges. Config supplies rule settings. The options can suppress the otherwise enabled cycle check.
+// Returns nothing. Appends any reported findings to the supplied list.
 export function analyseArchitectureRules(index: ProjectIndex, config: Config, findings: Finding[], options: ArchitectureRuleOptions = {}): void {
   if (ruleEnabled(config, DEEP_RELATIVE_IMPORT_RULE_ID)) {
     analyseDeepRelativeImports(index, config, findings);
@@ -115,11 +116,14 @@ const DEEP_RELATIVE_IMPORT_RULE_ID = "design.deep-relative-import";
 export const CIRCULAR_IMPORT_RULE_ID = "design.circular-import";
 const LARGE_MODULE_CONCENTRATION_RULE_ID = "design.large-module-concentration";
 
-/*
- * Reports imports that climb more than `maxParentSegments` `../` hops, anchored at the edge line
- * in the importing file. The double loop exists intentionally because `..` and `../foo` look
- * identical to a regex pass, so the parsed edge metadata is the only stable way to count depth
- * without false positives.
+/**
+ * Reports relative imports above the configured parent-hop limit.
+ * Uses parsed import edges because they supply both the hop count and the source line for a stable finding location.
+ *
+ * @param index - supplies importing scripts and their parsed import edges
+ * @param config - supplies the parent-hop limit and finding severity
+ * @param findings - destination for one finding per import above the limit
+ * @returns Nothing. Appends findings to the supplied list, leaving it unchanged if no import qualifies.
  */
 function analyseDeepRelativeImports(index: ProjectIndex, config: Config, findings: Finding[]): void {
   const maxParentSegments = threshold(config, "design.deep-relative-import", 2);
@@ -148,10 +152,9 @@ function analyseDeepRelativeImports(index: ProjectIndex, config: Config, finding
   }
 }
 
-/*
- * Reports one finding per strongly connected component in the runtime import graph. The component
- * list comes back already deterministic from `importCycles`, so fingerprints are reproducible.
- */
+// Appends one finding to findings for each cyclic runtime-import component in index that has an available anchor source.
+// importCycles supplies deterministic component order. Components without an anchor are skipped.
+// Returns no value after appending the qualifying findings.
 export function analyseCircularImportRule(index: ProjectIndex, findings: Finding[]): void {
   for (const cycle of importCycles(index)) {
     const finding = circularImportFinding(index, cycle);
@@ -163,7 +166,7 @@ export function analyseCircularImportRule(index: ProjectIndex, findings: Finding
 
 /*
  * Anchors the finding at the first file in the cycle so the stable fingerprint and reported line
- * match across reruns. Returns undefined when the anchor file dropped out of the index.
+ * match across reruns. Returns undefined when no indexed script source matches that anchor.
  */
 function circularImportFinding(index: ProjectIndex, cycle: ImportCycle): Finding | undefined {
   const anchorPath = cycle.files[0] ?? "";
@@ -185,16 +188,21 @@ function circularImportFinding(index: ProjectIndex, cycle: ImportCycle): Finding
   });
 }
 
-// Finds the first import edge in the anchor file that points into another cycle member. Line 1
-// fallback keeps finding metadata stable when no edge could be located on the parsed source.
+// Returns the first non-type-only import line in index for anchorPath whose resolved target belongs to cycle.
+// Returns line 1 when no qualifying edge exists, keeping the finding's source anchor defined.
 function circularImportLine(index: ProjectIndex, anchorPath: string, cycle: ImportCycle): number {
   const anchorEdges = index.importsByFile.get(anchorPath) ?? [];
   return anchorEdges.find((edge) => !edge.isTypeOnly && edge.targetPath && cycle.files.includes(edge.targetPath))?.line ?? 1;
 }
 
-/*
- * Reports the largest directory if it crosses the configured share-of-project threshold. Single
- * stable finding (the worst case) rather than one per directory - keeps the rule a noise-tolerant signal.
+/**
+ * Checks whether the largest production source file exceeds the configured share after the project and file size minimums are met.
+ * Emits at most one stable finding so the report points to the most concentrated module.
+ *
+ * @param index - project index supplying source files and their line counts
+ * @param config - supplies the concentration thresholds and finding severity
+ * @param findings - destination for the finding if the largest file qualifies
+ * @returns Nothing. Appends a finding only when the project and largest file meet the rule's conditions.
  */
 function analyseLargeModuleConcentration(index: ProjectIndex, config: Config, findings: Finding[]): void {
   const candidate = largeModuleCandidate(index, largeModuleThresholds(config));
@@ -204,8 +212,9 @@ function analyseLargeModuleConcentration(index: ProjectIndex, config: Config, fi
   findings.push(largeModuleConcentrationFinding(candidate, ruleSeverity(config, "design.large-module-concentration", "advisory")));
 }
 
-// Three thresholds drive the rule: minimum file count to consider a project worth checking,
-// minimum line count for the largest directory, and a share-percent cap. All three must hold.
+// Reads the rule limits from config: a minimum production-file count, a line minimum for the largest file, and a project-share cap.
+// Returns these thresholds for candidate selection. Both minima must be met and the share cap exceeded.
+// Missing settings default to 4 production files, 80 lines for the largest file and a 55 percent share cap.
 function largeModuleThresholds(config: Config): LargeModuleThresholds {
   return {
     minFiles: optionNumber(config, "design.large-module-concentration", "minFiles", 4),
@@ -214,8 +223,8 @@ function largeModuleThresholds(config: Config): LargeModuleThresholds {
   };
 }
 
-// Finds the directory with the most production lines and returns it only if it crosses every
-// threshold. Returns undefined when the project is too small or the largest module is below the cap.
+// Returns the largest production file in index with its line count, project total, share, and thresholds when it qualifies.
+// Returns undefined for too few production files, no production lines, or a largest file failing the size or dominance limits.
 function largeModuleCandidate(index: ProjectIndex, thresholds: LargeModuleThresholds): LargeModuleCandidate | undefined {
   const modules = productionModuleLineCounts(index);
   if (modules.length < thresholds.minFiles) {
@@ -236,14 +245,14 @@ function largeModuleCandidate(index: ProjectIndex, thresholds: LargeModuleThresh
   return { ...largest, totalLines, sharePercent, thresholds };
 }
 
-// Both conditions are required: a small but proportionally dominant module is still suspicious,
-// but a tiny single-file project shouldn't trip the rule just by having one module.
+// Checks largest's production line count and sharePercent against thresholds; returns true only when both limits qualify.
+// The line minimum is inclusive and the share cap must be exceeded, so tiny dominant modules remain ineligible.
 function exceedsLargeModuleThresholds(largest: ModuleLineCount, sharePercent: number, thresholds: LargeModuleThresholds): boolean {
   return largest.lines >= thresholds.minLines && sharePercent > thresholds.maxSharePercent;
 }
 
-// Counts only production sources (tests, fixtures, declarations excluded) sorted by descending
-// line count so the caller can take the head without re-scanning - keeps the rule deterministic and stable.
+// Returns line counts for indexed production sources, excluding tests, fixtures, declarations and generated paths.
+// Sorts by descending line count then path so the rule has a deterministic largest source. An empty list leaves no candidate.
 function productionModuleLineCounts(index: ProjectIndex): ModuleLineCount[] {
   return index.scriptSources
     .filter((source) => isProductionSourcePath(source.file.displayPath))
@@ -251,8 +260,8 @@ function productionModuleLineCounts(index: ProjectIndex): ModuleLineCount[] {
     .sort((left, right) => right.lines - left.lines || left.source.file.displayPath.localeCompare(right.source.file.displayPath));
 }
 
-// Single makeFinding site for the rule. All threshold values are surfaced in metadata so reviewers
-// can see why the rule fired without re-running with the same config - keeps reports stable for audits.
+// Returns a stable design finding for candidate's share of production lines at the supplied severity.
+// Includes measured counts and all configured thresholds so reviewers can explain the result without rerunning with the same config.
 function largeModuleConcentrationFinding(candidate: LargeModuleCandidate, severity: Severity): Finding {
   return makeFinding({
     ruleId: LARGE_MODULE_CONCENTRATION_RULE_ID,
@@ -275,8 +284,9 @@ function largeModuleConcentrationFinding(candidate: LargeModuleCandidate, severi
   });
 }
 
-// Per-file regex pass over the cached source lines. The resulting edges are sorted by (line,
-// specifier) so the import graph and cycle detection both see the same stable, deterministic order.
+// Extracts relative import edges from source's template-masked lines, resolving targets only against sourcePaths.
+// Returns edges ordered by line and specifier for deterministic traversal. No matching relative import or re-export yields an empty list.
+// Unresolved relative imports keep their edges without targetPath so parent-hop checks can still use them.
 function importEdgesForSource(source: ProjectSource, sourcePaths: Set<string>): ImportEdge[] {
   const edges: ImportEdge[] = [];
   for (const statement of importStatements(source.templateMaskedLines)) {
@@ -285,8 +295,8 @@ function importEdgesForSource(source: ProjectSource, sourcePaths: Set<string>): 
   return edges.sort((left, right) => left.line - right.line || left.specifier.localeCompare(right.specifier));
 }
 
-// Reassembles multiline import/export declarations from template-masked lines. This keeps
-// `import { a,\n b } from "x"` visible to the graph without parsing fixture template bodies.
+// Reassembles import/export spans from template-masked lines, returning their source text and starting lines for graph extraction.
+// Lines before a declaration are skipped; trailing text that fails the completion check is omitted.
 function importStatements(lines: string[]): ImportStatement[] {
   const statements: ImportStatement[] = [];
   let current = "";
@@ -317,9 +327,9 @@ function isImportStatementComplete(statement: string): boolean {
   return /\b(?:from\s*)?["'][^"']+["']/.test(statement);
 }
 
-// One statement may contain multiple imports (e.g., `import a;export b from 'x'`); the regex
-// captures every `from "specifier"` form. Non-relative specifiers are dropped because the rule
-// only cares about intra-project edges.
+// Extracts edges from relative imports and re-exports in statement, anchoring each edge at the statement's starting line.
+// importerPath is the resolution base and sourcePaths supplies candidate files. Unresolved relative edges have no targetPath.
+// Returns an empty list when no relative specifier matches. Omits non-relative specifiers.
 function importEdgesForStatement(importerPath: string, statement: ImportStatement, sourcePaths: Set<string>): ImportEdge[] {
   const edges: ImportEdge[] = [];
   for (const match of statement.source.matchAll(/\b(?:import|export)\b(?:[\s\S]*?\bfrom\s*)?\s*["']([^"']+)["']/g)) {
@@ -331,8 +341,9 @@ function importEdgesForStatement(importerPath: string, statement: ImportStatemen
   return edges;
 }
 
-// Builds an edge with `parentSegments` (counted from `..` hops) and an optional `targetPath` that
-// points to a file gruff has actually discovered. Used by both the cycle detector and the deep-import rule.
+// Builds an import-rule edge using importerPath as the resolution base and sourcePaths as the discovered-file candidates.
+// specifier supplies the module text and parent hops; line and isTypeOnly retain its source anchor and classification.
+// Returns undefined for non-relative specifiers; unresolved relative imports return an edge without targetPath.
 function importEdgeForSpecifier(importerPath: string, specifier: string, line: number, sourcePaths: Set<string>, isTypeOnly: boolean): ImportEdge | undefined {
   if (!specifier.startsWith(".")) {
     return undefined;
@@ -347,13 +358,14 @@ function importEdgeForSpecifier(importerPath: string, specifier: string, line: n
   };
 }
 
-// Type-only imports disappear at runtime, so they should not participate in circular-import cycles.
+// Returns whether importStatement contains an import type or export type prefix, marking that edge as type-only for cycle checks.
+// Inline type specifiers are not recognized by this check.
 function isTypeOnlyImportStatement(importStatement: string): boolean {
   return /\b(?:import|export)\s+type\b/.test(importStatement);
 }
 
-// Tries every extension / barrel form (see `importPathCandidates`). The first match wins because
-// Node's resolution is deterministic and a stable choice keeps cycle output reproducible.
+// Returns the first indexed match for a specifier resolved from the importing file's directory, or undefined if none match.
+// The source-path set defines the available targets. A stable candidate order keeps cycle output reproducible.
 function resolveRelativeImport(importerPath: string, specifier: string, sourcePaths: Set<string>): string | undefined {
   const basePath = normalizeDisplayPath(join(dirnamePath(importerPath), specifier));
   for (const candidate of importPathCandidates(basePath)) {
@@ -364,8 +376,8 @@ function resolveRelativeImport(importerPath: string, specifier: string, sourcePa
   return undefined;
 }
 
-// Generates every plausible filename for the import: the bare path, each script extension, and
-// `index.<ext>` variants. Set-deduplication keeps the candidate list small for the resolver loop.
+// Returns resolution candidates for basePath: an explicit extension tries the original path and script-extension substitutions.
+// An extensionless path tries script files and directory indexes; duplicates are removed before path normalization.
 function importPathCandidates(basePath: string): string[] {
   const extensions = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
   const candidates = new Set<string>();
@@ -384,8 +396,8 @@ function importPathCandidates(basePath: string): string[] {
   return [...candidates].map(normalizeDisplayPath);
 }
 
-// Tarjan SCC pass over the import graph. Components, members, and outgoing edges are sorted so
-// one runtime import region yields one deterministic finding regardless of discovery order.
+// Returns deterministic cycle records from index's import graph for one finding per multi-file component.
+// Records contain sorted members and a representative closed path; no qualifying components returns an empty list.
 function importCycles(index: ProjectIndex): ImportCycle[] {
   return stronglyConnectedImportComponents(index)
     .map((files) => ({ files, representativeCycle: representativeCycle(index, files) }))
@@ -403,8 +415,8 @@ interface StronglyConnectedState {
   components: string[][];
 }
 
-// Finds strongly connected import components with Tarjan's algorithm, then normalizes component
-// order so one runtime cycle produces stable report anchors and fingerprints.
+// Returns sorted multi-file strongly connected components from index's graph, excluding edges marked type-only, for stable findings.
+// Singleton components, including self-imports, are omitted; no qualifying component yields an empty list.
 function stronglyConnectedImportComponents(index: ProjectIndex): string[][] {
   const state: StronglyConnectedState = {
     nextIndex: 0,
@@ -425,7 +437,8 @@ function stronglyConnectedImportComponents(index: ProjectIndex): string[][] {
     .sort((left, right) => left.join("\0").localeCompare(right.join("\0")));
 }
 
-// Visits one graph node and updates Tarjan indices, low-links, and the active stack in lockstep.
+// Traverses index's import graph from path, mutating state to track Tarjan discovery order, low-links, and the active stack.
+// Returns no value. Non-root vertices stay on the stack so that the component root can pop and record them together in state.components.
 function visitStronglyConnectedImportComponent(index: ProjectIndex, path: string, state: StronglyConnectedState): void {
   state.indices.set(path, state.nextIndex);
   state.lowLinks.set(path, state.nextIndex);
@@ -462,23 +475,24 @@ function visitStronglyConnectedImportComponent(index: ProjectIndex, path: string
   state.components.push(component);
 }
 
-// Reads a Tarjan discovery index; missing entries fall back to zero only for malformed graph edges.
+// Returns path's discovery index from state for Tarjan comparisons; absent entries return zero.
 function indexFor(state: StronglyConnectedState, path: string): number {
   return state.indices.get(path) ?? 0;
 }
 
-// Reads a Tarjan low-link value; the fallback keeps partially indexed edges bounded.
+// Returns path's low-link value from traversal state for Tarjan comparisons, or zero when no value is recorded.
 function lowLinkFor(state: StronglyConnectedState, path: string): number {
   return state.lowLinks.get(path) ?? 0;
 }
 
-// Stable runtime-cycle contract: returns sorted value imports only; type-only edges never count.
+// Returns sorted, unique value-import targets for the importing file's path in the project index under the stable runtime-cycle contract.
+// If the file has no resolved value imports, the empty list leaves it with no outgoing cycle edges.
 function circularImportTargets(index: ProjectIndex, path: string): string[] {
   return [...new Set((index.importsByFile.get(path) ?? []).filter((edge) => !edge.isTypeOnly).map((edge) => edge.targetPath).filter(isString))].sort();
 }
 
-// Chooses one concrete closed path inside the SCC so the finding still shows a reviewable edge
-// chain even though the primary output unit is the whole component.
+// Uses index's import graph to choose a closed path through files, starting with the first member, for a grouped cycle finding.
+// Returns an empty list for empty files; if no closing path is found, returns the supplied files array unchanged.
 function representativeCycle(index: ProjectIndex, files: string[]): string[] {
   const anchor = files[0];
   if (!anchor) {
@@ -500,7 +514,8 @@ interface ComponentPathSearch {
   path: string[];
 }
 
-// Breadth-first path search inside one SCC so the grouped finding can display a concrete cycle.
+// Finds a shortest directed import path from start to end in index, following only targets present in members.
+// Returns the path including both endpoints when an edge reaches end, or undefined when none does, for a representative cycle.
 function pathBetweenComponentMembers(index: ProjectIndex, start: string, end: string, members: Set<string>): string[] | undefined {
   const queue: ComponentPathSearch[] = [{ current: start, path: [start] }];
   const visited = new Set([start]);
@@ -523,25 +538,25 @@ function pathBetweenComponentMembers(index: ProjectIndex, start: string, end: st
   return undefined;
 }
 
-// Production = not a test, not a `.d.ts`, not a fixture, not under `generated/`. Conservative on
-// purpose - adding a path category here changes the rule surface of every production-only rule.
+// Returns whether path qualifies for production-only rules by excluding test, declaration, and fixture-like paths.
+// Any slash-delimited generated component also excludes the path. This classification governs every production-only rule.
 export function isProductionSourcePath(path: string): boolean {
   return !isTestPath(path) && !isDeclarationPath(path) && !isFixtureLikePath(path) && !path.split("/").includes("generated");
 }
 
-// `__tests__/` and `tests/` directories, plus `.test.ts` / `.spec.ts` filename suffix. The same
-// patterns drive the production-source filter, so adding a layout here widens every test-aware rule.
+// Returns true for a path under __tests__, test, tests or spec, or for a filename with .test or .spec before a JS or TS extension.
+// The production-source filter uses this classification, so adding a convention here changes which files count as production.
 export function isTestPath(path: string): boolean {
   return /(?:^|\/)(?:__tests__|tests?|spec)\//.test(path) || /\.(?:test|spec)\.[cm]?[tj]sx?$/.test(path);
 }
 
-// `.d.ts` family. Declaration files don't carry runtime behaviour, so most rules skip them.
+// Returns whether path has a .d.ts, .d.cts, or .d.mts suffix, identifying declaration files for rule filtering.
 export function isDeclarationPath(path: string): boolean {
   return /\.d\.[cm]?ts$/.test(path);
 }
 
-// Conventional fixture directories. Only `docs.fixture-purpose-missing` opts in to fixture paths;
-// every other rule should treat them as test infrastructure.
+// Returns true for a slash-separated path under __fixtures__, fixture, fixtures or testdata.
+// The production-source filter excludes these paths, and docs.fixture-purpose-missing can check them.
 export function isFixtureLikePath(path: string): boolean {
   return /(?:^|\/)(?:__fixtures__|fixtures?|testdata)\//.test(path);
 }

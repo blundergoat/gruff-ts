@@ -21,18 +21,33 @@ type TsNode = import("typescript").Node;
 type TsExpression = import("typescript").Expression;
 type TsClassLike = import("typescript").ClassLikeDeclaration;
 
-/*
- * Class-pillar rules in their stable, deterministic emission order: exported-declaration
- * docs and file-name mismatch, then readonly candidates.
+/**
+ * Runs class rules in stable order, checking export documentation and file naming before readonly candidates.
+ *
+ * @param file - source file used for finding anchors and class/file name comparisons
+ * @param source - original text used for source lines and documentation checks
+ * @param codeSource - masked text searched for declarations and fields
+ * @param config - naming configuration, including accepted class/file pairs
+ * @param findings - shared collector that receives the class rule findings
+ * @param parsed - shared syntax tree. Without it, naming uses direct exports and the readonly check is skipped.
+ * @returns Nothing. It appends any findings from the class rules.
  */
 export function analyseClassRules(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[], parsed?: ParsedScript): void {
   analyseExportedDeclarations(file, source, codeSource, config, findings, parsed);
   analyseReadonlyCandidates(file, source, codeSource, findings, parsed);
 }
 
-/*
- * Keeps public-doc checks on direct exports, then evaluates class/file naming against the complete
- * syntax inventory so reports cover default/re-export forms without changing the documentation contract.
+/**
+ * Checks documentation on direct exports, then uses the syntax inventory when available to cover default exports and re-exports in naming checks.
+ * This preserves the direct-export documentation contract.
+ *
+ * @param file - source file used for finding anchors and the class/file name comparison
+ * @param source - original text used to locate declarations and leading documentation
+ * @param codeSource - masked text searched for direct exports
+ * @param config - naming configuration, including accepted class/file pairs
+ * @param findings - shared collector for documentation and naming findings
+ * @param parsed - shared export syntax. When absent, the naming check uses the direct-export inventory.
+ * @returns Nothing. It appends any documentation and class/file naming findings to the collector.
  */
 function analyseExportedDeclarations(file: SourceFile, source: string, codeSource: string, config: Config, findings: Finding[], parsed?: ParsedScript): void {
   const directlyExportedDeclarations = exportedDeclarations(source, codeSource);
@@ -47,9 +62,14 @@ function analyseExportedDeclarations(file: SourceFile, source: string, codeSourc
   pushClassFileMismatchFinding(file, modulePublicDeclarations, config, findings);
 }
 
-/*
- * Reports a normalized class/file mismatch only when one named class is the module's sole public
- * declaration, keeping feature modules quiet while preserving the stable finding anchor.
+/**
+ * Reports a class/file mismatch for a sole named public class, using normalized names to avoid warnings for equivalent spellings.
+ *
+ * @param file - file whose base name is compared and whose path anchors a stable finding
+ * @param publicDeclarations - module exports used to decide whether one class represents the file and whether its alias matches
+ * @param config - configured class/file pairs that are accepted even when the names differ
+ * @param findings - collector that receives the mismatch when the class and its alias differ from the file name
+ * @returns Nothing. It appends at most one class/file mismatch finding.
  */
 function pushClassFileMismatchFinding(file: SourceFile, publicDeclarations: PublicExportDeclaration[], config: Config, findings: Finding[]): void {
   // Feature modules with a second public declaration do not claim one primary class-to-file convention.
@@ -95,10 +115,17 @@ function pushClassFileMismatchFinding(file: SourceFile, publicDeclarations: Publ
   );
 }
 
-// `private name: Type;` fields without `readonly` whose rewrite to `readonly` compiles. Only private
-// fields qualify: a public or protected field can be written from another file this scan never reads.
-// Without a clean parse the class's writes are unknown, so the file reports nothing. A reported field
-// keeps the line, message and symbol the regex match gives it, so its stable finding identity is unchanged.
+/**
+ * Suggests readonly for typed private instance fields without an initializer when the syntax scan detects no writes outside construction.
+ * Restricts candidates to private fields because writes to public or protected fields can occur outside the scanned file.
+ *
+ * @param file - source file whose display path anchors any finding
+ * @param source - original text used to retain stable finding lines
+ * @param codeSource - masked text searched for field declarations
+ * @param findings - collector that receives readonly candidate findings
+ * @param parsed - shared syntax tree used to check writes. A missing parse or syntax diagnostics skip the rule.
+ * @returns Nothing. It appends findings for qualifying fields.
+ */
 function analyseReadonlyCandidates(file: SourceFile, source: string, codeSource: string, findings: Finding[], parsed?: ParsedScript): void {
   const syntax = parsed?.diagnostics.length === 0 ? parsed.sourceFile : undefined;
   if (syntax === undefined) {
@@ -129,11 +156,12 @@ function analyseReadonlyCandidates(file: SourceFile, source: string, codeSource:
   }
 }
 
-// Name start offsets of private instance fields, not yet readonly, that their class writes, if at all,
-// only through `this` in its own constructor.
+// Scans sourceFile for mutable private instance fields that can proceed to the readonly check.
+// Returns name offsets for fields without disqualifying writes, allowing direct this.name writes in the class's own constructor.
+// Skips classes with bracket writes on this or Object.assign calls targeting this because the scan treats their targets as uncertain.
 function constructionOnlyFieldNameStarts(sourceFile: TsSourceFile): Set<number> {
   const starts = new Set<number>();
-  // Checks each class, then recurses so nested and expression classes are checked too.
+  // Returns nothing. Adds candidate field offsets to starts for classes and class expressions in the syntax subtree rooted at node.
   const visit = (node: TsNode): void => {
     if (typescriptSyntax.isClassLike(node)) {
       addConstructionOnlyFields(sourceFile, node, starts);
@@ -144,10 +172,10 @@ function constructionOnlyFieldNameStarts(sourceFile: TsSourceFile): Set<number> 
   return starts;
 }
 
-// Adds to `starts` the name offset of each candidate field in `classNode` that nothing writes after construction.
+// Returns nothing. Adds the sourceFile name offsets of classNode's readonly candidates to starts.
 function addConstructionOnlyFields(sourceFile: TsSourceFile, classNode: TsClassLike, starts: Set<number>): void {
   const written = writtenMemberNames(classNode);
-  // `undefined` means the class writes through `this[...]` or `Object.assign(this, ...)`, so no field is safe.
+  // Skip readonly suggestions for this class when a bracket write on this or Object.assign(this, ...) leaves the target members uncertain.
   if (written === undefined) {
     return;
   }
@@ -168,17 +196,16 @@ function isMutablePrivateInstanceField(member: import("typescript").PropertyDecl
 }
 
 /*
- * Every member name the class body writes outside its constructor's own `this.<name>` assignments:
- * assignment and compound assignment, `++`/`--`, `delete`, destructuring targets and `for...in/of`
- * targets, on any receiver, including another instance or a nested function inside the constructor.
- * Returns `undefined` when the class writes through `this[...]` or `Object.assign(this, ...)`, whose
- * member names a syntax walk cannot know.
+ * Scans classNode for identifiable member writes, including writes on other receivers and inside nested functions.
+ * Returns their names, excluding direct this.name targets in the class's own constructor. An empty set rules out no fields.
+ * Returns undefined for bracket writes on this or Object.assign targeting this so the caller skips readonly suggestions for the class.
  */
 function writtenMemberNames(classNode: TsClassLike): Set<string> | undefined {
   const written = new Set<string>();
   let writesDynamically = false;
-  // Adds the member name `target` writes; `write` is the enclosing write expression, whose position
-  // decides whether a `this.<name>` target is a constructor assignment.
+  // Update written for property targets in target, excluding direct this.name writes in classNode's own constructor.
+  // Use write to locate the enclosing constructor; any this[...] target sets writesDynamically instead.
+  // Recurse through destructuring targets. On other receivers, record string literals or templates without substitutions. Returns nothing.
   const record = (target: TsExpression, write: TsNode): void => {
     const inner = withoutWrappers(target);
     if (typescriptSyntax.isPropertyAccessExpression(inner)) {
@@ -197,7 +224,8 @@ function writtenMemberNames(classNode: TsClassLike): Set<string> | undefined {
       }
     }
   };
-  // Records the target of each write form at `node`, then recurses through the whole class body.
+  // Scan node and its descendants for writes, updating written and writesDynamically through record.
+  // Object.assign(this, ...) sets writesDynamically because its sources may supply keys known only at runtime. Returns nothing.
   const visit = (node: TsNode): void => {
     if (typescriptSyntax.isBinaryExpression(node) && isAssignmentOperator(node.operatorToken.kind)) {
       record(node.left, node);
@@ -218,7 +246,8 @@ function writtenMemberNames(classNode: TsClassLike): Set<string> | undefined {
   return writesDynamically ? undefined : written;
 }
 
-// The expressions a destructuring pattern assigns: property values, array elements and rest targets, without defaults.
+// Returns explicit property-value targets, array targets and rest targets from the destructuring pattern for the member-write scan.
+// Defaults contribute only the assigned target. Array holes and shorthand object properties contribute no member target.
 function destructuringTargets(pattern: import("typescript").ObjectLiteralExpression | import("typescript").ArrayLiteralExpression): TsExpression[] {
   // Returns the assigned side of `element`: the left of `target = default`, otherwise `element` itself.
   const withoutDefault = (element: TsExpression): TsExpression =>
@@ -235,7 +264,8 @@ function destructuringTargets(pattern: import("typescript").ObjectLiteralExpress
   });
 }
 
-// Whether a write runs in this class's constructor body itself, not in a function, class or initializer nested in it.
+// Returns true when write reaches a constructor owned by classNode before crossing another function, class, field or static block.
+// This ancestry check also includes writes in constructor parameter initializers.
 function isInOwnConstructor(write: TsNode, classNode: TsClassLike): boolean {
   for (let current = write.parent; current !== undefined; current = current.parent) {
     if (typescriptSyntax.isConstructorDeclaration(current)) {
@@ -249,7 +279,7 @@ function isInOwnConstructor(write: TsNode, classNode: TsClassLike): boolean {
   return false;
 }
 
-// `Object.assign(this, ...)`, which writes members the syntax tree does not name.
+// Detects a call spelled Object.assign with this as its first argument so the caller can treat the member writes as uncertain.
 function isObjectAssignToThis(node: TsNode): boolean {
   if (!typescriptSyntax.isCallExpression(node) || !typescriptSyntax.isPropertyAccessExpression(node.expression)) {
     return false;
@@ -260,7 +290,7 @@ function isObjectAssignToThis(node: TsNode): boolean {
     && firstArgument !== undefined && isThisKeyword(firstArgument);
 }
 
-// Returns whether `expression` is `this`, looking through parentheses and type assertions.
+// Returns whether the expression is this after looking through parentheses, non-null assertions, type assertions and satisfies expressions.
 function isThisKeyword(expression: TsExpression): boolean {
   return withoutWrappers(expression).kind === typescriptSyntax.SyntaxKind.ThisKeyword;
 }
@@ -270,7 +300,7 @@ function isAssignmentOperator(kind: import("typescript").SyntaxKind): boolean {
   return kind >= typescriptSyntax.SyntaxKind.FirstAssignment && kind <= typescriptSyntax.SyntaxKind.LastAssignment;
 }
 
-// Strips parentheses, `!` and type assertions, which change neither the write target nor its receiver.
+// Returns the underlying write target or receiver after stripping parentheses, non-null assertions, type assertions and satisfies expressions.
 function withoutWrappers(expression: TsExpression): TsExpression {
   let current = expression;
   while (typescriptSyntax.isParenthesizedExpression(current) || typescriptSyntax.isNonNullExpression(current)

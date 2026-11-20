@@ -604,7 +604,8 @@ test("scanner guardrail fixtures keep live finding fingerprints stable", () => {
 `);
   const ruleIds = new Set(["security.eval-call", "security.string-timer"]);
 
-  // Projects reports to the fingerprint fields used by scanner guardrail assertions.
+  // Returns sorted identity strings for findings in report whose rule ids are in the shared ruleIds set.
+  // Each string joins rule id, path, line and fingerprint; a missing line becomes 0 for guardrail comparisons.
   const identity = (report: AnalysisReport) =>
     report.findings
       .filter((finding) => ruleIds.has(finding.ruleId))

@@ -30,19 +30,16 @@ const PATH_GLOB_CHARACTERS = /[*?[\]{}]/;
 const SUGGEST_EXACT_SCOPE = "Each `sensitiveExclusions:` entry needs exactly one `rule:` id, one project-relative `path:`, and a non-empty `reason:`; add a separate entry for every file you mean to exclude.";
 
 /**
- * Reads and validates the user's `sensitiveExclusions:` section before any scan runs.
+ * Validates the config's sensitiveExclusions section before scanning; an absent section returns no entries.
+ * Invalid sections or entries throw ConfigLoadError with the relevant config location; duplicate scopes are rejected.
+ * Entries need not match a finding; unmatched entries remain valid and receive zero suppression counts.
  *
- * Every rejection is a fatal config error naming the entry index and the offending key, because a
- * malformed suppression that loaded silently would hide sensitive findings the user believes are
- * still reported. An entry whose scope matches no finding is accepted and reports zero, so fixing
- * the underlying problem never breaks a build.
- *
- * @param parsedConfig The parsed config document; a missing section means no suppressions.
- * @returns Validated entries in declaration order, which is also their audit-row order.
- * @throws {ConfigLoadError} when the section is not a list, an entry is invalid, or two entries claim one scope.
+ * @param parsedConfig - parsed config document supplying the optional sensitiveExclusions list
+ * @returns validated entries in declaration and audit-row order, or an empty list when the section is absent or explicitly empty
+ * @throws {ConfigLoadError} - when the section is not a list, an entry is invalid, or two entries claim one scope
  */
 export function parseSensitiveExclusions(parsedConfig: Record<string, unknown>): SensitiveExclusion[] {
-  // A missing section is the common case and means the user suppresses nothing.
+  // A missing section configures no sensitive exclusions.
   if (!("sensitiveExclusions" in parsedConfig)) {
     return [];
   }
@@ -56,10 +53,11 @@ export function parseSensitiveExclusions(parsedConfig: Record<string, unknown>):
   return exclusions;
 }
 
-// Validates one entry's keys, rule, path, symbol, and reason in that order. Unknown keys are
-// rejected first so a `message_contains` or `value` key is reported as itself rather than masked by
-// a later complaint about a sibling field. Throws ConfigLoadError for every rejection.
-// @throws {ConfigLoadError} when the entry is not a mapping, has an unsupported key, or any field fails validation.
+// Checks entryValue in key, rule, path, optional symbol and reason order, using index to locate the entry in config errors.
+// Returns normalized fields. Unknown keys are rejected first so a message_contains or value key is reported before a sibling field error.
+// An omitted symbol lets the exclusion apply regardless of symbol for the configured rule and path.
+//
+// @throws {ConfigLoadError} - when the entry is not a mapping, has an unsupported key, or any field fails validation
 function parseSensitiveExclusionEntry(entryValue: unknown, index: number): SensitiveExclusion {
   const entry = objectValue(entryValue);
   // Only a mapping can carry the named scope keys; a bare string would hide which field is meant.
@@ -75,15 +73,16 @@ function parseSensitiveExclusionEntry(entryValue: unknown, index: number): Sensi
   };
 }
 
-/*
- * Rejects every key outside {rule, path, symbol, reason}. This is the structural half of the
- * value-matching prohibition: `message_contains`, `messageContains`, `value`, and `preview` fail
- * here by name, and so does any future key that would match against finding text. Throws
- * ConfigLoadError naming the offending key.
- * @throws {ConfigLoadError} when the entry carries any key other than rule, path, symbol, or reason.
+/**
+ * Rejects unsupported fields so an exclusion cannot use detected secret text as a match condition.
+ *
+ * @param entry - exclusion whose keys are checked without changing the entry
+ * @param index - exclusion position used in the config diagnostic
+ * @returns nothing after checking that the entry uses only supported keys
+ * @throws {ConfigLoadError} - when entry contains any key other than rule, path, symbol or reason.
  */
 function assertNoUnsupportedKeys(entry: Record<string, unknown>, index: number): void {
-  // Each supplied key is checked so the error names the exact key the user must delete.
+  // Identify the first unsupported field so the user knows where to amend the config.
   for (const key of Object.keys(entry)) {
     if (!SENSITIVE_EXCLUSION_KEYS.includes(key)) {
       throw new ConfigLoadError(
@@ -94,12 +93,14 @@ function assertNoUnsupportedKeys(entry: Record<string, unknown>, index: number):
   }
 }
 
-/*
- * Validates `rule` as exactly one sensitive-data rule id. Rejects a missing or empty value, a
- * wildcard/glob/regex selector, a pillar name, an id outside the catalogue, and a real rule from
- * another pillar - each one either widens the declared scope or names a rule this section cannot
- * govern. Throws ConfigLoadError naming `sensitiveExclusions[<index>].rule`.
- * @throws {ConfigLoadError} when the rule is missing, non-string, blank, a wildcard, a pillar, unknown, or not sensitive-data.
+/**
+ * Validates one sensitive-data rule id for an exclusion; selectors and pillar names would widen its scope.
+ * Missing, non-string, blank, unknown, and other-pillar values throw ConfigLoadError identifying the entry's rule field.
+ *
+ * @param configuredRule - raw config rule id to trim and validate against the catalogue
+ * @param index - entry position used in config errors
+ * @returns the trimmed sensitive-data rule id
+ * @throws {ConfigLoadError} - when the rule is missing, non-string, blank, a selector, a pillar, unknown, or outside sensitive-data
  */
 function validatedExclusionRule(configuredRule: unknown, index: number): string {
   const rule = requiredExclusionString(configuredRule, index, "rule");
@@ -107,7 +108,7 @@ function validatedExclusionRule(configuredRule: unknown, index: number): string 
   if (RULE_SELECTOR_CHARACTERS.test(rule)) {
     throw new ConfigLoadError(`Config key \`sensitiveExclusions[${index}].rule\` must be one exact rule id; ${JSON.stringify(rule)} contains a wildcard, glob, or regular-expression character.`, SUGGEST_EXACT_SCOPE);
   }
-  // A pillar name is a whole-pillar selector wearing a rule id.
+  // A pillar name would suppress a whole category instead of one reviewed rule.
   if (isPillarName(rule)) {
     throw new ConfigLoadError(`Config key \`sensitiveExclusions[${index}].rule\` must be one exact rule id, not the pillar ${JSON.stringify(rule)}.`, SUGGEST_EXACT_SCOPE);
   }
@@ -145,23 +146,28 @@ function validatedExclusionPath(configuredPath: unknown, index: number): string 
   return path;
 }
 
-// Validates an optional `symbol`, which narrows the scope where a rule stamps one. A supplied but
-// empty value cannot narrow anything, so it fails instead of silently widening back to the file.
+// A configured symbol limits an exclusion to findings tagged with it. The caller skips this helper when the symbol is omitted.
+// Returns configuredSymbol trimmed. Undefined, non-string, or blank input throws ConfigLoadError. index locates the entry in config errors.
 function validatedExclusionSymbol(configuredSymbol: unknown, index: number): string {
   return requiredExclusionString(configuredSymbol, index, "symbol");
 }
 
-// Validates the mandatory `reason`. An unexplained suppression is unreviewable, and whitespace is
-// not an explanation, so both fail before the scan starts.
+// Returns configuredReason trimmed for the suppression audit; index identifies its entry in config errors.
+// Throws ConfigLoadError for a missing, non-string, empty, or whitespace-only reason; every suppression needs an explanation.
 function validatedExclusionReason(configuredReason: unknown, index: number): string {
   return requiredExclusionString(configuredReason, index, "reason");
 }
 
-/*
+/**
  * Shared narrowing for the four string-valued keys. Throws ConfigLoadError naming
  * `sensitiveExclusions[<index>].<key>` for a missing, non-string, or whitespace-only value, so the
  * user sees the exact field to fix. Returns the trimmed text.
- * @throws {ConfigLoadError} when the value is missing, is not a string, or is empty or only whitespace.
+ *
+ * @param configuredValue - raw config field value to validate and trim
+ * @param index - entry position used in config errors
+ * @param key - field name used in config errors
+ * @returns trimmed, non-empty field text
+ * @throws {ConfigLoadError} - when the value is missing, is not a string, or is empty or only whitespace
  */
 function requiredExclusionString(configuredValue: unknown, index: number, key: string): string {
   const location = `sensitiveExclusions[${index}].${key}`;
@@ -174,28 +180,30 @@ function requiredExclusionString(configuredValue: unknown, index: number, key: s
     throw new ConfigLoadError(`Config key \`${location}\` must be a string; got ${JSON.stringify(configuredValue)}.`, SUGGEST_EDIT_CONFIG);
   }
   const trimmedText = configuredValue.trim();
-  // An empty or whitespace-only value is indistinguishable from an omitted one at review time.
+  // Blank text leaves reviewers with no scope or rationale for this field.
   if (trimmedText.length === 0) {
     throw new ConfigLoadError(`Config key \`${location}\` must be a non-empty string.`, SUGGEST_EXACT_SCOPE);
   }
   return trimmedText;
 }
 
-// Normalises a configured path to the same form findings carry, so a Windows-style separator or a
-// leading `./` cannot make an otherwise correct entry match nothing.
+// Returns the configured exclusion path with forward slashes and one leading current-directory prefix removed for exact matching.
+// A path consisting only of that prefix becomes empty and matches no file path.
 function normalisedExclusionPath(path: string): string {
   return path.replaceAll("\\", "/").replace(/^\.\//, "");
 }
 
-/*
- * Rejects a second entry claiming a scope an earlier entry already claims. Two entries over one
- * (rule, path, symbol) would split the audit count arbitrarily between them, so neither row would
- * report what it actually suppressed. Throws ConfigLoadError naming the duplicate entry's index.
- * @throws {ConfigLoadError} when a later entry repeats an earlier entry's rule, path, and symbol.
+/**
+ * Rejects duplicate rule, path, and symbol scopes because the first matching entry would receive all suppression credit.
+ * The error identifies the later entry so the user can merge the two rationales.
+ *
+ * @param exclusions - entries checked in declaration order. Two entries with the same rule and path and no symbol conflict.
+ * @returns nothing after checking that each configured scope is claimed once
+ * @throws {ConfigLoadError} - when a later entry repeats an earlier entry's rule, path, and symbol
  */
 function assertUniqueSensitiveScopes(exclusions: readonly SensitiveExclusion[]): void {
   const claimedScopes = new Map<string, number>();
-  // Entries are checked in declaration order so the error names the later duplicate, not the first.
+  // Declaration order lets the error identify the later entry as the duplicate and point to the earlier claim.
   for (const [index, exclusion] of exclusions.entries()) {
     const scope = sensitiveExclusionScopeKey(exclusion);
     const firstIndex = claimedScopes.get(scope);
@@ -210,8 +218,8 @@ function assertUniqueSensitiveScopes(exclusions: readonly SensitiveExclusion[]):
   }
 }
 
-// Builds the identity of one declared scope. JSON encoding keeps the three parts unambiguous, so two
-// different scopes can never collide onto one key.
+// Returns a stable duplicate-check key by JSON-encoding the exclusion's rule, path, and symbol as separate fields.
+// An omitted symbol is encoded as null and identifies the file-wide scope for that rule.
 function sensitiveExclusionScopeKey(exclusion: SensitiveExclusion): string {
   return JSON.stringify([exclusion.rule, exclusion.path, exclusion.symbol ?? null]);
 }
@@ -229,16 +237,12 @@ export interface SensitiveExclusionResult {
 }
 
 /**
- * Removes the findings the user's reviewed exclusions claim, and counts what each one suppressed.
+ * Apply reviewed sensitive-data exclusions before baseline filtering so claimed findings never affect the score or exit code.
+ * Stable contract: rule ID, display path, and any supplied symbol must match exactly. Current sensitive-data rules supply no symbol.
  *
- * Stable contract: a finding is suppressed only when its rule id, its project-relative display path, and - when the
- * entry supplies one - its symbol all match exactly. The same rule in another file and another rule
- * in the same file both keep reporting. No sensitive-data rule stamps a symbol today, so an entry
- * carrying `symbol` legitimately matches nothing and reports zero.
- *
- * @param findings Every finding produced by the scan, in report order.
- * @param exclusions Validated entries in declaration order.
- * @returns The surviving findings and one audit row per configured entry.
+ * @param findings - scan findings to check against the exclusions in report order
+ * @param exclusions - validated entries checked in declaration order, with the first match claiming each finding
+ * @returns Surviving findings in input order and one audit row per entry, including entries that suppressed nothing.
  */
 export function partitionSensitiveExclusions(findings: readonly Finding[], exclusions: readonly SensitiveExclusion[]): SensitiveExclusionResult {
   const suppressions = exclusions.map((exclusion, index) => initialSuppressionSummary(exclusion, index));
@@ -247,7 +251,7 @@ export function partitionSensitiveExclusions(findings: readonly Finding[], exclu
   for (const finding of findings) {
     const matchedIndex = exclusions.findIndex((exclusion) => sensitiveExclusionMatches(exclusion, finding));
     const summary = suppressions[matchedIndex];
-    // An unmatched finding keeps its place in the report, the score, and the exit code.
+    // A finding no entry claims stays eligible for later reporting, scoring, and exit-code checks.
     if (!summary) {
       kept.push(finding);
       continue;
@@ -273,7 +277,7 @@ const BUILT_IN_TEST_PATH_DIRECTORIES = new Set(["test", "tests", "__tests__", "s
 // `[^\n]` rather than `.`: JavaScript's `.` also refuses \r, U+2028 and U+2029, which the other four ports accept.
 const BUILT_IN_TEST_FILE_NAME = /^(?:[^\n]*_test\.go|test_[^\n]*\.py|[^\n]*_test\.py|[^\n]*Test\.php|[^\n]*\.(?:test|spec)\.(?:js|jsx|ts|tsx|mjs|cjs))$/;
 
-// Reports whether a finding's file is test, fixture or example code, e.g. a file under `__tests__/` or one named `login.spec.ts`.
+// Returns true when a finding's display path matches a built-in directory or file name convention for tests, fixtures, or examples.
 export function isBuiltInTestPath(displayPath: string): boolean {
   const segments = displayPath.replaceAll("\\", "/").split("/");
   const baseName = segments.pop() ?? "";
@@ -290,10 +294,10 @@ function isSkippedOnTestPaths(ruleId: string): boolean {
   return ruleId.startsWith("sensitive-data.") && ruleId !== BUILT_IN_TEST_PATH_EXEMPT_RULE;
 }
 
-// Hides sensitive-data and security findings in test, fixture and example files, and publishes one audit row per hidden file and rule.
+// Filters findings by test path and returns survivors with a copy of suppressions plus one audit row per skipped file and rule.
 //
 // A user scanning a project with sample keys or a deliberate `eval` in `__tests__/` sees `builtInTestPath[...]` rows instead of findings.
-// The skip is never silent, and it covers every gruff-ts sensitive-data rule, pii-pattern included, and every security rule (FAMILY-CONTRACT.md section 13a).
+// Every gruff-ts sensitive-data and security rule is covered, including pii-pattern, under FAMILY-CONTRACT.md section 13a.
 export function applyBuiltInTestPathSkip(findings: readonly Finding[], suppressions: readonly SuppressionSummary[]): SensitiveExclusionResult {
   const skippedCountByFileAndRule = new Map<string, { path: string; rule: string; count: number }>();
   const kept: Finding[] = [];
@@ -329,13 +333,14 @@ export function applyBuiltInTestPathSkip(findings: readonly Finding[], suppressi
   return { findings: kept, suppressions: rows };
 }
 
-// Orders two strings by their UTF-8 bytes, the order every port publishes test-path rows in (FAMILY-CONTRACT.md section 13a).
-// JavaScript's own `<` compares UTF-16 units, which puts a path with an emoji or other astral character in a different place.
+// Compares left with right by UTF-8 bytes for test-path row ordering (FAMILY-CONTRACT.md section 13a).
+// Returns a negative number, zero, or a positive number when left's bytes sort before, equal, or sort after right's bytes.
+// JavaScript's own `<` compares UTF-16 units, which can change the relative order of paths containing supplementary characters.
 function compareUtf8Bytes(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
-// Starts one entry's audit row at zero. `paths` is a single-element list and `symbol` is null when
+// Returns exclusion's zero-count audit row; index is its configured position. `paths` is a single-element list and `symbol` is null when
 // absent, which is the family row shape (gruff-rs/src/report.rs, search: `struct SuppressionSummary`).
 function initialSuppressionSummary(exclusion: SensitiveExclusion, index: number): SuppressionSummary {
   return {
@@ -348,9 +353,9 @@ function initialSuppressionSummary(exclusion: SensitiveExclusion, index: number)
   };
 }
 
-// Exact match on rule id, then on the finding's own display path, then on symbol when the entry
-// narrows to one. Stable contract: comparing the finding's stored display path is what keeps the
-// result independent of the directory the caller ran gruff from.
+// Returns true when the finding has the exclusion's exact rule ID and display path.
+// A specified symbol must match exactly. Omitting it leaves every finding in that rule and file eligible.
+// The stable contract uses the stored display path so matching is independent of the caller's working directory.
 function sensitiveExclusionMatches(exclusion: SensitiveExclusion, finding: Finding): boolean {
   if (finding.ruleId !== exclusion.rule) {
     return false;
@@ -362,10 +367,10 @@ function sensitiveExclusionMatches(exclusion: SensitiveExclusion, finding: Findi
 }
 
 /**
- * Totals what every configured exclusion suppressed, for the one human-readable line on text output.
+ * Totals suppression counts across audit rows for the human-readable text summary.
  *
- * @param suppressions Audit rows from `partitionSensitiveExclusions`.
- * @returns The number of suppressed findings; zero means the text line is omitted entirely.
+ * @param suppressions - audit rows whose suppressed counts contribute to the text summary
+ * @returns the number of suppressed findings; zero means the text line is omitted entirely
  */
 export function totalSuppressedFindings(suppressions: readonly SuppressionSummary[]): number {
   return suppressions.reduce((total, summary) => total + summary.suppressed, 0);

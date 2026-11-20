@@ -63,19 +63,20 @@ function defaultConfig(): Config {
   };
 }
 
-// Resolves a user-supplied config or profile path from the project root.
+// Resolves a user-supplied config or profile path against the caller's base directory.
 // Absolute paths remain unchanged so CLI and config-file references behave consistently.
 function absolutize(projectRoot: string, path: string): string {
   return isAbsolute(path) ? path : join(projectRoot, path);
 }
 
-// Builds the effective configuration before analysis by combining defaults, an optional file, and the selected profile.
-// Missing default files mean zero-config use; malformed or unsupported values become actionable CLI errors.
+// Returns effective analysis settings after layering the config file, profile, CLI budget, and rule selectors over the defaults.
+// The project root anchors discovery and profile resolution. CLI options can choose or skip a file and override the profile.
+// A missing default file leaves the built-in settings as the starting point. Read, parse, and validation errors stop loading.
 function loadConfig(projectRoot: string, options: AnalysisOptions): Config {
   const config = defaultConfig();
   const path = options.shouldSkipConfig ? undefined : selectedConfigPath(projectRoot, options);
   const parsedConfig: Record<string, unknown> = path ? parseConfigFile(path, options.config ?? basename(path)) : {};
-  // A selected path means the user supplied or owns a config file whose values must be applied.
+  // Schema and supported-key checks apply to selected files. Zero-config use needs no file.
   if (path) {
     applyConfigValues(config, parsedConfig);
   }
@@ -86,21 +87,21 @@ function loadConfig(projectRoot: string, options: AnalysisOptions): Config {
   return config;
 }
 
-// Applies the profile beneath explicit config values, with the CLI profile taking precedence over the file profile.
-// No selected profile keeps the user's zero-config result unchanged; `--no-config --profile …` still applies the CLI choice.
+// Returns nothing. Fills missing rule entries in the effective config from the selected profile and merges its ignore paths.
+// Selects the CLI profile before the parsed file's profile, even when file loading is skipped.
+// Resolves the initial file reference from the project root. Profile configuration errors stop loading.
 function applyProfile(config: Config, options: AnalysisOptions, parsedConfig: Record<string, unknown>, projectRoot: string): void {
   const configuredProfile = options.profile !== undefined ? options.profile : parsedConfig.profile;
-  // No CLI or file profile means the user's explicit settings and built-in defaults are already complete.
+  // When both sources omit a profile, the current defaults and explicit settings carry forward.
   if (configuredProfile === undefined) {
     return;
   }
   applyProfileUnderlay(config, resolveProfile(parseProfileSpec(configuredProfile), projectRoot));
 }
 
-// Adds a resolved profile only where the user has not already configured a rule.
+// Returns nothing. Fills the effective config's missing rule entries from the resolved profile.
 // Profile ignore paths join explicit ignores so either user choice keeps a path out of the scan.
 function applyProfileUnderlay(config: Config, definition: ProfileDefinition): void {
-  // Each profile rule is considered independently so explicit user overrides always win.
   for (const [ruleId, setting] of definition.rules) {
     // An existing rule entry came from the user's top-level config and must remain authoritative.
     if (!config.rules.has(ruleId)) {
@@ -124,30 +125,32 @@ function profileRuleToConfig(setting: ProfileRuleSetting): RuleOverride {
   };
 }
 
-// Resolves a built-in, file, or inline profile into one child-wins definition used before analysis.
-// The visit chain reports inheritance cycles as config errors; profile references stay local and never fetch or execute anything.
+// Returns the effective built-in, file-backed, or inline profile, with child overrides taking precedence.
+// Uses the project root for initial relative paths and starts a new visit chain when none is supplied.
+// References stay local. Config errors can report invalid profiles or use the visit chain to explain inheritance cycles.
 function resolveProfile(spec: ProfileSpec, projectRoot: string, chain: string[] = []): ProfileDefinition {
-  // A string is the user-facing built-in name or local file reference; an object is already an inline profile.
   if (typeof spec === "string") {
     return resolveProfileRef(spec, projectRoot, chain);
   }
   return resolveInlineProfile(spec, projectRoot, chain);
 }
 
-// Resolves a user's profile name to a bundled preset or treats it as a local file path.
-// Built-in short names win over same-named files; users can prefix a file with `./` to select it explicitly.
+// Returns the resolved profile for a bundled name or a local file reference.
+// Bundled names take precedence. A leading ./ selects a file, resolved from the supplied directory.
+// File resolution uses the visit chain to detect cycles and can fail with a config error.
 function resolveProfileRef(ref: string, projectRoot: string, chain: string[]): ProfileDefinition {
   const builtIn = BUILT_IN_PROFILES.get(ref) ?? BUILT_IN_PROFILES.get(`gruff.${ref}`);
-  // A bundled match gives users an isolated copy that later overlays cannot mutate globally.
+  // A bundled match receives its own rule map and ignore list so collection edits cannot alter the preset.
   if (builtIn) {
     return cloneProfileDefinition(builtIn);
   }
   return resolveProfileFile(ref, projectRoot, chain);
 }
 
-// Loads a local profile file and resolves its inheritance before analysis starts.
-// Throws an actionable config error for a missing file or inheritance cycle instead of starting a partial scan.
-// @throws {ConfigLoadError} when the profile file does not exist or its path already appears in the `extends` chain.
+// Returns a local profile with its inherited settings resolved before analysis.
+// Resolves the reference from the supplied directory and uses the file's own directory for relative bases.
+// The visit chain tracks ancestor paths for cycle detection. Other filesystem read errors propagate.
+// @throws {ConfigLoadError} - if a profile file is missing or invalid, or inheritance revisits a path in the chain.
 function resolveProfileFile(ref: string, projectRoot: string, chain: string[]): ProfileDefinition {
   const path = absolutize(projectRoot, ref);
   assertNoProfileCycle(path, chain);
@@ -161,15 +164,17 @@ function resolveProfileFile(ref: string, projectRoot: string, chain: string[]): 
   return resolveInlineProfile(inlineSpecFromObject(parseConfigFile(path)), dirname(path), [...chain, path]);
 }
 
-// Resolves an inline profile's base and then applies the user's child overrides.
-// Missing `extends` selects the recommended profile, preserving the documented default.
+// Returns the inline profile with its overrides applied to the resolved base.
+// Resolves relative bases from the supplied directory, which contains the profile file for file-backed profiles. The visit chain detects cycles.
+// Omitted extends selects the recommended profile. Invalid base profiles or child rules can stop loading with ConfigLoadError.
 function resolveInlineProfile(spec: InlineProfileSpec, projectRoot: string, chain: string[]): ProfileDefinition {
   const base = resolveProfileRef(spec.extends ?? DEFAULT_PROFILE_NAME, projectRoot, chain);
   return overlayProfile(base, spec);
 }
 
-// Overlays one inline profile on its resolved base, with the user's child values winning field by field.
-// A supplied ignore list replaces the base list; omission inherits it.
+// Returns a new profile with inline settings taking precedence over the resolved base field by field.
+// A supplied ignore list replaces the base list. Omission inherits it.
+// Throws ConfigLoadError when a child rule ID is outside the catalogue.
 function overlayProfile(base: ProfileDefinition, spec: InlineProfileSpec): ProfileDefinition {
   const rules = new Map(base.rules);
   // Each child rule may override only the fields the user supplied while retaining inherited fields.
@@ -183,19 +188,20 @@ function overlayProfile(base: ProfileDefinition, spec: InlineProfileSpec): Profi
 
 // Merges one inherited rule setting with the user's child fields.
 // Explicit false and zero values win, while omitted fields continue to inherit.
+// Without a parent setting, the result contains only the child fields.
 function mergeRuleSetting(parent: ProfileRuleSetting | undefined, child: ProfileRuleSetting): ProfileRuleSetting {
   return { ...parent, ...child };
 }
 
-// Copies a resolved profile before user overlays mutate its rules or ignore paths.
+// Returns a copy of the resolved profile with its own rule map and ignore list. The rule settings inside the map remain shared.
 // Use this for bundled profiles whose shared definitions must remain stable across commands.
 function cloneProfileDefinition(definition: ProfileDefinition): ProfileDefinition {
   return { name: definition.name, rules: new Map(definition.rules), ignoredPaths: [...definition.ignoredPaths] };
 }
 
-// Stops a repeated profile path before recursive loading can loop.
-// Throws with the visit order so users can find and break the `extends` cycle.
-// @throws {ConfigLoadError} when the key is already in the chain of profile paths being resolved.
+// Returns nothing after checking the profile path against the active resolution chain to prevent recursive loading from looping.
+// Throws with the visit order so users can find and break the extends cycle.
+// @throws {ConfigLoadError} - when the key is already in the chain of profile paths being resolved.
 function assertNoProfileCycle(key: string, chain: string[]): void {
   // A repeated path means the user's profile chain has returned to a file already being resolved.
   if (chain.includes(key)) {
@@ -206,9 +212,9 @@ function assertNoProfileCycle(key: string, chain: string[]): void {
   }
 }
 
-// Validates one profile rule name before it can affect analysis.
+// Returns nothing after checking the profile's rule identifier against the catalogue before it can affect analysis.
 // Throws for unknown names so users do not mistake a typo for applied policy.
-// @throws {ConfigLoadError} when the rule id is not in the gruff-ts rule catalogue.
+// @throws {ConfigLoadError} - when the rule id is not in the gruff-ts rule catalogue.
 function assertKnownProfileRule(ruleId: string): void {
   // A name outside the rule catalogue cannot produce the behavior the user requested.
   if (!isKnownRuleId(ruleId)) {
@@ -219,16 +225,16 @@ function assertKnownProfileRule(ruleId: string): void {
   }
 }
 
-// Converts the user's parsed `profile` value into a named/file reference or inline profile.
-// Throws during loading for unsupported shapes so analysis never starts with a partially understood profile.
-// @throws {ConfigLoadError} when the value is neither a string nor a mapping, or the mapping's `extends` is not a string.
+// Converts the user's parsed profile value into a named/file reference or inline profile.
+// An empty mapping leaves base selection to the profile resolver.
+// @throws {ConfigLoadError} - for a value outside string or mapping, a non-string extends, or a rule mapping that fails field validation.
 function parseProfileSpec(configuredProfile: unknown): ProfileSpec {
   // A string preserves the exact built-in name or local path the user selected.
   if (typeof configuredProfile === "string") {
     return configuredProfile;
   }
   const block = objectValue(configuredProfile);
-  // A non-string value must be an object before its profile fields can be interpreted.
+  // A non-string value with another shape cannot identify a profile, so config loading stops.
   if (!block) {
     throw new ConfigLoadError(
       "`profile:` must be a built-in name, a profile file path, or a mapping with `extends:` and overrides.",
@@ -238,9 +244,9 @@ function parseProfileSpec(configuredProfile: unknown): ProfileSpec {
   return inlineSpecFromObject(block);
 }
 
-// Reads the supported fields from an inline or file-backed profile after parsing.
-// Throws for invalid field shapes; unrelated top-level metadata remains inert.
-// @throws {ConfigLoadError} when the block has an `extends` key whose value is not a string.
+// Returns the overrides read from a parsed inline or file-backed profile mapping.
+// Without an extends field, resolution uses the recommended profile. Extra top-level fields have no effect.
+// @throws {ConfigLoadError} - when extends is supplied with a non-string value or a rule mapping fails field validation.
 function inlineSpecFromObject(block: Record<string, unknown>): InlineProfileSpec {
   const spec: InlineProfileSpec = {};
   // A supplied base must name a built-in profile or local profile file.
@@ -252,25 +258,25 @@ function inlineSpecFromObject(block: Record<string, unknown>): InlineProfileSpec
     spec.extends = block.extends;
   }
   const rulesBlock = objectValue(block.rules);
-  // A valid rules mapping contributes per-rule profile settings; omission means no rule delta.
+  // Without a rules mapping, the profile adds no rule overrides.
   if (rulesBlock) {
     spec.rules = profileRulesFromBlock(rulesBlock);
   }
-  // A supplied ignore list replaces the inherited list, including when the user intentionally provides an empty list.
+  // An ignoredPaths key replaces inherited ignores. A non-list value or a list without strings clears them.
   if ("ignoredPaths" in block) {
     spec.ignoredPaths = arrayValue(block.ignoredPaths).filter(isString);
   }
   return spec;
 }
 
-// Builds validated rule settings for an inline profile before it joins the effective configuration.
-// Reusing top-level validation gives users the same errors in profile and direct config forms.
+// Returns rule settings from the parsed profile rules mapping. Entries with other shapes contribute no override.
+// Shares field validation with direct config and propagates ConfigLoadError for invalid fields. Rule IDs are checked during overlay.
 function profileRulesFromBlock(rulesBlock: Record<string, unknown>): Record<string, ProfileRuleSetting> {
   const rules: Record<string, ProfileRuleSetting> = {};
-  // Each user-supplied rule is narrowed independently so one malformed entry cannot become a partial override.
+  // A non-mapping entry is skipped so that the other rule entries can still be validated.
   for (const [ruleId, value] of Object.entries(rulesBlock)) {
     const rule = objectValue(value);
-    // Only mapping-shaped settings can describe the rule controls users see in configuration.
+    // A rule mapping can still supply valid scalar fields when its options value has the wrong shape.
     if (rule) {
       rules[ruleId] = ruleConfigValue(ruleId, rule);
     }
@@ -285,8 +291,8 @@ function selectedConfigPath(projectRoot: string, options: AnalysisOptions): stri
   return options.config ? absolutize(process.cwd(), options.config) : defaultConfigPath(projectRoot);
 }
 
-// Applies each top-level config section in its stable loading order before analysis.
-// Schema validation runs first, then user thresholds, paths, allowlists, rule overrides, and reviewed sensitive exclusions become available to downstream commands.
+// Returns nothing. Updates the effective config from the parsed file before applying profiles and CLI overrides.
+// Checks the schema and supported keys first, then validates each section. A ConfigLoadError stops loading on a rejected setting.
 function applyConfigValues(config: Config, parsedConfig: Record<string, unknown>): void {
   applySchemaVersionConfig(parsedConfig);
   assertKnownKeys(parsedConfig, KNOWN_ROOT_KEYS, "");
@@ -301,22 +307,22 @@ function applyConfigValues(config: Config, parsedConfig: Record<string, unknown>
   config.sensitiveExclusions = parseSensitiveExclusions(parsedConfig);
 }
 
-/*
- * Refuses the first key of one block that gruff-ts does not recognise, naming it and listing what is accepted.
+/**
+ * Validates config key names before analysis because an ignored typo would leave a setting out of force.
+ * The error names the first rejected key and gives a stable, sorted list of accepted keys.
  *
- * Throws ConfigLoadError so the run stops before analysis, because a silently ignored key is a setting the user
- * believes is in force; a block the file never wrote is skipped entirely.
- *
- * Stable contract: the message names the key the user wrote and lists what is accepted, so the fix is in the error.
- * @throws {ConfigLoadError} when the block exists and contains a key that is not in the known set.
+ * @param block - config mapping to validate. An omitted block is allowed.
+ * @param known - permitted unprefixed key names for the block
+ * @param prefix - config path prefix shown before key names in the diagnostic
+ * @returns nothing. Validation continues for an omitted block or one whose keys are all recognised.
+ * @throws {ConfigLoadError} - the block contains a key outside the known set
  */
 function assertKnownKeys(block: Record<string, unknown> | undefined, known: ReadonlySet<string>, prefix: string): void {
-  // A block the user did not write cannot carry a wrong key.
+  // A missing or non-mapping section supplies no keys here, so the caller can continue its other config checks.
   if (!block) {
     return;
   }
   const unknownKey = Object.keys(block).find((key) => !known.has(key));
-  // Everything the file wrote in this block is a key gruff-ts acts on.
   if (unknownKey === undefined) {
     return;
   }
@@ -325,10 +331,10 @@ function assertKnownKeys(block: Record<string, unknown> | undefined, known: Read
   throw new ConfigLoadError(`Unknown config key ${rejected}. Valid keys: ${accepted}.`, SUGGEST_EDIT_CONFIG);
 }
 
-// Loads the optional paired line/byte budget. Either bound can trigger degradation, so both limits
-// remain present even when a user changes only one of them.
-// Throws ConfigLoadError when the mapping, keys, enabled flag, or numeric limits are invalid.
-// @throws {ConfigLoadError} when deepScanBudget is not a mapping, has an unknown key, or enabled or a limit is invalid.
+// Returns nothing. Updates config.deepScanBudget from the parsed deepScanBudget section and records the config file as its source.
+// Either bound can limit deep scanning. An omitted section leaves the current budget in place.
+// A null or omitted enabled flag and omitted numeric limits preserve their current values.
+// @throws {ConfigLoadError} - when deepScanBudget is not a mapping, has an unknown key, or enabled or a limit is invalid.
 function applyDeepScanBudgetConfig(config: Config, parsedConfig: Record<string, unknown>): void {
   const rawBudget = parsedConfig.deepScanBudget;
   if (rawBudget === undefined) {
@@ -352,9 +358,9 @@ function applyDeepScanBudgetConfig(config: Config, parsedConfig: Record<string, 
   config.deepScanBudget = { enabled, maxLines, maxBytes, override: "config" };
 }
 
-// Rejects zero, fractions, and unsafe values because a scan bound must be an exact positive count.
-// Throws ConfigLoadError when a configured limit is not a safe positive integer.
-// @throws {ConfigLoadError} when the limit is set but is not a number, not a safe integer, or not greater than zero.
+// Returns the configured scan bound once validated as a safe positive integer, or the caller's fallback when omitted.
+// The key identifies the line or byte limit to fix in the config error.
+// @throws {ConfigLoadError} - when the limit is set but is not a number, not a safe integer, or not greater than zero.
 function positiveBudgetLimit(configuredLimit: unknown, key: "maxLines" | "maxBytes", fallback: number): number {
   if (configuredLimit === undefined) {
     return fallback;
@@ -365,7 +371,9 @@ function positiveBudgetLimit(configuredLimit: unknown, key: "maxLines" | "maxByt
   return configuredLimit;
 }
 
-// The CLI override is atomic and therefore wins over every value loaded from the config file.
+// Returns nothing. Applies a CLI budget choice to the effective config. An absent choice leaves the existing budget in effect.
+// Enabling sets both limits from the CLI. Disabling turns off the budget and retains the existing limits.
+// Either choice records the CLI as the source.
 function applyDeepScanBudgetOverride(config: Config, override: DeepScanBudgetOverride | undefined): void {
   if (!override) {
     return;
@@ -375,9 +383,9 @@ function applyDeepScanBudgetOverride(config: Config, override: DeepScanBudgetOve
     : { ...config.deepScanBudget, enabled: false, override: "cli" };
 }
 
-// Validates the required config schema before any user setting affects the scan.
+// Returns nothing after checking the parsed configuration's required schema version before any user setting affects the scan.
 // Throws with migration guidance for missing or unsupported versions; the supported value already matches the default config.
-// @throws {ConfigLoadError} when schemaVersion is missing or is any value other than "gruff-ts.config.v0.1".
+// @throws {ConfigLoadError} - when schemaVersion is missing or is any value other than "gruff-ts.config.v0.1".
 function applySchemaVersionConfig(parsedConfig: Record<string, unknown>): void {
   const schemaVersion = parsedConfig.schemaVersion;
   // A missing version leaves Gruff unable to know which configuration contract the user intended.
@@ -390,20 +398,17 @@ function applySchemaVersionConfig(parsedConfig: Record<string, unknown>): void {
   }
 }
 
-/*
- * Loads the `minimumSeverity:` display floor, which hides findings below it from the report and changes nothing else.
+/**
+ * Sets the report's display floor. Existing per-command gates must move to failOn to keep their build behavior.
  *
- * The per-command mapping this key used to take is refused rather than reinterpreted: it is valid YAML that used to
- * gate a build, and reading it as a display floor would change what a committed file does without changing what it
- * says. The gate moved to `failOn:` (FAMILY-CONTRACT.md, search: `## 7. CLI surface`).
- *
- * Throws ConfigLoadError for the per-command mapping and for any value outside the three severities, so the run
- * stops before a misread floor can hide a finding the user expected to see.
- * @throws {ConfigLoadError} when minimumSeverity is a per-command mapping or is not advisory, warning, or error.
+ * @param config - effective config whose display floor is updated
+ * @param parsedConfig - file settings that may supply a minimumSeverity value
+ * @returns - nothing. Updates the effective config in place when a valid floor is supplied.
+ * @throws {ConfigLoadError} - when minimumSeverity is a mapping or a supplied value other than advisory, warning, or error
  */
 function applyDisplayFloorConfig(config: Config, parsedConfig: Record<string, unknown>): void {
   const configuredFloor = parsedConfig.minimumSeverity;
-  // An omitted key leaves every finding the run produced on screen.
+  // An omitted key leaves the current display floor in effect.
   if (configuredFloor === undefined) {
     return;
   }
@@ -416,11 +421,11 @@ function applyDisplayFloorConfig(config: Config, parsedConfig: Record<string, un
   config.displayFloor = configuredFloor;
 }
 
-// Loads per-command failure thresholds so users can set consistent CI behavior in configuration.
-// An omitted block preserves CLI or binary defaults; invalid command names and values fail before analysis.
+// Returns nothing. Updates the effective config's exit thresholds from the parsed failOn mapping so CI can apply them consistently.
+// An unknown command or invalid threshold in the mapping throws ConfigLoadError before analysis.
 function applyFailOnConfig(config: Config, parsedConfig: Record<string, unknown>): void {
   const block = objectValue(parsedConfig.failOn);
-  // No mapping means the user did not set command-specific failure thresholds.
+  // Without a mapping, the current thresholds stay in place for CLI option resolution.
   if (!block) {
     return;
   }
@@ -430,11 +435,11 @@ function applyFailOnConfig(config: Config, parsedConfig: Record<string, unknown>
   }
 }
 
-// Validates one `failOn` command name before it can define the user's exit behavior.
+// Returns the unchanged failOn command name after checking that it supports a configured exit threshold.
 // Throws for dashboard and unknown names because they cannot provide the gate the configuration implies.
-// @throws {ConfigLoadError} when commandName is dashboard or any name other than analyse, summary, or report.
+// @throws {ConfigLoadError} - when commandName is dashboard or any name other than analyse, summary, or report.
 function assertGatedCommand(commandName: string): MinimumSeverityCommand {
-  // Dashboard has no `--fail-on` behavior, so accepting it would promise users a gate that cannot run.
+  // Dashboard has no --fail-on behavior, so accepting it would promise users a gate that cannot run.
   if (commandName === "dashboard") {
     throw new ConfigLoadError('Unknown command in failOn: "dashboard". The dashboard subcommand does not currently expose a --fail-on flag; configuring its threshold is not supported.', "Remove the `dashboard:` line from `failOn:` in `.gruff-ts.yaml`, or open an issue if dashboard should gate.");
   }
@@ -445,11 +450,11 @@ function assertGatedCommand(commandName: string): MinimumSeverityCommand {
   throw new ConfigLoadError(`Unknown command in failOn: ${JSON.stringify(commandName)}. Valid keys: analyse, summary, report.`, SUGGEST_EDIT_CONFIG);
 }
 
-// Converts one configured failure threshold into the family vocabulary used by CLI exits.
+// Returns the configured exit threshold after checking it against the CLI's accepted values.
 // Unsupported values fail with the accepted choices instead of silently changing the user's CI gate.
-// @throws {ConfigLoadError} when the configured threshold is not none, advisory, warning, or error.
+// @throws {ConfigLoadError} - when the configured threshold is not none, advisory, warning, or error.
 function parseFailThresholdConfig(configuredThreshold: unknown): FailThreshold {
-  // Only the four documented values can define when a user's command exits unsuccessfully.
+  // CLI resolution receives none as an explicit gate choice, distinct from an omitted threshold.
   if (configuredThreshold === "none" || configuredThreshold === "advisory" || configuredThreshold === "warning" || configuredThreshold === "error") {
     return configuredThreshold;
   }
@@ -462,17 +467,16 @@ function minimumSeverityFor(config: Config, command: MinimumSeverityCommand): Fa
   return config.minimumSeverity.get(command);
 }
 
-// Loads the paths users want excluded from analysis.
-// Missing, empty, or non-string entries produce an empty list, leaving no config-based path exclusions.
+// Returns nothing. Replaces the effective config's path exclusions with strings from the parsed paths.ignore list.
+// A missing list, a non-list value, or a list with no strings clears these config-based exclusions.
 function applyPathConfig(config: Config, parsedConfig: Record<string, unknown>): void {
   const paths = objectValue(parsedConfig.paths);
   config.ignoredPaths = arrayValue(paths?.ignore).filter(isString);
 }
 
-// Loads naming exceptions before rules run; naming values become lowercase for stable matching.
-// Throws ConfigLoadError when the removed `secretPreviews` key is present at all, because section 5 makes category
-// markers unconditional and a key that authorises nothing must not look as though it does.
-// @throws {ConfigLoadError} when allowlists.secretPreviews is present, or a trackingTokens entry is not a valid regex.
+// Returns nothing. Updates the effective config from the parsed allowlists, lowercasing supplied naming values for matching.
+// A present naming or tracking key replaces its setting. A non-list value or a list with no strings clears it. Omitted keys keep their settings.
+// @throws {ConfigLoadError} - when allowlists.secretPreviews is present or a tracking token string is an invalid regular expression.
 function applyAllowlistConfig(config: Config, parsedConfig: Record<string, unknown>): void {
   const allowlists = objectValue(parsedConfig.allowlists);
   const abbreviations = arrayValue(allowlists?.acceptedAbbreviations).filter(isString);
@@ -480,20 +484,20 @@ function applyAllowlistConfig(config: Config, parsedConfig: Record<string, unkno
   if (allowlists && "acceptedAbbreviations" in allowlists) {
     config.acceptedAbbreviations = new Set(abbreviations.map((value) => value.toLowerCase()));
   }
-  // Presence is the test, not content: an empty list reads as configured redaction just as a populated one does.
+  // Even an empty legacy list stops loading because category redaction markers are unconditional.
   if (allowlists && "secretPreviews" in allowlists) {
     throw new ConfigLoadError(LEGACY_SECRET_PREVIEWS_ERROR, "Delete the `allowlists.secretPreviews:` entry from `.gruff-ts.yaml`; nothing replaces it.");
   }
   applyNamingAllowlist(config, allowlists, "acceptedClassFilePairs");
   applyNamingAllowlist(config, allowlists, "placeholderNames");
-  // Tracking tokens are project vocabulary, so none ship by default; each entry is a case-insensitive regular expression.
+  // Tracking tokens are project vocabulary, so none ship by default. Each supplied string becomes a case-insensitive pattern.
   if (allowlists && "trackingTokens" in allowlists) {
     config.trackingTokens = arrayValue(allowlists.trackingTokens).filter(isString).map((pattern) => trackingTokenPattern(pattern));
   }
 }
 
-// Compiles one configured tracking token; an invalid pattern stops the load instead of silently matching nothing.
-// @throws {ConfigLoadError} when the pattern is not a valid regular expression.
+// Returns a case-insensitive regular expression for a pattern from allowlists.trackingTokens.
+// @throws {ConfigLoadError} - Invalid syntax stops config loading and identifies the entry to fix or remove.
 function trackingTokenPattern(pattern: string): RegExp {
   try {
     return new RegExp(pattern, "i");
@@ -502,26 +506,25 @@ function trackingTokenPattern(pattern: string): RegExp {
   }
 }
 
-// Applies one naming allowlist as a complete replacement for its built-in values.
-// Missing keys preserve defaults; an explicit empty list lets users remove every built-in entry.
+// Returns nothing. Replaces the effective config's naming set for the selected key with lowercase strings from the parsed allowlists.
+// A supplied value with no usable strings clears the selected set.
 function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown> | undefined, key: "acceptedClassFilePairs" | "placeholderNames"): void {
-  // A missing allowlist section or key means the user wants the current defaults unchanged.
+  // If the section or selected key is missing, the current set stays in effect.
   if (!allowlists || !(key in allowlists)) {
     return;
   }
   config[key] = new Set(arrayValue(allowlists[key]).filter(isString).map((value) => value.toLowerCase()));
 }
 
-// Loads the user's per-rule enabled, threshold, severity, and numeric option overrides.
-// Missing fields retain defaults. It throws on unknown rules or malformed settings before the scan can misrepresent the user's policy.
-// @throws {ConfigLoadError} when a rules key is not a known rule id, or a field in its block fails validation.
+// Returns nothing. Applies per-rule overrides from the parsed rules mapping to the effective config.
+// Unset fields in a supplied rule use their defaults.
+// @throws {ConfigLoadError} - when a rule mapping names an unknown rule, has an unknown key, or fails field validation.
 function applyRuleConfig(config: Config, parsedConfig: Record<string, unknown>): void {
   const rules = objectValue(parsedConfig.rules);
-  // No rules mapping means the user accepts the effective profile and descriptor defaults.
+  // Without a rules mapping, the effective config adds no file overrides from this section.
   if (!rules) {
     return;
   }
-  // Each configured rule is validated independently before joining the settings used by analysis.
   for (const [ruleId, value] of Object.entries(rules)) {
     const rule = objectValue(value);
     // A non-mapping entry has no supported rule fields and therefore contributes no override.
@@ -545,10 +548,11 @@ const RULE_BLOCK_KEYS: ReadonlySet<string> = new Set(["enabled", "options", "sev
 // Option keys that switch a rule on or off for a wider scope, such as the tag rules' `everyCallable`; every other option is numeric.
 const BOOLEAN_RULE_OPTION_KEYS: ReadonlySet<string> = new Set(["everyCallable"]);
 
-// Builds one effective rule override after validating every user-supplied field.
-// Use this shared path for direct config and profile rules so both surfaces return the same errors.
+// Returns an override from the supplied rule block. Direct config and profiles share this field-validation path.
+// The rule ID selects accepted options and identifies the rule in errors. Without an options mapping, callers use option defaults.
+// Throws ConfigLoadError for unknown block keys or values that fail field or option-entry checks.
 function ruleConfigValue(ruleId: string, rule: Record<string, unknown>): RuleOverride {
-  // A key beside `threshold` that gruff-ts does not read, such as a sibling port's spelling, is refused, not ignored.
+  // A key alongside threshold that gruff-ts does not read, such as a sibling port's spelling, is refused, not ignored.
   assertKnownKeys(rule, RULE_BLOCK_KEYS, `rules.${ruleId}.`);
   assertRuleThresholdConfig(rule);
   assertRuleEnabledConfig(rule);
@@ -559,9 +563,9 @@ function ruleConfigValue(ruleId: string, rule: Record<string, unknown>): RuleOve
   return ruleOverride;
 }
 
-// Validates an explicit rule-enabled value before it can change the user's scan.
-// Missing means inherit. It throws on YAML words such as `no` because only true and false can reliably control the rule.
-// @throws {ConfigLoadError} when the rule block sets enabled to a value that is not a boolean.
+// Returns nothing after validating the rule block's explicit enabled setting before it can change the user's scan.
+// Missing means inherit. It throws on YAML words such as no because only true and false can reliably control the rule.
+// @throws {ConfigLoadError} - when the rule block sets enabled to a non-boolean value.
 function assertRuleEnabledConfig(rule: Record<string, unknown>): void {
   // A supplied non-boolean would otherwise look like a successful enable or disable choice while doing nothing.
   if ("enabled" in rule && typeof rule.enabled !== "boolean") {
@@ -572,21 +576,21 @@ function assertRuleEnabledConfig(rule: Record<string, unknown>): void {
   }
 }
 
-// Validates optional threshold and severity fields independently before analysis.
-// Missing fields inherit rule defaults. It throws on malformed supplied values with the exact setting users must correct.
-// @throws {ConfigLoadError} when threshold is set but not a number, or severity is set but not advisory, warning, or error.
+// Returns nothing after checking the rule block's optional threshold and severity overrides independently before analysis.
+// Omitted fields keep their inherited settings. Invalid overrides identify the exact field to correct.
+// @throws {ConfigLoadError} - when threshold is nonnumeric or severity is outside advisory, warning, and error.
 function assertRuleThresholdConfig(rule: Record<string, unknown>): void {
   // A supplied threshold must be numeric to define a meaningful rule boundary for the user.
   if ("threshold" in rule && typeof rule.threshold !== "number") {
     throw new ConfigLoadError('Rule config key "threshold" must be numeric.', SUGGEST_EDIT_CONFIG);
   }
-  // A supplied severity must use the report and `--fail-on` vocabulary users see elsewhere.
+  // A supplied severity must use the report severity names that --fail-on compares against.
   if ("severity" in rule && !isSeverity(rule.severity)) {
     throw new ConfigLoadError('Rule config key "severity" must be "advisory", "warning", or "error".', SUGGEST_EDIT_CONFIG);
   }
 }
 
-// Applies a validated enabled choice to the rule settings used by analysis.
+// Returns nothing. Copies an explicit enabled choice from the configured rule entry into the supplied rule override.
 // Missing values preserve the profile or descriptor behavior the user already selected.
 function applyRuleEnabledConfig(ruleOverride: RuleOverride, rule: Record<string, unknown>): void {
   // Only an explicit boolean represents a user choice to enable or disable the rule.
@@ -595,16 +599,15 @@ function applyRuleEnabledConfig(ruleOverride: RuleOverride, rule: Record<string,
   }
 }
 
-// Applies a validated numeric threshold to the user's effective rule settings.
-// Missing values preserve the profile or descriptor threshold.
+// Returns nothing. Copies a numeric threshold from the configured rule entry into the supplied rule override.
 function applyRuleThresholdConfig(ruleOverride: RuleOverride, rule: Record<string, unknown>): void {
-  // Only a numeric value can replace the threshold analysis will use.
+  // A missing or nonnumeric setting leaves the override untouched, preserving the inherited threshold when no override exists.
   if (typeof rule.threshold === "number") {
     ruleOverride.threshold = rule.threshold;
   }
 }
 
-// Applies a validated severity to the user's effective rule settings.
+// Returns nothing. Copies a supported severity from the configured rule entry into the supplied rule override.
 // Missing or unsupported values leave the inherited severity untouched.
 function applyRuleSeverityConfig(ruleOverride: RuleOverride, rule: Record<string, unknown>): void {
   // Only a supported severity can change how the finding appears and affects exit thresholds.
@@ -613,9 +616,9 @@ function applyRuleSeverityConfig(ruleOverride: RuleOverride, rule: Record<string
   }
 }
 
-// Builds the options for one rule after checking its public option catalogue.
-// Missing options become an empty map. It throws on unknown names or mistyped values so users never rely on an ignored tuning.
-// @throws {ConfigLoadError} when an option name is not one the rule accepts, or its value has the wrong type.
+// Returns validated options from optionsValue for ruleId, using that rule's public option catalogue.
+// Undefined, null, arrays and non-object values return an empty map, leaving the rule's option defaults in use.
+// @throws {ConfigLoadError} - when an option name is not one the rule accepts, or its value has the wrong type.
 function validatedRuleOptions(ruleId: string, optionsValue: unknown): Map<string, number | boolean> {
   const options = new Map<string, number | boolean>();
   const configuredOptions = objectValue(optionsValue);
@@ -636,11 +639,11 @@ function validatedRuleOptions(ruleId: string, optionsValue: unknown): Map<string
   return options;
 }
 
-// Returns one supported option value once its type matches: a switch takes true or false, every other option a number.
-// @throws {ConfigLoadError} when a switch is not a boolean, or a numeric option is not a number.
+// Returns option unchanged after name selects boolean or numeric validation; ruleId identifies the rule in errors.
+// @throws {ConfigLoadError} - when a switch is not a boolean, or a numeric option is not a number.
 function ruleOptionValue(ruleId: string, name: string, option: unknown): number | boolean {
   const isSwitch = BOOLEAN_RULE_OPTION_KEYS.has(name);
-  // A switch takes only true or false, so a YAML word such as `yes` cannot look like a choice that does nothing.
+  // A switch takes only true or false, so a YAML word such as yes cannot look like a choice that does nothing.
   if (isSwitch && typeof option === "boolean") {
     return option;
   }
@@ -652,13 +655,13 @@ function ruleOptionValue(ruleId: string, name: string, option: unknown): number 
   throw new ConfigLoadError(`Rule config option ${JSON.stringify(name)} for ${ruleId} must be ${expected}; got ${JSON.stringify(option)}.`, SUGGEST_EDIT_CONFIG);
 }
 
-// Finds the first supported project-root configuration file for zero-argument discovery.
-// No file means the user receives built-in defaults rather than a missing-config error.
+// Returns the first existing candidate path under the project root for zero-argument config discovery.
+// Returns undefined when no candidate exists, so loading starts from the built-in defaults.
 function defaultConfigPath(projectRoot: string): string | undefined {
   // Config names are checked in documented priority order so users get a deterministic selection.
   for (const fileName of DEFAULT_CONFIG_FILES) {
     const candidate = join(projectRoot, fileName);
-    // The first existing file becomes the single config source for this command.
+    // Discovery selects one path. The loader handles reading and validation.
     if (existsSync(candidate)) {
       return candidate;
     }
@@ -667,7 +670,7 @@ function defaultConfigPath(projectRoot: string): string | undefined {
 }
 
 // Returns whether one rule should run for the user's scan.
-// Missing config means the registry's default, which is on for every rule its descriptor does not turn off.
+// If the effective config has no enabled override for the rule, it runs unless its descriptor disables it by default.
 function ruleEnabled(config: Config, ruleId: string): boolean {
   return config.rules.get(ruleId)?.enabled ?? ruleDefaultEnabled(ruleId);
 }
@@ -684,15 +687,15 @@ function ruleSeverity(config: Config, ruleId: string, defaultSeverity: Severity)
   return config.rules.get(ruleId)?.severity ?? defaultSeverity;
 }
 
-// Returns one numeric rule option or the caller's documented default.
-// Missing rules, option maps, or names all mean the user left that tuning unchanged.
+// Looks up the named numeric option for the selected rule in the effective config.
+// Returns its numeric value, or the caller's default when the option is missing or has another type.
 function optionNumber(config: Config, ruleId: string, name: string, defaultValue: number): number {
   const option = config.rules.get(ruleId)?.options.get(name);
   return typeof option === "number" ? option : defaultValue;
 }
 
-// Returns one boolean rule option, such as a tag rule's `everyCallable` switch, or the caller's documented default.
-// Missing rules, option maps, or names all mean the user left that switch unchanged.
+// Looks up a named switch for the selected rule in the effective config, such as everyCallable for a tag rule.
+// Returns its boolean value, or the caller's default when the option is missing or has another type.
 function optionBoolean(config: Config, ruleId: string, name: string, isOnByDefault: boolean): boolean {
   const option = config.rules.get(ruleId)?.options.get(name);
   return typeof option === "boolean" ? option : isOnByDefault;

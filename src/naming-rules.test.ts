@@ -47,7 +47,7 @@ const value = 1;
 console.log(process, walk, strName, enabled, value);
 `);
 
-  // Collects finding symbols for one rule in the naming fixture assertions. Keeps rule output deterministic for snapshots.
+  // Returns the fixture report's finding symbols for ruleId in deterministic report order for the equality assertion.
   const byRule = (ruleId: string) => report.findings.filter((finding) => finding.ruleId === ruleId).map((finding) => finding.symbol);
   assert.deepEqual(byRule("naming.identifier-quality"), ["value"]);
 });

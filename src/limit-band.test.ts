@@ -23,13 +23,14 @@ function functionOfStatements(statements: number): string {
   return ["/** Probe. */", "export function probe(): void {", ...body, "}", ""].join("\n");
 }
 
-// A documented function declaring the given number of parameters.
+// Returns a documented probe for the parameter-count test with the requested number of parameters.
+// Use a positive count because the probe returns its first parameter.
 function functionWithParameters(count: number): string {
   const parameters = Array.from({ length: count }, (_, index) => `p${index}: number`).join(", ");
   return `/** Probe. */\nexport function probe(${parameters}): number {\n  return p0;\n}\n`;
 }
 
-// A documented function of flat `if` statements, each one decision.
+// Returns fixture source for a documented function with count flat if statements, each contributing one decision.
 function functionWithBranches(count: number): string {
   const branches = Array.from({ length: count }, (_, index) => `  if (flag === ${index}) {\n    total += ${index};\n  }`);
   return ["/** Probe. */", "export function probe(flag: number): number {", "  let total = 0;", ...branches, "  return total;", "}", ""].join("\n");
@@ -42,6 +43,7 @@ function fileOfLines(count: number): string {
 
 // The one finding a rule reports for a fixture, scanned with every banded rule at its low limit.
 // Contract: the test fails unless the rule reports exactly one finding, so a deterministic single result is returned.
+// source supplies fixture text and ruleId selects the result; severity overrides that rule only, with omission keeping its default.
 function onlyFinding(ruleId: BandedRule, source: string, severity?: Severity): Finding {
   const rules = Object.fromEntries(Object.entries(LIMITS).map(([id, threshold]) => [id, id === ruleId && severity ? { enabled: true, threshold, severity } : { enabled: true, threshold }]));
   const findings = analyseFixture(source, { config: { rules } }).findings.filter((finding) => finding.ruleId === ruleId);
@@ -79,7 +81,7 @@ test("the band boundary compares in floating point", () => {
   assert.deepEqual(bands, ["lower", "upper", "lower", "upper"]);
 });
 
-// One statement per line, so each form's body is long enough to cross a function-length limit of 10.
+// Returns count addition statements, one per line with the supplied indent, for fixtures that exceed a function-length limit of 10.
 function statements(count: number, indent: string): string {
   return Array.from({ length: count }, (_, index) => `${indent}total += ${index};`).join("\n");
 }

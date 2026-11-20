@@ -98,10 +98,14 @@ interface BaselineDocument {
   sensitive: { eligible: false; reason: string; counts: { total: number; byRule: Record<string, number> } };
 }
 
-/*
- * Writes the reviewed debt of this run: one row per identity, with sensitive findings counted and never stored.
- * Returns how many rows the file holds, which is what the report shows the user after a generate run.
- * Stable contract: rows are written in ascending identity order, so two identical runs produce one identical file.
+/**
+ * Writes a timestamped baseline of the run's reviewed debt with one row per identity in stable ascending identity order.
+ * Sensitive findings contribute to a count without an occurrence row.
+ *
+ * @param path - destination file to write or replace
+ * @param findings - current findings to aggregate into baseline rows
+ * @param declarationPosition - optional resolver for declaration positions. Omit it to rank by finding line.
+ * @returns The number of occurrence rows written, or zero when no finding has an identity.
  */
 export function writeBaseline(path: string, findings: Finding[], declarationPosition?: DeclarationPositionResolver): number {
   const document = baselineDocument(findings, declarationPosition);
@@ -115,13 +119,15 @@ export function sensitiveCountOf(findings: Finding[], declarationPosition?: Decl
   return baselineDocument(findings, declarationPosition).sensitive.counts.total;
 }
 
-/*
- * Applies a baseline to this run: hides the reviewed occurrences, keeps everything else, and says what moved.
+/**
+ * Apply reviewed counts in stable location order so matching hides the same occurrences for identical inputs.
+ * Hide unchanged occurrences only. Collisions and ineligible findings remain visible.
  *
- * Findings are classified in the ratified order: a sensitive finding is never eligible, an identity over two
- * declarations is a collision that hides nothing, occurrences within the reviewed count are unchanged, and the
- * rest are new. The reviewed count is spent lowest line first, so two ports hide the same occurrences.
- * Stable contract: only an unchanged finding is hidden; a collision, a secret, and every new occurrence still fail the run.
+ * @param path - baseline file to read and validate
+ * @param findings - current findings to classify against reviewed counts
+ * @param declarationPosition - optional resolver for declaration positions. Omit it to rank by finding line.
+ * @returns Visible findings, per-input statuses, counts, collisions, resolved review rows and the baseline entry total.
+ * @throws {BaselineFileError} - the baseline cannot be read or validated for this run.
  */
 export function applyBaseline(path: string, findings: Finding[], declarationPosition?: DeclarationPositionResolver): BaselineApplication {
   const document = readBaselineDocument(path);
@@ -148,14 +154,13 @@ export function applyBaseline(path: string, findings: Finding[], declarationPosi
 }
 
 /*
- * Carries a 0.5 baseline's reviews into a new v3 file, leaving the original byte-identical.
+ * Matches the legacy input's reviews against the current findings and writes their v3 identities to a separate output path.
+ * The input is opened only for reading. The optional resolver supplies declaration positions and defaults to finding lines.
+ * Returns counts of written rows, matched findings, and findings tallied in the sensitive summary.
  *
- * The reviews are re-identified from the current scan rather than translated, because a 0.5 digest names a line
- * and this one does not. A finding the 0.5 file never accepted stays visible.
- *
- * Stable contract: the input is only ever read, so a migration the user regrets leaves their 0.5 file to fall back to.
- * Throws when the input is missing, is not a 0.5 baseline, or resolves to the same file as the output, so the retreat path is never overwritten.
- * @throws {BaselineFileError} when output is the input file or the parsed input is not a 0.5 baseline, or {Error} when the input is not JSON or changed during migration.
+ * @throws {BaselineFileError} - the paths name the same file or the legacy schema or row container is invalid
+ * @throws {SyntaxError} - the input is malformed JSON
+ * @throws {Error} - a file operation fails or the input bytes differ after the write
  */
 export function migrateBaseline(inputPath: string, outputPath: string, findings: Finding[], declarationPosition?: DeclarationPositionResolver): BaselineMigration {
   requireDistinctPaths(inputPath, outputPath);
@@ -171,19 +176,17 @@ export function migrateBaseline(inputPath: string, outputPath: string, findings:
   return { entries, accepted: accepted.length, sensitiveCounted: sensitiveCountOf(accepted, declarationPosition) };
 }
 
-/*
- * Refuses to write a baseline over a 0.5 file at the shared default path.
+/**
+ * Guard the shared default filename because regenerating after an upgrade could overwrite the legacy baseline needed for rollback.
+ * Stable contract: generation proceeds here when the file declares the current schema or the guard finds no schema string.
  *
- * All five ports write and auto-discover the same filename, so without this an ordinary upgrade-then-generate
- * destroys the 0.5 baseline that is the user's documented retreat path, before they know they need it.
- * Regenerating v3 over v3 is not destructive, because v3 is what the tool now reads.
- *
- * Throws when the default path already holds a file this version would not read and the user passed no `--force`.
- * Stable contract: only the shared default filename is protected, and only a file this version cannot read.
- * @throws {BaselineFileError} when shouldForce is false and the default-named output holds a non-v3 baseline.
+ * @param outputPath - proposed baseline destination, checked only when it uses the shared default filename
+ * @param shouldForce - explicit user permission to bypass the overwrite guard
+ * @returns Nothing. Allows the caller to continue when the overwrite guard passes.
+ * @throws {BaselineFileError} - force is off and the default-named output declares a different schema version.
  */
 export function requireOverwritableDefaultPath(outputPath: string, shouldForce: boolean): void {
-  // Any other destination is the user's own choice of file, and any v3 file is what this version already reads.
+  // An explicit force flag or a different filename bypasses the shared-default safeguard.
   if (shouldForce || basename(outputPath) !== DEFAULT_BASELINE_FILENAME) {
     return;
   }
@@ -213,8 +216,8 @@ function existingSchemaVersion(outputPath: string): string | undefined {
   }
 }
 
-// Builds the document a generated baseline writes, ordered so two identical runs produce one identical file.
-// Stable contract: one row per identity, deterministic order, and no stored identity for any sensitive finding.
+// Builds a timestamped baseline document from the scan findings, with one row per identity in stable order.
+// The optional resolver supplies declaration positions for identity. Without it, finding lines are used.
 function baselineDocument(findings: Finding[], declarationPosition?: DeclarationPositionResolver): BaselineDocument {
   const identities = findingIdentities(findings, declarationPosition);
   const rows = new Map<string, BaselineEntry>();
@@ -222,7 +225,7 @@ function baselineDocument(findings: Finding[], declarationPosition?: Declaration
 
   findings.forEach((finding, index) => {
     const named = identities[index];
-    // A sensitive finding is counted by rule and stored nowhere, so no row can ever hide a secret.
+    // A finding without an identity contributes to the sensitive tally by rule and gets no row that could hide it.
     if (named === undefined) {
       sensitiveByRule[finding.ruleId] = (sensitiveByRule[finding.ruleId] ?? 0) + 1;
       return;
@@ -258,10 +261,9 @@ function baselineDocument(findings: Finding[], declarationPosition?: Declaration
  */
 export class BaselineFileError extends Error {}
 
-// Reads one v3 baseline, refusing a 0.5 layout, another port's file, and any row that could expire or leak.
-// Throws BaselineFileError on a missing or malformed file, a 0.5 layout, an unknown schema, another port's file, or a
-// row that could expire or leak, so a bad baseline fails closed.
-// @throws {BaselineFileError} when the file is unreadable, a 0.5 baseline, another schema or port's file, or has a bad row.
+// Returns the v3 baseline at path for this tool language after validating its occurrence rows.
+// A missing occurrence list becomes an empty review, so the baseline covers no findings.
+// @throws {BaselineFileError} - the file is unreadable, malformed, from an unsupported schema or port, or contains an invalid row
 function readBaselineDocument(path: string): BaselineDocument {
   const parsed = parsedBaselineFile(path);
   // A 0.5 file fails closed and names the command that carries its reviews forward, so nothing is silently dropped.
@@ -283,10 +285,9 @@ function readBaselineDocument(path: string): BaselineDocument {
 // A baseline file as parsed, before its rows are validated: every field may be missing and a row may be anything.
 type ParsedBaselineFile = Omit<Partial<BaselineDocument>, "occurrences"> & { occurrences?: unknown[] };
 
-// Reads and parses one baseline file. Throws BaselineFileError when the file is missing, unreadable, not JSON, or not a
-// JSON object whose occurrences, when present, are a list, so the reason reaches the user as a diagnostic rather than
-// a raw filesystem, parser or type stack. The schema must be checked before any field is read.
-// @throws {BaselineFileError} when the file cannot be read or parsed, is not a JSON object, or has non-list occurrences.
+// Returns the baseline file at path as a JSON object, checking that its occurrence list is an array when present.
+// The caller still checks the schema, writer language, and individual rows before applying any review.
+// @throws {BaselineFileError} - reading or parsing fails, the root is not an object, or occurrences is present without an array
 function parsedBaselineFile(path: string): ParsedBaselineFile {
   let parsed: unknown;
   try {
@@ -306,8 +307,8 @@ function parsedBaselineFile(path: string): ParsedBaselineFile {
   return parsed as ParsedBaselineFile;
 }
 
-// Why a baseline file could not be read, in words that never quote it. A JSON parser's message carries the file's
-// opening characters, and a mistyped --baseline can name a file that holds secrets.
+// Turns a baseline read or parse error into diagnostic text, with a fixed reason for a missing file.
+// Replaces JSON syntax errors with a fixed reason because parser messages can quote file contents. Other error messages pass through.
 function unreadableReason(error: unknown): string {
   if ((error as { code?: unknown }).code === "ENOENT") {
     return "the file does not exist";
@@ -324,10 +325,9 @@ function writerName(toolLanguage: unknown): string {
   return typeof toolLanguage === "string" && FAMILY_TOOL_LANGUAGES.has(toolLanguage) ? toolLanguage : "an unrecognised port";
 }
 
-// Rebuilds one reviewed row, refusing anything that could expire on an edit or leak a finding's text.
-// Throws a BaselineFileError naming the file when the row is not an object, the identity is not the ratified digest
-// shape, the count is below one, or a positional key is present.
-// @throws {BaselineFileError} when the row is not an object, its identity or count is invalid, or it has a forbidden key.
+// Returns the reviewed entry for a candidate row, copying only nonempty text for its optional descriptions.
+// The baseline path and row index locate an invalid entry in the diagnostic.
+// @throws {BaselineFileError} - the candidate is not an object row, its identity or count is invalid, or a forbidden key is present
 function validatedRow(path: string, candidate: unknown, index: number): BaselineEntry {
   // A row that is not an object has no identity to match, so the file is refused as written.
   if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
@@ -335,17 +335,17 @@ function validatedRow(path: string, candidate: unknown, index: number): Baseline
   }
   const row = candidate as Record<string, unknown>;
   const identity = row.identity;
-  // An identity that is not the ratified digest shape cannot have come from a generator, so the row is refused.
+  // The baseline schema requires 16 lowercase hex characters so that reviewed rows share one digest format.
   if (typeof identity !== "string" || !/^[0-9a-f]{16}$/u.test(identity)) {
     throw new BaselineFileError(`baseline ${path} occurrences[${index}].identity must be 16 lowercase hex characters`);
   }
   const count = row.count;
-  // A count below one would mean a reviewed identity that suppresses nothing, which is a hand edit gone wrong.
+  // A reviewed row needs a positive whole count to give it a usable suppression budget.
   if (typeof count !== "number" || !Number.isInteger(count) || count < 1) {
     throw new BaselineFileError(`baseline ${path} occurrences[${index}].count must be a positive integer`);
   }
   for (const forbidden of FORBIDDEN_OCCURRENCE_KEYS) {
-    // A positional field is how a 0.5 baseline expired on every edit, so its presence fails the file.
+    // Refuse positional and diagnostic fields to keep line numbers and raw diagnostic details out of the reviewed row.
     if (forbidden in row) {
       throw new BaselineFileError(`baseline ${path} occurrences[${index}] carries forbidden key "${forbidden}"`);
     }
@@ -353,7 +353,7 @@ function validatedRow(path: string, candidate: unknown, index: number): Baseline
   return { identity, count, ...optionalText(row, "ruleId"), ...optionalText(row, "path"), ...optionalText(row, "subject") };
 }
 
-// Reads one optional descriptive field, leaving it out entirely when the row never stored it.
+// Returns the requested row field for copying when it contains nonempty text, or an empty object so it is omitted.
 function optionalText(row: Record<string, unknown>, key: string): Record<string, string> {
   const storedText = row[key];
   return typeof storedText === "string" && storedText.length > 0 ? { [key]: storedText } : {};
@@ -368,13 +368,13 @@ interface IdentityGroup {
   path: string;
 }
 
-// Buckets every eligible finding by identity, remembering the declarations and subjects each one covers.
-// Stable contract: a sensitive finding joins no group, so no reviewed row can ever reach it.
+// Takes current findings and their identities in matching array order and returns groups keyed by stable baseline identity.
+// Each group retains finding indexes, declaration keys and distinct subjects for matching and collision reporting.
 function groupByIdentity(findings: Finding[], identities: Array<FindingIdentity | undefined>): Map<string, IdentityGroup> {
   const groups = new Map<string, IdentityGroup>();
   findings.forEach((finding, index) => {
     const named = identities[index];
-    // A sensitive finding has no identity, so it joins no group and no reviewed row can ever reach it.
+    // Findings without an identity stay outside the groups, so baseline review rows cannot hide them.
     if (named === undefined) {
       return;
     }
@@ -389,11 +389,14 @@ function groupByIdentity(findings: Finding[], identities: Array<FindingIdentity 
   return groups;
 }
 
-/*
- * Labels every finding, spending each identity's reviewed count on its lowest lines first.
- * The run is walked once in file order, so two ports hide the same occurrences for identical input rather than
- * merely the same number of them.
- * Stable contract: the run is walked in the ratified spend order, so two ports hide the same occurrences for identical input.
+/**
+ * Spend reviewed counts in stable line and column order so that identical inputs cover the same occurrences.
+ *
+ * @param findings - current findings whose locations determine spend order
+ * @param identities - identity per finding in input order, with undefined marking an ineligible occurrence
+ * @param groups - identity groups used to detect claims spanning multiple declarations
+ * @param reviewed - baseline counts by identity, with missing entries providing no allowance
+ * @returns One status per finding in input order. Unchanged marks a covered occurrence, and other statuses keep it visible.
  */
 function classify(findings: Finding[], identities: Array<FindingIdentity | undefined>, groups: Map<string, IdentityGroup>, reviewed: Map<string, BaselineEntry>): string[] {
   const statuses = findings.map(() => "new");
@@ -401,12 +404,12 @@ function classify(findings: Finding[], identities: Array<FindingIdentity | undef
 
   for (const index of spendOrder(findings)) {
     const named = identities[index];
-    // Sensitive findings are labelled before any lookup, so no reviewed row can reach a secret.
+    // A finding without an identity is ineligible, so a reviewed row cannot hide it.
     if (named === undefined) {
       statuses[index] = "notEligible";
       continue;
     }
-    // One identity over two declarations cannot separate them, so neither is hidden and the run names both.
+    // An identity spanning multiple declarations is ambiguous, so every occurrence with that identity stays visible.
     if ((groups.get(named.identity)?.declarations.size ?? 0) > 1) {
       statuses[index] = "collision";
       continue;
@@ -418,8 +421,8 @@ function classify(findings: Finding[], identities: Array<FindingIdentity | undef
   return statuses;
 }
 
-// Orders this run's findings by line then column, which is the ratified order a reviewed count is spent in.
-// Stable contract: line then column, with an unlocated finding last, is the ratified order a reviewed count is spent in.
+// Returns indexes into the findings in stable reviewed-count order, by line then column.
+// A missing line uses the last-line sentinel, and a missing column sorts as zero.
 function spendOrder(findings: Finding[]): number[] {
   return findings
     .map((_, index) => index)
@@ -430,7 +433,8 @@ function spendOrder(findings: Finding[]): number[] {
     });
 }
 
-// Finds every reviewed identity with fewer live occurrences than reviewed, which is debt the user has since fixed.
+// Returns copies of reviewed rows whose counts exceed the current group sizes, with each count set to the number absent from this scan.
+// The current finding statuses identify collisions, whose reviewed rows are excluded. With no current group, the full reviewed count is resolved.
 function resolvedSurplus(entries: BaselineEntry[], groups: Map<string, IdentityGroup>, statuses: string[]): BaselineEntry[] {
   return entries.flatMap((entry) => {
     const group = groups.get(entry.identity);
@@ -443,16 +447,16 @@ function resolvedSurplus(entries: BaselineEntry[], groups: Map<string, IdentityG
   });
 }
 
-// Lists the identities that covered two declarations, so the run can name each one for the user.
+// Returns a diagnostic record for each identity group covering multiple declarations, with the rule, path, and known subjects.
 function collidedIdentities(groups: Map<string, IdentityGroup>): BaselineCollision[] {
   return [...groups.entries()]
     .filter(([, group]) => group.declarations.size > 1)
     .map(([identity, group]) => ({ identity, ruleId: group.ruleId, path: group.path, subjects: group.subjects }));
 }
 
-// Refuses an output that is the input by spelling, resolved link target, or inode.
-// Throws when the two paths are one file by spelling, symlink, or inode, which is what keeps the 0.5 input intact.
-// @throws {BaselineFileError} when the input and output resolve to the same path or share an inode.
+// Protects the original baseline by checking the migration input path against the proposed output path.
+// Returns nothing when the check passes. A new destination can pass the path check without an inode comparison.
+// @throws {BaselineFileError} - the input and output paths compare equal after resolution or have matching device and inode numbers.
 function requireDistinctPaths(inputPath: string, outputPath: string): void {
   const resolvedInput = resolvedFilePath(inputPath);
   // A symlink or a hard link would make the "different" output the same bytes, destroying the retreat path.
@@ -461,25 +465,24 @@ function requireDistinctPaths(inputPath: string, outputPath: string): void {
   }
 }
 
-// Resolves a path through any symlink, falling back to the literal path when the file does not exist yet.
-// The fallback is the ordinary case, not an error: a migration output normally does not exist until it is written.
+// Returns the canonical migration path, or the supplied spelling when the filesystem cannot resolve it.
 function resolvedFilePath(path: string): string {
   try {
     return realpathSync(path);
   } catch {
-    // The output usually does not exist yet, which is the ordinary case and not a failure.
+    // A new output may have no target yet, so the caller can still compare its spelling and check inode identity separately.
     return path;
   }
 }
 
-// Reports whether two paths are one file on disk, which a hard link makes true even with different names.
+// Returns true if the input and output share a device and inode, including through a hard link, or false if either stat fails.
 function sameInode(inputPath: string, outputPath: string): boolean {
   try {
     const input = statSync(inputPath);
     const output = statSync(outputPath);
     return input.dev === output.dev && input.ino === output.ino;
   } catch {
-    // A missing output is the ordinary case: nothing to collide with yet.
+    // A new output normally has no inode yet, leaving the caller's resolved-path comparison as the other alias check.
     return false;
   }
 }
@@ -505,11 +508,12 @@ function legacyRows(path: string, contents: Buffer): Array<Record<string, unknow
   return rows.filter((row): row is Record<string, unknown> => typeof row === "object" && row !== null);
 }
 
-/*
- * Keeps the current findings a 0.5 baseline had already accepted, matching only on fields that file stored.
- * A row is matched on its rule and path, narrowed by its symbol and message when it recorded them, and it accepts
- * as many occurrences as the file held. A finding the old baseline never covered stays visible.
- * Stable contract: acceptance is spent in the same deterministic order as a reviewed count, so every port carries the same reviews across.
+/**
+ * Carry reviews forward from a 0.5 baseline. Match by rule and path, using symbol and message when the old row stored them.
+ *
+ * @param rows - legacy occurrence rows that supply one unit of acceptance each
+ * @param findings - current findings eligible to consume that acceptance
+ * @returns Current findings covered by the legacy counts in stable spend order, or an empty list when none match.
  */
 function acceptedByLegacy(rows: Array<Record<string, unknown>>, findings: Finding[]): Finding[] {
   const budget = new Map<string, number>();
@@ -517,7 +521,7 @@ function acceptedByLegacy(rows: Array<Record<string, unknown>>, findings: Findin
     const key = acceptanceKey(rowText(row, "ruleId"), rowText(row, "filePath") || rowText(row, "file"), rowText(row, "symbol"), rowText(row, "message"));
     budget.set(key, (budget.get(key) ?? 0) + 1);
   }
-  // Lowest line first, so a row covering fewer occurrences than exist today accepts the same ones on every port.
+  // Spend limited counts by line then column so a partially covered set resolves to the same occurrences for the same inputs.
   return spendOrder(findings)
     .map((index) => findings[index])
     .filter((finding): finding is Finding => finding !== undefined && canSpendLegacyBudget(budget, finding));
@@ -527,7 +531,7 @@ function acceptedByLegacy(rows: Array<Record<string, unknown>>, findings: Findin
 // Stable contract: the most specific stored shape is spent first, so a sparser 0.5 row never steals a narrower row's budget.
 function canSpendLegacyBudget(budget: Map<string, number>, finding: Finding): boolean {
   const symbol = finding.symbol ?? "";
-  // Try the most specific stored shape first, then the shapes a sparser 0.5 writer produced, so no debt is lost.
+  // If both single-field shapes can cover this finding, spend the symbol match and leave the message match available.
   for (const candidate of [
     acceptanceKey(finding.ruleId, finding.filePath, symbol, finding.message),
     acceptanceKey(finding.ruleId, finding.filePath, symbol, ""),
@@ -543,12 +547,12 @@ function canSpendLegacyBudget(budget: Map<string, number>, finding: Finding): bo
   return false;
 }
 
-// Joins the fields a 0.5 row could narrow on into one key, so a row and a finding compare as whole shapes.
+// Returns a legacy match key from the rule and file path, with an empty symbol or message leaving that part of the match unrestricted.
 function acceptanceKey(ruleId: string, path: string, symbol: string, message: string): string {
   return [ruleId, path, symbol, message].join("\0");
 }
 
-// Reads one stored 0.5 field, treating an absent or non-text value as a field that row never narrowed on.
+// Returns the requested legacy row field as text, using an empty string for a missing or non-text value so matching can use its fallback.
 function rowText(row: Record<string, unknown>, key: string): string {
   const storedText = row[key];
   return typeof storedText === "string" ? storedText : "";

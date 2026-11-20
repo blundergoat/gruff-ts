@@ -105,10 +105,10 @@ const DEFAULT_DISABLED_RULE_IDS: ReadonlySet<string> = new Set(
 );
 
 /**
- * Say whether a rule runs when no config names it: the registry's default, published by list-rules, SARIF and init.
+ * Reports the registry default published by list-rules, SARIF and init.
  *
  * @param ruleId - Any rule id; an id the registry does not hold reports true, the default every descriptor starts from.
- * @returns False only for a rule its descriptor marks `isEnabledByDefault: false`.
+ * @returns False when the registry explicitly disables the rule by default, and true otherwise.
  */
 export function ruleDefaultEnabled(ruleId: string): boolean {
   return !DEFAULT_DISABLED_RULE_IDS.has(ruleId);

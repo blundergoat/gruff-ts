@@ -22,15 +22,16 @@ const unsafeDeserializationSource = [
   "",
 ].join("\n");
 
-// Analyse one in-memory source fixture through only the AST flow pass.
+// Return AST flow findings for the in-memory source fixture passed as source.
 // Invariant: these unit tests bypass same-line scanning so flow findings stay isolated.
+// Parsing the script increments the shared parse count. If the AST pass cannot complete, the result is empty.
 function analyseSecurityFixture(source: string): Finding[] {
   const findings: Finding[] = [];
   analyseSecurityFlow(fileStub, source, findings);
   return findings;
 }
 
-// Analyse one executable line through the legacy same-line path used by full scans.
+// Return same-line security candidates for sourceLine at line 1 using the legacy path also used by full scans.
 // Invariant: tests can compare its sink precision independently from AST flow.
 function analyseSecurityLineFixture(sourceLine: string): Finding[] {
   const findings: Finding[] = [];

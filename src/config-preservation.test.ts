@@ -9,7 +9,8 @@ import { test } from "node:test";
 
 import { extractPreservedConfigFields } from "./config-preservation.ts";
 
-// Provides a disposable project root for each scenario so writes do not leak between tests.
+// Creates a temporary project directory and passes its path to the scenario callback so writes stay isolated between tests.
+// Returns nothing. It attempts to remove the whole directory even if the callback throws.
 function withTempProjectRoot(action: (path: string) => void): void {
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-config-preservation-"));
   try {

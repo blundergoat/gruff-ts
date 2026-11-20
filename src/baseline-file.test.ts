@@ -309,7 +309,7 @@ test("a written baseline carries no sentinel, raw, partial, hashed or encoded", 
   });
 });
 
-// Returns every shape a leaked secret could take in an artifact, so a derived value is caught as well as a raw one.
+// Returns the test secret as raw text, its first eight characters, SHA-256 hex, and Base64 for the baseline leak assertions.
 function sentinelForms(sentinel: string): Record<string, string> {
   return {
     raw: sentinel,
@@ -329,7 +329,7 @@ interface FindingOverrides {
   line?: number;
 }
 
-// Builds one ordinary finding; each test varies only the field whose effect on the identity it is proving.
+// Returns a baseline test finding with fixture defaults for fields the supplied overrides leave unset.
 // Stable contract: the fingerprint and stable identity are placeholders, because baseline v3 reads neither.
 function finding(overrides: FindingOverrides = {}): Finding {
   const symbol = overrides.symbol ?? "process";
@@ -343,7 +343,7 @@ function finding(overrides: FindingOverrides = {}): Finding {
     secondaryPillars: [],
     tier: "v0.1",
     confidence: "high",
-    // A file-level finding names no symbol, and is then named by its message with measurements stripped.
+    // An empty symbol override creates a file-level finding, whose baseline subject comes from the message with measurements stripped.
     ...(symbol === "" ? {} : { symbol }),
     metadata: {},
     fingerprint: "0".repeat(16),
@@ -351,7 +351,7 @@ function finding(overrides: FindingOverrides = {}): Finding {
   };
 }
 
-// Stages the 0.5 baseline a migration reads, and hands back its bytes for the comparison after the migration.
+// Writes the 0.5 fixture as legacy.json in the supplied directory and returns its bytes for comparison after migration.
 // Stable contract: those bytes are exactly what the migration must leave untouched.
 function writeLegacyInput(dir: string): Buffer {
   const legacy = Buffer.from(
@@ -369,7 +369,8 @@ function writeLegacyInput(dir: string): Buffer {
   return legacy;
 }
 
-// Writes a temp directory, runs one case inside it, and removes it afterwards, so no case sees another's baseline file.
+// Writes a fresh temporary directory and passes its path to the test callback so each case has its own baseline files.
+// Returns nothing. Attempts to remove the temporary directory even if the callback throws.
 function withProject(run: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-baseline-"));
   try {

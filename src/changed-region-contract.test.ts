@@ -113,9 +113,8 @@ function scopeRegion(range: string, scope: ChangedScopeMode): AnalysisReport {
   return analyseProject({ "region.ts": REGION_FIXTURE }, { paths: ["region.ts"], changedRanges: range, changedScope: scope });
 }
 
-// Asserts the changed-region partition the hook depends on: kept findings plus suppressedCount equal
-// the full-scan total, so the reported backlog never drops or double-counts a finding, and proves the
-// selection suppressed something. This is the stable invariant the changed-region contract must keep.
+// Checks the hook's count invariant by comparing the kept and suppressed totals in scoped with the total in the full scan report.
+// Returns nothing. It checks count equality before requiring positive suppression. A missing suppressedCount is treated as zero.
 function assertExhaustivePartition(scoped: AnalysisReport, full: AnalysisReport): void {
   const suppressed = scoped.suppressedCount ?? 0;
   assert.equal(scoped.findings.length + suppressed, full.findings.length);
@@ -123,7 +122,7 @@ function assertExhaustivePartition(scoped: AnalysisReport, full: AnalysisReport)
 }
 
 // Base analyse options for the dual-eval baseline fixture: JSON, no config, symbol scope, baseline
-// skipped by default so each test layers only the baseline fields it is exercising.
+// skipped by default. Tests override the target paths, changed-region selection or baseline settings as needed.
 function regionScanOptions(): AnalysisOptions {
   return {
     paths: ["dual.ts"],
@@ -285,7 +284,7 @@ export function risky(input: string): unknown {
 
 // Builds a git repo with two packages, commits the clean state, then leaves both packages with the
 // same unstaged eval-introducing edit so diff scoping has real hunks on both subtrees.
-// Writes fixture files to the temp filesystem and spawns git subprocesses against that repo.
+// Returns nothing. It writes fixture files to the scratch directory repoDir and spawns git subprocesses there.
 function initParityRepo(repoDir: string): void {
   execFileSync("git", ["init", "-q"], { cwd: repoDir });
   execFileSync("git", ["config", "user.email", "gruff-test@example.com"], { cwd: repoDir });

@@ -28,7 +28,7 @@ const DETERMINISM_FIXTURE_SOURCE = [
 ].join("\n");
 
 /*
- * Serializes the report as a JSON user receives it after removing the per-run timestamp.
+ * Returns report's native state as JSON after cloning it and removing run.generatedAt for deterministic comparisons.
  * Invariant: every path, finding, score, and ordering decision remains under byte comparison.
  */
 function normalizedReportBytes(report: AnalysisReport): string {
@@ -109,10 +109,12 @@ const UNSCANNED_FIXTURE_FILES: Record<string, string> = {
 const SCAN_SURFACE_SWEEP_NOTE =
   "discovery allowlist changed - sweep the scan-surface sentence in CLAUDE.md, AGENTS.md, .github/copilot-instructions.md, README.md, docs/rules.md, .goat-flow/architecture.md, and .goat-flow/glossary.md";
 
-/*
- * Scans a throwaway project containing exactly the supplied files and reports how many were analysed.
- * Side effect: writes and removes a temporary project directory on the filesystem.
- * Invariant: the count reflects the discovery allowlist alone, because the fixture ships no config.
+/**
+ * Scans a temporary project with config loading disabled so the test can compare the analysed file count with the expected total.
+ * Writes the fixture to the filesystem, switches the process working directory for the scan, then restores it and removes the fixture.
+ *
+ * @param files - fixture paths relative to the temporary project, mapped to their contents
+ * @returns Number of files the analyser counted in the temporary project
  */
 function analysedFileCount(files: Record<string, string>): number {
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-scan-surface-"));
@@ -184,8 +186,8 @@ function livePillarCounts(): Map<string, number> {
 }
 
 /*
- * Reads back the pillar/count rows a documentation file publishes.
- * Invariant: the pattern matches only tally rows, so a stray prose number cannot enter the result.
+ * Reads tally rows from the documentation file at path using global rowPattern, with pillar in group 1 and numeric count in group 2.
+ * Returns a pillar-to-count map; no matches gives an empty map, and later rows replace earlier counts for the same pillar.
  */
 function documentedPillarCounts(path: string, rowPattern: RegExp): Map<string, number> {
   const rows = [...readFileSync(path, "utf8").matchAll(rowPattern)];
@@ -193,10 +195,8 @@ function documentedPillarCounts(path: string, rowPattern: RegExp): Map<string, n
   return new Map(rows.map((row) => [String(row[1]), Number(row[2])]));
 }
 
-/*
- * Reads back every catalogue-size number a file states in prose, in the order it states them.
- * Invariant: the pattern only matches an "N rules" phrase, so surrounding prose cannot inflate it.
- */
+// Reads the file at path and returns counts from N rules matches, where N is a run of digits, in file order.
+// An empty array means the file supplied no count claims in that form.
 function documentedTotals(path: string): number[] {
   return [...readFileSync(path, "utf8").matchAll(/\b(\d+) rules\b/gu)].map((match) => Number(match[1]));
 }
@@ -247,7 +247,7 @@ const SCHEMA_LITERAL_PATTERN = /gruff\.(?:analysis|summary|baseline|hotspot|hook
 
 /*
  * Names the output family a schema string belongs to, such as "baseline" for the baseline schema.
- * Invariant: the family is the middle dotted segment, so documented and live strings share one key.
+ * Returns the second dotted segment, or the original schemaVersion when that segment is absent; an empty segment stays empty.
  */
 function schemaFamily(schemaVersion: string): string {
   return schemaVersion.split(".")[1] ?? schemaVersion;
@@ -264,8 +264,8 @@ function renderedVersionField(json: string, field: string): string {
 }
 
 /*
- * Collects the schema version each public output emits, keyed by family, from one real scan.
- * Side effect: writes and removes a temporary project and restores the working directory.
+ * Returns schema versions by output family, using one scan for analysis, summary and hotspot.
+ * Writes a temporary project, changes into it for the scan, then restores the working directory and removes the project.
  * Invariant: every version comes from a renderer or the exported baseline constant, never a document.
  */
 function liveSchemaVersions(): Map<string, string> {

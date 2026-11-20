@@ -142,8 +142,8 @@ const DESCRIPTORS = new Map(ruleDescriptors().map((descriptor) => [descriptor.ru
 const TRAILING_ORDINAL = /#(\d+)$/u;
 const CONFIG_ERROR_REMEDIATION = "Fix the reported problem in .gruff-ts.yaml, or pass --no-config to run without it.";
 
-// Emits the gruff.hook.v2 capability handshake so a consumer can resolve flag names before a real
-// request; the advertised supports/flags object is the stable gruff.hook.v2 contract.
+// Returns the gruff.hook.v2 capability handshake as pretty-printed JSON with a trailing newline.
+// Consumers use its stable supports and flags fields to select options before submitting an analysis request.
 export function renderHookCapabilities(): string {
   return JSON.stringify({
     contractVersion: HOOK_CONTRACT_VERSION,
@@ -176,8 +176,15 @@ export function renderHookCapabilities(): string {
   }, null, 2) + "\n";
 }
 
-// Runs the analysis and projects it into the gruff.hook.v2 envelope: the run audit, scoped findings,
-// suppressed count, the section 13a exclusion audit, ignored paths, and a schema-ok config block.
+/**
+ * Run analysis and apply hook filtering so the gruff.hook.v2 schema records the findings and audits the agent can act on.
+ * Diff-base replay spawns Git, writes a temporary tree, and temporarily changes the process working directory.
+ * An absent diff base skips replay filtering. An absent baseline skips review filtering and leaves row statuses null.
+ *
+ * @param runAnalyse - analysis runner used to obtain the report views and replay an available diff base
+ * @param input - hook request with scan options, changed-region mode, and any baseline or diff base
+ * @returns newline-terminated JSON with the run audit, filtered findings, diagnostics, exclusion audit, ignored paths, and config status
+ */
 export function renderHookReport(runAnalyse: HookAnalysisRunner, input: HookReportInput): string {
   const views = hookAnalysisViews(runAnalyse, input);
   const { currentReport, scopedReport } = views;
@@ -189,7 +196,8 @@ export function renderHookReport(runAnalyse: HookAnalysisRunner, input: HookRepo
   return JSON.stringify(hookReport(scopedReport, findings, suppressedCount, hookRun(scopedReport, input)), null, 2) + "\n";
 }
 
-// Selects the optimized hook view when available, otherwise falls back to one or two analyse calls.
+// Returns current and scoped reports using runAnalyse and the scan options in input, preferring runAnalyse.hookViews.
+// Without that method, calls the runner twice only for a changed region; otherwise both reports share one result.
 function hookAnalysisViews(runAnalyse: HookAnalysisRunner, input: HookReportInput): HookAnalysisViews {
   if (runAnalyse.hookViews) {
     return runAnalyse.hookViews(input.currentOptions, input.scopedOptions, input.hasChangedRegion);
@@ -199,14 +207,14 @@ function hookAnalysisViews(runAnalyse: HookAnalysisRunner, input: HookReportInpu
   return { currentReport, scopedReport };
 }
 
-/*
- * Classifies this run's findings against the baseline the caller named, so each one can report what the
- * baseline made of it and a reviewed occurrence stays hidden.
+/**
+ * Classify hook findings against the same gruff.baseline.v3 file that analyse --generate-baseline writes, so one review serves both commands.
+ * Classify the scoped report last so that its statuses take precedence for findings shared by both reports.
  *
- * The hook reads the same `gruff.baseline.v3` file `analyse --generate-baseline` writes, so one review carries
- * across both surfaces; the published view is classified last, because that is the set the agent acts on.
- * Throws when the file is missing, malformed, in the 0.5 schema, or written by another port, so a baseline this
- * port cannot read never suppresses a finding under rules nobody ratified.
+ * @param views - Current and scoped reports whose findings need baseline classification.
+ * @param baselinePath - Caller-selected baseline path, resolved from the working directory. Omission leaves the run unclassified.
+ * @returns Statuses keyed by finding. A missing application status defaults to new. An omitted path yields an empty map.
+ * @throws If the named baseline cannot be read or fails format, schema, or port validation.
  */
 function hookBaselineStatuses(views: HookAnalysisViews, baselinePath: string | undefined): HookBaselineStatuses {
   const statuses: HookBaselineStatuses = new Map();
@@ -224,31 +232,27 @@ function hookBaselineStatuses(views: HookAnalysisViews, baselinePath: string | u
   return statuses;
 }
 
-/*
- * Emits a gruff.hook.v2 envelope for a run that could not happen, so the consumer always receives JSON with a
- * fatal diagnostic instead of a crash and an empty stdout.
+/**
+ * Build an envelope for a fatal hook failure. The CLI exits with code 2 and writes the envelope unless stdout is suppressed.
  *
- * Every field the contract requires is present and empty, so one shape parses whether the run succeeded or not
- * and the reason is read from the diagnostic rather than scraped from stderr.
- *
- * It reports the failure and never throws: a consumer handed no JSON at all has nothing to act on, and the caller
- * exits 2 after writing what this returns.
+ * @param diagnosticType - category assigned to the sole fatal diagnostic
+ * @param message - failure detail shown in the diagnostic
+ * @returns newline-terminated hook JSON with empty findings, suppression rows, and ignored paths, plus default run and config fields
  */
 export function renderHookFatal(diagnosticType: string, message: string): string {
   return JSON.stringify(fatalReport(diagnosticType, message), null, 2) + "\n";
 }
 
-// Emits the fatal envelope for a configuration the loader refuses, which also reports the schema as not ok.
-// `remediation` defaults to the general advice, so a failure with no specific fix still tells the user what to try.
+// Returns newline-terminated hook JSON with the loader's message in the fatal diagnostic and config error, and schemaOk set to false.
+// Remediation defaults to general advice so callers without a specific fix can still tell the user what to try.
 export function renderHookConfigError(message: string, remediation: string = CONFIG_ERROR_REMEDIATION): string {
   const report = fatalReport("config", message);
   report.config = { schemaOk: false, error: { message, remediation } };
   return JSON.stringify(report, null, 2) + "\n";
 }
 
-// Builds the empty envelope a fatal run publishes, carrying one fatal diagnostic and nothing else.
-// It reports the failure rather than throwing it, so the caller always has a payload to write before exiting 2.
-// Stable contract: every required key is present and empty, so one shape parses whether the run happened or not.
+// Returns a hook envelope with one fatal diagnostic built from the supplied type and message, so the caller has a payload to publish before exit 2.
+// The stable contract retains the required envelope fields, with no findings or analysed files.
 function fatalReport(diagnosticType: string, message: string): HookReport {
   return {
     contractVersion: HOOK_CONTRACT_VERSION,
@@ -263,8 +267,8 @@ function fatalReport(diagnosticType: string, message: string): HookReport {
   };
 }
 
-// Assembles the gruff.hook.v2 envelope (run audit, sorted findings, diagnostics, suppressed count,
-// exclusion audit, ignored paths, config) as the stable gruff.hook.v2 output contract.
+// Returns a gruff.hook.v2 envelope for a completed analysis with the supplied run audit, visible findings, and suppressed count.
+// The analysis report supplies diagnostics, the exclusion audit, and skipped paths. The contract presents findings in stable order.
 function hookReport(report: AnalysisReport, findings: HookFinding[], suppressedCount: number, run: HookRun): HookReport {
   return {
     contractVersion: HOOK_CONTRACT_VERSION,
@@ -279,9 +283,9 @@ function hookReport(report: AnalysisReport, findings: HookFinding[], suppressedC
   };
 }
 
-// Describes what this run was asked to do and which baseline classified it, which is the audit block.
-// Stable contract: `baseline.applied` is true exactly when the caller named a baseline, so a consumer can trust
-// that a false there means no review hid anything.
+// Returns the run audit using report for the project root and analysed-file count and input for selectors and paths.
+// Empty scoped paths are reported as the current directory; a present baselinePath marks applied true and reports its path.
+// Without a baseline, applied is false and its schema version and path are null, so consumers can see that no review was used.
 function hookRun(report: AnalysisReport, input: HookReportInput): HookRun {
   const applied = input.baselinePath !== undefined;
   return {
@@ -311,7 +315,7 @@ function hookRunMode(input: HookReportInput): HookRun["mode"] {
   return input.scopedOptions.since ? "since" : "full";
 }
 
-// Projects one configured sensitive exclusion into its section 13a audit row, counted across the whole scan.
+// Projects a scan suppression summary into a hook audit row; an empty path list yields an empty path and a null symbol is omitted.
 function toHookSuppression(summary: SuppressionSummary): HookSuppression {
   return {
     rule: summary.rule,
@@ -320,13 +324,13 @@ function toHookSuppression(summary: SuppressionSummary): HookSuppression {
     ...(summary.symbol === null ? {} : { symbol: summary.symbol }),
     reason: summary.reason,
     suppressed: summary.suppressed,
-    // Only a built-in row names its source; a configured row is recognised by carrying none.
+    // Built-in, inline and duplicate rows retain their source; configured rows omit it.
     ...(summary.source === undefined ? {} : { source: summary.source }),
   };
 }
 
-// Projects one run diagnostic into the hook contract's shape, saying what it means for the run rather than
-// leaving a consumer to infer that from the type; never throws - absent anchors are omitted.
+// Returns a hook diagnostic without throwing and omits unavailable file and line anchors.
+// In the hook contract, an explicit invalidatesRun value of false means warning. An unset or true value means fatal.
 function toHookDiagnostic(diagnostic: RunDiagnostic): HookDiagnostic {
   return {
     type: diagnostic.diagnosticType,
@@ -338,20 +342,19 @@ function toHookDiagnostic(diagnostic: RunDiagnostic): HookDiagnostic {
   };
 }
 
-/*
- * Decides what the hook tells the calling agent, from the findings it actually published.
+/**
+ * Decide whether to block the edit using the same hook contract entries the agent sees.
+ * Missing or non-array findings and diagnostics count as empty. The CLI uses exit code 2 for errors caught before calling this gate.
  *
- * What blocks an edit is exactly what the agent was shown: a finding the changed-region filter or the baseline
- * removed is not in the payload and does not block. Returns 0 when nothing reached the gate and 1 when
- * something did; a run that could not happen at all exits 2 before this is ever called.
- *
- * Stable contract: the verdict is read back from the published payload, so what an agent sees and what blocks it
- * can never drift apart.
+ * @param renderedEnvelope - published hook envelope as JSON
+ * @param gate - thresholds and options that determine which published entries block the edit
+ * @returns 1 when a published entry reaches the gate and 0 otherwise
+ * @throws SyntaxError - if the envelope is invalid JSON
  */
 export function hookExitCode(renderedEnvelope: string, gate: HookExitGate): number {
   const payload = JSON.parse(renderedEnvelope) as { findings?: HookFinding[]; diagnostics?: HookDiagnostic[] };
   const diagnostics = Array.isArray(payload.diagnostics) ? payload.diagnostics : [];
-  // A consumer may ask for any caveat to stop the edit, which is the only way a warning becomes blocking.
+  // When the diagnostic gate is enabled, any published diagnostic blocks the edit regardless of the finding thresholds.
   if (gate.shouldFailOnDiagnostics && diagnostics.length > 0) {
     return 1;
   }
@@ -360,9 +363,10 @@ export function hookExitCode(renderedEnvelope: string, gate: HookExitGate): numb
 }
 
 // True when one published finding reaches the gate the caller set, by baseline status or by severity and confidence.
-// Stable contract: severity and confidence are independent floors, so either one alone can keep a finding away.
+// Severity and confidence are independent floors, so either can keep a finding from reaching the threshold.
+// The gate contract treats failOn none as disabling only those floors, so enabled new-debt gating can still block.
 function reachesHookGate(finding: HookFinding, gate: HookExitGate): boolean {
-  // A run asked to block on new debt blocks on it regardless of how severe the new finding is.
+  // A new status can block regardless of either floor. A null status can block only through an enabled severity and confidence gate.
   if (gate.shouldFailOnNew && finding.baselineStatus === "new") {
     return true;
   }
@@ -379,9 +383,16 @@ function analyzerInfo(): { name: "gruff-ts"; version: string } {
   return { name: "gruff-ts", version: VERSION };
 }
 
-// Builds the hook finding list: changed-region scoping drops inherited file findings, new-only filtering
-// re-admits file/project findings the base did not hold, and a baseline hides what it reviewed.
-// Invariant: suppressed.count arithmetic must stay exact across every filtering stage.
+/**
+ * Build the findings to publish, using prior coverage to distinguish inherited issues from findings the hook can attribute to this edit.
+ *
+ * @param currentReport - full scan that supplies file and project candidates for re-admission
+ * @param scopedReport - scoped scan that supplies the initial candidates
+ * @param input - hook request that supplies changed-region mode and whether a baseline was named
+ * @param baseIdentities - stable match-key counts from the diff base, or undefined to skip diff-base filtering
+ * @param statuses - baseline classifications used to remove reviewed occurrences marked unchanged
+ * @returns the findings kept after changed-region, diff-base, and baseline filtering
+ */
 function hookFindings(
   currentReport: AnalysisReport,
   scopedReport: AnalysisReport,
@@ -390,8 +401,8 @@ function hookFindings(
   statuses: HookBaselineStatuses,
 ): Finding[] {
   const hasChangedRegion = input.hasChangedRegion;
-  // Without a prior base the hook cannot attribute a whole-file issue to this edit, so it stays out of the way.
-  // An applied baseline is a prior base as much as a diff ref is: it already knows what the file used to carry.
+  // In changed-region mode, a whole-file issue needs a prior base before the hook can attribute it to the edit.
+  // A named baseline or a replayed diff base lets the hook reconsider whole-file findings.
   const hasPriorBase = baseIdentities !== undefined || input.baselinePath !== undefined;
   const scopedFindings = scopedReport.findings.filter((finding) => !hasChangedRegion || scopeForFinding(finding) !== "file");
   const covered = baseCoveredOccurrences(currentReport, baseIdentities);
@@ -401,12 +412,12 @@ function hookFindings(
   const afterNewOnly = baseIdentities
     ? withNewFileAndProject.filter((finding) => !spendCoveredOccurrence(covered, finding))
     : withNewFileAndProject;
-  // An occurrence the user already reviewed is debt, not this edit's doing, so it stays out of the agent's way.
+  // A finding marked unchanged has already been reviewed against the baseline, so it stays out of the published list.
   return afterNewOnly.filter((finding) => statuses.get(finding) !== "unchanged");
 }
 
-// Collects file- and project-scope findings that are new since the base, excluding any already
-// emitted, deduped by fingerprint.
+// Returns file and project findings in currentReport whose fingerprints are absent from scopedFindings and have no remaining base occurrence.
+// Mutates covered, the remaining base counts by fingerprint, to spend one count per eligible match so that repeated occurrences compare correctly.
 function newFileAndProjectFindings(currentReport: AnalysisReport, scopedFindings: Finding[], covered: Map<string, number>): Finding[] {
   const alreadyIncluded = new Set(scopedFindings.map((finding) => finding.fingerprint));
   return currentReport.findings.filter((finding) => {
@@ -419,9 +430,8 @@ function newFileAndProjectFindings(currentReport: AnalysisReport, scopedFindings
   });
 }
 
-// Picks the current occurrences the base already held, keyed by fingerprint. Each base key's count is spent once per
-// occurrence, lowest line first as baseline matching spends a reviewed count, so a duplicate an edit added stays visible.
-// Stable contract: without a base nothing is covered, and the covered total for a key never exceeds its base count.
+// Returns counts of covered current findings by report fingerprint. Missing base counts yield an empty map.
+// For each stable hook match key, spend at most its base count in line and column order to avoid covering extra matches.
 function baseCoveredOccurrences(currentReport: AnalysisReport, baseCounts: Map<string, number> | undefined): Map<string, number> {
   const covered = new Map<string, number>();
   if (baseCounts === undefined) {
@@ -442,9 +452,9 @@ function baseCoveredOccurrences(currentReport: AnalysisReport, baseCounts: Map<s
   return covered;
 }
 
-// Spends one covered occurrence of a finding's fingerprint, telling whether the base held this occurrence.
-// Stable contract: each covered occurrence hides exactly one finding, so file/project re-admission and the new-only
-// filter never spend the same base occurrence twice.
+// Mutates the caller's coverage map when the finding's fingerprint count is nonzero. Returns true after spending one occurrence.
+// Returns false if the fingerprint is missing or its count is exhausted.
+// The stable contract lets each covered occurrence hide one finding across file/project re-admission and the new-only filter.
 function spendCoveredOccurrence(covered: Map<string, number>, finding: Finding): boolean {
   const count = covered.get(finding.fingerprint) ?? 0;
   if (count === 0) {
@@ -454,8 +464,9 @@ function spendCoveredOccurrence(covered: Map<string, number>, finding: Finding):
   return true;
 }
 
-// Counts the file/project findings the hook drops under changed-region attribution, excluding any
-// re-emitted as new, so the stable suppressed.count contract is never double-counted.
+// Returns the stable suppressed.count total when hasChangedRegion is true, or zero for a full scan.
+// Adds scopedReport's existing suppression tally, defaulting to zero, to its remaining file and project findings.
+// Uses emittedFindings fingerprints to avoid counting published findings as suppressed.
 function hookSuppressedCount(scopedReport: AnalysisReport, emittedFindings: Finding[], hasChangedRegion: boolean): number {
   if (!hasChangedRegion) {
     return 0;
@@ -468,10 +479,9 @@ function hookSuppressedCount(scopedReport: AnalysisReport, emittedFindings: Find
   return (scopedReport.suppressedCount ?? 0) + fileOrProjectAnchorResiduals;
 }
 
-// Projects an analyser Finding into the hook shape, attaching scope, remediation, the ratified identity and the
-// ordinal that lets a consumer recompute it, plus what a baseline made of it.
-// Stable contract: `stableIdentity` carries the one ratified family identity and `fingerprint` the port-local key,
-// so a consumer never reads two schemes under one field name.
+// Returns a hook row for finding. The symbol ordinal is 0 without a stored ordinal. Missing remediation uses rule or generic advice.
+// baselineStatus is the supplied review result or null when unclassified; absent symbols and stable identities are also null.
+// Omits missing columns and both lines when the start line is absent. Otherwise uses the start line if the end line is missing or earlier.
 function toHookFinding(finding: Finding, baselineStatus: string | null): HookFinding {
   const endLine = endLineFor(finding);
   return {
@@ -495,9 +505,8 @@ function toHookFinding(finding: Finding, baselineStatus: string | null): HookFin
   };
 }
 
-// Returns the span end every v2 finding carries, repeating the start line when the rule reported no span, because
-// a consumer locating a finding cannot treat an absent end as a single line by guessing.
-// Stable contract: the end is never below the start, so a span is always a range a reader can open.
+// Returns the finding's span end for the stable hook contract, using its start when the reported end is absent or earlier than the start.
+// Returns undefined when the finding has no start line, so the hook omits the span end.
 function endLineFor(finding: Finding): number | undefined {
   if (finding.line === undefined) {
     return undefined;
@@ -506,8 +515,7 @@ function endLineFor(finding: Finding): number | undefined {
 }
 
 // Returns the declaration ordinal the ratified identity hashed, so a consumer can recompute that identity.
-// A finding naming no symbol reports 0, which is what the identity contract says a symbol-less subject carries.
-// Reads the finding's stored subject only; it mutates nothing and touches no filesystem, process, or network state.
+// The identity contract uses 0 when the finding has no stored subject or its subject has no ordinal suffix.
 function symbolOrdinalOf(finding: Finding): number {
   const trailing = finding.baselineSubject === undefined ? null : TRAILING_ORDINAL.exec(finding.baselineSubject);
   return trailing === null ? 0 : Number(trailing[1]);
@@ -529,20 +537,19 @@ function scopeForFinding(finding: Finding): HookScope {
   return "line";
 }
 
-// Returns normalized threshold metadata when the rule has one, else the finding's own metadata,
-// keeping the contract's metadata shape stable.
+// Returns the hook contract's threshold metadata for a supported rule with a numeric measurement and limit.
+// Otherwise returns the finding's original metadata.
 function hookMetadata(finding: Finding): Record<string, unknown> {
   const thresholdMetadata = thresholdMetadataFor(finding);
-  // A banded size or complexity finding keeps its band beside the measurement (FAMILY-CONTRACT.md section 12, search
-  // `The band key`).
+  // The hook contract keeps the limit band beside the measurement (FAMILY-CONTRACT.md section 12, The band key).
   if (thresholdMetadata && typeof finding.metadata.limitBand === "string") {
     return { ...thresholdMetadata, limitBand: finding.metadata.limitBand };
   }
   return thresholdMetadata ?? finding.metadata;
 }
 
-// Maps known threshold rules to a measured/threshold/unit triple so the hook exposes a stable,
-// machine-readable measurement contract.
+// Uses the finding's rule ID and metadata to return a stable hook measurement with its threshold, unit, and direction.
+// Returns undefined when the rule has no measurement mapping or either numeric value is unavailable.
 function thresholdMetadataFor(finding: Finding): Record<string, unknown> | undefined {
   const metadata = finding.metadata;
   switch (finding.ruleId) {
@@ -561,21 +568,20 @@ function thresholdMetadataFor(finding: Finding): Record<string, unknown> | undef
   return undefined;
 }
 
-// Builds the normalized measurement object, or undefined when the measured/threshold pair is not
-// numeric.
+// Returns metadata containing measured as the observed value, threshold as its comparison limit, and unit as their label.
+// The direction is above; returns undefined unless measured and threshold both have number type.
 function metricMetadata(measured: unknown, threshold: unknown, unit: string): Record<string, unknown> | undefined {
   return typeof measured === "number" && typeof threshold === "number"
     ? { measured, threshold, unit, direction: "above" }
     : undefined;
 }
 
-/*
- * Hashes (ruleId, filePath, scope component) into the port-local key the hook matches a base ref on.
+/**
+ * Build a stable key for matching findings against a base replay so edits above a finding do not make it look new.
+ * The published stableIdentity is computed separately.
  *
- * It is line-insensitive so an edit above a finding does not make it look new, and it is deliberately not the
- * published identity: `stableIdentity` carries the one ratified family identity and nothing else.
- *
- * Stable contract: the same finding always hashes to the same key, so a base replay and this run compare like for like.
+ * @param finding - occurrence whose rule, path, and scope component identify it for replay matching
+ * @returns the 16-character hexadecimal hook match key
  */
 function hookMatchKey(finding: Finding): string {
   const scope = scopeForFinding(finding);
@@ -585,36 +591,31 @@ function hookMatchKey(finding: Finding): string {
     .slice(0, 16);
 }
 
-// Derives the per-occurrence component of the match key: scope token, symbol, or message plus match column.
-// Stable contract: two occurrences of one rule in one file get different components, so accepting one never hides the other.
+// Returns a stable match-key component from finding according to scope, so that occurrences can be matched across edits.
+// File scope shares one component. Project scope uses a nonempty symbol when present and otherwise shares its scope token.
+// Symbol and line scopes use a nonempty symbol when present. Otherwise they use the message and add the match column when present.
 function matchKeyComponent(finding: Finding, scope: HookScope): string {
   if (scope === "file") {
     return scope;
   }
   if (scope === "project") {
-    // Project rules are value-insensitive on their measurement, but component-level findings still
-    // need a stable occurrence key. design.circular-import carries the canonical sorted SCC member
-    // list in `symbol`; folding it in keeps independent components distinct without line sensitivity.
+    // Project matching ignores measured values.
+    // The canonical member list in the design.circular-import symbol distinguishes cycles without relying on line numbers.
     return finding.symbol && finding.symbol.length > 0 ? `project:${finding.symbol}` : scope;
   }
   if (finding.symbol && finding.symbol.length > 0) {
     return `symbol:${finding.symbol}`;
   }
-  // Symbol-less line findings (e.g. each hardcoded secret) key on the message so several same-rule
-  // findings in one file get distinct keys. A value-insensitive `metric:${scope}` token collapsed
-  // them all, letting one accepted finding hide later new ones in the same file. file scope above
-  // stays fully value-insensitive; project scope folds in a canonical symbol when present.
+  // For occurrences without a symbol, differing messages distinguish matches of the same rule in a file.
   const messageComponent = `message:${finding.message}`;
-  // The redacted preview alone stopped separating occurrences once short secrets became fully
-  // masked: two 20-character keys on one line produce the same preview, so the same message. The
-  // match column separates them and names no line, so an edit above the finding still keeps the
-  // key stable. Scanners that report a whole line supply no column and keep the older key.
+  // Fully masked matches on one line can share a message, so the column distinguishes them without using the line number.
+  // Without a column, the message is the whole component.
   return finding.column === undefined ? messageComponent : `${messageComponent}\0column:${finding.column}`;
 }
 
-// Builds the base key counts a diff or since ref contributes to new-only filtering; undefined when neither
-// is requested, because an empty map and "no base at all" mean different things to the filter.
-// Stable contract: undefined means no base was replayed, so the filter admits everything rather than suppressing blindly.
+// Returns stable match-key counts from the diff base. The runner uses the input's scan settings on paths drawn from the current report.
+// Replay spawns Git, writes a temporary tree, and temporarily changes the process working directory.
+// An absent diff base returns undefined and skips diff-base filtering. An empty map still lets the hook reconsider whole-file findings.
 function hookDiffBaseIdentities(runAnalyse: HookAnalysisRunner, input: HookReportInput, currentReport: AnalysisReport): Map<string, number> | undefined {
   if (input.diffBase === undefined) {
     return undefined;
@@ -622,8 +623,16 @@ function hookDiffBaseIdentities(runAnalyse: HookAnalysisRunner, input: HookRepor
   return keysFromDiffBase(runAnalyse, input.currentOptions, input.diffBase, currentReport);
 }
 
-// Replays the diff base ref and counts its findings' port-local hook keys for new-only filtering.
-// Writes a temp tree, spawns git to materialize base files, and must clean both up afterward.
+/**
+ * Replays the diff base so new-only filtering can compare stable hook keys by occurrence count.
+ * Spawns Git and writes a temporary tree. Changes into it for analysis, then restores the working directory and removes the tree in finally.
+ *
+ * @param runAnalyse - runner that scans the materialized base files
+ * @param options - current scan settings from which to build the replay options
+ * @param diffBase - diff selector that identifies the revision or index to replay
+ * @param currentReport - current findings that identify which file paths to replay
+ * @returns counts by hook match key, empty if there is no replayable base, no eligible path or base file, or no base finding
+ */
 function keysFromDiffBase(
   runAnalyse: HookAnalysisRunner,
   options: AnalysisOptions,
@@ -658,10 +667,11 @@ function keysFromDiffBase(
   }
 }
 
-/*
- * A finding's base context is its anchor plus any project-relationship members from
- * `metadata.files`. Contract invariant: without every SCC member at the base ref, the replay
- * cannot reconstruct the cycle identity and a pre-existing cycle would be reported as new.
+/**
+ * Select replay paths so that the base scan can reconstruct the complete import cycle for stable matching.
+ *
+ * @param finding - current occurrence whose file and recorded member paths identify the replay inputs
+ * @returns the finding's file path plus string paths in metadata.files, or just its file path when no members qualify
  */
 function findingBasePaths(finding: Finding): string[] {
   const memberFiles = finding.metadata.files;
@@ -671,9 +681,8 @@ function findingBasePaths(finding: Finding): string[] {
   return [finding.filePath, ...memberFiles.filter((file): file is string => typeof file === "string")];
 }
 
-// Resolves a diff-base selector to the git rev whose blobs are the new-only base. "unstaged" diffs
-// the worktree against the index, so its base is the index ("" rev -> `git show :path`); "-" (stdin
-// patch) has no materializable base. Returns undefined only when no base can be replayed.
+// Returns the Git revision to replay for new-only filtering. The working-tree and staged selectors use HEAD, and explicit refs pass through.
+// Unstaged diffs use the index via an empty revision. A stdin patch has no replayable base, so its selector returns undefined.
 function diffBaseRef(diffBase: string): string | undefined {
   if (diffBase === "-") {
     return undefined;
@@ -702,8 +711,8 @@ function materializeBaseFiles(ref: string, files: string[], root: string): strin
   return materialized;
 }
 
-// Builds the analysis options for the base-ref scan: drops changed-region flags and resolves the
-// config path against the original root.
+// Returns base-scan options from options, using paths as scan targets and disabling baseline and changed-region selection.
+// Resolves config against originalRoot, or discovers its .gruff-ts.yaml when present unless options.shouldSkipConfig disables discovery.
 function baseAnalysisOptions(options: AnalysisOptions, paths: string[], originalRoot: string): AnalysisOptions {
   return {
     ...withoutChangedRegion(options),
@@ -712,22 +721,22 @@ function baseAnalysisOptions(options: AnalysisOptions, paths: string[], original
   };
 }
 
-// Falls back to the project's default .gruff-ts.yaml for the base scan when one exists and config is
-// not skipped.
+// Returns a config option for originalRoot/.gruff-ts.yaml when present unless options.shouldSkipConfig disables it.
+// Returns an empty object otherwise, leaving the base scan without this config override.
 function defaultConfigPathOption(originalRoot: string, options: AnalysisOptions): Partial<Pick<AnalysisOptions, "config">> {
   const defaultConfigPath = join(originalRoot, ".gruff-ts.yaml");
   return !options.shouldSkipConfig && existsSync(defaultConfigPath) ? { config: defaultConfigPath } : {};
 }
 
-// Strips every changed-region and baseline flag so the base-ref scan runs as a plain full scan,
-// deterministic regardless of the original changed-region request.
+// Returns a copy of options for a deterministic full base-ref scan, dropping changedRanges, diff, diffPatch and since.
+// Drops the baseline path and generation request and sets shouldSkipBaseline so that default baseline lookup is disabled too.
 function withoutChangedRegion(options: AnalysisOptions): AnalysisOptions {
   const { baseline: _baseline, changedRanges: _changedRanges, diff: _diff, diffPatch: _diffPatch, generateBaseline: _generateBaseline, since: _since, ...rest } = options;
   return { ...rest, shouldSkipBaseline: true };
 }
 
-// Orders findings by severity, then file, line, and rule id, giving the contract a deterministic,
-// stable finding order.
+// Returns a copy of the supplied hook findings in stable severity, file, line, and rule ID order.
+// A finding without a line sorts as line 0.
 function sortHookFindings(findings: HookFinding[]): HookFinding[] {
   return [...findings].sort(
     (left, right) =>

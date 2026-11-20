@@ -17,8 +17,8 @@ export class ConfigLoadError extends Error {
    */
   readonly isConfigLoadFailure: boolean;
 
-  // Stores the suggested fix alongside the message so the CLI formatter can render both without
-  // re-deriving the suggestion from the error text. Throws nothing; this is a plain data wrapper.
+  // Creates the CLI error from the display message and suggested next step.
+  // The failure flag defaults to true. Pass false for a flag-related refusal that should omit the config-error diagnostic.
   constructor(message: string, suggestion: string, isConfigLoadFailure = true) {
     super(message);
     this.name = "ConfigLoadError";

@@ -426,26 +426,29 @@ function parent(isReady: boolean): void {
 });
 
 /**
- * Parses one TypeScript fixture through the shared boundary used by a normal CLI scan.
- * @param source Fixture source; an empty string yields no callable blocks.
- * @returns Discovered blocks with syntax metrics, or an empty array when source has no callables.
+ * Parses one TypeScript fixture through the shared boundary used by a normal CLI scan and increments the shared parse counter.
+ *
+ * @param source - TypeScript fixture text to scan. An empty string yields no callable blocks.
+ * @returns Discovered blocks with syntax metrics, or an empty array when the source has no callables.
+ * @throws {AssertionError} - When the fixture does not produce a parsed script.
  */
 function parsedFixtureBlocks(source: string) {
   const parsed = parseScript({ displayPath: "complexity-fixture.ts", isScript: true }, source);
-  // A `.ts` fixture must produce the shared parse; undefined would bypass the behavior under test.
+  // Require a parsed script so the fixture exercises syntax-based discovery and metrics.
   assert.ok(parsed);
   return functionBlocks(source, maskNonCode(source), parsed);
 }
 
 /**
- * Selects the three headline values a report user compares across callable shapes.
- * @param blocks Parsed fixture blocks shown by the analyser.
- * @param blockName Reported symbol to select; an empty name cannot match a stable block.
- * @returns Cyclomatic, cognitive, and max nesting, or undefined when discovery/metrics are missing.
+ * Selects the complexity values that fixture assertions compare for a named callable.
+ *
+ * @param blocks - Discovered fixture blocks to search for the callable.
+ * @param blockName - Reported name of the callable whose metrics the assertion expects.
+ * @returns Cyclomatic complexity, cognitive complexity and maximum nesting, or undefined if the callable or its metrics are missing.
  */
 function metricTupleFor(blocks: ReturnType<typeof parsedFixtureBlocks>, blockName: string): [number, number, number] | undefined {
   const metrics = blocks.find((block) => block.name === blockName)?.complexityMetrics;
-  // An absent tuple tells the assertion that callable discovery or metric ownership failed.
+  // Without a matching block and metrics, the assertion has no tuple to compare.
   if (!metrics) {
     return undefined;
   }

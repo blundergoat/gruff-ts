@@ -61,8 +61,8 @@ type ListedRule = Omit<RuleDescriptor, "ruleId" | "severity" | "isEnabledByDefau
 };
 
 // Projects one internal descriptor into the listed record. Field order is deliberate: identity and
-// scoring first, the threshold map where the scalar used to sit, then every remaining descriptor
-// field unchanged, so a diff of the two shapes reads as the three renames it is.
+// scoring first, then defaultEnabled, an optional named threshold map, and the remaining descriptor fields.
+// An absent threshold leaves thresholds absent; absent isEnabledByDefault becomes true.
 function listedRule(descriptor: RuleDescriptor): ListedRule {
   const { ruleId, pillar, severity, confidence, isEnabledByDefault, threshold, ...rest } = descriptor;
   const knob = LISTING_THRESHOLD_KNOB_NAMES[ruleId] ?? "threshold";
@@ -113,23 +113,22 @@ function profileListRow(summary: ProfileSummary): string {
   return `${summary.name} | ${summary.enabledRuleCount}/${summary.totalRuleCount} rules | ${summary.enabledPillars.length} pillars${tightened} | ${summary.description}`;
 }
 
-/*
- * Returns a single rule descriptor by ID, or undefined when the ID is not registered. Surfaced so
- * the explain-mode renderer can dispatch on "is this a real rule?" without iterating the full
- * catalogue at each render site. Stable contract: lookup keys match the public rule ID strings
- * exactly; partial / case-insensitive matches are intentionally out of scope.
+/**
+ * Look up a registered rule by its exact, case-sensitive public ID for explain-mode rendering.
+ *
+ * @param ruleId - complete public rule ID to match
+ * @returns matching descriptor, or undefined when the ID is not registered
  */
 function getRuleDescriptor(ruleId: string): RuleDescriptor | undefined {
   return ruleDescriptors().find((descriptor) => descriptor.ruleId === ruleId);
 }
 
-/*
- * Single-rule detail renderer. Text format prints a labelled section with every populated field;
- * JSON format wraps the same listed record the catalogue publishes in a tool envelope, so one rule
- * reads the same shape on both surfaces. Surfaces config keys
- * (`rules.<ruleId>.{enabled,severity,threshold}`) and the option/allowlist hatches because
- * operators looking up one rule shouldn't have to grep `src/config.ts` to find the override knobs
- * they're about to tune.
+/**
+ * Show supported overrides because operators looking up a rule should be able to find its keys without opening src/config.ts.
+ *
+ * @param descriptor - Catalogue entry supplying the rule details and supported configuration and allowlist keys.
+ * @param format - Selects the labelled text card or the catalogue record with config keys and tool metadata in JSON.
+ * @returns The selected single-rule detail with a trailing newline. The threshold override appears only for a numeric threshold.
  */
 function renderRuleDetail(descriptor: RuleDescriptor, format: RuleListFormat): string {
   if (format === "json") {
@@ -158,9 +157,8 @@ function renderRuleDetail(descriptor: RuleDescriptor, format: RuleListFormat): s
   return `${lines.join("\n")}\n`;
 }
 
-// Three baseline config-key entries shared by every rule: the enable toggle, the severity override,
-// and (when present) the threshold override. Optional knobs (options / allowlists) get their own
-// blocks in `renderRuleDetail` to keep this list focused on the always-applicable keys.
+// Return text lines for the rule's enable and severity keys, plus a threshold key when descriptor.threshold is numeric.
+// descriptor supplies the rule id and default threshold; options and allowlists are rendered separately by renderRuleDetail.
 function ruleConfigKeyLines(descriptor: RuleDescriptor): string[] {
   return [
     "Config keys:",
@@ -170,9 +168,9 @@ function ruleConfigKeyLines(descriptor: RuleDescriptor): string[] {
   ];
 }
 
-// JSON representation of the same config-key list. Returned as a structured array so JSON consumers
-// don't have to re-derive the shape from the text layout. Each entry carries the key path, the
-// value's type vocabulary, and a default when one is known.
+// Return structured config-key entries for JSON consumers using descriptor's rule id, enabled state, severity, and threshold.
+// An omitted enablement flag defaults to true. A threshold entry appears only for a numeric threshold.
+// Each entry names its type and any applicable default or enum values.
 function ruleConfigKeys(descriptor: RuleDescriptor): Array<{ key: string; type: string; values?: readonly string[]; default?: number | boolean | string }> {
   return [
     { key: `rules.${descriptor.ruleId}.enabled`, type: "bool", default: descriptor.isEnabledByDefault !== false },
@@ -181,8 +179,9 @@ function ruleConfigKeys(descriptor: RuleDescriptor): Array<{ key: string; type: 
   ];
 }
 
-// The Symfony-style command catalogue shown for `gruff-ts`, `gruff-ts list`, and `gruff-ts help`.
-// `shouldUseAnsi` is autodetected by the caller from TTY and `--ansi` flags, never from this layer.
+// Returns the command catalogue shown for gruff-ts, gruff-ts list, and gruff-ts help.
+// shouldUseAnsi controls colored labels and headings; it defaults to false for plain text.
+// CLI callers supply their ANSI policy rather than detecting terminal capabilities in this renderer.
 function renderConsoleList(shouldUseAnsi = false): string {
   const listCommand = ansiWrap("list", ANSI_GREEN, shouldUseAnsi);
   return [
@@ -205,8 +204,8 @@ function renderConsoleList(shouldUseAnsi = false): string {
   ].join("\n") + "\n";
 }
 
-// Two-column row: label padded to `width`, then description. Width is fixed per section so the
-// catalogue lines up regardless of label length - matches Symfony console output conventions.
+// Returns an indented row with label padded toward width, followed by description and at least one separating space.
+// shouldUseAnsi adds green coloring to the label; padding is based on its uncolored length.
 function formatConsoleRow(label: string, description: string, width: number, shouldUseAnsi: boolean): string {
   const paddedLabel = ansiWrap(label, ANSI_GREEN, shouldUseAnsi);
   const padding = " ".repeat(Math.max(1, width - label.length));
@@ -214,8 +213,8 @@ function formatConsoleRow(label: string, description: string, width: number, sho
   return `  ${paddedLabel}${padding}${rowDescription}`;
 }
 
-// `shouldUseAnsi` is the only gate. We never sniff `process.stdout.isTTY` here because the caller may be
-// rendering to a file or capture buffer where ANSI codes would be garbage.
+// Returns text wrapped in color and a foreground reset when shouldUseAnsi is true; otherwise returns text unchanged.
+// The caller supplies the ANSI color prefix and decides whether its output destination supports ANSI escapes.
 function ansiWrap(text: string, color: string, shouldUseAnsi: boolean): string {
   if (!shouldUseAnsi) {
     return text;
@@ -224,8 +223,7 @@ function ansiWrap(text: string, color: string, shouldUseAnsi: boolean): string {
   return `${ansiColor}${text}${ANSI_RESET_FG}`;
 }
 
-// Dispatches by shell with bash as the default - chosen because bash completion is most likely to
-// be installed and least likely to break silently if the user pipes the output through `source`.
+// Returns a completion script for shell: fish and zsh use their own renderers, and all other values select Bash.
 function renderCompletionScript(shell: CompletionShell): string {
   const context = completionContext();
   if (shell === "fish") {
@@ -237,8 +235,8 @@ function renderCompletionScript(shell: CompletionShell): string {
   return renderBashCompletion(context);
 }
 
-// Filters out `help` from the completion list - Commander handles it implicitly and exposing it
-// would suggest `gruff-ts help` is a real subcommand on equal footing with `analyse`.
+// Returns space-separated command names and global options for shell completion renderers.
+// Help is excluded because Commander handles it implicitly; offering it here would put it alongside analyse.
 function completionContext(): CompletionContext {
   return {
     commands: CONSOLE_COMMANDS.filter((command) => command.name !== "help").map((command) => command.name).join(" "),
@@ -246,8 +244,8 @@ function completionContext(): CompletionContext {
   };
 }
 
-// Fish's `complete` builtin is invoked once per token. Trailing newline matters - fish ignores
-// the final entry without one.
+// Returns a newline-terminated Fish completion script from the space-separated commands and options in context.
+// File completion is disabled so candidates come from the supplied command and option lists.
 function renderFishCompletion(context: CompletionContext): string {
   return [
     "complete -c gruff-ts -f",
@@ -257,8 +255,9 @@ function renderFishCompletion(context: CompletionContext): string {
   ].join("\n");
 }
 
-// `#compdef gruff-ts` must be on line 1 - zsh's autoloader rejects the file otherwise. Uses
-// `_arguments` rather than `_describe` so option completion still works after a subcommand.
+// Returns a Zsh completion script using the space-separated command and option candidates in context.
+// The first-line #compdef tag lets completion discovery recognize the file.
+// Uses _arguments to route command and subsequent option completion to separate states.
 function renderZshCompletion(context: CompletionContext): string {
   return [
     "#compdef gruff-ts",
@@ -276,8 +275,8 @@ function renderZshCompletion(context: CompletionContext): string {
   ].join("\n");
 }
 
-// Bash completion: a function registered via `complete -F`. The `--format` / `--fail-on` value
-// lists are duplicated from `cli-program.ts` because completion runs without loading the analyser.
+// Returns a Bash completion script registered with complete -F; commands and options supply space-separated candidates.
+// The format and fail-on value lists let the emitted script offer those values without loading the analyser.
 function renderBashCompletion({ commands, options }: CompletionContext): string {
   const commandsLine = `  commands=\"${commands}\"`;
   const optionsLine = `  options=\"${options}\"`;
@@ -304,7 +303,7 @@ function renderBashCompletion({ commands, options }: CompletionContext): string 
   ].join("\n");
 }
 
-// Bash is the fallback for any unknown shell name - see `renderCompletionScript` for why bash wins.
+// Returns fish or zsh when shellName matches exactly; every other value selects the bash completion renderer.
 function completionShell(shellName: unknown): CompletionShell {
   return shellName === "fish" || shellName === "zsh" ? shellName : "bash";
 }

@@ -39,16 +39,18 @@ type TestCallback = ArrowFunction | FunctionExpression;
 /**
  * Appends one finding for every qualifying group, retaining every member in source order.
  * Contract: the first member owns the native identity and every member remains visible.
+ *
  * @param file - discovered file identity for native findings
  * @param parsed - shared syntax tree; malformed files provide no reliable groups
  * @param findings - destination for complete native findings
+ * @returns no value. Appends in place and leaves findings unchanged when parsing reports diagnostics or no group qualifies.
  */
 export function analyseDuplicateTestGroups(file: SourceFile, parsed: ParsedScript, findings: Finding[]): void {
   if (parsed.diagnostics.length > 0) {
     return;
   }
   const groups = new Map<string, TestMember[]>();
-  // Visits each syntax node once; node supplies possible registrations without another parse.
+  // Walks node and its descendants without another parse and adds qualifying tests to the shared groups map. Returns no value.
   const visit = (node: Node): void => {
     if (syntax.isCallExpression(node)) {
       collectTestMember(node, parsed.sourceFile, groups);
@@ -80,9 +82,12 @@ export function analyseDuplicateTestGroups(file: SourceFile, parsed: ParsedScrip
 
 /**
  * Adds a supported registration to its exact container, attributes and normalized-body group.
+ * Group boundaries must preserve differences in scope and runner options before cases can be compared.
+ *
  * @param call - possible test registration
- * @param sourceFile - shared tree used for decoded titles and positions
- * @param groups - ordered group membership collected during the traversal
+ * @param sourceFile - shared tree used for source locations and enclosing declaration names
+ * @param groups - shared membership map updated in traversal order
+ * @returns no value. Adds a member in place only when the registration, callback and container qualify.
  */
 function collectTestMember(call: CallExpression, sourceFile: SyntaxFile, groups: Map<string, TestMember[]>): void {
   const target = callTarget(call.expression);
@@ -123,8 +128,9 @@ function collectTestMember(call: CallExpression, sourceFile: SyntaxFile, groups:
 /**
  * Recognizes literal test/suite roots and preserves the order and arguments of modifiers.
  * The walk must retain both property and call steps because either can change a runner modifier.
+ *
  * @param expression - callee, including modifier calls such as skipIf(condition)
- * @returns supported root and modifiers, or undefined for a custom registration form
+ * @returns root, ordered modifier identities and a table flag, or undefined for unsupported callee forms
  */
 function callTarget(expression: Expression): CallTarget | undefined {
   if (syntax.isIdentifier(expression)) {
@@ -155,9 +161,10 @@ function callTarget(expression: Expression): CallTarget | undefined {
 /**
  * Separates lexical declarations and rejects registrations already inside table iteration.
  * Declaration positions must stay distinct because same-named sibling suites are separate containers.
+ *
  * @param call - test registration whose ancestor declarations define its container
  * @param sourceFile - shared source for enclosing declaration names
- * @returns declaration positions and readable names, or undefined for a table form
+ * @returns positions and names, with line labels for unnamed declarations, empty arrays at file scope, or undefined in loops or table/iterator calls
  */
 function enclosingContainer(call: CallExpression, sourceFile: SyntaxFile): { positions: number[]; names: string[] } | undefined {
   const positions: number[] = [];
@@ -184,26 +191,28 @@ function enclosingContainer(call: CallExpression, sourceFile: SyntaxFile): { pos
 }
 
 /**
- * Checks the two callback forms that supported runners register directly.
+ * Recognizes inline callback functions so the duplicate-test rule can inspect them without resolving references.
+ *
  * @param node - candidate callback argument or enclosing declaration
- * @returns whether the node has a function or arrow callback body
+ * @returns whether the node is an arrow function or function expression, regardless of its body form
  */
 function isTestCallback(node: Node): node is TestCallback {
   return syntax.isArrowFunction(node) || syntax.isFunctionExpression(node);
 }
 
 /**
- * Compares syntax, retaining keys, indices and decoded whitespace-bearing text exactly.
+ * Builds a comparison key for test bodies, retaining keys, indices and decoded text containing ASCII whitespace.
  * The token walk must retain operators, declaration keywords and empty for-loop clauses that
  * forEachChild omits, while allowing optional statement semicolons and trailing commas.
+ *
  * @param node - syntax subtree to compare
  * @param normalize - whether eligible literal values may become same-kind placeholders
  * @param exact - whether the subtree sits inside a declaration or decorator that keeps its documentation
  * @returns deterministic syntax identity, with no local-name renaming
  */
 function syntaxIdentity(node: Node, normalize: boolean, exact = false): unknown {
-  // Section 16 compares a declaration in the body exactly, because a case table cannot carry it, and keeps
-  // decorator arguments; a const binding is a named value and normalizes like any other statement.
+  // Preserve literals and documentation in exact subtrees because a shared case body could otherwise hide declaration or decorator differences.
+  // Outside those subtrees, const initializers can use the same literal normalization as other statements.
   const inExact = exact || isExactDeclaration(node);
   const literal = literalIdentity(node, normalize && !inExact);
   if (literal !== undefined) {
@@ -223,7 +232,8 @@ function syntaxIdentity(node: Node, normalize: boolean, exact = false): unknown 
 }
 
 /**
- * Recognizes the declarations section 16 compares exactly, and decorators wherever they appear.
+ * Identifies function, class, interface, type, enum and module declarations, plus decorators, for exact comparison.
+ *
  * @param node - syntax node inside a compared test body
  * @returns whether its literals and documentation must stay exact
  */
@@ -234,9 +244,10 @@ function isExactDeclaration(node: Node): boolean {
 }
 
 /**
- * Reads the JSDoc blocks before a node inside an exact declaration; the parser leaves them unattached in function bodies.
+ * Reads raw JSDoc for a node in an exact subtree so documentation differences can keep test bodies apart.
+ *
  * @param node - declaration or one of its descendants
- * @returns the raw documentation comments, in source order
+ * @returns the raw documentation comments in source order, or an empty array when the node has no JSDoc to compare
  */
 function leadingDocumentation(node: Node): string[] {
   const text = node.getSourceFile().text;
@@ -247,8 +258,10 @@ function leadingDocumentation(node: Node): string[] {
 }
 
 /**
- * Keeps grammar separators that distinguish roles, without treating optional punctuation as a difference.
+ * Ignores statement semicolons, empty statements in blocks and trailing commas when comparing syntax.
  * For-loop semicolons must remain because they identify initializer, condition and increment clauses.
+ * Skips parsed JSDoc because syntaxIdentity handles raw documentation for exact subtrees.
+ *
  * @param owner - syntax node whose immediate children are compared
  * @param child - candidate token or nested syntax node
  * @param index - child's position in the owner's token sequence
@@ -269,10 +282,11 @@ function isComparisonChild(owner: Node, child: Node, index: number, count: numbe
 }
 
 /**
- * Gives literal leaves their language kind and keeps decoded whitespace text exact.
- * Normalization cannot erase meaningful strings or cross literal kinds, so each leaf keeps its kind.
+ * Builds comparison identities for leaf nodes, preserving JSX text and decoded string or template text containing ASCII whitespace.
+ * Quoted strings and templates without substitutions share a text kind; true and false share a boolean kind.
+ *
  * @param node - possible literal or identifier leaf
- * @param normalize - false within any key, index or option argument
+ * @param normalize - whether eligible values become placeholders; callers disable this for keys, indices, options and exact declarations
  * @returns leaf identity, or undefined when child structure must be compared
  */
 function literalIdentity(node: Node, normalize: boolean): unknown {

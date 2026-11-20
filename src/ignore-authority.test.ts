@@ -127,6 +127,7 @@ test("check-ignore keeps explicit files under fallback parents but reports the d
 /*
  * Reads back the directories the starter config tells a new user a recursive scan already skips.
  * Invariant: the names come from the rendered seed, so rewording the seed cannot bypass the check.
+ * Throws an assertion error if the rendered seed omits the directory-example marker.
  */
 function seedDefaultIgnoredDirectories(): string[] {
   const seedLine = renderDefaultConfig().split("\n").find((line) => line.includes("# such as "));

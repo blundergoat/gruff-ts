@@ -113,16 +113,17 @@ export interface BlockFindingWithMetadataArgs extends BlockFindingArgs {
   remediation?: string;
 }
 
-// Build a high-confidence warning at the callable's line and symbol, preserving its stable finding anchor.
-// Use the metadata variant when the rule needs measurements or medium confidence.
+// Returns a high-confidence finding from the rule details and severity in args, using its file and block for the stable source anchor.
+// Omits remediation when the rule has no advice. Use the metadata variant when the rule needs measurements or medium confidence.
 export function blockFinding(args: BlockFindingArgs): Finding {
   const endLine = args.block.startLine + args.block.lineCount - 1;
   const remediation = TEST_QUALITY_ADVICE.get(args.ruleId);
   return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.block.startLine, endLine, severity: args.severity, pillar: args.pillar, confidence: "high", symbol: args.block.name, ...(remediation === undefined ? {} : { remediation }) });
 }
 
-// Build a medium-confidence warning with measurements at the callable's stable source anchor.
-// Measurements accompany the callable's line and symbol without changing its fingerprint.
+// Returns a medium-confidence finding from the rule details and severity in args, using its file and block for the stable source anchor.
+// Attaches args.metadata without changing the fingerprint. Uses explicit remediation and falls back to rule advice when it is absent.
+// The finding omits remediation when the override is empty or neither source supplies advice.
 export function blockFindingWithMetadata(args: BlockFindingWithMetadataArgs): Finding {
   const remediation = args.remediation ?? TEST_QUALITY_ADVICE.get(args.ruleId);
   return makeFinding({
@@ -140,8 +141,8 @@ export function blockFindingWithMetadata(args: BlockFindingWithMetadataArgs): Fi
   });
 }
 
-// Threads one parsed complexity result and body through each block rule.
-// Legacy span-only callers receive base complexity because no extra parse is allowed; this preserves the report invariant.
+// Returns the rule context for a callable, using file for source anchors, block for the span and metrics, and config for rule limits.
+// Shares findings as the output collector and uses base complexity for legacy spans to preserve the report invariant without another parse.
 export function blockRuleContext(file: SourceFile, block: FunctionBlock, config: Config, findings: Finding[]): BlockRuleContext {
   // A regex-only caller has no shared syntax node, so it receives the neutral base measurement.
   const sharedComplexityMetrics = block.complexityMetrics ?? baseComplexityMetrics();
@@ -155,26 +156,29 @@ export function blockRuleContext(file: SourceFile, block: FunctionBlock, config:
   };
 }
 
-// Run block rules in the fixed order expected by scan consumers and stable finding identities.
+// Returns nothing. Appends findings to context.findings using the callable, settings and measurements supplied in context.
+// Run size and complexity checks first, then missing-documentation and useless-return checks.
 export function analyseBlockRules(context: BlockRuleContext): void {
   analyseBlockMeasures(context);
   pushMissingFunctionDocFinding(context);
   pushUselessReturnFindings(context);
 }
 
-// Run the size and complexity rules alone, in the order `analyseBlockRules` runs them. Callables that only these rules
-// measure use this entry, so the documentation and useless-return rules never see them (FAMILY-CONTRACT.md section 12, search
-// `four more function forms`).
+// Runs size and complexity rules in the stable order used by analyseBlockRules for callables measured only by those rules.
+// Returns nothing. Uses the block measurements and rule config in context to append any findings to context.findings.
+// See FAMILY-CONTRACT.md section 12 under four more function forms for why documentation and useless-return checks are skipped.
 export function analyseBlockMeasures(context: BlockRuleContext): void {
   pushFunctionLengthFinding(context);
   pushParameterCountFinding(context);
   pushCyclomaticFinding(context);
 }
 
-// Reports a size finding when the scanned function exceeds the configured line limit, which defaults to 200.
+// Append a size finding to context.findings when its callable's codeLineCount exceeds the configured limit, which defaults to 200.
+// context supplies the source location and rule settings.
+// Returns nothing.
 function pushFunctionLengthFinding(context: BlockRuleContext): void {
   const functionLengthThreshold = threshold(context.config, "size.function-length", 200);
-  // Show a size warning only when this function exceeds the user's configured line limit.
+  // Lower-band overruns are advisory. The upper band uses the configured severity.
   if (context.block.codeLineCount > functionLengthThreshold) {
     const band = bandedFields(context.block.codeLineCount, functionLengthThreshold, ruleSeverity(context.config, "size.function-length", "warning"), LOWER_BAND_FUNCTION, SPLIT_FUNCTION);
     context.findings.push(blockFindingWithMetadata({
@@ -190,12 +194,13 @@ function pushFunctionLengthFinding(context: BlockRuleContext): void {
   }
 }
 
-// Warn when declared inputs exceed the configured limit, using parsed counts when available.
-// Legacy text spans use the comma-based fallback; the default limit is seven.
+// Append a parameter-count finding to context.findings when its callable exceeds the configured limit, which defaults to seven.
+// Use context's parsed parameterCount when present; otherwise count nonempty comma-separated entries in its parameter text.
+// Returns nothing.
 function pushParameterCountFinding(context: BlockRuleContext): void {
   const params = context.block.parameterCount ?? context.block.params.split(",").map((value) => value.trim()).filter(Boolean).length;
   const parameterCountThreshold = threshold(context.config, "size.parameter-count", 7);
-  // Show a parameter-count warning when the declared inputs exceed the configured limit.
+  // The lower band is advisory. The upper band uses the configured severity for the larger overrun.
   if (params > parameterCountThreshold) {
     const band = bandedFields(params, parameterCountThreshold, ruleSeverity(context.config, "size.parameter-count", "warning"), LOWER_BAND_PARAMETER, GROUP_PARAMETERS);
     context.findings.push(blockFindingWithMetadata({
@@ -211,11 +216,12 @@ function pushParameterCountFinding(context: BlockRuleContext): void {
   }
 }
 
-// Default threshold 15.
-// Reports the shared syntax-node decision count to CLI and JSON users.
+// Append a cyclomatic finding to context.findings when context's shared count exceeds its configured limit, which defaults to 15.
+// Use context's file, callable and complexity breakdown to anchor and explain the finding.
+// Returns nothing.
 function pushCyclomaticFinding(context: BlockRuleContext): void {
   const cyclomaticThreshold = threshold(context.config, "complexity.cyclomatic", 15);
-  // Show the shared decision count when it exceeds the user's complexity limit.
+  // The lower band is advisory. The upper band uses the configured severity for the larger overrun.
   if (context.cyclomatic > cyclomaticThreshold) {
     const band = bandedFields(context.cyclomatic, cyclomaticThreshold, ruleSeverity(context.config, "complexity.cyclomatic", "warning"), LOWER_BAND_FUNCTION, SIMPLIFY_PATH);
     context.findings.push(blockFindingWithMetadata({
@@ -231,10 +237,10 @@ function pushCyclomaticFinding(context: BlockRuleContext): void {
   }
 }
 
-// Reports warnings for missing public descriptions and advice for missing internal descriptions.
-// Test titles and existing leading comments already explain the callable.
+// Append a missing-documentation finding to context.findings unless its block is a test or has a recognized leading comment.
+// context supplies location and settings. Exported APIs receive warnings and internal callables receive advisory findings.
+// Returns nothing.
 function pushMissingFunctionDocFinding(context: BlockRuleContext): void {
-  // A test title or an existing leading description already explains this callable, so no missing-doc warning is needed.
   if (context.block.isTest || context.block.hasLeadingComment) {
     return;
   }
@@ -244,11 +250,9 @@ function pushMissingFunctionDocFinding(context: BlockRuleContext): void {
   context.findings.push(blockFinding({ ruleId, message: missingFunctionDocMessage(context.block, isExportedApi ? "Exported" : "Internal"), file: context.file, block: context.block, severity, pillar: "documentation" }));
 }
 
-// Builds the missing-doc message from the signature (M13-T29, operator decision D3). It names each
-// parameter, asks for the return value only when the callable returns one, and asks when it fails
-// only when its body throws, the same test docs.missing-error-behavior-doc uses. A `this` parameter is a
-// type annotation, not an argument, and destructured parameters have no name, so neither is named.
-// With nothing to ask, the message is the plain one.
+// Returns a missing-doc message for the block, prefixed by audience. If no prompts apply, the message has no suffix.
+// Requests descriptions for named parameters other than this and for a return value when the parsed callable returns one.
+// A throw token in the masked body triggers the failure prompt under the docs.missing-error-behavior-doc criterion.
 function missingFunctionDocMessage(block: FunctionBlock, audience: "Exported" | "Internal"): string {
   const asks: string[] = [];
   const names = parameterNames(block.params).map((parameter) => parameter.name).filter((name) => name !== "this");
@@ -265,23 +269,24 @@ function missingFunctionDocMessage(block: FunctionBlock, audience: "Exported" | 
   return `${audience} function \`${block.name}\` is missing a leading maintainer comment${suffix}.`;
 }
 
-// Under either tag rule's `everyCallable` switch, a public method of an exported class is exported
-// API and reports at the exported severity (operator decision D8).
+// Return whether context enables either everyCallable tag option and its parsed callable is a public method of a directly exported class.
+// An absent callableNode returns false; the caller uses a true result to select exported-documentation severity.
 function isEveryCallablePublicMethod(context: BlockRuleContext): boolean {
   return isTagRuleEveryCallable(context.config) && context.block.callableNode !== undefined && isPublicExportedClassMethod(context.block.callableNode);
 }
 
-// Whether either tag rule's `everyCallable` switch is on. Both are on by default; setting both false
+// Whether either tag rule's everyCallable switch is on. Both are on by default; setting both false
 // keeps a public method of an exported class in the internal tier.
 function isTagRuleEveryCallable(config: Config): boolean {
   return optionBoolean(config, "docs.missing-param-tag", "everyCallable", true)
     || optionBoolean(config, "docs.missing-return-tag", "everyCallable", true);
 }
 
-// Caller adds the block's start line to the relative offset so the finding anchors at the actual trailing statement.
-// Reports `waste.useless-return` when the final statement is a redundant bare exit.
+// Append useless-return advisories to context.findings for terminal bare returns found in context.block.codeBody.
+// Add context.block.startLine to each zero-based offset so the finding points to the return in context.file.
+// Returns nothing.
 function pushUselessReturnFindings(context: BlockRuleContext): void {
-  // Each unnecessary terminal bare return gets a source location the developer can remove.
+  // The line scan skips a return it recognizes as the catch's only handling, so the advice cannot leave that catch empty.
   for (const lineOffset of terminalBareReturnLines(context.block.codeBody)) {
     context.findings.push(
       makeFinding({
@@ -326,15 +331,14 @@ function functionBlockBrace(source: string): number {
   return -1;
 }
 
-// Locate an unnecessary final bare return for the useless-return advisory.
-// An empty list means the last meaningful line is not a bare return.
+// Return the zero-based line index of a terminal bare return in masked source as a one-element array for useless-return findings.
+// Return an empty array when there is no candidate or the line scan recognizes it as the catch block's only statement.
 function terminalBareReturnLines(source: string): number[] {
   const lines = source.split(/\r?\n/);
   let current = lines.length - 1;
-  // Walk backward over the function's closing lines to locate unnecessary returns.
   while (current >= 0) {
     const trimmed = lines[current]?.trim() ?? "";
-    // Closing braces and blank lines contain no return statement to report.
+    // Closing braces and blank lines can follow the last statement without making it nonterminal.
     if (trimmed === "" || trimmed === "}") {
       current -= 1;
       continue;
@@ -344,8 +348,8 @@ function terminalBareReturnLines(source: string): number[] {
   return [];
 }
 
-// A bare `return;` that is a catch block's only statement is that catch's handling: removing it would leave an empty catch
-// that `waste.swallowed-catch` reports. Comments are already masked to blank lines, so the previous non-blank line is code.
+// Keeps waste.useless-return from suggesting a removal that would leave the catch empty and eligible for waste.swallowed-catch.
+// Returns true if the first nonblank line before returnIndex in the comment-masked lines opens a catch. Otherwise returns false.
 function isOnlyStatementOfCatch(lines: string[], returnIndex: number): boolean {
   for (let current = returnIndex - 1; current >= 0; current -= 1) {
     const trimmed = lines[current]?.trim() ?? "";
@@ -356,28 +360,31 @@ function isOnlyStatementOfCatch(lines: string[], returnIndex: number): boolean {
   return false;
 }
 
-// Matches test/it openers, including a discarded registration result.
-// Used by the block parser to pick the right pattern and by setup detection to skip the test wrapper line itself.
+// Return whether line opens a test or it registration, allowing a discarded registration result.
+// The block parser uses the result to select the test pattern and mark test blocks.
 function isTestInvocationLine(line: string): boolean {
   return /^\s*(?:void\s+)?(?:test|it)\s*\(/.test(line);
 }
 
-// Builds report blocks from the shared syntax tree while preserving anchors and fingerprints.
-// Span-only utilities without a parse retain the legacy regex walk.
+// Return report blocks cut from source; codeSource supplies matching text and codeBody fields and defaults to source.
+// Reuse parsed for syntax-based discovery and metrics; without it, use legacy regex discovery and omit syntax metrics.
+// Return an empty array when no supported callable is found.
 export function functionBlocks(source: string, codeSource = source, parsed?: ParsedScript): FunctionBlock[] {
   const scan = functionBlockScan(source, codeSource, parsed);
   const matchPoints = matchPointsFor(scan, parsed);
   const ownedCallableNodes = ownedCallables(matchPoints, parsed);
-  // Each stable block receives one metric result based on the final one-block-per-line ownership set.
+  // Share ownership so enclosing block metrics skip nested callables that have their own blocks.
   return matchPoints.map((point) => functionBlockFromPoint(scan, point, ownedCallableNodes));
 }
 
 /**
- * Builds blocks for the callable forms only the size and complexity rules measure: object-literal `key: function`
- * methods, functions assigned to a member, `var` function expressions and immediately invoked functions.
- * @param source Raw script text the blocks slice their bodies from.
- * @param codeSource The same text with comments and literals masked.
- * @param parsed Shared parse of the script; these forms are found only on the syntax tree.
+ * Builds blocks for size and complexity checks on function expressions and arrows.
+ * Covers noncomputed object properties such as key: function, member assignments, var bindings and immediate invocation.
+ * Baseline matching also uses their declaration spans so that same-named callables can be ranked separately.
+ *
+ * @param source - Raw script text used to slice each callable body.
+ * @param codeSource - Masked script text used to slice the corresponding code body.
+ * @param parsed - Shared syntax tree used to locate the covered callable forms.
  * @returns One block per occurrence of these forms, in source order; empty when the script uses none of them.
  */
 export function measuredOnlyFunctionBlocks(source: string, codeSource: string, parsed: ParsedScript): FunctionBlock[] {
@@ -386,7 +393,9 @@ export function measuredOnlyFunctionBlocks(source: string, codeSource: string, p
   return measuredOnlyCallablePoints(parsed).map((point) => functionBlockFromPoint(scan, blockMatchPoint(point), ownedCallableNodes));
 }
 
-// Reads the lines, code-line flags and re-exported names one script's block builders share.
+// Return the line arrays, code-line flags, patterns and local export names used by block builders.
+// source supplies raw text; codeSource supplies matching text; parsed enables decorator exclusion in the code-line flags.
+// Without parsed, comments and blank lines are excluded from code-line flags, but decorator lines remain countable.
 function functionBlockScan(source: string, codeSource: string, parsed: ParsedScript | undefined): FunctionBlockScan {
   return {
     lines: source.split(/\r?\n/),
@@ -397,8 +406,9 @@ function functionBlockScan(source: string, codeSource: string, parsed: ParsedScr
   };
 }
 
-// Every AST-backed block owns one callable body, and so does every measure-only callable, so a nested callable's
-// decisions count in its own measure and never again in the function around it. Regex-only span probes have no node.
+// Return the callable nodes owned by matchPoints plus the measure-only nodes discovered in parsed.
+// Without parsed, only nodes already present in matchPoints are included; points without callableNode contribute nothing.
+// Complexity measurement uses this set to keep nested decisions out of their enclosing callable's count.
 function ownedCallables(matchPoints: BlockMatchPoint[], parsed: ParsedScript | undefined): Set<import("typescript").Node> {
   const ownedCallableNodes = new Set<import("typescript").Node>();
   for (const point of matchPoints) {
@@ -437,9 +447,9 @@ interface BlockMatchPoint {
   callableNode?: import("typescript").Node;
 }
 
-// Chooses the discovery mode: AST points from the shared parse, or the legacy regex line walk.
+// Return callable match points. The normal scan must reuse the supplied parse so that discovery shares one syntax tree.
+// Otherwise derive points from scan's raw and masked lines and ordered patterns without creating a parse.
 function matchPointsFor(scan: FunctionBlockScan, parsed: ParsedScript | undefined): BlockMatchPoint[] {
-  // A normal script scan already owns one ParsedScript and must reuse its callable points here.
   if (parsed) {
     return callableMatchPoints(parsed).map(blockMatchPoint);
   }
@@ -447,7 +457,7 @@ function matchPointsFor(scan: FunctionBlockScan, parsed: ParsedScript | undefine
   // Span-only utilities still use the legacy masked-line inventory without triggering a parse.
   scan.codeLines.forEach((line, index) => {
     const match = functionBlockMatch(scan, line, index);
-    // Only lines that contain a supported callable shape become legacy block points.
+    // A legacy hit carries text coordinates, so block construction estimates its end from the source.
     if (match) {
       points.push({ lineIndex: index, name: match[1] ?? "", params: match[2] ?? "" });
     }
@@ -455,7 +465,7 @@ function matchPointsFor(scan: FunctionBlockScan, parsed: ParsedScript | undefine
   return points;
 }
 
-// Carries one parsed callable point into the block builder's shape.
+// Returns the block builder input for a parsed callable selected for measurement, preserving its declaration metadata and syntax node.
 function blockMatchPoint(point: CallableMatchPoint): BlockMatchPoint {
   return {
     lineIndex: point.lineIndex,
@@ -473,16 +483,13 @@ function blockMatchPoint(point: CallableMatchPoint): BlockMatchPoint {
   };
 }
 
-// Identify local declarations exposed by export lists or bare default exports for the public-doc rule.
-// Export-from clauses name another module's API and cannot promote a same-named local declaration.
+// Return local names recognized in codeSource's export lists or bare default exports for public-documentation checks.
+// Export-from clauses refer to another module and do not add names to this local set.
 function collectReExportedNames(codeSource: string): ReadonlySet<string> {
   const names = new Set<string>();
-  // Inspect local export lists so public declarations receive the public-documentation rule.
   for (const match of codeSource.matchAll(/export\s*\{([^}]+)\}(?!\s*from\b)/g)) {
-    // Each listed local name may promote its declaration to the public API surface.
     for (const entry of (match[1] ?? "").split(",")) {
       const local = entry.trim().split(/\s+as\s+/)[0]?.trim();
-      // Only a present identifier can give a local declaration public-API status.
       if (local && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(local)) {
         names.add(local);
       }
@@ -490,7 +497,6 @@ function collectReExportedNames(codeSource: string): ReadonlySet<string> {
   }
   // A bare default export can make an earlier local declaration public.
   for (const match of codeSource.matchAll(/^\s*export\s+default\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$/gm)) {
-    // A missing exported-name capture leaves the public-name set unchanged.
     if (match[1]) {
       names.add(match[1]);
     }
@@ -498,8 +504,8 @@ function collectReExportedNames(codeSource: string): ReadonlySet<string> {
   return names;
 }
 
-// Recognize tests, functions, methods and arrow assignments for legacy block discovery.
-// Test registrations take precedence; default-export functions remain visible to public-doc checks.
+// Return the ordered regex patterns used by legacy callable discovery.
+// Test registrations take precedence; named default-export functions remain eligible for public-documentation checks.
 function functionBlockPatterns(): RegExp[] {
   return [
     /^\s*(?:void\s+)?(?:test|it)\s*\(\s*["'`]([^"'`]+)["'`]\s*,\s*(?:async\s*)?\(([^)]*)\)\s*=>/,
@@ -509,13 +515,13 @@ function functionBlockPatterns(): RegExp[] {
   ];
 }
 
-// Choose the first supported callable shape on this line; no match returns undefined and creates no block.
+// Return the first supported callable match for masked line, or undefined when no pattern accepts it.
+// scan supplies the ordered patterns and raw source; index selects the raw line used to recover a test's title.
 function functionBlockMatch(scan: FunctionBlockScan, line: string, index: number): RegExpMatchArray | undefined {
   const rawLine = scan.lines[index] ?? "";
   // Try the supported callable forms in order so test registrations keep their own block role.
   for (let patternIndex = 0; patternIndex < scan.patterns.length; patternIndex += 1) {
     const pattern = scan.patterns[patternIndex];
-    // A missing pattern supplies no callable evidence and cannot create a block.
     if (!pattern) {
       continue;
     }
@@ -528,8 +534,9 @@ function functionBlockMatch(scan: FunctionBlockScan, line: string, index: number
   return undefined;
 }
 
-// Use raw test titles and masked ordinary code to recognize a callable.
-// A missing name or control keyword returns undefined rather than creating a report block.
+// Return the match for pattern, or undefined when it has no callable name or the name is a control-flow keyword.
+// patternIndex is the pattern's position; position zero uses rawLine for recognized test openers to preserve their titles.
+// line supplies masked code for all other matches.
 function functionPatternMatch(pattern: RegExp, patternIndex: number, line: string, rawLine: string): RegExpMatchArray | undefined {
   const candidate = patternIndex === 0 && isTestInvocationLine(line) ? rawLine : line;
   const match = candidate.match(pattern);
@@ -540,8 +547,8 @@ function functionPatternMatch(pattern: RegExp, patternIndex: number, line: strin
   return match;
 }
 
-// Promotes a discovery point into the shared block used by report rules and context documentation.
-// Parsed points receive one syntax metric; legacy span-only points keep that field absent.
+// Returns the block used by report rules and context documentation, using point for the callable and scan for its source span.
+// Uses ownedCallableNodes to preserve complexity ownership when measuring parsed points. Legacy span-only points omit the metrics.
 function functionBlockFromPoint(scan: FunctionBlockScan, point: BlockMatchPoint, ownedCallableNodes: ReadonlySet<import("typescript").Node>): FunctionBlock {
   const index = point.lineIndex;
   const start = functionStartIndex(scan.lines, index);
@@ -575,18 +582,18 @@ function functionBlockFromPoint(scan: FunctionBlockScan, point: BlockMatchPoint,
   };
 }
 
-// Choose the correct expression or brace-body end so block rules inspect only this callable's source.
+// Return the zero-based end line selected for the callable starting at index in scan.
+// Use the expression-arrow result when available; otherwise use the brace scan, including its end-of-input fallback.
 function functionEndIndex(scan: FunctionBlockScan, index: number): number {
   return expressionArrowEndIndex(scan.codeLines, index) ?? blockFunctionEndIndex(scan, index);
 }
 
-// Find the end of an opened callable body using masked code so literal braces cannot distort the report range.
+// Return the zero-based closing line for a callable starting at index, using scan.codeLines for brace depth.
+// If no opened body closes, return the last scan.lines index visited, or index when the loop visits no lines.
 function blockFunctionEndIndex(scan: FunctionBlockScan, index: number): number {
   const state: FunctionBodyScanState = { depth: 0, hasSeenOpen: false };
   let end = index;
-  // Read code lines until the complete callable body ends.
   for (let current = index; current < scan.lines.length; current += 1) {
-    // Count only code braces; missing lines provide no characters to inspect.
     for (const character of scan.codeLines[current] ?? "") {
       applyFunctionBodyCharacter(state, character);
     }
@@ -599,36 +606,33 @@ function blockFunctionEndIndex(scan: FunctionBlockScan, index: number): number {
   return end;
 }
 
-// Update body depth for one code character while locating the callable shown in scan findings.
+// Returns nothing. Updates the scanner state from one code character by tracking brace depth and recording any body opener.
 function applyFunctionBodyCharacter(state: FunctionBodyScanState, character: string): void {
-  // An opening brace starts or nests the body whose range anchors the developer's warning.
   if (character === "{") {
     state.depth += 1;
     state.hasSeenOpen = true;
-  // A closing brace moves the scan toward the end of this callable.
   } else if (character === "}") {
     state.depth -= 1;
   }
 }
 
-// Finish a block only after its body has opened and its braces have closed.
+// Return whether state records an opened body whose brace depth has returned to zero or below.
 function isFunctionBodyClosed(state: FunctionBodyScanState): boolean {
   return state.hasSeenOpen && state.depth <= 0;
 }
 
-// Locate a single-expression arrow's end for block discovery.
-// Undefined means this line needs the ordinary brace-body walk.
+// Estimate a zero-based end line for the arrow starting at index in codeLines. Use index if the scan finds no terminator.
+// Return undefined if the line lacks an arrow or has an opening brace after its first arrow.
 function expressionArrowEndIndex(codeLines: string[], index: number): number | undefined {
   const line = codeLines[index] ?? "";
   const arrowIndex = line.indexOf("=>");
-  // A block-bodied or non-arrow line uses the ordinary brace walk instead.
+  // These lines fall through to the caller's brace scan for a span estimate.
   if (!isExpressionArrowLine(line, arrowIndex)) {
     return undefined;
   }
-  // Look ahead for the end of this expression body before building its report block.
   for (let current = index; current < codeLines.length; current += 1) {
     const endIndex = expressionArrowEndStep(codeLines, line, arrowIndex, index, current);
-    // A known end gives block rules the exact expression span; undefined means keep looking.
+    // A terminator or following blank line sets the reported end; otherwise keep looking.
     if (endIndex !== undefined) {
       return endIndex;
     }
@@ -641,57 +645,54 @@ function isExpressionArrowLine(line: string, arrowIndex: number): boolean {
   return arrowIndex !== -1 && !line.slice(arrowIndex + 2).includes("{");
 }
 
-// Check one line for the end of an expression-arrow body; undefined means continue looking.
-// A blank line ends the previous body rather than joining the next declaration.
+// Return a terminating line index from codeLines, or undefined while the expression-arrow scan must continue.
+// line is the declaration text, arrowIndex locates its arrow, start is its index, and current is the line being checked.
+// A blank continuation line sets the estimated end to current - 1. A trailing semicolon sets it to current.
 function expressionArrowEndStep(codeLines: string[], line: string, arrowIndex: number, start: number, current: number): number | undefined {
   const trimmed = (codeLines[current] ?? "").trim();
-  // On the declaration line, only a terminating semicolon completes this expression body.
+  // Only the text after the arrow can end the span on the declaration line.
   if (current === start) {
     return line.slice(arrowIndex + 2).trim().endsWith(";") ? current : undefined;
   }
-  // A blank line marks that the walk has passed the expression's body.
   if (trimmed === "") {
     return current - 1;
   }
   return trimmed.endsWith(";") ? current : undefined;
 }
 
-// Keep control-flow keywords out of callable discovery so block rules cannot report them as functions.
+// Return whether the candidate name is one of the control-flow keywords excluded by legacy callable discovery.
 function isControlBlockName(name: string): boolean {
   return ["if", "for", "while", "switch", "catch"].includes(name);
 }
 
-// Include attached documentation and decorators in the callable's range.
-// Trim blank separators so a warning points to this declaration rather than the previous function's empty space.
+// Return the zero-based scan start for the declaration at index in lines, extending it over recognised docblock or decorator prefix lines.
 function functionStartIndex(lines: string[], index: number): number {
   let start = index;
-  // Include attached documentation and decorators so the report range follows the full declaration.
   while (start > 0) {
     const previous = lines[start - 1]?.trim() ?? "";
-    // A prefix line belongs to this callable's leading context.
     if (isFunctionPrefixLine(previous)) {
       start -= 1;
       continue;
     }
     break;
   }
-  // Remove blank separators so the warning starts at this declaration rather than empty space above it.
+  // Skip leading blanks so the range starts at the first attached prefix line or at the declaration itself.
   while (start < index && (lines[start]?.trim() ?? "") === "") {
     start += 1;
   }
   return start;
 }
 
-// Decide whether an attached decorator, docblock or blank line belongs to the callable's leading context.
+// Returns true when the trimmed preceding line is blank or starts like a decorator or JSDoc line, so the block scan includes it.
 function isFunctionPrefixLine(trimmedLine: string): boolean {
   return trimmedLine.startsWith("@") || trimmedLine.startsWith("/**") || trimmedLine.startsWith("*") || trimmedLine === "";
 }
 
 // Checks a masked test body before Gruff warns that the test makes no assertion.
 
-// TypeORM's `value.should.be.eql(expected)` counts; an ordinary `options.should` property does not.
+// Return whether maskedTestBody contains a recognized assertion-like call or matcher marker for test-quality checks.
+// For should.be chains, only calls to eql, equal, greaterThan or instanceOf count.
 export function hasAssertion(maskedTestBody: string): boolean {
-  // Standard assert calls and named assert helpers show a developer's expected result.
   if (/\bassert(?:\.[A-Za-z]+|[A-Z][A-Za-z0-9_$]*)?\s*\(/.test(maskedTestBody)) {
     return true;
   }
@@ -703,28 +704,27 @@ export function hasAssertion(maskedTestBody: string): boolean {
   if (/\b[A-Za-z_$][A-Za-z0-9_$]*Check\s*\(/.test(maskedTestBody)) {
     return true;
   }
-  // Promise rejection and resolution matchers also verify an expected result.
+  // Promise matcher properties count as assertion markers even without a following matcher call.
   if (/\.(?:rejects|resolves)\b/.test(maskedTestBody) || /\b(?:doesNotReject|rejects)\s*\(/.test(maskedTestBody)) {
     return true;
   }
-  // These observed TypeORM matcher calls check values inside returned test callbacks.
   if (/\.\s*should\s*\.\s*be\s*\.\s*(?:eql|equal|greaterThan|instanceOf)\s*\(/.test(maskedTestBody)) {
     return true;
   }
   return false;
 }
 
-// Count meaningful test setup before its first assertion for the fixture-purpose documentation check.
+// Return the fixture-purpose setup count for the masked callable source, excluding blank lines and lines containing only } or });.
+// Count eligible body lines up to the first assertion marker. With no marker, count every eligible line. An uninspectable body counts as zero.
 export function setupLineCount(source: string): number {
   let count = 0;
-  // Count meaningful setup work before the first assertion in the developer's test.
   for (const line of functionBodyContent(source).split(/\r?\n/)) {
     const trimmed = line.trim();
-    // Blank lines and closing syntax add no fixture setup work.
+    // Standalone block and callback closers add no setup work in the two recognized forms.
     if (isIgnorableSetupLine(trimmed)) {
       continue;
     }
-    // The first assertion ends setup, so later test work cannot inflate this fixture-purpose check.
+    // The first recognized assertion marker ends this count, so later test work cannot inflate it.
     if (hasAssertion(trimmed)) {
       break;
     }
@@ -733,7 +733,7 @@ export function setupLineCount(source: string): number {
   return count;
 }
 
-// Keep blank lines and closing syntax out of the test-setup count shown to the fixture-purpose rule.
+// Return whether the already trimmed line is empty or contains only } or });, which excludes it from the test's setup count.
 function isIgnorableSetupLine(trimmedLine: string): boolean {
   return trimmedLine.length === 0 || trimmedLine === "});" || trimmedLine === "}";
 }

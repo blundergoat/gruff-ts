@@ -451,10 +451,11 @@ test("hook diff new-only keeps each occurrence beyond the base count", () => {
   const declaration = "const tasks: Array<() => Promise<void>> = [];\n";
   const loop = "tasks.forEach(async (task) => { await task(); });\n";
   /**
-   * Lists the lines of the `security.async-foreach` findings one hook run reported.
+   * Lists the lines of the security.async-foreach findings one hook run reported.
    * Stable contract: lines come back in report order, so each assertion names the exact surviving occurrences.
-   * @param report - the parsed hook payload
-   * @returns the finding lines in report order
+   *
+   * @param report - hook output whose surviving async-forEach findings the test checks
+   * @returns line numbers in report order, with 0 for a finding without a line and an empty list when none match
    */
   const asyncForEachLines = (report: HookPayload): number[] =>
     report.findings.filter((finding) => finding.ruleId === "security.async-foreach").map((finding) => finding.line ?? 0);
@@ -688,12 +689,14 @@ test("hook reads the same generated baseline analyse writes, and it hides no sec
   });
 });
 
-// Runs the gruff-ts hook command and parses its stdout JSON; spawns the CLI binary through bash.
+// Spawns the gruff-ts CLI through Bash in the supplied working directory with the hook invocation arguments.
+// Returns the parsed hook payload from stdout. A failed command or invalid JSON throws.
 function runHook(cwdPath: string, args: string[]): HookPayload {
   return JSON.parse(execFileSync("bash", [BIN, ...args], { cwd: cwdPath, encoding: "utf8" })) as HookPayload;
 }
 
-// Runs a callback from a temp project root and restores the process cwd afterward.
+// Mutates the process working directory to run the callback at the supplied project path.
+// Returns nothing and restores the previous directory even if the callback throws.
 function withCwd(path: string, run: () => void): void {
   const previous = cwd();
   try {
@@ -704,7 +707,8 @@ function withCwd(path: string, run: () => void): void {
   }
 }
 
-// Creates a temp project, writes the given files into it, runs the callback, then removes the dir.
+// Writes the supplied files into a temporary project and passes its directory to the callback.
+// Returns nothing and removes the directory even if a write or the callback throws.
 function withProject(files: Record<string, string>, run: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-hook-"));
   try {
@@ -717,7 +721,7 @@ function withProject(files: Record<string, string>, run: (dir: string) => void):
   }
 }
 
-// Writes one fixture file under the temp project root, creating parent dirs on the filesystem.
+// Writes source to file relative to root, creating parent directories and replacing any existing file, and returns nothing.
 function writeProjectFile(root: string, file: string, source: string): void {
   const path = join(root, file);
   mkdirSync(dirname(path), { recursive: true });
@@ -733,7 +737,8 @@ type CountingHookRunner = ((options: AnalysisOptions) => AnalysisReport) & {
   };
 };
 
-// Base hook analysis options matching cli-program's hook defaults for direct render tests.
+// Returns hook analysis options for paths in direct-render tests, with configuration and baseline loading disabled.
+// selectors supplies changedRanges, diff, or since overrides; omitting it leaves the default symbol-scoped options unchanged.
 function baseHookOptions(paths: string[], selectors: Partial<Pick<AnalysisOptions, "changedRanges" | "diff" | "since">> = {}): AnalysisOptions {
   return {
     paths,
@@ -747,13 +752,14 @@ function baseHookOptions(paths: string[], selectors: Partial<Pick<AnalysisOption
   };
 }
 
-// Removes changed-region selectors so expected current-report calls always analyse the full file set.
+// Returns a copy of options for expected full-file analysis, with changed-region selectors removed and baseline application disabled.
 function currentHookOptions(options: AnalysisOptions): AnalysisOptions {
   const { changedRanges: _changedRanges, diff: _diff, diffPatch: _diffPatch, since: _since, ...rest } = options;
   return { ...rest, shouldSkipBaseline: true };
 }
 
-// Builds the hook renderer input with an optional diff base only when the test needs base replay.
+// Returns renderer input using currentOptions for the full scan and scopedOptions for the selected region.
+// hasChangedRegion enables region attribution; diffBase supplies the selector for replay and is omitted when absent or empty.
 function hookRenderInput(currentOptions: AnalysisOptions, scopedOptions: AnalysisOptions, hasChangedRegion: boolean, diffBase?: string): HookRenderInput {
   return {
     currentOptions,
@@ -763,7 +769,8 @@ function hookRenderInput(currentOptions: AnalysisOptions, scopedOptions: Analysi
   };
 }
 
-// Compares fallback and optimized hook renderers and asserts the optimized call count.
+// Renders input through fallback and optimized hook runners and asserts identical output and expectedCalls optimized calls.
+// Returns nothing after asserting that fallback uses one extra call for a changed region and the same count otherwise.
 function assertHookRenderCalls(input: HookRenderInput, expectedCalls: number): void {
   const fallback = countingHookRunner(false);
   const optimized = countingHookRunner(true);
@@ -774,7 +781,8 @@ function assertHookRenderCalls(input: HookRenderInput, expectedCalls: number): v
   assert.equal(fallback.calls(), expectedCalls + (input.hasChangedRegion ? 1 : 0));
 }
 
-// Stable test contract: counts full analyse calls and optional hook-view calls behind one runner.
+// Returns an analysis runner and a function that reads its total call count for stable test assertions.
+// The flag enables a hook-view entry point. Calls through either enabled entry point increment the count before analysis runs.
 function countingHookRunner(shouldUseHookViews: boolean): { runner: CountingHookRunner; calls: () => number } {
   let analyseCalls = 0;
   let hookViewCalls = 0;
@@ -791,14 +799,15 @@ function countingHookRunner(shouldUseHookViews: boolean): { runner: CountingHook
   return { runner, calls: () => analyseCalls + hookViewCalls };
 }
 
-// Finds the first finding for a rule id or fails the test; returns the stable contract finding.
+// For hook contract assertions, returns the first finding in the payload with the requested rule ID, or fails the test if none matches.
 function requiredFinding(payload: HookPayload, ruleId: string): HookFinding {
   const finding = payload.findings.find((entry) => entry.ruleId === ruleId);
   assert.ok(finding, `expected ${ruleId}`);
   return finding;
 }
 
-// Writes a gruff.baseline.v3 file from the given findings, keyed by their stable identity.
+// Writes findings to root/gruff-baseline.json in the gruff.baseline.v3 schema and returns nothing.
+// Each finding with a stable identity contributes one occurrence. Null identities are omitted and cannot become reviewed rows.
 function writeBaseline(root: string, findings: HookFinding[]): void {
   writeProjectFile(root, "gruff-baseline.json", JSON.stringify({
     schemaVersion: "gruff.baseline.v3",
@@ -813,12 +822,13 @@ function writeBaseline(root: string, findings: HookFinding[]): void {
 }
 
 // Rebuilds the subject the ratified identity hashed, which is what a generated baseline stores beside it.
-// Stable contract: the same finding always yields the same subject, so a hand-built row matches a generated one.
+// The stable subject uses the finding's symbol and ordinal, or its message with numbers replaced by # when the symbol is null.
 function baselineSubjectOf(finding: HookFinding): string {
   return finding.symbol === null ? finding.message.replace(/[0-9]+(?:[.,][0-9]+)*/gu, "#") : `${finding.symbol}#${finding.symbolOrdinal}`;
 }
 
-// Initialises a git repo and stages the fixtures without committing; spawns git via execFileSync.
+// Spawns Git in the fixture root to initialise the repository, set its local fixture identity, and stage the files.
+// Returns nothing and leaves the fixtures staged without a commit.
 function initGitAdd(root: string): void {
   execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
   execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: root, stdio: "ignore" });
@@ -826,7 +836,7 @@ function initGitAdd(root: string): void {
   execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
 }
 
-// Initialises a git repo in the temp project and commits the fixtures; spawns git via execFileSync.
+// Returns nothing. Spawns Git to initialise the temporary project directory, set its local test identity and stage and commit its files.
 function initGitCommit(root: string): void {
   execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
   execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: root, stdio: "ignore" });
@@ -835,17 +845,20 @@ function initGitCommit(root: string): void {
   execFileSync("git", ["commit", "-m", "initial"], { cwd: root, stdio: "ignore" });
 }
 
-// Builds a stable per-finding key so two hook runs can be compared deterministically.
+// Returns sorted, stable keys from the hook payload's findings so two runs can be compared without depending on report order.
+// Each key uses 0 when there is no line.
 function hookFindingKeys(payload: HookPayload): string[] {
   return payload.findings.map((finding) => `${finding.ruleId}:${finding.scope}:${finding.file}:${finding.line ?? 0}:${finding.stableIdentity}`).sort();
 }
 
-// Builds source with an eval call on the given line, padded with filler consts.
+// Builds source for the line-shift test. Pass a positive one-based line number to place the eval call after any filler constants.
+// Passing zero produces a single filler line with no eval call.
 function evalSource(evalLine: number): string {
   return Array.from({ length: Math.max(1, evalLine) }, (_, index) => (index + 1 === evalLine ? "eval(input);" : `const filler${index} = ${index};`)).join("\n");
 }
 
-// Builds a file of the given length with a one-line overview and an optional eval call.
+// Returns fixture source with lines as its line count and an overview first; a nonpositive line count returns empty source.
+// evalLine selects a one-based line after the overview for eval; use 0 to omit eval, as with any unavailable line.
 function longSource(lines: number, evalLine: number): string {
   return Array.from({ length: lines }, (_, index) => {
     const line = index + 1;

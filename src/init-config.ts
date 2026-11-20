@@ -76,11 +76,8 @@ const EMPTY_PRESERVED_CONFIG: PreservedInitConfig = { ignoredPaths: [], failOn: 
  * sensitiveExclusions → rules so the highest-impact CI behaviour (gating threshold per command) sits near the top of the file. Sections are separated
  * by blank lines for readability.
  *
- * @param ignoredPaths Optional `paths.ignore` entries to inject verbatim (block-sequence form).
- *   The `gruff-ts init --force` flow forwards the existing file's entries so user-curated
- *   exclusions survive regeneration; an empty list emits `ignore: []` for fresh projects.
- * @param preservedFailOn Optional carry-over of the existing config's `failOn:` block.
- *   A command missing from the map gets its default: advisory for analyse, none for summary and report.
+ * @param ignoredPaths - path exclusions kept by gruff-ts init --force. An empty list emits ignore: [].
+ * @param preservedFailOn - existing command gates. Missing entries default to advisory for analyse and none for summary and report.
  * @param preservedSensitiveExclusions - existing reviewed suppressions, re-emitted below the guidance comments; an empty list emits only the comments
  * @returns A YAML document string terminated by a trailing newline.
  */
@@ -104,13 +101,12 @@ function renderDefaultConfig(
   ].join("\n") + "\n";
 }
 
-/*
- * Reviewed sensitive-data suppressions, emitted entirely as comments so a fresh project suppresses
- * nothing until someone writes an entry by hand. The section is deliberately separate from
- * `rules:` and `paths.ignore` because it is the only surface that can hide a sensitive finding, and
- * a commented example is how a user discovers it (FAMILY-CONTRACT.md, search:
- * `### 13a. Sensitive exclusions`). Nothing generates an entry: gruff never converts a detected
- * value, a preview, or a message into a suppression.
+/**
+ * Render the reviewed sensitive-data exclusions described in FAMILY-CONTRACT.md section 13a.
+ * Guidance stays commented so fresh projects suppress nothing here. Active entries come from prior manual review.
+ *
+ * @param preservedEntries - reviewed exclusions carried forward from the existing config
+ * @returns YAML section text with guidance and any preserved entries, or only commented guidance when the list is empty
  */
 function renderSensitiveExclusionsSection(preservedEntries: readonly PreservedSensitiveExclusionEntry[]): string {
   const guidance = [
@@ -133,14 +129,15 @@ function renderSensitiveExclusionsSection(preservedEntries: readonly PreservedSe
     "#     reason: <reviewed-rationale>",
   ];
   // Regeneration must never silently re-enable a finding a reviewer accepted in writing, so any
-  // existing entries are re-emitted verbatim below the guidance comment.
+  // existing entries are serialized as active YAML below the guidance comment.
   if (preservedEntries.length === 0) {
     return guidance.join("\n");
   }
   return [...guidance, "sensitiveExclusions:", ...preservedEntries.flatMap(renderPreservedExclusionEntry)].join("\n");
 }
 
-// One preserved entry as block-sequence YAML lines, keeping the ratified key order.
+// Returns one preserved exclusion as block-sequence YAML lines in the expected key order.
+// An entry without a symbol keeps that selector unset in the generated YAML.
 function renderPreservedExclusionEntry(entry: PreservedSensitiveExclusionEntry): string[] {
   const lines = [`  - rule: ${JSON.stringify(entry.rule)}`, `    path: ${JSON.stringify(entry.path)}`];
   if (entry.symbol !== undefined) {
@@ -150,8 +147,7 @@ function renderPreservedExclusionEntry(entry: PreservedSensitiveExclusionEntry):
   return lines;
 }
 
-// Required top-level schema-version field. Documented in ADR-004 because the introduction itself
-// is a pre-1.0 break - every existing config gains this line, no transitional shim.
+// Returns the required top-level schema version field for the generated config.
 function renderSchemaVersionSection(): string {
   return [
     "# Config-schema version. Required as of gruff-ts 0.2.0. See ADR-004 (decision log).",
@@ -159,9 +155,8 @@ function renderSchemaVersionSection(): string {
   ].join("\n");
 }
 
-// Per-command --fail-on defaults. The canonical out-of-the-box values match the operator's "show
-// everything, fail on anything" philosophy. `dashboard` is intentionally NOT a valid key because
-// the dashboard subcommand has no --fail-on flag and accepting it would be a silent CI footgun.
+// Returns the failOn YAML section, using preserved command thresholds when present.
+// Missing analyse defaults to advisory; missing summary and report default to none. Dashboard has no entry.
 function renderFailOnSection(preserved: ReadonlyMap<MinimumSeverityCommand, FailThreshold>): string {
   const header = [
     "# Per-command default for `--fail-on`. CLI flag > this block > binary default.",
@@ -185,20 +180,12 @@ function renderFailOnSection(preserved: ReadonlyMap<MinimumSeverityCommand, Fail
 }
 
 /**
- * Write the default config to `<projectRoot>/.gruff-ts.yaml`. Performs a filesystem write side
- * effect when no supported config exists, or when `shouldOverwrite` is true and `.gruff-ts.yaml`
- * is the incumbent. Refuses to clobber (no side effect) when ANY supported config file is present
- * (the four-name precedence list in `DEFAULT_CONFIG_FILES`), not just `.gruff-ts.yaml` -
- * otherwise `init` would silently create a higher-precedence file alongside an existing
- * `.gruff.yaml` / `.gruff.yml` / `.gruff.json` and quietly change the effective config. When
- * overwriting an existing `.gruff-ts.yaml`, the file's `paths.ignore` entries are preserved so
- * `init --force` does not erase project-specific recursive-scan exclusions.
+ * Writes .gruff-ts.yaml when no supported config exists or force is enabled.
+ * Uses DEFAULT_CONFIG_FILES precedence so the caller can name the blocking file or carry its settings forward on a forced write.
  *
- * @param projectRoot Directory to write the config file into.
- * @param shouldOverwrite Overwrite an existing config file when true.
- * @returns The resolved path and whether a file was written, overwritten, or skipped. When the
- *   refusal is triggered by a non-canonical name, `path` points at that file so the caller's
- *   error message names the actual blocker.
+ * @param projectRoot - directory to search for the incumbent config and write the canonical file
+ * @param shouldOverwrite - allows a canonical write even when a supported config already exists
+ * @returns the incumbent path with exists when skipped, or the canonical path with written or overwritten after a write
  */
 function writeDefaultConfig(projectRoot: string, shouldOverwrite: boolean): InitResult {
   const targetPath = join(projectRoot, DEFAULT_CONFIG_FILE_NAME);
@@ -207,23 +194,19 @@ function writeDefaultConfig(projectRoot: string, shouldOverwrite: boolean): Init
     return { path: existingConfigPath, status: "exists" };
   }
   const targetExists = existsSync(targetPath);
-  // Preserve paths.ignore + the per-command failOn gate from whichever supported config exists, not just
-  // `.gruff-ts.yaml` - otherwise `init --force` against a project with only
-  // `.gruff.yaml`/`.yml`/`.json` would silently drop user-curated exclusions and command-specific
-  // gating thresholds when generating the new canonical file.
+  // Carry forward paths.ignore, command gates, and reviewed sensitive exclusions so a forced write preserves the selected scan policy.
+  //
+  // An existing alias can supply that policy when the project has no canonical file.
+  // If the existing settings cannot be read, regeneration uses defaults.
   const preserved = existingConfigPath !== undefined ? readExistingPreservedConfig(existingConfigPath) : EMPTY_PRESERVED_CONFIG;
   writeFileSync(targetPath, renderDefaultConfig(preserved.ignoredPaths, preserved.failOn, preserved.sensitiveExclusions));
   return { path: targetPath, status: targetExists ? "overwritten" : "written" };
 }
 
 /*
- * Recover the existing file's `paths.ignore` and per-command gate blocks before `init --force`
- * overwrites it. Uses the permissive extractor (not the strict validator) so a pre-0.2.0 config
- * without `schemaVersion` still hands its curated entries to the regenerated file - the strict
- * gate would throw on the missing field and silently drop the user's `paths.ignore`. The
- * try/catch swallows IO/parse errors and returns empty values so a malformed existing config
- * does not block regeneration; the user is opting into clobbering, but the documented contract
- * is that curated entries survive when readable.
+ * Returns ignore paths, command gates and reviewed sensitive exclusions recovered from the existing config path.
+ * Uses the permissive extractor so configs without schemaVersion can retain their readable settings.
+ * Read or parse failures silently return empty settings because forced regeneration permits replacing unreadable content.
  */
 function readExistingPreservedConfig(existingConfigPath: string): PreservedInitConfig {
   try {
@@ -233,9 +216,8 @@ function readExistingPreservedConfig(existingConfigPath: string): PreservedInitC
   }
 }
 
-// `paths.ignore` defaults to empty for fresh projects - discovery.ts already filters node_modules,
-// .git, etc. regardless of config. When `init --force` regenerates an existing config, the caller
-// forwards the existing entries so user-curated exclusions survive.
+// Returns the paths YAML section. With no supplied exclusions, it emits an empty ignore list because discovery already applies built-in ignores.
+// During forced regeneration, the caller supplies existing path exclusions so the user's entries survive.
 function renderPathsSection(ignoredPaths: readonly string[]): string {
   const header = [
     "paths:",
@@ -257,7 +239,7 @@ function renderPathsSection(ignoredPaths: readonly string[]): string {
   ].join("\n");
 }
 
-// Shows users which short identifier terms avoid naming findings in a newly initialized project.
+// Returns the starter YAML naming allowlists, listing the default abbreviations accepted in identifiers.
 // The other naming allowlists stay commented so users can discover them without changing defaults.
 function renderAllowlistsSection(): string {
   return [
@@ -265,7 +247,6 @@ function renderAllowlistsSection(): string {
     "  # Abbreviations listed here are accepted in identifiers without a naming finding.",
     "  # Replace this list with the short terms reviewers accept in this project.",
     "  acceptedAbbreviations:",
-    // Each family term is visible so a user can review or replace the complete list in generated YAML.
     ...DEFAULT_ACCEPTED_ABBREVIATIONS.map((abbreviation) => `    - ${abbreviation}`),
     "  # Exact fileBase:ClassName pairs accepted by naming.class-file-mismatch.",
     "  # Default: []",
@@ -286,9 +267,8 @@ function renderRulesSection(): string {
   return lines.join("\n");
 }
 
-// One rule entry: a `# pillar/severity: description` comment line, the rule id, `enabled`, then
-// threshold/severity/options only when the descriptor declares them. Omitting absent keys keeps
-// the generated file aligned with the descriptor's actual contract.
+// Returns YAML lines for the supplied rule descriptor, including its description, id and default enabled state.
+// A numeric threshold adds threshold and severity; option fields come from RULE_OPTION_DEFAULTS when registered.
 function renderRuleEntry(descriptor: RuleDescriptor): string[] {
   const lines: string[] = [];
   lines.push(`  # ${descriptor.pillar}/${descriptor.severity}: ${descriptor.description}`);
@@ -309,15 +289,10 @@ function renderRuleEntry(descriptor: RuleDescriptor): string[] {
 }
 
 /**
- * Decide whether the analyse/summary actions should prompt the user to run `init`.
+ * Decide whether analyse or summary may offer init when interaction is allowed and output is not suppressed.
+ * Requires no explicit config or opt-out, three TTY streams and no supported config file at the project root.
  *
- * Returns true only when every gate passes: interaction is allowed, output isn't suppressed, the
- * user hasn't already opted in (--config) or out (--no-config) of config loading, all three
- * standard streams are TTYs (stdin to type, stderr to display, stdout to confirm the run is not
- * piping machine output to a downstream consumer), and no supported config file is already
- * present at the project root.
- *
- * @param context CLI-collected state needed to make the decision.
+ * @param context - CLI flags, stream state and project root used to decide whether to prompt
  * @returns Whether the prompt should be shown.
  */
 function shouldPromptForInit(context: InitPromptContext): boolean {
@@ -337,13 +312,11 @@ function shouldPromptForInit(context: InitPromptContext): boolean {
 }
 
 /**
- * Ask the user a yes/no question on stderr and return their answer.
+ * Ask the user a yes/no question on stderr, reading stdin; empty or other answers mean no.
+ * The readline interface closes when the question settles.
  *
- * Defaults to "no" when the user just presses enter so the prompt is safe to dismiss. Reads from
- * stdin; closes the readline interface in a finally so a Ctrl-C exits cleanly.
- *
- * @param question Prompt text written to stderr verbatim.
- * @returns True when the user typed y or yes (case-insensitive); false otherwise.
+ * @param question - prompt text written to stderr verbatim
+ * @returns true for a trimmed, case-insensitive y or yes; false for other answers
  */
 async function promptYesNo(question: string): Promise<boolean> {
   const readlineInterface = createInterface({ input: process.stdin, output: process.stderr });

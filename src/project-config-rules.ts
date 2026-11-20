@@ -14,10 +14,14 @@ interface ConfigSourceFile {
   displayPath: string;
 }
 
-/*
- * Dispatcher for package.json / tsconfig.json health rules. Only these two filenames are inspected;
- * any other JSON files in the project are out of scope to keep the rule surface bounded. The
- * stable, deterministic Finding[] emission order is what makes baselines reproducible.
+/**
+ * Run configuration checks for package.json, tsconfig.json, and named variants such as tsconfig.build.json.
+ * Keep finding order stable so that baseline reports are reproducible.
+ *
+ * @param file - Configuration file whose basename selects the checks and whose path identifies their findings.
+ * @param source - Original JSON text to parse and use when locating findings.
+ * @param findings - Collector for package or TypeScript configuration findings.
+ * @returns Nothing. Appends findings only for supported filenames whose contents parse as a JSON object.
  */
 function analyseProjectConfigRules(file: ConfigSourceFile, source: string, findings: Finding[]): void {
   const name = basename(file.displayPath);
@@ -35,23 +39,29 @@ function analyseProjectConfigRules(file: ConfigSourceFile, source: string, findi
   }
 }
 
-// Accepts the default tsconfig plus named variants such as `tsconfig.base.json`. This keeps
-// workspace/shared config files inside the same strictness rule surface as the root config.
+// Returns true for the filename tsconfig.json or a named variant such as tsconfig.base.json.
+// This keeps shared and workspace configs subject to the same strictness checks as the root config.
 function isTsconfigFileName(name: string): boolean {
   return name === "tsconfig.json" || /^tsconfig\.[^.]+(?:\.[^.]+)*\.json$/.test(name);
 }
 
-// Three sub-pillars in fixed order (scripts → dependencies → bins). This deterministic order is
-// the stable emission contract that lets fingerprints survive cosmetic reorderings of package.json.
+// Runs script, dependency and bin checks in that order to preserve the stable order of finding groups.
+// The file identifies the manifest, its text locates declarations, and the parsed package supplies the fields to check.
+// Returns nothing. Appends any reported findings to the supplied list.
 function analysePackageJson(file: ConfigSourceFile, source: string, pkg: Record<string, unknown>, findings: Finding[]): void {
   analysePackageScripts(file, source, objectValue(pkg.scripts), findings);
   analysePackageDependencies(file, source, pkg, findings);
   analysePackageBins(file, source, pkg, findings);
 }
 
-/*
- * Iterates `package.json#scripts` in declaration order - the stable Finding[] emission contract
- * relies on this. Each script is checked for a remote installer.
+/**
+ * Checks script strings for remote shell execution in stable object entry order.
+ *
+ * @param file - package manifest whose path is reported
+ * @param source - manifest text used to locate each script
+ * @param scripts - parsed script entries, with missing sections and nonstring commands skipped
+ * @param findings - destination for remote execution findings
+ * @returns Nothing. Appends findings for matching commands to the supplied list.
  */
 function analysePackageScripts(file: ConfigSourceFile, source: string, scripts: Record<string, unknown> | undefined, findings: Finding[]): void {
   if (!scripts) {
@@ -65,10 +75,16 @@ function analysePackageScripts(file: ConfigSourceFile, source: string, scripts: 
   }
 }
 
-/*
- * Reports `security.remote-install-script` for `curl|wget … | sh` patterns. Severity is `error`
- * because remote shell execution at install time is a contract red flag in the modern supply-chain
- * landscape.
+/**
+ * Flags curl or wget with an HTTP(S) URL piped to sh, bash or zsh, optionally via sudo, under the security.remote-install-script contract.
+ * The finding is an error because running a matching script can execute code fetched from a remote server.
+ *
+ * @param file - package manifest whose path is reported
+ * @param source - manifest text used to locate the named script
+ * @param scriptName - manifest key to report for a matching command
+ * @param scriptCommand - script text inspected for remote shell execution
+ * @param findings - destination for the error finding
+ * @returns Nothing. Appends an error only when the script matches.
  */
 function pushRemoteInstallScriptFinding(file: ConfigSourceFile, source: string, scriptName: string, scriptCommand: string, findings: Finding[]): void {
   if (!isRemoteInstallScript(scriptCommand)) {
@@ -90,10 +106,15 @@ function pushRemoteInstallScriptFinding(file: ConfigSourceFile, source: string, 
   );
 }
 
-/*
- * Walks every dependency section in a stable, deterministic order. The `isRuntimeDependency` flag
- * separates devDependencies from the rest because the broad-version rule should only fire for
- * runtime drift.
+/**
+ * Checks string entries in dependencies, optionalDependencies, peerDependencies and devDependencies in that stable order.
+ * The broad-version check applies only to dependencies and optionalDependencies because those are the runtime sections for this rule.
+ *
+ * @param file - package manifest whose path is reported
+ * @param source - manifest text used to locate dependency entries
+ * @param pkg - parsed manifest supplying the dependency sections, with missing or non-object sections skipped
+ * @param findings - destination for findings from the dependency checks
+ * @returns Nothing. Appends findings from the checks on eligible entries.
  */
 function analysePackageDependencies(file: ConfigSourceFile, source: string, pkg: Record<string, unknown>, findings: Finding[]): void {
   for (const section of ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"]) {
@@ -110,7 +131,9 @@ function analysePackageDependencies(file: ConfigSourceFile, source: string, pkg:
   }
 }
 
-// Runs both per-dependency checks for one entry; the emission order is a stable contract.
+// Checks one dependency for a URL spec, then checks for a broad spec when the runtime flag is set, to preserve stable finding order.
+// The manifest supplies the reported path. Its text is searched by section, name and version for URL findings and by name for broad versions.
+// Returns nothing. Appends any matching findings to the supplied list.
 function analysePackageDependency(
   file: ConfigSourceFile,
   source: string,
@@ -124,8 +147,9 @@ function analysePackageDependency(
   pushBroadRuntimeDependencyFinding(file, source, section, packageName, versionSpec, isRuntimeDependency, findings);
 }
 
-// Flags URL/git/file version specs, which bypass registry auditing.
-// Stable `security.url-dependency` contract: reports exactly one finding per offending spec.
+// Appends one stable security.url-dependency finding for recognized URL, Git or file specs because they bypass normal registry auditing.
+// Uses the manifest path and text to locate the entry by section, name and version, with a name-only fallback. Records the runtime flag.
+// Returns nothing. Other version specs leave the supplied findings list unchanged.
 function pushUrlDependencyFinding(
   file: ConfigSourceFile,
   source: string,
@@ -154,8 +178,9 @@ function pushUrlDependencyFinding(
   );
 }
 
-// Flags broad runtime version ranges (`*`, `latest`, bare majors) under the stable
-// `waste.broad-runtime-version` contract: reports runtime sections only; dev sections must stay exempt.
+// Under the stable waste.broad-runtime-version contract, flags broad specs such as *, x or latest for entries marked as runtime.
+// The manifest and its text locate the dependency. The section, package name and version identify it in finding metadata.
+// Returns nothing. Appends to the supplied findings list only when the runtime flag and broad-version check both qualify the entry.
 function pushBroadRuntimeDependencyFinding(
   file: ConfigSourceFile,
   source: string,
@@ -184,10 +209,14 @@ function pushBroadRuntimeDependencyFinding(
   );
 }
 
-/*
- * Expands `bin` into (command, target) pairs (handling both string and object forms), then checks
- * each one in a deterministic, stable order. Returns nothing when `bin` is absent - the rule does
- * not require packages to ship CLIs.
+/**
+ * Checks string bin declarations and string targets in bin maps in stable entry order. Missing declarations and nonstring targets are skipped.
+ *
+ * @param file - package manifest used to resolve relative bin targets
+ * @param source - manifest text used to locate bin declarations
+ * @param pkg - parsed manifest supplying the bin declaration and the name for a string bin, which defaults to bin
+ * @param findings - destination for findings raised by the target checks
+ * @returns Nothing. Appends any findings from checking the declared targets.
  */
 function analysePackageBins(file: ConfigSourceFile, source: string, pkg: Record<string, unknown>, findings: Finding[]): void {
   for (const [command, target] of packageBinEntries(pkg)) {
@@ -195,10 +224,16 @@ function analysePackageBins(file: ConfigSourceFile, source: string, pkg: Record<
   }
 }
 
-/*
- * Reads the bin target from disk. The stable mapping: missing → `package-bin-missing`;
- * non-executable → `package-bin-not-executable`. Executable files pass silently so the rule cannot
- * fail a healthy install pipeline.
+/**
+ * Checks a declared CLI target on disk. The stable rules distinguish missing targets from existing targets that are not executable files.
+ * Windows skips the executable-file check because POSIX execute bits do not apply there.
+ *
+ * @param file - package manifest used to resolve and report the target
+ * @param source - manifest text used to locate the bin declaration
+ * @param command - declared CLI name to report if the check fails
+ * @param target - declared path checked as given when absolute and relative to the manifest directory otherwise
+ * @param findings - destination for any finding raised by this check
+ * @returns Nothing. Appends a finding for a missing target or, outside Windows, a target that is not an executable file.
  */
 function analysePackageBin(file: ConfigSourceFile, source: string, command: string, target: string, findings: Finding[]): void {
   const absolute = packageBinPath(file, target);
@@ -215,15 +250,21 @@ function analysePackageBin(file: ConfigSourceFile, source: string, command: stri
   }
 }
 
-// Bin targets are resolved against the directory of the owning package.json, not the project root.
+// Returns absolute bin targets unchanged and resolves relative ones against the owning package.json directory.
 // Required because workspace packages can live in subdirectories and have their own bins.
 function packageBinPath(file: ConfigSourceFile, target: string): string {
   return isAbsolute(target) ? target : join(dirnamePath(file.absolutePath), target);
 }
 
-/*
- * Reports the `design.package-bin-missing` finding for a declared bin whose file does not exist
- * on disk - emitted with stable command + target metadata that other tooling can key off.
+/**
+ * Records design.package-bin-missing for a declared CLI whose target is missing, with stable command and target metadata.
+ *
+ * @param file - package manifest whose path is reported
+ * @param source - manifest text used to locate the bin declaration
+ * @param command - declared CLI name recorded in the finding
+ * @param target - missing path as declared in the manifest
+ * @param findings - destination for the finding
+ * @returns Nothing. Appends the finding to the supplied list.
  */
 function pushMissingPackageBinFinding(file: ConfigSourceFile, source: string, command: string, target: string, findings: Finding[]): void {
   findings.push(
@@ -239,10 +280,15 @@ function pushMissingPackageBinFinding(file: ConfigSourceFile, source: string, co
   );
 }
 
-/*
- * Reports the stable `design.package-bin-not-executable` finding - the file exists but lacks the
- * execute bit. Common on Windows checkouts; the remediation message reminds maintainers to also
- * keep the shebang valid.
+/**
+ * Records the stable design.package-bin-not-executable finding when the caller finds an existing target that is not an executable file.
+ *
+ * @param file - package manifest whose path is reported
+ * @param source - manifest text used to locate the bin declaration
+ * @param command - declared CLI name used in the finding
+ * @param target - declared bin path recorded with the command
+ * @param findings - destination for the finding
+ * @returns Nothing. Appends the finding to the supplied list.
  */
 function pushNonExecutablePackageBinFinding(file: ConfigSourceFile, source: string, command: string, target: string, findings: Finding[]): void {
   findings.push(
@@ -270,8 +316,8 @@ interface PackageBinFindingInput {
   remediation: string;
 }
 
-// Single makeFinding call site for both bin-missing and bin-not-executable. The `command` symbol
-// is what the fingerprint anchors on, so renaming a bin entry intentionally invalidates the baseline.
+// Returns the missing-bin or non-executable-bin finding described by input, including its package location and remediation.
+// The command symbol contributes to the fingerprint, so renaming a bin entry changes its baseline identity.
 function packageBinFinding(input: PackageBinFindingInput): Finding {
   return makeFinding({
     ruleId: input.ruleId,
@@ -287,11 +333,15 @@ function packageBinFinding(input: PackageBinFindingInput): Finding {
   });
 }
 
-/*
- * Three TypeScript strictness flags whose absence is a documentation-worthy compromise: `strict`,
- * `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`. Reports each missing flag as its own
- * finding; the list is intentionally short - adding new flags here changes the rule surface and
- * warrants a schema discussion.
+/**
+ * Checks the TypeScript strictness contract covered by the rule documentation.
+ * An extends entry can supply an omitted flag, so the check skips omissions when inheritance is declared.
+ *
+ * @param file - Config file used to name the path in each finding.
+ * @param source - Config text used to locate the option in each finding.
+ * @param tsconfigData - Parsed config used to read compilerOptions and detect extends.
+ * @param findings - Accumulator for the strictness findings.
+ * @returns Nothing. Appends one finding per checked flag that is neither true nor omitted with extends.
  */
 function analyseTsconfigJson(file: ConfigSourceFile, source: string, tsconfigData: Record<string, unknown>, findings: Finding[]): void {
   const compilerOptions = objectValue(tsconfigData.compilerOptions) ?? {};
@@ -306,8 +356,7 @@ function analyseTsconfigJson(file: ConfigSourceFile, source: string, tsconfigDat
     if (optionValue === true) {
       continue;
     }
-    // When the tsconfig `extends` another file we can't see the resolved compilerOptions, so an
-    // absent flag may already be `true` in the base. Only an explicit `false` is reportable.
+    // Skip an omitted flag with extends because the unresolved base config may already enable it.
     if (optionValue === undefined && hasExtends) {
       continue;
     }
@@ -335,8 +384,8 @@ interface TsconfigFindingInput {
   currentValue: unknown;
 }
 
-// Single makeFinding site for tsconfig strictness findings. `optionName` is the symbol anchor and
-// `currentValue` is preserved verbatim in metadata for downstream tooling - both are part of the stable contract.
+// Returns a strictness finding from the supplied tsconfig file, source text, rule details and observed option value.
+// The source locates the option key. The stable contract uses optionName as the symbol and retains currentValue in metadata.
 function tsconfigFinding(input: TsconfigFindingInput): Finding {
   return makeFinding({
     ruleId: input.ruleId,
@@ -353,8 +402,8 @@ function tsconfigFinding(input: TsconfigFindingInput): Finding {
 }
 
 /*
- * Swallows parse errors and returns undefined as a fallback so a malformed package.json doesn't
- * fail the whole analysis run - the rest of the file scan continues.
+ * Parses source as JSONC and returns its object root; malformed text and non-object roots return undefined so these rules skip the file.
+ * Parse failures stay unlogged because this rule pass only emits findings for successfully decoded objects.
  */
 function parseJsonObject(source: string): Record<string, unknown> | undefined {
   try {
@@ -364,15 +413,15 @@ function parseJsonObject(source: string): Record<string, unknown> | undefined {
   }
 }
 
-// Approximate line lookup - finds the first `"key":` occurrence. JSON allows the same key in
-// nested objects, but for package.json/tsconfig the top-level keys we report on are unique.
+// Returns the one-based line of the first quoted key followed by a colon in source for approximate finding locations.
+// Nested keys and text inside comments can match; a missing match falls back to line 1.
 function jsonKeyLine(source: string, key: string): number {
   const escapedKey = escapeRegex(key);
   return firstLine(source, new RegExp(`"${escapedKey}"\\s*:`));
 }
 
-// Finds the line of the `"name": "spec"` entry at or after its section's own key, so a package also named in
-// `overrides` or another section reports where the URL spec is written; falls back to the first key with that name.
+// Finds packageName with versionSpec in source from the first section key, or from the start when section is absent.
+// Returns a one-based line; falls back to the first packageName key or line 1, and the search can extend beyond section.
 function dependencyEntryLine(source: string, section: string, packageName: string, versionSpec: string): number {
   const lines = source.split(/\r?\n/);
   const sectionStart = Math.max(lines.findIndex((line) => new RegExp(`"${escapeRegex(section)}"\\s*:`).test(line)), 0);
@@ -381,33 +430,32 @@ function dependencyEntryLine(source: string, section: string, packageName: strin
   return offset >= 0 ? sectionStart + offset + 1 : jsonKeyLine(source, packageName);
 }
 
-// Pattern matches `curl|wget … | sh` or its inline-pipe variants. The negative lookaheads for `|`,
-// `;`, `&` prevent overlong matches that would span multiple shell commands.
+// Returns true if the supplied command matches curl|wget … | sh with an HTTP(S) URL and optional sudo before sh, bash or zsh.
+// The pattern stops at shell separators or a newline before that pipe to avoid matching across commands.
 function isRemoteInstallScript(command: string): boolean {
   return /\b(?:curl|wget)\b[^\n|;&]*https?:\/\/[^\n|;&]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)\b/i.test(command);
 }
 
-// Recognises non-registry installs: full URLs, git+ssh, file:, and npm-hosting shortcuts.
-// These specs cannot be reproducibly locked the way registry versions can.
+// Returns true if versionSpec starts with a recognized URL, Git or file prefix or matches a bare repository shortcut.
 function isUrlDependency(versionSpec: string): boolean {
   return /^(?:https?:\/\/|git(?:\+https?|\+ssh)?:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:|file:|git@[^:]+:[^/]+\/|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#.+)?$)/i.test(versionSpec);
 }
 
-// Catches `*`, `x`, `latest`, unbounded `>=` ranges, and OR-joined ranges. All let dependency
-// resolution drift arbitrarily - lockfile or not, the declared intent is "anything goes".
+// Returns whether versionSpec matches the broad-version heuristic after trimming and case folding.
+// It matches bare *, x or latest, any ||, or a leading >= followed by optional whitespace and a digit with no < anywhere.
 function isBroadRuntimeVersion(versionSpec: string): boolean {
   const normalized = versionSpec.trim().toLowerCase();
   return normalized === "*" || normalized === "x" || normalized === "latest" || (/^>=\s*\d/.test(normalized) && !normalized.includes("<")) || normalized.includes("||");
 }
 
-// JSONC normalization used for tsconfig files: strip BOM, comments, then trailing commas while
-// preserving line breaks so `jsonKeyLine` still points at the original source location.
+// Returns source with a leading BOM, JSONC comments and trailing commas removed.
+// Keeps LF line breaks in the text passed to JSON.parse.
 function jsonParseSource(source: string): string {
   return stripJsonTrailingCommas(stripJsonComments(source.replace(/^\uFEFF/, "")));
 }
 
-// Removes `//` and `/* */` comments outside strings, replacing comment bytes with spaces/newlines
-// so later parse errors and line lookups remain aligned with the original file.
+// Replaces line and block comments outside strings in source with spaces and preserves LF line breaks.
+// Returns text of the same length so that each character outside a comment stays at its original offset in this step.
 function stripJsonComments(source: string): string {
   let result = "";
   const quoteState: JsonQuoteState = { quote: "", isEscaped: false };
@@ -432,8 +480,8 @@ function stripJsonComments(source: string): string {
   return result;
 }
 
-// Replacement text for a line comment. Spaces keep column alignment; the end index lets the caller
-// resume at the newline without losing the line break.
+// Scans source from a line comment's startIndex and returns equal-width spaces plus the last replaced index as endIndex.
+// The newline is left for the caller to retain; a comment at EOF ends at source.length - 1.
 function lineCommentSpan(source: string, startIndex: number): { replacement: string; endIndex: number } {
   let endIndex = startIndex;
   while (endIndex < source.length && source[endIndex] !== "\n") {
@@ -476,7 +524,8 @@ function stripJsonTrailingCommas(source: string): string {
   return result;
 }
 
-// Looks past whitespace to decide whether a comma is trailing before `}` or `]`.
+// Looks through source from startIndex for trailing-comma removal.
+// Returns true if the next non-whitespace character is } or ]; returns false for another token or end of input.
 function isJsonClosingTokenAhead(source: string, startIndex: number): boolean {
   for (let index = startIndex; index < source.length; index += 1) {
     const character = source[index] ?? "";
@@ -493,8 +542,8 @@ interface JsonQuoteState {
   isEscaped: boolean;
 }
 
-// Tracks whether the cursor is inside a JSON string and whether the prior character was a
-// backslash. Callers use this to avoid rewriting comment/comma-like text inside string values.
+// Consumes character and mutates quoteState to track JSON string membership and whether the next character is escaped.
+// Returns no value after updating the scan state so that callers preserve comment-like and comma-like text inside strings.
 function updateJsonQuoteState(character: string, quoteState: JsonQuoteState): void {
   if (!quoteState.quote && character === "\"") {
     quoteState.quote = character;
@@ -512,9 +561,8 @@ function updateJsonQuoteState(character: string, quoteState: JsonQuoteState): vo
   }
 }
 
-// Normalises both npm bin forms: a string (uses the package name as the command) and an object
-// (each key is a command name). Non-string entries are silently dropped because nothing valid can
-// be done with them.
+// Returns command/target pairs from pkg.bin: a string uses pkg.name, or bin when that name is not a string.
+// Object keys supply command names; missing or invalid bin declarations yield no pairs, and non-string targets are dropped.
 function packageBinEntries(pkg: Record<string, unknown>): Array<[string, string]> {
   const bin = pkg.bin;
   if (isString(bin)) {
@@ -528,8 +576,7 @@ function packageBinEntries(pkg: Record<string, unknown>): Array<[string, string]
   return Object.entries(bins).filter((entry): entry is [string, string] => isString(entry[1]));
 }
 
-// Local copy of the regex-escape helper - `discovery.ts` has its own copy because this module
-// is intentionally a leaf with no cross-module dependency on path helpers.
+// Returns rawText with regular-expression metacharacters escaped so callers can match it literally.
 function escapeRegex(rawText: string): string {
   return rawText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

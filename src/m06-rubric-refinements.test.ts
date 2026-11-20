@@ -126,7 +126,8 @@ test("M06 score contract keeps different-symbol complexity penalties separate", 
   assert.equal(score.topOffenders[0]?.score, SEPARATE_COMPLEXITY_SCORE);
 });
 
-// Invariant: report and score fixtures share one stable clustered finding shape.
+// Returns a clustered finding for report and scoring fixtures. The rule ID labels it, and the pillar selects which score it counts against.
+// The symbol names the cluster. The rule ID and symbol determine the stable fixture identifiers.
 function clusterFinding(ruleId: string, pillar: Finding["pillar"] = "complexity", symbol = "tangled"): Finding {
   return {
     ruleId,

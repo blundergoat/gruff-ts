@@ -51,8 +51,8 @@ interface DocParamTagOccurrence extends DocTagOccurrence {
   name: string;
 }
 
-// Scans the masked code for the five exportable kinds. The order returned matches source order
-// because `matchAll` walks left-to-right, which is what downstream rules depend on.
+// Returns source-ordered export matches from codeSource for class, interface, type, enum or function followed directly by a simple name.
+// codeSource is masked text aligned with source; source supplies line numbers. No matches produces an empty list.
 export function exportedDeclarations(source: string, codeSource: string): ExportedDeclaration[] {
   return [...codeSource.matchAll(/\bexport\s+(class|interface|type|enum|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)].map((match) => ({
     kind: match[1] ?? "",
@@ -61,10 +61,15 @@ export function exportedDeclarations(source: string, codeSource: string): Export
   }));
 }
 
-/*
- * Skips functions and interfaces - those have dedicated rules (`docs.missing-exported-function-doc`,
- * `docs.missing-internal-function-doc`, `docs.missing-interface-doc`). Reports the stable
- * `docs.missing-public-doc` finding for classes/types/enums without a leading JSDoc-style block comment.
+/**
+ * Check for the leading docblock required by the stable docs.missing-public-doc rule.
+ * Function checks are docs.missing-exported-function-doc, docs.missing-internal-function-doc. Interfaces use docs.missing-interface-doc.
+ *
+ * @param file - File path to attach to the finding.
+ * @param source - Text searched above the exported declaration for a docblock marker.
+ * @param declaration - Exported item to check. Functions and interfaces are skipped.
+ * @param findings - Collector for the advisory finding.
+ * @returns Nothing. Appends a finding only when an in-scope declaration lacks a leading docblock.
  */
 export function pushMissingPublicDocFinding(file: SourceFile, source: string, declaration: ExportedDeclaration, findings: Finding[]): void {
   if (declaration.kind === "function" || declaration.kind === "interface") {
@@ -88,8 +93,9 @@ export function pushMissingPublicDocFinding(file: SourceFile, source: string, de
   );
 }
 
-// Anchors the finding at line 1 because the overview comment is expected at the very top of the
-// file. Reports the stable `docs.missing-file-overview` finding when no top-of-file comment exists.
+// Examines source for an overview at the first meaningful line after allowing for an optional shebang.
+// Returns nothing and appends a stable docs.missing-file-overview finding to findings when the overview is absent.
+// Anchors the report at line 1 of file because the overview belongs at the top.
 export function analyseFileOverviewDoc(file: SourceFile, source: string, findings: Finding[]): void {
   if (hasFileOverviewComment(source)) {
     return;
@@ -109,9 +115,14 @@ export function analyseFileOverviewDoc(file: SourceFile, source: string, finding
   );
 }
 
-/*
- * Same shape as `pushMissingFunctionDocFinding` but for interfaces. The stable
- * `docs.missing-interface-doc` rule reports any exported interface without a leading comment block.
+/**
+ * Checks interface declarations, including unexported ones, for a leading maintainer comment.
+ *
+ * @param file - source file whose display path anchors the findings
+ * @param source - original text used to find line numbers and leading comments
+ * @param codeSource - masked text searched for interface declarations
+ * @param findings - accumulator for stable docs.missing-interface-doc findings
+ * @returns nothing. Appends a finding for each matched interface without a usable leading comment.
  */
 export function analyseInterfaceDocs(file: SourceFile, source: string, codeSource: string, findings: Finding[]): void {
   for (const declaration of interfaceDeclarations(source, codeSource)) {
@@ -135,8 +146,8 @@ export function analyseInterfaceDocs(file: SourceFile, source: string, codeSourc
   }
 }
 
-// Line-anchored regex (`^[ \t]*` + `gm` flag) so the match start is the declaration line, not the
-// first character of the keyword inside another construct. See lessons file for the indent-newline trap.
+// Returns source-ordered matches for interface headers that start a line, allowing indentation and a plain export prefix on that line.
+// codeSource supplies the masked headers and same-line names. source supplies the line numbers for the interface documentation check.
 export function interfaceDeclarations(source: string, codeSource: string): ExportedDeclaration[] {
   return [...codeSource.matchAll(/^[ \t]*(?:export[ \t]+)?interface[ \t]+([A-Za-z_$][A-Za-z0-9_$]*)\b/gm)].map((match) => ({
     kind: "interface",
@@ -156,15 +167,15 @@ export interface DocTagRuleSwitches {
   isReturnTagEveryCallable: boolean;
 }
 
-/*
- * Docblock rule pack. Walks every documented exported function from the shared syntax tree and
- * fires its sub-rules per block in a stable, deterministic emission order
- * (stale-param → missing-param → missing-return → bare-tag).
- * `everyCallable` turns on the tag rules' widened coverage in `pushEveryCallableTagFindings`. On
- * every block, `docs.missing-return-tag`'s switch also infers a returned value from the body, and
- * each tag rule's switch also reports its tags that have no description (`pushBareTagFindings`).
- * `docs.missing-param-tag`'s switch also makes `docs.stale-param-tag` name every stale tag of a
- * block in one finding.
+/**
+ * Checks docblocks in stable order, reporting stale parameters, missing parameters, missing returns and bare tags in that order.
+ * The switches gate wider coverage and extra checks so that either tag rule can be configured independently.
+ *
+ * @param file - source file whose display path anchors the findings
+ * @param findings - report accumulator that receives the docblock findings
+ * @param parsed - shared syntax tree providing the documented callables and signatures
+ * @param everyCallable - enables wider coverage and bare tag checks, plus grouped stale names for params or inferred returns for returns
+ * @returns nothing. Appends the docblock violations to findings.
  */
 export function analyseDocRules(file: SourceFile, findings: Finding[], parsed: ParsedScript, everyCallable: DocTagRuleSwitches): void {
   for (const documentedExport of documentedBlocks(documentedExportFunctions(parsed))) {
@@ -176,13 +187,15 @@ export function analyseDocRules(file: SourceFile, findings: Finding[], parsed: P
   pushEveryCallableTagFindings(file, parsed, everyCallable, findings);
 }
 
-/*
- * The tag rules' widened coverage: documented exported arrow and function-expression constants,
- * default exports, callables exported by a later export statement, documented class and
- * object-literal methods, and documented private and nested functions and callable constants,
- * reported at the same severity as exported function declarations. Each tag rule reads these
- * blocks only when its own `everyCallable` switch is on, and `docs.stale-param-tag` never reads
- * them, so the default finding contract stays unchanged.
+/**
+ * Extends tag checks to documented arrows, function expressions, default and later exports, methods, and private and nested callables.
+ * Leaves stale tags on the primary pass so that only enabled missing and bare tag checks run here.
+ *
+ * @param file - source file whose display path anchors the findings
+ * @param parsed - shared syntax tree used to find the additional documented callables
+ * @param everyCallable - switches that independently enable parameter and return tag checks
+ * @param findings - accumulator for violations of the tag contract
+ * @returns nothing. Appends findings for enabled checks and leaves the accumulator alone when both switches are off.
  */
 function pushEveryCallableTagFindings(file: SourceFile, parsed: ParsedScript, everyCallable: DocTagRuleSwitches, findings: Finding[]): void {
   if (!everyCallable.isParamTagEveryCallable && !everyCallable.isReturnTagEveryCallable) {
@@ -200,12 +213,11 @@ function pushEveryCallableTagFindings(file: SourceFile, parsed: ParsedScript, ev
   }
 }
 
-/*
- * Detection anchors on the syntax tree: parameter names are real AST parameters, so parenthesised
- * types such as `(typeof X)[number]` cannot truncate the signature, prose containing `export`
- * inside the docblock cannot suppress a block, and `export async function` plus generic and
- * multi-line signatures are covered. The former regex fallback for parse-less callers is gone -
- * every caller supplies the shared parse.
+/**
+ * Keeps the parsed declaration details for each block, and extracts parameter tag names for the documentation checks.
+ *
+ * @param documentedCallables - Callable declarations and their documentation from the shared syntax tree.
+ * @returns One check record per input callable in the same order, or an empty array when there are none.
  */
 function documentedBlocks(documentedCallables: DocumentedExportFunction[]): DocumentedCallableBlock[] {
   return documentedCallables.map((documented) => ({
@@ -219,10 +231,9 @@ function documentedBlocks(documentedCallables: DocumentedExportFunction[]): Docu
   }));
 }
 
-// Reports stale `@param` tags before missing ones because a rename should produce a stable pair:
-// reports the "old name is stale" finding first because that order is the review contract.
-// With `isNamingEveryStaleTag` (`docs.missing-param-tag`'s `everyCallable` switch), one finding
-// names every stale tag instead (`pushEveryStaleParamFinding`).
+// Returns nothing. Appends stable findings at block's location in file for documented names absent from the signature.
+// isNamingEveryStaleTag groups distinct names into one finding. Otherwise findings gets one per stale tag, or none if no tags are stale.
+// The caller checks for missing tags afterward so that a rename flags the old name first.
 function pushStaleParamFindings(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[], isNamingEveryStaleTag: boolean): void {
   const staleTags = block.paramTags.filter((tag) => !block.params.includes(tag));
   if (isNamingEveryStaleTag) {
@@ -246,10 +257,9 @@ function pushEveryStaleParamFinding(file: SourceFile, block: DocumentedCallableB
   findings.push(docFinding({ ruleId: "docs.stale-param-tag", message: `Docblock for \`${block.name}\` has stale @param ${noun} ${quoted}.`, file, line: block.line, symbol: block.name, parameter: staleTags.join(", ") }));
 }
 
-// Complements `pushStaleParamFindings`: reports one finding per declaration that names every
-// parameter with no @param tag, in signature order, so reviewers need not re-parse the signature.
-// One finding per parameter would share the docblock's line and symbol, so its fingerprint would
-// collapse them into the first. `parameter` metadata holds the same names, joined by ", ".
+// Appends one finding to findings for all parameters in block without an @param tag, in signature order. Uses file for the report path.
+// Groups the names in the message and parameter metadata because findings on the same doc line and symbol would share a fingerprint.
+// Returns nothing. Appends nothing when all declared parameters have tags.
 function pushMissingParamFindings(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[]): void {
   const missing = block.params.filter((param) => !block.paramTags.includes(param));
   if (missing.length === 0) {
@@ -259,9 +269,9 @@ function pushMissingParamFindings(file: SourceFile, block: DocumentedCallableBlo
   findings.push(docFinding({ ruleId: "docs.missing-param-tag", message: `Docblock for \`${block.name}\` is missing @param for ${quoted}.`, file, line: block.line, symbol: block.name, parameter: missing.join(", ") }));
 }
 
-// `@returns` only required when the signature declares a non-void return type, or, with
-// `isInferringReturn` (the rule's `everyCallable` switch), when an unannotated body returns a value.
-// `void` is exempt because documenting "returns nothing" is noise. Reports the stable `docs.missing-return-tag`.
+// Returns nothing. Appends a stable docs.missing-return-tag finding to findings when block in file lacks a tag this detector requires.
+// A return annotation needs a tag unless it starts with void at a word boundary. isInferringReturn checks unannotated bodies for a value.
+// In this detector, void is exempt because documenting "returns nothing" is noise. Project policy still requires a void return note.
 function pushMissingReturnFinding(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[], isInferringReturn: boolean): void {
   if (!needsReturnTag(block, isInferringReturn)) {
     return;
@@ -269,14 +279,15 @@ function pushMissingReturnFinding(file: SourceFile, block: DocumentedCallableBlo
   findings.push(docFinding({ ruleId: "docs.missing-return-tag", message: `Docblock for \`${block.name}\` is missing @returns.`, file, line: block.line, symbol: block.name }));
 }
 
-// The docblock has no `@returns` tag and the callable returns a value (`isReturningValue`).
+// Reports whether the missing-return rule flags block when its docblock has neither @return nor @returns.
+// A declared type qualifies unless it starts with the void keyword. isInferringReturn lets unannotated bodies qualify by returning a value.
 function needsReturnTag(block: DocumentedCallableBlock, isInferringReturn: boolean): boolean {
   return !/@returns?\b/.test(block.doc) && isReturningValue(block, isInferringReturn);
 }
 
-// Either a declared non-void return type exists, or there is no annotation, inference is on and the
-// body returns a value. A declared type always wins over the body. Without inference,
-// annotation-less and void returns are exempt.
+// Tells the return-tag checks whether to treat a documented callable as returning a value.
+// An annotation takes precedence and yields false if it starts with the word void. With no annotation,
+// the result is true only when inference is enabled and the body returns a value.
 function isReturningValue(block: DocumentedCallableBlock, isInferringReturn: boolean): boolean {
   if (block.returnType === "") {
     return isInferringReturn && block.hasBodyReturnValue;
@@ -284,12 +295,15 @@ function isReturningValue(block: DocumentedCallableBlock, isInferringReturn: boo
   return !/^void\b/.test(block.returnType);
 }
 
-/*
- * The tag rules' `everyCallable` check for tags with no description: a `@param` tag naming a real
- * parameter, or a `@returns` tag on a callable that returns a value, with no text after its name or
- * `{Type}` on its own line or on a continuation line. Each rule runs only when its own switch is on,
- * so at default settings a bare tag still satisfies both rules and the default finding contract
- * stays unchanged.
+/**
+ * Checks existing tags on declared parameters and on callables that qualify for value-return tags.
+ * The description contract is satisfied by one described occurrence for each parameter or return, including description on continuation lines.
+ *
+ * @param file - source file whose display path anchors the findings
+ * @param block - doc text and signature used to check parameter and return tags
+ * @param findings - accumulator for bare-tag violations
+ * @param everyCallable - switches that independently enable the parameter and return checks
+ * @returns nothing. Appends violations for enabled checks only when matching tags exist and all their occurrences are bare.
  */
 function pushBareTagFindings(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[], everyCallable: DocTagRuleSwitches): void {
   if (everyCallable.isParamTagEveryCallable) {
@@ -300,9 +314,9 @@ function pushBareTagFindings(file: SourceFile, block: DocumentedCallableBlock, f
   }
 }
 
-// One `docs.missing-param-tag` finding per parameter whose @param tags are all bare, anchored on the
-// first bare tag's line so each of two bare parameters, or a bare one and a missing one, keeps its
-// own fingerprint. A tag naming no parameter is left to `docs.stale-param-tag`.
+// Appends a docs.missing-param-tag finding to findings for each parameter in block with tags but no description on any of them.
+// Uses file for the report path and the first bare tag for the anchor so that each reported parameter keeps a distinct fingerprint.
+// Returns nothing. Tags naming no declared parameter are handled by docs.stale-param-tag.
 function pushBareParamTagFindings(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[]): void {
   const tags = docParamTagOccurrences(block.doc);
   for (const param of block.params) {
@@ -313,8 +327,9 @@ function pushBareParamTagFindings(file: SourceFile, block: DocumentedCallableBlo
   }
 }
 
-// Reports the stable `docs.missing-return-tag` finding when the callable returns a value (inference
-// is on with the switch) and its @returns tags are all bare, anchored on the first bare tag's line.
+// Reports a stable docs.missing-return-tag finding on the first @return or @returns line when all existing return tags are bare.
+// A declared type qualifies unless it starts with the void keyword. Without a declared type, the body must return a value.
+// Returns nothing and appends to findings, using file for the report path and block for the doc text and signature.
 function pushBareReturnTagFinding(file: SourceFile, block: DocumentedCallableBlock, findings: Finding[]): void {
   if (!isReturningValue(block, true)) {
     return;
@@ -325,14 +340,14 @@ function pushBareReturnTagFinding(file: SourceFile, block: DocumentedCallableBlo
   }
 }
 
-// The first tag when there are tags and none of them is described; one described duplicate is enough.
+// Returns the first entry in tags only when all are undescribed; empty tags or any described tag returns undefined.
 function firstBareTag<T extends DocTagOccurrence>(tags: T[]): T | undefined {
   return tags.some((tag) => tag.isDescribed) ? undefined : tags[0];
 }
 
-// Single makeFinding factory for every docblock-rule finding. `parameter` is omitted (not set to
-// undefined) under exactOptionalPropertyTypes so the metadata shape stays stable and each
-// baseline fingerprint round-trips cleanly across runs.
+// Returns an advisory docblock finding using input's rule, message, and source location.
+// An absent or empty parameter leaves that metadata field unset under exactOptionalPropertyTypes.
+// The stable fingerprint comes from the rule, file path, line, and symbol.
 function docFinding(input: DocFindingInput): Finding {
   return makeFinding({
     ruleId: input.ruleId,
@@ -348,8 +363,8 @@ function docFinding(input: DocFindingInput): Finding {
   });
 }
 
-// Pulls every `@param name` tag's name from a docblock. Order is preserved so callers can spot
-// duplicate tags by simple list comparison rather than set membership.
+// Returns the name parsed from the first @param marker on each line of doc, in stable order for stale-tag reporting.
+// The list is empty when no line yields a name.
 function docParamTags(doc: string): string[] {
   const names: string[] = [];
   for (const line of doc.split(/\r?\n/)) {
@@ -361,9 +376,8 @@ function docParamTags(doc: string): string[] {
   return names;
 }
 
-// Skips the `{Type}` braces before reading the identifier. The two-step approach lets the type
-// portion be arbitrarily complex (unions, generics) without breaking the identifier extraction.
-// `tail` is the text after the name, where the tag's description starts.
+// Reads line after its first @param marker, skipping an optional brace-delimited type through its first closing brace.
+// Returns the name and raw tail for description checking, or undefined when the marker, usable name or closing type brace is missing.
 function docParamTagParts(line: string): { name: string; tail: string } | undefined {
   const marker = line.indexOf("@param");
   if (marker === -1) {
@@ -374,8 +388,8 @@ function docParamTagParts(line: string): { name: string; tail: string } | undefi
   return name ? { name, tail: rest.slice(name.length) } : undefined;
 }
 
-// Every `@param` tag with a parameter name, in docblock order, with its line offset and whether a
-// description follows the name.
+// Checks the first @param marker on each line of doc and returns an occurrence when it yields a name.
+// Each occurrence gives its line offset and whether it has description text on that line or before the next tag.
 function docParamTagOccurrences(doc: string): DocParamTagOccurrence[] {
   const lines = docContentLines(doc);
   const tags: DocParamTagOccurrence[] = [];
@@ -388,8 +402,8 @@ function docParamTagOccurrences(doc: string): DocParamTagOccurrence[] {
   return tags;
 }
 
-// Every `@returns` or `@return` tag, in docblock order, with its line offset and whether a
-// description follows the tag or its `{Type}`.
+// Returns an occurrence for the first @returns or @return marker matched on each line of doc, in docblock order.
+// Each occurrence gives its line offset and whether description text follows the marker or optional type on that line or before the next tag.
 function docReturnTagOccurrences(doc: string): DocTagOccurrence[] {
   const lines = docContentLines(doc);
   const tags: DocTagOccurrence[] = [];
@@ -402,14 +416,15 @@ function docReturnTagOccurrences(doc: string): DocTagOccurrence[] {
   return tags;
 }
 
-// Docblock lines without their leading `*` marker. The doc text already starts after the `/**`
+// Docblock lines without their leading * marker. The doc text already starts after the /**
 // opener and stops before the closer, so index 0 is the docblock's first line.
 function docContentLines(doc: string): string[] {
   return doc.split(/\r?\n/).map((line) => line.replace(/^\s*\*/, "").trim());
 }
 
-// True when description text follows the tag on its own line after an optional `-` separator, or on
-// a continuation line before the next tag or the end of the docblock.
+// Returns whether the tag has description text in tail or subsequent lines before the next tag.
+// lines holds stripped, trimmed docblock lines; index identifies the current tag.
+// tail is text after the tag's name or type; a leading - alone does not count as a description.
 function hasTagDescription(lines: string[], index: number, tail: string): boolean {
   if (tail.trim().replace(/^-\s*/, "") !== "") {
     return true;
@@ -418,8 +433,8 @@ function hasTagDescription(lines: string[], index: number, tail: string): boolea
   return lines.slice(index + 1, nextTag === -1 ? lines.length : nextTag).some((line) => line !== "");
 }
 
-// Removes a leading `{Type}` cluster from a `@param` tag tail. Returns the empty string when the
-// braces are unbalanced - a malformed tag should not contribute a phantom parameter name.
+// Removes a leading brace-delimited type from rest and returns the trimmed suffix after its first closing brace.
+// Returns rest unchanged when no type begins it, or an empty string when an opening brace has no closing brace.
 function stripDocParamType(rest: string): string {
   if (!rest.startsWith(String.fromCharCode(123))) {
     return rest;
@@ -428,9 +443,8 @@ function stripDocParamType(rest: string): string {
   return end === -1 ? "" : rest.slice(end + 1).trim();
 }
 
-// Walks upward from the declaration looking for `/** */` or `*` continuation lines. The boundary
-// predicate stops the search at the first real code or non-doc text, so docblocks from earlier
-// declarations don't leak across.
+// Returns whether the upward scan above the one-based declaration line in source reaches a /** opener or a line starting with *.
+// Blank and @-prefixed lines are skipped; other text ends the search without a match.
 function hasDocCommentBeforeLine(source: string, line: number): boolean {
   const lines = source.split(/\r?\n/);
   let index = line - 2;
@@ -447,21 +461,20 @@ function hasDocCommentBeforeLine(source: string, line: number): boolean {
   return false;
 }
 
-// `/**` openers and `*` continuation lines are both docblock material. Plain `//` comments are
-// intentionally excluded - those are tracked separately by `hasLeadingCommentBeforeLine`.
+// Returns whether trimmedLine begins with a /** opener or * continuation marker.
+// Ordinary // comments are excluded here and checked by hasLeadingCommentBeforeLine.
 function isDocCommentLine(trimmedLine: string): boolean {
   return trimmedLine.startsWith("/**") || trimmedLine.startsWith("*");
 }
 
-// Halts the docblock walker when the upward search lands on real code. `@` lines are allowed
-// through because JSDoc tags appear inside the docblock body and shouldn't terminate the scan.
+// Returns whether trimmedLine ends a docblock search after doc-comment lines have been ruled out.
+// Blank lines and @-prefixed tag text allow the search to continue; every other line is a boundary.
 function isDocCommentSearchBoundary(trimmedLine: string): boolean {
   return trimmedLine !== "" && !trimmedLine.startsWith("@");
 }
 
-// File-overview presence check for `docs.missing-file-overview`. Skips a shebang first because
-// scripts conventionally place `#!` on line 1, then asks whether the first real line is a
-// comment - that is the contract the rule reports against.
+// Reports whether the first content in source after blank lines and an optional shebang supplies overview text.
+// An empty file, a shebang alone, an empty comment or a block containing only tag lines leaves the overview missing.
 function hasFileOverviewComment(source: string): boolean {
   const lines = source.split(/\r?\n/);
   let index = firstMeaningfulLineIndex(lines);
@@ -474,9 +487,8 @@ function hasFileOverviewComment(source: string): boolean {
   return index !== undefined && commentTextAtLine(lines, index) !== undefined;
 }
 
-// Returns the index of the first non-blank line at or after `start`. The implementation does
-// not skip comments - callers asking for "first meaningful line" treat comment text as a
-// meaningful signal (file-overview detection wants to land on the comment itself).
+// Returns the first nonblank index in lines at or after start (default 0), or undefined when none remains.
+// Comments count as meaningful so file-overview detection can inspect the comment itself.
 function firstMeaningfulLineIndex(lines: string[], start = 0): number | undefined {
   for (let index = start; index < lines.length; index += 1) {
     if ((lines[index] ?? "").trim() !== "") {

@@ -42,9 +42,8 @@ const REPORTED_SECURITY = [
   "src/run.ts:12 security.eval-call",
 ];
 
-// Scans the fixture project with its workflow folder included. security.unsafe-deserialization ships off by
-// default; it is switched on so the eval call it shares with security.eval-call still reports once.
-// Invariant: every call rebuilds the same two files, so both tests read identical, deterministic reports.
+// Returns a fresh analysis report for the fixture source and workflow, with ignored paths included.
+// Enables security.unsafe-deserialization so the fixtures exercise the invariant that the shared eval occurrence is reported once and audited.
 function analyseSection13cProject(): AnalysisReport {
   return analyseProject(
     { "src/run.ts": RUN_SOURCE, ".github/workflows/ci.yml": WORKFLOW },

@@ -128,7 +128,8 @@ test("deepScanBudget rejects malformed mappings, unknown keys, and non-positive 
     "deepScanBudget:\n  maxBytes: 1.5\n",
   ];
   for (const invalidConfig of invalidConfigs) {
-    // Runs the current malformed mapping so the labeled assertion identifies the failing case.
+    // Runs analysis with the current invalidConfig fixture and its schema header so the assertion can check deepScanBudget validation.
+    // Expected validation errors propagate to assert.throws; returns an analysis report if the fixture is unexpectedly accepted.
     const analyseInvalidConfig = () => analyseProject({
       "bad.ts": "export const value = 1;\n",
       ".gruff-ts.yaml": `schemaVersion: gruff-ts.config.v0.1\n${invalidConfig}`,

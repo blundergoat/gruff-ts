@@ -259,12 +259,12 @@ test("gruff-ts analyse --no-interaction skips the init prompt in a config-less p
   }
 });
 
-// Returns the projectRoot-anchored AnalysisOptions needed to drive loadConfig in tests.
+// Returns default analysis options for loadConfig tests; callers supply the project root separately.
 function baseOptions(): AnalysisOptions {
   return { paths: ["."], shouldSkipConfig: false, format: "text", failOn: "none", shouldIncludeIgnored: false, changedScope: "symbol", shouldSkipBaseline: true };
 }
 
-// Baseline context used by the prompt-predicate tests; individual cases override one field at a time.
+// Returns an interactive, unsuppressed prompt-test context for the supplied project root, with no explicit config or opt-out.
 function promptContext(projectRoot: string): InitPromptContext {
   return {
     projectRoot,
@@ -278,14 +278,14 @@ function promptContext(projectRoot: string): InitPromptContext {
   };
 }
 
-// Keeps descriptor-registry parity assertions outside test bodies so the test remains declarative.
+// Returns nothing after checking for each registered rule's heading marker in the rendered YAML. A missing marker fails the test.
 function assertDefaultConfigIncludesEveryDescriptor(yaml: string): void {
   for (const descriptor of ruleDescriptors()) {
     assert.equal(yaml.includes(`  ${descriptor.ruleId}:`), true, `missing rule entry for ${descriptor.ruleId}`);
   }
 }
 
-// Verifies default enabled states against the literal rendered YAML, before loadConfig overlays defaults.
+// Returns nothing after checking that each rule's explicit enabled value in the rendered YAML matches its catalogue default.
 function assertDefaultConfigOptInStates(yaml: string): void {
   for (const descriptor of ruleDescriptors()) {
     const block = renderedRuleBlock(yaml, descriptor.ruleId);
@@ -294,7 +294,8 @@ function assertDefaultConfigOptInStates(yaml: string): void {
   }
 }
 
-// Checks threshold fields on the rendered document so absent keys stay absent in starter config.
+// Returns nothing after checking each rule block in the rendered YAML against its descriptor.
+// Rules with numeric thresholds must render matching threshold and severity fields. Other rules must omit both.
 function assertDefaultConfigThresholdFields(yaml: string): void {
   for (const descriptor of ruleDescriptors()) {
     const block = renderedRuleBlock(yaml, descriptor.ruleId);
@@ -308,7 +309,7 @@ function assertDefaultConfigThresholdFields(yaml: string): void {
   }
 }
 
-// Confirms parser round-trip coverage without putting registry loops directly in the test body.
+// Returns nothing after asserting that the loaded rule overrides contain every registered rule with its descriptor's default enabled state.
 function assertLoadedConfigContainsEveryRule(ruleOverrides: Config["rules"]): void {
   for (const descriptor of ruleDescriptors()) {
     const ruleOverride = ruleOverrides.get(descriptor.ruleId);
@@ -317,7 +318,7 @@ function assertLoadedConfigContainsEveryRule(ruleOverrides: Config["rules"]): vo
   }
 }
 
-// Pulls one rule block by marker rather than parsing the whole YAML document.
+// Returns the named rule's block from the supplied rendered YAML, including its heading; asserts if the rule marker is absent.
 function renderedRuleBlock(yaml: string, ruleId: string): string {
   const marker = `  ${ruleId}:\n`;
   const start = yaml.indexOf(marker);
@@ -328,14 +329,14 @@ function renderedRuleBlock(yaml: string, ruleId: string): string {
   return yaml.slice(start, end);
 }
 
-// Reads a scalar field from a rendered rule block without normalising the document through loadConfig.
+// Returns the text captured for key from the rendered block, or undefined when the field pattern does not match.
 function renderedRuleField(block: string, key: string): string | undefined {
   const match = block.match(new RegExp(`^    ${key}:\\s*(\\S.*)$`, "m"));
   return match?.[1];
 }
 
-// Extracts `optionNumber` and `optionBoolean(<varName>.config | config, "ruleId", "key", <default>)` defaults
-// from rule implementation sources. Mirrors the parsing approach used by rule-catalogue.test.ts.
+// Extracts numeric or boolean literal defaults from optionNumber and optionBoolean calls in rule source, using config or receiver.config.
+// Returns a deterministic map by rule ID and option key, empty when no calls match.
 function parseOptionDefaults(source: string): Map<string, Map<string, number | boolean>> {
   const usages = new Map<string, Map<string, number | boolean>>();
   for (const match of source.matchAll(/option(?:Number|Boolean)\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)",\s*(-?\d+(?:\.\d+)?|true|false)\)/g)) {
@@ -360,7 +361,7 @@ function normalizeOptionDefaults(defaults: Readonly<Record<string, Readonly<Reco
   return sortNestedMap(result);
 }
 
-// Deterministic key ordering so deepEqual does not fail on insertion-order differences.
+// Returns a new map of the supplied rule defaults with rule ids and option keys sorted for deterministic iteration.
 function sortNestedMap(input: Map<string, Map<string, number | boolean>>): Map<string, Map<string, number | boolean>> {
   return new Map(
     [...input.entries()]

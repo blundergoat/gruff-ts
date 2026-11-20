@@ -101,7 +101,7 @@ test("parse diagnostics accept ordinary balanced TypeScript and JavaScript", () 
 `), []);
 });
 
-// Minimal source shape consumed by parseDiagnostics.
+// Returns script metadata using displayPath as the parser's file identity, so parseDiagnostics parses the fixture.
 function scriptFile(displayPath: string): { displayPath: string; isScript: boolean } {
   return { displayPath, isScript: true };
 }
@@ -162,7 +162,7 @@ const REPORT_SWALLOW_SILENTLY = [
   "}",
 ];
 
-// Joins report fixture blocks into one module with the blank line the appendix files put between declarations.
+// Returns module text with header first, then the fixture blocks, separated by blank lines to match the appendix fixtures.
 function reportModule(header: string, ...blocks: string[][]): string {
   return [header, "", ...blocks.flatMap((block) => [...block, ""])].join("\n");
 }
@@ -181,7 +181,7 @@ test("M22 report repro A: a nested template literal leaves the next function ana
 test("M22 report repro E: the swallowed catch below a nested template is still reported, like its control", () => {
   const nestedSource = reportModule("/** Repro E: the same desync also SUPPRESSES real findings after the nested template. */", REPORT_NESTED_LABEL, REPORT_SWALLOW_SILENTLY);
   const controlSource = reportModule("/** Repro E control: repro-e-false-negative.ts with the nested template flattened. */", REPORT_FLAT_LABEL, REPORT_SWALLOW_SILENTLY);
-  // The waste-pillar rule ids one module reports, sorted into a stable order so the pair compares by content.
+  // Returns fixture waste rule IDs in stable lexical order with swallowed-catch enabled. Each case expects one swallowed-catch ID.
   const wasteRuleIds = (source: string): string[] => analyseFixture(source, SWALLOWED_CATCH_ON).findings.filter((entry) => entry.ruleId.startsWith("waste.")).map((entry) => entry.ruleId).sort();
 
   assert.deepEqual(wasteRuleIds(nestedSource), ["waste.swallowed-catch"]);

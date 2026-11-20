@@ -25,17 +25,14 @@ const CLEAN_PILLAR_SCORE = 100;
 const HALF_WAY_SCORE = 75;
 
 /**
- * Builds one finding with an explicit weight and symbol so a test can state what it expects.
- *
- * Invariant: the returned finding always carries the severity and confidence the caller asked for,
- * and omits `symbol` entirely rather than setting it undefined, which `exactOptionalPropertyTypes`
- * rejects.
+ * Build a scoring fixture with the requested severity and optional symbol.
+ * The invariant is that an unspecified symbol stays absent, as required by exactOptionalPropertyTypes.
  *
  * @param ruleId - rule id the finding carries; its message reads "<ruleId> fired."
  * @param pillar - pillar whose score the finding counts against
  * @param severity - severity that sets the finding's weight
- * @param options - optional confidence (default `high`), file path (default `src/a.ts`), line (default 1) and symbol
- * @returns the finding `makeFinding` builds from these values
+ * @param options - overrides for confidence (default high), file path (default src/a.ts) and line (default 1), plus an optional symbol
+ * @returns a finding with the requested scoring inputs, its fixture location, and the fingerprint computed by makeFinding
  */
 function contractFinding(
   ruleId: string,
@@ -62,7 +59,7 @@ function pillarRow(score: ReturnType<typeof scoreReport>, pillar: Pillar) {
   return row;
 }
 
-// Reads one published pillar's score, failing the test when the pillar evaluated nothing.
+// Returns the requested pillar's score from the published result. The test fails if the pillar is missing or has a null score.
 function pillarScore(score: ReturnType<typeof scoreReport>, pillar: Pillar): number {
   const pillarValue = pillarRow(score, pillar).score;
   assert.notEqual(pillarValue, null, `pillar ${pillar} has no score`);

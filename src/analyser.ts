@@ -49,10 +49,11 @@ export interface HookAnalysisReports {
 }
 
 /**
- * Analyse the configured paths and return the stable gruff.analysis.v3 report state.
+ * Analyse the requested paths and return the stable gruff.analysis.v3 report.
+ * Writes the requested history entry and writes a baseline when generation or migration is requested.
  *
- * @param requestedOptions Normalised analysis options from the CLI or direct callers.
- * @returns Versioned report with fingerprinted findings, diagnostics, paths, and score data.
+ * @param requestedOptions - selects paths, rules, baseline settings, changed scope and optional history output.
+ * @returns Versioned report with fingerprinted findings, diagnostics, paths and score data. An unreadable changed scope leaves no findings.
  */
 export function analyse(requestedOptions: AnalysisOptions): AnalysisReport {
   const options = targetsFromLaunchDirectory(requestedOptions);
@@ -62,8 +63,7 @@ export function analyse(requestedOptions: AnalysisOptions): AnalysisReport {
   const changedResult = filterChangedFindings(run.baselineResult.findings, changedScope, run.scanned.sources);
 
   if (options.historyFile) {
-    // The history row is scored on the run's own denominator, so a later delta measures findings
-    // rather than the difference between two project sizes.
+    // Use the discovered script count so the history score is normalised to this run's scan size.
     recordHistory(
       run.projectRoot,
       options.historyFile,
@@ -73,7 +73,7 @@ export function analyse(requestedOptions: AnalysisOptions): AnalysisReport {
     );
   }
 
-  // File-scoped policy: diff runs report and fail on diagnostics from changed target files only.
+  // Diff scope limits file-content diagnostics to changed targets. Operational diagnostics and explicit-range diagnostics stay visible.
   const diagnostics = [...filterScopedDiagnostics(run.diagnostics, changedScope), ...scopeDiagnostics];
   // A scope the run could not read leaves nothing scoped to report. Publishing the unscoped findings beside the
   // diagnostic would read as a successful narrow scan at a scope the run never applied.
@@ -81,11 +81,9 @@ export function analyse(requestedOptions: AnalysisOptions): AnalysisReport {
   return reportFromRun({ ...run, diagnostics }, options, { ...run.baselineResult, findings }, changedResult.suppressedCount);
 }
 
-// An unreadable changed range names no region, so the run reports one run-invalidating diagnostic, no findings,
-// and exits 2, as a missing input does. The diagnostic carries the type the hook reports for the same failure,
-// which is the one type the family publishes for it. A literal empty value never reaches here: it is read as no
-// filter, which FAMILY-CONTRACT.md section 6 still has to settle.
-// @throws {Error} when changedRegionScope fails with any error other than a ChangedRegionError, rethrown unchanged.
+// Returns the scope requested in options and an empty diagnostic list. Without a filter, the scope is undefined.
+// On ChangedRegionError, returns undefined scope and one fatal diagnostic, so the CLI exits 2 with no findings per FAMILY-CONTRACT.md section 6.
+// @throws Any other value thrown during scope resolution, rethrown unchanged.
 function changedRegionScopeOrDiagnostic(options: AnalysisOptions): { changedScope: ChangedRegionScope | undefined; scopeDiagnostics: RunDiagnostic[] } {
   try {
     return { changedScope: changedRegionScope(options), scopeDiagnostics: [] };
@@ -97,8 +95,8 @@ function changedRegionScopeOrDiagnostic(options: AnalysisOptions): { changedScop
   }
 }
 
-// Builds the hook's full and changed-region reports from one scan. The diff-base replay still uses
-// the ordinary runner because it analyses different file contents.
+// Scan with currentOptions and return the full report plus the changed-region view selected by scopedOptions.
+// When hasChangedRegion is false, the report contract gives both fields the same object. Baseline writes follow currentOptions.
 export function analyseHookReports(currentOptions: AnalysisOptions, scopedOptions: AnalysisOptions, hasChangedRegion: boolean): HookAnalysisReports {
   const run = completeAnalysis(prepareAnalysis(currentOptions), currentOptions);
   const currentReport = reportFromRun(run, currentOptions, run.baselineResult);
@@ -113,15 +111,12 @@ export function analyseHookReports(currentOptions: AnalysisOptions, scopedOption
 }
 
 /**
- * Pick the directory that every reported path is written relative to.
+ * Anchor reported paths at the launch directory when all usable targets are inside it or none are usable.
+ * Otherwise use the nearest shared directory for all usable targets. Files contribute their containing directories.
  *
- * Run `gruff-ts analyse .` inside a project and the answer is that directory. Run `gruff-ts analyse /srv/checkout` from a
- * home directory, as CI and scripted scans do, and the answer is /srv/checkout, so findings still read as short project-relative
- * paths rather than absolute ones.
- *
- * @param paths Scan targets as typed on the command line; empty means no target was named, so the launch directory is the project.
- * @returns Directory to treat as the project root; never empty.
- * @throws When targets sit under different filesystem roots, such as `analyse /srv/api /opt/tools`, leaving no single project.
+ * @param paths - Scan targets resolved from the launch directory; an empty list selects the launch directory.
+ * @returns The launch directory or a shared ancestor of usable targets; never empty.
+ * @throws When targets cannot share a filesystem root.
  */
 function projectRootFromTargets(paths: string[]): string {
   const launchDirectory = cwd();
@@ -132,17 +127,17 @@ function projectRootFromTargets(paths: string[]): string {
   }
 
   let common: string | null = null;
-  // Each target narrows the answer: the root must be a directory that contains all of them.
+  // A later usable target can widen the common directory because the root must contain every usable target.
   for (const path of paths) {
     const absolute = resolve(launchDirectory, path);
     let directory = absolute;
     try {
-      // Naming one file means the project is the folder holding it, not the file itself.
+      // A file contributes its containing directory because reported paths need a directory anchor.
       if (!statSync(absolute).isDirectory()) {
         directory = dirname(absolute);
       }
     } catch {
-      // The caller named a path that does not exist, such as a typo; discovery reports it as missing instead.
+      // A failed stat keeps the path from setting the root. Discovery checks the original targets and reports missing inputs.
       continue;
     }
 
@@ -153,7 +148,7 @@ function projectRootFromTargets(paths: string[]): string {
     }
     while (!isSameOrDescendant(directory, common)) {
       const parent = dirname(common);
-      // Walking up hit the filesystem root, so these targets live in unrelated projects.
+      // Reaching a filesystem root without containing this target means no single root can anchor both paths.
       if (parent === common) {
         throw new Error("scan targets do not share a filesystem root");
       }
@@ -161,8 +156,7 @@ function projectRootFromTargets(paths: string[]): string {
     }
   }
 
-  // Targets sit inside the launch directory, so it stays the root. Moving the root down to a target's own folder would
-  // re-anchor config discovery, ignore patterns, and baseline paths.
+  // Keep the launch directory when no target was usable or their shared root is inside it, preserving config and baseline anchoring.
   if (common === null || isSameOrDescendant(common, launchDirectory)) {
     return launchDirectory;
   }
@@ -170,18 +164,11 @@ function projectRootFromTargets(paths: string[]): string {
 }
 
 /**
- * Rewrite each relative target, and each typed baseline path, to name from the project root what it named from the launch
- * directory when the project root is elsewhere.
+ * Keep scan targets and baseline paths stable because discovery and baseline handling resolve paths from the project root.
+ * Absolute baseline paths stay unchanged.
  *
- * Discovery reads operands against the project root, so `..` typed from `proj/src` names `proj`, but read against the root
- * `proj` it named the directory above the project, which was then scanned and failed on its first path. The baseline
- * flags are read against the root too, so a baseline typed two levels down was written above the project and never read.
- *
- * Stable contract: the launch directory never changes which files a run scans or which baseline file it reads or writes.
- *
- * @param options Analysis options with the targets and baseline paths as typed on the command line.
- * @returns The options unchanged when the root is the launch directory, otherwise with each target anchored to it and
- *   each baseline path rewritten relative to the root, so no report names a host path.
+ * @param options - Scan options containing targets and any baseline paths entered from the launch directory.
+ * @returns The original options when launched from the project root, or a copy with absolute targets and rebased relative baseline paths.
  */
 function targetsFromLaunchDirectory(options: AnalysisOptions): AnalysisOptions {
   const launchDirectory = cwd();
@@ -190,7 +177,7 @@ function targetsFromLaunchDirectory(options: AnalysisOptions): AnalysisOptions {
   if (projectRoot === launchDirectory) {
     return options;
   }
-  // Names from the project root the file a relative baseline path names from the launch directory.
+  // Return path unchanged when absolute, or relative to projectRoot when it names a baseline from launchDirectory.
   const fromRoot = (path: string): string => (isAbsolute(path) ? path : relative(projectRoot, resolve(launchDirectory, path)));
   return {
     ...options,
@@ -206,15 +193,15 @@ function targetsFromLaunchDirectory(options: AnalysisOptions): AnalysisOptions {
  *
  * Comparison is by whole path segment, so a sibling folder such as /work/apidocs is never mistaken for something inside /work/api.
  *
- * @param candidate Directory being tested.
- * @param ancestor Directory that may contain it.
+ * @param candidate - Directory being tested.
+ * @param ancestor - Directory that may contain it.
  * @returns True when candidate is the ancestor or sits inside it.
  */
 function isSameOrDescendant(candidate: string, ancestor: string): boolean {
   return candidate === ancestor || candidate.startsWith(ancestor.replace(/\/+$/u, "") + "/");
 }
 
-// Loads config and discovers inputs once so direct analysis and hook reuse share the same setup.
+// Return the project root, loaded config, discovered inputs and an empty diagnostic array selected by options for a scan.
 function prepareAnalysis(options: AnalysisOptions): AnalysisPreparation {
   const projectRoot = projectRootFromTargets(options.paths);
   const config = loadConfig(projectRoot, options);
@@ -223,9 +210,15 @@ function prepareAnalysis(options: AnalysisOptions): AnalysisPreparation {
   return { projectRoot, config, diagnostics, discovery };
 }
 
-// Runs per-file and project-level rules before applying baseline suppression; finding order remains stable.
-// A baseline that cannot be read, or that another port wrote, throws out of a hook run, which publishes its own fatal
-// payload, and becomes a fatal `baseline-error` diagnostic in a direct analysis, so neither reports a clean scan.
+/**
+ * Complete a prepared scan. Preserve stable finding identities by assigning them before inline and baseline suppression.
+ *
+ * @param preparation - project scope, discovery and config, with the caller's diagnostic array to append to
+ * @param options - request settings for project scope and baseline selection. Generation or migration writes the requested baseline file.
+ * @param unusableBaseline - defaults to throw for hooks. Diagnose mode records a fatal baseline-error and keeps the findings.
+ * @returns Run data for reporting, including findings after baseline handling, suppression records, notes and accumulated diagnostics.
+ * @throws {BaselineFileError} - a baseline file failure in throw mode.
+ */
 function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOptions, unusableBaseline: "throw" | "diagnose" = "throw"): AnalysisRun {
   const { projectRoot, config, diagnostics, discovery } = preparation;
   pushMissingPathDiagnostics(discovery.missingPaths, diagnostics);
@@ -248,18 +241,21 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
   // in SARIF and the findings left keep the ordinals they had without the comment (FAMILY-CONTRACT.md section 13c).
   const inline = applyInlineSuppressions(namedFindings, testPathSkipped.suppressions, discovery.files);
   const baselineResult = applyBaselineOptions(projectRoot, options, inline.findings, spans, unusableBaseline);
-  // A collision names two declarations one identity could not tell apart; it suppresses nothing and fails no run.
+  // A baseline collision records a non-fatal diagnostic and leaves every finding with that identity visible.
   diagnostics.push(...baselineResult.diagnostics);
   const notes = [...discovery.notes, ...scanned.notes];
   return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes, suppressions: inline.suppressions, suppressedFindings: inline.suppressed };
 }
 
-/*
- * Converts a completed run into native report state, or into a changed-region projection when the caller passed `--diff`.
+/**
+ * Assemble report state for the stable gruff.analysis.v3 schema from the findings the caller selected for this view.
+ * Keep suppression audit counts scan-wide so that a changed-region view preserves what the exclusions hid.
  *
- * The JSON adapter owns the stable `gruff.analysis.v3` wire shape.
- * `suppressions` carries one audit row per configured sensitive exclusion and is counted across the whole scan, so a
- * changed-region view never understates what a suppression hid.
+ * @param run - completed scan supplying discovery totals, diagnostics, notes and suppression records
+ * @param options - request metadata to record, including input paths and failure threshold
+ * @param baselineResult - baseline metadata and the findings to report, already scoped when needed
+ * @param suppressedCount - number of findings omitted by changed-region filtering. Omit it to leave the field out of the report.
+ * @returns Native report state with the supplied findings, scan totals, and any baseline or changed-region count supplied.
  */
 function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResult: BaselineApplication, suppressedCount?: number): AnalysisReport {
   const findings = baselineResult.findings;
@@ -271,8 +267,8 @@ function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResul
       format: options.format,
       failOn: options.failOn,
       generatedAt: new Date().toISOString(),
-      // Operands are typed relative to the launch directory, which need not be the project root, so they are
-      // recorded absolute and the renderer makes them project-relative.
+      // Record explicit inputs as absolute paths so they keep their launch-directory meaning if the project root differs.
+      // With no explicit input, a single dot denotes the default project scan.
       inputs: options.paths.length === 0 ? ["."] : options.paths.map((path) => resolve(cwd(), path)),
       ...(options.config === undefined ? {} : { config: options.config }),
       ...(options.shouldIncludeIgnored ? { includeIgnored: true as const } : {}),
@@ -304,14 +300,11 @@ export const CONFIG_ERROR_DIAGNOSTIC_TYPE = "config-error";
 export const TARGET_ERROR_DIAGNOSTIC_TYPE = "target-error";
 
 /**
- * Name the first of several targets that sits outside the launch directory.
+ * Identify a multi-target request that violates the launch-directory boundary so the caller can refuse it before reporting.
+ * A single external target is allowed; every target in a multi-target request must stay inside the launch directory.
  *
- * One such target is supported: `gruff-ts analyse /srv/checkout` makes it the project root. Several are not, because
- * every reported path is written relative to one root, so `../a` and `../b` from a sibling directory would leave paths
- * the report cannot express. The caller refuses that run instead of throwing while the report renders.
- *
- * @param paths Scan targets as typed on the command line.
- * @returns The first target outside the launch directory when two or more were named, otherwise null.
+ * @param paths - Scan targets resolved from the launch directory for this boundary check.
+ * @returns The first outside target in a multi-target request, or null when no request boundary is violated.
  */
 export function targetOutsideLaunchDirectory(paths: string[]): string | null {
   // A single target, or none, always has a root the run can report against.
@@ -319,25 +312,24 @@ export function targetOutsideLaunchDirectory(paths: string[]): string | null {
     return null;
   }
   const launchDirectory = cwd();
-  // One target outside the launch directory leaves the targets with no shared root to report from.
+  // Multi-target requests are refused as soon as any operand lies outside the launch directory.
   return paths.find((path) => !isSameOrDescendant(resolve(launchDirectory, path), launchDirectory)) ?? null;
 }
 
-/*
- * Builds the envelope a run that could not start still owes a caller who asked for a machine format.
+/**
+ * Build a stable gruff.analysis.v3 report for a run refused before discovery so machine consumers can read the failure.
  *
- * Nothing was discovered and nothing was scanned, so it reports one run-invalidating diagnostic and empty
- * everything else. Printing only to stderr would leave a JSON consumer with no diagnostic, no type and no run block
- * to read, where every other port publishes all three.
- *
- * Stable contract: the same `gruff.analysis.v3` schema shape `reportFromRun` publishes, carrying zero findings and
- * exactly one diagnostic. Throws nothing.
+ * @param projectRoot - project path to record for the refused run
+ * @param format - requested output format to record in run metadata
+ * @param diagnosticType - category that identifies why the run was refused
+ * @param message - explanation to include in the diagnostic
+ * @returns A report with one run diagnostic, zero analysed files and no findings.
  */
 export function failedRunReport(projectRoot: string, format: OutputFormat, diagnosticType: string, message: string): AnalysisReport {
   return {
     schemaVersion: "gruff.analysis.v3",
     tool: { name: "gruff-ts", version: VERSION },
-    // The threshold is the `analyse` default because no flag was read; the refusal exits 2 whatever it says.
+    // Use the analyse default threshold because the caller handles the refusal status separately.
     run: { projectRoot, format, failOn: "advisory", generatedAt: new Date().toISOString() },
     summary: summarize([]),
     paths: { analysedFiles: 0, ignoredPaths: [], skipped: [], missingPaths: [] },
@@ -394,8 +386,8 @@ interface AnalysisRun {
   suppressedFindings: SuppressedFinding[];
 }
 
-// Emits a `missing-path` diagnostic per path that the user requested but discovery could not
-// resolve. Diagnostics force a non-zero exit (see `exitFor`); never throws - partial scans should still report.
+// Append one missing-path diagnostic to diagnostics for each requested path in missingPaths that discovery could not resolve.
+// Returns nothing. These diagnostics invalidate the run and force exit 2. An empty list adds nothing.
 function pushMissingPathDiagnostics(missingPaths: string[], diagnostics: RunDiagnostic[]): void {
   for (const missingPath of missingPaths) {
     diagnostics.push({
@@ -406,10 +398,14 @@ function pushMissingPathDiagnostics(missingPaths: string[], diagnostics: RunDiag
   }
 }
 
-/*
- * Per-file read + scan loop. Reports read failures as diagnostics because CLI users need partial
- * results from the rest of the tree, but the stable discovered-file order still feeds project-index
- * snapshots before the final canonical sort. Changing that contract can churn graph-rule anchors.
+/**
+ * Read and scan inputs in stable discovery order so that project-index snapshots keep their graph anchors.
+ * Record failures caught during a file's read or scan as read-error diagnostics so the remaining files can still be checked.
+ *
+ * @param files - discovered inputs in the order used for project-index snapshots
+ * @param config - scan budget, rule settings and project-source selection settings
+ * @param diagnostics - caller's array for budget, parser and caught file-scan diagnostics
+ * @returns Findings, retained project snapshots, text sources with optional parses, and notes for skipped non-text inputs.
  */
 function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics: RunDiagnostic[]): SourceScanResult {
   const findings: Finding[] = [];
@@ -430,7 +426,7 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
       }
       const source = fileBytes.toString("utf8");
       const budgetDiagnostic = deepScanBudgetDiagnostic(file, source, config);
-      // One parse per script per run: every deep consumer shares this result; over-budget files skip it.
+      // Over-budget scripts skip parsing and project snapshots but still get enabled text checks. Other scripts share one parse.
       const parsed = budgetDiagnostic ? undefined : parseScript(file, source);
       sources.set(file.displayPath, { file, source, ...(parsed ? { parsed } : {}) });
       if (budgetDiagnostic) {
@@ -454,11 +450,12 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
   return { findings, projectSources, sources, notes };
 }
 
-/*
- * Attaches each ordinary finding's durable identity, which SARIF publishes as its code-scanning fingerprint.
+/**
+ * Attach baseline identities and subjects before filtering so that SARIF and baseline matching share the same stable fingerprint identity.
  *
- * A sensitive finding is left unnamed, because it has no durable identity at all; the field is native-only and
- * never reaches the JSON envelope, which publishes the identity through SARIF alone.
+ * @param findings - findings to name together before any reporting view narrows the list
+ * @param spansByFile - parsed declaration spans used to assign positions and ordinals
+ * @returns A new array in input order. Findings with identities gain native identity and subject fields, and unnamed findings stay unchanged.
  */
 function withBaselineIdentities(findings: Finding[], spansByFile: Map<string, DeclarationSpan[]>): Finding[] {
   const identities = findingIdentities(findings, declarationPositionFromSpans(spansByFile));
@@ -470,10 +467,8 @@ function withBaselineIdentities(findings: Finding[], spansByFile: Map<string, De
 }
 
 /*
- * Names every function this run parsed, per file, so a baseline identity can count declarations rather than lines.
- *
- * Inserting code above a function moves its line and not its ordinal, which is what keeps a reviewed finding
- * hidden through an ordinary edit; a file that never parsed contributes nothing and its findings rank by line.
+ * Return declaration names and inclusive line spans by display path from scanned.sources for baseline identity ranking.
+ * Entries without parsed syntax still go through ordinary block discovery, but cannot add the measured-only callable forms.
  */
 function declarationSpans(scanned: SourceScanResult): Map<string, DeclarationSpan[]> {
   const spansByFile = new Map<string, DeclarationSpan[]>();
@@ -490,8 +485,8 @@ function declarationSpans(scanned: SourceScanResult): Map<string, DeclarationSpa
   return spansByFile;
 }
 
-// Returns diagnostic metadata for a visible, non-fatal breach of either effective deep-scan bound.
-// Source classification happens first, so config and other non-code text files never enter this guard.
+// Return a non-fatal budget diagnostic for script file and source using config.deepScanBudget.
+// Return undefined for non-scripts, a disabled budget or source within both limits; a diagnostic requests skipping deep script checks.
 function deepScanBudgetDiagnostic(file: SourceFile, source: string, config: Config): RunDiagnostic | undefined {
   const budget = config.deepScanBudget;
   if (!file.isScript || !budget.enabled) {
@@ -511,14 +506,15 @@ function deepScanBudgetDiagnostic(file: SourceFile, source: string, config: Conf
   };
 }
 
-// Retains production files for exported-surface checks, tests for central-suite import coverage,
-// and import/export candidates for graph edges. Dropping any class here makes a project rule blind.
+// Return whether script file belongs in the project index: production code, tests or source with possible import/export edges.
+// Non-script files are excluded; the retained categories support exported-surface, test-coverage and graph rules.
 function shouldRetainProjectSource(file: SourceFile, source: string): boolean {
   return file.isScript && (isProductionSourcePath(file.displayPath) || isTestPath(file.displayPath) || hasImportSyntaxCandidate(source));
 }
 
-// Stores the raw line view, its code-line count, and, only when needed, a template-masked line view. The conditional mask
-// avoids paying lexer cost for files that cannot affect import edges while keeping fixtures invisible.
+// Return project-index data for file and raw source, including line views and a code-line count.
+// Use parsed to exclude decorator text from the count. Without it, decorator-only lines count.
+// Mask template bodies only for import candidates so template fixture text cannot become graph edges; otherwise reuse raw lines.
 function projectSource(file: SourceFile, source: string, parsed?: ParsedScript): ProjectSource {
   const lines = source.split(/\r?\n/);
   const templateMaskedLines = hasImportSyntaxCandidate(source) ? maskTemplateLiteralBodies(source).split(/\r?\n/) : lines;
@@ -531,14 +527,16 @@ function hasImportSyntaxCandidate(source: string): boolean {
   return source.includes("import") || source.includes("from");
 }
 
-// Per-file rule pipeline, run once for every discovered file.
-//
-// - Text rules run on every file, including config and YAML; TypeScript rules run only on scripts inside the deep-scan budget.
-// - The fixed rule order is part of the stable fingerprint contract, so baselines keep matching across runs.
-// - Generated and copied files keep every security and sensitive-data finding, but drop documentation and naming ones:
-//   nobody hand-wrote that code, so asking a reviewer to fix its docstrings is noise.
-//
-// Contract invariant: skipping docs and naming must never suppress a safety pillar or reorder rules.
+/**
+ * Run the text pass first and preserve stable rule order. Generated sources skip documentation and naming findings to avoid noise.
+ *
+ * @param file - input path and script classification used by the rule passes
+ * @param source - original file text to check and inspect for generated markers
+ * @param config - selects rules and supplies their settings
+ * @param isWithinDeepScanBudget - allows deeper rules for scripts small enough to scan
+ * @param parsed - shared script parse when available for syntax-backed checks
+ * @returns Enabled findings in emission order. Generated input retains eligible safety findings under the same filtering contract.
+ */
 function analyseSource(file: SourceFile, source: string, config: Config, isWithinDeepScanBudget: boolean, parsed?: ParsedScript): Finding[] {
   const findings: Finding[] = [];
   // Size and documentation rules share one comment scan so code-only line counts do not add a second pass.
@@ -563,14 +561,16 @@ function isGeneratedSource(source: string): boolean {
   return source.split(/\r?\n/, 10).some((line) => /AUTO-?GENERATED|@generated\b|GENERATED FILE|Code generated|Generated by|DO NOT EDIT|Copied from/i.test(line));
 }
 
-/*
- * Cross-file rule pipeline, run once after every file has been analysed on its own.
+/**
+ * Run cross-file checks after per-file analysis. Root graph context keeps cycles through requested files visible while preserving report scope.
+ * Unreadable files encountered while gathering root graph context are skipped so a scoped scan can continue.
  *
- * Contract invariant: a scoped run keeps `paths.analysedFiles` scoped, while circular-import may still build root graph
- * context so a cycle passing through the requested files stays visible.
- *
- * Errors: `graphProjectSources` swallows a read failure on an unrelated root file, so one unreadable file elsewhere in the
- * project cannot fail a narrow scan. No other error is handled here.
+ * @param projectRoot - root for deciding and discovering circular-import context
+ * @param options - requested scope and discovery settings for root context
+ * @param scopedFiles - discovered files whose paths define which root cycles to keep
+ * @param projectSources - scanned source snapshots for the scoped project index
+ * @param config - enables cross-file rules and supplies their settings
+ * @returns Cross-file findings under the scoped reporting contract, or an empty list if no pass runs or produces a finding.
  */
 function analyseProjectIndex(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[], projectSources: ProjectSource[], config: Config): Finding[] {
   const shouldUseRootCircularContext = ruleEnabled(config, CIRCULAR_IMPORT_RULE_ID) && shouldBuildRootCircularContext(projectRoot, options, scopedFiles);
@@ -599,7 +599,8 @@ const SCOPED_PROJECT_INDEX_RULE_IDS = [
   "design.large-module-concentration",
 ] as const;
 
-// Root graph context is needed only for narrow path operands; full-root scans already have context.
+// Return whether options' targets need extra graph context rooted at projectRoot to find cycles through scopedFiles.
+// No scopedFiles, no explicit targets, or a target resolving to projectRoot means no extra scan.
 function shouldBuildRootCircularContext(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[]): boolean {
   if (scopedFiles.length === 0 || options.paths.length === 0) {
     return false;
@@ -607,7 +608,15 @@ function shouldBuildRootCircularContext(projectRoot: string, options: AnalysisOp
   return options.paths.every((input) => displayPath(projectRoot, absolutize(projectRoot, input)) !== ".");
 }
 
-// Builds stable circular-import findings from the repository root, then filters back to requested files.
+/**
+ * Read root graph context so that a scoped scan can detect a cycle passing through files outside the request.
+ *
+ * @param projectRoot - root directory for graph discovery
+ * @param options - discovery settings to keep while clearing the requested path operands
+ * @param scopedFiles - requested files whose display paths qualify a cycle for the report
+ * @param config - discovery and project-source settings for the root scan
+ * @returns Stable circular-import findings touching a requested file, or an empty list if no cycle qualifies.
+ */
 function rootCircularImportFindings(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[], config: Config): Finding[] {
   const requestedFiles = new Set(scopedFiles.map((file) => file.displayPath));
   const rootDiscovery = discoverSources(projectRoot, { ...options, paths: [] }, config);
@@ -617,7 +626,8 @@ function rootCircularImportFindings(projectRoot: string, options: AnalysisOption
   return findings.filter((finding) => circularImportFindingTouchesRequestedFile(finding, requestedFiles));
 }
 
-// Reads just the root files needed for import graph context and swallows unrelated read failures.
+// Read root-context candidates from files and return retained script snapshots that satisfy config's deep-scan budget.
+// Unreadable or unprocessable candidates are skipped; the primary scoped scan owns requested-file diagnostics.
 function graphProjectSources(files: SourceFile[], config: Config): ProjectSource[] {
   const projectSources: ProjectSource[] = [];
   for (const file of files) {
@@ -627,13 +637,14 @@ function graphProjectSources(files: SourceFile[], config: Config): ProjectSource
         projectSources.push(projectSource(file, source));
       }
     } catch {
-      // ignore hidden root-context read failures; scoped scans still report requested-file errors.
+      // Root context is supplemental; the primary scan reports requested-file failures, so this pass adds no duplicate diagnostic.
     }
   }
   return projectSources;
 }
 
-// Contract filter: root-context circular findings survive only when the SCC contains a requested file.
+// Returns whether a circular-import finding lists a requested display path among its cycle members.
+// The scope contract falls back to the finding's path for a missing or non-array list. Empty arrays and non-string members never match.
 function circularImportFindingTouchesRequestedFile(finding: Finding, requestedFiles: Set<string>): boolean {
   const files = Array.isArray(finding.metadata.files) ? finding.metadata.files : [finding.filePath];
   return files.some((file) => typeof file === "string" && requestedFiles.has(file));
@@ -760,19 +771,25 @@ function ruleIdsForPillar(pillar: Pillar): readonly string[] {
   return RULE_IDS_BY_PILLAR.get(pillar) ?? [];
 }
 
-// Checks a rule-id group through the resolved config map so profiles and explicit overrides share one gate.
+// Return whether any id in ruleIds is enabled by config, including profile and explicit overrides; an empty group returns false.
 function isAnyRuleEnabled(config: Config, ruleIds: readonly string[]): boolean {
   return ruleIds.some((ruleId) => ruleEnabled(config, ruleId));
 }
 
-/*
- * Per-file text-pillar rules run before script-only rules because config, workflow, and
- * secret surfaces are not TypeScript. The order is a stable baseline contract: reshuffling these
- * checks changes same-line finding order for machine reports.
+/**
+ * Check source text before deeper script passes so that text inputs are covered too. Keep the rule order stable for tied findings.
+ *
+ * @param file - input path for findings and script classification for the size check
+ * @param source - raw text to measure or check for sensitive data, workflow and configuration issues
+ * @param comments - comment records used to count substantive script lines
+ * @param config - enables checks and supplies the size threshold and severity
+ * @param findings - caller's array to append results to
+ * @param parsed - shared script parse used to exclude decorator text. Without it, decorator-only lines count.
+ * @returns Nothing. Appends size findings when enabled and text findings from each group with at least one enabled rule.
  */
 function analyseTextRules(file: SourceFile, source: string, comments: CommentRecord[], config: Config, findings: Finding[], parsed?: ParsedScript): void {
-  // File length measures JavaScript and TypeScript only; JSON, YAML, TOML, XML and other text files are data, not logic
-  // (FAMILY-CONTRACT.md section 12, search `Size and complexity findings in two bands`).
+  // The file-length threshold applies to scripts because it measures code size. Other inputs still receive enabled text checks.
+  // The size bands follow FAMILY-CONTRACT.md section 12 under Size and complexity findings in two bands.
   if (file.isScript && ruleEnabled(config, "size.file-length")) {
     const lines = substantiveLineCount(source, comments, parsed);
     const fileLengthThreshold = threshold(config, "size.file-length", 1000);
@@ -805,11 +822,12 @@ function analyseTextRules(file: SourceFile, source: string, comments: CommentRec
   }
 }
 
-// Counts a script's nonblank lines after removing comments, decorators and any `#!` line. Strings remain intact, so a
-// line containing only a string literal still counts.
+// Return the nonblank source line count after masking comments at their recorded spans. Skip any trimmed line that starts with #!.
+// parsed enables masking decorator text. Without it, decorator-only lines count. String text otherwise counts. Empty source returns zero.
 function substantiveLineCount(source: string, comments: CommentRecord[], parsed?: ParsedScript): number {
   const withoutComments = maskRecordedComments(source, comments);
-  // A parsed script also frees its decorator lines (FAMILY-CONTRACT section 12, search `Code lines in every line count`).
+  // Mask only the decorator spans so code sharing a line with a decorator still counts.
+  // See FAMILY-CONTRACT.md section 12 under Code lines in every line count.
   const withoutDecorators = parsed ? maskDecorators(withoutComments, parsed) : withoutComments;
   return withoutDecorators
     .split(/\r?\n/)
@@ -836,7 +854,7 @@ function isSubstantiveLine(line: string): boolean {
   return trimmed !== "" && !trimmed.startsWith("#!");
 }
 
-// Counts the same logical lines as `source.split(/\r?\n/)` without allocating the full line array.
+// Return the logical line count of source without allocating a split array; empty source is one line and a trailing newline adds one.
 function lineCount(source: string): number {
   let count = 1;
   for (let index = 0; index < source.length; index += 1) {
@@ -847,9 +865,16 @@ function lineCount(source: string): number {
   return count;
 }
 
-/*
- * TypeScript-only rule pipeline. Masks comments and literals once, parses callable blocks once,
- * then walks every rule pack in a stable, deterministic order so reports and baselines remain reproducible.
+/**
+ * Run enabled script checks in a stable order so that reports remain reproducible. Skip passes that require a parse when it is unavailable.
+ *
+ * @param file - script being checked and the path used in its findings
+ * @param source - original script text used by lexical and text checks
+ * @param comments - comment locations and text available to comment quality checks
+ * @param config - selects rule passes and their settings
+ * @param findings - caller's array to append script findings to
+ * @param parsed - shared script parse when available for syntax-backed checks
+ * @returns Nothing. Appends findings from enabled passes to the caller's array.
  */
 function analyseTypeScriptRules(file: SourceFile, source: string, comments: CommentRecord[], config: Config, findings: Finding[], parsed?: ParsedScript): void {
   if (!isAnyRuleEnabled(config, TYPESCRIPT_RULE_IDS)) {
@@ -876,8 +901,7 @@ function analyseTypeScriptRules(file: SourceFile, source: string, comments: Comm
   runRuleGroupPass(config, LINE_RULE_IDS, () => analyseLineRules(file, source, codeSource, config, findings, parsed));
   runRuleGroupPass(config, SECURITY_FLOW_RULE_IDS, () => analyseSecurityFlow(file, source, findings, parsed?.sourceFile));
   runRulePass(config, "waste.unreachable-code", () => analyseUnreachable(file, codeSource, findings));
-  // Docblock rules read real AST signatures; a bounded-deep-scan file without a parse skips them
-  // like the other syntax-backed passes instead of falling back to a lossy regex walk.
+  // Without a parse, skip docblock checks because they need reliable callable signatures.
   runRuleGroupPass(config, DOCBLOCK_RULE_IDS, () => {
     if (parsed) {
       analyseDocRules(file, findings, parsed, {
@@ -892,25 +916,31 @@ function analyseTypeScriptRules(file: SourceFile, source: string, comments: Comm
   runRulePass(config, "dead-code.unused-private-method", () => analyseDeadCode(file, codeSource, findings));
 }
 
-// Runs a single-rule pass only when that exact resolved rule id is enabled.
+// Returns nothing. Runs action, the pass for ruleId, only when config enables that rule.
 function runRulePass(config: Config, ruleId: string, action: () => void): void {
   if (ruleEnabled(config, ruleId)) {
     action();
   }
 }
 
-// Runs a shared pass only when at least one rule it can emit is enabled.
+// Returns nothing. Runs action for the group only when config enables at least one of the rules named by ruleIds.
 function runRuleGroupPass(config: Config, ruleIds: readonly string[], action: () => void): void {
   if (isAnyRuleEnabled(config, ruleIds)) {
     action();
   }
 }
 
-// One pass over the file's parsed callables.
-//
-// Naming and test-block fanouts are dispatched separately so `blocks.ts` stays independent of the naming-pusher and
-// test-block-rule modules. The per-rule emission order from `analyseBlockRules` is the stable fingerprint contract every
-// finding depends on for deterministic baseline matching.
+/**
+ * Dispatch enabled rules for each parsed callable. Keep emission order stable because the report sort can preserve it for tied findings.
+ *
+ * @param file - source file whose path identifies the findings
+ * @param source - original source text for test checks
+ * @param codeSource - source with comments and literals masked for test checks
+ * @param blocks - parsed callables to check
+ * @param config - selects enabled rule groups and their settings
+ * @param findings - caller's array to append rule results to
+ * @returns Nothing. Appends enabled block, parameter naming and test findings to the caller's array.
+ */
 function analyseBlocks(file: SourceFile, source: string, codeSource: string, blocks: FunctionBlock[], config: Config, findings: Finding[]): void {
   const shouldAnalyseBlockRules = isAnyRuleEnabled(config, BLOCK_RULE_IDS);
   const shouldAnalyseParameterNaming = isAnyRuleEnabled(config, PARAMETER_NAMING_RULE_IDS);
@@ -931,9 +961,12 @@ function analyseBlocks(file: SourceFile, source: string, codeSource: string, blo
   }
 }
 
-/*
- * Per-parameter naming-rule fanout. Each parameter is checked for short-name and placeholder forms.
- * Reports findings to the shared sink.
+/**
+ * The naming contract exempts local bindings, tests and recognized comparator pairs from short-name checks.
+ * Placeholder checks still cover every parameter.
+ *
+ * @param context - callable and location to check, configured rules, and destination findings array
+ * @returns Nothing. Appends applicable parameter-name findings to the caller's array.
  */
 function pushParameterNamingFindings(context: BlockRuleContext): void {
   const line = context.block.declarationLine;
@@ -947,9 +980,8 @@ function pushParameterNamingFindings(context: BlockRuleContext): void {
   }
 }
 
-// Variable-bound callables and test callbacks keep their parameters beside the implementation,
-// so short closure names do not create the cross-file review cost this rule is meant to surface.
-// Declared functions and methods remain covered. Other parameter naming rules still run here.
+// Return whether block is a test callback or non-exported const/let-bound callable, exempting its parameters from short-name checks.
+// Exported bindings, declarations, methods and unrecognized binding syntax remain covered.
 function isLocallyBoundParameterOwner(block: FunctionBlock): boolean {
   if (block.isTest) {
     return true;
@@ -965,8 +997,8 @@ function isLocallyBoundParameterOwner(block: FunctionBlock): boolean {
   return bindingName === block.name;
 }
 
-// `(a, b)` is a conventional comparator pair when the callable is explicitly shaped like sorting.
-// Keep the exemption narrow so arbitrary two-parameter helpers still need domain names.
+// Return whether parameter name may use the conventional comparator exemption for the callable in context.
+// params must contain exactly a then b, and the callable's name or body must match comparator heuristics.
 function isComparatorShortParameter(context: BlockRuleContext, params: Array<{ name: string; raw: string }>, name: string): boolean {
   const names = params.map((parameter) => parameter.name);
   if (names.length !== 2 || names[0] !== "a" || names[1] !== "b" || (name !== "a" && name !== "b")) {
@@ -975,8 +1007,8 @@ function isComparatorShortParameter(context: BlockRuleContext, params: Array<{ n
   return isComparatorCallable(context.block.name, context.block.codeBody);
 }
 
-// Comparator-shaped callables are either named for ordering (`compare*`, `*Comparator`, `byName`) or
-// their body performs the standard locale/numeric ordering expression over both parameters.
+// Return whether the callable name or codeBody matches comparator heuristics used to permit conventional short parameters.
+// A dotted localeCompare matches with or without whitespace before the opening parenthesis, regardless of receiver or arguments.
 function isComparatorCallable(name: string, codeBody: string): boolean {
   return (
     /^(?:compare[A-Z0-9_]?|.*Comparator$|by[A-Z])/.test(name) ||

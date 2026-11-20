@@ -17,16 +17,16 @@ const EXPECTED_RELEASE_RULE_COUNT = 83;
 // remainder omits the field. Naming both counts keeps the two guards below arithmetically linked.
 const EXPECTED_GUIDED_RULE_COUNT = 48;
 
-// Asserts the descriptor's optionKeys list is sorted and unique. Factored out of the descriptor
-// catalogue test body to preserve a stable sort invariant without an inline `if` branch.
+// Check the descriptor's option keys against the catalogue ordering and uniqueness invariant. An absent list counts as empty.
+// Returns nothing. Fails the test if the keys are out of order or repeated, using the rule ID to identify the failure.
 function assertSortedUniqueOptionKeys(descriptor: { ruleId: string; optionKeys?: readonly string[] }): void {
   const optionKeys = descriptor.optionKeys ?? [];
   assert.deepEqual(optionKeys, [...optionKeys].sort(), `option key ordering for ${descriptor.ruleId}`);
   assert.equal(new Set(optionKeys).size, optionKeys.length, `option key uniqueness for ${descriptor.ruleId}`);
 }
 
-// Asserts the descriptor either has a fixture exemption with a real reason or is covered by a
-// catalogue fixture id. Factored out so the descriptor catalogue test body avoids a branch.
+// Checks that descriptor.ruleId is in the fixture IDs coverageIds or has a nonempty fixtureExemption.
+// Any nonempty exemption must exceed ten characters. Returns nothing when both checks pass and throws an assertion error when either fails.
 function assertDescriptorCoverageOrExemption(descriptor: { ruleId: string; fixtureExemption?: string }, coverageIds: Set<string>): void {
   const exemption = descriptor.fixtureExemption ?? "";
   const hasExemption = exemption.length > 0;
@@ -37,9 +37,8 @@ function assertDescriptorCoverageOrExemption(descriptor: { ruleId: string; fixtu
 type RuleQualityCategory = (typeof RULE_QUALITY_FIXTURE_CATEGORIES)[number];
 type RuleQualityDescriptor = ReturnType<typeof ruleDescriptors>[number];
 
-// Minimal analyse options for loading the repo's shipped `.gruff-ts.yaml` (which selects a profile)
-// from the test working directory. Coverage is checked against the effective loaded config rather than
-// yaml text, so the assertions hold whether the config enumerates rules or names a profile.
+// Returns analyse options for loading the shipped .gruff-ts.yaml from the test working directory.
+// The tests use the effective config to check rule enablement and descriptor defaults.
 function repoScanOptions(): AnalysisOptions {
   return { paths: ["."], shouldSkipConfig: false, format: "json", failOn: "none", shouldIncludeIgnored: false, changedScope: "symbol", shouldSkipBaseline: true };
 }
@@ -451,9 +450,9 @@ interface RiskyRuleDoctrineCheck {
   categoryVocabulary: readonly string[];
 }
 
-// Verifies that a single doctrine entry matches its descriptor and that every fixture-category
-// field is non-terse. Factored out so the test body avoids an inline branch; the descriptor-to-
-// entry mapping must stay stable so doctrine drift is caught even when entries are added.
+// Check the stable catalogue contract for the rule selected by check using its descriptor, doctrine, exception list, and fixture vocabulary.
+// Returns nothing. Fails if the descriptor or doctrine is missing, an exception exists, or pillar, severity, confidence, or vocabulary differ.
+// Each checked doctrine explanation must exceed 20 characters.
 function assertRiskyRuleDoctrineEntry(check: RiskyRuleDoctrineCheck): void {
   const { ruleId, descriptors, doctrine, exceptions, categoryVocabulary } = check;
   const descriptor = descriptors.get(ruleId);
@@ -500,7 +499,8 @@ test("rule descriptor thresholds and options match implementation and config def
   });
 });
 
-// Preserves the descriptor/default invariant by extracting threshold(config, ruleId, default) calls.
+// Scan source text for threshold(config, ...) or threshold(owner.config, ...) with a double-quoted rule ID and decimal default.
+// Return a deterministic map by rule ID. The last match supplies each rule's default, and no matches yield an empty map.
 function thresholdUsages(source: string): Map<string, number> {
   const usages = new Map<string, number>();
   for (const match of source.matchAll(/threshold\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*(-?\d+(?:\.\d+)?)\)/g)) {
@@ -511,7 +511,8 @@ function thresholdUsages(source: string): Map<string, number> {
   return new Map([...usages.entries()].sort(([left], [right]) => left.localeCompare(right)));
 }
 
-// Preserves the descriptor/options invariant by extracting optionNumber and optionBoolean(config, ruleId, key) calls.
+// Scan source text for optionNumber or optionBoolean calls with config or owner.config and double-quoted rule IDs and keys.
+// Return a deterministic map of rule IDs to sorted, unique keys for the descriptor comparison. No matches give an empty map.
 function optionUsages(source: string): Map<string, string[]> {
   const usages = new Map<string, Set<string>>();
   for (const match of source.matchAll(/option(?:Number|Boolean)\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)"/g)) {

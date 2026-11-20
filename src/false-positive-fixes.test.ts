@@ -800,7 +800,8 @@ test("mutates global state", () => {
 // missing-doc rule reports the function and the docblock rules do not judge that comment.
 const FUNCTION_DOC_RULE_IDS = new Set(["docs.missing-exported-function-doc", "docs.missing-param-tag", "docs.missing-return-tag"]);
 
-// "rule symbol" lines for the function documentation rules in a stable, deterministic order, so each case reads as one list.
+// Analyzes the fixture program in source and returns rule and symbol lines for the selected documentation rules in deterministic sorted order.
+// Returns an empty list when none of those rules report.
 function functionDocFindings(source: string): string[] {
   return analyseFixture(source)
     .findings.filter((entry) => FUNCTION_DOC_RULE_IDS.has(entry.ruleId))
@@ -878,9 +879,9 @@ export function joinBelowDivider(left: string): string {
   ]);
 });
 
-// T-10: a readonly candidate must be a private field whose rewrite to `readonly` compiles, so the
-// rule reports only fields their class assigns through `this` in its own constructor.
-// The symbols each readonly-candidate finding names, in a stable, deterministic order.
+// Analyses the TypeScript fixture in source and returns the readonly-candidate symbols in stable sorted order.
+// Uses an empty string for a missing symbol so that assertions can see a finding even when it names no field.
+// Returns an empty list when the fixture produces no candidates.
 function readonlyCandidates(source: string): string[] {
   return analyseFixture(source)
     .findings.filter((entry) => entry.ruleId === "modernisation.readonly-property-candidate")

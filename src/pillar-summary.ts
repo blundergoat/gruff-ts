@@ -33,11 +33,12 @@ interface PillarSeverityCounts {
   error: number;
 }
 
-/*
- * Builds the canonical pillar rows shared by text, Markdown, and HTML renderers. The shape is one
- * deterministic row per applicable pillar, even when a run has no findings, because cross-port
- * consumers compare this human-readable table byte-for-byte. Pillars without findings default to
- * a clean A/100 row. Sort order is `findings DESC, pillar ASC`.
+/**
+ * Builds the shared pillar summary for text, Markdown and HTML reports.
+ * Keeps one row per applicable pillar even when there are no findings, so comparisons cover the same pillars.
+ *
+ * @param report - supplies pillar scores and findings to tally by severity
+ * @returns Deterministic rows in findings DESC, pillar ASC order. Missing scores use A/100 and missing tallies use zero.
  */
 function buildPillarRows(report: AnalysisReport): PillarRow[] {
   const scoreByPillar = new Map(report.score.pillars.map((entry) => [entry.pillar, entry] as const));
@@ -47,9 +48,8 @@ function buildPillarRows(report: AnalysisReport): PillarRow[] {
   return rows;
 }
 
-// Tallies advisory/warning/error counts per pillar from the live findings list. Returning a Map
-// rather than mutating an accumulator keeps `buildPillarRows` linear and easy to read; this is
-// the deterministic per-pillar tally feeding the public Pillars-table schema.
+// Returns a map of severity counts by pillar from the report's findings for the stable Pillars table schema.
+// A pillar with no findings has no map entry, so the row builder supplies its zero counts.
 function countSeverityByPillar(findings: Finding[]): Map<Pillar, PillarSeverityCounts> {
   const severityByPillar = new Map<Pillar, PillarSeverityCounts>();
   for (const finding of findings) {
@@ -60,11 +60,13 @@ function countSeverityByPillar(findings: Finding[]): Map<Pillar, PillarSeverityC
   return severityByPillar;
 }
 
-/*
- * Assembles one PillarRow from the optional analyser score entry and optional severity tally.
- * Defaults preserve the clean A/100 row contract when a pillar produced no findings. Invariant:
- * `findings` is derived from the severity tally rather than `scoreEntry.findings`, so the total and
- * per-severity columns share one source and cannot disagree.
+/**
+ * Build the summary row for an applicable pillar. The row contract derives the total from the same tally as its severity columns.
+ *
+ * @param pillar - pillar to label in the summary
+ * @param scoreEntry - score and penalty for that pillar, defaulting to 100 and 0 when absent
+ * @param severities - reported findings by severity for that pillar, defaulting to zero counts when absent
+ * @returns the applicable pillar's row with its grade, score, penalty, and finding counts
  */
 function buildPillarRow(pillar: Pillar, scoreEntry: AnalysisReport["score"]["pillars"][number] | undefined, severities: PillarSeverityCounts | undefined): PillarRow {
   const score = scoreEntry?.score ?? 100;
@@ -82,8 +84,8 @@ function buildPillarRow(pillar: Pillar, scoreEntry: AnalysisReport["score"]["pil
   };
 }
 
-// Findings DESC, then pillar ASC. Extracted so the cross-port sort contract lives in one place and
-// any tweak (e.g. a stable secondary key) only has to land here.
+// Compares leftRow with rightRow for descending finding count, then ascending pillar name in the shared renderer order.
+// Returns a negative number when leftRow sorts first, zero for equal keys, and a positive number when rightRow sorts first.
 function comparePillarRows(leftRow: PillarRow, rightRow: PillarRow): number {
   if (leftRow.findings !== rightRow.findings) {
     return rightRow.findings - leftRow.findings;
@@ -101,8 +103,8 @@ function applicablePillarSet(): Set<Pillar> {
   return pillars;
 }
 
-// Composite-score → letter grade conversion. 90/80/70/60 boundaries are part of the stable rule
-// surface; changing them would shift every historical report grade and the headline on the dashboard.
+// Converts the supplied composite or pillar score to a letter grade using the stable 90, 80, 70 and 60 thresholds.
+// Returns F below 60; changing a threshold changes grades only for scores that cross the revised boundary.
 function grade(score: number): string {
   if (score >= 90) {
     return "A";

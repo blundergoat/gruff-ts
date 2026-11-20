@@ -159,11 +159,11 @@ function dropEmptiedParent(migrated: string[], lines: string[], index: number): 
 }
 
 /**
- * True when a line belongs to a block opened at the given indent, so blank lines inside one do not end it.
+ * Returns whether a non-blank input line is indented farther than the block header.
  *
- * @param line - the input line to test
+ * @param line - configuration line whose leading whitespace is compared with the block header's indentation
  * @param indent - leading-whitespace width of the block's header line
- * @returns true when the line is non-blank and indented deeper than `indent`; a blank line returns false
+ * @returns - true when the line is non-blank and indented deeper than indent; a blank line returns false
  */
 function isDeeperThan(line: string, indent: number): boolean {
   return line.trim().length > 0 && line.length - line.trimStart().length > indent;
@@ -172,10 +172,10 @@ function isDeeperThan(line: string, indent: number): boolean {
 /**
  * Pin the schema version, inserting it at the top when the 0.5 file never named one.
  *
- * @param lines - the migrated lines so far
- * @param changes - the rewrites applied so far, appended to when the version moves
+ * @param lines - migrated lines, mutated in place to insert or replace schemaVersion
+ * @param changes - the rewrite log, appended to when schemaVersion is inserted or its existing line needs repinning
  * @param original - the file as written, returned unchanged when nothing needed rewriting
- * @returns the migration result
+ * @returns - text and the same changes array; text is original when no rewrites were recorded
  */
 function withSchemaVersion(lines: string[], changes: ConfigMigrationChange[], original: string): ConfigMigration {
   const existing = lines.findIndex((line) => /^schemaVersion\s*:/u.test(line));

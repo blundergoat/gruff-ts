@@ -14,8 +14,7 @@ interface DiagnosticSourceFile {
 
 /**
  * Syntax-only TypeScript parser diagnostics for script files; non-script inputs stay unparsed.
- * Thin wrapper over the shared parse boundary so direct callers keep this signature while the
- * analyser consumes the boundary result once per script.
+ * Uses the shared parser so callers that only need diagnostics get the same summary as the analyser.
  *
  * @param file - Source metadata used to skip non-script inputs and report paths.
  * @param source - Raw file text to parse for syntax diagnostics.
@@ -62,8 +61,8 @@ interface ScanStep {
   shouldStopLine: boolean;
 }
 
-// All flags begin false / quote unset. `previousCode` starts empty so the first `/` in a file
-// is treated as a regex opener (matches the JS grammar at program start).
+// Returns fresh delimiter-scan state for a new file, with no active literal or comment and no prior code character.
+// An empty previousCode lets a slash at the start of code open a regex; later code updates that context.
 function defaultDelimiterScanState(): DelimiterScanState {
   return {
     quote: undefined,
@@ -77,8 +76,9 @@ function defaultDelimiterScanState(): DelimiterScanState {
   };
 }
 
-// Walks one line, mutating `ctx.counts` and `ctx.scan` in place. The `shouldStopLine` step is the only
-// way out before line end; comment, string, and regex bodies merely advance offset without counting.
+// Returns nothing and updates the supplied delimiter totals and scanner state for one source line.
+// Stops at a line comment because the rest of the line is comment text.
+// Block comments, string text and regex bodies leave counts unchanged. Template interpolations resume counting.
 function scanDelimiterLine(line: string, ctx: DelimiterScanContext): void {
   for (let offset = 0; offset < line.length; offset += 1) {
     const step = scanDelimiterCharacter(line, offset, ctx);
@@ -89,8 +89,8 @@ function scanDelimiterLine(line: string, ctx: DelimiterScanContext): void {
   }
 }
 
-// State-machine dispatch: block-comment, string, regex, or code. Order matters - once inside a
-// block comment, characters must not be re-interpreted as a quote or regex opener.
+// Scan line at offset according to the lexical mode stored in ctx, updating its counts and scan state.
+// Return a step telling the line walker whether to continue, skip a character, or stop at a line comment.
 function scanDelimiterCharacter(line: string, offset: number, ctx: DelimiterScanContext): ScanStep {
   const character = line[offset] ?? "";
   const next = line[offset + 1] ?? "";
@@ -109,6 +109,7 @@ function scanDelimiterCharacter(line: string, offset: number, ctx: DelimiterScan
 
 // Inside `/* ... */`. Returns `skip: 1` to swallow the `/` of the closing `*/`, then the next
 // step resumes in code mode. Block-comment contents do not affect delimiter counts.
+// Read character and lookahead next, update scan's lexical mode, and return a continuing step when no closer is found.
 function scanBlockCommentDelimiter(character: string, next: string, scan: DelimiterScanState): ScanStep {
   if (character === "*" && next === "/") {
     scan.isInBlockComment = false;
@@ -117,11 +118,9 @@ function scanBlockCommentDelimiter(character: string, next: string, scan: Delimi
   return continueScan();
 }
 
-// Inside a string or template literal. `\` arms `isEscaped` so the next character (including a
-// closing quote) is treated as literal text. Necessary to handle `"\\\""` and similar correctly.
-// Template literals also recognise `${` as an interpolation opener - the scanner pushes the current
-// brace count onto a stack, exits quote mode, and counts the opening `{` so a matching `}` re-enters
-// template literal mode. Without this, nested-template files mis-attribute later `\`` as the closer.
+// Scan character and lookahead next inside a quoted literal, updating the quote, escape, and delimiter state in ctx.
+// Escapes protect the next character; template interpolation saves brace depth and resumes code until its closing brace.
+// Return a continuing step, skipping the opening brace after a template interpolation marker.
 function scanQuotedDelimiter(character: string, next: string, ctx: DelimiterScanContext): ScanStep {
   const scan = ctx.scan;
   if (scan.isEscaped) {
@@ -145,6 +144,7 @@ function scanQuotedDelimiter(character: string, next: string, ctx: DelimiterScan
   return continueScan();
 }
 
+// Returns nothing. Updates scan from character, tracking escapes and classes. Closing the regex sets previousCode to an operand marker.
 // Inside `/regex/`. `[...]` character classes can legally contain `/`, so the closing slash
 // is only honoured when `isInRegexCharClass` is false; otherwise `/[/]/` would terminate early.
 function scanRegexDelimiter(character: string, scan: DelimiterScanState): void {
@@ -162,8 +162,8 @@ function scanRegexDelimiter(character: string, scan: DelimiterScanState): void {
   }
 }
 
-// In executable code. The chain order (line comment → block comment → quote → regex → plain) is
-// deliberate: line comments must win over block-comment openers because `/* /* */` is one comment.
+// Classify character and lookahead next in executable code, using line and offset for the regex-opening heuristic.
+// Update delimiter counts and lexical state in ctx; return the matched token's scan step or the ordinary-code step.
 function scanCodeDelimiter(line: string, offset: number, character: string, next: string, ctx: DelimiterScanContext): ScanStep {
   return (
     scanLineCommentStart(character, next) ??
@@ -175,6 +175,7 @@ function scanCodeDelimiter(line: string, offset: number, character: string, next
 }
 
 // `//` ends the line for delimiter purposes - anything to the right is comment text.
+// Read character and lookahead next; return a stopping step for the opener or undefined to try another token kind.
 function scanLineCommentStart(character: string, next: string): ScanStep | undefined {
   if (character === "/" && next === "/") {
     return stopLineScan();
@@ -183,6 +184,7 @@ function scanLineCommentStart(character: string, next: string): ScanStep | undef
 }
 
 // `/*` flips the scanner into block-comment mode; `skip: 1` swallows the `*` so it isn't re-evaluated.
+// Inspect character and lookahead next, update scan on an opener, and return a skip step or undefined for another token handler.
 function scanBlockCommentStart(character: string, next: string, scan: DelimiterScanState): ScanStep | undefined {
   if (character === "/" && next === "*") {
     scan.isInBlockComment = true;
@@ -191,7 +193,8 @@ function scanBlockCommentStart(character: string, next: string, scan: DelimiterS
   return undefined;
 }
 
-// Records which quote character opened the literal so the scanner closes on the same kind.
+// Treat character as a possible quote opener and store a recognised quote in the caller's scan state.
+// Return a continuing step for a quote, or undefined so the caller can try another token kind.
 function scanQuoteStart(character: string, scan: DelimiterScanState): ScanStep | undefined {
   if (isQuote(character)) {
     scan.quote = character;
@@ -200,9 +203,8 @@ function scanQuoteStart(character: string, scan: DelimiterScanState): ScanStep |
   return undefined;
 }
 
-// `/` is ambiguous in JS - it can start a regex or be division. `isRegexLiteralStart` decides based
-// on the previous non-whitespace token; getting this wrong would let division `a / b / c` enter
-// regex mode and absorb everything to the next slash.
+// Use character, the prefix of line before offset, and scan.previousCode to distinguish a regex opener from division.
+// On an opener, update the caller's scan flags and return a continuing step; otherwise return undefined for the next token handler.
 function scanRegexStart(line: string, offset: number, character: string, scan: DelimiterScanState): ScanStep | undefined {
   if (character === "/" && isRegexLiteralStart(scan.previousCode, line.slice(0, offset))) {
     scan.isInRegex = true;
@@ -213,10 +215,9 @@ function scanRegexStart(line: string, offset: number, character: string, scan: D
   return undefined;
 }
 
-// Updates the delimiter tallies and remembers this character as `previousCode` so the next `/`
-// can decide regex-vs-division. Whitespace is not recorded; it would corrupt the regex heuristic.
-// Also detects when a `}` returns to a saved template-interpolation depth and transitions the
-// scanner back into template-literal mode.
+// Count character in ctx.counts and update ctx.scan so later slashes can be classified as regex or division.
+// Ignore whitespace when remembering code; a closing interpolation brace restores template-literal mode at its saved depth.
+// Return a continuing scan step after updating the caller's state.
 function scanPlainCodeDelimiter(character: string, ctx: DelimiterScanContext): ScanStep {
   countDelimiter(character, ctx.counts);
   if (character === "}" && ctx.scan.templateInterpolationStack.length > 0 && ctx.counts.braces === (ctx.scan.templateInterpolationStack[ctx.scan.templateInterpolationStack.length - 1] ?? -1)) {
@@ -231,8 +232,8 @@ function scanPlainCodeDelimiter(character: string, ctx: DelimiterScanContext): S
   return continueScan();
 }
 
-// Increment on opener, decrement on closer. Other characters are no-ops so the function can be
-// called unconditionally per character without a guard in the caller.
+// Returns nothing and updates the supplied delimiter totals for the current character.
+// Openers add to their own total and closers subtract. Other characters are ignored so that callers can pass each character unconditionally.
 function countDelimiter(character: string, counts: DelimiterCounts): void {
   if (character === "{") {
     counts.braces += 1;
@@ -249,21 +250,23 @@ function countDelimiter(character: string, counts: DelimiterCounts): void {
   }
 }
 
-// Negative on any of the three means a closer ran ahead of its opener - caller reports immediately
-// at the current line because the original mismatch is local, not at EOF.
+// Returns whether counts contains a negative brace, parenthesis, or bracket balance, indicating a closer without an opener.
 function hasNegativeDelimiterCount(counts: DelimiterCounts): boolean {
   return counts.braces < 0 || counts.parentheses < 0 || counts.brackets < 0;
 }
 
-// Non-zero after the whole file means an opener was never closed. Caller reports at EOF.
+// Returns whether counts has any nonzero brace, parenthesis, or bracket balance, indicating unmatched delimiters.
 function hasUnbalancedDelimiterCount(counts: DelimiterCounts): boolean {
   return counts.braces !== 0 || counts.parentheses !== 0 || counts.brackets !== 0;
 }
 
-/*
- * Emits a `parse-error` diagnostic. The CLI exit contract forces a non-zero exit (see `exitFor`)
- * whenever diagnostics fire - this builder reports failures so a broken file in the scan tree
- * cannot hide silently rather than throw the error or recover quietly.
+/**
+ * Builds a parse-error diagnostic for a caller to include in scan results.
+ *
+ * @param file - source metadata whose displayPath identifies the failed file
+ * @param line - source line to attach to the error
+ * @param message - explanation copied into the diagnostic
+ * @returns a parse-error record containing the supplied message, display path, and line
  */
 function parseErrorDiagnostic(file: DiagnosticSourceFile, line: number, message: string): RunDiagnostic {
   return {
@@ -274,15 +277,15 @@ function parseErrorDiagnostic(file: DiagnosticSourceFile, line: number, message:
   };
 }
 
-// Heuristic for the regex-vs-division ambiguity: `/` is a regex opener after operators, control
-// punctuation, or `return`; otherwise it's division. False positives would expand a regex across
-// real code and break delimiter balance, so this list is intentionally conservative.
+// Returns whether a slash looks like a regex opener. previousCode holds a code character, a synthetic operand marker, or an empty start marker.
+// beforeSlash supplies preceding text. An empty marker, selected punctuation, or the word return after trimming trailing whitespace permits a regex.
+// This conservative heuristic limits the risk of masking real code as a regex body and losing its delimiters.
 function isRegexLiteralStart(previousCode: string, beforeSlash: string): boolean {
   return previousCode === "" || "([{=,:!&|?;".includes(previousCode) || /\breturn$/.test(beforeSlash.trimEnd());
 }
 
-// Masks non-code bytes without changing offsets. Regex-driven rules rely on the 1:1 byte mapping
-// to report raw-source line numbers while avoiding matches inside comments, strings, and regex bodies.
+// Returns source with recognized comment and literal bodies masked, preserving UTF-16 code-unit offsets and newline positions.
+// Regex-driven rules use the unchanged positions to report source locations without matching text inside those bodies.
 function maskNonCode(source: string): string {
   let result = "";
   const state = defaultMaskState();
@@ -294,10 +297,9 @@ function maskNonCode(source: string): string {
   return result;
 }
 
-// Replaces only `` ` `` template-literal body characters with spaces. Unlike `maskNonCode`, single
-// and double-quoted string bodies are preserved so syntax-pattern rules (e.g. import edges) still
-// see the specifier text on real `import ... from "..."` lines. Used by `import-edge` style rules
-// that must ignore fixture content embedded in template literals without losing real imports.
+// Masks template-literal bodies in source with spaces and returns the result, preserving offsets and line-feed characters.
+// Single- and double-quoted bodies remain visible so syntax-pattern rules can read real import specifiers.
+// Import-edge rules use this to ignore fixture text inside backticks. Import calls inside interpolations can also be masked.
 function maskTemplateLiteralBodies(source: string): string {
   let result = "";
   const state = templateMaskState();
@@ -325,8 +327,9 @@ function templateMaskState(): TemplateMaskState {
   return { quote: undefined, isEscaped: false, isLineComment: false, isBlockComment: false };
 }
 
-// Per-character dispatch: newlines clear single-line state; backtick body chars are masked; quoted
-// and commented chars pass through. Skips the regex branch because regex bodies cannot start an import.
+// Transform character with lookahead next for template-body masking, updating the caller's state.
+// Preserve delimiters, newlines, single/double-quoted strings, and comments while masking template body text.
+// Return output text and the extra-character skip count; regex literals receive no dedicated handling.
 function templateMaskCharacter(character: string, next: string, state: TemplateMaskState): MaskStep {
   if (character === "\n") return templateMaskNewline(state);
   if (state.isLineComment) return { text: character, skip: 0 };
@@ -336,6 +339,7 @@ function templateMaskCharacter(character: string, next: string, state: TemplateM
 }
 
 // Newlines clear line-comment state and any non-template quote; template literals survive across lines.
+// Mutate state in place and return a newline with no extra-character skip.
 function templateMaskNewline(state: TemplateMaskState): MaskStep {
   state.isLineComment = false;
   if (state.quote !== "`") {
@@ -344,7 +348,8 @@ function templateMaskNewline(state: TemplateMaskState): MaskStep {
   return { text: "\n", skip: 0 };
 }
 
-// Inside a block comment: pass body through and detect the closing `*/`.
+// Use character and lookahead next to preserve block-comment text, clearing state.isBlockComment on its closer.
+// Return preserved text and an extra-character skip of one for the closer, or zero otherwise.
 function templateMaskBlockComment(character: string, next: string, state: TemplateMaskState): MaskStep {
   if (character === "*" && next === "/") {
     state.isBlockComment = false;
@@ -354,6 +359,8 @@ function templateMaskBlockComment(character: string, next: string, state: Templa
 }
 
 // Inside any quoted string: bodies of `` ` `` get masked, single/double-quote bodies pass through.
+// Use character and the active quote in state, updating escape and quote flags in place.
+// Return the transformed character with no extra skip; preserve an unescaped closing quote and leave quote mode.
 function templateMaskQuotedCharacter(character: string, state: TemplateMaskState): MaskStep {
   const masked = state.quote === "`";
   if (state.isEscaped) {
@@ -372,6 +379,7 @@ function templateMaskQuotedCharacter(character: string, state: TemplateMaskState
 }
 
 // In code: detect comment openers and the three quote types, otherwise pass through.
+// Read character and lookahead next, update state on an opener, and return preserved text plus the extra-character skip count.
 function templateMaskCodeCharacter(character: string, next: string, state: TemplateMaskState): MaskStep {
   if (character === "/" && next === "/") {
     state.isLineComment = true;
@@ -427,8 +435,9 @@ function defaultMaskState(): MaskState {
   };
 }
 
-// Newlines short-circuit first - single-line `//` comments must clear at line end, and ordinary
-// quotes do too, but template literals (` ` `) survive across lines.
+// Returns output text and an extra-character skip for source[index], updating state as comments and literals open or close.
+// source is the complete input and index selects the current character; state carries the masking context between calls.
+// Newlines end line comments and ordinary quote or regex state, while template literals and block comments remain active.
 function maskNonCodeCharacter(source: string, index: number, state: MaskState): MaskStep {
   const character = source[index] ?? "";
   const next = source[index + 1] ?? "";
@@ -450,8 +459,9 @@ function maskNonCodeCharacter(source: string, index: number, state: MaskState): 
   return maskCodeCharacter(source, index, character, next, state);
 }
 
-// At a newline: drop line-comment / single-quote / regex state, but preserve template-literal state
-// because backtick strings legitimately span multiple lines. Emits `\n` verbatim to keep offsets aligned.
+// Updates the supplied mask state at a newline by clearing line-comment, single-quote, double-quote, and regex modes.
+// Keeps template-literal and block-comment modes because both can span lines.
+// Returns a step containing the original newline to preserve source offsets.
 function maskNewline(state: MaskState): MaskStep {
   state.isLineComment = false;
   if (state.quote !== "`") {
@@ -464,7 +474,8 @@ function maskNewline(state: MaskState): MaskStep {
 }
 
 // Replaces block-comment text with spaces; the closing `*/` becomes "  " so the two output
-// characters line up with the two consumed characters.
+// characters line up with the two consumed characters; character and next are the current source pair.
+// Returns text plus an extra-character skip, clearing state.isBlockComment when the closing pair is consumed.
 function maskBlockComment(character: string, next: string, state: MaskState): MaskStep {
   if (character === "*" && next === "/") {
     state.isBlockComment = false;
@@ -473,8 +484,9 @@ function maskBlockComment(character: string, next: string, state: MaskState): Ma
   return maskSingleCharacter();
 }
 
-// Inside a string: mask body characters but emit the closing quote unchanged so downstream rules
-// can still see the quote boundary. `\` arms `isEscaped` to keep the next character literal.
+// Returns masking text and an extra-character skip for character inside a literal; next is the following source character.
+// Mutates state to track escapes and the closing quote; body text becomes spaces while the closing quote remains visible.
+// In a template, an interpolation opener remains visible, pushes its brace depth, and clears the quote so expression code is scanned.
 function maskQuotedCharacter(character: string, next: string, state: MaskState): MaskStep {
   if (state.isEscaped) {
     state.isEscaped = false;
@@ -500,6 +512,7 @@ function maskQuotedCharacter(character: string, next: string, state: MaskState):
 
 // Inside `/.../`: mask body characters and pass through the closing `/`. `[ ... ]` character classes
 // suspend the closing-slash check so `/[/]/` does not terminate at the inner slash.
+// Returns text for character with skip 0 and updates state for escapes, character classes, and the closing slash.
 function maskRegexCharacter(character: string, state: MaskState): MaskStep {
   if (state.isRegexEscaped) {
     state.isRegexEscaped = false;
@@ -525,8 +538,9 @@ function maskRegexCharacter(character: string, state: MaskState): MaskStep {
   return maskSingleCharacter();
 }
 
-// Dispatch order in code mode matters: detect comment openers before regex, since `/*` would
-// otherwise be misread as a regex start; detect regex before quote because no quote begins with `/`.
+// Returns output text and an extra-character skip for source[index]; character and next are the current and following source characters.
+// Mutates state for template braces, comment or literal starts, or the last code character, preserving positions for rule matching.
+// Checks comment openers before regex starts so a comment opener cannot enter regex mode; unmatched text passes through.
 function maskCodeCharacter(source: string, index: number, character: string, next: string, state: MaskState): MaskStep {
   return (
     maskTemplateInterpolationBrace(character, state) ??
@@ -538,9 +552,9 @@ function maskCodeCharacter(source: string, index: number, character: string, nex
   );
 }
 
-// While inside a template `${...}` expression, braces are executable code and must stay visible.
-// Only the innermost interpolation's brace count moves; when it closes, masking resumes in the template that
-// opened it, which may itself sit inside an outer interpolation.
+// Returns character with skip 0 for a brace in the active template interpolation, updating state and only its innermost brace depth.
+// character is the current code character; state tracks open interpolations. Closing its final brace resumes template-body masking.
+// Returns undefined outside an interpolation or for other characters so the caller can try the next detector.
 function maskTemplateInterpolationBrace(character: string, state: MaskState): MaskStep | undefined {
   const openBraceDepths = state.templateInterpolationDepths;
   const innermost = openBraceDepths.length - 1;
@@ -564,8 +578,8 @@ function maskTemplateInterpolationBrace(character: string, state: MaskState): Ma
   return undefined;
 }
 
-// Detects `//` and arms line-comment mode; the actual masking happens on subsequent characters
-// via the `state.isLineComment` branch in `maskNonCodeCharacter`.
+// Detects a line-comment opener from character and next, the current and following source characters.
+// On a match, sets state.isLineComment and returns two spaces with skip 1; otherwise returns undefined for the next detector.
 function maskLineCommentStart(character: string, next: string, state: MaskState): MaskStep | undefined {
   if (character === "/" && next === "/") {
     state.isLineComment = true;
@@ -574,7 +588,8 @@ function maskLineCommentStart(character: string, next: string, state: MaskState)
   return undefined;
 }
 
-// Detects `/*` and masks the two opener characters. State flips so subsequent chars route to `maskBlockComment`.
+// Detects a block-comment opener from character and next, the current and following source characters.
+// On a match, sets state.isBlockComment and returns two spaces with skip 1; otherwise returns undefined for the next detector.
 function maskBlockCommentStart(character: string, next: string, state: MaskState): MaskStep | undefined {
   if (character === "/" && next === "*") {
     state.isBlockComment = true;
@@ -583,8 +598,9 @@ function maskBlockCommentStart(character: string, next: string, state: MaskState
   return undefined;
 }
 
-// Same regex-vs-division heuristic as `parseDiagnostics`, but with up to 80 prior characters of
-// context (rather than just one) to recognise the `return /pattern/` case across multi-token expressions.
+// Returns character with skip 0 on a recognized regex opener, updating state.isRegex and state.previousCode.
+// source supplies up to 80 characters before index as context; character is the current source character and state holds the prior code.
+// Returns undefined for other characters or contexts so the caller can try the next detector.
 function maskRegexStart(source: string, index: number, character: string, state: MaskState): MaskStep | undefined {
   if (character === "/" && isRegexLiteralStart(state.previousCode, source.slice(Math.max(0, index - 80), index))) {
     state.isRegex = true;
@@ -594,8 +610,9 @@ function maskRegexStart(source: string, index: number, character: string, state:
   return undefined;
 }
 
-// Opening quote is emitted unchanged so downstream rules can detect string boundaries; subsequent
-// body characters get masked by `maskQuotedCharacter`.
+// Returns character with skip 0 when it is a string or template delimiter, updating state.quote and state.previousCode.
+// character is the current source character; state carries the masking context. A non-quote returns undefined for the plain-code fallback.
+// Later calls mask literal text while keeping quote boundaries and template interpolation code visible.
 function maskQuoteStart(character: string, state: MaskState): MaskStep | undefined {
   if (isQuote(character)) {
     state.quote = character;
@@ -614,14 +631,14 @@ function maskPlainCodeCharacter(character: string, state: MaskState): MaskStep {
   return { text: character, skip: 0 };
 }
 
-// One space per masked byte. Preserves overall length so byte offsets in masked text map 1:1 to source.
+// Returns one space with skip 0, masking one UTF-16 code unit while preserving source offsets.
 function maskSingleCharacter(): MaskStep {
   return { text: " ", skip: 0 };
 }
 
-// Cheaper, line-local mask used when rules don't need full lexer state - strips line-comments and
-// string bodies but does not track block comments. Use `maskNonCode` instead when state must
-// survive across lines.
+// Returns a source line with string bodies and line comments removed, leaving quote delimiters for matching.
+// The line-local scanner has no block-comment state.
+// Use maskNonCode when rules need to preserve scanner state across lines.
 function codeLineForMatching(line: string): string {
   let result = "";
   const state: CodeLineState = { quote: undefined, isEscaped: false };
@@ -648,8 +665,9 @@ interface CodeLineStep {
   shouldStopLine: boolean;
 }
 
-// Quotes are emitted (so callers can see the literal boundary) but their bodies are dropped, while
-// any `//` outside a string truncates the rest of the line.
+// Returns the output text and stop flag for line[index]; line is raw input and index selects the character.
+// Mutates state to track string delimiters and escapes, emitting quotes but dropping string bodies.
+// A line-comment opener outside a string returns empty text and stops the line; other steps keep scanning.
 function codeLineCharacter(line: string, index: number, state: CodeLineState): CodeLineStep {
   const character = line[index] ?? "";
   const next = line[index + 1] ?? "";
@@ -666,8 +684,9 @@ function codeLineCharacter(line: string, index: number, state: CodeLineState): C
   return { text: character, shouldStopLine: false };
 }
 
-// Body characters of a string are dropped so `"// not a comment"` doesn't truncate the line, but
-// the closing quote is emitted so the caller still sees a balanced literal.
+// Suppresses literal contents while keeping the closing quote visible so the caller can see the literal boundary.
+// Returns the unescaped closing quote or empty text for any other character. The stop flag is always false inside the quote.
+// Updates state to track escapes and clears the stored quote when the literal closes.
 function quotedCodeLineCharacter(character: string, state: CodeLineState): CodeLineStep {
   if (state.isEscaped) {
     state.isEscaped = false;
@@ -689,17 +708,17 @@ function continueScan(): ScanStep {
   return { skip: 0, shouldStopLine: false };
 }
 
-// Skip one extra character - used to swallow the second half of a two-character token like `*/`.
+// Returns a step that skips the second character of a two-character token and continues scanning the line.
 function skipNextCharacter(): ScanStep {
   return { skip: 1, shouldStopLine: false };
 }
 
-// End-of-line short circuit returned when a `//` line comment starts.
+// Returns a step that ends the current scan at a line comment so the remaining text contributes no delimiters.
 function stopLineScan(): ScanStep {
   return { skip: 0, shouldStopLine: true };
 }
 
-// String, template literal, and char-class quotes recognised by every lexer in this module.
+// Returns whether character can delimit a single-quoted string, double-quoted string, or template literal.
 function isQuote(character: string): boolean {
   return character === "\"" || character === "'" || character === "`";
 }

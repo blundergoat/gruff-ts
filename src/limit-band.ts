@@ -31,8 +31,8 @@ export function limitBand(measured: number, limit: number): LimitBand {
   return measured >= UPPER_BAND_RATIO * limit ? "upper" : "lower";
 }
 
-// Puts one size or complexity finding in its band: a lower-band finding is advisory whatever severity the user
-// configured, and either band carries its own advice.
+// Returns severity, remediation and band fields by comparing measured with limit for a size or complexity finding.
+// The lower band uses advisory and lowerAdvice; the upper band uses configuredSeverity and upperAdvice.
 export function bandedFields(measured: number, limit: number, configuredSeverity: Severity, lowerAdvice: string, upperAdvice: string): BandedFields {
   const band = limitBand(measured, limit);
   return band === "lower"

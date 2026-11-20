@@ -63,46 +63,31 @@ export interface DeclarationPositionResolver {
 export class BaselineIdentityError extends Error {}
 
 /*
- * Tells whether a finding may ever receive a baseline identity.
- *
- * A sensitive finding never does: it stays visible and blocking on every run until the user fixes it or excludes
- * it with a written reason under `sensitiveExclusions`.
- * Stable contract: a sensitive finding never receives an identity, which is what stops a stored review from hiding a secret.
+ * Returns false for findings in the sensitive-data pillar or with a rule ID starting with sensitive-data followed by a dot.
+ * Stable contract: those findings receive no baseline identity, so a stored review cannot suppress them.
+ * A matching sensitiveExclusions entry with a written reason can remove a finding before baseline application.
  */
 export function isBaselineEligible(finding: Finding): boolean {
   return finding.pillar !== SENSITIVE_PILLAR && !finding.ruleId.startsWith(`${SENSITIVE_PILLAR}.`);
 }
 
-/*
- * Replaces every measured value in a message with `#`, per the identity amendment of 2026-09-05.
- *
- * "File has 1010 lines" becomes "File has # lines", so growing the file does not re-key the finding; rewording it
- * still does, because the message is the only stable name a symbol-less finding has.
- *
- * Stable contract: the same message always normalises to the same subject, so the identity stays deterministic.
- */
+// Returns the finding message with numeric sequences, including digits joined by periods or commas, replaced by #.
+// This keeps a symbol-less finding's subject stable as measurements change. Changes to the surrounding text still affect the subject.
 export function normaliseMeasuredValues(message: string): string {
   return message.replace(MEASURED_VALUE_PATTERN, MEASURED_VALUE_PLACEHOLDER);
 }
 
-/*
- * Builds the identity subject: `symbol#ordinal` for a symbol-bearing finding, otherwise the normalised message.
- * The ordinal keeps two same-named functions apart; without it, reviewing one silently baselines the other.
+/**
+ * Build a stable baseline subject. An ordinal distinguishes declarations with the same symbol so each can be reviewed independently.
  *
- * Returns undefined when the finding's own text makes it unnameable, which is a property of the scanned code and
- * not an error: a symbol already carrying the separator could pose as another symbol's ordinal, and a finding with
- * neither symbol nor message has nothing to be named by. Such a finding is reported without an identity, exactly as
- * a sensitive finding already is, rather than costing the caller its whole run.
- *
- * Still throws BaselineIdentityError for a missing or non-positive ordinal, because that is this module failing to
- * rank a symbol it accepted, not anything the scanned project did.
- *
- * Stable contract: one declaration always produces one subject, which is what a stored review is matched on.
- * @throws {BaselineIdentityError} when a symbol-bearing finding gets an ordinal that is not a positive integer.
+ * @param finding - supplies the symbol or, when there is no symbol, the message used for matching
+ * @param ordinal - one-based declaration rank used when the symbol can be named
+ * @returns The symbol with its ordinal or the normalised message. Undefined means a reserved separator or empty message prevents naming.
+ * @throws {BaselineIdentityError} - a symbol without the reserved separator was given an ordinal that is not a positive integer.
  */
 export function baselineSubject(finding: Finding, ordinal: number): string | undefined {
   const symbol = finding.symbol && finding.symbol.length > 0 ? finding.symbol : undefined;
-  // A file-level finding has nothing but its message to name it, so its measurement is stripped before hashing.
+  // Normalise measured values so changes to the measurement can preserve the file-level subject.
   if (symbol === undefined) {
     return finding.message.length === 0 ? undefined : normaliseMeasuredValues(finding.message);
   }
@@ -117,38 +102,32 @@ export function baselineSubject(finding: Finding, ordinal: number): string | und
   return `${symbol}${ORDINAL_SEPARATOR}${ordinal}`;
 }
 
-/*
- * Hashes the ratified identity under an explicit tool language.
- * Conformance tests use it to reproduce the digests the family oracle pins for other ports, which is the only
- * proof the rule is one rule rather than five that happen to agree today.
- */
+// Returns the stable 16-character baseline digest for the writer language, finding rule ID, file path, and identity subject.
+// The explicit language lets conformance tests compare the calculation with pinned identities for other ports.
 export function computeIdentityFor(toolLanguage: string, ruleId: string, path: string, subject: string): string {
   return createHash("sha256").update([toolLanguage, ruleId, path, subject].join("\0")).digest("hex").slice(0, 16);
 }
 
-/*
- * Names every eligible finding in one run, ranking same-named declarations as it goes.
+/**
+ * Assign stable baseline identities through the same path for generation and matching, preserving names already assigned to the full scan.
  *
- * This is the single entry point baseline generation and matching both use, so a written identity and a matched
- * identity can never be computed two different ways. A sensitive finding maps to undefined and joins no group.
- * Stable contract: generation and matching call this one function, so a written identity and a matched identity cannot diverge.
+ * @param findings - findings to rank together or whose stored identities and subjects to reuse
+ * @param declarationPosition - resolver for declaration ranking. Defaults to the finding's line position.
+ * @returns One identity record per input finding in order. Ineligible findings and findings with no usable subject receive undefined.
  */
 export function findingIdentities(findings: Finding[], declarationPosition: DeclarationPositionResolver = declarationPositionByLine): Array<FindingIdentity | undefined> {
   const ordinals = symbolOrdinals(findings, declarationPosition);
   return findings.map((finding, index) => {
-    // A sensitive finding is skipped before any hashing, so no secret ever reaches a stored identity.
+    // Findings classified as sensitive get no baseline identity, so a stored review cannot suppress them.
     if (!isBaselineEligible(finding)) {
       return undefined;
     }
-    // The analyser names every finding once, over the whole scan. Reusing that name keeps one finding one identity
-    // in every later consumer, which would otherwise re-rank only the subset it was handed (the inline-filtered
-    // list, a hook view) and could give a declaration a different ordinal.
+    // Reuse a name assigned across the full scan so a filtered consumer preserves the declaration's original ordinal.
     if (finding.baselineIdentity !== undefined && finding.baselineSubject !== undefined) {
       return { identity: finding.baselineIdentity, subject: finding.baselineSubject, declarationKey: storedDeclarationKey(finding, finding.baselineSubject) };
     }
     const subject = baselineSubject(finding, ordinals[index] ?? 0);
-    // A finding whose own text cannot name it joins a sensitive finding in carrying no identity: it is still
-    // reported and scored, it simply can never be baselined, because there is nothing stable to match it on.
+    // An unusable subject leaves the finding without a stable match key, so baseline matching cannot hide it.
     if (subject === undefined) {
       return undefined;
     }
@@ -160,11 +139,12 @@ export function findingIdentities(findings: Finding[], declarationPosition: Decl
   });
 }
 
-/*
- * Ranks each symbol-bearing finding's declaration among same-named declarations in its file.
- * Two findings on one declaration share a position and therefore an ordinal; a second declaration of that name
- * takes the next one, which is what stops one review from covering both.
- * Stable contract: the ordinal counts declarations, not lines, so it survives an edit that only moves the finding.
+/**
+ * Rank same-named declarations within each file so stable baseline identities distinguish namesakes.
+ *
+ * @param findings - current findings whose file and symbol define each ranking group
+ * @param declarationPosition - resolves declaration positions and can supply additional same-name positions
+ * @returns One ordinal per finding in input order. Named declarations rank from one, and zero marks a finding with no eligible symbol.
  */
 function symbolOrdinals(findings: Finding[], declarationPosition: DeclarationPositionResolver): number[] {
   const positionsBySymbol = new Map<string, Set<number>>();
@@ -174,7 +154,7 @@ function symbolOrdinals(findings: Finding[], declarationPosition: DeclarationPos
       const key = `${finding.filePath}\0${symbol}`;
       const positions = positionsBySymbol.get(key) ?? new Set<number>();
       positions.add(declarationPosition(finding));
-      // Every same-named declaration the parser saw takes a slot, whether or not it warned this run.
+      // Include any extra positions supplied by the resolver so declarations without findings can still reserve their slots.
       for (const position of declarationPosition.sameNamedPositions?.(finding) ?? []) {
         positions.add(position);
       }
@@ -184,7 +164,7 @@ function symbolOrdinals(findings: Finding[], declarationPosition: DeclarationPos
 
   return findings.map((finding) => {
     const symbol = namedSymbol(finding);
-    // A symbol-less finding is named by its message, so it needs no ordinal and takes the sentinel zero.
+    // With no eligible symbol, zero signals that there is no declaration rank to use.
     if (symbol === undefined) {
       return 0;
     }
@@ -193,24 +173,21 @@ function symbolOrdinals(findings: Finding[], declarationPosition: DeclarationPos
   });
 }
 
-/*
- * Names the declaration a finding sits on, for collision detection only.
- * A file-level finding names no declaration at all, so every symbol-less occurrence shares one key and is matched
- * by count; keying them by message would report two measurements of one file as an unresolvable collision.
- * Stable contract: equal keys under one identity are an ordinary count; different keys are the collision the run reports.
- */
+// Returns a stable collision key for the current finding. A named finding uses the supplied resolver's declaration position.
+// Findings without an eligible symbol share a file-level key so repeated measurements can be matched by count.
+// Distinct keys under the same baseline identity mark a collision.
 function declarationKey(finding: Finding, declarationPosition: DeclarationPositionResolver): string {
   return namedSymbol(finding) === undefined ? "declaration:file" : `declaration:${declarationPosition(finding)}`;
 }
 
-// The same key for a reused identity: its subject already names one declaration, and no position is re-derived.
-// Stable contract: two findings carrying one stored subject share a key, so they are counted, never reported as a collision.
+// Returns the stable collision key for a finding reusing its baseline identity.
+// A finding without an eligible symbol uses the file-level key. A named finding uses its stored subject to preserve grouping.
 function storedDeclarationKey(finding: Finding, subject: string): string {
   return namedSymbol(finding) === undefined ? "declaration:file" : `declaration:subject:${subject}`;
 }
 
-// Reads a finding's symbol only when it actually names one, so an empty string never becomes a declaration.
-// Stable contract: an empty symbol reads as no symbol at all, so a blank string never becomes a declaration.
+// Returns the symbol used for stable declaration grouping. A missing or empty symbol returns undefined and receives no declaration rank.
+// Findings ineligible for baseline matching also return undefined, even when they carry a symbol.
 function namedSymbol(finding: Finding): string | undefined {
   if (!isBaselineEligible(finding)) {
     return undefined;
@@ -218,23 +195,23 @@ function namedSymbol(finding: Finding): string | undefined {
   return finding.symbol && finding.symbol.length > 0 ? finding.symbol : undefined;
 }
 
-/*
- * Builds the resolver that maps a finding to the line its declaration begins on, from this run's parsed blocks.
- * The ordinal then counts declarations rather than lines: inserting code above a function moves its line and not
- * its ordinal, which is the whole point of a line-free identity.
- * Stable contract: the position is the declaration's own start line, so the resulting identity is deterministic across runs.
+/**
+ * Build a stable position resolver so moving a finding within a matched declaration preserves its position for ranking.
+ *
+ * @param spansByFile - parsed spans grouped by path for matching declarations and collecting same-name positions
+ * @returns Resolver with same-name positions. Uses the matching span's start line or the finding's line, defaulting to 1 if unlocated.
  */
 export function declarationPositionFromSpans(spansByFile: Map<string, DeclarationSpan[]>): DeclarationPositionResolver {
   /**
-   * Places one finding on the declaration that encloses it.
-   * Stable contract: the position is a declaration start line, so the identity it feeds is deterministic across runs.
-   * @param finding - the finding to place; its symbol's last segment picks the declaration name
-   * @returns the enclosing same-named declaration's start line, or the finding's own line when none encloses it
+   * Resolve a stable declaration position for identity ranking, using the parsed span when it matches the finding.
+   *
+   * @param finding - occurrence whose path, line and final symbol segment locate its declaration
+   * @returns The matching declaration's start line, or the finding's line when none matches. A missing finding line is treated as 1.
    */
   const resolver: DeclarationPositionResolver = (finding: Finding) => {
     const line = finding.line ?? 1;
     const symbol = namedSymbol(finding);
-    // Without a symbol there is no declaration to rank, and every symbol-less finding of one file shares a key anyway.
+    // Without an eligible symbol there is no declaration to rank, so use the finding's line position.
     if (symbol === undefined) {
       return line;
     }
@@ -244,8 +221,8 @@ export function declarationPositionFromSpans(spansByFile: Map<string, Declaratio
   };
   resolver.sameNamedPositions = (finding: Finding) => {
     const symbol = namedSymbol(finding);
-    // A qualified symbol such as `Widget.process` keeps ranking among its findings: spans carry only the short name,
-    // so counting every `process` in the file would merge two classes' methods into one sequence.
+    // With no eligible symbol there are no positions to add to ranking.
+    // Qualified names rank from their findings alone because span names lack the class qualifier and could merge distinct methods.
     if (symbol === undefined || symbol.includes(".")) {
       return [];
     }
@@ -254,8 +231,8 @@ export function declarationPositionFromSpans(spansByFile: Map<string, Declaratio
   return resolver;
 }
 
-// Ranks a symbol on its own line when no parsed declarations are available, as a direct API call has.
-// Stable contract: without parsed declarations the finding's own line is the position, which keeps a direct API call deterministic.
+// Returns the finding's own line as a stable declaration position when parsed declarations are unavailable.
+// Unlocated findings use position 1.
 export function declarationPositionByLine(finding: Finding): number {
   return finding.line ?? 1;
 }

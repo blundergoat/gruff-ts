@@ -388,7 +388,8 @@ ${routingBranches}
   assert.deepEqual(symbols, ["namesItsArguments", "routeValue"]);
 });
 
-// Build repeated branch text for a documentation-rule fixture without adding complexity to the test driver.
+// Returns newline-separated comparison-and-return branches for the documentation-rule fixtures.
+// Each entry in values is inserted verbatim, so pass text safe inside a double-quoted TypeScript string.
 function branchFixtureLines(values: string[]): string {
   return values.map((value) => `  if (value === "${value}") return "${value}";`).join("\n");
 }
@@ -603,6 +604,8 @@ export function joinDeclared(left: string): string {
 `;
 
 // Collects the two tag rules' findings as "severity message" lines in a stable sorted order so each case reads as one list.
+// options supplies the fixture path and analysis settings; omitting it uses the fixture analyser's defaults.
+// Each analysis creates and removes a temporary project and temporarily changes process cwd.
 function tagFindings(options: Parameters<typeof analyseFixture>[1] = {}): string[] {
   return analyseFixture(CALLABLE_CONSTANT_SOURCE, options)
     .findings.filter((finding) => finding.ruleId === "docs.missing-param-tag" || finding.ruleId === "docs.missing-return-tag")
@@ -676,6 +679,8 @@ const TAG_RULE_IDS = ["docs.missing-param-tag", "docs.missing-return-tag"];
 const MISSING_DOC_RULE_IDS = ["docs.missing-exported-function-doc", "docs.missing-internal-function-doc"];
 
 // Collects the method fixture's findings for the given rules as "severity message" lines in a stable sorted order.
+// options supplies the fixture path and analysis settings; omitting it uses the fixture analyser's defaults.
+// Each analysis creates and removes a temporary project and temporarily changes process cwd.
 function methodFindings(ruleIds: string[], options: Parameters<typeof analyseFixture>[1] = {}): string[] {
   return analyseFixture(METHOD_SOURCE, options)
     .findings.filter((finding) => ruleIds.includes(finding.ruleId))
@@ -765,6 +770,8 @@ export { joinListed, joinListedArrow as renamedArrow };
 `;
 
 // Collects the tag rules' findings across the given fixtures as "severity symbol message" lines in a stable sorted order.
+// options supplies the fixture path and analysis settings; omitting it uses the fixture analyser's defaults.
+// Each analysis creates and removes a temporary project and temporarily changes process cwd.
 function exportFormTagFindings(sources: string[], options: Parameters<typeof analyseFixture>[1] = {}): string[] {
   return sources
     .flatMap((source) => analyseFixture(source, options).findings)
@@ -844,6 +851,8 @@ export function useAll(label: string): string {
 `;
 
 // Collects the private-callable fixture's findings for the given rules as "severity symbol message" lines in a stable sorted order.
+// options supplies the fixture path and analysis settings; omitting it uses the fixture analyser's defaults.
+// Each analysis creates and removes a temporary project and temporarily changes process cwd.
 function privateCallableFindings(ruleIds: string[], options: Parameters<typeof analyseFixture>[1] = {}): string[] {
   return analyseFixture(PRIVATE_CALLABLE_SOURCE, options)
     .findings.filter((finding) => ruleIds.includes(finding.ruleId))
@@ -1030,7 +1039,8 @@ export function logTyped(label: string): void {
 export const pickTyped = (label: string) => label;
 `;
 
-// Collects the two tag rules' findings on BARE_TAG_SOURCE as "line message" strings in a stable sorted order.
+// Runs BARE_TAG_SOURCE with the supplied analysis options so that tests can compare the two tag rules' output.
+// Returns stable, sorted line severity message strings, or an empty list when neither rule emits a finding.
 function bareTagFindings(options: Parameters<typeof analyseFixture>[1] = {}): string[] {
   return analyseFixture(BARE_TAG_SOURCE, options)
     .findings.filter((finding) => TAG_RULE_IDS.includes(finding.ruleId))
@@ -1110,6 +1120,8 @@ export function trimOneStale(label: string): string { return label.trim(); }
 `;
 
 // Collects docs.stale-param-tag findings on STALE_PARAMS_SOURCE as [symbol, message, parameter] rows in their stable emission order.
+// options supplies the fixture path and analysis settings; omitting it uses the fixture analyser's defaults.
+// Each analysis creates and removes a temporary project and temporarily changes process cwd.
 function staleParamFindings(options: Parameters<typeof analyseFixture>[1] = {}): unknown[][] {
   return analyseFixture(STALE_PARAMS_SOURCE, options).findings.filter((finding) => finding.ruleId === "docs.stale-param-tag").map((finding) => [finding.symbol, finding.message, finding.metadata.parameter]);
 }
