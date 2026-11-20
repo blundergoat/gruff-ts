@@ -114,7 +114,8 @@ export interface BlockFindingWithMetadataArgs extends BlockFindingArgs {
 }
 
 // Returns a high-confidence finding from the rule details and severity in args, using its file and block for the stable source anchor.
-// Omits remediation when the rule has no advice. Use the metadata variant when the rule needs measurements or medium confidence.
+// Omits remediation when the rule has no advice. Use the metadata variant when the rule needs measurements. Analysis then
+// replaces the confidence with the rule's catalogue confidence.
 export function blockFinding(args: BlockFindingArgs): Finding {
   const endLine = args.block.startLine + args.block.lineCount - 1;
   const remediation = TEST_QUALITY_ADVICE.get(args.ruleId);
@@ -123,7 +124,8 @@ export function blockFinding(args: BlockFindingArgs): Finding {
 
 // Returns a medium-confidence finding from the rule details and severity in args, using its file and block for the stable source anchor.
 // Attaches args.metadata without changing the fingerprint. Uses explicit remediation and falls back to rule advice when it is absent.
-// The finding omits remediation when the override is empty or neither source supplies advice.
+// The finding omits remediation when the override is empty or neither source supplies advice. Analysis then replaces the
+// confidence with the rule's catalogue confidence.
 export function blockFindingWithMetadata(args: BlockFindingWithMetadataArgs): Finding {
   const remediation = args.remediation ?? TEST_QUALITY_ADVICE.get(args.ruleId);
   return makeFinding({

@@ -18,6 +18,7 @@ import { absolutize, discoverSources, displayPath, type SourceFile } from "./dis
 import { makeFinding } from "./findings.ts";
 import { applyConfiguredSeverity, finding, parameterNames } from "./findings-helpers.ts";
 import { commentRecords, type CommentRecord } from "./comment-scanner.ts";
+import { catalogueConfidence } from "./rules.ts";
 import { analyseArchitectureRules, analyseCircularImportRule, buildProjectIndex, CIRCULAR_IMPORT_RULE_ID, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
 import { analyseBlockMeasures, analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks, measuredOnlyFunctionBlocks } from "./blocks.ts";
 import { bandedFields, LOWER_BAND_FILE, SPLIT_FILE } from "./limit-band.ts";
@@ -211,6 +212,19 @@ function prepareAnalysis(options: AnalysisOptions): AnalysisPreparation {
 }
 
 /**
+ * Give a finding its rule's catalogue confidence, so list-rules, the hook gate and the score read one value. A rule helper's
+ * default must not override the catalogue. The fingerprint and stable identity do not include confidence, so both stay unchanged.
+ *
+ * @param finding - scanner result for a rule the catalogue normally lists
+ * @returns the same finding when its confidence already matches, a copy carrying the catalogue confidence otherwise, or the
+ *   finding unchanged for a rule id the catalogue does not list
+ */
+function withCatalogueConfidence(finding: Finding): Finding {
+  const confidence = catalogueConfidence(finding.ruleId);
+  return confidence === undefined || confidence === finding.confidence ? finding : { ...finding, confidence };
+}
+
+/**
  * Complete a prepared scan. Preserve stable finding identities by assigning them before inline and baseline suppression.
  *
  * @param preparation - project scope, discovery and config, with the caller's diagnostic array to append to
@@ -227,7 +241,7 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
   const allFindings = sortedUniqueFindings([
     ...scanned.findings,
     ...analyseProjectIndex(projectRoot, options, discovery.files, scanned.projectSources, config).filter((finding) => ruleEnabled(config, finding.ruleId)),
-  ].map((finding) => applyConfiguredSeverity(config, finding)));
+  ].map((finding) => applyConfiguredSeverity(config, withCatalogueConfidence(finding))));
   // Reviewed sensitive exclusions apply before the baseline so a suppressed finding never reaches
   // the report, the score, or the exit code, and each entry's count covers the whole scan.
   const excluded = partitionSensitiveExclusions(allFindings, config.sensitiveExclusions);

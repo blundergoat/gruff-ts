@@ -15,7 +15,7 @@ const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "mis
 const EXPECTED_RELEASE_RULE_COUNT = 83;
 // Every medium- and low-confidence rule carries reviewed false-positive guidance; the high-confidence
 // remainder omits the field. Naming both counts keeps the two guards below arithmetically linked.
-const EXPECTED_GUIDED_RULE_COUNT = 48;
+const EXPECTED_GUIDED_RULE_COUNT = 52;
 
 // Check the descriptor's option keys against the catalogue ordering and uniqueness invariant. An absent list counts as empty.
 // Returns nothing. Fails the test if the keys are out of order or repeated, using the rule ID to identify the failure.
@@ -136,7 +136,7 @@ const riskyRuleQualityDoctrine = [
     signalSource: "commented function metrics reused from existing size, cyclomatic, cognitive, and nesting thresholds",
     expectedPillar: "documentation",
     expectedSeverity: "advisory",
-    expectedConfidence: "medium",
+    expectedConfidence: "low",
     fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
     invalidFixture: "commented function over an existing complexity threshold without because/why/tradeoff context",
     noisyValidFixture: "simple commented functions and complex functions whose comments mention why, because, or tradeoffs",
@@ -149,7 +149,7 @@ const riskyRuleQualityDoctrine = [
     signalSource: "comment-text scanner over lint, formatter, coverage, and tool suppression markers",
     expectedPillar: "documentation",
     expectedSeverity: "advisory",
-    expectedConfidence: "medium",
+    expectedConfidence: "low",
     fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
     invalidFixture: "eslint, biome, oxlint, coverage, or prettier suppression without because/reason/tracking text",
     noisyValidFixture: "suppression markers with because, reason, false-positive, issue, ADR, or task context",
@@ -162,7 +162,7 @@ const riskyRuleQualityDoctrine = [
     signalSource: "comment-text scanner requiring issue, owner, date, ADR, milestone, or task tracking markers",
     expectedPillar: "documentation",
     expectedSeverity: "advisory",
-    expectedConfidence: "high",
+    expectedConfidence: "medium",
     fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
     invalidFixture: "TODO, FIXME, HACK, or XXX comment with no tracking context",
     noisyValidFixture: "marker words inside strings/templates/regexes, quoted or mid-sentence prose mentions, plus comments with explicit tracking markers",
@@ -337,7 +337,7 @@ test("every medium and low confidence rule carries reviewed false-positive guida
 test("high confidence rules omit falsePositiveShapes rather than publishing an empty array", () => {
   const highConfidence = ruleDescriptors().filter((descriptor) => descriptor.confidence === "high");
 
-  // The 35 high-confidence rules are the complement of the 48 medium/low rules that carry guidance.
+  // The 31 high-confidence rules are the complement of the 52 medium/low rules that carry guidance.
   assert.equal(highConfidence.length, EXPECTED_RELEASE_RULE_COUNT - EXPECTED_GUIDED_RULE_COUNT);
 
   const publishingShapes = highConfidence

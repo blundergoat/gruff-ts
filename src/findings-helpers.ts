@@ -142,7 +142,8 @@ export function applyConfiguredSeverity(config: Config, finding: Finding): Findi
 
 // Input bundle for `finding()` - the lowest-cost finding factory. Captures everything the caller
 // must supply for a line-anchored Finding; shared defaults (confidence "high", empty metadata)
-// are added inside the builder so callers don't repeat them at every rule site.
+// are added inside the builder so callers don't repeat them at every rule site. Analysis then replaces the
+// confidence with the rule's catalogue confidence.
 export interface LineFindingArgs {
   ruleId: string;
   message: string;
