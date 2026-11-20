@@ -10,7 +10,7 @@ import { analyseSecurityFlow } from "./security-flow-rules.ts";
 import { maskNonCode } from "./source-text.ts";
 import { analyseFixture, analyseProject } from "./test-fixtures.ts";
 
-// Parses one fixture through the shared boundary and returns its discovered blocks.
+// Parses source using fileName as the script path and returns discovered function blocks for the fixture assertions.
 function discoveredBlocks(fileName: string, source: string) {
   const parsed = parseScript({ displayPath: fileName, isScript: true }, source);
   return functionBlocks(source, maskNonCode(source), parsed);
@@ -94,21 +94,6 @@ export function manyParams(a: string, b: string, c: string, d: string, e: string
   const DECLARED_PLAIN_PARAMETERS = 8;
   const finding = loud.findings.find((found) => found.ruleId === "size.parameter-count");
   assert.equal(finding?.metadata.parameters, DECLARED_PLAIN_PARAMETERS);
-});
-
-test("parameter text keeps names that follow end-of-line comments", () => {
-  const report = analyseFixture(`function inspect(
-  first: string, // Retained parameter.
-  second: string,
-): string {
-  return first;
-}
-`);
-  const unusedParameters = report.findings
-    .filter((finding) => finding.ruleId === "waste.unused-parameter")
-    .map((finding) => finding.metadata.parameter);
-
-  assert.deepEqual(unusedParameters, ["second"]);
 });
 
 test("AST export classification handles split declarations and same-name class methods", () => {

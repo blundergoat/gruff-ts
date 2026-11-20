@@ -9,7 +9,7 @@ import { ConfigLoadError } from "./config-load-error.ts";
 
 // Two common suggestion strings reused across the validators. Hoisted out so a future doc-link
 // or wording tweak lands in one place instead of N throw sites.
-const SUGGEST_INIT_FORCE = "Run `gruff-ts init --force` to regenerate the config from current defaults (preserves your `paths.ignore` and `minimumSeverity:` entries).";
+const SUGGEST_INIT_FORCE = "Run `gruff-ts init --force` to regenerate the config from current defaults (preserves your `paths.ignore` and `failOn:` entries).";
 const SUGGEST_EDIT_CONFIG = "Edit `.gruff-ts.yaml` to use a valid value, or run `gruff-ts init --force` to regenerate from defaults.";
 
 const YAML_KEYWORD_SCALARS = new Map<string, boolean | null>([
@@ -29,47 +29,52 @@ interface ParsedYamlScalar {
 
 const UNMATCHED_YAML_SCALAR: ParsedYamlScalar = { isMatched: false, value: undefined };
 
-/*
- * Reads YAML or JSON config and rejects unknown extensions. Raw IO failures (e.g. `--config <path>`
- * pointing at a missing file) and JSON parse failures are rewrapped as ConfigLoadError so the CLI
- * surface stays uniform - a bare ENOENT or SyntaxError would otherwise bypass the formatted
- * "gruff-ts: config error" stderr path in `runWithConfigErrorHandling`.
+/**
+ * Reads YAML or JSON config so that runWithConfigErrorHandling can present missing or malformed configs as CLI usage errors.
  *
- * Throws ConfigLoadError when: the file is missing (ENOENT), the contents are not valid JSON, the
- * YAML subset rejects the file (see parseYamlConfig), or the top-level value is not a mapping.
+ * @param path - File selected by --config <path> or default lookup. Its extension determines the parser.
+ * @param shownPath - Name used in diagnostics and error envelopes. Defaults to path.
+ * @returns The parsed top-level configuration mapping.
+ * @throws {ConfigLoadError} - The file is missing, has an unsupported extension, fails parsing, or does not contain a mapping.
+ * @throws {Error} - Other filesystem read errors propagate unchanged.
  */
-function parseConfigFile(path: string): Record<string, unknown> {
-  const source = readConfigSource(path);
+function parseConfigFile(path: string, shownPath: string = path): Record<string, unknown> {
+  const source = readConfigSource(path, shownPath);
   const extension = extname(path).toLowerCase();
-  const parsed = parseConfigSource(source, extension, path);
+  const parsed = parseConfigSource(source, extension, shownPath);
   const config = objectValue(parsed);
   if (!config) {
-    throw new ConfigLoadError(`Config file must contain an object with .yaml, .yml, or .json extension: ${path}`, SUGGEST_INIT_FORCE);
+    throw new ConfigLoadError(`Config file must contain an object with .yaml, .yml, or .json extension: ${shownPath}`, SUGGEST_INIT_FORCE);
   }
   return config;
 }
 
-/*
- * Reads the raw config bytes. Explicit `--config <path>` skips the `defaultConfigPath` existence
- * check, so a typo here would otherwise dump a raw Node stack. Throws ConfigLoadError on ENOENT
- * with a user-actionable suggestion; rethrows every other filesystem error unchanged so an
- * unexpected IO failure still surfaces its native stack for debugging.
+/**
+ * Reads config text and gives users a path-selection hint if the file is missing.
+ *
+ * @param path - Filesystem path to read.
+ * @param shownPath - Path label to display if the file is missing.
+ * @returns Decoded UTF-8 config text with any leading byte order mark removed.
+ * @throws {ConfigLoadError} - When the file does not exist.
+ * @throws {Error} - Propagates other filesystem read failures unchanged.
  */
-function readConfigSource(path: string): string {
+function readConfigSource(path: string, shownPath: string): string {
   try {
     return readFileSync(path, "utf8").replace(/^\uFEFF/, "");
   } catch (error) {
     if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
-      throw new ConfigLoadError(`Config file not found: ${path}.`, "Pass --config with an existing path, or omit the flag to use the default lookup.");
+      throw new ConfigLoadError(`Config file not found: ${shownPath}.`, "Pass --config with an existing path, or omit the flag to use the default lookup.");
     }
     throw error;
   }
 }
 
-// Routes to the YAML subset parser or the native JSON parser. Wraps `JSON.parse`'s SyntaxError so
-// a malformed `.gruff.json` surfaces through the same ConfigLoadError channel as YAML failures
-// (parseYamlConfig already throws ConfigLoadError on its own malformed inputs).
-function parseConfigSource(source: string, extension: string, path: string): unknown {
+// Parses config text as YAML or JSON according to its file extension and returns the parsed value.
+// An unsupported extension yields undefined so the caller can reject the file.
+// The display path identifies the file in invalid JSON errors, which use the same CLI error channel as YAML errors.
+// @throws {ConfigLoadError} - For invalid JSON syntax or input rejected by the YAML parser.
+// @throws {Error} - Propagates other JSON parser errors unchanged.
+function parseConfigSource(source: string, extension: string, shownPath: string): unknown {
   if (extension === ".yaml" || extension === ".yml") {
     return parseYamlConfig(source);
   }
@@ -80,7 +85,7 @@ function parseConfigSource(source: string, extension: string, path: string): unk
     return JSON.parse(source) as unknown;
   } catch (error) {
     if (error instanceof SyntaxError) {
-      throw new ConfigLoadError(`Config file is not valid JSON: ${error.message} (${path}).`, SUGGEST_EDIT_CONFIG);
+      throw new ConfigLoadError(`Config file is not valid JSON: ${error.message} (${shownPath}).`, SUGGEST_EDIT_CONFIG);
     }
     throw error;
   }
@@ -100,10 +105,12 @@ interface YamlParser {
   index: number;
 }
 
-/*
- * Custom YAML parser that intentionally supports only a documented subset (mappings, arrays,
- * scalars, inline `[]`/`{}`) - keeps gruff free of a yaml dependency. Throws on malformed input
- * because silently misparsing config would produce wrong findings and a stable but broken baseline.
+/**
+ * Parses the supported YAML configuration subset of mappings, sequences and scalar values.
+ *
+ * @param source - Config text to split into YAML lines and parse.
+ * @returns The top-level mapping. Blank or comment-only input yields an empty mapping.
+ * @throws {ConfigLoadError} - For a non-mapping root, a missing mapping separator, excess indentation or tabs in retained line indentation.
  */
 function parseYamlConfig(source: string): Record<string, unknown> {
   const parser = { lines: yamlLines(source), index: 0 };
@@ -115,8 +122,8 @@ function parseYamlConfig(source: string): Record<string, unknown> {
   return config;
 }
 
-// Dispatch entry for a block. Empty (no lines at this indent) returns `{}`; sequence lines lead
-// into the array parser; everything else is an object/mapping.
+// Returns an empty mapping when the YAML cursor has no next line or its indent is below the supplied minimum.
+// Otherwise the next line sets the block indent and selects a sequence or mapping, advancing the cursor through that block.
 function parseYamlBlock(parser: YamlParser, indent: number): unknown {
   const line = parser.lines[parser.index];
   if (!line || line.indent < indent) {
@@ -125,8 +132,9 @@ function parseYamlBlock(parser: YamlParser, indent: number): unknown {
   return isYamlArrayLine(line) ? parseYamlArray(parser, line.indent) : parseYamlObject(parser, line.indent);
 }
 
-// Walks mapping entries at one indent level, stopping when the next line dedents or switches to
-// sequence form. Throws on unexpected indent so a missed key isn't silently swallowed.
+// Returns the mapping at the supplied indent and advances the YAML cursor through its entries and values.
+// A dedent or sequence line ends the mapping. If no entry was consumed, the result is an empty object.
+// An over-indented mapping line raises ConfigLoadError so a misaligned entry cannot be read at this level.
 function parseYamlObject(parser: YamlParser, indent: number): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   while (parser.index < parser.lines.length) {
@@ -140,8 +148,9 @@ function parseYamlObject(parser: YamlParser, indent: number): Record<string, unk
   return result;
 }
 
-// Inline scalar after the colon → leaf value; bare key → recurse into nested block. Keys are
-// unquoted so `"foo"` and `foo` produce the same result key.
+// Returns nothing. Adds the current YAML mapping entry to the destination object and advances the parser past its value.
+// Uses the mapping indent to detect a nested value. An empty value with no deeper block becomes an empty object.
+// Unquotes keys so quoted and bare spellings of the same key share an entry.
 function addYamlObjectEntry(parser: YamlParser, indent: number, line: YamlLine, result: Record<string, unknown>): void {
   const [rawKey, rawValue] = yamlKeyValuePair(line.content);
   const scalarText = rawValue.trim();
@@ -149,8 +158,9 @@ function addYamlObjectEntry(parser: YamlParser, indent: number, line: YamlLine, 
   result[unquoteYaml(rawKey.trim())] = scalarText.length > 0 ? parseYamlScalar(scalarText) : parseNestedYamlValue(parser, indent, {});
 }
 
-// Block-style YAML sequence. Inline `[...]` arrays are handled by `parseYamlCollectionScalar`;
-// this walks the `- item` lines and recurses into nested values for empty `-` openers.
+// Returns the block sequence at the supplied indent and advances the YAML cursor through its items and nested values.
+// A dedent or non-sequence line ends the block. If no item was consumed, the result is an empty array.
+// An over-indented sequence item raises ConfigLoadError. Inline arrays are handled by parseYamlCollectionScalar.
 function parseYamlArray(parser: YamlParser, indent: number): unknown[] {
   const result: unknown[] = [];
   while (parser.index < parser.lines.length) {
@@ -164,8 +174,9 @@ function parseYamlArray(parser: YamlParser, indent: number): unknown[] {
   return result;
 }
 
-// Three branches: bare `-` (recurse for nested), `- key: value` (mapping item), `- scalar`.
-// Bare-dash items return null when the nested block is empty so the array entry isn't elided.
+// Parses the YAML sequence item on line, using indent as the dash column to distinguish a nested value.
+// Advances parser past the current line and any continuation lines it consumes.
+// Returns a nested value, a mapping for - key: value, or a scalar. A bare dash with no deeper block returns null so that its slot is kept.
 function parseYamlArrayItem(parser: YamlParser, indent: number, line: YamlLine): unknown {
   const itemText = line.content === "-" ? "" : line.content.slice(2).trim();
   parser.index += 1;
@@ -177,26 +188,56 @@ function parseYamlArrayItem(parser: YamlParser, indent: number, line: YamlLine):
   return pair ? parseYamlArrayMappingItem(parser, indent, pair) : parseYamlScalar(itemText);
 }
 
-// `- key: value` form: the first key is on the dash line, subsequent keys live as a nested object.
-// Mirrors the inline-vs-nested split of `addYamlObjectEntry`.
+// Returns the sequence item's mapping, starting from the key and value pair on its dash line.
+// Uses the dash indent to find nested values and sibling keys, advancing the YAML cursor through those lines.
+// A blank first value with no deeper block becomes an empty object.
 function parseYamlArrayMappingItem(parser: YamlParser, indent: number, pair: [string, string]): Record<string, unknown> {
   const [rawKey, rawValue] = pair;
   const scalarText = rawValue.trim();
-  return {
+  const mappingItem: Record<string, unknown> = {
     [unquoteYaml(rawKey.trim())]: scalarText.length > 0 ? parseYamlScalar(scalarText) : parseNestedYamlValue(parser, indent, {}),
   };
+  addYamlArrayItemSiblingKeys(parser, indent, mappingItem);
+  return mappingItem;
 }
 
-// Returns the nested block if the next line indents further, otherwise the caller's `fallback`.
-// `fallback` is `{}` for mappings (empty value → empty object) and `null` for sequences.
+/**
+ * Reads sibling keys at the first continuation's indentation so that YAML entries such as sensitiveExclusions: can span lines.
+ *
+ * @param parser - YAML cursor positioned after the item's first entry
+ * @param indent - indentation of the item's dash line, which continuations must exceed
+ * @param mappingItem - mapping that receives the sibling entries
+ * @returns - nothing. Adds the sibling entries and advances the cursor past them, if present.
+ */
+function addYamlArrayItemSiblingKeys(parser: YamlParser, indent: number, mappingItem: Record<string, unknown>): void {
+  const keyIndent = parser.lines[parser.index]?.indent;
+  // Nothing deeper than the dash line means the item ended with its first key.
+  if (keyIndent === undefined || keyIndent <= indent) {
+    return;
+  }
+  while (parser.index < parser.lines.length) {
+    const line = parser.lines[parser.index];
+    // A change in indentation or the start of the next sequence item ends this item's key list.
+    if (!line || line.indent !== keyIndent || isYamlArrayLine(line)) {
+      break;
+    }
+    addYamlObjectEntry(parser, keyIndent, line, mappingItem);
+  }
+}
+
+// If the next line is deeper than the parent indent, advances the YAML cursor through the nested block and returns its value.
+// Otherwise returns the supplied fallback, an empty object for a bare mapping value or null for a bare sequence item.
 function parseNestedYamlValue(parser: YamlParser, indent: number, fallback: unknown): unknown {
   const nestedIndent = parser.lines[parser.index]?.indent;
   return nestedIndent !== undefined && nestedIndent > indent ? parseYamlBlock(parser, nestedIndent) : fallback;
 }
 
-/*
- * Throws when a mapping line has no `:` separator - the parser cannot recover, and a silent skip
- * would hide a real config typo from the user.
+/**
+ * Requires a valid mapping separator so a malformed entry produces a config error.
+ *
+ * @param content - YAML mapping line to split into a key and value.
+ * @returns Raw key and value slices on either side of the separator.
+ * @throws {ConfigLoadError} - When no unquoted colon is followed by whitespace or the end of the line.
  */
 function yamlKeyValuePair(content: string): [string, string] {
   const pair = splitYamlKeyValue(content);
@@ -206,14 +247,18 @@ function yamlKeyValuePair(content: string): [string, string] {
   return pair;
 }
 
-// `- ` or bare `-` only - two-dash openers and ambiguous variants are not sequence entries.
+// Treats a YAML line as a sequence entry when it starts with a dash followed by a space or consists of a single dash.
 function isYamlArrayLine(line: YamlLine): boolean {
   return line.content.startsWith("- ") || line.content === "-";
 }
 
-/*
- * Throws when a line is indented more than expected at this scope. Without this guard, a stray
- * indent would silently produce a sub-mapping and the user's config would mean something different.
+/**
+ * Rejects excess indentation before a misaligned entry can be consumed at the current block level.
+ *
+ * @param line - Candidate entry in the current YAML block.
+ * @param indent - Expected indentation for entries at this block level.
+ * @returns Nothing. Lets the caller continue parsing when the line is within the indentation limit.
+ * @throws {ConfigLoadError} - When the line is indented deeper than the current block level.
  */
 function assertYamlIndent(line: YamlLine, indent: number): void {
   if (line.indent > indent) {
@@ -221,10 +266,12 @@ function assertYamlIndent(line: YamlLine, indent: number): void {
   }
 }
 
-/*
- * Pre-pass that drops blank/comment lines and rejects tab-indented input. Tabs are forbidden
- * because mixing them with spaces is the canonical YAML footgun, so the parser throws rather than
- * guess at the user's intent.
+/**
+ * Prepares meaningful YAML lines for indentation-based parsing by stripping comments and skipping blank lines.
+ *
+ * @param source - YAML document text to split into lines.
+ * @returns Retained lines with their indentation width and trimmed content, or an empty array if none remain.
+ * @throws {ConfigLoadError} - When a retained line contains a tab in its leading whitespace.
  */
 function yamlLines(source: string): YamlLine[] {
   const lines: YamlLine[] = [];
@@ -242,15 +289,15 @@ function yamlLines(source: string): YamlLine[] {
   return lines;
 }
 
-// Drops `# comment` text but only when the `#` is not inside quotes - `foo: "a # b"` keeps the
-// comment-like substring as part of the string value, matching YAML semantics.
+// Returns the YAML line before its first unquoted hash at the start of the line or after whitespace.
+// With no such hash, returns the full line so hashes inside quotes or unquoted words remain part of the value.
 function stripYamlComment(line: string): string {
   const commentIndex = firstUnquotedIndex(line, (character, index) => character === "#" && (index === 0 || /\s/.test(line[index - 1] ?? "")));
   return commentIndex === undefined ? line : line.slice(0, commentIndex);
 }
 
-// Finds the first `:<space>` outside quotes. Required because a quoted value can legitimately
-// contain `:` (`url: "https://..."`) and the parser must not split at the first occurrence.
+// Splits candidate mapping text at the first unquoted colon followed by whitespace or the end of the text.
+// Returns the raw key and value slices, or undefined when there is no mapping separator.
 function splitYamlKeyValue(mappingText: string): [string, string] | undefined {
   const separatorIndex = firstUnquotedIndex(mappingText, (character, index) => {
     const next = mappingText[index + 1];
@@ -259,8 +306,8 @@ function splitYamlKeyValue(mappingText: string): [string, string] | undefined {
   return separatorIndex === undefined ? undefined : [mappingText.slice(0, separatorIndex), mappingText.slice(separatorIndex + 1)];
 }
 
-// Tries each scalar parser in order; the first to claim a match wins. Bare strings are the
-// fallback so callers never end up with `undefined` for a non-empty scalar.
+// Trims the supplied YAML scalar text and returns the first matching parser's value.
+// When no parser matches, returns the trimmed text. A blank scalar therefore becomes an empty string.
 function parseYamlScalar(scalarText: string): unknown {
   const trimmed = scalarText.trim();
   for (const parser of [parseYamlCollectionScalar, parseYamlQuotedScalar, parseYamlKeywordScalar, parseYamlNumberScalar]) {
@@ -272,7 +319,8 @@ function parseYamlScalar(scalarText: string): unknown {
   return trimmed;
 }
 
-// Parses YAML collection scalar from source text.
+// Returns a match for trimmed YAML text in square brackets or for an empty mapping written as a pair of braces.
+// Empty collections are valid matches. Other text returns the unmatched-scalar sentinel so another parser can try it.
 function parseYamlCollectionScalar(trimmed: string): ParsedYamlScalar {
   if (trimmed === "[]") {
     return matchedYamlScalar([]);
@@ -286,8 +334,8 @@ function parseYamlCollectionScalar(trimmed: string): ParsedYamlScalar {
   return UNMATCHED_YAML_SCALAR;
 }
 
-// `"..."` or `'...'` wrapped. Calls `unquoteYaml` so the resulting value matches what a real YAML
-// engine would produce; matched-state flag separates "empty quoted string" from "not a quoted scalar".
+// Returns a matched string for trimmed YAML text with matching outer quotes, decoding the supported escapes.
+// Empty quoted text is a successful match. Text without matching quotes returns the unmatched-scalar sentinel.
 function parseYamlQuotedScalar(trimmed: string): ParsedYamlScalar {
   if (isQuotedYaml(trimmed)) {
     return matchedYamlScalar(unquoteYaml(trimmed));
@@ -295,8 +343,8 @@ function parseYamlQuotedScalar(trimmed: string): ParsedYamlScalar {
   return UNMATCHED_YAML_SCALAR;
 }
 
-// Recognises `true`/`false`/`null`/`~` (case-insensitive). The keyword table is shared so the
-// parser produces consistent JS values (`null` instead of the string "null").
+// Matches trimmed YAML text for true, false, null and tilde case-insensitively, returning a Boolean or null in a matched result.
+// Other text returns the unmatched-scalar sentinel so number parsing or the plain-text fallback can handle it.
 function parseYamlKeywordScalar(trimmed: string): ParsedYamlScalar {
   const normalized = trimmed.toLowerCase();
   if (YAML_KEYWORD_SCALARS.has(normalized)) {
@@ -305,8 +353,8 @@ function parseYamlKeywordScalar(trimmed: string): ParsedYamlScalar {
   return UNMATCHED_YAML_SCALAR;
 }
 
-// Strict numeric pattern - no octals, no special floats. Numbers that don't fit fall through to
-// bare-string handling, so `0xFF` or `1e10` stay as strings rather than producing surprising values.
+// Returns a matched number when the trimmed YAML scalar fits the supported decimal syntax.
+// Other text returns the unmatched-scalar sentinel. Hexadecimal and exponent forms fall through as strings.
 function parseYamlNumberScalar(trimmed: string): ParsedYamlScalar {
   if (YAML_NUMBER_SCALAR.test(trimmed)) {
     return matchedYamlScalar(Number(trimmed));
@@ -315,7 +363,7 @@ function parseYamlNumberScalar(trimmed: string): ParsedYamlScalar {
 }
 
 // Returns a "matched" result with the parsed value, distinguishing real matches from the shared
-// `UNMATCHED_YAML_SCALAR` sentinel used by every parser that failed.
+// UNMATCHED_YAML_SCALAR sentinel used by every parser that failed.
 function matchedYamlScalar(scalarValue: unknown): ParsedYamlScalar {
   return { isMatched: true, value: scalarValue };
 }
@@ -330,8 +378,8 @@ function parseYamlInlineArray(arrayText: string): unknown[] {
   return splitYamlInlineItems(inner).map((item) => parseYamlScalar(item));
 }
 
-// Quote-aware split on commas. Treating a quoted comma as a separator would corrupt entries like
-// `["a, b", "c"]` - same reason `splitYamlKeyValue` is also quote-aware.
+// Splits the contents of an inline array into trimmed item strings, keeping quoted commas inside their items.
+// Returns empty fields as empty strings so their array positions are preserved.
 function splitYamlInlineItems(itemsText: string): string[] {
   const items: string[] = [];
   let start = 0;
@@ -350,8 +398,8 @@ interface QuoteScanState {
   isEscaped: boolean;
 }
 
-// Walks `value` calling `predicate` only at quote-free positions. Used by both the comment
-// stripper and the colon splitter to keep quoted text inert.
+// Searches the source text outside quotes, passing eligible characters and their indexes to the supplied predicate until it accepts one.
+// Returns the first accepted index, or undefined when no unquoted position matches.
 function firstUnquotedIndex(sourceText: string, predicate: (character: string, index: number) => boolean): number | undefined {
   for (const index of unquotedIndexes(sourceText)) {
     const character = sourceText[index] ?? "";
@@ -362,8 +410,8 @@ function firstUnquotedIndex(sourceText: string, predicate: (character: string, i
   return undefined;
 }
 
-// All quote-free positions in `value`, optionally filtered by a specific character. The two-mode
-// shape lets the same lexer feed both `firstUnquotedIndex` and the inline-array splitter.
+// Returns indexes outside quoted regions in the supplied text, excluding the quote delimiters themselves.
+// An omitted or empty character filter keeps every eligible index. If none qualify, the result is an empty array.
 function unquotedIndexes(sourceText: string, expectedCharacter?: string): number[] {
   const indexes: number[] = [];
   const state: QuoteScanState = { quote: undefined, isEscaped: false };
@@ -383,8 +431,8 @@ function unquotedIndexes(sourceText: string, expectedCharacter?: string): number
   return indexes;
 }
 
-// Returns true and mutates `state` when the character was inside a quoted region. The escape
-// handling is double-quote-only because YAML single-quote strings have no `\` escapes.
+// Returns true for a character consumed by the active quoted region and updates the supplied quote and escape state.
+// Backslash escapes apply inside double quotes. With no active quote, returns false so the caller can handle the character.
 function consumeQuotedCharacter(character: string, state: QuoteScanState): boolean {
   if (!state.quote) {
     return false;
@@ -400,8 +448,7 @@ function consumeQuotedCharacter(character: string, state: QuoteScanState): boole
   return true;
 }
 
-// Single and double quotes only - YAML allows backticks elsewhere but they're not part of the
-// supported subset here, and the parser would have to reject them anyway.
+// Recognizes a character as a YAML quote delimiter when it is a single or double quote. Backticks remain ordinary text.
 function isYamlQuote(character: string): boolean {
   return character === "\"" || character === "'";
 }
@@ -412,9 +459,9 @@ function isQuotedYaml(scalarText: string): boolean {
   return scalarText.length >= 2 && ((scalarText.startsWith("\"") && scalarText.endsWith("\"")) || (scalarText.startsWith("'") && scalarText.endsWith("'")));
 }
 
-// Removes quotes and decodes the supported escapes: `''` doubling for single quotes, and `\n`,
-// `\r`, `\t`, `\"`, `\\` for double quotes. Anything else passes through unchanged so the parser
-// reports the user's exact intent rather than mangling unknown escape sequences.
+// Removes matching outer quotes from a YAML scalar and decodes doubled apostrophes in single-quoted text.
+// In double quotes, decodes backslash escapes for newline, carriage return, tab, double quote and backslash.
+// Returns unquoted input unchanged and preserves unrecognized escapes inside quoted text.
 function unquoteYaml(scalarText: string): string {
   if (!isQuotedYaml(scalarText)) {
     return scalarText;
@@ -438,8 +485,8 @@ function unquoteYaml(scalarText: string): string {
   });
 }
 
-// Type narrowing for `Record<string, unknown>`. Returns undefined (not null) for non-objects so
-// the caller can use the standard optional-chaining pattern through the rest of the config layer.
+// Returns the supplied config value when it is a non-null, non-array object so callers can read named options.
+// Null, arrays and primitive values yield undefined so callers can use optional chaining for an absent mapping.
 function objectValue(configValue: unknown): Record<string, unknown> | undefined {
   return typeof configValue === "object" && configValue !== null && !Array.isArray(configValue) ? (configValue as Record<string, unknown>) : undefined;
 }

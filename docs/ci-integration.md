@@ -59,7 +59,7 @@ TypeScript supports working-tree, staged, unstaged, and base-ref diff scans:
 Config `paths.ignore` is authoritative in every invocation mode - a matching
 path is excluded and produces no findings whether it is reached by a directory
 walk, passed explicitly, or touched by a diff. Each excluded path is reported in
-`paths.skipped` with its `source` and `pattern`. `--include-ignored` affects
+`paths.details` with its `source`; a `config` entry also carries the matching `pattern`. `--include-ignored` affects
 git-ignored and default-ignored paths only; it never overrides `paths.ignore`.
 
 `check-ignore` answers "would gruff skip this path?" without running a scan,

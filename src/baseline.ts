@@ -1,4 +1,7 @@
-// Baseline persistence helpers for stable suppression files and score history side effects.
+// Score-history side effects and the canonical finding order every report and baseline is built from.
+//
+// Baseline reading, writing, and matching live in `baseline-file.ts`; this module keeps the ordering and dedupe
+// rules that decide which findings a run reports at all, and the history file the dashboard sparkline reads.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { scoreReport } from "./scoring.ts";
@@ -18,66 +21,31 @@ function displayPath(projectRoot: string, path: string): string {
   return relativePath === "" ? "." : relativePath;
 }
 
-// `gruff.baseline.v1`: writes the fingerprint plus the identity tuple used by `applyBaseline`.
-// `message` is persisted for human review; `applyBaseline` ignores it so cosmetic message changes
-// do not invalidate baselines. Bump schema before adding required fields; persists to disk via writeFileSync.
-function writeBaseline(path: string, findings: Finding[]): void {
-  writeFileSync(
-    path,
-    JSON.stringify(
-      {
-        schemaVersion: "gruff.baseline.v1",
-        generatedAt: new Date().toISOString(),
-        entries: findings.map((finding) => ({
-          fingerprint: finding.fingerprint,
-          ruleId: finding.ruleId,
-          filePath: finding.filePath,
-          line: finding.line,
-          symbol: finding.symbol,
-          message: finding.message,
-        })),
-      },
-      null,
-      2,
-    ),
-  );
-}
-
-// Suppresses any finding whose (fingerprint, ruleId, filePath) tuple appears in the baseline.
-// Drift between versions would let stale suppressions leak in, so the operator must regenerate
-// against the current CLI; reads the baseline file and throws on an unknown schema version.
-function applyBaseline(path: string, findings: Finding[]): Finding[] {
-  const baselineFile = JSON.parse(readFileSync(path, "utf8")) as { schemaVersion?: string; entries?: Array<{ fingerprint: string; ruleId: string; filePath: string }> };
-  if (baselineFile.schemaVersion !== "gruff.baseline.v1") {
-    throw new Error(`unsupported baseline schema in ${path}`);
-  }
-  const keys = new Set((baselineFile.entries ?? []).map((entry) => [entry.fingerprint, entry.ruleId, entry.filePath].join("\0")));
-  return findings.filter((finding) => !keys.has([finding.fingerprint, finding.ruleId, finding.filePath].join("\0")));
-}
-
-/*
- * Appends one row to the score-history JSON file and trims to the most recent 100 entries so the
- * dashboard sparkline never grows unbounded. The stable contract: writes via writeFileSync, and on
- * persistence failure it reports a `history-error` diagnostic and recovers - a flaky history file
- * must not fail the analysis run.
+/**
+ * Writes a score-history row and keeps the latest 100 entries to bound the dashboard sparkline. An absent file starts a new history.
+ * The stable contract is to report a history failure so that analysis can continue.
+ *
+ * @param projectRoot - base directory for resolving the history path and displaying it in a diagnostic
+ * @param historyFile - JSON history destination
+ * @param findings - run findings used for the count and score
+ * @param evaluatedFiles - number of evaluated files used to calculate the score
+ * @param diagnostics - run diagnostics array that receives a history-error if recording fails
+ * @returns Nothing. It writes the updated history or appends a failure diagnostic.
  */
-function recordHistory(projectRoot: string, historyFile: string, findings: Finding[], diagnostics: RunDiagnostic[]): void {
+function recordHistory(projectRoot: string, historyFile: string, findings: Finding[], evaluatedFiles: number, diagnostics: RunDiagnostic[]): void {
   const path = absolutize(projectRoot, historyFile);
   try {
     const entries = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as unknown[]) : [];
-    entries.push({ recordedAt: new Date().toISOString(), findings: findings.length, score: scoreReport(findings).composite });
+    entries.push({ recordedAt: new Date().toISOString(), findings: findings.length, score: scoreReport(findings, evaluatedFiles).composite });
     writeFileSync(path, JSON.stringify(entries.slice(-100), null, 2));
   } catch (error) {
     diagnostics.push({ diagnosticType: "history-error", message: `Unable to write history file: ${String(error)}`, filePath: displayPath(projectRoot, path) });
   }
 }
 
-// `docs.missing-public-doc` is keyed by (ruleId, filePath, symbol) instead of fingerprint because one
-// file can legitimately surface multiple undocumented public symbols and they must each survive dedupe.
-// All other rules collapse on their fingerprint, extended by the match column when one is present
-// (ADR-017): two distinct secrets on one line share a line-keyed fingerprint, and without the column
-// discriminator the second occurrence would be silently dropped from every report and the hook.
-// The extended key is in-memory only - fingerprint values and `gruff.baseline.v1` matching are unchanged.
+// Returns the first finding per dedupe key in input order, preserving the original fingerprints.
+// Only docs.missing-public-doc findings with a symbol use rule, path and symbol. Other keys use the fingerprint and any column.
+// Columns preserve separate same-line matches. gruff.baseline.v3 uses line-free matching under the identity separation in ADR-017.
 function dedupeFindings(findings: Finding[]): Finding[] {
   const seen = new Set<string>();
   return findings.filter((finding) => {
@@ -90,18 +58,13 @@ function dedupeFindings(findings: Finding[]): Finding[] {
   });
 }
 
-// Derives the in-memory dedupe key for one finding, so same-line occurrences with distinct
-// columns survive dedupe as separate findings (ADR-017). Invariant: the key is never serialized
-// and never feeds `applyBaseline` - fingerprint values and baseline matching stay byte-identical.
+// Returns a stable in-memory dedupe key. Outside the per-symbol rule below, distinct columns keep same-line occurrences separate.
+// When a finding has no column, its fingerprint alone groups duplicates outside the per-symbol rule.
+// The key stays in memory as required by ADR-017. applyBaseline receives the deduplicated findings with their original fingerprints.
 function dedupeKey(finding: Finding): string {
   // One file legitimately surfaces many undocumented public symbols; keep each per-symbol entry.
   if (finding.ruleId === "docs.missing-public-doc" && finding.symbol) {
     return [finding.ruleId, finding.filePath, finding.symbol].join("\0");
-  }
-  // Casing drift is scoped to a lexical owner. Preserve owner-distinct diagnostics in memory
-  // without changing their public line-keyed fingerprints or baseline matching contract.
-  if (finding.ruleId === "naming.inconsistent-casing" && typeof finding.metadata.ownerId === "string") {
-    return [finding.fingerprint, finding.metadata.ownerId].join("\0");
   }
   // A column means the scanner pinpointed the occurrence; same-line occurrences stay distinct.
   if (finding.column !== undefined) {
@@ -110,8 +73,8 @@ function dedupeKey(finding: Finding): string {
   return finding.fingerprint;
 }
 
-// Canonical finding ordering: (filePath, line, ruleId, message). The same tuple is part of the
-// stable baseline matching contract, so changing the comparator would churn every existing baseline.
+// Sorts the caller's findings in place by path, line, rule and message to give reports a stable order. Missing lines sort as zero.
+// Returns a new array with the first occurrence of each dedupe key in that order.
 function sortedUniqueFindings(findings: Finding[]): Finding[] {
   findings.sort(
     (left, right) =>
@@ -123,4 +86,4 @@ function sortedUniqueFindings(findings: Finding[]): Finding[] {
   return dedupeFindings(findings);
 }
 
-export { DEFAULT_BASELINE, writeBaseline, applyBaseline, recordHistory, dedupeFindings, sortedUniqueFindings };
+export { DEFAULT_BASELINE, recordHistory, dedupeFindings, sortedUniqueFindings };

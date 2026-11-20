@@ -1,20 +1,14 @@
-// Every documentation, comment-quality, fixture-purpose, stale-reference, context-doc,
-// magic-threshold, and restating-signature rule. The biggest of the rule-pack modules; the
-// orchestrator `analyseCommentQualityRules` fans out per-comment / per-declaration / per-block
-// passes that all share a stable, deterministic emission order.
-import { existsSync } from "node:fs";
-import { dirname as dirnamePath, resolve } from "node:path";
-import { cwd } from "node:process";
+// Every comment-quality, fixture-purpose and context-doc rule. The orchestrator
+// `analyseCommentQualityRules` fans out per-comment / per-declaration / per-block passes that all
+// share a stable, deterministic emission order.
 import { type FunctionBlock } from "./blocks.ts";
-import { combinedContextLineComment, type CommentRecord } from "./comment-scanner.ts";
+import { combinedContextLineComment, type CommentRecord, isOverviewOrDividerCommentAt } from "./comment-scanner.ts";
 import { type SourceFile } from "./discovery.ts";
 import { type ExportedDeclaration, interfaceDeclarations } from "./doc-rules.ts";
 import { type CommentedDeclaration, pushDeclarationContextFindings, pushFunctionContextFindings } from "./context-doc-rules.ts";
 import { makeFinding } from "./findings.ts";
 import { splitIdentifierWords } from "./findings-helpers.ts";
 import { pushFixturePurposeFindings } from "./fixture-purpose-rules.ts";
-import { isTestPath } from "./project-rules.ts";
-import { ruleDescriptors } from "./rules.ts";
 import type { Config, Finding } from "./types.ts";
 
 type CommentQualityRuleInput = {
@@ -36,72 +30,67 @@ type FunctionContextCommentQualityInput = {
   findings: Finding[];
 };
 
-type MagicThresholdCandidate = {
-  label: string;
-  value: string;
-  kind: string;
-};
-
-const DESCRIPTOR_IDS = new Set(ruleDescriptors().map((descriptor) => descriptor.ruleId));
-const CLI_FLAGS = knownCliFlags();
-
-
-/*
- * Coordinator for every comment-quality rule. Comments and declarations are parsed once and the
- * rule descriptor + CLI flag sets are computed once, so every sub-rule sees the same stable inputs.
- */
+// Runs the comment-quality checks using the source text, parsed comments, declaration blocks and configuration in input.
+// Appends findings for violations of the comment-quality contract to input.findings and returns nothing.
+// Shares parsed inputs so that the checks use the same source locations.
 export function analyseCommentQualityRules(input: CommentQualityRuleInput): void {
   const { file, source, codeSource, blocks, comments, config, findings } = input;
   const lines = source.split(/\r?\n/);
   const declarations = commentedDeclarations(blocks, interfaceDeclarations(source, codeSource));
 
-  analyseStandaloneCommentQuality(file, source, comments, DESCRIPTOR_IDS, CLI_FLAGS, findings);
+  analyseStandaloneCommentQuality(file, source, comments, findings, config.trackingTokens);
   analyseCommentedDeclarationQuality(file, lines, comments, declarations, findings);
   analyseFunctionContextCommentQuality({ file, lines, comments, blocks, config, findings });
-  pushMagicThresholdFindings(file, lines, codeSource, comments, findings);
   pushFixturePurposeFindings({ file, source, codeSource, lines, comments, blocks, findings });
 }
 
-/*
- * Five per-comment rules (task tracking, suppression rationale, stale file refs, stale rule refs,
- * stale CLI flag refs) that run on every comment regardless of whether it documents a declaration.
- * Stable, deterministic emission order across the five sub-checks.
+/**
+ * Checks comments for task tracking and suppression rationale in stable input order.
+ *
+ * @param file - source file whose path identifies violations
+ * @param source - file text used to check marker context and locate attached rationale
+ * @param comments - parsed comments to check, including those that document no declaration
+ * @param findings - shared list to which violations are appended
+ * @param trackingTokens - patterns for accepted tracking references. Testing a global or sticky pattern can change its lastIndex.
+ * @returns nothing. Appends violations to findings.
  */
-function analyseStandaloneCommentQuality(file: SourceFile, source: string, comments: CommentRecord[], ruleIdSet: Set<string>, optionFlagSet: Set<string>, findings: Finding[]): void {
+function analyseStandaloneCommentQuality(file: SourceFile, source: string, comments: CommentRecord[], findings: Finding[], trackingTokens: readonly RegExp[]): void {
+  const attachedRationale = directivesWithAttachedRationale(source, comments, trackingTokens);
   for (const comment of comments) {
-    pushTodoWithoutTrackingFinding(file, source, comment, findings);
-    pushSuppressionWithoutRationaleFinding(file, comment, findings);
-    pushStaleFileReferenceFindings(file, comment, findings);
-    pushStaleRuleReferenceFindings(file, comment, ruleIdSet, findings);
-    pushStaleCliFlagReferenceFindings(file, comment, optionFlagSet, findings);
+    pushTodoWithoutTrackingFinding(file, source, comment, findings, trackingTokens);
+    pushSuppressionWithoutRationaleFinding(file, comment, attachedRationale.has(comment), findings, trackingTokens);
   }
 }
 
-/*
- * Per-declaration rules that need both the declaration metadata and its leading comment. Each
- * declaration is checked against three rules (stale reference, restating signature, context-doc)
- * in their stable, deterministic order.
+/**
+ * Run declaration context rules that need metadata and a leading comment, in stable input order.
+ * Skip comments that only restate the signature because they supply no context to judge.
+ *
+ * @param file - Source file to which findings are attributed.
+ * @param lines - Source lines used to locate each declaration's leading comment.
+ * @param comments - Comment records used to find and assemble the declaration's context.
+ * @param declarations - Ordered declarations to check.
+ * @param findings - Collector that receives context findings.
+ * @returns Nothing. Appends findings for declarations with a leading comment that supplies context.
  */
 function analyseCommentedDeclarationQuality(file: SourceFile, lines: string[], comments: CommentRecord[], declarations: CommentedDeclaration[], findings: Finding[]): void {
   for (const declaration of declarations) {
-    const comment = leadingCommentForLine(lines, comments, declaration.line);
+    const comment = declaration.kind === "function" ? functionLeadingComment(lines, comments, declaration.line) : leadingCommentForLine(lines, comments, declaration.line);
     if (!comment) {
       continue;
     }
-    pushStaleDeclarationCommentFinding(file, comment, declaration, findings);
-    pushRestatingSignatureCommentFinding(file, comment, declaration, findings);
     if (!isRestatingSignatureComment(comment.text, declaration.name, declaration.kind)) {
       pushDeclarationContextFindings(file, lines, declaration, combinedContextLineComment(comments, comment), findings);
     }
   }
 }
 
-// Function-only context-doc rule. Restating-signature comments are skipped first because the
-// useless-docblock rule has already flagged them; running context checks on top would be redundant noise.
+// Checks function comments from input's source lines, comments and blocks, using its file identity and configuration.
+// Appends context findings to input.findings, skipping missing or signature-only comments; returns nothing.
 function analyseFunctionContextCommentQuality(input: FunctionContextCommentQualityInput): void {
   const { file, lines, comments, blocks, config, findings } = input;
   for (const block of blocks) {
-    const comment = leadingCommentForLine(lines, comments, block.declarationLine);
+    const comment = functionLeadingComment(lines, comments, block.declarationLine);
     if (!comment || isRestatingSignatureComment(comment.text, block.name, "function")) {
       continue;
     }
@@ -110,7 +99,7 @@ function analyseFunctionContextCommentQuality(input: FunctionContextCommentQuali
 }
 
 // Combines callable blocks and exported interfaces into one homogeneous list for the comment-quality
-// rules. Test blocks are excluded because their `test("…")` description is the documentation.
+// rules. Test blocks are excluded because their test description is the documentation.
 function commentedDeclarations(blocks: FunctionBlock[], interfaces: ExportedDeclaration[]): CommentedDeclaration[] {
   return [
     ...blocks
@@ -120,14 +109,19 @@ function commentedDeclarations(blocks: FunctionBlock[], interfaces: ExportedDecl
   ];
 }
 
-/*
- * One finding per comment containing an untracked task marker. The reported marker keyword is
- * preserved in stable metadata so consumers can group by marker kind. Reports the stable
- * untracked-task-marker finding when no tracking reference is attached.
+/**
+ * Flags task comments without tracking and keeps the marker keyword in stable metadata so consumers can group by marker kind.
+ *
+ * @param file - source file whose display path anchors the finding
+ * @param source - original source used to identify the task marker
+ * @param comment - candidate comment whose text is checked for tracking and whose line anchors the finding
+ * @param findings - collector for docs.todo-without-tracking findings
+ * @param trackingTokens - project patterns used alongside built-in forms. Testing a global or sticky pattern can change its lastIndex.
+ * @returns Nothing. It appends one finding for a comment with a recognized marker and no accepted tracking.
  */
-function pushTodoWithoutTrackingFinding(file: SourceFile, source: string, comment: CommentRecord, findings: Finding[]): void {
+function pushTodoWithoutTrackingFinding(file: SourceFile, source: string, comment: CommentRecord, findings: Finding[], trackingTokens: readonly RegExp[]): void {
   const marker = todoMarker(source, comment);
-  if (!marker || hasTodoTracking(comment.text)) {
+  if (!marker || hasTodoTracking(comment.text, trackingTokens)) {
     return;
   }
   findings.push(
@@ -145,9 +139,9 @@ function pushTodoWithoutTrackingFinding(file: SourceFile, source: string, commen
   );
 }
 
-// Four canonical task-marker words, returned in uppercase so the finding message reads consistently
-// regardless of how the maintainer wrote them. A marker must INTRODUCE a comment body line - prose
-// that merely mentions a marker word (quoted, backticked, or mid-sentence) stays quiet.
+// Finds the first leading task marker in the recorded comment body, using file text for block comments.
+// Returns its uppercase spelling for a consistent finding message, or undefined when no body line introduces a task.
+// A marker can follow a list or quote prefix. Mid-sentence mentions do not count. Fenced lines in block comments are skipped.
 function todoMarker(source: string, comment: CommentRecord): string | undefined {
   for (const line of commentBodyLines(source, comment)) {
     const marker = leadingTodoMarker(line);
@@ -158,9 +152,8 @@ function todoMarker(source: string, comment: CommentRecord): string | undefined 
   return undefined;
 }
 
-// One body line per physical comment line: the trimmed `//` text, or each block-comment line with
-// its `*` decoration stripped. Lines inside ``` fences are dropped so marker examples shown in
-// doc comments cannot become findings.
+// Returns body lines for comment, using its offsets in source to read block text and its stored text for a line comment.
+// Strips block decoration and surrounding whitespace, and omits fence delimiters and their contents to ignore marker examples.
 function commentBodyLines(source: string, comment: CommentRecord): string[] {
   if (comment.kind === "line") {
     return [comment.text];
@@ -181,9 +174,9 @@ function commentBodyLines(source: string, comment: CommentRecord): string[] {
   return lines;
 }
 
-// Leading-marker grammar: optional list bullet, the marker word, then a delimiter real markers use
-// (":", "(", "-", whitespace, or end of line). Any other next character - a quote, slash, or
-// backtick - means the line talks ABOUT a marker instead of being one.
+// Returns the uppercase marker from a comment body line that starts with a task marker, optionally after a list bullet or greater-than quote prefix.
+// The marker must end the line or be followed by a colon, opening parenthesis, hyphen, or whitespace.
+// Returns undefined if the line has no marker in that position or the marker lacks an allowed separator.
 function leadingTodoMarker(line: string): string | undefined {
   const match = line.match(/^(?:(?:[-*>]|\d+[.)])\s+)?(TODO|FIXME|HACK|XXX)\b(.*)$/i);
   const marker = match?.[1];
@@ -198,28 +191,29 @@ const TODO_TRACKING_PATTERNS = [
   /https?:\/\//i,
   /(?:^|\s)#\d+\b/,
   /\bGH-\d+\b/i,
-  /\bM\d{1,3}\b/,
-  /\.goat-flow\/tasks\//,
-  /\bADR-\d{3}\b/i,
   /\b\d{4}-\d{2}-\d{2}\b/,
   /\bowner\s*:/i,
 ] as const;
 
-// Eight accepted tracking forms (URL, #123, GH-123, M123, .goat-flow/tasks, ADR-001, ISO date,
-// `owner:`). The stable set is intentionally generous so projects with different ticketing systems
-// can comply without changing their conventions.
-function hasTodoTracking(text: string): boolean {
-  return TODO_TRACKING_PATTERNS.some((pattern) => pattern.test(text));
+// Returns true when the task comment text matches a built-in tracking form or one of the patterns from allowlists.trackingTokens.
+// With no project patterns, only the built-in forms qualify. Testing a global or sticky pattern can change its lastIndex.
+function hasTodoTracking(text: string, trackingTokens: readonly RegExp[] = []): boolean {
+  return TODO_TRACKING_PATTERNS.some((pattern) => pattern.test(text)) || trackingTokens.some((token) => token.test(text));
 }
 
-/*
- * Targets `eslint-disable`, `biome-ignore`, coverage `istanbul ignore`, etc. when no maintainer
- * rationale is attached - the false-positive escape hatch is explicit because TS suppression
- * directives have their own dedicated rule. Reports the stable `docs.suppression-without-rationale` finding.
+/**
+ * Flags tool suppressions that lack a rationale on the directive or in attached line comments. TypeScript directives are excluded.
+ *
+ * @param file - source file whose display path anchors the finding
+ * @param comment - candidate directive text and source line
+ * @param hasAttachedRationale - whether an attached comment already explains the suppression
+ * @param findings - collector for the stable docs.suppression-without-rationale finding
+ * @param trackingTokens - project patterns accepted as rationale on the directive. A global or sticky pattern can have its lastIndex changed.
+ * @returns Nothing. It appends one finding for a recognized suppression with no accepted rationale.
  */
-function pushSuppressionWithoutRationaleFinding(file: SourceFile, comment: CommentRecord, findings: Finding[]): void {
+function pushSuppressionWithoutRationaleFinding(file: SourceFile, comment: CommentRecord, hasAttachedRationale: boolean, findings: Finding[], trackingTokens: readonly RegExp[]): void {
   const suppression = suppressionDirective(comment.text);
-  if (!suppression || hasSuppressionRationale(comment.text)) {
+  if (!suppression || hasAttachedRationale || hasSuppressionRationale(comment.text, trackingTokens)) {
     return;
   }
   findings.push(
@@ -237,8 +231,40 @@ function pushSuppressionWithoutRationaleFinding(file: SourceFile, comment: Comme
   );
 }
 
-// Returns the suppression keyword that triggered the rule. `@ts-*` directives are explicitly
-// excluded - they have their own dedicated rule (`pushTsDirectiveFinding`).
+// Returns standalone non-TypeScript suppressions explained by adjacent preceding line comments, or an empty set when none qualify.
+// Pass file text to identify standalone comments and records in source order. Extra rationale patterns can change lastIndex if global or sticky.
+// Blank lines, code, block or trailing comments and recognized non-TypeScript suppressions break the run so that rationale stays local.
+function directivesWithAttachedRationale(source: string, comments: readonly CommentRecord[], trackingTokens: readonly RegExp[]): Set<CommentRecord> {
+  const attached = new Set<CommentRecord>();
+  let blockEndLine = -1;
+  let hasBlockRationale = false;
+  for (const comment of comments) {
+    const isStandalone = comment.kind === "line" && startsItsLine(source, comment.startIndex);
+    const isDirective = suppressionDirective(comment.text) !== undefined;
+    const continuesBlock = isStandalone && comment.line === blockEndLine + 1;
+    if (isDirective && continuesBlock && hasBlockRationale) {
+      attached.add(comment);
+    }
+    if (isStandalone && !isDirective) {
+      hasBlockRationale = (continuesBlock && hasBlockRationale) || hasSuppressionRationale(comment.text, trackingTokens);
+      blockEndLine = comment.line;
+    } else {
+      blockEndLine = -1;
+      hasBlockRationale = false;
+    }
+  }
+  return attached;
+}
+
+// Returns true when the file text before the comment offset on that line is only whitespace.
+// A trailing comment breaks the run of standalone comments that can supply suppression rationale.
+function startsItsLine(source: string, commentStart: number): boolean {
+  const lineStart = source.lastIndexOf("\n", commentStart - 1) + 1;
+  return source.slice(lineStart, commentStart).trim() === "";
+}
+
+// Returns the supported suppression keyword found in the comment text, or undefined when there is no match.
+// TypeScript ignore, expect-error, nocheck, and check directives in the text also yield undefined so the TypeScript-specific check handles them.
 function suppressionDirective(text: string): string | undefined {
   if (/@ts-(?:ignore|expect-error|nocheck|check)\b/.test(text)) {
     return undefined;
@@ -247,310 +273,15 @@ function suppressionDirective(text: string): string | undefined {
   return match?.[1];
 }
 
-// Accepted rationale forms: explanatory keywords (because, intentional, false positive, tracked in),
-// project task markers (M123, ADR-XXX, GH-123), explicit `reason:`, a tracking URL, or a #issue.
-export function hasSuppressionRationale(text: string): boolean {
-  return /\b(?:because|intentional|false positive|tracked in|M\d{1,3}|ADR-\d{3}|GH-\d+)\b/i.test(text) || /\breason\s*:/i.test(text) || /(?:^|\s)#\d+\b/.test(text) || /https?:\/\//i.test(text) || /\.goat-flow\/tasks\//.test(text);
+// Returns true when the suppression comment text matches a rationale cue such as an explanatory phrase or a reason label.
+// Numbered issue references, HTTP or HTTPS prefixes, and project tracking patterns also count.
+// Testing a global or sticky tracking pattern can change its lastIndex.
+export function hasSuppressionRationale(text: string, trackingTokens: readonly RegExp[] = []): boolean {
+  return /\b(?:because|intentional|false positive|tracked in|GH-\d+)\b/i.test(text) || /\breason\s*:/i.test(text) || /(?:^|\s)#\d+\b/.test(text) || /https?:\/\//i.test(text) || trackingTokens.some((token) => token.test(text));
 }
 
-/*
- * Scans the comment text for path-shaped references and reports any that resolve to nothing on
- * disk. Historical-context comments (migration notes, legacy markers) are exempted on purpose
- * because they intentionally name removed files. Reports the stable `docs.stale-comment` finding.
- */
-function pushStaleFileReferenceFindings(file: SourceFile, comment: CommentRecord, findings: Finding[]): void {
-  if (isHistoricalContextComment(comment.text)) {
-    return;
-  }
-  for (const match of comment.text.matchAll(/[`'"]((?:\.{1,2}\/|src\/|bin\/|scripts\/|docs\/|fixtures\/|\.goat-flow\/)[A-Za-z0-9_./-]+\.(?:ts|tsx|js|json|ya?ml|toml|md|sh))[`'"]/g)) {
-    const referencedPath = match[1] ?? "";
-    if (referencedPathExists(file, referencedPath)) {
-      continue;
-    }
-    findings.push(staleCommentFinding(file, comment, `Comment references missing path \`${referencedPath}\`.`, { staleReference: referencedPath, referenceType: "path" }));
-  }
-}
-
-// Tries both the project-root and same-directory interpretations because comments are inconsistent
-// about which they imply. Either match is enough to consider the reference live.
-function referencedPathExists(file: SourceFile, referencedPath: string): boolean {
-  const fromProject = resolve(cwd(), referencedPath);
-  const fromFile = resolve(dirnamePath(file.absolutePath), referencedPath);
-  return existsSync(fromProject) || existsSync(fromFile);
-}
-
-/*
- * Walks every `pillar.rule-id` shape in the comment and reports those not in the descriptor set.
- * Historical-context comments stay exempt so removed rules can remain referenced in lessons text.
- * Reports the stable `docs.stale-comment` finding for each stale rule id.
- */
-function pushStaleRuleReferenceFindings(file: SourceFile, comment: CommentRecord, ruleIdSet: Set<string>, findings: Finding[]): void {
-  if (isHistoricalContextComment(comment.text)) {
-    return;
-  }
-  for (const match of comment.text.matchAll(/\b((?:complexity|dead-code|design|docs|modernisation|naming|security|sensitive-data|size|test-quality|waste)\.[a-z0-9-]+)\b/g)) {
-    const ruleId = match[1] ?? "";
-    if (ruleIdSet.has(ruleId)) {
-      continue;
-    }
-    findings.push(staleCommentFinding(file, comment, `Comment references unknown rule id \`${ruleId}\`.`, { staleReference: ruleId, referenceType: "ruleId" }));
-  }
-}
-
-/*
- * Each double-dash option in a comment must appear in `cliFlags` (parsed from the CLI source) or
- * it counts as a stale reference. The rule's value is catching gruff-ts maintainers who rename a
- * flag and forget to update its references - so the check only fires when the comment also names
- * gruff-ts (or invokes the gruff/gruff-ts binary). In any other project, flag references belong to
- * that project's CLI, not gruff-ts, and validating them against gruff-ts's own option surface
- * produces only noise. Reports the stable `docs.stale-comment` finding for each unknown option.
- */
-function pushStaleCliFlagReferenceFindings(file: SourceFile, comment: CommentRecord, optionFlagSet: Set<string>, findings: Finding[]): void {
-  if (isHistoricalContextComment(comment.text)) {
-    return;
-  }
-  if (!mentionsGruffCli(comment.text)) {
-    return;
-  }
-  for (const match of comment.text.matchAll(/(?<![A-Za-z0-9])--[a-z][a-z0-9-]*/g)) {
-    const flag = match[0] ?? "";
-    if (optionFlagSet.has(flag)) {
-      continue;
-    }
-    findings.push(staleCommentFinding(file, comment, `Comment references unknown CLI flag \`${flag}\`.`, { staleReference: flag, referenceType: "cliFlag" }));
-  }
-}
-
-// True when the comment names the gruff-ts CLI by binary or product name. Acts as the activation
-// gate for the unknown-CLI-flag check; comments that talk about other tools' flags never trip it.
-function mentionsGruffCli(text: string): boolean {
-  return /\bgruff(?:-ts)?\b/i.test(text);
-}
-
-// Static list of valid CLI options. Hand-curated rather than parsed from the Commander definition
-// at runtime because the stale-CLI-flag rule must not depend on import order - both files would
-// otherwise have to load the analyser to power their checks.
-function knownCliFlags(): Set<string> {
-  return new Set([
-    "--ansi",
-    "--baseline",
-    "--config",
-    "--diff",
-    "--changed-ranges",
-    "--changed-scope",
-    "--fail-on",
-    "--fail-on-diagnostics",
-    "--force",
-    "--format",
-    "--generate-baseline",
-    "--help",
-    "--history-file",
-    "--host",
-    "--include-ignored",
-    "--no-ansi",
-    "--no-baseline",
-    "--no-config",
-    "--no-interaction",
-    "--output",
-    "--port",
-    "--profile",
-    "--project-root",
-    "--quiet",
-    "--silent",
-    "--since",
-    "--top",
-    "--verbose",
-    "--version",
-  ]);
-}
-
-// A comment whose prose names a different symbol than the declaration directly below it. The
-// historical-context escape hatch keeps migration notes (which intentionally name removed symbols)
-// quiet. Reports `docs.stale-comment` with stable metadata.
-function pushStaleDeclarationCommentFinding(file: SourceFile, comment: CommentRecord, declaration: CommentedDeclaration, findings: Finding[]): void {
-  if (isHistoricalContextComment(comment.text)) {
-    return;
-  }
-  const referencedName = referencedDeclarationName(comment.text, declaration.kind);
-  if (!referencedName || referencedName === declaration.name) {
-    return;
-  }
-  findings.push(staleCommentFinding(file, comment, `Comment names \`${referencedName}\` but documents \`${declaration.name}\`.`, { staleReference: referencedName, referenceType: declaration.kind, symbol: declaration.name }));
-}
-
-// Two-pass match: either `<kind> name` (e.g., "function fooBar") or leading `name <kind|helper|
-// method|contract|type>`. Both forms appear in real comments and either is sufficient evidence
-// that the comment intends to name a specific symbol.
-function referencedDeclarationName(text: string, kind: CommentedDeclaration["kind"]): string | undefined {
-  const directBackticked = text.match(new RegExp(["\\b", kind, "\\s+`([A-Za-z_$][A-Za-z0-9_$]*)`"].join(""), "i"));
-  if (directBackticked?.[1]) {
-    return directBackticked[1];
-  }
-  const directCodeLike = text.match(new RegExp(["\\b", kind, "\\s+([A-Za-z_$][A-Za-z0-9_$]*)"].join(""), "i"));
-  if (directCodeLike?.[1] && isCodeLikeIdentifier(directCodeLike[1])) {
-    return directCodeLike[1];
-  }
-  return leadingReferencedDeclarationName(text, kind);
-}
-
-// The leading form is intentionally stricter than `<kind> name`: ordinary English such as
-// "Read-only filesystem interface" or "Symlink helper" must not become a stale-symbol finding.
-function leadingReferencedDeclarationName(text: string, kind: CommentedDeclaration["kind"]): string | undefined {
-  const backticked = text.match(new RegExp(["^`([A-Za-z_$][A-Za-z0-9_$]*)`\\s+(?:", kind, "|helper|method|contract|type)\\b"].join(""), "i"));
-  if (backticked?.[1]) {
-    return backticked[1];
-  }
-  const codeLike = text.match(new RegExp(["^([A-Za-z_$][A-Za-z0-9_$]*)\\s+(?:", kind, "|helper|method|contract|type)\\b"].join(""), "i"));
-  if (codeLike?.[1] && isCodeLikeIdentifier(codeLike[1])) {
-    return codeLike[1];
-  }
-  return undefined;
-}
-
-// Requires a real identifier marker beyond normal prose capitalization.
-function isCodeLikeIdentifier(name: string): boolean {
-  return /[A-Z].*[A-Z]|[a-z][A-Z]|[_$]|\d/.test(name);
-}
-
-/*
- * Public block-doc comments are exempted on purpose because their first words usually mirror the
- * API surface - that's the documented JSDoc convention, not a useless docblock. Reports the stable
- * `docs.useless-docblock` finding otherwise.
- */
-function pushRestatingSignatureCommentFinding(file: SourceFile, comment: CommentRecord, declaration: CommentedDeclaration, findings: Finding[]): void {
-  if (declaration.kind === "function" && declaration.isPublic && comment.kind === "block") {
-    return;
-  }
-  if (!isRestatingSignatureComment(comment.text, declaration.name, declaration.kind)) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "docs.useless-docblock",
-      message: `Comment for \`${declaration.name}\` only restates the signature.`,
-      filePath: file.displayPath,
-      line: comment.line,
-      severity: "advisory",
-      pillar: "documentation",
-      confidence: "medium",
-      symbol: declaration.name,
-      remediation: "Update the JSDoc so it documents the current signature and return value.",
-      metadata: {},
-    }),
-  );
-}
-
-/*
- * Test files are exempt because their `expect(x).toBe(42)` patterns legitimately contain
- * unexplained numbers. For every production source line, the rule looks for either a named
- * threshold/limit/cap or a `threshold(config, …)` default call, then checks that a nearby comment
- * explains it. Reports the stable `docs.magic-threshold-without-rationale` finding.
- */
-function pushMagicThresholdFindings(file: SourceFile, lines: string[], codeSource: string, comments: CommentRecord[], findings: Finding[]): void {
-  if (isTestPath(file.displayPath) || !hasMagicThresholdSignal(codeSource)) {
-    return;
-  }
-  const codeLines = codeSource.split(/\r?\n/);
-  codeLines.forEach((codeLine, index) => {
-    const candidate = magicThresholdCandidate(lines[index] ?? "", codeLine);
-    if (!candidate || hasNearbyThresholdRationale(lines, comments, index + 1)) {
-      return;
-    }
-    findings.push(
-      makeFinding({
-        ruleId: "docs.magic-threshold-without-rationale",
-        message: `Threshold-like value \`${candidate.label}\` lacks a nearby rationale comment.`,
-        filePath: file.displayPath,
-        line: index + 1,
-        severity: "advisory",
-        pillar: "documentation",
-        confidence: "medium",
-        symbol: candidate.label,
-        remediation: "Add a nearby comment explaining the threshold, limit, budget, or default.",
-        metadata: { value: candidate.value, thresholdKind: candidate.kind },
-      }),
-    );
-  });
-}
-
-// Cheap whole-file preflight for the two shapes `magicThresholdCandidate` can report.
-function hasMagicThresholdSignal(codeSource: string): boolean {
-  return /\bthreshold\s*\(/.test(codeSource) || /\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*(?:Threshold|Limit|Cap|Budget|Timeout|Tolerance|Weight|Score|Max|Min|Default|Entropy|Length)[A-Za-z0-9_$]*\b/i.test(codeSource);
-}
-
-// Two candidate sources: a named constant (`const maxThings = N`) or a `threshold()` default call.
-// Either is treated as policy-shaped numeric - ordinary arithmetic constants stay quiet.
-function magicThresholdCandidate(rawLine: string, codeLine: string): MagicThresholdCandidate | undefined {
-  return namedThresholdCandidate(rawLine, codeLine) ?? configDefaultThresholdCandidate(rawLine, codeLine);
-}
-
-// Identifiers ending in Threshold/Limit/Cap/Budget/Timeout/Tolerance/Weight/Score/Max/Min/Default/
-// Entropy/Length signal "policy number". `-1`, `0`, `1`, `2` are exempt because they're usually sentinels.
-// Gates on the masked `codeLine` so template-literal fixture content (where the same line appears as
-// source text but inside a backtick) does not trip the rule.
-function namedThresholdCandidate(rawLine: string, codeLine: string): MagicThresholdCandidate | undefined {
-  if (!/\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*(?:Threshold|Limit|Cap|Budget|Timeout|Tolerance|Weight|Score|Max|Min|Default|Entropy|Length)[A-Za-z0-9_$]*\b/i.test(codeLine)) {
-    return undefined;
-  }
-  const named = rawLine.match(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*(?:Threshold|Limit|Cap|Budget|Timeout|Tolerance|Weight|Score|Max|Min|Default|Entropy|Length)[A-Za-z0-9_$]*)\b[^=\n]*=\s*(-?\d+(?:\.\d+)?)/i);
-  const label = named?.[1];
-  const thresholdValue = named?.[2];
-  if (!label) {
-    return undefined;
-  }
-  if (!thresholdValue || isCommonSafeNumber(thresholdValue)) {
-    return undefined;
-  }
-  return { label, value: thresholdValue, kind: "named-threshold" };
-}
-
-// Cheap gate first: only look for the four-arg `threshold(config, "rule", "key", N)` form when the
-// masked code actually contains `threshold(`. Required because labels come from raw text but the
-// call shape must originate in executable code - masked code is the only stable signal for that.
-function configDefaultThresholdCandidate(rawLine: string, codeLine: string): MagicThresholdCandidate | undefined {
-  if (!/\bthreshold\s*\(/.test(codeLine)) {
-    return undefined;
-  }
-  const thresholdDefault = rawLine.match(/\bthreshold\s*\([^)]*,\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/);
-  const ruleId = thresholdDefault?.[1];
-  const key = thresholdDefault?.[2];
-  const thresholdValue = thresholdDefault?.[3];
-  if (!ruleId || !key) {
-    return undefined;
-  }
-  if (!thresholdValue || isCommonSafeNumber(thresholdValue)) {
-    return undefined;
-  }
-  return { label: `${ruleId}.${key}`, value: thresholdValue, kind: "config-default" };
-}
-
-// Four sentinel values that recur as "counter starts", "boolean toggle as int", and "default
-// count" without being policy decisions. Anything outside this set is treated as a threshold.
-function isCommonSafeNumber(numericLiteral: string): boolean {
-  return ["-1", "0", "1", "2"].includes(numericLiteral);
-}
-
-// Two acceptable positions for the explanatory comment: same line as the constant, or directly
-// above with a blank-line gap. Mirrors `hasFixturePurposeComment` adjacency rules, including
-// reading a stacked `//` header as one comment so rationale on an earlier line counts.
-function hasNearbyThresholdRationale(lines: string[], comments: CommentRecord[], line: number): boolean {
-  const sameLine = comments.find((comment) => comment.line <= line && comment.endLine >= line);
-  if (sameLine && hasThresholdRationaleMarker(sameLine.text)) {
-    return true;
-  }
-  const leading = leadingCommentForLine(lines, comments, line);
-  return Boolean(leading && hasThresholdRationaleMarker(combinedContextLineComment(comments, leading).text));
-}
-
-// Vocabulary used by the magic-threshold rule. A numeric constant followed by a comment containing
-// any of these words is treated as "explained".
-function hasThresholdRationaleMarker(text: string): boolean {
-  return /\b(?:threshold|limit|cap|budget|tuned|default|because|empirical)\b/i.test(text);
-}
-
-// Three-tier test: useful-context vocabulary short-circuits as "not restating"; identical
-// word sequences are restating; near-identical sequences (one extra trailing word) are restating.
-// The result drives the `docs.useless-docblock` rule.
+// Compares the comment text with the declaration name, using the declaration kind to filter generic words from the comment.
+// Returns false for context cues. Otherwise, returns true for no remaining words, a name match, or a match with one extra trailing word.
 function isRestatingSignatureComment(text: string, name: string, kind: CommentedDeclaration["kind"]): boolean {
   if (hasUsefulCommentContext(text)) {
     return false;
@@ -566,8 +297,8 @@ function isRestatingSignatureComment(text: string, name: string, kind: Commented
   return words.length <= nameWords.length + 1 && sameWords(words.slice(0, nameWords.length), nameWords);
 }
 
-// Strips backticks, splits on non-identifier characters, then further splits each fragment into
-// identifier-style words. The flat list lets the comparator compare on a per-word basis.
+// Returns the comment text as identifier-style words for comparison with the declaration name.
+// An empty list leaves the comparator with no words to distinguish the comment from the signature.
 function normalizedCommentWords(text: string): string[] {
   return text
     .replace(/`/g, " ")
@@ -596,40 +327,13 @@ function sameWords(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((word, index) => word === right[index]);
 }
 
-// The shared "this comment carries real signal" vocabulary. Any match here exempts the comment
-// from the useless-docblock and stale-reference rules.
+// Returns true when the candidate comment contains a context keyword that exempts it from the signature-restatement check.
 function hasUsefulCommentContext(text: string): boolean {
   return /\b(?:because|why|intentional|tradeoff|compat|avoid|preserve|invariant|contract|side effect|throws|writes|reads|persists|fallback|recover|stable|deterministic|schema|fingerprint)\b/i.test(text);
 }
 
-// Five vocabulary markers signal "this comment is intentionally about removed/old code". The
-// stale-reference rules all consult this so legacy notes can keep naming removed paths/symbols.
-function isHistoricalContextComment(text: string): boolean {
-  return /\b(?:previously|legacy|compat|migration|ADR)\b/i.test(text);
-}
-
-// Single makeFinding factory for every stale-comment variant. `symbol` is omitted (not set to
-// undefined) via conditional spread because exactOptionalPropertyTypes treats the two as different
-// shapes - the omission keeps stable fingerprints round-tripping across baseline reads and writes.
-function staleCommentFinding(file: SourceFile, comment: CommentRecord, message: string, metadata: Record<string, string>): Finding {
-  const symbol = metadata["symbol"];
-  return makeFinding({
-    ruleId: "docs.stale-comment",
-    message,
-    filePath: file.displayPath,
-    line: comment.line,
-    severity: "advisory",
-    pillar: "documentation",
-    confidence: "medium",
-    ...(symbol ? { symbol } : {}),
-    remediation: "Update the comment reference or add historical context that explains why it remains useful.",
-    metadata,
-  });
-}
-
-// Reverse scan through the comment list - the closest comment whose `endLine < line` wins, but
-// only when nothing but blank lines sits between them. Anything else means the comment documents
-// a different declaration.
+// Finds the closest preceding record in the ordered comment list for a declaration line in the source.
+// Returns that record if only blank source lines separate it from the declaration, or undefined if no comment can be attached.
 function leadingCommentForLine(lines: string[], comments: CommentRecord[], line: number): CommentRecord | undefined {
   for (let index = comments.length - 1; index >= 0; index -= 1) {
     const comment = comments[index];
@@ -642,6 +346,13 @@ function leadingCommentForLine(lines: string[], comments: CommentRecord[], line:
     return undefined;
   }
   return undefined;
+}
+
+// Filters the candidate from leadingCommentForLine for a function at one-based line, using source lines and parsed comments.
+// Returns that comment unless it is absent, a divider or a file overview, in which case it returns undefined.
+function functionLeadingComment(lines: string[], comments: CommentRecord[], line: number): CommentRecord | undefined {
+  const comment = leadingCommentForLine(lines, comments, line);
+  return comment && !isOverviewOrDividerCommentAt(lines, comment.line - 1, comment.endLine - 1, line - 1) ? comment : undefined;
 }
 
 // Tighter sibling of `hasOnlyBlankFixturePurposeGap` - exclusive upper bound. Used by

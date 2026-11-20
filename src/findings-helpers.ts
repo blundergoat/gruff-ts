@@ -8,16 +8,18 @@ import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
-// Splits only at top-level commas, then strips parameter-property modifiers and `...rest`.
-// Destructured parameters remain intentionally invisible to per-parameter rules.
-export function parameterNames(params: string): Array<{ name: string; raw: string }> {
+// Returns named entries from parameter-list text params for per-parameter rules; destructured or unrecognized entries are omitted.
+// Each entry has name, raw text without supported modifiers or rest dots, and isParameterProperty set when a modifier was removed.
+// Empty input returns no entries.
+export function parameterNames(params: string): Array<{ name: string; raw: string; isParameterProperty: boolean }> {
   return splitTopLevelParameters(params)
     .map((parameter) => parameter.trim())
     .filter(Boolean)
     .map((raw) => {
-      const stripped = raw.replace(/^(?:(?:public|private|protected|readonly|override)\s+)*/, "").replace(/^\.\.\./, "");
+      const modifiers = raw.match(/^(?:(?:public|private|protected|readonly|override)\s+)*/)?.[0] ?? "";
+      const stripped = raw.slice(modifiers.length).replace(/^\.\.\./, "");
       const name = stripped.match(/^([A-Za-z_$][A-Za-z0-9_$]*)\s*(?=[?:=]|$)/)?.[1] ?? "";
-      return { name, raw: stripped };
+      return { name, raw: stripped, isParameterProperty: modifiers !== "" };
     })
     .filter((parameter) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(parameter.name));
 }
@@ -33,9 +35,8 @@ interface ParameterSplitState {
   isEscaped: boolean;
 }
 
-// Parameter defaults and type expressions can contain their own commas. A small delimiter scanner
-// keeps those nested commas attached, because adding another TypeScript parse to this hot path
-// would cost more than the character walk saves.
+// Splits parameter-list text params into original substrings at top-level commas, keeping quoted and nested commas within each parameter.
+// Preserves whitespace and empty segments; empty input returns one empty string for parameterNames to filter out.
 function splitTopLevelParameters(params: string): string[] {
   const parameters: string[] = [];
   const state: ParameterSplitState = { parenthesisDepth: 0, bracketDepth: 0, braceDepth: 0, angleDepth: 0, quote: "", isEscaped: false };
@@ -56,8 +57,8 @@ function splitTopLevelParameters(params: string): string[] {
   return parameters;
 }
 
-// Consumes quote-context characters: inside a string nothing is structural, and a quote character
-// opens string context. Returns false for ordinary characters so the caller keeps scanning.
+// Updates state in place for character, tracking quote boundaries and backslash escapes so string contents are not treated as structure.
+// Returns true when character belongs to quoted text or opens a quote; false lets the caller inspect it as a delimiter.
 function advanceParameterQuoteState(state: ParameterSplitState, character: string): boolean {
   if (state.quote !== "") {
     if (state.isEscaped) {
@@ -76,8 +77,8 @@ function advanceParameterQuoteState(state: ParameterSplitState, character: strin
   return false;
 }
 
-// Tracks nesting for parentheses, brackets, braces, and guarded type-argument angles so commas
-// inside them stay attached to their parameter.
+// Updates state in place for the character at index in params so nested commas do not split parameters.
+// Uses start as the current parameter's starting offset when recognizing type arguments; returns no value.
 function advanceParameterDepths(state: ParameterSplitState, params: string, index: number, start: number): void {
   const character = params[index] ?? "";
   if (character === "(") state.parenthesisDepth += 1;
@@ -95,9 +96,9 @@ function isTopLevelParameterPosition(state: ParameterSplitState): boolean {
   return state.parenthesisDepth === 0 && state.bracketDepth === 0 && state.braceDepth === 0 && state.angleDepth === 0;
 }
 
-// Treat `<...>` as type arguments in annotations, or in generic call/arrow defaults whose closing
-// token is followed by `(`. Requiring that call boundary keeps comparison chains from swallowing
-// a later parameter while preserving commas inside `factory<T, U>(...)` and `<T, U>(...) => ...`.
+// Returns whether index in params looks like a type-argument opener so its commas stay within the parameter.
+// parameterStart bounds the prefix. A colon without an equals sign marks type context. Otherwise, the close must be followed by optional space and (.
+// Rejects unrecognized prefixes and unmatched brackets to avoid treating comparison operators as type delimiters.
 function opensTypeArgumentList(params: string, index: number, parameterStart: number): boolean {
   const prefix = params.slice(parameterStart, index);
   const previousCharacter = params[index - 1] ?? "";
@@ -122,20 +123,27 @@ function opensTypeArgumentList(params: string, index: number, parameterStart: nu
   return false;
 }
 
-/*
- * Central severity-override pass: config `rules.<id>.severity` wins over the scanner's created
- * severity for every rule family in one place, so a user's policy applies even to scanners that
- * hardcode their descriptor literal; without an override the created severity stands.
- * Invariant: the fingerprint hashes (ruleId, filePath, line, symbol), so overrides never churn identity.
+/**
+ * Applies rules.<id>.severity while preserving the finding's stable fingerprint.
+ *
+ * @param config - effective configuration supplying any override for this finding's rule
+ * @param finding - scanner result to check. Lower-band notices keep their assigned severity.
+ * @returns - the original finding if its severity stands, or a copy carrying the configured severity
  */
 export function applyConfiguredSeverity(config: Config, finding: Finding): Finding {
+  // A lower-band size or complexity finding is advisory whatever severity the user configured (FAMILY-CONTRACT.md
+  // section 12, search `Size and complexity findings in two bands`).
+  if (finding.metadata.limitBand === "lower") {
+    return finding;
+  }
   const severity = ruleSeverity(config, finding.ruleId, finding.severity);
   return severity === finding.severity ? finding : { ...finding, severity };
 }
 
 // Input bundle for `finding()` - the lowest-cost finding factory. Captures everything the caller
 // must supply for a line-anchored Finding; shared defaults (confidence "high", empty metadata)
-// are added inside the builder so callers don't repeat them at every rule site.
+// are added inside the builder so callers don't repeat them at every rule site. Analysis then replaces the
+// confidence with the rule's catalogue confidence.
 export interface LineFindingArgs {
   ruleId: string;
   message: string;
@@ -143,19 +151,23 @@ export interface LineFindingArgs {
   line: number;
   severity: Severity;
   pillar: Pillar;
+  // The rule's advice; omitted, the finding carries none and consumers fall back to the catalogue.
+  remediation?: string | undefined;
 }
 
-// Cheapest finding factory: line-anchored, no symbol, confidence "high". Produces the
-// (ruleId, filePath, line) tuple that every per-line emission relies on - this tuple is the
-// stable fingerprint that drives baseline matching and report determinism.
+// Builds a high-confidence, symbol-free finding from args for a per-line report entry.
+// Uses args.file.displayPath and args.line for location; an empty remediation is omitted.
+// Returns a finding whose fingerprint hashes ruleId, filePath, line and an empty symbol slot.
 export function finding(args: LineFindingArgs): Finding {
-  return makeFinding({ ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.line, severity: args.severity, pillar: args.pillar, confidence: "high" });
+  return makeFinding({
+    ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.line, severity: args.severity, pillar: args.pillar,
+    confidence: "high", ...(args.remediation ? { remediation: args.remediation } : {}),
+  });
 }
 
-// Diff-aware discovery: uses `execFileSync` (not `execSync`) so the `mode` value is passed as
-// an argv entry and a malicious value cannot inject shell metacharacters. Custom-mode values pass
-// through `--end-of-options` so a leading `-` cannot be reinterpreted as a `git diff` flag
-// (e.g., `--output=…`). Normalises path separators to `/` for clean display-path joins.
+// Returns slash-normalized Git paths for mode: staged, unstaged, working-tree, or a revision compared with the working tree.
+// Working-tree mode includes staged, unstaged and non-ignored untracked paths. An empty set means Git reported no matching paths.
+// Spawns Git without a shell and places revision arguments after --end-of-options. Command failures propagate to the caller.
 export function changedFiles(mode: string): Set<string> {
   if (mode === "staged") {
     return gitPathSet(["diff", "--name-only", "--cached"]);
@@ -169,28 +181,28 @@ export function changedFiles(mode: string): Set<string> {
   return gitPathSet(["diff", "--name-only", "--end-of-options", mode]);
 }
 
-// Spawns `git` through execFileSync with one fixed argv vector and returns the normalized path set
-// used by diff filtering; spawns no shell because callers choose argv arrays, never shell strings.
+// Spawns Git through execFileSync without a shell, using args as the subcommand and its arguments.
+// Returns a set of Git output paths with backslashes converted to slashes. No paths give an empty set. Git failures propagate.
 function gitPathSet(args: string[]): Set<string> {
   return new Set(execFileSync("git", args, { encoding: "utf8" }).split(/\r?\n/).filter(Boolean).map((line) => line.replaceAll("\\", "/")));
 }
 
-// Strips directory and trailing extension. Used by `naming.class-file-mismatch` so the exported
+// Strips directory and trailing extension. Used by naming.class-file-mismatch so the exported
 // symbol name and the file stem normalise to the same shape - both sides must agree on this
 // canonical form for the deterministic comparison to be meaningful.
 export function fileBaseName(path: string): string {
   return basename(path).replace(/\.[^.]+$/, "");
 }
 
-// Lowercase-and-strip-separators canonical form. Treats `FooBar`, `foo_bar`, and `foo-bar` as
-// the same key so naming rules can compare across case styles without baking the convention in.
+// Returns a lowercase ASCII alphanumeric key from identifier so naming rules can compare across case styles.
+// Treats FooBar, foo_bar and foo-bar as the same key. An identifier with no ASCII letters or digits produces an empty key.
 export function normalizedIdentifier(identifier: string): string {
   return identifier.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
 }
 
-// Inserts a space at every camelCase boundary, then splits on any non-alphanumeric run. Acronym
-// runs (`HTTPServer`) stay intact because the inserted boundary is `lower → Upper`, not
-// `Upper → Upper` - callers comparing word lists rely on this to keep tokens aligned.
+// Returns lowercase ASCII word tokens from identifier for naming comparisons.
+// Splits where an ASCII lowercase letter or digit precedes an uppercase letter, and at runs outside ASCII letters and digits.
+// Uppercase runs stay together, so HTTPServer yields httpserver; input with no ASCII letters or digits returns an empty array.
 export function splitIdentifierWords(identifier: string): string[] {
   return identifier
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -199,81 +211,24 @@ export function splitIdentifierWords(identifier: string): string[] {
     .filter(Boolean);
 }
 
-// Counts newlines before the offset to get a 0-based line number. `Math.max(0, …)` guards against
-// negative input - callers occasionally pass `match.index` which is typed as optional.
+// Returns the zero-based line at the string offset index in source.
+// Negative offsets select the first line so they cannot index from the end. Offsets beyond the end select the final line.
 export function lineOffset(source: string, index: number): number {
   return source.slice(0, Math.max(0, index)).split("\n").length - 1;
 }
 
-// Detector for `waste.commented-out-code`: require a parseable disabled-code shape rather than a
-// bare keyword so prose such as "import cycle" or section headings don't look executable.
-export function isCommentedOutCode(line: string): boolean {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith("//")) {
-    return false;
-  }
-  const uncommented = trimmed.replace(/^\/\/+\s?/, "");
-  if (isCommentSeparatorOrAnchor(uncommented)) {
-    return false;
-  }
-  return isDisabledDeclaration(uncommented) || isDisabledControlFlow(uncommented) || isDisabledCall(uncommented);
-}
-
-// Skips prose examples, labels, search anchors, and section dividers that often begin with code words.
-function isCommentSeparatorOrAnchor(uncommented: string): boolean {
-  const text = uncommented.trim();
-  return (
-    text === "" ||
-    /^[-=*_#]{3,}$/.test(text) ||
-    /^[A-Za-z_$][A-Za-z0-9_$]*\s*:\s*['"`[{]/.test(text) ||
-    /\b(?:search|grep|anchor|example|for example|e\.g\.)\s*:/.test(text) ||
-    /^(?!(?:if|for|while|switch)\b)[A-Za-z_$][A-Za-z0-9_$]*\s+\([^;{}]*[A-Za-z][^;{}]*\)$/.test(text) ||
-    /^[A-Z][A-Za-z0-9_$]*(?:\s|\s*\([^)]*\)$)/.test(text)
-  );
-}
-
-// Declarations must carry their syntactic partner (`=`, `{`, `from`, etc.) to count as disabled code.
-function isDisabledDeclaration(uncommented: string): boolean {
-  return (
-    /^(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=/.test(uncommented) ||
-    /^(?:async\s+)?function\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\(/.test(uncommented) ||
-    /^class\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s+extends\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\{?/.test(uncommented) ||
-    /^interface\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\{?/.test(uncommented) ||
-    /^type\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=/.test(uncommented) ||
-    /^enum\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\{?/.test(uncommented) ||
-    /^import\s+(?:["'][^"']+["']|.+\s+from\s+["'][^"']+["'])/.test(uncommented) ||
-    /^export\s+(?:\{|\*|(?:default\s+)?(?:const|let|var|function|class|interface|type|enum)\b)/.test(uncommented)
-  );
-}
-
-// Control-flow comments need real syntax such as parentheses or an expression after `return`/`throw`.
-function isDisabledControlFlow(uncommented: string): boolean {
-  return /^(?:if|for|while|switch)\s*\(/.test(uncommented) || /^(?:return|throw|await)\s+\S/.test(uncommented);
-}
-
-// Keep single-line disabled calls; heading/prose guards above filter labels such as `Rules (...)`.
-function isDisabledCall(uncommented: string): boolean {
-  return /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?\s*\([^)]*\);?$/.test(uncommented);
-}
-
-// Lowercase membership test against the configured banned-names set. Drives the
-// `naming.identifier-quality` predicate so the rule stays a single Set lookup per identifier.
-export function isGenericName(name: string, bannedNames: Set<string>): boolean {
-  return bannedNames.has(name.toLowerCase());
-}
-
 // Escapes the standard regex metacharacters so user-supplied strings (rule IDs, identifiers,
-// paths) can be embedded in dynamic patterns without altering their meaning. Hot path -
-// used by every rule that builds a per-source RegExp.
+// paths) can be embedded in dynamic patterns without altering their meaning.
 export function escapeRegex(source: string): string {
   return source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/*
- * Per-rule severity tally for the `summary` Top-N rules block. Walks the findings once and returns
- * a deterministic Map keyed by ruleId carrying total / error / warning / advisory counts. Lets the
- * renderer surface "412 (0 err / 0 warn / 412 adv)" rows without re-scanning findings per row. The
- * count shape mirrors the `summary` schema invariant - total must equal err + warn + adv.
+/**
+ * Accumulates rule counts so that summary rows can be rendered without scanning the findings again.
+ * Each total must equal the sum of errors, warnings and advisories.
+ *
+ * @param findings - report results to group by rule and count by severity
+ * @returns a map of totals and severity counts keyed by rule ID, or an empty map when there are no findings
  */
 export function countRuleSeverities(findings: Finding[]): Map<string, { total: number; error: number; warning: number; advisory: number }> {
   const counts = new Map<string, { total: number; error: number; warning: number; advisory: number }>();

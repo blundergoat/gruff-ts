@@ -1,6 +1,6 @@
 // Best-effort field extraction for `gruff-ts init --force`. The strict loader in `config.ts`
 // throws on schemaVersion mismatch (deliberate: pre-1.0 break, no migration shim), but the init
-// migration path needs to lift `paths.ignore` and `minimumSeverity` off whatever the user has on
+// migration path needs to lift `paths.ignore` and the per-command gate off whatever the user has on
 // disk so regeneration does not silently clobber curated entries. This module exists because the
 // strict validator is the wrong tool for that handoff - the next analyser load will run it.
 import { objectValue, parseConfigFile } from "./config-parse.ts";
@@ -10,38 +10,92 @@ import type { FailThreshold, MinimumSeverityCommand } from "./types.ts";
 // values mean nothing was preserved, not that the existing config was empty.
 interface PreservedConfigFields {
   ignoredPaths: string[];
-  minimumSeverity: Map<MinimumSeverityCommand, FailThreshold>;
+  failOn: Map<MinimumSeverityCommand, FailThreshold>;
+  sensitiveExclusions: PreservedSensitiveExclusion[];
 }
 
-/*
- * Reads the existing config and returns its `paths.ignore` and `minimumSeverity` blocks. Pre-0.2.0
- * configs without `schemaVersion` succeed here (the strict gate is skipped) so the user's entries
- * survive `init --force`. Individual malformed entries inside the preserved blocks are dropped
- * rather than thrown - the strict validator runs at the next analyser load and surfaces errors
- * in the right place. Throws `ConfigLoadError` only on IO/parse failure of the file itself; the
- * caller handles that fallback to "preserve nothing" instead of blocking regeneration.
+// One carried-over `sensitiveExclusions:` entry. Kept as plain strings because regeneration only
+// needs to re-emit what the user wrote; the strict parser validates it at the next analyser load.
+interface PreservedSensitiveExclusion {
+  rule: string;
+  path: string;
+  symbol?: string;
+  reason: string;
+}
+
+/**
+ * Recovers settings before init --force regenerates a config. Files without a schemaVersion can still supply settings.
+ * The regeneration caller proceeds with empty fields if reading or parsing fails.
+ *
+ * @param configPath - path to the existing config to read
+ * @returns - preserved ignore globs, command thresholds, and sensitive exclusions, with empty collections for unavailable entries
+ * @throws {ConfigLoadError} - for a missing file, unsupported extension, invalid syntax, or a root value that is not a mapping
+ * @throws {Error} - when another filesystem read error occurs
  */
 export function extractPreservedConfigFields(configPath: string): PreservedConfigFields {
   const raw = parseConfigFile(configPath);
   return {
     ignoredPaths: extractIgnoredPaths(raw),
-    minimumSeverity: extractMinimumSeverity(raw),
+    failOn: extractFailOn(raw),
+    sensitiveExclusions: extractSensitiveExclusions(raw),
   };
 }
 
-// `paths.ignore` is a free-form list of glob strings. Non-string entries are dropped silently -
-// the strict path enforces the same shape at the next analyser load.
+/**
+ * Carries existing sensitive exclusions and their written reasons into the regenerated config.
+ *
+ * @param raw - parsed existing config that may contain a sensitiveExclusions list
+ * @returns - entries with string rule, path, and reason fields and any string symbol, or an empty list when no entries qualify
+ */
+function extractSensitiveExclusions(raw: Record<string, unknown>): PreservedSensitiveExclusion[] {
+  const entries = raw.sensitiveExclusions;
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  const preserved: PreservedSensitiveExclusion[] = [];
+  for (const entry of entries) {
+    const candidate = preservedSensitiveExclusion(entry);
+    if (candidate !== undefined) {
+      preserved.push(candidate);
+    }
+  }
+  return preserved;
+}
+
+// Copies one existing sensitive exclusion for regeneration, keeping rule, path, reason, and a string symbol if supplied.
+// Returns undefined for a non-mapping or when rule, path, or reason is missing or is not a string.
+// The caller skips entries that return undefined.
+function preservedSensitiveExclusion(entry: unknown): PreservedSensitiveExclusion | undefined {
+  const block = objectValue(entry);
+  if (!block) {
+    return undefined;
+  }
+  const rule = block.rule;
+  const path = block.path;
+  const reason = block.reason;
+  const symbol = block.symbol;
+  if (typeof rule !== "string" || typeof path !== "string" || typeof reason !== "string") {
+    return undefined;
+  }
+  return typeof symbol === "string" ? { rule, path, symbol, reason } : { rule, path, reason };
+}
+
+// Returns the glob strings from paths.ignore in the parsed existing config for regeneration.
+// Skips non-string entries and returns an empty list when the ignore list is missing or has another shape.
 function extractIgnoredPaths(raw: Record<string, unknown>): string[] {
   const ignore = objectValue(raw.paths)?.ignore;
   return Array.isArray(ignore) ? ignore.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
-// Permissive minimumSeverity reader: each entry is filtered through the same vocabulary the strict
-// validator checks (commands × thresholds). Anything off-vocabulary is dropped. The reason we
-// don't throw here is so a typo in one entry does not nuke preservation of the other entries.
-function extractMinimumSeverity(raw: Record<string, unknown>): Map<MinimumSeverityCommand, FailThreshold> {
+/**
+ * Preserves valid per-command gates during config rewrites so that one invalid entry does not discard the others.
+ *
+ * @param raw - parsed file settings. Legacy minimumSeverity: supplies gates only when failOn supplies no mapping.
+ * @returns - map from command to threshold, empty when there is no mapping or no valid entry
+ */
+function extractFailOn(raw: Record<string, unknown>): Map<MinimumSeverityCommand, FailThreshold> {
   const result = new Map<MinimumSeverityCommand, FailThreshold>();
-  const block = objectValue(raw.minimumSeverity);
+  const block = objectValue(raw.failOn) ?? objectValue(raw.minimumSeverity);
   if (!block) {
     return result;
   }
@@ -51,8 +105,8 @@ function extractMinimumSeverity(raw: Record<string, unknown>): Map<MinimumSeveri
   return result;
 }
 
-// Per-entry filter: extracted so the outer loop stays linear and the NPath budget for the file
-// extractor stays small. Both gates must pass before the entry lands in the preserved map.
+// Returns nothing. Stores the existing config's failure threshold for the command in the destination map used for regeneration.
+// An unsupported command or threshold leaves the destination map unchanged.
 function addPreservedSeverityEntry(result: Map<MinimumSeverityCommand, FailThreshold>, commandName: string, rawThreshold: unknown): void {
   if (commandName !== "analyse" && commandName !== "summary" && commandName !== "report") {
     return;

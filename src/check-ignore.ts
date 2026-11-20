@@ -11,24 +11,24 @@ import type { AnalysisOptions } from "./types.ts";
 /** Output encodings supported by the `check-ignore` command. */
 export type CheckIgnoreFormat = "text" | "json";
 
-// Resolves config exactly as `analyse` does (`--config` / `--no-config`), then classifies each input
-// path. Config `paths.ignore` is authoritative; default and gitignore matches are reported with their
-// source too so the caller sees why a path would be skipped.
+// Reads config using the current working directory. The options select config and control whether ordinary ignore rules are bypassed.
+// Returns one classification per input path in input order. A path with no applicable ignore rule has no source or pattern.
+// Config paths.ignore takes precedence. Ignored paths report the source and pattern that caused the skip.
 export function checkIgnore(inputs: string[], options: AnalysisOptions): PathIgnoreClassification[] {
   const projectRoot = cwd();
   const config = loadConfig(projectRoot, options);
   return inputs.map((input) => classifyPathIgnore(projectRoot, input, options, config));
 }
 
-// Mirrors `git check-ignore`: exit 0 when at least one path is ignored, 1 when none are. Exit 2 is
-// reserved for config/usage errors and is set by the CLI layer via `runWithConfigErrorHandling`.
+// Converts path classifications to the git check-ignore status. Returns 0 if any path is ignored and 1 otherwise, including an empty list.
+// The CLI's runWithConfigErrorHandling assigns exit 2 for configuration failures.
 export function checkIgnoreExitCode(results: PathIgnoreClassification[]): number {
   return results.some((result) => result.isIgnored) ? 0 : 1;
 }
 
-// JSON is the agent-facing contract: every input path as `{ path, ignored, source, pattern }`, with
-// `source`/`pattern` null when the path is not ignored. Text lists only the ignored paths as
-// `<path>\t<source>:<pattern>`, matching `git check-ignore`'s "print the matches" behaviour.
+// Returns the path classifications in the requested format. JSON includes every path with its ignored flag, source and pattern.
+// JSON uses null for missing match details. Text lists ignored paths with a tab before source and pattern, separated by a colon.
+// Text returns an empty string when no path is ignored.
 export function renderCheckIgnore(results: PathIgnoreClassification[], format: CheckIgnoreFormat): string {
   if (format === "json") {
     return JSON.stringify(

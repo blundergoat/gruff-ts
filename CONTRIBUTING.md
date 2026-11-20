@@ -60,7 +60,7 @@ When adding or changing a rule:
 - Add config threshold coverage when the rule has thresholds.
 - Run `npm run check`.
 
-Every finding must keep a stable `fingerprint`. Baselines depend on it.
+Every finding must keep a stable identity. Baseline matching and SARIF alert grouping both read it; neither reads the `fingerprint`.
 
 ## Documentation Changes
 
@@ -69,8 +69,13 @@ Update docs when behavior changes:
 - `README.md` for user-facing workflow changes.
 - `CHANGELOG.md` for release-visible changes.
 - `docs/configuration.md` for config shape or threshold changes.
-- `docs/reports-and-ci.md` for output, CI, dashboard, or baseline changes.
+- `docs/output-formats.md` for output-format, schema, or exit-code changes.
+- `docs/ci-integration.md` for CI and baseline changes.
+- `docs/dashboard.md` for dashboard changes.
+- `UPGRADING.md` for a change that breaks an existing project.
 - `docs/releasing.md` for release process changes.
+- `docs/reports-and-ci.md` is a retained compatibility page: point it at the owned pages above
+  rather than restating them there.
 
 ## Pull Request Checklist
 

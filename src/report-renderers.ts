@@ -2,18 +2,24 @@
 // HTML output and dashboard chrome live in `report-html.ts` so this module stays under the
 // `size.file-length` threshold; both files source `buildPillarRows` + `grade` from
 // `pillar-summary.ts` so the cross-format Pillars table stays byte-aligned.
-import type { AnalysisReport, Finding, OutputFormat, Severity } from "./types.ts";
+import { findingIdentities } from "./baseline-identity.ts";
+import { isAbsolute, relative } from "node:path";
+import type { AnalysisReport, Finding, OutputFormat, ScanSurfaceNote, Severity, SkippedPath, SuppressionSummary } from "./types.ts";
 import { OUTPUT_VOLUME_HINT_THRESHOLD } from "./constants.ts";
+import { MINIFIED_FILE_PATTERN } from "./discovery.ts";
 import { countRuleSeverities } from "./findings-helpers.ts";
 import { buildPillarRows, type PillarRow } from "./pillar-summary.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { renderHtml } from "./report-html.ts";
-import { severityGradeBreakdown } from "./scoring.ts";
+import { compositeLine, exitFor, severityGradeBreakdown } from "./scoring.ts";
+import { totalSuppressedFindings } from "./sensitive-exclusions.ts";
 
-/*
- * Format dispatcher. `hotspot` is emitted inline (smallest schema) while every other format has a
- * dedicated renderer. The stable schema string `gruff.hotspot.v1` is part of the public contract;
- * bump it only when changing the hotspot payload shape.
+/**
+ * Render the analysis for the requested output consumer.
+ *
+ * @param report - Native analysis report supplying the data for the selected format.
+ * @param format - Selects the human-readable renderer or machine output projection.
+ * @returns Rendered report text. Hotspot JSON uses the stable gruff.hotspot.v1 schema and includes up to ten top offenders.
  */
 function renderReport(report: AnalysisReport, format: OutputFormat): string {
   switch (format) {
@@ -26,7 +32,7 @@ function renderReport(report: AnalysisReport, format: OutputFormat): string {
     case "github":
       return renderGithub(report);
     case "hotspot":
-      return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders.slice(0, 10) }, null, 2);
+      return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders.slice(0, 10), diagnostics: report.diagnostics }, null, 2);
     case "sarif":
       return renderSarif(report);
     case "text":
@@ -34,44 +40,364 @@ function renderReport(report: AnalysisReport, format: OutputFormat): string {
   }
 }
 
-type JsonFinding = Finding & { file: string };
-type JsonTopOffender = AnalysisReport["score"]["topOffenders"][number] & { file: string };
-type JsonAnalysisReport = Omit<AnalysisReport, "findings" | "score"> & {
-  findings: JsonFinding[];
-  score: Omit<AnalysisReport["score"], "topOffenders"> & { topOffenders: JsonTopOffender[] };
+type MachineFinding = Omit<Finding, "filePath" | "line" | "endLine" | "column" | "symbol" | "remediation" | "metadata"> & {
+  file: string;
+  line: number;
+  endLine?: number;
+  column?: number;
+  symbol?: string;
+  remediation: string;
+  metadata: Record<string, unknown>;
 };
 
-// JSON boundary adapter: canonical `file` is emitted while legacy `filePath` remains until the
-// coordinated family JSON unification; a port-local removal would break existing report users.
-// Stable `gruff.analysis.v2` contract line kept adjacent to the function for the doc-context rule.
+/**
+ * Canonical machine record for one skipped path.
+ *
+ * Invariant: `pattern` is present only for a `config` source; reason values use the family vocabulary.
+ */
+interface MachinePathDetail {
+  path: string;
+  reason: "vcs" | "dependency" | "build-output" | "local-tooling" | "generated" | "gitignored" | "config-ignore";
+  source: SkippedPath["source"];
+  pattern?: string;
+}
+
+/**
+ * Canonical machine diagnostic with omission-based optional location fields.
+ *
+ * Invariant: `invalidatesRun` is the schema-required field name and always carries an explicit boolean.
+ */
+interface MachineDiagnostic {
+  type: string;
+  message: string;
+  "invalidatesRun": boolean;
+  file?: string;
+  line?: number;
+}
+
+type MachineSuppression = Omit<SuppressionSummary, "paths" | "symbol"> & {
+  paths: string[];
+  symbol?: string;
+};
+
+/**
+ * Fields shared byte-for-byte by analysis and summary v3 envelopes.
+ *
+ * Invariant: summary changes only `schemaVersion` and omits the top-level findings array.
+ */
+interface MachineEnvelopeCore {
+  tool: AnalysisReport["tool"];
+  run: {
+    failOn: AnalysisReport["run"]["failOn"];
+    format: AnalysisReport["run"]["format"];
+    inputs: string[];
+    projectRoot: ".";
+    config?: string;
+    includeIgnored?: true;
+  };
+  summary: {
+    analysedFiles: number;
+    diagnostics: number;
+    exitCode: number;
+    findings: AnalysisReport["summary"];
+    findingsByPillar: Record<string, number>;
+    ignoredPaths: number;
+    missingPaths: number;
+    skippedFiles: number;
+    suppressedFindings?: number;
+  };
+  score: {
+    composite: { grade: string | null; score: number | null };
+    /** Ratified scoring denominator and the pillar set the composite averaged over. */
+    evaluatedFiles: number;
+    scoredPillars: AnalysisReport["score"]["scoredPillars"];
+    clusters: AnalysisReport["score"]["clusters"];
+    ruleAttribution: AnalysisReport["score"]["ruleAttribution"];
+    pillars: AnalysisReport["score"]["pillars"];
+    topOffenders: Array<{ file: string; score: number | null; penalty: number; findings: number }>;
+  };
+  diagnostics: MachineDiagnostic[];
+  paths: { analysedFiles: number; details: MachinePathDetail[]; ignoredPaths: string[]; missingPaths: string[] };
+  suppressions: MachineSuppression[];
+  baseline?: { applied: boolean; generated: boolean; path?: string; source: string; suppressedFindings: number; entries: number; newFindings: number; unchangedFindings: number; resolvedFindings: number };
+  diff?: { enabled: true; filteredFindings: number; mode: "changed-regions" };
+  extensions?: { ts: { topLevel: { notes: ScanSurfaceNote[] } } };
+}
+
+type JsonAnalysisReport = MachineEnvelopeCore & { schemaVersion: "gruff.analysis.v3"; findings: MachineFinding[] };
+type JsonSummaryReport = MachineEnvelopeCore & { schemaVersion: "gruff.summary.v3" };
+
+// JSON boundary adapter for native report state.
+// Invariant: the result is the exact v3 envelope, without legacy aliases or volatile timestamps.
 function toJsonReport(report: AnalysisReport): JsonAnalysisReport {
   return {
-    ...report,
-    findings: report.findings.map(jsonFinding),
+    schemaVersion: "gruff.analysis.v3",
+    ...machineEnvelopeCore(report),
+    findings: report.findings.map((finding) => machineFinding(finding, report.run.projectRoot)),
+  };
+}
+
+// Returns the report's shared machine fields under the summary v3 schema and omits the per-finding array.
+function toJsonSummary(report: AnalysisReport): JsonSummaryReport {
+  return { schemaVersion: "gruff.summary.v3", ...machineEnvelopeCore(report) };
+}
+
+// Return the machine envelope from the native analysis report so both writers publish the same stable fields.
+// Omit baseline and diff sections when their data is absent. Include the notes extension only when the report supplies notes.
+function machineEnvelopeCore(report: AnalysisReport): MachineEnvelopeCore {
+  const { details, ignoredPaths } = machinePathProjection(report);
+  return {
+    tool: report.tool,
+    run: machineRun(report),
+    summary: machineSummary(report, details.length),
     score: {
-      ...report.score,
-      topOffenders: report.score.topOffenders.map(jsonTopOffender),
+      composite: { grade: report.score.grade, score: report.score.composite },
+      evaluatedFiles: report.score.evaluatedFiles,
+      scoredPillars: report.score.scoredPillars,
+      clusters: report.score.clusters,
+      ruleAttribution: report.score.ruleAttribution,
+      pillars: report.score.pillars,
+      topOffenders: report.score.topOffenders.map((offender) => ({
+        file: machinePath(offender.filePath, report.run.projectRoot),
+        score: offender.score,
+        penalty: offender.penalty,
+        findings: offender.findings,
+      })),
+    },
+    diagnostics: report.diagnostics.map((diagnostic) => machineDiagnostic(diagnostic, report.run.projectRoot)),
+    paths: {
+      analysedFiles: report.paths.analysedFiles,
+      details,
+      ignoredPaths,
+      missingPaths: machinePaths(report.paths.missingPaths, report.run.projectRoot),
+    },
+    suppressions: report.suppressions.map((suppression) => machineSuppression(suppression, report.run.projectRoot)),
+    ...(report.baseline === undefined ? {} : {
+      baseline: {
+        applied: !report.baseline.generated,
+        generated: report.baseline.generated,
+        ...optionalMachinePath("path", report.baseline.path, report.run.projectRoot),
+        source: report.baseline.source,
+        suppressedFindings: report.baseline.suppressed,
+        // A generate run has no comparison. Default missing baseline counts to zero so both formats publish numeric counts.
+        // The baseline path is omitted if it lies outside the project.
+        entries: report.baseline.entries ?? 0,
+        newFindings: report.baseline.newFindings ?? 0,
+        unchangedFindings: report.baseline.unchangedFindings ?? 0,
+        resolvedFindings: report.baseline.resolvedFindings ?? 0,
+      },
+    }),
+    ...(report.suppressedCount === undefined ? {} : {
+      diff: { enabled: true as const, filteredFindings: report.suppressedCount, mode: "changed-regions" as const },
+    }),
+    ...(report.notes === undefined ? {} : {
+      extensions: { ts: { topLevel: { notes: report.notes } } },
+    }),
+  };
+}
+
+// Return stable machine run settings from the native report, with project-relative paths and a portable dot for the root.
+// Missing inputs default to the project directory. Missing or out-of-project config paths are omitted.
+// Publish includeIgnored only when enabled.
+function machineRun(report: AnalysisReport): MachineEnvelopeCore["run"] {
+  return {
+    failOn: report.run.failOn,
+    format: report.run.format,
+    inputs: machinePaths(report.run.inputs ?? ["."], report.run.projectRoot),
+    projectRoot: ".",
+    ...(report.run.config === undefined ? {} : optionalMachinePath("config", report.run.config, report.run.projectRoot)),
+    ...(report.run.includeIgnored === true ? { includeIgnored: true as const } : {}),
+  };
+}
+
+// Return the machine summary from the native report, combining recorded totals with diagnostic and pillar tallies and the fail-on exit code.
+// The count invariant uses the supplied skippedFiles count for both skipped and ignored paths. An absent suppression count is omitted.
+// Pillars with no findings have no key in the tally.
+function machineSummary(report: AnalysisReport, skippedFiles: number): MachineEnvelopeCore["summary"] {
+  const pillarCounts = new Map<string, number>();
+  report.findings.forEach((finding) => pillarCounts.set(finding.pillar, (pillarCounts.get(finding.pillar) ?? 0) + 1));
+  return {
+    analysedFiles: report.paths.analysedFiles,
+    diagnostics: report.diagnostics.length,
+    exitCode: exitFor(report, report.run.failOn),
+    findings: report.summary,
+    findingsByPillar: Object.fromEntries([...pillarCounts.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    ignoredPaths: skippedFiles,
+    missingPaths: report.paths.missingPaths.length,
+    skippedFiles,
+    ...(report.suppressedCount === undefined ? {} : { suppressedFindings: report.suppressedCount }),
+  };
+}
+
+// Return a new machine finding with the native fingerprint and stable identity unchanged and the path relative to projectRoot.
+// Missing or invalid lines use 1. Missing or invalid columns are omitted and give line-only precision. Missing remediation becomes empty text.
+// Omit end lines without a valid position and symbols that are absent or empty.
+function machineFinding(finding: Finding, projectRoot: string): MachineFinding {
+  const line = positiveInteger(finding.line) ?? 1;
+  const column = positiveInteger(finding.column);
+  const endLine = positiveInteger(finding.endLine);
+  return {
+    ruleId: finding.ruleId,
+    message: finding.message,
+    file: machinePath(finding.filePath, projectRoot),
+    line,
+    ...(endLine === undefined ? {} : { endLine }),
+    ...(column === undefined ? {} : { column }),
+    severity: finding.severity,
+    pillar: finding.pillar,
+    secondaryPillars: finding.secondaryPillars,
+    tier: finding.tier,
+    confidence: finding.confidence,
+    ...(finding.symbol === undefined || finding.symbol.length === 0 ? {} : { symbol: finding.symbol }),
+    remediation: finding.remediation ?? "",
+    fingerprint: finding.fingerprint,
+    stableIdentity: finding.stableIdentity,
+    metadata: {
+      ...finding.metadata,
+      locationPrecision: column === undefined ? "line-only" : "scanner-pinpointed",
     },
   };
 }
 
-// Maps one Finding into the JSON contract without mutating the native in-memory finding object.
-function jsonFinding(finding: Finding): JsonFinding {
-  const { ruleId, message, filePath, ...rest } = finding;
-  return { ruleId, message, file: filePath, filePath, ...rest };
+// Return the canonical machine record for the native diagnostic, using projectRoot to make any supplied file path portable.
+// The invalidation invariant defaults to true unless the diagnostic explicitly opts out.
+// Omit the file when absent and the line when absent or invalid.
+function machineDiagnostic(
+  diagnostic: AnalysisReport["diagnostics"][number],
+  projectRoot: string,
+): MachineDiagnostic {
+  const line = positiveInteger(diagnostic.line);
+  return {
+    type: diagnostic.diagnosticType,
+    message: diagnostic.message,
+    invalidatesRun: diagnostic.invalidatesRun !== false,
+    ...(diagnostic.filePath === undefined ? {} : { file: machinePath(diagnostic.filePath, projectRoot) }),
+    ...(line === undefined ? {} : { line }),
+  };
 }
 
-// Maps one top offender into the JSON contract while preserving the legacy filePath alias.
-function jsonTopOffender(offender: AnalysisReport["score"]["topOffenders"][number]): JsonTopOffender {
-  const { filePath, ...rest } = offender;
-  return { file: filePath, filePath, ...rest };
+// Returns a machine suppression from suppression, normalizing its paths relative to projectRoot.
+// Null or empty symbols and an absent source are omitted.
+function machineSuppression(suppression: SuppressionSummary, projectRoot: string): MachineSuppression {
+  return {
+    index: suppression.index,
+    rule: suppression.rule,
+    paths: machinePaths(suppression.paths, projectRoot),
+    ...(suppression.symbol === null || suppression.symbol.length === 0 ? {} : { symbol: suppression.symbol }),
+    reason: suppression.reason,
+    suppressed: suppression.suppressed,
+    // Built-in, inline, and duplicate rows retain their source; configured rows omit it.
+    ...(suppression.source === undefined ? {} : { source: suppression.source }),
+  };
 }
 
-/*
- * SARIF 2.1.0 output for GitHub code-scanning uploads. Kept as one large object literal because
- * the SARIF schema demands a specific shape - splitting it up obscures which fields are required.
- * `partialFingerprints.gruffFingerprint` is the cross-tool stable identifier; GitHub uses it to
- * dedupe alerts across re-uploads, so it must match the Finding fingerprint exactly.
+// Returns report's normalized skip details and ignored paths, resolving paths against report.run.projectRoot.
+// The ignored path list must exactly match the detail paths in order.
+// @throws {Error} - normalized ignored paths and skip-detail paths differ in length, value, or order.
+function machinePathProjection(report: AnalysisReport): { details: MachinePathDetail[]; ignoredPaths: string[] } {
+  const details = report.paths.skipped.map((skipped) => machinePathDetail(skipped, report.run.projectRoot));
+  const ignoredPaths = machinePaths(report.paths.ignoredPaths, report.run.projectRoot);
+  if (ignoredPaths.length !== details.length || ignoredPaths.some((path, index) => path !== details[index]?.path)) {
+    throw new Error("Machine ignored paths must be the exact projection of path details.");
+  }
+  return { details, ignoredPaths };
+}
+
+// Returns a machine path detail for skipped, making its path relative to projectRoot and mapping its ignore reason.
+// Only config-sourced records include their matching pattern.
+function machinePathDetail(skipped: SkippedPath, projectRoot: string): MachinePathDetail {
+  return {
+    path: machinePath(skipped.path, projectRoot),
+    reason: machineIgnoreReason(skipped),
+    source: skipped.source,
+    ...(skipped.source === "config" ? { pattern: skipped.pattern } : {}),
+  };
+}
+
+// The family reason for each directory name TypeScript skips by default (FAMILY-CONTRACT.md section 7).
+const DEFAULT_DIRECTORY_REASONS: ReadonlyMap<string, MachinePathDetail["reason"]> = new Map([
+  [".git", "vcs"], [".hg", "vcs"], [".svn", "vcs"],
+  ["node_modules", "dependency"], ["vendor", "dependency"], ["vendors", "dependency"], ["third_party", "dependency"],
+  ["third-party", "dependency"], ["bower_components", "dependency"],
+  ["build", "build-output"], ["coverage", "build-output"], ["dist", "build-output"],
+  [".fleet", "local-tooling"], [".idea", "local-tooling"], [".vscode", "local-tooling"],
+]);
+
+// Returns the canonical ignore reason for skipped, using its source and matched default pattern.
+// @throws {Error} - a default pattern is neither the minified-file pattern nor one with a recognized final directory component.
+function machineIgnoreReason(skipped: SkippedPath): MachinePathDetail["reason"] {
+  if (skipped.source === "config") {
+    return "config-ignore";
+  }
+  if (skipped.source === "gitignore") {
+    return "gitignored";
+  }
+  if (skipped.pattern === MINIFIED_FILE_PATTERN) {
+    return "generated";
+  }
+  const component = skipped.pattern.replace(/\/+$/u, "").split("/").at(-1) ?? "";
+  const reason = DEFAULT_DIRECTORY_REASONS.get(component);
+  if (reason === undefined) {
+    throw new Error(`Default ignored path has no canonical reason: ${skipped.pattern}`);
+  }
+  return reason;
+}
+
+// Returns values as unique project-relative POSIX paths in first-occurrence order, resolving absolute paths against projectRoot.
+function machinePaths(values: readonly string[], projectRoot: string): string[] {
+  return [...new Set(values.map((value) => machinePath(value, projectRoot)))];
+}
+
+// Returns a field named key containing the portable pathValue, using projectRoot as the base for absolute paths.
+// Returns an empty object when the relative spelling is .. or starts with ../ to avoid publishing a host path.
+// Other paths go through machinePath, which can reject an escape through a later parent segment.
+function optionalMachinePath<Key extends string>(key: Key, pathValue: string, projectRoot: string): Partial<Record<Key, string>> {
+  const relativeValue = (isAbsolute(pathValue) ? relative(projectRoot, pathValue) : pathValue).replaceAll("\\", "/");
+  if (relativeValue === ".." || relativeValue.startsWith("../")) {
+    return {};
+  }
+  return { [key]: machinePath(pathValue, projectRoot) } as Partial<Record<Key, string>>;
+}
+
+// Returns pathValue relative to projectRoot with POSIX separators; a path resolving to the root returns ".".
+// Rejects host-specific and escaping paths to preserve portable report paths.
+// @throws {Error} - pathValue is empty, UNC, drive-qualified, or normalization steps above projectRoot.
+function machinePath(pathValue: string, projectRoot: string): string {
+  const slashValue = pathValue.replaceAll("\\", "/");
+  if (slashValue.length === 0 || slashValue.startsWith("//") || /^[A-Za-z]:/u.test(slashValue)) {
+    throw new Error(`Machine path must be project-relative: ${JSON.stringify(pathValue)}`);
+  }
+  const relativeValue = isAbsolute(pathValue) ? relative(projectRoot, pathValue).replaceAll("\\", "/") : slashValue;
+  const parts: string[] = [];
+  for (const part of relativeValue.split("/")) {
+    if (part.length === 0 || part === ".") {
+      continue;
+    }
+    if (part === "..") {
+      if (parts.length === 0) {
+        throw new Error(`Machine path must stay inside the project root: ${JSON.stringify(pathValue)}`);
+      }
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return parts.length === 0 ? "." : parts.join("/");
+}
+
+// Returns integerValue if it is a positive integer, or undefined for an absent or invalid location value.
+// Callers omit optional coordinates and use line 1 when a finding has no valid start line.
+function positiveInteger(integerValue: number | undefined): number | undefined {
+  return integerValue !== undefined && Number.isInteger(integerValue) && integerValue > 0 ? integerValue : undefined;
+}
+
+/**
+ * Renders SARIF 2.1.0 for GitHub code-scanning uploads.
+ * The stable partialFingerprints.gruffFingerprint uses a baseline or computed identity to preserve cross-run alert matching.
+ * Results with no identity omit the field.
+ *
+ * @param report - Supplies findings, suppressions, diagnostics and run metadata.
+ * @returns Newline-terminated SARIF JSON.
  */
 function renderSarif(report: AnalysisReport): string {
   const rules = ruleDescriptors().map((descriptor) => ({
@@ -85,7 +411,7 @@ function renderSarif(report: AnalysisReport): string {
       tier: "v0.1",
       defaultSeverity: descriptor.severity,
       confidence: descriptor.confidence,
-      defaultEnabled: true,
+      defaultEnabled: descriptor.isEnabledByDefault !== false,
       ...(typeof descriptor.threshold === "number" ? { threshold: descriptor.threshold } : {}),
       ...(descriptor.optionKeys ? { optionKeys: descriptor.optionKeys } : {}),
     },
@@ -103,7 +429,21 @@ function renderSarif(report: AnalysisReport): string {
             rules,
           },
         },
-        results: report.findings.map((finding) => sarifResult(finding, ruleIndices)),
+        invocations: [
+          {
+            executionSuccessful: !report.diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false),
+            toolExecutionNotifications: report.diagnostics.map(sarifDiagnostic),
+          },
+        ],
+        results: [
+          ...report.findings.map((finding) => sarifResult(finding, ruleIndices)),
+          // A finding another tool's comment or a repeated claim removed stays a result marked suppressed, so a
+          // code-scanning tool shows it as suppressed rather than fixed (FAMILY-CONTRACT.md section 13c).
+          ...(report.suppressedFindings ?? []).map(({ finding, justification }) => ({
+            ...sarifResult(finding, ruleIndices),
+            suppressions: [{ kind: "inSource", justification }],
+          })),
+        ],
         properties: {
           gruffSchemaVersion: report.schemaVersion,
           generatedAt: report.run.generatedAt,
@@ -116,9 +456,48 @@ function renderSarif(report: AnalysisReport): string {
   return `${JSON.stringify(sarif, null, 2)}\n`;
 }
 
-/*
- * Maps one Finding into a SARIF result row. The stable, deterministic fingerprint in
- * `partialFingerprints` is the public contract - GitHub code-scanning keys alerts off it.
+// Return a SARIF invocation notification from the analysis diagnostic with a file anchor when a path is available.
+// The severity contract treats an explicit non-invalidating flag as a note. An absent or true flag marks the run invalid and emits an error.
+// A path without a line gives a file-level location.
+function sarifDiagnostic(diagnostic: AnalysisReport["diagnostics"][number]): Record<string, unknown> {
+  return {
+    descriptor: { id: diagnostic.diagnosticType },
+    level: diagnostic.invalidatesRun === false ? "note" : "error",
+    message: { text: diagnostic.message },
+    ...(diagnostic.filePath
+      ? {
+          locations: [{
+            physicalLocation: {
+              artifactLocation: { uri: sarifUri(diagnostic.filePath) },
+              ...(diagnostic.line === undefined ? {} : { region: { startLine: diagnostic.line } }),
+            },
+          }],
+        }
+      : {}),
+    properties: { invalidatesRun: diagnostic.invalidatesRun !== false },
+  };
+}
+
+/**
+ * Preserve the stable alert identity because the analyser considers every finding together when assigning declaration ordinals.
+ *
+ * @param finding - Finding whose baseline identity is reused when present. Otherwise derive an identity from this finding alone.
+ * @returns A gruffFingerprint record, or undefined for a sensitive or unnameable finding so SARIF omits the fingerprint.
+ */
+function sarifPartialFingerprints(finding: Finding): Record<string, string> | undefined {
+  if (finding.baselineIdentity !== undefined) {
+    return { gruffFingerprint: finding.baselineIdentity };
+  }
+  const named = findingIdentities([finding])[0];
+  return named === undefined ? undefined : { gruffFingerprint: named.identity };
+}
+
+/**
+ * Build the SARIF result with the stable alert identity used by GitHub code scanning when available.
+ *
+ * @param finding - Native finding supplying the result message, location, severity, and properties.
+ * @param ruleIndices - Index of rule IDs in the SARIF rule list. An unknown ID leaves ruleIndex absent.
+ * @returns A SARIF result object with optional properties populated from the finding when available.
  */
 function sarifResult(finding: Finding, ruleIndices: Map<string, number>): Record<string, unknown> {
   const result: Record<string, unknown> = {
@@ -130,10 +509,12 @@ function sarifResult(finding: Finding, ruleIndices: Map<string, number>): Record
         physicalLocation: sarifPhysicalLocation(finding),
       },
     ],
-    partialFingerprints: {
-      gruffFingerprint: finding.fingerprint,
-    },
   };
+  const fingerprints = sarifPartialFingerprints(finding);
+  // Leave the alert without a durable fingerprint when the finding is sensitive or cannot be named.
+  if (fingerprints !== undefined) {
+    result.partialFingerprints = fingerprints;
+  }
   const ruleIndex = ruleIndices.get(finding.ruleId);
   if (ruleIndex !== undefined) {
     result.ruleIndex = ruleIndex;
@@ -159,9 +540,8 @@ function sarifResult(finding: Finding, ruleIndices: Map<string, number>): Record
 }
 
 /*
- * Constructs the stable SARIF `physicalLocation` object. `startLine` and column/endLine are only
- * populated when the Finding carries them - SARIF requires `region` to be omitted (not empty)
- * when there is no line context.
+ * Returns the stable SARIF location for the finding's file.
+ * With a line, the region includes any supplied column and end line. Without a line, the location identifies only the artifact.
  */
 function sarifPhysicalLocation(finding: Finding): Record<string, unknown> {
   const location: Record<string, unknown> = {
@@ -184,8 +564,8 @@ function sarifPhysicalLocation(finding: Finding): Record<string, unknown> {
   return location;
 }
 
-// SARIF artifact URIs are POSIX-style relative paths. Strips leading `./` (which SARIF consumers
-// treat as absolute or as a different path) and converts Windows-style separators.
+// Returns a URI-encoded artifact path from filePath, replacing backslashes and stripping leading ./ segments.
+// Encodes segments separately to preserve path separators; absolute and parent-relative paths are not rejected.
 function sarifUri(filePath: string): string {
   return filePath
     .replaceAll("\\", "/")
@@ -195,7 +575,7 @@ function sarifUri(filePath: string): string {
     .join("/");
 }
 
-// SARIF has three levels; gruff's "advisory" maps to "note" because that's the documented soft-warning level.
+// Maps a gruff severity to its SARIF result level: error and warning are unchanged, and advisory returns note.
 function sarifLevel(severity: Severity): "error" | "warning" | "note" {
   switch (severity) {
     case "error":
@@ -207,21 +587,26 @@ function sarifLevel(severity: Severity): "error" | "warning" | "note" {
   }
 }
 
-/*
- * Compact digest for humans in terminals. It intentionally stays outside the JSON schema contract
- * because the CLI should be able to improve wording/layout without a schema bump; callers that need
- * durable machine output should use `analyse --format=json` instead.
+/**
+ * Render a terminal digest; callers needing a stable machine contract use analyse --format=json.
+ *
+ * @param report - findings, scores, diagnostics, baseline, and suppression data to summarize
+ * @param elapsedMs - optional elapsed duration; omitted leaves out the Duration line
+ * @param pathLabel - path shown in the digest; omitted uses the report's project root
+ * @param top - number of leading clusters, rules, and file offenders to display; defaults to 10
+ * @returns terminal summary text followed by a newline
  */
 function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: string, top = 10): string {
   const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
   const pillarRows = buildPillarRows(report);
   const breakdown = severityGradeBreakdown(report.findings);
+  // FAMILY-CONTRACT section 1 keeps the masthead, composite, and finding totals ahead of port-specific summary lines.
   const lines = [
     `gruff-ts ${report.tool.version} summary`,
+    compositeLine(report.score.composite, report.score.grade),
+    `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     `Path: ${pathLabel ?? report.run.projectRoot}`,
     ...(typeof elapsedMs === "number" ? [`Duration: ${formatSummaryDuration(elapsedMs)}`] : []),
-    `Composite: ${report.score.grade} (${report.score.composite.toFixed(2)} / 100)`,
-    `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     `  Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `  Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
     `  Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
@@ -240,64 +625,38 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
     ...(
       report.score.topOffenders.length === 0
         ? ["- No file offenders."]
-        : report.score.topOffenders.slice(0, top).map((offender) => `- ${offender.filePath}: ${offender.findings} findings, quality ${offender.score.toFixed(1)}/100`)
+        : report.score.topOffenders.slice(0, top).map((offender) => {
+            const quality = offender.score === null ? "n/a" : `${offender.score.toFixed(1)}/100`;
+            return `- ${offender.filePath}: ${offender.findings} findings, quality ${quality}`;
+          })
     ),
   );
+  // FAMILY-CONTRACT.md section 13a requires a suppression audit on each surface that applies sensitive exclusions.
+  // Keep this extension below the canonical block; machine counts belong to the v3 summary projection.
+  lines.push(...renderTextSuppressionLines(report));
   return `${lines.join("\n")}\n`;
 }
 
-/*
- * Renders the stable public `gruff.summary.v2` JSON contract for the `summary --format=json` flow.
- * Phase 2 of the cross-port harmonisation replaces the flat `{pillar, count}` shape with rich
- * per-pillar objects carrying grade, score, applicability, and per-severity counts (findings,
- * advisory, warning, error). The schema-version string is bumped because downstream CI consumers
- * parse this payload and the field-set is no longer compatible with v1; scope/score/topRules/
- * topOffenders remain unchanged.
+/**
+ * Use the gruff.summary.v3 schema for summary --format=json.
+ *
+ * @param report - Native analysis report supplying the common machine envelope.
+ * @returns Indented summary JSON with a trailing newline and without the per-finding array.
  */
-function renderSummaryJson(report: AnalysisReport, elapsedMs?: number, pathLabel?: string, top = 10): string {
-  const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
-  const pillarRows = buildPillarRows(report);
-  const payload = {
-    schemaVersion: "gruff.summary.v2",
-    tool: report.tool,
-    scope: {
-      paths: pathLabel ?? report.run.projectRoot,
-      projectRoot: report.run.projectRoot,
-      analysedFiles: report.paths.analysedFiles,
-      ignoredPaths: report.paths.ignoredPaths.length,
-      missingPaths: report.paths.missingPaths.length,
-      diagnostics: report.diagnostics.length,
-      elapsedSeconds: typeof elapsedMs === "number" ? Number((elapsedMs / 1000).toFixed(3)) : undefined,
-    },
-    score: report.score,
-    findings: report.summary,
-    baseline: report.baseline,
-    pillars: pillarRows.map((row) => ({
-      pillar: row.pillar,
-      grade: row.grade,
-      score: row.score,
-      penalty: row.penalty,
-      applicable: row.isApplicable,
-      findings: row.findings,
-      advisory: row.advisory,
-      warning: row.warning,
-      error: row.error,
-    })),
-    topRules: renderRankedCountRows(ruleCounts, top),
-    topOffenders: report.score.topOffenders.slice(0, top),
-  };
-  return `${JSON.stringify(payload, null, 2)}\n`;
+function renderSummaryJson(report: AnalysisReport): string {
+  return `${JSON.stringify(toJsonSummary(report), null, 2)}\n`;
 }
 
-// Shared text formatter for diagnostic rows in plain-text summaries and the `text` format. Stable
-// "- {type}: {message} (path)" shape is part of the contract that scripts grepping the text output
-// rely on, so the format must stay deterministic across both call sites.
+// Returns a diagnostic row shared by terminal summaries and text reports, with type and message from diagnostic.
+// Appends the parenthesized filePath only when present; otherwise the row has no location suffix.
+// Keep this shared shape stable for scripts that grep both output surfaces.
 function summaryDiagnosticLine(diagnostic: AnalysisReport["diagnostics"][number]): string {
   const location = diagnostic.filePath ? ` (${diagnostic.filePath})` : "";
   return `- ${diagnostic.diagnosticType}: ${diagnostic.message}${location}`;
 }
 
-// Documents the summary baseline contract so suppressed findings are not mistaken for a clean scan.
+// Return the summary line from the report's baseline metadata under the baseline contract.
+// A generated baseline leaves current findings visible. An applied baseline reports its source and suppression count.
 function summaryBaselineLine(baseline: NonNullable<AnalysisReport["baseline"]>): string {
   if (baseline.generated) {
     return `Baseline: generated ${baseline.path}; current findings still shown`;
@@ -306,7 +665,8 @@ function summaryBaselineLine(baseline: NonNullable<AnalysisReport["baseline"]>):
   return `Baseline: ${baseline.source} ${baseline.path}; suppressed ${baseline.suppressed} ${findingNoun}`;
 }
 
-// Human-sized summary runtime without pretending sub-millisecond precision is useful.
+// Returns elapsedMs as a summary duration, rounding to whole milliseconds below one second and two-decimal seconds otherwise.
+// Negative durations display as 0ms.
 function formatSummaryDuration(elapsedMs: number): string {
   const bounded = Math.max(0, elapsedMs);
   if (bounded < 1000) {
@@ -325,14 +685,12 @@ function countBy<T extends string>(findings: Finding[], keyFor: (finding: Findin
   return counts;
 }
 
-/*
- * Text renderer for the `Pillars` block in `gruff-ts summary`. Column widths are computed from the
- * actual data (max pillar-name length, max digits per severity column) with a 3-char minimum value
- * width so single-digit cells still leave visual breathing room before the next column. This
- * matches the cross-port canonical byte-for-byte layout: leading "Pillars" header, 2-space row
- * indent, pillar name padded to max-name-width + 1 space, single-letter grade, 1-space separator,
- * score right-aligned in 6 chars with 2 decimals, then findings/advisory/warning/error cells
- * separated by 3 spaces and trimmed of trailing whitespace on the final column.
+/**
+ * Render the terminal Pillars block with a two-space row indent and three spaces between count cells.
+ * Names and counts expand to fit; count cells use at least three characters and scores use two decimals in at least six.
+ *
+ * @param rows - pillar summaries to display in their supplied order
+ * @returns heading and formatted rows, or a heading and none marker when rows is empty
  */
 function renderPillarsBlock(rows: PillarRow[]): string[] {
   if (rows.length === 0) {
@@ -357,12 +715,12 @@ function renderPillarsBlock(rows: PillarRow[]): string[] {
   return lines;
 }
 
-/*
- * Enriched top-N rules renderer. Replaces the plain `- <ruleId>: <count>` form with a per-severity
- * split plus the rule's one-line description, so an operator triaging 1000+ findings can see
- * whether the top entry is one error or four hundred advisories at a glance. Description text is
- * truncated to `DESCRIPTION_BODY_LIMIT` characters with an ellipsis so the row stays legible at 100
- * columns. Sort order is preserved (count DESC, ruleId ASC) to keep the row-at-position-[0] stable.
+/**
+ * Show severity counts and short descriptions so operators can triage the most frequent rules first.
+ *
+ * @param findings - Findings to group by rule and tally by severity.
+ * @param limit - Cap on ranked rows. Omit it to show every rule with findings.
+ * @returns Stable bullets by descending count then ascending rule ID. No findings give a placeholder. Unknown rules have blank descriptions.
  */
 function renderRankedRuleRows(findings: Finding[], limit?: number): string[] {
   const severities = countRuleSeverities(findings);
@@ -386,13 +744,14 @@ function renderRankedRuleRows(findings: Finding[], limit?: number): string[] {
  */
 const DESCRIPTION_BODY_LIMIT = 60;
 
-// Applies the description budget to a single rule's description so each rule row in the summary
-// Top-N block fits on one terminal line. Returns the input unchanged when already short.
+// Returns the rule description text unchanged when it fits DESCRIPTION_BODY_LIMIT.
+// Longer text is cut to that many UTF-16 code units, trimmed at the end, and given an ellipsis; row width remains variable.
 function truncateDescription(text: string): string {
   return text.length <= DESCRIPTION_BODY_LIMIT ? text : `${text.slice(0, DESCRIPTION_BODY_LIMIT).trimEnd()}…`;
 }
 
-// Renders a count map as ranked text bullets; the (count DESC, key ASC) ordering is deterministic.
+// Return ranked text bullets from the count map in deterministic order by descending count then ascending key.
+// For an empty map, return one bullet using emptyText. Otherwise apply limit when supplied, or show all entries when omitted.
 function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText: string, limit?: number): string[] {
   if (counts.size === 0) {
     return [`- ${emptyText}`];
@@ -403,7 +762,8 @@ function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText:
     .map(([key, count]) => `- ${key}: ${count}`);
 }
 
-// Structured variant of `renderRankedCounts` for JSON consumers; the same deterministic ordering.
+// Return name and count rows for JSON consumers from the supplied count map, in deterministic order by descending count then ascending name.
+// Use limit as the cap when supplied. An omitted limit keeps every row, and an empty map yields no rows.
 function renderRankedCountRows<T extends string>(counts: Map<T, number>, limit?: number): Array<{ name: T; count: number }> {
   return [...counts.entries()]
     .sort(([leftKey, leftCount], [rightKey, rightCount]) => rightCount - leftCount || leftKey.localeCompare(rightKey))
@@ -411,15 +771,14 @@ function renderRankedCountRows<T extends string>(counts: Map<T, number>, limit?:
     .map(([name, count]) => ({ name, count }));
 }
 
-/*
- * Default terminal output. Findings are listed verbatim (no truncation) - the analyser keeps them
- * sorted into the stable order, so piping into `grep` produces deterministic results.
- */
+// Returns the supplied analysis report as newline-terminated terminal text.
+// Lists full finding messages in the supplied stable order so that grep sees consistent rows.
+// A finding with no source line is displayed at line 1.
 function renderText(report: AnalysisReport): string {
   const breakdown = severityGradeBreakdown(report.findings);
   const lines = [
     `gruff-ts ${report.tool.version} analyse`,
-    `Composite: ${report.score.grade} (${report.score.composite.toFixed(2)} / 100)`,
+    compositeLine(report.score.composite, report.score.grade),
     `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     `  Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `  Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
@@ -439,27 +798,70 @@ function renderText(report: AnalysisReport): string {
   if (report.findings.length >= OUTPUT_VOLUME_HINT_THRESHOLD) {
     lines.push("", `Tip: ${report.findings.length} findings is more than a flat list usefully shows. Try \`gruff-ts summary --top=20\` for a per-rule digest.`);
   }
+  lines.push(...renderTextSuppressionLines(report));
+  // Under ADR-006, name the applied baseline and its selection source so hidden findings never read as a clean scan.
+  if (report.baseline !== undefined && !report.baseline.generated) {
+    lines.push("", summaryBaselineLine(report.baseline));
+  }
   return `${lines.join("\n")}\n`;
 }
 
-/*
- * Markdown renderer for the `gruff.analysis.v2` report. Truncates to 50 findings because Markdown
- * previews (PR comments, READMEs) start mangling longer tables; the JSON and HTML renderers stay
- * the canonical full-fidelity output. Public contract / invariant: the Pillars table is inserted
- * between the severity counts and the per-finding list so CI logs and PR comment previews see it
- * first, and it shares its row data and sort order with the text/JSON/HTML pillar renderers via
- * `buildPillarRows` so all four surfaces stay deterministic and byte-aligned across runs.
+/**
+ * Render the suppression summary using the stable text contract in gruff-rs/src/render/text.rs.
+ * Each positive row shows the exclusion label, rule, count, and rationale without printing matched evidence.
+ *
+ * @param report - Analysis report whose suppression rows supply the total and details.
+ * @returns A separator and one summary line when the total is positive, or an empty list when nothing was suppressed.
+ */
+function renderTextSuppressionLines(report: AnalysisReport): string[] {
+  const total = totalSuppressedFindings(report.suppressions);
+  // Nothing suppressed means no line at all, matching the reference renderer.
+  if (total === 0) {
+    return [];
+  }
+  const details = report.suppressions
+    .filter((summary) => summary.suppressed > 0)
+    // Built-in and section 13c rows put the first covered path in the label brackets. A missing path leaves the brackets empty.
+    .map((summary) => (summary.source === undefined
+      ? `sensitiveExclusions[${summary.index}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`
+      : `${summary.source === "built-in" ? "builtInTestPath" : summary.source}[${summary.paths[0] ?? ""}] ${summary.rule}: ${summary.suppressed} (${summary.reason})`))
+    .join("; ");
+  return ["", `Suppressed findings: ${total} via ${details}`];
+}
+
+/**
+ * Keep the Pillars table ahead of individual findings so readers see the breakdown in a report preview.
+ * Use the shared pillar rows to preserve deterministic order across formats.
+ *
+ * @param report - Native analysis report supplying the score, diagnostics, pillars, and findings in display order.
+ * @returns Markdown with diagnostics when present and at most the first 50 individual findings.
  */
 function renderMarkdown(report: AnalysisReport): string {
   const breakdown = severityGradeBreakdown(report.findings);
-  // A repository controls each displayed value; a missing line keeps the historic line-1 fallback.
+  // Keep repository text from changing the Markdown structure. An unlocated finding uses line 1 as its display anchor.
   const findingRows = report.findings
     .slice(0, 50)
     .map((finding) => `- ${markdownInlineCode(finding.ruleId)} ${markdownInlineCode(finding.filePath)}:${finding.line ?? 1} - ${escapeMarkdownFindingMessage(finding.message)}`);
+  const diagnosticRows = report.diagnostics.length === 0
+    ? []
+    : [
+        "## Diagnostics",
+        "",
+        ...report.diagnostics.map((diagnostic) => {
+          const diagnosticLocation = diagnostic.filePath
+            ? `${markdownInlineCode(diagnostic.filePath)}:${diagnostic.line ?? 1} `
+            : "";
+          return `- ${markdownInlineCode(diagnostic.diagnosticType)} ${diagnosticLocation}- ${escapeMarkdownFindingMessage(diagnostic.message)}`;
+        }),
+        "",
+      ];
   return [
     "# gruff-ts report",
     "",
-    `Composite: **${report.score.grade} (${report.score.composite.toFixed(2)} / 100)**`,
+    // A missing composite score or grade uses the same nothing-evaluated wording as the text report.
+    report.score.composite === null || report.score.grade === null
+      ? "Composite: **n/a (nothing evaluated)**"
+      : `Composite: **${report.score.grade} (${report.score.composite.toFixed(2)} / 100)**`,
     `- Errors:   ${breakdown.error.grade} (${breakdown.error.count})`,
     `- Warnings: ${breakdown.warning.grade} (${breakdown.warning.count})`,
     `- Advisory: ${breakdown.advisory.grade} (${breakdown.advisory.count})`,
@@ -467,19 +869,18 @@ function renderMarkdown(report: AnalysisReport): string {
     "",
     `Findings: ${report.summary.total} total · ${report.summary.error} error · ${report.summary.warning} warning · ${report.summary.advisory} advisory`,
     "",
+    ...diagnosticRows,
     ...renderMarkdownPillarsTable(buildPillarRows(report)),
     "",
     ...findingRows,
   ].join("\n");
 }
 
-/*
- * Canonical 7-column Pillars table shared by the cross-port markdown contract. The header,
- * separator (right-aligned numeric columns), and row format match the gruff-go markdown reporter
- * byte-for-byte so downstream tooling (PR comment scrapers, dashboards parsing the markdown body)
- * keys off a single shape. Row order is sourced from `buildPillarRows` (findings DESC, then pillar
- * ASC); scores render with two decimals; pipes in pillar/grade cells are escaped so a future
- * pillar/grade name containing `|` cannot break the table.
+/**
+ * Preserve the shared seven-column Markdown table contract, including two-decimal scores and escaped cell pipes.
+ *
+ * @param rows - Pillar rows in caller order. buildPillarRows supplies findings DESC, then pillar ASC.
+ * @returns Table lines including a placeholder row when there are no pillars to list.
  */
 function renderMarkdownPillarsTable(rows: PillarRow[]): string[] {
   const lines = [
@@ -500,9 +901,8 @@ function renderMarkdownPillarsTable(rows: PillarRow[]): string[] {
   return lines;
 }
 
-// Escapes the pipe character so a pillar/grade name containing `|` cannot terminate the table row.
-// Markdown's table syntax has no other reserved cell characters - newlines are already impossible
-// inside a single-line `lines.push` interpolation - so this single replacement is sufficient.
+// Returns cell with pipe characters escaped for a Markdown table cell.
+// Callers supply single-line pillar and grade labels; this helper does not escape other Markdown syntax.
 function escapeMarkdownCell(cell: string): string {
   return cell.replaceAll("|", "\\|");
 }
@@ -520,7 +920,7 @@ function markdownInlineCode(reportLabel: string): string {
   return `${fence}${paddedLabel}${fence}`;
 }
 
-// Escapes repository-controlled finding prose before a reviewer sees the Markdown report.
+// Escapes finding and diagnostic messages to preserve the Markdown report's stable entry layout.
 // Line breaks collapse so a message cannot start a new heading, list, or HTML block.
 function escapeMarkdownFindingMessage(findingMessage: string): string {
   return findingMessage
@@ -546,9 +946,10 @@ interface ComplexityCluster {
   ruleIds: string[];
 }
 
-const CORRELATED_COMPLEXITY_RULE_IDS = new Set(["complexity.cognitive", "complexity.cyclomatic", "size.function-length"]);
+const CORRELATED_COMPLEXITY_RULE_IDS = new Set(["complexity.cyclomatic", "size.function-length"]);
 
-// Invariant: text output surfaces linked complexity clusters without changing JSON report shape.
+// Returns a text heading and one line per selected complexity cluster from the supplied findings, in stable rank order.
+// The limit is the end position in that list and defaults to 10. An empty selection returns no heading or rows.
 function renderComplexityClusterLines(findings: Finding[], limit = 10): string[] {
   const clusters = complexityClusters(findings).slice(0, limit);
   if (clusters.length === 0) {
@@ -560,7 +961,7 @@ function renderComplexityClusterLines(findings: Finding[], limit = 10): string[]
   ];
 }
 
-// Invariant: markdown mirrors text complexity clusters without adding JSON fields.
+// Returns the Markdown heading and rows for all clusters in the supplied findings, using the same grouping contract as text output.
 function renderMarkdownComplexityClusterLines(findings: Finding[]): string[] {
   const clusters = complexityClusters(findings);
   // A scan with no overlapping complexity findings should not show an empty review section.
@@ -585,7 +986,9 @@ function renderMarkdownComplexityClusterRow(cluster: ComplexityCluster): string 
   return `- ${markdownInlineCode(clusterLabel)}: ${cluster.ruleIds.length} linked findings (${linkedRuleLabels})`;
 }
 
-// Invariant: groups findings by file and symbol so every renderer explains score overlap consistently.
+// Returns stable clusters from the supplied complexity findings so that renderers explain overlaps consistently.
+// A file and symbol qualify only when at least two distinct correlated rules fired there. Otherwise no cluster is emitted for that pair.
+// The list is empty without a qualifying overlap. Clusters rank by descending rule count, then path and symbol, with sorted rule IDs.
 function complexityClusters(findings: Finding[]): ComplexityCluster[] {
   const bySymbol = new Map<string, ComplexityCluster>();
   for (const finding of findings) {
@@ -605,16 +1008,29 @@ function complexityClusters(findings: Finding[]): ComplexityCluster[] {
     .sort((left, right) => right.ruleIds.length - left.ruleIds.length || left.filePath.localeCompare(right.filePath) || left.symbol.localeCompare(right.symbol));
 }
 
-// GitHub Actions `::workflow command` syntax. Public contract invariant: file/title properties
-// must be normalized and command-escaped before interpolation because commas and colons delimit the property list.
+// Returns newline-separated GitHub Actions annotations for report diagnostics and findings; missing finding lines use line 1.
+// File paths are normalized, and file and title values must be command-escaped because commas and colons are delimiters.
+// Returns an empty string when the report has neither diagnostics nor findings.
 function renderGithub(report: AnalysisReport): string {
-  return report.findings
-    .map((finding) => `::${githubLevel(finding.severity)} file=${escapeCommandProperty(githubAnnotationPath(finding.filePath))},line=${finding.line ?? 1},title=${escapeCommandProperty(finding.ruleId)}::${escapeCommand(finding.message)}`)
+  return [
+    ...report.diagnostics.map(githubDiagnostic),
+    ...report.findings.map((finding) => `::${githubLevel(finding.severity)} file=${escapeCommandProperty(githubAnnotationPath(finding.filePath))},line=${finding.line ?? 1},title=${escapeCommandProperty(finding.ruleId)}::${escapeCommand(finding.message)}`),
+  ]
     .join("\n");
 }
 
-// GitHub annotation paths are repository-relative POSIX paths. Leading `./` and Windows
-// separators produce duplicate annotations for the same file, so normalize them once here.
+// Returns a GitHub Actions annotation for the supplied run diagnostic. The level contract uses notice only when invalidatesRun is false.
+// Without a file path the annotation has no location. With a file path and no line, it defaults to line 1.
+function githubDiagnostic(diagnostic: AnalysisReport["diagnostics"][number]): string {
+  const level = diagnostic.invalidatesRun === false ? "notice" : "error";
+  const location = diagnostic.filePath
+    ? ` file=${escapeCommandProperty(githubAnnotationPath(diagnostic.filePath))},line=${diagnostic.line ?? 1},`
+    : " ";
+  return `::${level}${location}title=${escapeCommandProperty(diagnostic.diagnosticType)}::${escapeCommand(diagnostic.message)}`;
+}
+
+// Returns filePath for a GitHub annotation with forward slashes and without leading dot-slash segments.
+// Equivalent slash and dot-prefix spellings share one path. Absolute paths and parent segments are preserved.
 function githubAnnotationPath(filePath: string): string {
   return filePath.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "");
 }
@@ -625,14 +1041,14 @@ function githubLevel(severity: Severity): "notice" | "warning" | "error" {
   return severity === "error" ? "error" : severity === "warning" ? "warning" : "notice";
 }
 
-// Actions workflow-command escaping per the documented spec. `%` must be first - otherwise the
-// `%0A` replacement would itself be re-encoded.
+// Returns commandText with the base GitHub Actions escapes for messages and property values. % must be first, otherwise the
+// %0A replacement would itself be re-encoded.
 function escapeCommand(commandText: string): string {
   return commandText.replaceAll("%", "%25").replaceAll("\n", "%0A").replaceAll("\r", "%0D");
 }
 
-// Property-list variant of `escapeCommand`: also escapes `:` and `,` because GitHub workflow
-// commands use them as the property-list delimiters between `file`, `line`, `title`, etc.
+// Returns propertyText with the base command escapes plus colon and comma escapes because GitHub workflow
+// commands use commas between properties and double colons around the command header.
 function escapeCommandProperty(propertyText: string): string {
   return escapeCommand(propertyText).replaceAll(":", "%3A").replaceAll(",", "%2C");
 }

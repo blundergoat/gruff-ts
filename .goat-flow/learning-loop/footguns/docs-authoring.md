@@ -25,7 +25,7 @@ Defences:
 2. For a lone literal backtick in prose, write the word "backtick" instead of trying to typeset one.
 3. Verify by rendering the line (markdown-it `renderInline`), not by eyeballing the source - the corruption is invisible in a plain editor.
 
-Instance: `.goat-flow/learning-loop/footguns/rule-scanners.md` (search: `docs.fixture-purpose-missing`) carried three such spans on one line until 2026-06-04; a markdown-it render of that line emitted 24 inline code spans, five of them prose fragments (for example "on the" and "is not a candidate -") rather than code. Fixed by switching to double-backtick delimiters and rewording the lone backtick.
+Instance: the fixture-purpose entry, now in `.goat-flow/learning-loop/footguns/comment-rules.md` (search: `docs.fixture-purpose-missing`), carried three such spans on one line until 2026-06-04; a markdown-it render of that line emitted 24 inline code spans, five of them prose fragments (for example "on the" and "is not a candidate -") rather than code. Fixed by switching to double-backtick delimiters and rewording the lone backtick.
 
 ## Footgun: moving a `.goat-flow/` doc strands source comments that cite its old path
 
@@ -54,8 +54,8 @@ Smoke evidence: `.goat-flow/logs/sessions/2026-07-16-goat-{critique,plan,qa,secu
 **Status:** active | **Created:** 2026-08-07 | **Evidence:** ACTUAL_MEASURED
 **Decision changed:** After a goat-flow upgrade, run stats and all three audit modes, then budget time to reconcile project-owned metadata, anchors, and inventories that the installer deliberately preserves.
 **Trigger phase:** VERIFY
-**Incident count:** 2
-**Latest occurrence:** 2026-08-07
+**Incident count:** 3
+**Latest occurrence:** 2026-10-03
 
 The 1.14.0 setup audit passed while `audit . --agent codex --harness` failed because existing entries used older evidence labels such as `MEASURED`, appended evidence context inside the label field, encoded resolution dates inside `Status`, and cited a gitignored milestone as durable evidence. The install correctly refreshed system-owned README contracts but did not rewrite project-owned learning entries, so a structurally current install can still fail its feedback-loop gate.
 
@@ -64,6 +64,8 @@ The 1.15.0 `audit . --agent codex --check-content` gate then found the same pres
 Evidence: `.goat-flow/learning-loop/footguns/README.md` (search: `Evidence labels are mutually exclusive`) defines the current label/status contract; `.goat-flow/learning-loop/lessons/README.md` (search: `Automatic Capture Policy`) confirms project-owned entries are manually consolidated rather than auto-rewritten; `.goat-flow/logs/sessions/README.md` (search: `Local Data and Evidence Budget`) demonstrates the managed-to-project-owned anchor contract.
 
 Prevention: immediately run `stats . --check`, the base audit, the harness audit, and the content audit after installation. Normalize only reported project-owned entries, replace gitignored task paths with committed semantic anchors, reconcile architecture and code-map inventories against live files, regenerate indexes, and rerun each original failing command.
+
+**Recurrence 2026-10-03:** The 1.17.0 install retired `writing-style.md` but kept the file, which the drift check then reported as an orphan, while `CLAUDE.md`, `AGENTS.md`, `.goat-flow/architecture.md`, `.goat-flow/code-map.md`, and the decisions README still cited it. The same release began requiring `.goat-flow/security-policy.md` in every Router Table, and its stricter `stats --check` exposed 12 stale and 13 missing footgun anchors left behind by earlier source refactors. Every base audit failed until those project-owned files were reconciled.
 
 ## Footgun: `audit --agent <one>` never inspects the sibling agents' instruction files
 
@@ -77,7 +79,7 @@ This workspace keeps four near-identical agent instruction files (`CLAUDE.md`, `
 
 Defence: after renaming a doc, run one repo-wide grep for the old basename across all extensions (`grep -rn "old-name\.md" . | grep -v node_modules`) and fix every agent surface in the same change. A green `--agent claude` audit is not evidence that the other three surfaces are consistent.
 
-Instance: `docs/coding-standards/git-commit.md` was renamed to `git-commit-message.md`, but six references survived - inline prose in all three of `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, the router-table `Commit policy` row in the latter two, and the Copilot Workspace Boundary owned-surfaces list. Both `audit . --agent claude --harness` and `--check-content` reported pass (all five concerns at 100, drift 0/53 findings, 177 files scanned) while every one of those pointers was broken. The audit's own verification concern named the real file (`Commit guidance found at docs/coding-standards/git-commit-message.md`), so the mismatch was only visible by reading that finding against the instruction file.
+Instance: `docs/coding-standards/git-commit.md` was renamed to `git-commit-message.md`, but six references survived - inline prose in all three of `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, the router-table `Commit policy` row in the latter two (`AGENTS.md`, search: `Commit policy`), and the Copilot Workspace Boundary owned-surfaces list. Both `audit . --agent claude --harness` and `--check-content` reported pass (all five concerns at 100, drift 0/53 findings, 177 files scanned) while every one of those pointers was broken. The audit's own verification concern named the real file (`Commit guidance found at docs/coding-standards/git-commit-message.md`), so the mismatch was only visible by reading that finding against the instruction file.
 
 ## Footgun: gitignore-aware search finds nothing when recursion starts at `.goat-flow/`
 

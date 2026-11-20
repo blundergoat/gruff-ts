@@ -38,7 +38,7 @@ Implication: keep a valid TSX false-positive fixture and a broken TSX counter-fi
 
 **Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
 
-`analyseDeadCode` (search: `function analyseDeadCode`) flags a `private` method as unused when its name appears `<= 1` times in the same source file. It cannot detect:
+`analyseDeadCode` (`src/dead-code-rules.ts`, search: `function analyseDeadCode`) flags a `private` method as unused when `name(` appears `<= 1` times in the same source file and no `this.name` or `this?.name` reference exists there. It cannot detect:
 
 - Methods called via `this[name](...)` indirection.
 - Methods referenced by string in decorator metadata or DI containers.
@@ -50,4 +50,4 @@ The rule is intentionally `confidence: "low"` and `severity: "advisory"` for tha
 
 **Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
 
-`analyseUnreachable` (search: `function analyseUnreachable`) only marks the previous line as terminating when its trimmed form matches `/\b(return|throw|process\.exit)\b/` AND ends with `;`. ASI-style code (no trailing semicolon) silently bypasses the check. If you adjust this rule, consider that the project's own style writes most returns with `;`, so a fix that emits more findings will mostly trip the project itself.
+`analyseUnreachable` only marks the previous line as terminating when `isTerminatingStatement` (`src/dead-code-rules.ts`, search: `function isTerminatingStatement`) sees its trimmed form start with `return`, `throw`, or `process.exit` AND end with `;`. ASI-style code (no trailing semicolon) silently bypasses the check. If you adjust this rule, consider that the project's own style writes most returns with `;`, so a fix that emits more findings will mostly trip the project itself.

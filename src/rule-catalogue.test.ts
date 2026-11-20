@@ -8,22 +8,25 @@ import { cwd } from "node:process";
 import { ruleDescriptors } from "./cli.ts";
 import { loadConfig, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
 import { SECURITY_EXPANSION_RISKY_RULE_IDS, SECURITY_EXPANSION_RULE_QUALITY_DOCTRINE } from "./fixtures/rule-catalogue-security-doctrine.ts";
-import { ruleCatalogueCoverageRuleIds } from "./test-fixtures.ts";
+import { ruleCatalogueCoverageFindings, ruleCatalogueCoverageRuleIds } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
 
 const RULE_QUALITY_FIXTURE_CATEGORIES = ["valid", "invalid", "noisy-valid", "missing-invalid"] as const;
-const EXPECTED_RELEASE_RULE_COUNT = 120;
+const EXPECTED_RELEASE_RULE_COUNT = 83;
+// Every medium- and low-confidence rule carries reviewed false-positive guidance; the high-confidence
+// remainder omits the field. Naming both counts keeps the two guards below arithmetically linked.
+const EXPECTED_GUIDED_RULE_COUNT = 52;
 
-// Asserts the descriptor's optionKeys list is sorted and unique. Factored out of the descriptor
-// catalogue test body to preserve a stable sort invariant without an inline `if` branch.
+// Check the descriptor's option keys against the catalogue ordering and uniqueness invariant. An absent list counts as empty.
+// Returns nothing. Fails the test if the keys are out of order or repeated, using the rule ID to identify the failure.
 function assertSortedUniqueOptionKeys(descriptor: { ruleId: string; optionKeys?: readonly string[] }): void {
   const optionKeys = descriptor.optionKeys ?? [];
   assert.deepEqual(optionKeys, [...optionKeys].sort(), `option key ordering for ${descriptor.ruleId}`);
   assert.equal(new Set(optionKeys).size, optionKeys.length, `option key uniqueness for ${descriptor.ruleId}`);
 }
 
-// Asserts the descriptor either has a fixture exemption with a real reason or is covered by a
-// catalogue fixture id. Factored out so the descriptor catalogue test body avoids a branch.
+// Checks that descriptor.ruleId is in the fixture IDs coverageIds or has a nonempty fixtureExemption.
+// Any nonempty exemption must exceed ten characters. Returns nothing when both checks pass and throws an assertion error when either fails.
 function assertDescriptorCoverageOrExemption(descriptor: { ruleId: string; fixtureExemption?: string }, coverageIds: Set<string>): void {
   const exemption = descriptor.fixtureExemption ?? "";
   const hasExemption = exemption.length > 0;
@@ -34,9 +37,8 @@ function assertDescriptorCoverageOrExemption(descriptor: { ruleId: string; fixtu
 type RuleQualityCategory = (typeof RULE_QUALITY_FIXTURE_CATEGORIES)[number];
 type RuleQualityDescriptor = ReturnType<typeof ruleDescriptors>[number];
 
-// Minimal analyse options for loading the repo's shipped `.gruff-ts.yaml` (which selects a profile)
-// from the test working directory. Coverage is checked against the effective loaded config rather than
-// yaml text, so the assertions hold whether the config enumerates rules or names a profile.
+// Returns analyse options for loading the shipped .gruff-ts.yaml from the test working directory.
+// The tests use the effective config to check rule enablement and descriptor defaults.
 function repoScanOptions(): AnalysisOptions {
   return { paths: ["."], shouldSkipConfig: false, format: "json", failOn: "none", shouldIncludeIgnored: false, changedScope: "symbol", shouldSkipBaseline: true };
 }
@@ -58,15 +60,12 @@ interface RuleQualityDoctrineCase {
 
 const riskyRuleIdsRequiringNoisyValidProof = [
   "docs.fixture-purpose-missing",
-  "docs.magic-threshold-without-rationale",
   "docs.missing-error-behavior-doc",
   "docs.missing-invariant-doc",
   "docs.missing-side-effect-doc",
   "docs.missing-why-for-complex-code",
-  "docs.stale-comment",
   "docs.suppression-without-rationale",
   "docs.todo-without-tracking",
-  "docs.useless-docblock",
   "security.disabled-tls-verification",
   "security.eval-call",
   ...SECURITY_EXPANSION_RISKY_RULE_IDS,
@@ -74,14 +73,9 @@ const riskyRuleIdsRequiringNoisyValidProof = [
   "security.string-timer",
   "security.inner-html",
   "security.javascript-url",
-  "security.process-exec",
-  "security.proto-access",
   "security.weak-crypto",
   "sensitive-data.api-key-pattern",
-  "sensitive-data.high-entropy-string",
-  "test-quality.only-skip",
   "test-quality.static-analysis-redundant-test",
-  "waste.commented-out-code",
 ] as const;
 
 const riskyRuleQualityDoctrine = [
@@ -97,19 +91,6 @@ const riskyRuleQualityDoctrine = [
     missingInvalidFixture: "large scanner-relevant fixture remains reported when unrelated strings and documented fixtures are present",
     falsePositiveEscapeHatch: "scope to test/fixture-like files, require large source-like content or fixture setup signals, and accept purpose vocabulary or a substantive leading explanation with stacked // headers read as one comment",
     fingerprintStability: "anchor to the fixture declaration, helper call, or test invocation line rather than fixture body text",
-  },
-  {
-    ruleId: "docs.magic-threshold-without-rationale",
-    signalSource: "masked executable-line scan for named threshold constants and threshold() defaults",
-    expectedPillar: "documentation",
-    expectedSeverity: "advisory",
-    expectedConfidence: "medium",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "threshold-like numeric constant or config default without nearby rationale",
-    noisyValidFixture: "ordinary numeric literals, test assertions, strings, templates, and rationale-commented thresholds",
-    missingInvalidFixture: "unexplained threshold remains reported when explained thresholds are nearby",
-    falsePositiveEscapeHatch: "skip common safe values and test files, require threshold-like names or threshold() defaults",
-    fingerprintStability: "anchor to the numeric policy line and threshold label without including surrounding prose",
   },
   {
     ruleId: "docs.missing-error-behavior-doc",
@@ -155,7 +136,7 @@ const riskyRuleQualityDoctrine = [
     signalSource: "commented function metrics reused from existing size, cyclomatic, cognitive, and nesting thresholds",
     expectedPillar: "documentation",
     expectedSeverity: "advisory",
-    expectedConfidence: "medium",
+    expectedConfidence: "low",
     fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
     invalidFixture: "commented function over an existing complexity threshold without because/why/tradeoff context",
     noisyValidFixture: "simple commented functions and complex functions whose comments mention why, because, or tradeoffs",
@@ -164,24 +145,11 @@ const riskyRuleQualityDoctrine = [
     fingerprintStability: "anchor to the leading comment line plus function symbol",
   },
   {
-    ruleId: "docs.stale-comment",
-    signalSource: "comment-text scanner with declaration, rule, flag, and path cross-checks",
-    expectedPillar: "documentation",
-    expectedSeverity: "advisory",
-    expectedConfidence: "medium",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "comments naming missing files, unknown rule ids, stale flags, or the wrong declaration",
-    noisyValidFixture: "historical comments with legacy or migration context and valid file/rule/flag references",
-    missingInvalidFixture: "stale references still report when valid historical context appears nearby",
-    falsePositiveEscapeHatch: "skip explicitly historical context and only match narrow quoted paths and known rule prefixes",
-    fingerprintStability: "anchor to the comment line rather than the prose body so wording edits do not churn identity",
-  },
-  {
     ruleId: "docs.suppression-without-rationale",
     signalSource: "comment-text scanner over lint, formatter, coverage, and tool suppression markers",
     expectedPillar: "documentation",
     expectedSeverity: "advisory",
-    expectedConfidence: "medium",
+    expectedConfidence: "low",
     fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
     invalidFixture: "eslint, biome, oxlint, coverage, or prettier suppression without because/reason/tracking text",
     noisyValidFixture: "suppression markers with because, reason, false-positive, issue, ADR, or task context",
@@ -194,26 +162,13 @@ const riskyRuleQualityDoctrine = [
     signalSource: "comment-text scanner requiring issue, owner, date, ADR, milestone, or task tracking markers",
     expectedPillar: "documentation",
     expectedSeverity: "advisory",
-    expectedConfidence: "high",
+    expectedConfidence: "medium",
     fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
     invalidFixture: "TODO, FIXME, HACK, or XXX comment with no tracking context",
     noisyValidFixture: "marker words inside strings/templates/regexes, quoted or mid-sentence prose mentions, plus comments with explicit tracking markers",
     missingInvalidFixture: "untracked marker remains reported when tracked marker examples are present",
     falsePositiveEscapeHatch: "scan extracted comments only and accept bounded tracking patterns",
     fingerprintStability: "anchor to the marker comment line and keep raw TODO text out of the fingerprint",
-  },
-  {
-    ruleId: "docs.useless-docblock",
-    signalSource: "leading-comment scanner comparing normalized comment words with declaration names",
-    expectedPillar: "documentation",
-    expectedSeverity: "advisory",
-    expectedConfidence: "medium",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "JSDoc or line comment that only repeats the function or interface name",
-    noisyValidFixture: "comments that explain contract, side effects, invariants, fallback, or why context",
-    missingInvalidFixture: "restating comment remains reported beside useful context comments",
-    falsePositiveEscapeHatch: "skip comments with explicit maintainer-context marker phrases",
-    fingerprintStability: "anchor to the declaration comment line and symbol, not the full prose",
   },
   {
     ruleId: "security.eval-call",
@@ -295,32 +250,6 @@ const riskyRuleQualityDoctrine = [
   },
   ...SECURITY_EXPANSION_RULE_QUALITY_DOCTRINE,
   {
-    ruleId: "security.process-exec",
-    signalSource: "masked source executable-line scan with fixed test harness exemption",
-    expectedPillar: "security",
-    expectedSeverity: "warning",
-    expectedConfidence: "high",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "spawn, exec, or execFile called with runtime-controlled command input",
-    noisyValidFixture: "fixed local spawn or execFile command vectors inside test harness files",
-    missingInvalidFixture: "dynamic child-process calls remain reported when fixed harnesses are present",
-    falsePositiveEscapeHatch: "exempt only fixed local command vectors in test-like files",
-    fingerprintStability: "keep the child-process call line as the finding anchor",
-  },
-  {
-    ruleId: "security.proto-access",
-    signalSource: "masked executable-line and guarded raw bracket-property scans",
-    expectedPillar: "security",
-    expectedSeverity: "warning",
-    expectedConfidence: "medium",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "direct dot or bracket __proto__ property access",
-    noisyValidFixture: "__proto__ text inside comments and unrelated string literals",
-    missingInvalidFixture: "direct prototype access remains reported beside noisy strings",
-    falsePositiveEscapeHatch: "require a real property access token in code",
-    fingerprintStability: "keep the prototype access line as the finding anchor",
-  },
-  {
     ruleId: "security.weak-crypto",
     signalSource: "raw text scan anchored to executable crypto API tokens",
     expectedPillar: "security",
@@ -334,32 +263,6 @@ const riskyRuleQualityDoctrine = [
     fingerprintStability: "keep the weak crypto line as the finding anchor",
   },
   {
-    ruleId: "sensitive-data.high-entropy-string",
-    signalSource: "raw text literal scanner with redacted preview metadata",
-    expectedPillar: "sensitive-data",
-    expectedSeverity: "error",
-    expectedConfidence: "medium",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "secret-like high-entropy literal",
-    noisyValidFixture: "package integrity hash and obvious placeholder literals",
-    missingInvalidFixture: "secret-like literal remains reported with redacted output",
-    falsePositiveEscapeHatch: "allowlist known non-secret encodings before reporting",
-    fingerprintStability: "anchor to the literal line without including raw secret text",
-  },
-  {
-    ruleId: "test-quality.only-skip",
-    signalSource: "test block scan against masked executable body",
-    expectedPillar: "test-quality",
-    expectedSeverity: "advisory",
-    expectedConfidence: "high",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "focused or skipped test marker in executable test code",
-    noisyValidFixture: "focused/skipped marker text inside fixtures and documentation",
-    missingInvalidFixture: "focused or skipped test remains reported when noisy fixtures are present",
-    falsePositiveEscapeHatch: "run against masked test block source only",
-    fingerprintStability: "anchor to the test block start line",
-  },
-  {
     ruleId: "test-quality.static-analysis-redundant-test",
     signalSource: "test block assertion scan for direct typeof-function, self-instance, and visible non-null return assertions",
     expectedPillar: "test-quality",
@@ -371,19 +274,6 @@ const riskyRuleQualityDoctrine = [
     missingInvalidFixture: "shape-only assertion remains reported when behavioral assertions are present in the same test",
     falsePositiveEscapeHatch: "match only direct code-shape assertions and require visible local declarations for non-null return candidates",
     fingerprintStability: "anchor to the flagged assertion line and test block symbol so multiple candidates in one test stay distinct",
-  },
-  {
-    ruleId: "waste.commented-out-code",
-    signalSource: "raw line comment scanner",
-    expectedPillar: "maintainability",
-    expectedSeverity: "advisory",
-    expectedConfidence: "high",
-    fixtureCategories: RULE_QUALITY_FIXTURE_CATEGORIES,
-    invalidFixture: "single-line comment that starts with disabled source syntax",
-    noisyValidFixture: "ordinary prose comments that mention code tokens",
-    missingInvalidFixture: "disabled source line remains reported when prose comments are present",
-    falsePositiveEscapeHatch: "require the uncommented text to look like a statement, declaration, or call",
-    fingerprintStability: "anchor to the commented-out source line",
   },
 ] as const satisfies readonly RuleQualityDoctrineCase[];
 
@@ -415,9 +305,49 @@ test("documentation catalogue covers comment rule pack", () => {
 
 // Pins the public release count so adding or removing a user-visible rule requires an intentional
 // catalogue and documentation update instead of silently changing the published scanner surface.
-test("release catalogue contains exactly 120 rule descriptors", () => {
+test("release catalogue contains exactly 83 rule descriptors", () => {
   const currentRuleCount = ruleDescriptors().length;
   assert.equal(currentRuleCount, EXPECTED_RELEASE_RULE_COUNT);
+});
+
+// A rule a user is told to trust less than the others owes them the shapes it gets wrong. This is
+// the metadata floor: every medium- and low-confidence rule carries at least one reviewed shape,
+// and each entry names both the pattern and what to do about it.
+test("every medium and low confidence rule carries reviewed false-positive guidance", () => {
+  const unguided = ruleDescriptors()
+    .filter((descriptor) => descriptor.confidence !== "high")
+    .filter((descriptor) => (descriptor.falsePositiveShapes ?? []).length === 0)
+    .map((descriptor) => descriptor.ruleId);
+
+  assert.deepEqual(unguided, []);
+
+  // Reported as one list rather than asserted in a loop, so a failure names every offending rule
+  // at once instead of stopping at the first.
+  const blankEntries = ruleDescriptors()
+    .flatMap((descriptor) => (descriptor.falsePositiveShapes ?? []).map((entry) => ({ descriptor, entry })))
+    .filter(({ entry }) => entry.shape.trim().length === 0 || entry.mitigation.trim().length === 0)
+    .map(({ descriptor }) => descriptor.ruleId);
+
+  assert.deepEqual(blankEntries, []);
+});
+
+// Omission is the contract, not an accident. A high-confidence rule leaves the field off entirely
+// so an absent field reads as "no shape reviewed" rather than "reviewed and found none" - an empty
+// array would publish the second claim, which no one has made.
+test("high confidence rules omit falsePositiveShapes rather than publishing an empty array", () => {
+  const highConfidence = ruleDescriptors().filter((descriptor) => descriptor.confidence === "high");
+
+  // The 31 high-confidence rules are the complement of the 52 medium/low rules that carry guidance.
+  assert.equal(highConfidence.length, EXPECTED_RELEASE_RULE_COUNT - EXPECTED_GUIDED_RULE_COUNT);
+
+  const publishingShapes = highConfidence
+    .filter((descriptor) => descriptor.falsePositiveShapes !== undefined)
+    .map((descriptor) => descriptor.ruleId);
+  assert.deepEqual(publishingShapes, []);
+
+  const exported = JSON.parse(JSON.stringify(ruleDescriptors())) as Array<Record<string, unknown>>;
+  const emptyArrays = exported.filter((rule) => Array.isArray(rule["falsePositiveShapes"]) && (rule["falsePositiveShapes"] as unknown[]).length === 0);
+  assert.deepEqual(emptyArrays, []);
 });
 
 test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
@@ -443,19 +373,44 @@ test("rule descriptors cover emitted rules and fixture-backed coverage", () => {
   });
 });
 
-test("rule descriptors surface escape-hatch knobs in remediation prose", () => {
-  // M06 contract: every rule that carries a tunable knob (threshold, optionKeys, allowlistKeys)
-  // must point at it from `remediation` so consumers can find the config override without grepping
-  // the source. Threshold rules cite `rules.<ruleId>.threshold`; optionKeys rules name every key
-  // verbatim; allowlistKeys rules cite the `allowlists.<key>` path. Pre-filtering by descriptor
-  // shape avoids in-loop conditionals so the assertion runs as a deterministic table check.
+// The M11 advice table found these pattern-check findings carried no advice of their own; each now carries its rule's remediation.
+const PATTERN_CHECK_RULE_IDS = [
+  "modernisation.date-now-candidate",
+  "modernisation.object-spread-candidate",
+  "modernisation.var-declaration",
+  "security.disabled-tls-verification",
+  "security.document-write",
+  "security.eval-call",
+  "security.inner-html",
+  "security.javascript-url",
+  "security.new-function",
+  "security.sql-concatenation",
+  "security.weak-crypto",
+  "waste.any-type",
+];
+
+test("pattern-check findings carry their catalogue remediation", () => {
+  const remediation = new Map(ruleDescriptors().map((descriptor) => [descriptor.ruleId, descriptor.remediation]));
+  const findings = ruleCatalogueCoverageFindings().filter((finding) => PATTERN_CHECK_RULE_IDS.includes(finding.ruleId));
+
+  assert.deepEqual([...new Set(findings.map((finding) => finding.ruleId))].sort(), PATTERN_CHECK_RULE_IDS);
+  for (const finding of findings) {
+    assert.equal(finding.remediation, remediation.get(finding.ruleId), finding.ruleId);
+  }
+});
+
+test("rule descriptors keep limit knobs out of remediation and allowlist knobs in it", () => {
+  // FAMILY-CONTRACT.md section 15 (search `Config hints in advice`): no advice offers raising a limit, and allowlist
+  // hints on naming rules stay. A threshold or option key is a limit, so it lives in docs/rules.md and the catalogue's
+  // false-positive mitigations; an allowlist key is not, so its `allowlists.<key>` path stays in the remediation.
+  // Pre-filtering by descriptor shape avoids in-loop conditionals so the assertion runs as a deterministic table check.
   const descriptors = ruleDescriptors();
   descriptors.filter((descriptor) => typeof descriptor.threshold === "number").forEach((descriptor) => {
-    assert.match(descriptor.remediation, /rules\./, `${descriptor.ruleId} remediation missing rules.<id> reference`);
+    assert.doesNotMatch(descriptor.remediation, /rules\.|threshold/, `${descriptor.ruleId} remediation offers its limit`);
   });
   descriptors.filter((descriptor) => descriptor.optionKeys !== undefined).forEach((descriptor) => {
     (descriptor.optionKeys ?? []).forEach((optionKey) => {
-      assert.match(descriptor.remediation, new RegExp(`\\b${optionKey}\\b`), `${descriptor.ruleId} remediation missing optionKey ${optionKey}`);
+      assert.doesNotMatch(descriptor.remediation, new RegExp(`\\b${optionKey}\\b`), `${descriptor.ruleId} remediation offers option ${optionKey}`);
     });
   });
   descriptors.filter((descriptor) => descriptor.allowlistKeys !== undefined).forEach((descriptor) => {
@@ -495,9 +450,9 @@ interface RiskyRuleDoctrineCheck {
   categoryVocabulary: readonly string[];
 }
 
-// Verifies that a single doctrine entry matches its descriptor and that every fixture-category
-// field is non-terse. Factored out so the test body avoids an inline branch; the descriptor-to-
-// entry mapping must stay stable so doctrine drift is caught even when entries are added.
+// Check the stable catalogue contract for the rule selected by check using its descriptor, doctrine, exception list, and fixture vocabulary.
+// Returns nothing. Fails if the descriptor or doctrine is missing, an exception exists, or pillar, severity, confidence, or vocabulary differ.
+// Each checked doctrine explanation must exceed 20 characters.
 function assertRiskyRuleDoctrineEntry(check: RiskyRuleDoctrineCheck): void {
   const { ruleId, descriptors, doctrine, exceptions, categoryVocabulary } = check;
   const descriptor = descriptors.get(ruleId);
@@ -533,11 +488,9 @@ test("rule descriptor thresholds and options match implementation and config def
   assert.deepEqual(descriptorThresholds, implementationThresholds);
   assert.deepEqual(descriptorOptions, optionUsages(implementationSources));
 
-  // The shipped `.gruff-ts.yaml` selects `profile: recommended`, so it carries no explicit per-rule
-  // thresholds that could drift from the descriptor. Assert the loaded config enables every
-  // threshold-owning rule and leaves its threshold and severity at the descriptor default - a real
-  // override in the repo config would surface here. recommended == descriptor defaults is itself
-  // proven by the parity test in profiles.test.ts.
+  // The shipped `.gruff-ts.yaml` writes an explicit block for every rule. Assert the loaded config enables every
+  // threshold-owning rule and leaves its threshold and its severity at the descriptor default, so a drifted value in
+  // the repo config surfaces here rather than silently changing gruff-ts's own scan.
   const config = loadConfig(cwd(), repoScanOptions());
   descriptors.filter((entry) => typeof entry.threshold === "number").forEach((descriptor) => {
     assert.equal(ruleEnabled(config, descriptor.ruleId), true, `repo config disables ${descriptor.ruleId}`);
@@ -546,7 +499,8 @@ test("rule descriptor thresholds and options match implementation and config def
   });
 });
 
-// Preserves the descriptor/default invariant by extracting threshold(config, ruleId, default) calls.
+// Scan source text for threshold(config, ...) or threshold(owner.config, ...) with a double-quoted rule ID and decimal default.
+// Return a deterministic map by rule ID. The last match supplies each rule's default, and no matches yield an empty map.
 function thresholdUsages(source: string): Map<string, number> {
   const usages = new Map<string, number>();
   for (const match of source.matchAll(/threshold\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*(-?\d+(?:\.\d+)?)\)/g)) {
@@ -557,10 +511,11 @@ function thresholdUsages(source: string): Map<string, number> {
   return new Map([...usages.entries()].sort(([left], [right]) => left.localeCompare(right)));
 }
 
-// Preserves the descriptor/options invariant by extracting optionNumber(config, ruleId, key) calls.
+// Scan source text for optionNumber or optionBoolean calls with config or owner.config and double-quoted rule IDs and keys.
+// Return a deterministic map of rule IDs to sorted, unique keys for the descriptor comparison. No matches give an empty map.
 function optionUsages(source: string): Map<string, string[]> {
   const usages = new Map<string, Set<string>>();
-  for (const match of source.matchAll(/optionNumber\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)"/g)) {
+  for (const match of source.matchAll(/option(?:Number|Boolean)\((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?config,\s*"([^"]+)",\s*"([^"]+)"/g)) {
     const ruleId = match[1] ?? "";
     const key = match[2] ?? "";
     usages.set(ruleId, usages.get(ruleId) ?? new Set<string>());

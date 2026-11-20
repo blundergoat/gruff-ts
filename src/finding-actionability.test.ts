@@ -9,13 +9,22 @@ import { scoreReport } from "./scoring.ts";
 import { analyseFixture } from "./test-fixtures.ts";
 import type { Finding } from "./types.ts";
 
-// Filters one scan down to a single rule so every case reads as fixture + expectation.
+// Scans source as fileName and returns only findings for ruleId, or an empty array when none match.
+// Missing or empty fileName selects bad.ts; scanning creates and removes a temporary project and restores the working directory.
 function ruleFindings(source: string, ruleId: string, fileName?: string) {
   const report = analyseFixture(source, fileName ? { fileName } : {});
   return report.findings.filter((entry) => entry.ruleId === ruleId);
 }
 
-// Minimal real finding for direct scoring-math tests; distinct lines keep each fingerprint unique.
+// Scans source in a temporary project with ruleId explicitly enabled, then returns only that rule's findings.
+// Creates and removes fixture files and restores the working directory; returns an empty array when the rule reports nothing.
+function enabledRuleFindings(source: string, ruleId: string) {
+  const report = analyseFixture(source, { config: { rules: { [ruleId]: { enabled: true } } } });
+  return report.findings.filter((entry) => entry.ruleId === ruleId);
+}
+
+// Builds a finding for scoring tests; ruleId, pillar and severity set its classification, and line distinguishes its fingerprint.
+// Returns a medium-confidence finding for src/sample.ts with a generated message.
 function scoredFinding(ruleId: string, pillar: Finding["pillar"], severity: Finding["severity"], line: number): Finding {
   return makeFinding({ ruleId, message: `${ruleId} fired.`, filePath: "src/sample.ts", line, severity, pillar, confidence: "medium" });
 }
@@ -29,10 +38,17 @@ test("composite counts clean pillars as perfect instead of dropping them", () =>
   const score = scoreReport([
     scoredFinding("docs.missing-file-overview", "documentation", "advisory", 1),
     scoredFinding("security.process-exec", "security", "warning", 2),
-  ]);
-  const documentationScore = 100 - 1.5;
-  const securityScore = 100 - 4;
-  assert.equal(score.composite, (documentationScore + securityScore + 100 * (pillarUniverseCount - 2)) / pillarUniverseCount);
+  ], 10);
+  // Both findings are medium confidence, which now weighs 0.75x: gruff-ts had no confidence
+  // dimension before M06, so a low-confidence heuristic used to weigh exactly as much as a certain
+  // defect. Over ten evaluated files documentation weighs 0.75 (density 0.075, score 78.57) and
+  // security 3.00 (density 0.30, score 62.50).
+  const documentationScore = 78.57;
+  const securityScore = 62.5;
+  const expectedComposite = (documentationScore + securityScore + 100 * (pillarUniverseCount - 2)) / pillarUniverseCount;
+  assert.equal(score.composite, Math.round(expectedComposite * 100) / 100);
+  assert.equal(score.pillars.find((pillar) => pillar.pillar === "documentation")?.score, documentationScore);
+  assert.equal(score.pillars.find((pillar) => pillar.pillar === "security")?.score, securityScore);
 });
 
 test("removing any single finding never decreases the composite", () => {
@@ -43,10 +59,10 @@ test("removing any single finding never decreases the composite", () => {
     scoredFinding("security.eval-usage", "security", "error", 3),
     scoredFinding("size.file-length", "size", "warning", 4),
   ];
-  const fullComposite = scoreReport(findings).composite;
+  const fullComposite = scoreReport(findings, 10).composite;
   findings.forEach((_finding, index) => {
-    const reducedComposite = scoreReport(findings.filter((_entry, entryIndex) => entryIndex !== index)).composite;
-    assert.equal(reducedComposite >= fullComposite, true, `removing finding ${index} lowered the composite`);
+    const reducedComposite = scoreReport(findings.filter((_entry, entryIndex) => entryIndex !== index), 10).composite;
+    assert.equal((reducedComposite ?? 0) >= (fullComposite ?? 0), true, `removing finding ${index} lowered the composite`);
   });
 });
 
@@ -241,10 +257,9 @@ test("fixture-purpose-missing is cleared by the remediation vocabulary above the
   assert.deepEqual(findings, []);
 });
 
-// Matrix fixtures for the comment-style coupling report: a JSDoc block and an equivalent // run
-// above the same declaration must trigger the same context-doc rules. The docblock tag pack
-// (missing-param-tag / missing-return-tag) is the one deliberate asymmetry, pinned further down,
-// because // comments cannot carry @param or @returns tags at all.
+// Builds JSDoc and line comment fixture sources from jsdocLines, placing each header directly above body.
+// Returns jsdoc and lineRun with trailing newlines so tests can compare both styles, including tag findings expected only for JSDoc.
+// Empty jsdocLines produces an empty JSDoc block and no line comment header.
 function commentStyleVariants(jsdocLines: string[], body: string): { jsdoc: string; lineRun: string } {
   return {
     jsdoc: ["/**", ...jsdocLines.map((line) => ` * ${line}`), " */", body, ""].join("\n"),
@@ -257,13 +272,54 @@ test("missing-side-effect-doc treats JSDoc and // runs identically", () => {
   writeFileSync(path, "{}");
 }`;
   const silentComment = commentStyleVariants(["Stores the run marker for later comparison."], sideEffectBody);
-  assert.equal(ruleFindings(silentComment.jsdoc, "docs.missing-side-effect-doc").length, 1);
-  assert.equal(ruleFindings(silentComment.lineRun, "docs.missing-side-effect-doc").length, 1);
+  assert.equal(enabledRuleFindings(silentComment.jsdoc, "docs.missing-side-effect-doc").length, 1);
+  assert.equal(enabledRuleFindings(silentComment.lineRun, "docs.missing-side-effect-doc").length, 1);
 
   // The 0.4.0 trap: side-effect vocabulary on the FIRST line of a two-line comment must count.
   const documentedComment = commentStyleVariants(["Writes the run marker to disk so a later", "comparison can read it back."], sideEffectBody);
-  assert.deepEqual(ruleFindings(documentedComment.jsdoc, "docs.missing-side-effect-doc"), []);
-  assert.deepEqual(ruleFindings(documentedComment.lineRun, "docs.missing-side-effect-doc"), []);
+  assert.deepEqual(enabledRuleFindings(documentedComment.jsdoc, "docs.missing-side-effect-doc"), []);
+  assert.deepEqual(enabledRuleFindings(documentedComment.lineRun, "docs.missing-side-effect-doc"), []);
+});
+
+// M22 brief shape (`parseUnderline`, 13 of 13 on the reporting repository): a regular expression's `.exec` is a
+// member call, not process execution. A bare `exec(cmd)`, a child-process module call and `execFileSync(cmd)` still
+// report, and a locally declared function named `spawn` stays a residual this receiver guard cannot see. The receiver
+// contract: a bare call or a call on a child-process module counts as execution, and any other member call does not.
+test("missing-side-effect-doc does not read a regular expression's exec as process execution", () => {
+  const pure = [
+    "/** Overview: repro for docs.missing-side-effect-doc on pure functions. */",
+    "",
+    "/** Parse a setext underline into its heading level. */",
+    "export function parseUnderline(line: string): number | null {",
+    "  const underline = /^ {0,3}(=+|-+)[\\t ]*$/.exec(line)?.[1];",
+    "  if (!underline) return null;",
+    "  return underline.startsWith(\"=\") ? 1 : 2;",
+    "}",
+    "",
+  ].join("\n");
+  assert.deepEqual(enabledRuleFindings(pure, "docs.missing-side-effect-doc"), []);
+
+  const executing = [
+    "import { exec, execFileSync } from \"node:child_process\";",
+    "import * as cp from \"node:child_process\";",
+    "",
+    "/** Runs the configured build step. */",
+    "export function runBuild(command: string): void {",
+    "  exec(command);",
+    "}",
+    "",
+    "/** Runs the configured lint step. */",
+    "export function runLint(command: string): void {",
+    "  cp.execSync(command);",
+    "}",
+    "",
+    "/** Runs the configured test step. */",
+    "export function runTests(command: string): Buffer {",
+    "  return execFileSync(command);",
+    "}",
+    "",
+  ].join("\n");
+  assert.deepEqual(enabledRuleFindings(executing, "docs.missing-side-effect-doc").map((finding) => finding.symbol), ["runBuild", "runLint", "runTests"]);
 });
 
 test("missing-error-behavior-doc treats JSDoc and // runs identically", () => {
@@ -277,7 +333,7 @@ test("missing-error-behavior-doc treats JSDoc and // runs identically", () => {
   assert.equal(ruleFindings(silentComment.jsdoc, "docs.missing-error-behavior-doc").length, 1);
   assert.equal(ruleFindings(silentComment.lineRun, "docs.missing-error-behavior-doc").length, 1);
 
-  const documentedComment = commentStyleVariants(["Throws when the payload is empty, otherwise", "returns it unchanged."], throwingBody);
+  const documentedComment = commentStyleVariants(["Returns the payload unchanged.", "@throws Error when the payload is empty."], throwingBody);
   assert.deepEqual(ruleFindings(documentedComment.jsdoc, "docs.missing-error-behavior-doc"), []);
   assert.deepEqual(ruleFindings(documentedComment.lineRun, "docs.missing-error-behavior-doc"), []);
 });
@@ -301,64 +357,6 @@ test("docblock tag rules stay a deliberate JSDoc-only asymmetry", () => {
   assert.equal(ruleFindings(variants.jsdoc, "docs.missing-return-tag").length, 1);
   assert.deepEqual(ruleFindings(variants.lineRun, "docs.missing-param-tag"), []);
   assert.deepEqual(ruleFindings(variants.lineRun, "docs.missing-return-tag"), []);
-});
-
-test("acronym-case allows SCREAMING constants beside camelCase identifiers", () => {
-  // Covers the idiomatic-mix regression: convention-forced casings carry no drift signal.
-  const findings = ruleFindings(`const RAW_HTML_BLOCK_TAGS = /^(?:div|p|ul|table)$/iu;
-
-export function startsHtmlBlock(line: string): boolean {
-  if (line.trim().length === 0) return false;
-  const inHtmlComment = line.startsWith("<!--");
-  if (inHtmlComment) return false;
-  return RAW_HTML_BLOCK_TAGS.test(line.replace(/[<>/]/gu, "").trim());
-}
-`, "naming.acronym-case");
-  assert.deepEqual(findings, []);
-});
-
-test("acronym-case stays quiet when every acronym casing is convention-forced", () => {
-  // Covers the forced-surfaces case: a screaming constant beside a lower_snake name is two conventions.
-  const findings = ruleFindings(`const RAW_HTML_TAGS = "div";
-const parse_html = "p";
-console.log(RAW_HTML_TAGS, parse_html);
-`, "naming.acronym-case");
-  assert.deepEqual(findings, []);
-});
-
-test("acronym-case still fires on chosen-case drift within camel and Pascal names", () => {
-  // Covers detection preservation: the author chose Html once and HTML once in the same file.
-  const findings = ruleFindings(`const parsedHtml = "a";
-const rawHTML = "b";
-console.log(parsedHtml, rawHTML);
-`, "naming.acronym-case");
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0]?.symbol, "rawHTML");
-  assert.deepEqual(findings[0]?.metadata.variants, ["title", "upper"]);
-});
-
-test("delimited casing twins are not an acronym-case concern", () => {
-  // Covers the report's HTML_TAGS/HTML_Tags example: the acronym HTML is upper in BOTH names, so
-  // there is no acronym drift to report. The TAGS/Tags drift is general casing drift; the
-  // inconsistent-casing rule boundary-filters SCREAMING constants (a 0.5.0 decision protecting
-  // DTO-versus-constant pairs), so this half-screaming twin is deliberately quiet there too.
-  const source = `const HTML_TAGS = "a";
-const HTML_Tags = "b";
-console.log(HTML_TAGS, HTML_Tags);
-`;
-  assert.deepEqual(ruleFindings(source, "naming.acronym-case"), []);
-  assert.deepEqual(ruleFindings(source, "naming.inconsistent-casing"), []);
-});
-
-test("magic-threshold rationale on an earlier line of a stacked // run counts", () => {
-  // Covers the stacked-header contract shared with fixture-purpose: rationale vocabulary on the
-  // first line of a // run must clear the threshold finding.
-  const findings = ruleFindings(`// This retry ceiling is tuned for flaky-network reruns, because three
-// attempts cover the recovery cases we have observed.
-const MAX_RETRY_CAP = 3;
-export const usesCap = MAX_RETRY_CAP;
-`, "docs.magic-threshold-without-rationale");
-  assert.deepEqual(findings, []);
 });
 
 test("loop-in-test lets labeled data-driven loops opt out", () => {
@@ -422,4 +420,57 @@ test("fixture-purpose-missing still fires on undocumented and trivially commente
 
   const trivialFindings = ruleFindings(`// setup data\nconst routeSweepFixture = \`\n${lines}\n\`;\n`, "docs.fixture-purpose-missing", "routes.test.ts");
   assert.equal(trivialFindings.length, 1);
+});
+
+// Fixture for the missing-doc message built from the signature (M13-T29, operator decision D3).
+const SIGNATURE_MESSAGE_SOURCE = `export function joinChecked(left: string, right: string): string {
+  if (left === "") {
+    throw new Error("empty");
+  }
+  return left + right;
+}
+
+export function logPair(this: unknown, label: string, { value }: { value: number }): void {
+  console.log(label, value);
+}
+
+function countInferred(items: string[]) {
+  return items.length;
+}
+
+export async function flushAll(): Promise<void> {
+  await Promise.resolve();
+}
+
+function resetState() {
+  return;
+}
+`;
+
+// Scans SIGNATURE_MESSAGE_SOURCE in a temporary project and returns missing function-documentation messages keyed by symbol.
+// Creates and removes fixture files and restores the working directory; missing symbols use undefined and later duplicate keys win.
+function signatureMessages(): Map<string | undefined, string> {
+  const missingDocRules = new Set(["docs.missing-exported-function-doc", "docs.missing-internal-function-doc"]);
+  const findings = analyseFixture(SIGNATURE_MESSAGE_SOURCE).findings.filter((entry) => missingDocRules.has(entry.ruleId));
+  return new Map(findings.map((entry) => [entry.symbol, entry.message]));
+}
+
+test("the missing-doc message names each parameter and asks for the return value and errors when the callable has them", () => {
+  const expected = "Exported function `joinChecked` is missing a leading maintainer comment; describe parameters `left`, `right`; describe the return value; say when it throws.";
+  assert.equal(signatureMessages().get("joinChecked"), expected);
+});
+
+test("the missing-doc message skips this and destructured parameters and asks no return value of a void callable", () => {
+  assert.equal(signatureMessages().get("logPair"), "Exported function `logPair` is missing a leading maintainer comment; describe parameter `label`.");
+});
+
+test("the missing-doc message reads an unannotated return value from the body and keeps the internal wording", () => {
+  const expected = "Internal function `countInferred` is missing a leading maintainer comment; describe parameter `items`; describe the return value.";
+  assert.equal(signatureMessages().get("countInferred"), expected);
+});
+
+test("the missing-doc message stays plain when the signature has no parameter, value or error to describe", () => {
+  const messages = signatureMessages();
+  assert.equal(messages.get("flushAll"), "Exported function `flushAll` is missing a leading maintainer comment.");
+  assert.equal(messages.get("resetState"), "Internal function `resetState` is missing a leading maintainer comment.");
 });

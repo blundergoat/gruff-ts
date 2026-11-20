@@ -26,8 +26,8 @@ interface CommentScanState {
 
 type CommentScanHandler = (source: string, index: number, state: CommentScanState, records: CommentRecord[]) => number | undefined;
 
-// Source-text comment lexer. Produces the stable list of CommentRecords every documentation rule
-// consumes. Walks the file once via the prioritised handler chain (`COMMENT_SCAN_HANDLERS`).
+// Scans a file's source text and returns comment records in source order for checks that inspect comment text and locations.
+// The result is empty when the lexer recognises no source comments.
 export function commentRecords(source: string): CommentRecord[] {
   const records: CommentRecord[] = [];
   const state = initialCommentScanState();
@@ -48,7 +48,15 @@ const COMMENT_SCAN_HANDLERS: CommentScanHandler[] = [
   scanRegexStartStep,
 ];
 
-/** Runs the first lexer step that can consume the current source character. */
+/**
+ * Runs the first lexer step that can consume the current source character.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the current character in `source`
+ * @param state - lexer state, updated by whichever step runs; an unconsumed non-whitespace character becomes `previousCode`
+ * @param records - comment records found so far; the comment step appends to it
+ * @returns index of the last consumed character, after which `commentRecords` resumes; `index` when no step consumed the character
+ */
 function advanceCommentRecordScan(source: string, index: number, state: CommentScanState, records: CommentRecord[]): number {
   for (const handler of COMMENT_SCAN_HANDLERS) {
     const nextIndex = handler(source, index, state, records);
@@ -60,7 +68,11 @@ function advanceCommentRecordScan(source: string, index: number, state: CommentS
   return index;
 }
 
-/** Creates a fresh comment lexer state for a single source file scan. */
+/**
+ * Creates a fresh comment lexer state for a single source file scan.
+ *
+ * @returns state at line 1 with no open string, template or regex and no previous code character
+ */
 function initialCommentScanState(): CommentScanState {
   return {
     quote: undefined,
@@ -73,7 +85,14 @@ function initialCommentScanState(): CommentScanState {
   };
 }
 
-/** Consumes newlines and resets quote/regex state that cannot cross lines. */
+/**
+ * Consumes newlines and resets quote/regex state that cannot cross lines.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the current character
+ * @param state - lexer state; on a newline its line count advances, a non-template quote closes and regex state clears
+ * @returns `index` when the character is a newline, or undefined to pass it to the next step
+ */
 function scanCommentLineBreak(source: string, index: number, state: CommentScanState): number | undefined {
   if ((source[index] ?? "") !== "\n") {
     return undefined;
@@ -82,7 +101,12 @@ function scanCommentLineBreak(source: string, index: number, state: CommentScanS
   return index;
 }
 
-/** Advances the lexer after a newline has been consumed. */
+/**
+ * Advances the lexer after a newline has been consumed.
+ *
+ * @param state - lexer state to update: the line count goes up by one, any quote except a template backtick closes, and the regex flags clear
+ * @returns Nothing. Updates the lexer state in place for the next line.
+ */
 function advanceCommentScanLine(state: CommentScanState): void {
   state.line += 1;
   if (state.quote !== "`") {
@@ -93,12 +117,25 @@ function advanceCommentScanLine(state: CommentScanState): void {
   state.isRegexCharClass = false;
 }
 
-/** Keeps quoted text from being reported as a real source comment. */
+/**
+ * Keeps quoted text from being reported as a real source comment.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the current character
+ * @param state - lexer state; inside a string or template, the character updates its quote and escape flags
+ * @returns `index` when the lexer is inside a string or template, so the character is neither code nor a comment; otherwise undefined
+ */
 function scanQuotedCommentStep(source: string, index: number, state: CommentScanState): number | undefined {
   return scanActiveQuotedCommentState(state, source[index] ?? "") ? index : undefined;
 }
 
-/** Updates quote escape/close state when the lexer is inside a string. */
+/**
+ * Updates quote escape/close state when the lexer is inside a string.
+ *
+ * @param state - lexer state whose quote and escape flags change: a backslash escapes the next character, an unescaped closing quote ends the string
+ * @param character - the current source character
+ * @returns true when a quote was open, so the character belongs to the string; false when none was open
+ */
 function scanActiveQuotedCommentState(state: CommentScanState, character: string): boolean {
   if (!state.quote) {
     return false;
@@ -109,12 +146,25 @@ function scanActiveQuotedCommentState(state: CommentScanState, character: string
   return true;
 }
 
-/** Keeps regex literal bodies from being reported as real source comments. */
+/**
+ * Keeps regex literal bodies from being reported as real source comments.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the current character
+ * @param state - lexer state; inside a regex literal, the character updates its escape, character-class and close flags
+ * @returns `index` when the lexer is inside a regex literal, otherwise undefined
+ */
 function scanRegexCommentStep(source: string, index: number, state: CommentScanState): number | undefined {
   return scanActiveRegexCommentState(state, source[index] ?? "") ? index : undefined;
 }
 
-/** Updates regex escape, character-class, and close state. */
+/**
+ * Updates regex escape, character-class, and close state.
+ *
+ * @param state - lexer state whose regex flags change: an unescaped `/` outside a character class ends the literal
+ * @param character - the current source character
+ * @returns true when a regex literal was open, so the character belongs to it; false when none was open
+ */
 function scanActiveRegexCommentState(state: CommentScanState, character: string): boolean {
   if (!state.isRegex) {
     return false;
@@ -126,7 +176,15 @@ function scanActiveRegexCommentState(state: CommentScanState, character: string)
   return true;
 }
 
-/** Records a line or block comment and returns the consumed source index. */
+/**
+ * Records a line or block comment and returns the consumed source index.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the current character, a possible `//` or `/*` start
+ * @param state - lexer state; its line moves to the comment's last line
+ * @param records - comment records found so far; a comment starting here is appended
+ * @returns index of the comment's last character, or undefined when none starts here; a line comment stops before its newline for the line count
+ */
 function scanCommentRecordStep(source: string, index: number, state: CommentScanState, records: CommentRecord[]): number | undefined {
   const record = commentRecordAt(source, index, state.line);
   if (!record) {
@@ -137,7 +195,14 @@ function scanCommentRecordStep(source: string, index: number, state: CommentScan
   return record.kind === "line" ? record.endIndex - 1 : record.endIndex;
 }
 
-/** Detects whether the current slash pair begins a source comment. */
+/**
+ * Detects whether the current slash pair begins a source comment.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the possible `//` or `/*` start
+ * @param line - one-based line number of `index`, stored as the record's first line
+ * @returns a line or block comment record starting at `index`, or undefined when the two characters there are neither `//` nor `/*`
+ */
 function commentRecordAt(source: string, index: number, line: number): CommentRecord | undefined {
   const character = source[index] ?? "";
   const next = source[index + 1] ?? "";
@@ -150,12 +215,25 @@ function commentRecordAt(source: string, index: number, line: number): CommentRe
   return undefined;
 }
 
-/** Opens string/template quote state when the current character starts a literal. */
+/**
+ * Opens string/template quote state when the current character starts a literal.
+ *
+ * @param source - the whole file text being scanned
+ * @param index - position of the current character
+ * @param state - lexer state that records an opener as both the open quote and previous code character and clears the escape flag
+ * @returns the current index when a quote opens, otherwise undefined with lexer state unchanged
+ */
 function scanQuoteStartStep(source: string, index: number, state: CommentScanState): number | undefined {
   return openCommentScanQuote(state, source[index] ?? "") ? index : undefined;
 }
 
-/** Mutates quote state after a quote-start character is found. */
+/**
+ * Mutates quote state after a quote-start character is found.
+ *
+ * @param state - lexer state; a quote character becomes its open quote and `previousCode`, with the escape flag cleared
+ * @param character - the current source character
+ * @returns true when the character opened a string or template; false for any other character, leaving the state unchanged
+ */
 function openCommentScanQuote(state: CommentScanState, character: string): boolean {
   if (character !== "\"" && character !== "'" && character !== "`") {
     return false;
@@ -166,12 +244,27 @@ function openCommentScanQuote(state: CommentScanState, character: string): boole
   return true;
 }
 
-/** Opens regex state for slash tokens that follow expression-start syntax. */
+/**
+ * Opens regex state for a slash that the lexer treats as the start of a literal, including when it has seen no code yet.
+ *
+ * @param source - file text supplying the current character and up to 40 preceding characters to check for return
+ * @param index - position of the current character
+ * @param state - lexer state to update on a match. Opens the regex, clears its escape and class flags and records the slash as previous code
+ * @returns index on a regex start, or undefined with lexer state unchanged when the character does not open a regex
+ */
 function scanRegexStartStep(source: string, index: number, state: CommentScanState): number | undefined {
   return openCommentScanRegex(state, source, index, source[index] ?? "") ? index : undefined;
 }
 
-/** Mutates regex state after a regex literal start is found. */
+/**
+ * Mutates regex state after a regex literal start is found.
+ *
+ * @param state - lexer state; a regex start sets the regex flag, clears its escape and character-class flags and makes `/` the previous code
+ * @param source - the whole file text; up to 40 characters before `index` are checked for a preceding `return`
+ * @param index - position of the current character
+ * @param character - the current source character
+ * @returns true when the character is a `/` that `isCommentRegexStart` accepts as a regex start; false otherwise, leaving the state unchanged
+ */
 function openCommentScanRegex(state: CommentScanState, source: string, index: number, character: string): boolean {
   if (character !== "/" || !isCommentRegexStart(state.previousCode, source.slice(Math.max(0, index - 40), index))) {
     return false;
@@ -183,15 +276,22 @@ function openCommentScanRegex(state: CommentScanState, source: string, index: nu
   return true;
 }
 
-/** Remembers the last non-whitespace code token for regex/comment disambiguation. */
+/**
+ * Remembers the last non-whitespace code character for regex/comment disambiguation.
+ *
+ * @param state - lexer state whose previousCode becomes character unless it is whitespace
+ * @param character - the source character no other lexer step consumed
+ * @returns Nothing. Records the character in the supplied lexer state when it contains non-whitespace.
+ */
 function updateCommentScanPreviousCode(state: CommentScanState, character: string): void {
   if (/\S/.test(character)) {
     state.previousCode = character;
   }
 }
 
-// Pure function returning the next quote state. Pure because callers thread the state explicitly,
-// which keeps the comment-lexer testable in isolation from the surrounding mutation.
+// Computes the next quote and escape flags for one character inside a string or template.
+// The quote is the opening delimiter, and the incoming escape flag says whether the current character is escaped.
+// An unescaped matching delimiter yields an undefined quote, so the caller resumes scanning outside the literal.
 function scanQuotedCommentCharacter(character: string, quote: string, isEscaped: boolean): { quote: string | undefined; isEscaped: boolean } {
   if (isEscaped) {
     return { quote, isEscaped: false };
@@ -205,7 +305,8 @@ function scanQuotedCommentCharacter(character: string, quote: string, isEscaped:
   return { quote, isEscaped: false };
 }
 
-// Pure step that yields the next regex state. Same isolation pattern as `scanQuotedCommentCharacter`.
+// Computes the next regex state from the current character, whether it is escaped, and whether it is in a character class.
+// Returns the open, escape, and character-class flags. An unescaped slash outside a class closes the regex.
 function scanRegexCommentCharacter(character: string, isEscaped: boolean, isCharClass: boolean): { isRegex: boolean; isEscaped: boolean; isCharClass: boolean } {
   if (isEscaped) {
     return { isRegex: true, isEscaped: false, isCharClass };
@@ -225,14 +326,15 @@ function scanRegexCommentCharacter(character: string, isEscaped: boolean, isChar
   return { isRegex: true, isEscaped: false, isCharClass };
 }
 
-// Same regex-vs-division heuristic as `source-text.ts:isRegexLiteralStart`. Duplicated here so the
-// comment lexer stays a leaf with no cross-module dependency on the masking pass.
+// Returns whether to open a regex literal using the last code character and the available source text before the slash.
+// With no previous code character, the lexer treats the slash as a regex start.
+// This mirrors the masking pass and keeps the comment lexer independent of it.
 function isCommentRegexStart(previousCode: string, beforeSlash: string): boolean {
   return previousCode === "" || "([{=,:!&|?;".includes(previousCode) || /\breturn$/.test(beforeSlash.trimEnd());
 }
 
-// Line-comment record. `line === endLine` because line comments cannot span newlines. Text is
-// captured trimmed so leading/trailing whitespace doesn't enter rule comparisons.
+// Builds a record for the line comment at the opener offset in the source, using the supplied one-based line number for both line bounds.
+// Trims the body for rule comparisons. The exclusive end offset is the newline's index or the source length if there is no newline.
 function lineCommentRecord(source: string, startIndex: number, line: number): CommentRecord {
   const newline = source.indexOf("\n", startIndex + 2);
   const endIndex = newline === -1 ? source.length : newline;
@@ -246,8 +348,9 @@ function lineCommentRecord(source: string, startIndex: number, line: number): Co
   };
 }
 
-// Block-comment record. `endLine > line` is normal for multi-line blocks. `text` is normalised
-// (leading-asterisk decoration stripped) so JSDoc-style and plain-block comments compare equally.
+// Builds a record for the block comment at the opener offset in the source, using the supplied one-based line number.
+// The text drops leading asterisks so the same prose compares equally in JSDoc and plain blocks.
+// The end index points to the closer's last character, or the final source character when no closer is found.
 function blockCommentRecord(source: string, startIndex: number, line: number): CommentRecord {
   let endIndex = source.length - 1;
   let endLine = line;
@@ -270,8 +373,8 @@ function blockCommentRecord(source: string, startIndex: number, line: number): C
   };
 }
 
-// Strips the `* ` JSDoc-style line decoration so `/** foo */`, `/* foo */`, and `// foo` all
-// produce the same `text` payload for rule comparison.
+// Returns comparison text from a delimiter-free block comment body by removing leading asterisks and joining nonblank lines.
+// A body containing only decoration and whitespace yields an empty string.
 function normalizedBlockCommentText(text: string): string {
   return text
     .split(/\r?\n/)
@@ -281,9 +384,9 @@ function normalizedBlockCommentText(text: string): string {
     .trim();
 }
 
-// Reads a contiguous `//` run as one maintainer comment while keeping the final record's anchor.
-// Rules that accept a leading comment use this so a purpose or context statement on an earlier
-// line of a stacked header still counts; block comments pass through unchanged.
+// Reads consecutive line comments as one maintainer comment while keeping the final record's source position.
+// Pass comments in source order so context on earlier lines of the header still counts.
+// A block comment or a final record absent from the supplied list is returned unchanged.
 export function combinedContextLineComment(comments: CommentRecord[], finalComment: CommentRecord): CommentRecord {
   if (finalComment.kind !== "line") {
     return finalComment;
@@ -308,15 +411,13 @@ export function combinedContextLineComment(comments: CommentRecord[], finalComme
   return { ...finalComment, text };
 }
 
-// String-input wrapper around `hasLeadingCommentBeforeLines`. Keeps call sites that already hold
-// a split line array from re-splitting on every lookup.
+// Splits the file text and returns whether there is usable leading comment text above the one-based declaration line.
 export function hasLeadingCommentBeforeLine(source: string, line: number): boolean {
   return hasLeadingCommentBeforeLines(source.split(/\r?\n/), line);
 }
 
-// Skips blank padding above the declaration and asks whether the immediately preceding non-blank
-// line is any comment shape (`//`, `/*`, or `*/`). Underlies the missing-comment rules across
-// functions, interfaces, and exported declarations.
+// Checks the source lines above a one-based declaration line, skipping blank padding.
+// Returns true if the preceding nonblank line yields comment text and false if there is no usable text.
 export function hasLeadingCommentBeforeLines(lines: string[], line: number): boolean {
   let index = line - 2;
   while (index >= 0 && (lines[index] ?? "").trim() === "") {
@@ -325,9 +426,75 @@ export function hasLeadingCommentBeforeLines(lines: string[], line: number): boo
   return index >= 0 && commentTextAtLine(lines, index) !== undefined;
 }
 
-// Three comment shapes resolved here: `//` line comments, `/* … */` opener lines, and lines that
-// only contain the `*/` closer (call delegates upward to find the opener). Returns undefined for
-// non-comment lines and for empty comments, so callers can use truthiness as the "has text" gate.
+// Checks the source lines above the one-based function declaration line for text that counts as its own documentation.
+// Skips blank lines and returns false if there is no comment text or the comment is a section divider or file overview.
+export function hasFunctionLeadingCommentBeforeLines(lines: string[], line: number): boolean {
+  let endIndex = line - 2;
+  while (endIndex >= 0 && (lines[endIndex] ?? "").trim() === "") {
+    endIndex -= 1;
+  }
+  if (endIndex < 0 || commentTextAtLine(lines, endIndex) === undefined) {
+    return false;
+  }
+  return !isOverviewOrDividerCommentAt(lines, commentStartIndex(lines, endIndex), endIndex, line - 1);
+}
+
+// The opener line of the comment that ends on `endIndex`: the line itself for `//` and one-line
+// `/* */` comments, else the nearest `/*` above a `*/` closer.
+function commentStartIndex(lines: string[], endIndex: number): number {
+  for (let index = endIndex; index >= 0; index -= 1) {
+    const trimmedLine = (lines[index] ?? "").trim();
+    if (trimmedLine.startsWith("//") || trimmedLine.startsWith("/*")) {
+      return index;
+    }
+  }
+  return endIndex;
+}
+
+// Returns true for a section divider or a file-opening comment with a file-level tag or a blank gap before the declaration.
+// Supply the source file's lines from the beginning so earlier code can rule out a file overview.
+// startIndex and endIndex are the zero-based inclusive comment bounds. declarationIndex marks the declaration and bounds the gap.
+export function isOverviewOrDividerCommentAt(lines: string[], startIndex: number, endIndex: number, declarationIndex: number): boolean {
+  const commentText = lines.slice(startIndex, endIndex + 1).join("\n");
+  return isDividerComment(commentText) || (isFileOverviewComment(commentText, lines.slice(endIndex + 1, declarationIndex)) && isFileOpeningLine(lines, startIndex));
+}
+
+// A one-line comment whose text opens with a run of three or more `-`, `=`, `*`, `_`, `#`, `~`, `+`
+// or `/`, such as `// ---- helpers` or `/* ==== */`, divides sections; it does not describe the
+// function below it.
+export function isDividerComment(commentText: string): boolean {
+  if (commentText.includes("\n")) {
+    return false;
+  }
+  const text = commentText.trim().replace(/^\/\/|^\/\*\*?/, "").replace(/\*\/$/, "").trim();
+  return /^[-=*_#~+/]{3,}/.test(text);
+}
+
+// Returns true when the comment text has a file-level tag or the lines before the next declaration contain a blank separator.
+// The caller checks whether the comment is at the file opening before treating it as an overview.
+export function isFileOverviewComment(commentText: string, gapLines: string[]): boolean {
+  return gapLines.some((gapLine) => gapLine.trim() === "") || /@(?:file|fileoverview|overview|packageDocumentation|module|license)\b/.test(commentText);
+}
+
+// True when only a shebang, blank lines and other comments come before line `startIndex`, so a
+// comment that starts there opens the file. Stops at the first code line.
+function isFileOpeningLine(lines: string[], startIndex: number): boolean {
+  let isInBlockComment = false;
+  for (let index = 0; index < startIndex; index += 1) {
+    const trimmedLine = (lines[index] ?? "").trim();
+    if (isInBlockComment || trimmedLine.startsWith("/*")) {
+      isInBlockComment = !trimmedLine.endsWith("*/");
+      continue;
+    }
+    if (trimmedLine !== "" && !trimmedLine.startsWith("//") && !(index === 0 && trimmedLine.startsWith("#!"))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Returns text at the given source line index from a leading line comment or block opener, or a block closer at the end of the trimmed line.
+// Block extraction drops tag lines. Returns undefined if no text remains, if an opener has no closer or if the line has no comment to extract.
 export function commentTextAtLine(lines: string[], index: number): string | undefined {
   const trimmedLine = (lines[index] ?? "").trim();
   if (trimmedLine.startsWith("//")) {
@@ -355,9 +522,9 @@ function blockCommentTextEndingAt(lines: string[], endIndex: number): string | u
   return undefined;
 }
 
-// Joins a block comment's lines into one normalised text run: strips `/*` / `*/` / leading `*`,
-// drops `@tag` lines, and collapses whitespace. The `knownEndIndex` parameter lets
-// `blockCommentTextEndingAt` skip the scan when the closer line is already known.
+// Extracts text from the source lines beginning at the block opener index, removing delimiters, leading asterisks, and tag lines.
+// The remaining lines are trimmed and joined with spaces. A supplied closer index skips the search for the end of the block.
+// Returns undefined if the search finds no closer or no text remains for the documentation checks.
 function blockCommentText(lines: string[], startIndex: number, knownEndIndex?: number): string | undefined {
   const endIndex = knownEndIndex ?? blockCommentEndIndex(lines, startIndex);
   if (endIndex === undefined) {
@@ -372,8 +539,8 @@ function blockCommentText(lines: string[], startIndex: number, knownEndIndex?: n
   return text === "" ? undefined : text;
 }
 
-// Forward scan for the next line containing `*/`. Returns undefined for unterminated comments,
-// which the caller treats as "no useful text" rather than throwing - partial-scan robustness.
+// Returns the first source line index containing a block closer, starting at the opener's zero-based line index.
+// Returns undefined if no closer is found, so the caller has no comment text to inspect.
 function blockCommentEndIndex(lines: string[], startIndex: number): number | undefined {
   for (let index = startIndex; index < lines.length; index += 1) {
     if ((lines[index] ?? "").includes("*/")) {

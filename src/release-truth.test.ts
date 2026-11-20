@@ -1,17 +1,21 @@
 // Release-truth tests protect facts that users and package consumers rely on between releases.
 // This focused suite scans one unchanged project twice through the full analyser pipeline, pins which
-// file kinds a scan accepts at all, and holds the documented rule counts to the live catalogue.
+// file kinds a scan accepts at all, and holds the documented rule counts and schema versions to the
+// live catalogue and renderers.
 // Maintainers reach it when report generation changes ordering, identity, or volatile run metadata,
-// or when they add or remove either a discovery extension or a rule descriptor.
+// or when they add or remove either a discovery extension or a rule descriptor, or bump a schema.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import test from "node:test";
+import { BASELINE_SCHEMA_VERSION } from "./baseline-file.ts";
 import { EXACT_SECRET_TEXT_FILES, SCRIPT_FILE_EXTENSIONS, TEXT_FILE_EXTENSIONS } from "./discovery.ts";
+import { renderHookCapabilities } from "./hook-contract.ts";
+import { renderReport, renderSummaryJson } from "./report-renderers.ts";
 import { ruleDescriptors } from "./rules.ts";
-import { analyseProjectInCurrentDirectory, setupAnalyseProjectDirectory } from "./test-fixtures.ts";
+import { analyseProjectInCurrentDirectory, REPO_ROOT, setupAnalyseProjectDirectory } from "./test-fixtures.ts";
 import type { AnalysisReport } from "./types.ts";
 
 const EVALUATION_CALL = ["ev", "al"].join("");
@@ -24,7 +28,7 @@ const DETERMINISM_FIXTURE_SOURCE = [
 ].join("\n");
 
 /*
- * Serializes the report as a JSON user receives it after removing the per-run timestamp.
+ * Returns report's native state as JSON after cloning it and removing run.generatedAt for deterministic comparisons.
  * Invariant: every path, finding, score, and ordering decision remains under byte comparison.
  */
 function normalizedReportBytes(report: AnalysisReport): string {
@@ -105,10 +109,12 @@ const UNSCANNED_FIXTURE_FILES: Record<string, string> = {
 const SCAN_SURFACE_SWEEP_NOTE =
   "discovery allowlist changed - sweep the scan-surface sentence in CLAUDE.md, AGENTS.md, .github/copilot-instructions.md, README.md, docs/rules.md, .goat-flow/architecture.md, and .goat-flow/glossary.md";
 
-/*
- * Scans a throwaway project containing exactly the supplied files and reports how many were analysed.
- * Side effect: writes and removes a temporary project directory on the filesystem.
- * Invariant: the count reflects the discovery allowlist alone, because the fixture ships no config.
+/**
+ * Scans a temporary project with config loading disabled so the test can compare the analysed file count with the expected total.
+ * Writes the fixture to the filesystem, switches the process working directory for the scan, then restores it and removes the fixture.
+ *
+ * @param files - fixture paths relative to the temporary project, mapped to their contents
+ * @returns Number of files the analyser counted in the temporary project
  */
 function analysedFileCount(files: Record<string, string>): number {
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-scan-surface-"));
@@ -180,8 +186,8 @@ function livePillarCounts(): Map<string, number> {
 }
 
 /*
- * Reads back the pillar/count rows a documentation file publishes.
- * Invariant: the pattern matches only tally rows, so a stray prose number cannot enter the result.
+ * Reads tally rows from the documentation file at path using global rowPattern, with pillar in group 1 and numeric count in group 2.
+ * Returns a pillar-to-count map; no matches gives an empty map, and later rows replace earlier counts for the same pillar.
  */
 function documentedPillarCounts(path: string, rowPattern: RegExp): Map<string, number> {
   const rows = [...readFileSync(path, "utf8").matchAll(rowPattern)];
@@ -189,10 +195,8 @@ function documentedPillarCounts(path: string, rowPattern: RegExp): Map<string, n
   return new Map(rows.map((row) => [String(row[1]), Number(row[2])]));
 }
 
-/*
- * Reads back every catalogue-size number a file states in prose, in the order it states them.
- * Invariant: the pattern only matches an "N rules" phrase, so surrounding prose cannot inflate it.
- */
+// Reads the file at path and returns counts from N rules matches, where N is a run of digits, in file order.
+// An empty array means the file supplied no count claims in that form.
 function documentedTotals(path: string): number[] {
   return [...readFileSync(path, "utf8").matchAll(/\b(\d+) rules\b/gu)].map((match) => Number(match[1]));
 }
@@ -214,4 +218,91 @@ test("documented rule counts match the live catalogue", () => {
   const publishedPillars = new Map(PILLAR_COUNT_SURFACES.map((surface) => [surface.path, documentedPillarCounts(surface.path, surface.rowPattern)]));
   const expectedPillars = new Map(PILLAR_COUNT_SURFACES.map((surface) => [surface.path, livePillars]));
   assert.deepEqual(publishedPillars, expectedPillars, RULE_COUNT_SWEEP_NOTE);
+});
+
+// Files that state the current public output contract and nothing older. Decision records, the
+// changelog, upgrade notes, the README's migration paragraph and dated learning entries quote retired
+// versions on purpose, so they stay out of this list.
+const SCHEMA_CONTRACT_SURFACES = [
+  "CLAUDE.md",
+  "AGENTS.md",
+  ".github/copilot-instructions.md",
+  ".goat-flow/architecture.md",
+  ".goat-flow/glossary.md",
+  "docs/agent-hook.md",
+  "docs/configuration.md",
+  "docs/output-formats.md",
+];
+
+// Agent orientation docs kept stale schema strings through two version bumps because nothing compared
+// them with the renderers; a failure names each file and literal to fix.
+const SCHEMA_SWEEP_NOTE =
+  "a documented schema version no longer matches what gruff-ts emits - update each listed literal, and keep retired versions only in historical records";
+
+// The public output families a consumer can pin; each must report a live version below.
+const PUBLIC_OUTPUT_FAMILIES = ["analysis", "baseline", "hook", "hotspot", "summary"];
+
+// Matches every public output schema string; the config input schema uses a different prefix.
+const SCHEMA_LITERAL_PATTERN = /gruff\.(?:analysis|summary|baseline|hotspot|hook)\.v\d+/gu;
+
+/*
+ * Names the output family a schema string belongs to, such as "baseline" for the baseline schema.
+ * Returns the second dotted segment, or the original schemaVersion when that segment is absent; an empty segment stays empty.
+ */
+function schemaFamily(schemaVersion: string): string {
+  return schemaVersion.split(".")[1] ?? schemaVersion;
+}
+
+/*
+ * Reads one version field from a rendered JSON payload a consumer receives.
+ * Invariant: a missing or non-string field fails here rather than becoming an undefined map entry.
+ */
+function renderedVersionField(json: string, field: string): string {
+  const versionField: unknown = Reflect.get(JSON.parse(json) as object, field);
+  assert.equal(typeof versionField, "string", `rendered payload must carry a string ${field}`);
+  return String(versionField);
+}
+
+/*
+ * Returns schema versions by output family, using one scan for analysis, summary and hotspot.
+ * Writes a temporary project, changes into it for the scan, then restores the working directory and removes the project.
+ * Invariant: every version comes from a renderer or the exported baseline constant, never a document.
+ */
+function liveSchemaVersions(): Map<string, string> {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-schema-truth-"));
+  const originalWorkingDirectory = cwd();
+  const scanOptions = { shouldSkipConfig: true } as const;
+
+  try {
+    setupAnalyseProjectDirectory(projectRoot, { "src/schema-fixture.ts": "export const fixtureValue = 1;\n" }, scanOptions);
+    chdir(projectRoot);
+    const report = analyseProjectInCurrentDirectory(scanOptions);
+    const versions = [
+      renderedVersionField(renderReport(report, "json"), "schemaVersion"),
+      renderedVersionField(renderSummaryJson(report), "schemaVersion"),
+      renderedVersionField(renderReport(report, "hotspot"), "schemaVersion"),
+      renderedVersionField(renderHookCapabilities(), "contractVersion"),
+      BASELINE_SCHEMA_VERSION,
+    ];
+    return new Map(versions.map((version) => [schemaFamily(version), version]));
+  } finally {
+    chdir(originalWorkingDirectory);
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+}
+
+/*
+ * Holds every schema string in the current-contract documents to the version gruff-ts emits.
+ * Invariant: a schema bump fails here until each listed document quotes the new version.
+ */
+test("documented schema versions match the versions gruff-ts emits", () => {
+  const live = liveSchemaVersions();
+  assert.deepEqual([...live.keys()].sort(), PUBLIC_OUTPUT_FAMILIES, "every public output family must report a live version");
+
+  const staleLiterals = SCHEMA_CONTRACT_SURFACES.flatMap((path) =>
+    [...readFileSync(join(REPO_ROOT, path), "utf8").matchAll(SCHEMA_LITERAL_PATTERN)]
+      .map((match) => match[0])
+      .filter((literal) => live.get(schemaFamily(literal)) !== literal)
+      .map((literal) => `${path}: ${literal}`));
+  assert.deepEqual(staleLiterals, [], SCHEMA_SWEEP_NOTE);
 });

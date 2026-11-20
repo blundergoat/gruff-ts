@@ -2,7 +2,7 @@
 import { VERSION } from "./constants.ts";
 import { profileSummaries, type ProfileSummary } from "./profiles.ts";
 import { ruleDescriptors } from "./rules.ts";
-import type { RuleDescriptor } from "./types.ts";
+import type { RuleDescriptor, Severity } from "./types.ts";
 
 type RuleListFormat = "text" | "json";
 type CompletionShell = "bash" | "fish" | "zsh";
@@ -20,6 +20,7 @@ const ANSI_RESET_FG = "\x1b[39m";
 
 const CONSOLE_COMMANDS = [
   { name: "analyse", description: "Run gruff analysis." },
+  { name: "check-ignore", description: "Report whether gruff would ignore each path, with the matching source and pattern. Runs no analysis." },
   { name: "completion", description: "Dump the shell completion script" },
   { name: "dashboard", description: "Serve the local gruff dashboard." },
   { name: "help", description: "Display help for a command" },
@@ -28,6 +29,7 @@ const CONSOLE_COMMANDS = [
   { name: "list", description: "List commands" },
   { name: "list-profiles", description: "List the built-in gruff profiles." },
   { name: "list-rules", description: "List gruff rule metadata." },
+  { name: "migrate-config", description: "Rewrite a 0.5 config for the current schema, writing the result to a different file." },
   { name: "report", description: "Render a gruff report to stdout or a file." },
   {
     name: "summary",
@@ -36,12 +38,52 @@ const CONSOLE_COMMANDS = [
   },
 ] as const;
 
+// Knob names gruff-go already publishes for a single-threshold rule, keyed by rule id. The family
+// listing shape (M09, ratified 2026-09-09) carries every threshold as a named map; a rule whose id
+// has no knob name anywhere in the family publishes the one-key map `{"threshold": N}` so no new
+// permanent public identifier is invented.
+const LISTING_THRESHOLD_KNOB_NAMES: Readonly<Record<string, string>> = {
+  "complexity.cyclomatic": "maxComplexity",
+  "size.file-length": "maxLines",
+  "size.function-length": "maxLines",
+  "size.parameter-count": "maxParameters",
+};
+
+// The record both JSON catalogue surfaces publish: identity under `id`, severity under
+// `defaultSeverity`, and the threshold as a named map under `thresholds`. The internal descriptor
+// keeps its own field names because reports, hooks, and config validation read those; only the two
+// public listing surfaces are projected.
+type ListedRule = Omit<RuleDescriptor, "ruleId" | "severity" | "isEnabledByDefault" | "threshold"> & {
+  id: string;
+  defaultSeverity: Severity;
+  defaultEnabled: boolean;
+  thresholds?: Record<string, number>;
+};
+
+// Projects one internal descriptor into the listed record. Field order is deliberate: identity and
+// scoring first, then defaultEnabled, an optional named threshold map, and the remaining descriptor fields.
+// An absent threshold leaves thresholds absent; absent isEnabledByDefault becomes true.
+function listedRule(descriptor: RuleDescriptor): ListedRule {
+  const { ruleId, pillar, severity, confidence, isEnabledByDefault, threshold, ...rest } = descriptor;
+  const knob = LISTING_THRESHOLD_KNOB_NAMES[ruleId] ?? "threshold";
+  return {
+    id: ruleId,
+    pillar,
+    defaultSeverity: severity,
+    confidence,
+    // Every record publishes the family field, so a rule that is on by default says so rather than leaving it absent.
+    defaultEnabled: isEnabledByDefault !== false,
+    ...(typeof threshold === "number" ? { thresholds: { [knob]: threshold } } : {}),
+    ...rest,
+  };
+}
+
 // Rule catalogue renderer. JSON is the integration surface for docs and audits; text is allowed to
 // stay plain because it is only for terminal inspection and should not become another schema.
 function renderRuleList(format: RuleListFormat): string {
   const descriptors = ruleDescriptors();
   if (format === "json") {
-    return `${JSON.stringify({ tool: { name: "gruff-ts", version: VERSION }, rules: descriptors }, null, 2)}\n`;
+    return `${JSON.stringify({ tool: { name: "gruff-ts", version: VERSION }, rules: descriptors.map(listedRule) }, null, 2)}\n`;
   }
   const lines = ["gruff-ts " + VERSION + ` rules (${descriptors.length})`, ""];
   for (const descriptor of descriptors) {
@@ -71,32 +113,34 @@ function profileListRow(summary: ProfileSummary): string {
   return `${summary.name} | ${summary.enabledRuleCount}/${summary.totalRuleCount} rules | ${summary.enabledPillars.length} pillars${tightened} | ${summary.description}`;
 }
 
-/*
- * Returns a single rule descriptor by ID, or undefined when the ID is not registered. Surfaced so
- * the explain-mode renderer can dispatch on "is this a real rule?" without iterating the full
- * catalogue at each render site. Stable contract: lookup keys match the public rule ID strings
- * exactly; partial / case-insensitive matches are intentionally out of scope.
+/**
+ * Look up a registered rule by its exact, case-sensitive public ID for explain-mode rendering.
+ *
+ * @param ruleId - complete public rule ID to match
+ * @returns matching descriptor, or undefined when the ID is not registered
  */
 function getRuleDescriptor(ruleId: string): RuleDescriptor | undefined {
   return ruleDescriptors().find((descriptor) => descriptor.ruleId === ruleId);
 }
 
-/*
- * Single-rule detail renderer. Text format prints a labelled section with every populated field;
- * JSON format wraps the descriptor in a tool envelope mirroring the multi-rule shape. Surfaces
- * config keys (`rules.<ruleId>.{enabled,severity,threshold}`) and the option/allowlist hatches
- * because operators looking up one rule shouldn't have to grep `src/config.ts` to find the
- * override knobs they're about to tune.
+/**
+ * Show supported overrides because operators looking up a rule should be able to find its keys without opening src/config.ts.
+ *
+ * @param descriptor - Catalogue entry supplying the rule details and supported configuration and allowlist keys.
+ * @param format - Selects the labelled text card or the catalogue record with config keys and tool metadata in JSON.
+ * @returns The selected single-rule detail with a trailing newline. The threshold override appears only for a numeric threshold.
  */
 function renderRuleDetail(descriptor: RuleDescriptor, format: RuleListFormat): string {
   if (format === "json") {
-    return `${JSON.stringify({ tool: { name: "gruff-ts", version: VERSION }, rule: { ...descriptor, configKeys: ruleConfigKeys(descriptor) } }, null, 2)}\n`;
+    return `${JSON.stringify({ tool: { name: "gruff-ts", version: VERSION }, rule: { ...listedRule(descriptor), configKeys: ruleConfigKeys(descriptor) } }, null, 2)}\n`;
   }
   const lines = [
     `Rule:        ${descriptor.ruleId}`,
     `Pillar:      ${descriptor.pillar}`,
     `Severity:    ${descriptor.severity}`,
     `Confidence:  ${descriptor.confidence}`,
+    // The family's detail-card wording; a rule that ships off (ADR-021) runs only when a config enables it.
+    `Enabled by default: ${descriptor.isEnabledByDefault === false ? "no" : "yes"}`,
     ...(typeof descriptor.threshold === "number" ? [`Threshold:   ${descriptor.threshold}`] : []),
     "",
     `Description: ${descriptor.description}`,
@@ -106,13 +150,15 @@ function renderRuleDetail(descriptor: RuleDescriptor, format: RuleListFormat): s
     ...ruleConfigKeyLines(descriptor),
     ...(descriptor.optionKeys && descriptor.optionKeys.length > 0 ? ["", "Options:", ...descriptor.optionKeys.map((key) => `  rules.${descriptor.ruleId}.options.${key}`)] : []),
     ...(descriptor.allowlistKeys && descriptor.allowlistKeys.length > 0 ? ["", "Allowlists:", ...descriptor.allowlistKeys.map((key) => `  allowlists.${key}`)] : []),
+    ...(descriptor.falsePositiveShapes && descriptor.falsePositiveShapes.length > 0
+      ? ["", "Known false positives:", ...descriptor.falsePositiveShapes.flatMap(({ shape, mitigation }) => [`  ${shape}`, `    -> ${mitigation}`])]
+      : []),
   ];
   return `${lines.join("\n")}\n`;
 }
 
-// Three baseline config-key entries shared by every rule: the enable toggle, the severity override,
-// and (when present) the threshold override. Optional knobs (options / allowlists) get their own
-// blocks in `renderRuleDetail` to keep this list focused on the always-applicable keys.
+// Return text lines for the rule's enable and severity keys, plus a threshold key when descriptor.threshold is numeric.
+// descriptor supplies the rule id and default threshold; options and allowlists are rendered separately by renderRuleDetail.
 function ruleConfigKeyLines(descriptor: RuleDescriptor): string[] {
   return [
     "Config keys:",
@@ -122,19 +168,20 @@ function ruleConfigKeyLines(descriptor: RuleDescriptor): string[] {
   ];
 }
 
-// JSON representation of the same config-key list. Returned as a structured array so JSON consumers
-// don't have to re-derive the shape from the text layout. Each entry carries the key path, the
-// value's type vocabulary, and a default when one is known.
+// Return structured config-key entries for JSON consumers using descriptor's rule id, enabled state, severity, and threshold.
+// An omitted enablement flag defaults to true. A threshold entry appears only for a numeric threshold.
+// Each entry names its type and any applicable default or enum values.
 function ruleConfigKeys(descriptor: RuleDescriptor): Array<{ key: string; type: string; values?: readonly string[]; default?: number | boolean | string }> {
   return [
-    { key: `rules.${descriptor.ruleId}.enabled`, type: "bool", default: true },
+    { key: `rules.${descriptor.ruleId}.enabled`, type: "bool", default: descriptor.isEnabledByDefault !== false },
     { key: `rules.${descriptor.ruleId}.severity`, type: "enum", values: ["advisory", "warning", "error"] as const, default: descriptor.severity },
     ...(typeof descriptor.threshold === "number" ? [{ key: `rules.${descriptor.ruleId}.threshold`, type: "int", default: descriptor.threshold }] : []),
   ];
 }
 
-// The Symfony-style command catalogue shown for `gruff-ts`, `gruff-ts list`, and `gruff-ts help`.
-// `shouldUseAnsi` is autodetected by the caller from TTY and `--ansi` flags, never from this layer.
+// Returns the command catalogue shown for gruff-ts, gruff-ts list, and gruff-ts help.
+// shouldUseAnsi controls colored labels and headings; it defaults to false for plain text.
+// CLI callers supply their ANSI policy rather than detecting terminal capabilities in this renderer.
 function renderConsoleList(shouldUseAnsi = false): string {
   const listCommand = ansiWrap("list", ANSI_GREEN, shouldUseAnsi);
   return [
@@ -157,8 +204,8 @@ function renderConsoleList(shouldUseAnsi = false): string {
   ].join("\n") + "\n";
 }
 
-// Two-column row: label padded to `width`, then description. Width is fixed per section so the
-// catalogue lines up regardless of label length - matches Symfony console output conventions.
+// Returns an indented row with label padded toward width, followed by description and at least one separating space.
+// shouldUseAnsi adds green coloring to the label; padding is based on its uncolored length.
 function formatConsoleRow(label: string, description: string, width: number, shouldUseAnsi: boolean): string {
   const paddedLabel = ansiWrap(label, ANSI_GREEN, shouldUseAnsi);
   const padding = " ".repeat(Math.max(1, width - label.length));
@@ -166,8 +213,8 @@ function formatConsoleRow(label: string, description: string, width: number, sho
   return `  ${paddedLabel}${padding}${rowDescription}`;
 }
 
-// `shouldUseAnsi` is the only gate. We never sniff `process.stdout.isTTY` here because the caller may be
-// rendering to a file or capture buffer where ANSI codes would be garbage.
+// Returns text wrapped in color and a foreground reset when shouldUseAnsi is true; otherwise returns text unchanged.
+// The caller supplies the ANSI color prefix and decides whether its output destination supports ANSI escapes.
 function ansiWrap(text: string, color: string, shouldUseAnsi: boolean): string {
   if (!shouldUseAnsi) {
     return text;
@@ -176,8 +223,7 @@ function ansiWrap(text: string, color: string, shouldUseAnsi: boolean): string {
   return `${ansiColor}${text}${ANSI_RESET_FG}`;
 }
 
-// Dispatches by shell with bash as the default - chosen because bash completion is most likely to
-// be installed and least likely to break silently if the user pipes the output through `source`.
+// Returns a completion script for shell: fish and zsh use their own renderers, and all other values select Bash.
 function renderCompletionScript(shell: CompletionShell): string {
   const context = completionContext();
   if (shell === "fish") {
@@ -189,8 +235,8 @@ function renderCompletionScript(shell: CompletionShell): string {
   return renderBashCompletion(context);
 }
 
-// Filters out `help` from the completion list - Commander handles it implicitly and exposing it
-// would suggest `gruff-ts help` is a real subcommand on equal footing with `analyse`.
+// Returns space-separated command names and global options for shell completion renderers.
+// Help is excluded because Commander handles it implicitly; offering it here would put it alongside analyse.
 function completionContext(): CompletionContext {
   return {
     commands: CONSOLE_COMMANDS.filter((command) => command.name !== "help").map((command) => command.name).join(" "),
@@ -198,8 +244,8 @@ function completionContext(): CompletionContext {
   };
 }
 
-// Fish's `complete` builtin is invoked once per token. Trailing newline matters - fish ignores
-// the final entry without one.
+// Returns a newline-terminated Fish completion script from the space-separated commands and options in context.
+// File completion is disabled so candidates come from the supplied command and option lists.
 function renderFishCompletion(context: CompletionContext): string {
   return [
     "complete -c gruff-ts -f",
@@ -209,8 +255,9 @@ function renderFishCompletion(context: CompletionContext): string {
   ].join("\n");
 }
 
-// `#compdef gruff-ts` must be on line 1 - zsh's autoloader rejects the file otherwise. Uses
-// `_arguments` rather than `_describe` so option completion still works after a subcommand.
+// Returns a Zsh completion script using the space-separated command and option candidates in context.
+// The first-line #compdef tag lets completion discovery recognize the file.
+// Uses _arguments to route command and subsequent option completion to separate states.
 function renderZshCompletion(context: CompletionContext): string {
   return [
     "#compdef gruff-ts",
@@ -228,8 +275,8 @@ function renderZshCompletion(context: CompletionContext): string {
   ].join("\n");
 }
 
-// Bash completion: a function registered via `complete -F`. The `--format` / `--fail-on` value
-// lists are duplicated from `cli-program.ts` because completion runs without loading the analyser.
+// Returns a Bash completion script registered with complete -F; commands and options supply space-separated candidates.
+// The format and fail-on value lists let the emitted script offer those values without loading the analyser.
 function renderBashCompletion({ commands, options }: CompletionContext): string {
   const commandsLine = `  commands=\"${commands}\"`;
   const optionsLine = `  options=\"${options}\"`;
@@ -256,7 +303,7 @@ function renderBashCompletion({ commands, options }: CompletionContext): string 
   ].join("\n");
 }
 
-// Bash is the fallback for any unknown shell name - see `renderCompletionScript` for why bash wins.
+// Returns fish or zsh when shellName matches exactly; every other value selects the bash completion renderer.
 function completionShell(shellName: unknown): CompletionShell {
   return shellName === "fish" || shellName === "zsh" ? shellName : "bash";
 }

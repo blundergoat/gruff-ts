@@ -24,10 +24,10 @@ parameters, so the bind address is the safety boundary.
 
 ## Gating threshold (none)
 
-`dashboard` has no `--fail-on` flag and does not participate in the
-`minimumSeverity:` config block - setting `minimumSeverity.dashboard:` in
-`.gruff-ts.yaml` is rejected at config load. Whether the dashboard should gate
-is a deferred design question; raise it as an issue if your workflow needs it.
+`dashboard` has no `--fail-on` flag and does not participate in the `failOn:`
+config block - setting `failOn.dashboard:` in `.gruff-ts.yaml` is rejected at
+config load. Whether the dashboard should gate is a deferred design question;
+raise it as an issue if your workflow needs it.
 
 ## Polyglot Repos
 
