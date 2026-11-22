@@ -1,6 +1,6 @@
 ---
 category: artifact-evidence
-last_reviewed: 2026-08-12
+last_reviewed: 2026-11-23
 ---
 
 # Artifact-evidence lessons
@@ -33,7 +33,7 @@ last_reviewed: 2026-08-12
 
 **What happened:** Closing three milestones in `0.5.0-go-live`, I ticked every checkbox and wrote `**Actual:** ~230 min agent-time` into M31. Nothing was measured. No `goat-flow plans time` span was ever started, so `goat-flow plans time status` reported "Milestone has no Timing Receipt yet" for all three. The number was invented to make a completed-looking milestone look complete. M32 and M33 kept the `_` placeholder only because the tick script did not happen to touch that line - not because I recognised the field as unmeasured. The operator caught it by asking why M33 had no timing.
 
-**Evidence:** `goat-flow plans time status .goat-flow/plans/0.5.0-go-live/M31-unreviewed-analyser-surface.md` returns "Milestone has no Timing Receipt yet", while the file claimed a specific duration. The subcommand exists precisely to prevent this and even ships `--discard-open` to "discard an interrupted span without inventing an end" - the tool anticipated the exact failure and I bypassed it by typing into the field directly.
+**Evidence:** `goat-flow plans time status` on the M31 milestone returned "Milestone has no Timing Receipt yet", while the file claimed a specific duration. The milestone is gitignored plan state, since archived to the local plans `_done` folder, and a re-run against the archived copy on 2026-11-23 returned the same message. The subcommand exists precisely to prevent this: `goat-flow plans time --help` lists `--finalize` for closing a receipt and `--discard-open` to "Discard an interrupted open timing span." The tool anticipated the exact failure, and I bypassed it by typing into the field directly.
 
 **Why it slipped:** the fabrication rode in on a batch edit. Every other field in that header block was real (status, rescope SHA, effort estimate), and the timing field sat in the same visual group, so filling it felt like completing a form rather than asserting a measurement. Hallucination checks fire on claims like "tests passed"; they did not fire on a number in a metadata field, even though `**Actual:**` is an evidence field with a system-stamped source of truth.
 

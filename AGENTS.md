@@ -2,7 +2,7 @@
 
 `gruff-ts` governs AI-generated code: wired in as a coding-agent hook, it forces an agent to produce changes a human who did not write them can sign off on - legible enough to verify, secure where the reviewer's eye slips, and tested for real behavior rather than low-signal ceremony. Mechanically it is a TypeScript project quality analyzer: a dependency-light Node.js/ESM CLI with a thin `src/cli.ts` bootstrap and focused runtime modules under `src/`. It scans TypeScript and JavaScript (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`) plus config and text assets (`conf`, `config`, `env`, `ini`, `json`, `toml`, `xml`, `yaml`, `yml`, any `.env*` name, and `.npmrc`/`.pypirc`/`.envrc`/`.netrc`); CSS left the allowlist in 0.3.0, and `src/discovery.ts`:`pushSourceFile` is the only authority. It emits findings across 11 pillars (complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality). Core invariant: every finding carries a stable `fingerprint` so baselines (`gruff.baseline.v3`) and report snapshots (`gruff.analysis.v3`) round-trip without churn.
 
-goat-flow version: 1.18.0
+goat-flow version: 1.19.0
 
 ## Workspace Boundary
 
@@ -22,7 +22,7 @@ The Never tier and accepted ADR safety constraints are non-overridable. Approval
 
 - **Always:** Read source before changing it; run `npm run check` on changed `.ts`; edit within declared scope; append progress lines to the active session log when one exists.
 - **Ask First:** Before touching any of: schema strings (`gruff.analysis.v3`, `gruff.baseline.v3`, `gruff.hotspot.v1`), the `Finding` shape, the default-ignored directory list, baseline file format, dashboard wire format, or `package.json`/`tsconfig.json`. State boundary touched, related code read (file:symbol), footgun checked, local instruction checked, rollback command.
-- **Never:** Freeze writes if interrupted; commit/push without explicit ask; relax `tsconfig.json` strict flags; introduce runtime dependencies beyond `commander`, `tsx`, and `typescript` (syntax-only parsing per ADR-012); bypass `.goat-flow/hooks/deny-dangerous.sh` or `.goat-flow/hooks/deny-git-mutations.sh`; edit `CLAUDE.md` or `.claude/` (peer agent surfaces).
+- **Never:** Freeze writes if interrupted; commit/push without explicit ask; relax `tsconfig.json` strict flags; introduce runtime dependencies beyond `commander`, `tsx`, and `typescript` (syntax-only parsing per ADR-012); bypass `.goat-flow/hooks/deny-dangerous.mjs` or `.goat-flow/hooks/deny-git-mutations.mjs`; edit `CLAUDE.md` or `.claude/` (peer agent surfaces).
 
 ## Hard Rules
 
@@ -53,7 +53,7 @@ npm test             # node --import tsx --test src/**/*.test.ts
 npm run start-dev    # tsx src/cli.ts dashboard (binds 127.0.0.1:8767)
 ./bin/gruff-ts analyse . --fail-on=advisory   # the self-scan gate CI enforces
 bash scripts/preflight-checks.sh              # full local gate: version, npm audit, check, self-scan, shellcheck
-bash .goat-flow/hooks/deny-dangerous.sh --self-test   # verify deny hook
+node .goat-flow/hooks/deny-dangerous.mjs --self-test=full   # verify deny hook
 ```
 
 ## Execution Loop: READ → SCOPE → ACT → VERIFY
@@ -61,7 +61,7 @@ bash .goat-flow/hooks/deny-dangerous.sh --self-test   # verify deny hook
 When a `goat-*` skill is active, its Step 0 replaces READ and selects the skill's mode/depth. SCOPE still applies before writes: a skill may write when its selected mode permits writes or the user explicitly approves them. `/goat-plan` File-Write may create gitignored milestone files without a separate approval gate; `/goat-debug` D3 still requires approval before fixes. Resume at ACT after Step 0 output or when a blocking gate releases.
 
 ### READ
-MUST read relevant files before changes. Never fabricate codebase facts (rule counts, pillar names, schema strings - read the live source first, especially `src/types.ts`, `src/rules.ts`, `src/constants.ts`, and the touched module). For URL, local HTML, localhost, screenshot, rendered UI, or browser-visible behaviour (the `dashboard` subcommand on `127.0.0.1:8767`), check browser evidence first. Search the generated `INDEX.md` files in `.goat-flow/learning-loop/{footguns,lessons,patterns}/` before opening source entries; include `.goat-flow/learning-loop/decisions/INDEX.md` for architecture, schema, or setup work. When a follow-up grep is needed, root it at the bucket directory or deeper - a recursive search started at `.goat-flow/` silently returns zero hits because its `.gitignore` opens with `*`. Before declaring any tool or capability unavailable, read the matching playbook in `.goat-flow/skill-docs/playbooks/` (e.g. `browser-use.md`, `page-capture.md`) and run that doc's "Availability Check" section verbatim - project-local CLI tools at `~/.local/bin/` are valid; do not conflate "no harness/MCP tool" with "no tool". Before editing human-read prose, load its playbook: `changelog.md` for `CHANGELOG.md`, `release-notes.md` for release notes, and `writing-human-facing-prose.md` for README, docs, plan narrative, PR/issue text, or learning-loop bodies.
+MUST read relevant files before changes. Never fabricate codebase facts (rule counts, pillar names, schema strings - read the live source first, especially `src/types.ts`, `src/rules.ts`, `src/constants.ts`, and the touched module). For URL, local HTML, localhost, screenshot, rendered UI, or browser-visible behaviour (the `dashboard` subcommand on `127.0.0.1:8767`), check browser evidence first. Search the generated `INDEX.md` files in `.goat-flow/learning-loop/{footguns,lessons,patterns}/` before opening source entries; include `.goat-flow/learning-loop/decisions/INDEX.md` for architecture, schema, or setup work. Ignore-aware search tools skip gitignored `.goat-flow/plans/`, `.goat-flow/logs/`, and `.goat-flow/scratchpad/` content in recursive searches; use `command grep -r` when a sweep must reach it. Before declaring any tool or capability unavailable, read the matching playbook in `.goat-flow/skill-docs/playbooks/` (e.g. `browser-use.md`, `page-capture.md`) and run that doc's "Availability Check" section verbatim - project-local CLI tools at `~/.local/bin/` are valid; do not conflate "no harness/MCP tool" with "no tool". Before editing human-read prose, load its playbook: `changelog.md` for `CHANGELOG.md`, `release-notes.md` for release notes, and `writing-human-facing-prose.md` for README, docs, plan narrative, PR/issue text, or learning-loop bodies.
 
 ### SCOPE
 Three signals before acting: (1) Intent - question vs directive. (2) Complexity tier + budget. (3) Mode - Plan / Implement / Explain / Debug / Review. MUST declare files allowed to change, non-goals, max blast radius. Expanding beyond scope = stop and re-scope.
@@ -85,7 +85,7 @@ Declare `State: [MODE] | Goal: [one line] | Exit: [condition]`.
 | Review | Investigate first. Never blindly apply suggestions |
 
 ### VERIFY
-MUST run `npm run check` after touching `src/**/*.ts`, then the CI self-scan `./bin/gruff-ts analyse . --fail-on=advisory` (or `bash scripts/preflight-checks.sh` for the full sweep). MUST run `shellcheck` on `.sh` changes (including `.goat-flow/hooks/*.sh`). Cross-reference grep after renames (`grep -r symbol src/`). Tick milestone `- [x]` immediately when working from a plan.
+MUST run `npm run check` after touching `src/**/*.ts`, then the CI self-scan `./bin/gruff-ts analyse . --fail-on=advisory` (or `bash scripts/preflight-checks.sh` for the full sweep). MUST run `shellcheck` on `.sh` changes (including `.goat-flow/hooks/*.sh`). Cross-reference grep after renames (`grep -r symbol src/`). When working from a plan, start timing with `goat-flow plans time start <milestone-file> --category <product|proof|other>`, tick milestone `- [x]` immediately as each task lands, and close with `goat-flow plans time stop <milestone-file> --finalize`; only that receipt may fill `**Actual:**`.
 
 **Hallucination red-flags:**
 1. **Checks passed.** Quote the literal `tsc`/`node --test` pass line from this session - not paraphrase, not cached output.

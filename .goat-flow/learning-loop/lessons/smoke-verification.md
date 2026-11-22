@@ -1,6 +1,6 @@
 ---
 category: smoke-verification
-last_reviewed: 2026-08-07
+last_reviewed: 2026-11-23
 ---
 
 # Smoke verification lessons
@@ -21,7 +21,7 @@ last_reviewed: 2026-08-07
 
 **What happened:** During dashboard parity verification, screenshots were first captured against a dashboard server that had been started before the final `src/cli.ts` CSS tweak. The evidence was structurally valid, but it did not prove the current source until the server was stopped, restarted, and the captures were rerun.
 
-**Evidence:** `src/cli.ts` + `(search: "function startDashboard")`; the dashboard-parity capture script in `.goat-flow/scratchpad/dashboard-parity/` captured the current-source screenshots only after the dashboard was restarted on `127.0.0.1:8877`.
+**Evidence:** At the time, the dashboard server and its CSS lived in `src/cli.ts`; they now live in `src/dashboard.ts` (search: `function startDashboard`) and `src/report-html.ts` (search: `function dashboardCss`). The capture script captured current-source screenshots only after the dashboard was restarted on `127.0.0.1:8877`. It ran from the gitignored scratchpad, which has since been cleared, so the script and screenshots are no longer available.
 
 **Prevention:** For browser-visible code, restart any long-running dev server after every source edit before taking final screenshots or claiming visual verification.
 
@@ -31,7 +31,7 @@ last_reviewed: 2026-08-07
 
 **What happened:** The dashboard-parity screenshot script initially clicked dashboard Refresh and then read `[data-scan-status]` before the iframe `load` handler had settled, producing a false failure with status `Scanning`.
 
-**Evidence:** The capture script under `.goat-flow/scratchpad/dashboard-parity/` (search: `wait_for_function`); the corrected script waits until the status text is `Ready` before asserting refresh completion.
+**Evidence:** The dashboard script in `src/report-html.ts` (search: `function dashboardJs`) sets the `[data-scan-status]` text to `Scanning` when a scan starts and to `Ready` only in the iframe `load` handler. The corrected capture script waited until the status text was `Ready` before asserting refresh completion. That script ran from the gitignored scratchpad, which has since been cleared.
 
 **Prevention:** Browser evidence scripts should wait for the user-visible postcondition after an interaction, not only for a reused selector or iframe to exist.
 
@@ -41,7 +41,7 @@ last_reviewed: 2026-08-07
 
 **What happened:** The `test-quality.setup-bloat` default moved from 8 to 12 setup lines, but two positive fixtures still used only nine setup statements. `npm run check` correctly failed until the fixtures were expanded past the new threshold.
 
-**Evidence:** `src/cli.test.ts` + `(search: "test(\"setup bloat\"")`; failing test names were `risk expansion finds scoped test-quality rules` and `cumulative expanded fixture covers every new rule with unique fingerprints`.
+**Evidence:** The failing tests, then in `src/cli.test.ts`, were `risk expansion finds scoped test-quality rules` and `cumulative expanded fixture covers every new rule with unique fingerprints`. `test-quality.setup-bloat` has since been removed from the catalogue (`CHANGELOG.md`, search: `test-quality.setup-bloat`), so this incident no longer reproduces. The prevention still applies to any rule with a default threshold.
 
 **Prevention:** When changing a default threshold, update every positive fixture owned by that rule in the same patch and count the candidate lines against the new default before rerunning the full gate.
 
@@ -61,7 +61,7 @@ last_reviewed: 2026-08-07
 
 **What happened:** During rule-quality doctrine work, the first `npm run check` failed in `tsc` because a rule-quality self-check built one `Map` from doctrine entries and another from exception entries. TypeScript inferred each `Map` with only its literal key union, so looking up the full risky-rule union failed for the exception-only rule.
 
-**Evidence:** `src/cli.test.ts` + `(search: "rule quality doctrine covers risky scanner descriptors")`; the failing command reported `sensitive-data.api-key-pattern` was not assignable to the doctrine-only map key union.
+**Evidence:** `src/rule-catalogue.test.ts` (search: `rule quality doctrine covers risky scanner descriptors`); the failing command reported `sensitive-data.api-key-pattern` was not assignable to the doctrine-only map key union.
 
 **Prevention:** For test metadata split across coverage and exception lists, widen lookup maps to `Map<string, ...>` before iterating the combined rule-id list. This preserves useful literal data in the source arrays while keeping strict TypeScript from rejecting intentional exception-only entries.
 
@@ -73,7 +73,7 @@ last_reviewed: 2026-08-07
 
 **Evidence:** `src/docs-comment-rules.test.ts` + `(search: "comment quality requires rationale for non-TypeScript suppressions")`; the corrected fixture uses one concatenated source expression so `TS_IGNORE_DIRECTIVE` is visible to import analysis without adding setup lines.
 
-**Prevention:** When a fixture token must be visible outside a template literal, prefer a compact concatenated expression over line-array builders unless the test already has setup budget and a nearby fixture-purpose comment.
+**Prevention:** When a fixture token must be visible outside a template literal, prefer a compact concatenated expression over line-array builders unless the test already has a nearby fixture-purpose comment. `test-quality.setup-bloat` has since been retired, but added setup lines can still trip `docs.fixture-purpose-missing` (`src/fixture-purpose-rules.ts`, search: `FIXTURE_PURPOSE_MIN_LINES`).
 
 ## Lesson: self-scan CLI onboarding changes before close-out
 
@@ -81,9 +81,9 @@ last_reviewed: 2026-08-07
 
 **What happened:** During baseline-onboarding work, `npm run check` passed but `./bin/gruff-ts summary . --fail-on=none --no-baseline` exposed new gruff findings from newly added helper functions and a CLI test that used a dynamic binary path for `execFileSync`.
 
-**Evidence:** `src/report-renderers.ts` + `(search: "function summaryBaselineLine")`; `src/cli-surfaces.test.ts` + `(search: "summary CLI reports generated and applied baseline metadata")` - the corrected version documents the baseline summary contract and uses the fixed local `./bin/gruff-ts` command vector.
+**Evidence:** `src/report-renderers.ts` + `(search: "function summaryBaselineLine")`; `src/cli-surfaces.test.ts` + `(search: "summary CLI reports generated and applied baseline metadata")` - the corrected version documents the baseline summary contract and uses the fixed local `./bin/gruff-ts` command vector. The dynamic-binary-path finding came from `security.process-exec`, which ADR-021 has since retired (`CHANGELOG.md`, search: `security.process-exec`), so that half of the fix no longer clears a finding.
 
-**Prevention:** For scanner-facing CLI or renderer changes, run a self-scan after the normal test gate, then remove avoidable new findings before closing. In CLI tests, prefer fixed local command vectors when possible so process-exec findings remain focused on dynamic commands.
+**Prevention:** For scanner-facing CLI or renderer changes, run a self-scan after the normal test gate, then remove avoidable new findings before closing.
 
 ## Lesson: baseline smoke tests must keep project root stable
 
@@ -91,7 +91,7 @@ last_reviewed: 2026-08-07
 
 **What happened:** A manual baseline smoke generated `gruff-baseline.json` from the repository cwd against an absolute `/tmp/.../sample.ts`, then tried to auto-apply it from the temp project cwd. Default baseline application appeared to fail because the finding `filePath` identity changed from a repo-relative temp path to `sample.ts`.
 
-**Evidence:** `src/baseline.ts` + `(search: "function applyBaseline")`; `src/analyser.ts` + `(search: "function selectedBaseline")` - baseline matching includes `(fingerprint, ruleId, filePath)`, and default baseline discovery is rooted at the current project root.
+**Evidence:** `src/baseline-file.ts` (search: `export function applyBaseline`) matches findings by identity. `src/baseline-identity.ts` (search: `computeIdentityFor(TOOL_LANGUAGE`) hashes `ruleId`, `filePath`, and a line-free subject into that identity, and `src/baseline-options.ts` (search: `function selectedBaseline`) roots default baseline discovery at the project root. The incident predates the current identity, when the match key was `(fingerprint, ruleId, filePath)`; `filePath` is still part of it, so the trap remains.
 
 **Prevention:** Generate and apply baseline smoke artifacts from the same project root. If testing absolute path operands, assert that changed display paths intentionally do not match the baseline.
 

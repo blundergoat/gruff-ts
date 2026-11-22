@@ -333,38 +333,32 @@ shellcheck_check() {
 # Runs the guardrail corpus that decides which agent commands are blocked or allowed.
 # Without it a policy change ships on the strength of tests that never read the policy.
 hook_policy_check() {
-  local deny_self_test=".goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh"
-  local post_turn_hook=".goat-flow/hooks/post-turn-safety.sh"
+  local post_turn_hook=".goat-flow/hooks/post-turn-safety.mjs"
   local summaries=()
+  local policy_hook
   local output
   local status
 
-  if [[ -f "$deny_self_test" ]]; then
-    output=$(bash "$deny_self_test" 2>&1)
+  # A missing hook file fails the step: skipping it would let a hook rename turn this gate into a silent pass.
+  for policy_hook in .goat-flow/hooks/deny-dangerous.mjs .goat-flow/hooks/deny-git-mutations.mjs; do
+    output=$(node "$policy_hook" --self-test=full 2>&1)
     status=$?
     if ((status != 0)); then
       printf '%s\n' "$output"
       return "$status"
     fi
     summaries+=("${output##*$'\n'}")
-  fi
+  done
 
   # The Stop hook is the last thing standing between a leaked credential and the
   # user's next commit, so prove it still blocks before calling a release ready.
-  if [[ -f "$post_turn_hook" ]]; then
-    output=$(bash "$post_turn_hook" --self-test 2>&1)
-    status=$?
-    if ((status != 0)); then
-      printf '%s\n' "$output"
-      return "$status"
-    fi
-    summaries+=("${output##*$'\n'}")
+  output=$(node "$post_turn_hook" --self-test 2>&1)
+  status=$?
+  if ((status != 0)); then
+    printf '%s\n' "$output"
+    return "$status"
   fi
-
-  if [[ "${#summaries[@]}" -eq 0 ]]; then
-    printf 'no hook self-tests found'
-    return 0
-  fi
+  summaries+=("${output##*$'\n'}")
 
   local joined="${summaries[0]}"
   local index

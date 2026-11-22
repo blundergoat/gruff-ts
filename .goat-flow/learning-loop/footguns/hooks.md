@@ -1,6 +1,6 @@
 ---
 category: hooks
-last_reviewed: 2026-10-03
+last_reviewed: 2026-11-23
 ---
 
 # Hooks footguns
@@ -15,41 +15,55 @@ goat-flow owns the hook files it installs and compares them byte-wise against it
 
 Version 1.15.1 had no supported local-override seam: `--force` overwrote every conflicted managed seed, and `.goat-flow/config.yaml` had no per-hook customization key. Version 1.16.0 adds `--force-path`, which narrows the replacement authority but still replaces the current bytes at that path.
 
-This bit during the 0.5.0 review. The secret-guard bypass documented below was fixed locally in `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` and `.goat-flow/hooks/deny-dangerous/patterns-paths.sh`, then reproduced against the pristine 1.15.1 template. Goat-flow 1.16.0 incorporated equivalent protections: `find_has_destructive_action` saves and restores the shared command context, and the shared splitter handles stderr pipelines. Since 1.17.0 that splitter lives in `.goat-flow/hooks/deny-dangerous/guard-runtime.sh` (search: `Bash's |& operator pipes stderr too`) rather than `deny-dangerous.sh`. Direct checks also confirmed that `npm run secrets` and `make secrets` remain allowed. The exact-path refresh therefore removed this repository's deliberate three-file divergence.
+This bit during the 0.5.0 review. The secret-guard bypass documented below was fixed locally in the bash policy modules patterns-shell.sh and patterns-paths.sh, then reproduced against the pristine 1.15.1 template. Goat-flow 1.16.0 incorporated equivalent protections: `find_has_destructive_action` saves and restores the shared command context, and the shared splitter handles stderr pipelines. Direct checks also confirmed that `npm run secrets` and `make secrets` remain allowed. The exact-path refresh therefore removed this repository's deliberate three-file divergence. Since 1.19.0 the hooks are Node modules, and `.goat-flow/hooks/deny-dangerous/corpus.json` (search: `stderr pipeline cannot hide protected read`) pins the stderr-pipeline protection.
 
-Detection: a managed dry run that reports `both-changed` is a divergence requiring review, not corruption. Confirm `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` still contains `saved_cmd_trimmed` in `find_has_destructive_action`, then run the full deny-hook self-test before authorizing a conflicted path.
+Detection: a managed dry run that reports `both-changed` is a divergence requiring review, not corruption. Before authorizing a conflicted path, run `node .goat-flow/hooks/deny-dangerous.mjs --self-test=full` and confirm it prints `PASS`. The corpus case `.goat-flow/hooks/deny-dangerous/corpus.json` (search: `find exec preserves protected search root`) covers the bypass this repository once patched locally.
+
+## Footgun: an upgrade that retires hook files fails each install until the last provider migrates
+
+**Status:** active | **Created:** 2026-11-23 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** When a goat-flow upgrade retires hook files, run `install . --agent <id>` for every installed agent, re-run each install that exited 1, and only then run `hooks sync .`. Afterwards grep tracked files outside `.goat-flow/hooks/` for the retired paths, because install does not report references in CI, scripts, or instruction files.
+**Trigger phase:** ACT
+
+On the 1.18.0 to 1.19.0 upgrade the `.sh` hooks were replaced by `.mjs` hooks. Four provider configs register them, for example `.codex/hooks.json` (search: `run-hook.mjs`), alongside `.claude/settings.json`, `.agents/hooks.json` and `.github/hooks/hooks.json`. The claude, codex and antigravity installs wrote their files and then exited 1 with `Runtime migration is incomplete: a provider still references the retired runtime.` After the claude install, only `.claude/settings.json` had stopped referencing the retired runtime. The copilot install, run last, removed the ten retired files, and re-running the first three installs then printed `Install verified for <agent> (1.19.0)`.
+
+The same rename stranded the self-test gates. Three CI steps in `.github/workflows/ci.yml` named the deleted `.sh` files and would have failed. `scripts/preflight-checks.sh` (search: `hook_policy_check()`) ran each hook self-test only when its file existed, so with the old paths it would have reported success while running nothing; it now runs the `.mjs` self-tests unconditionally, so a missing hook file fails the step.
+
+## Resolved Entries
 
 ## Footgun: policy modules read shared `CMD_*` globals that any nested walk overwrites
 
-**Status:** active | **Created:** 2026-08-13 | **Evidence:** ACTUAL_MEASURED
+**Status:** resolved | **Created:** 2026-08-13 | **Evidence:** ACTUAL_MEASURED
 **Decision changed:** Before adding a recursive `check_command_segments` call inside any policy module, save the `CMD_*` and `HAS_*` globals and restore them once the nested walk returns. Adding a new recursion site without that save is a silent policy bypass, not a style issue.
 **Trigger phase:** ACT
 
-`check_segment` (`.goat-flow/hooks/deny-dangerous/guard-runtime.sh`, search: `prepare_segment_context "$cmd" "$depth" || return $?`) parses each segment once and then runs three modules in sequence. `prepare_segment_context` assigns `CMD_TRIMMED`, `CMD_NORMALIZED`, `CMD_VERB`, `CMD_UNQUOTED`, `CMD_LOWER`, `HAS_REDIRECT`, and `HAS_PIPE` without `local`, so they are globals. Both later modules discard their own argument and read those globals instead (search: `CMD_TRIMMED` in `patterns-paths.sh` and `patterns-writes.sh`).
+This trap belongs to the bash policy runtime that goat-flow shipped through 1.18.0. There, `check_segment` in guard-runtime.sh parses each segment once and then runs three modules in sequence. `prepare_segment_context` assigns `CMD_TRIMMED`, `CMD_NORMALIZED`, `CMD_VERB`, `CMD_UNQUOTED`, `CMD_LOWER`, `HAS_REDIRECT`, and `HAS_PIPE` without `local`, so they are globals. Both later modules, patterns-paths.sh and patterns-writes.sh, discard their own argument and read `CMD_TRIMMED` and its siblings instead.
 
-Any module that recurses after the parse therefore rewrites the context the remaining modules depend on. `find_has_destructive_action` (`.goat-flow/hooks/deny-dangerous/patterns-shell.sh`, search: `check_command_segments "$exec_cmd"`) does exactly this for `-exec` and `-execdir` payloads, so the outer command was judged using the inner payload's context.
+Any module that recurses after the parse therefore rewrites the context the remaining modules depend on. `find_has_destructive_action` in patterns-shell.sh does exactly this for `-exec` and `-execdir` payloads, so the outer command was judged using the inner payload's context.
 
 Measured: `find .env -exec cat {} \;` was ALLOWED while the control `find .env -name x` was BLOCKED, and `.env.local`, `.aws/credentials`, `.npmrc`, `deploy.pem`, and `secrets/prod.pfx` were all reachable the same way. `-ok` and `-okdir` were unaffected because they do not recurse.
 
 The trap is structural: `prepare_segment_context` already carries a save/restore around its own `bash -c` recursion, which reads as though the hazard is handled everywhere. It is not, and nothing in the suite covered the shape, because a nested payload that is itself dangerous still blocks correctly. Only an outer-dangerous plus inner-safe command exposes it.
 
-Regression coverage now lives in `.goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh` (search: `find exec preserves protected search root`).
+Regression coverage now lives in `.goat-flow/hooks/deny-dangerous/corpus.json` (search: `find exec preserves protected search root`).
 
-Upstream status: goat-flow 1.16.0 carries the fix. The current `find_has_destructive_action` saves the shared command context immediately before each nested walk and restores it afterwards, while the regression suite covers a protected outer search root with a safe nested action. The structural warning remains active because any future recursion site that omits the same save and restore can recreate the bypass.
+Upstream status: goat-flow 1.16.0 carries the fix. Its `find_has_destructive_action` saves the shared command context immediately before each nested walk and restores it afterwards, while the regression suite covers a protected outer search root with a safe nested action.
+
+Resolved 2026-11-23 by goat-flow 1.19.0, which replaced the bash runtime with Node modules. The policy modules declare no module-level `let` or `var` bindings, each segment's context comes from its own `segmentFacts` call, and `.goat-flow/hooks/deny-dangerous/patterns-shell.mjs` (search: `export async function findHasDestructiveAction`) hands each `-exec` payload to an `evaluate` callback at `depth + 1` instead of rewriting shared state. Through `node .goat-flow/hooks/deny-dangerous.mjs --check`, `find .env -exec cat {} \;`, its control `find .env -name x`, and the `.env.local`, `.aws/credentials`, `.npmrc`, `deploy.pem`, and `secrets/prod.pfx` variants all exited 2.
 
 ## Footgun: a leading variable assignment makes deny-dangerous read quoted-heredoc backticks as command substitution
 
-**Status:** active | **Created:** 2026-10-03 | **Evidence:** ACTUAL_MEASURED
+**Status:** resolved | **Created:** 2026-10-03 | **Evidence:** ACTUAL_MEASURED
 **Decision changed:** Write multi-line file bodies with the Write tool. When a shell heredoc is unavoidable and its body holds backticks, do not open the command with a bare `NAME=value;` segment, and treat a block as "not run" rather than rewording the body to slip past the guard.
 **Trigger phase:** ACT
 
 **Prevention:** Prefer the Write tool for file bodies; otherwise drop the leading assignment, which the guard accepts without it.
 
-Under goat-flow 1.17.0 the guard (`.goat-flow/hooks/deny-dangerous/guard-runtime.sh`, search: `Backtick command substitution hides nested execution`) blocked a scratch-file write whose command began `S=<dir>;` and then fed a quoted heredoc with backticks in its body. Quoted-delimiter heredoc bodies never undergo substitution, so the block is a false positive. Check mode reproduces it: `bash .goat-flow/hooks/deny-dangerous.sh --check="$cmd"` exits 2 when `cmd` is `S=/tmp/x; cat > /tmp/a.json <<'JSON'`, a body line holding a backticked word, and `JSON`; the same heredoc with no prefix, or after `echo start;`, exits 0.
+Under goat-flow 1.17.0 the bash guard in guard-runtime.sh blocked a scratch-file write with `Backtick command substitution hides nested execution`. The command began `S=<dir>;` and then fed a quoted heredoc with backticks in its body. Quoted-delimiter heredoc bodies never undergo substitution, so the block is a false positive. Check mode reproduced it: `bash deny-dangerous.sh --check="$cmd"` exited 2 when `cmd` was `S=/tmp/x; cat > /tmp/a.json <<'JSON'`, a body line holding a backticked word, and `JSON`; the same heredoc with no prefix, or after `echo start;`, exited 0.
 
-The block fails closed, so it costs time, not safety. The managed self-test pins only the bounded-saver shape (`.goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh`, search: `bounded quality saver treats Markdown report JSON as data`). Because install reverts local hook patches (first entry above), the fix belongs upstream; resolve this entry when a goat-flow release passes the reproduction.
+The block fails closed, so it costs time, not safety. The managed self-test pins only the bounded-saver shape, now in `.goat-flow/hooks/deny-dangerous/corpus.json` (search: `bounded quality saver treats Markdown report JSON as data`). Because install reverts local hook patches (first entry above), the fix belonged upstream, and this entry was to be resolved when a goat-flow release passed the reproduction.
 
-## Resolved Entries
+Resolved 2026-11-23 by goat-flow 1.19.0. Through `node .goat-flow/hooks/deny-dangerous.mjs --check`, the reproduction exits 0 with the `S=/tmp/x;` prefix, without it, and after `echo start;`. As a control, the same three commands against the 1.18.0 bash hook from commit `56a4b53` exited 2, 0, and 0, the first with `Backtick command substitution hides nested execution`.
 
 ## Footgun: `install` and `hooks sync` disagree about a disabled hook's script
 

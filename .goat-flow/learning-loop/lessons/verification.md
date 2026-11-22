@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-11-22
+last_reviewed: 2026-11-23
 ---
 
 # Verification lessons
@@ -25,9 +25,9 @@ last_reviewed: 2026-11-22
 
 **Created:** 2026-08-13
 
-**What happened:** Reviewing the 0.5.0 hook changes, I reported that the new local-producer exemption in `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` (search: `interpreter_treats_stdin_as_data`) allowed arbitrary destructive inline interpreter code, and I graded it a blocking security regression. The evidence looked decisive: `printf x | node -e 'require("fs").rmSync("dist",{recursive:true})'` was BLOCKED at the base commit and ALLOWED at head, reproduced at runtime on both. An automated reviewer had independently flagged the same exemption, which reinforced the reading.
+**What happened:** Reviewing the 0.5.0 hook changes, I reported that the new local-producer exemption in the deny hook's stdin classifier (`interpreterTreatsStdinAsData` in `.goat-flow/hooks/deny-dangerous/patterns-shell.mjs` since goat-flow 1.19.0) allowed arbitrary destructive inline interpreter code, and I graded it a blocking security regression. The evidence looked decisive: `printf x | node -e 'require("fs").rmSync("dist",{recursive:true})'` was BLOCKED at the base commit and ALLOWED at head, reproduced at runtime on both. An automated reviewer had independently flagged the same exemption, which reinforced the reading.
 
-**Evidence:** the base-versus-head comparison was real but incomplete. Running the same body without the pipe showed `node -e 'require("fs").rmSync("dist",{recursive:true})'` ALLOWED at base as well as head. The base only blocked the piped spelling through a blanket pipe-to-interpreter rule; it never inspected the body. Since anything reachable via `printf x | node -e 'BODY'` was already reachable via `node -e 'BODY'`, the change granted no new capability. The residual exposure is the project's documented accepted scope limit, stated in the suite itself (search: `ACCEPTED scope: python3 shell escape in body is not inspected`).
+**Evidence:** the base-versus-head comparison was real but incomplete. Running the same body without the pipe showed `node -e 'require("fs").rmSync("dist",{recursive:true})'` ALLOWED at base as well as head. The base only blocked the piped spelling through a blanket pipe-to-interpreter rule; it never inspected the body. Since anything reachable via `printf x | node -e 'BODY'` was already reachable via `node -e 'BODY'`, the change granted no new capability. The residual exposure is the project's documented accepted scope limit, stated in the self-test corpus `.goat-flow/hooks/deny-dangerous/corpus.json` (search: `ACCEPTED scope: python3 shell escape in body is not inspected`).
 
 **Rule going forward:** a base-to-head behaviour delta is necessary but not sufficient for a regression claim. Before grading one, run the nearest always-permitted equivalent of the same capability. If that equivalent was already allowed, the guard being removed was incidental rather than load-bearing, and the finding is an accepted-scope pointer, not a blocker. Applies equally to bot findings: the same check refuted the automated report. The sibling finding in that review survived this test precisely because `cat .env` is blocked, so `find .env -exec cat {} \;` had no permitted equivalent.
 
@@ -224,14 +224,14 @@ when the old behavior is still present in code.
 ## Lesson: classify interpreter pipelines by whether stdin is data or code
 
 **Created:** 2026-05-10
-**Updated:** 2026-08-09
+**Updated:** 2026-11-23
 **Decision changed:** Check the current hook's stdin classification before rewriting a local-data pipeline; downloader and executable-stdin paths remain blocked, while reviewed local data consumers may be allowed.
 
 The pre-1.14 policy blocked every pipe into `python3 -c` or `node -e`, so local-data processing had to switch to a file intermediate. Goat-flow 1.14 now distinguishes reviewed local producers feeding an inline snippet or checked-in script (stdin remains data) from raw interpreter stdin, stdin-path/module spellings, and downloader pipelines (stdin may execute code).
 
 **Recurrence, 2026-08-09:** M28 put literal backticks inside a double-quoted `rg` pattern; the deny hook blocked it before execution.
 
-**Evidence:** `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` (search: `interpreter_treats_stdin_as_data`) owns the current classification; `.goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh` (search: `Local data stays readable through explicit inline snippets`) pins allowed local-data cases and blocked executable-input cases.
+**Evidence:** `.goat-flow/hooks/deny-dangerous/patterns-shell.mjs` (search: `export function interpreterTreatsStdinAsData`) owns the current classification. `.goat-flow/hooks/deny-dangerous/corpus.json` (search: `local data pipe to inline python snippet`) pins an allowed local-data case, and the same file (search: `local data pipe to shell stays blocked`) pins a blocked executable-input case.
 
 **Prevention:** If the hook blocks a pipeline, do not retry an equivalent spelling. Inspect whether stdin is code or data; keep downloader and raw-stdin execution blocked, and use an explicit file input when the command falls outside the reviewed local-data cases. Use single-quoted search patterns when repository text contains backticks.
 
@@ -294,3 +294,17 @@ The pre-1.14 policy blocked every pipe into `python3 -c` or `node -e`, so local-
 **Prevention:** When a gate claims to cover N directions, run N experiments, one per direction, and pick each probe so it is NOT already named in the fixture data - a probe drawn from the fixture set proves only that the fixture set is wired up. More generally, a behavioural assertion over an enumerated fixture set gates the fixtures, not the enumeration: to gate a list, assert the list.
 
 **Recurrence 2026-11-22:** Restoring the hotspot renderer's previous field set tripped the diagnostic-format test, which expected diagnostics in every format. Check the prior renderer before changing a versioned format. `src/scan-surface.test.ts` now checks the hotspot key set and diagnostic output in the formats that carry it.
+
+## Lesson: check a semantic anchor with `grep -F`, not a regex grep
+
+**Created:** 2026-11-23
+
+**Decision changed:** Before reporting that a `(search: ...)` needle is missing from its cited file, re-run the count with `grep -F` (or `rg -F`); treat a zero from a regex grep as unproven.
+
+**Trigger phase:** VERIFY
+
+**What happened:** While repointing hook anchors after the goat-flow 1.19.0 upgrade, I grepped the extracted 1.18.0 hooks for the old needles `prepare_segment_context "$cmd" "$depth" || return $?` and `check_command_segments "$exec_cmd"` without `-F`, got a count of 0 for both, and told the user those anchors had already been stale before the upgrade. They had not.
+
+**Evidence:** The same files with `grep -c -F` returned 1 for each needle. In this shell `grep` is ugrep in basic-regex mode (`-G`), and the `$` inside both needles acted as an end-of-line anchor, so a needle that quotes shell code could not match its own text.
+
+**Prevention:** Verify every needle with a fixed-string search, and run the check on the claim before stating it to the user.

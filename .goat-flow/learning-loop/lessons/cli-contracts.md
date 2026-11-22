@@ -1,6 +1,6 @@
 ---
 category: cli-contracts
-last_reviewed: 2026-08-09
+last_reviewed: 2026-11-23
 ---
 
 # CLI contract lessons

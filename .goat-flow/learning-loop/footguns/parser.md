@@ -1,10 +1,10 @@
 ---
 category: parser
-last_reviewed: 2026-08-09
+last_reviewed: 2026-11-23
 hallucination-risk: high
 ---
 
-# Parser footguns (`src/source-text.ts`)
+# Parser footguns (`src/source-text.ts`, `src/parsed-script.ts`)
 
 Static-analysis surfaces that look like a real TS parser may still be regex/character heuristics, syntax-only parser passes, or single-file text scans. Agents reading the code from names alone (`functionBlocks`, `parseDiagnostics`, `analyseDeadCode`) tend to over-trust them - that is the trap.
 
@@ -23,14 +23,14 @@ When changing a per-block rule, test the relevant callable shape. When adding an
 
 ## Footgun: `parseDiagnostics` is syntax-only TypeScript parsing, not typechecking
 
-**Status:** active | **Created:** 2026-05-10 | **Updated:** 2026-06-10 | **Evidence:** OBSERVED
+**Status:** active | **Created:** 2026-05-10 | **Updated:** 2026-11-23 | **Evidence:** OBSERVED
 
-`parseDiagnostics` (`src/source-text.ts`, search: `function parseDiagnostics`) now uses `typescript.createSourceFile(...).parseDiagnostics` for script files and picks `ScriptKind` by extension. That fixes delimiter false positives in valid TSX/JSX, but the pass is syntax-only. It does not run semantic TypeScript checking, module resolution, JSX type checks, or project compiler options.
+`parseDiagnostics` (`src/source-text.ts`, search: `function parseDiagnostics`) delegates to the shared `parseScript` (`src/parsed-script.ts`, search: `export function parseScript`). That function reads `typescript.createSourceFile(...).parseDiagnostics` for script files, picks `ScriptKind` by extension through `scriptKindFor`, and reports one summarized diagnostic per malformed file. That fixes delimiter false positives in valid TSX/JSX, but the pass is syntax-only. It does not run semantic TypeScript checking, module resolution, JSX type checks, or project compiler options.
 
 Two traps from M08:
 
 - Over-budget files intentionally skip parse diagnostics through the scan-surface guardrail. Do not move parser calls above that budget check.
-- `SourceFile.parseDiagnostics` is present at runtime but is not exposed on the public TypeScript `SourceFile` type used by this repo's TS version. A direct `sourceFile.parseDiagnostics` caused `tsc` failure. Keep the local typed bridge (`ParsedSourceFileWithDiagnostics`) or verify the installed TypeScript types before changing it.
+- `SourceFile.parseDiagnostics` is present at runtime but is not exposed on the public TypeScript `SourceFile` type used by this repo's TS version. A direct `sourceFile.parseDiagnostics` caused `tsc` failure. Keep the typed bridge (`ParsedSourceFileWithDiagnostics` in `src/parsed-script.ts`) or verify the installed TypeScript types before changing it.
 
 Implication: keep a valid TSX false-positive fixture and a broken TSX counter-fixture when changing this area. Do not claim parse diagnostics are equivalent to `tsc --noEmit`; they are only parser diagnostics.
 
