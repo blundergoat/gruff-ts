@@ -77,7 +77,7 @@ gruff-ts/
 │   ├── baseline.ts                = canonical finding order, dedupe, and score-history recording
 │   ├── scoring.ts                 = report scoring, summaries, and finding exit semantics
 │   ├── pillar-summary.ts          = canonical summary pillar rows and ordering
-│   ├── rules.ts                   = catalogue of exactly 83 descriptors across 11 pillars
+│   ├── rules.ts                   = catalogue of exactly 81 descriptors across 11 pillars
 │   ├── profiles.ts                = built-in rule profile presets that profile: and --profile resolve
 │   ├── selectors.ts               = execution versus presentation rule selectors
 │   ├── rule-list.ts               = list-rules, profile list, and shell completion rendering
