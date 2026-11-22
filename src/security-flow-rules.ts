@@ -1,4 +1,7 @@
-// Conservative security candidates from same-line source tokens and bounded local AST flow.
+// Finds candidate security issues in TypeScript and JavaScript during analysis.
+//
+// Uses written source and local assignments to connect inputs with calls worth reviewing.
+// A finding points the developer to the code to inspect, with no need to run the scanned project.
 import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { parseScript } from "./parsed-script.ts";
@@ -881,20 +884,23 @@ function isUnsafeXmlParserConstruction(parsedSource: TsSourceFile, expr: TsNode)
   );
 }
 
-// Return the first SOURCE_TOKENS kind in expr's text in parsedSource, or undefined for no unmasked match or a recognized sanitizer call.
-// String literals and substitution-free templates return undefined. With fileReads, mask proven reads so path taint cannot imply content taint.
-// Mask request-like parameter names from nested functions unless immediately invoked. Property access names stay visible.
+// Identifies the first recognized input source so a flow finding can tell the user where an unchecked value came from.
+// Returns undefined when the expression supplies no input evidence, such as plain text or a recognized escaping call.
 function sourceKindOf(parsedSource: TsSourceFile, expr: TsNode, fileReads?: FileReadBindings): string | undefined {
+  // A recognized escaping helper is evidence that the developer prepared the value for this check.
   if (isSafeWrapperExpression(parsedSource, expr)) {
     return undefined;
   }
+  // A literal in code or a template with no substitutions supplies text rather than a request value.
   if (isSourceTextLiteral(expr)) {
     return undefined;
   }
   let text = textOutsideRequestHandlers(parsedSource, expr);
+  // Without recognized file reads, there are no read paths to mask from input classification.
   if (fileReads?.size) {
     const start = expr.getStart(parsedSource);
     walk(expr, (node) => {
+      // Keep other calls visible. A file read's path is separate from the file contents the developer uses.
       if (!isImportedFileRead(node, parsedSource, fileReads)) return;
       const from = node.getStart(parsedSource) - start;
       const endOffset = node.getEnd() - start;
@@ -902,7 +908,9 @@ function sourceKindOf(parsedSource: TsSourceFile, expr: TsNode, fileReads?: File
       return false;
     });
   }
+  // Use the first recognized input kind to describe the starting point in the finding.
   for (const token of SOURCE_TOKENS) {
+    // When the remaining source matches this check, show its input kind in the report.
     if (token.pattern.test(text)) {
       return token.kind;
     }
@@ -910,21 +918,23 @@ function sourceKindOf(parsedSource: TsSourceFile, expr: TsNode, fileReads?: File
   return undefined;
 }
 
-// Returns the text of expr from its owning parsedSource, masking nested handler request names to preserve offsets.
-// The mask matches identifiers named by req, request or ctx parameters and leaves property names after a dot visible.
-// A function called in place, as in (() => req.query.path)(), starts no handler mask because its result contributes to the value.
+// Separates nested handlers from the value being reviewed so one handler's local request does not flag another expression.
+// Retains source offsets and input evidence from callbacks that contribute to the current value, such as a map callback.
 function textOutsideRequestHandlers(parsedSource: TsSourceFile, expr: TsNode): string {
   const expressionStart = expr.getStart(parsedSource);
   let text = expr.getText(parsedSource);
   walk(expr, (node) => {
-    if (node === expr || !isFunctionLike(node) || isImmediatelyInvoked(node)) {
+    // Keep expressions and value-producing callbacks in view when they can supply input to the current finding.
+    if (node === expr || !isFunctionLike(node) || contributesCallbackValue(node)) {
       return;
     }
     const declaredNames = declaredRequestParameterNames(node);
+    // A nested handler with no recognized request parameter has no local request names to hide.
     if (declaredNames.size === 0) {
       return;
     }
     walk(node, (inner) => {
+      // Mask the handler's parameter references. A property named req, such as this.req, is a different binding.
       if (typescriptSyntax.isIdentifier(inner) && declaredNames.has(inner.text) && !isPropertyAccessName(inner)) {
         const blankStart = inner.getStart(parsedSource) - expressionStart;
         const blankEnd = inner.getEnd() - expressionStart;
@@ -943,13 +953,29 @@ function declaredRequestParameterNames(node: TsNode): Set<string> {
   return new Set(parameters.flatMap((parameter) => (typescriptSyntax.isIdentifier(parameter.name) && REQUEST_RECEIVER_NAMES.has(parameter.name.text) ? [parameter.name.text] : [])));
 }
 
-// True when a function is called where it is written, through any parentheses, as in ((req) => req.query.path)(req).
-function isImmediatelyInvoked(node: TsNode): boolean {
-  let callee = node;
-  while (typescriptSyntax.isParenthesizedExpression(callee.parent)) {
-    callee = callee.parent;
+// Keeps known value-producing callbacks in the input scan so the developer can trace a result through a function call.
+function contributesCallbackValue(node: TsNode): boolean {
+  // Extra parentheses around a function do not change whether its value is used.
+  while (typescriptSyntax.isParenthesizedExpression(node.parent)) {
+    node = node.parent;
   }
-  return typescriptSyntax.isCallExpression(callee.parent) && callee.parent.expression === callee;
+  const parent = node.parent;
+  // Developers can invoke a function through call or apply. Reading one of those properties alone supplies no result.
+  if (typescriptSyntax.isPropertyAccessExpression(parent) && parent.expression === node) {
+    return (parent.name.text === "call" || parent.name.text === "apply")
+      && typescriptSyntax.isCallExpression(parent.parent) && parent.parent.expression === parent;
+  }
+  // A function merely stored as a value does not contribute its body to the current finding.
+  if (!typescriptSyntax.isCallExpression(parent)) {
+    return false;
+  }
+  // An immediately invoked function can pass its return value into the expression being checked.
+  if (parent.expression === node) {
+    return true;
+  }
+  // Known collection and promise methods use a callback result, such as a value returned from then.
+  return parent.arguments[0] === node && typescriptSyntax.isPropertyAccessExpression(parent.expression)
+    && /^(?:map|flatMap|reduce|reduceRight|then|catch)$/u.test(parent.expression.name.text);
 }
 
 // Returns true when the identifier names a property in a dotted access such as this.req, where req reads no local binding.

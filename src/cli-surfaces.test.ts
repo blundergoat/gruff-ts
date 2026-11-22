@@ -1,8 +1,11 @@
-// CLI and dashboard surface tests covering command help, render formats, SARIF, and HTML controls.
+// Exercises the CLI as a user runs it and checks the reports they open or feed into CI.
+//
+// Covers command help, JSON and SARIF output, summary gates, and dashboard HTML controls.
+// Also checks that invalid scans and failed upgrades leave saved config or review files available.
 import { findingIdentities } from "./baseline-identity.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -262,6 +265,78 @@ test("summary exits 0 on findings unless --fail-on asks for a gate", () => {
   const args = ["summary", "fixtures/sample.ts", "--no-config", "--no-baseline"];
   assert.equal(spawnSync("./bin/gruff-ts", args, { encoding: "utf8" }).status, 0);
   assert.equal(spawnSync("./bin/gruff-ts", [...args, "--fail-on=advisory"], { encoding: "utf8" }).status, 1);
+});
+
+// The gate runs before display filtering. JSON users still need the process verdict and the visible finding totals.
+// Writes a temporary project, invokes the CLI against it, and removes the project afterwards.
+test("the JSON exit code agrees with each gate after display filtering", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-json-gate-"));
+  try {
+    const path = join(root, "sample.ts");
+    writeFileSync(path, "export function choose(value: string): string { return value; }\n");
+    const rule = "docs.missing-exported-function-doc";
+    const args = ["analyse", path, "--no-config", "--format=json", "--include-rule", rule];
+    const cases = [
+      { flags: ["--min-confidence=high"], status: 0, visible: 1 },
+      { flags: ["--hide-rule", rule], status: 1, visible: 0 },
+    ];
+    // A user can raise the confidence gate or hide a rule. Check the visible counts and published verdict for both choices.
+    for (const { flags, status, visible } of cases) {
+      const scan = spawnSync("./bin/gruff-ts", [...args, ...flags], { encoding: "utf8" });
+      const report = JSON.parse(scan.stdout);
+      assert.equal(scan.status, status);
+      assert.equal(report.summary.exitCode, status);
+      assert.equal(report.summary.findings.total, visible);
+      assert.equal(report.findings.length, visible);
+      assert.deepEqual(report.score.scoredPillars, ["documentation"]);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The destination can name the same physical file without using the same path spelling.
+// Writes and hard-links a temporary config, runs migration twice, and removes the temporary directory.
+test("migration creates a separate output and preserves a hard-linked original", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-config-migration-"));
+  try {
+    const input = join(root, "old.json");
+    const alias = join(root, "alias.json");
+    const output = join(root, "new.json");
+    const original = JSON.stringify({ minimumSeverity: { analyse: "warning" } });
+    writeFileSync(input, original);
+    linkSync(input, alias);
+    const args = ["migrate-config", "--config", input, "--output"];
+    assert.equal(spawnSync("./bin/gruff-ts", [...args, alias]).status, 2);
+    assert.equal(readFileSync(input, "utf8"), original);
+    assert.equal(spawnSync("./bin/gruff-ts", [...args, output]).status, 0);
+    const migrated = JSON.parse(readFileSync(output, "utf8"));
+    assert.deepEqual(migrated.failOn, { analyse: "warning" });
+    assert.equal(Object.hasOwn(migrated, "minimumSeverity"), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Both failure paths must avoid the baseline writer, since its output can hide debt in a later scan.
+// Writes a temporary source and baseline, invokes analysis twice, and cleans up the files.
+test("an invalid scan leaves an existing baseline destination alone", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-incomplete-baseline-"));
+  try {
+    const source = join(root, "sample.ts");
+    const baseline = join(root, "saved.json");
+    const original = "previous review\n";
+    writeFileSync(baseline, original);
+    const args = ["analyse", source, "--no-config", "--format=json", "--generate-baseline", baseline];
+    writeFileSync(source, "export const okay = 1;\n");
+    assert.equal(spawnSync("./bin/gruff-ts", [...args, "--changed-ranges="]).status, 2);
+    assert.equal(readFileSync(baseline, "utf8"), original);
+    writeFileSync(source, "export const broken = {\n");
+    assert.equal(spawnSync("./bin/gruff-ts", args).status, 2);
+    assert.equal(readFileSync(baseline, "utf8"), original);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("an unreadable --changed-ranges value exits 2 with one run-invalidating diagnostic", () => {

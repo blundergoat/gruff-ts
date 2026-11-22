@@ -1,6 +1,7 @@
-// Configuration loading turns CLI and config-file choices into validated analyzer settings.
+// Resolves the project settings used by analyse, summary, report, and hook.
 //
-// Users get predictable defaults or an actionable startup error; syntax parsing and value narrowing live in `config-parse.ts`.
+// Starts with built-in defaults and layers on settings from the user's project, profile, and command flags.
+// Invalid settings produce a startup error before the user relies on the requested scan or exit gate.
 import { existsSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { arrayValue, isString, objectValue, parseConfigFile, SUGGEST_EDIT_CONFIG, SUGGEST_INIT_FORCE } from "./config-parse.ts";
@@ -331,25 +332,29 @@ function assertKnownKeys(block: Record<string, unknown> | undefined, known: Read
   throw new ConfigLoadError(`Unknown config key ${rejected}. Valid keys: ${accepted}.`, SUGGEST_EDIT_CONFIG);
 }
 
-// Returns nothing. Updates config.deepScanBudget from the parsed deepScanBudget section and records the config file as its source.
-// Either bound can limit deep scanning. An omitted section leaves the current budget in place.
-// A null or omitted enabled flag and omitted numeric limits preserve their current values.
-// @throws {ConfigLoadError} - when deepScanBudget is not a mapping, has an unknown key, or enabled or a limit is invalid.
+// Applies the user's configured line and byte limits before analysis so the report can explain any truncated checks.
+// Omitted settings inherit the current budget. Null values are invalid.
+// @throws {ConfigLoadError} for an invalid budget mapping, unknown key, or invalid enabled flag or limit.
 function applyDeepScanBudgetConfig(config: Config, parsedConfig: Record<string, unknown>): void {
   const rawBudget = parsedConfig.deepScanBudget;
+  // A project with no budget block keeps the current limits.
   if (rawBudget === undefined) {
     return;
   }
   const budget = objectValue(rawBudget);
+  // An explicit null does not select a budget. Users who want unlimited analysis can set enabled to false.
   if (!budget) {
     throw new ConfigLoadError('Config key "deepScanBudget" must be a mapping.', SUGGEST_EDIT_CONFIG);
   }
   const allowedKeys = new Set(["enabled", "maxLines", "maxBytes"]);
   const unknownKey = Object.keys(budget).find((key) => !allowedKeys.has(key));
+  // A typo such as maxLine could make a user think a limit is in effect when it was ignored.
   if (unknownKey) {
     throw new ConfigLoadError(`Unknown deepScanBudget key: ${JSON.stringify(unknownKey)}. Valid keys: enabled, maxLines, maxBytes.`, SUGGEST_EDIT_CONFIG);
   }
-  const enabled = budget.enabled ?? config.deepScanBudget.enabled;
+  // A user can change just the line or byte limit and keep the inherited enabled setting.
+  const enabled = budget.enabled === undefined ? config.deepScanBudget.enabled : budget.enabled;
+  // An explicit null or string gives the user an error with the accepted settings.
   if (typeof enabled !== "boolean") {
     throw new ConfigLoadError('Config key "deepScanBudget.enabled" must be true or false.', SUGGEST_EDIT_CONFIG);
   }
@@ -421,15 +426,19 @@ function applyDisplayFloorConfig(config: Config, parsedConfig: Record<string, un
   config.displayFloor = configuredFloor;
 }
 
-// Returns nothing. Updates the effective config's exit thresholds from the parsed failOn mapping so CI can apply them consistently.
-// An unknown command or invalid threshold in the mapping throws ConfigLoadError before analysis.
+// Loads a project's per-command exit gates so a developer and CI can get the same result without repeating `--fail-on`.
+// @throws {ConfigLoadError} for a non-mapping, an unknown command, or an invalid threshold.
 function applyFailOnConfig(config: Config, parsedConfig: Record<string, unknown>): void {
-  const block = objectValue(parsedConfig.failOn);
-  // Without a mapping, the current thresholds stay in place for CLI option resolution.
-  if (!block) {
+  // Omitting failOn keeps the current command thresholds.
+  if (parsedConfig.failOn === undefined) {
     return;
   }
-  // Each configured command receives its validated threshold for later CLI precedence handling.
+  const block = objectValue(parsedConfig.failOn);
+  // A bare `failOn: warning` gives no command to gate. Ask the user to name one, such as analyse.
+  if (!block) {
+    throw new ConfigLoadError('Config key "failOn" must be a mapping of commands to thresholds.', SUGGEST_EDIT_CONFIG);
+  }
+  // Apply each gate so a project can fail analyse at warning while allowing summary to exit successfully.
   for (const [commandName, value] of Object.entries(block)) {
     config.minimumSeverity.set(assertGatedCommand(commandName), parseFailThresholdConfig(value));
   }

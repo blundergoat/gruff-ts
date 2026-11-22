@@ -1,11 +1,15 @@
-// `gruff.hook.v2` adapter: owns the agent-hook JSON shape independently of the analysis v3 envelope.
+// Builds the JSON response that a coding agent receives from `gruff-ts hook`.
+//
+// Compares the user's edit with a Git base or reviewed baseline when one is supplied.
+// Uses published findings and diagnostics to decide whether the edit can proceed.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { tmpdir } from "node:os";
 import { applyBaseline, BASELINE_SCHEMA_VERSION } from "./baseline-file.ts";
+import { defaultConfigPath } from "./config.ts";
 import { absolutize, displayPath } from "./discovery.ts";
 import { VERSION } from "./constants.ts";
 import { ruleDescriptors } from "./rules.ts";
@@ -128,7 +132,7 @@ interface HookFinding {
 }
 
 // What a baseline made of each finding this run produced, so the payload can report a status per finding.
-type HookBaselineStatuses = Map<Finding, string>;
+type HookBaselineStatuses = Map<string, string>;
 
 const HOOK_CONTRACT_VERSION = "gruff.hook.v2";
 const FILE_SCOPE_RULE_IDS = new Set(["design.large-module-concentration", "docs.missing-file-overview", "size.file-length"]);
@@ -177,13 +181,14 @@ export function renderHookCapabilities(): string {
 }
 
 /**
- * Run analysis and apply hook filtering so the gruff.hook.v2 schema records the findings and audits the agent can act on.
- * Diff-base replay spawns Git, writes a temporary tree, and temporarily changes the process working directory.
- * An absent diff base skips replay filtering. An absent baseline skips review filtering and leaves row statuses null.
+ * Builds the hook response from the findings the integration can act on for this edit.
+ *
+ * Invariant: the response includes the selected findings and the audits the hook gate will use for this edit.
+ * Side effects: replaying a Git base uses a temporary directory and briefly changes the working directory.
  *
  * @param runAnalyse - analysis runner used to obtain the report views and replay an available diff base
- * @param input - hook request with scan options, changed-region mode, and any baseline or diff base
- * @returns newline-terminated JSON with the run audit, filtered findings, diagnostics, exclusion audit, ignored paths, and config status
+ * @param input - hook request. No diff base skips replay. No baseline skips filtering by reviewed findings.
+ * @returns newline-terminated JSON with findings and run details. Null baseline statuses mean the user supplied no baseline.
  */
 export function renderHookReport(runAnalyse: HookAnalysisRunner, input: HookReportInput): string {
   const views = hookAnalysisViews(runAnalyse, input);
@@ -192,13 +197,15 @@ export function renderHookReport(runAnalyse: HookAnalysisRunner, input: HookRepo
   const baseIdentities = hookDiffBaseIdentities(runAnalyse, input, currentReport);
   const kept = hookFindings(currentReport, scopedReport, input, baseIdentities, statuses);
   const suppressedCount = hookSuppressedCount(scopedReport, kept, input.hasChangedRegion);
-  const findings = kept.map((finding) => toHookFinding(finding, statuses.get(finding) ?? null));
+  // A finding with no matching status stays new when the user supplied a baseline. Otherwise it has no review status.
+  const findings = kept.map((finding) => toHookFinding(finding, statuses.get(hookOccurrenceKey(finding)) ?? (input.baselinePath === undefined ? null : "new")));
   return JSON.stringify(hookReport(scopedReport, findings, suppressedCount, hookRun(scopedReport, input)), null, 2) + "\n";
 }
 
-// Returns current and scoped reports using runAnalyse and the scan options in input, preferring runAnalyse.hookViews.
-// Without that method, calls the runner twice only for a changed region; otherwise both reports share one result.
+// Gets all findings and those in the user's edit so hook filtering can compare the two views.
+// Without a change selector, both views describe the full scan.
 function hookAnalysisViews(runAnalyse: HookAnalysisRunner, input: HookReportInput): HookAnalysisViews {
+  // The CLI runner supplies both views from one scan so the user sees a consistent result.
   if (runAnalyse.hookViews) {
     return runAnalyse.hookViews(input.currentOptions, input.scopedOptions, input.hasChangedRegion);
   }
@@ -208,8 +215,8 @@ function hookAnalysisViews(runAnalyse: HookAnalysisRunner, input: HookReportInpu
 }
 
 /**
- * Classify hook findings against the same gruff.baseline.v3 file that analyse --generate-baseline writes, so one review serves both commands.
- * Classify the scoped report last so that its statuses take precedence for findings shared by both reports.
+ * Applies the review file produced by `analyse --generate-baseline` before narrowing to the edit.
+ * Counting reviews across the full scan keeps an unchanged occurrence elsewhere from hiding a new one in the edit.
  *
  * @param views - Current and scoped reports whose findings need baseline classification.
  * @param baselinePath - Caller-selected baseline path, resolved from the working directory. Omission leaves the run unclassified.
@@ -223,13 +230,18 @@ function hookBaselineStatuses(views: HookAnalysisViews, baselinePath: string | u
     return statuses;
   }
   const resolved = absolutize(cwd(), baselinePath);
-  for (const report of [views.currentReport, views.scopedReport]) {
-    const application = applyBaseline(resolved, report.findings);
-    report.findings.forEach((finding, index) => {
-      statuses.set(finding, application.statuses[index] ?? "new");
-    });
-  }
+  const findings = views.currentReport.findings;
+  const application = applyBaseline(resolved, findings);
+  // A matching occurrence keeps the outcome of the original review. An unclassified occurrence stays visible as new.
+  findings.forEach((finding, index) => {
+    statuses.set(hookOccurrenceKey(finding), application.statuses[index] ?? "new");
+  });
   return statuses;
+}
+
+// Invariant: one occurrence has the same key in both views, but different columns distinguish multiple matches on one line.
+function hookOccurrenceKey(finding: Finding): string {
+  return `${finding.fingerprint}\0${finding.column ?? ""}`;
 }
 
 /**
@@ -344,32 +356,37 @@ function toHookDiagnostic(diagnostic: RunDiagnostic): HookDiagnostic {
 
 /**
  * Decide whether to block the edit using the same hook contract entries the agent sees.
- * Missing or non-array findings and diagnostics count as empty. The CLI uses exit code 2 for errors caught before calling this gate.
+ * Missing or non-array lists count as empty so they add no gate entries.
  *
  * @param renderedEnvelope - published hook envelope as JSON
  * @param gate - thresholds and options that determine which published entries block the edit
- * @returns 1 when a published entry reaches the gate and 0 otherwise
+ * @returns 2 for a missing target, 1 when a published entry reaches the gate, or 0 when the edit can proceed
  * @throws SyntaxError - if the envelope is invalid JSON
  */
 export function hookExitCode(renderedEnvelope: string, gate: HookExitGate): number {
   const payload = JSON.parse(renderedEnvelope) as { findings?: HookFinding[]; diagnostics?: HookDiagnostic[] };
   const diagnostics = Array.isArray(payload.diagnostics) ? payload.diagnostics : [];
+  // An editor may request a file that was just deleted. The hook cannot approve an edit it could not scan.
+  if (diagnostics.some((diagnostic) => diagnostic.type === "missing-path")) {
+    return 2;
+  }
   // When the diagnostic gate is enabled, any published diagnostic blocks the edit regardless of the finding thresholds.
   if (gate.shouldFailOnDiagnostics && diagnostics.length > 0) {
     return 1;
   }
+  // When there are no published findings, only diagnostics can block the edit.
   const findings = Array.isArray(payload.findings) ? payload.findings : [];
   return findings.some((finding) => reachesHookGate(finding, gate)) ? 1 : 0;
 }
 
-// True when one published finding reaches the gate the caller set, by baseline status or by severity and confidence.
-// Severity and confidence are independent floors, so either can keep a finding from reaching the threshold.
-// The gate contract treats failOn none as disabling only those floors, so enabled new-debt gating can still block.
+// Decides whether a published finding blocks the edit under the user's review or severity settings.
+// Invariant: `--fail-on none` disables severity gating while leaving an explicitly requested review gate active.
 function reachesHookGate(finding: HookFinding, gate: HookExitGate): boolean {
-  // A new status can block regardless of either floor. A null status can block only through an enabled severity and confidence gate.
-  if (gate.shouldFailOnNew && finding.baselineStatus === "new") {
+  // The review gate blocks unreviewed findings, including those that cannot be recorded. Null means the user supplied no baseline.
+  if (gate.shouldFailOnNew && finding.baselineStatus !== null && finding.baselineStatus !== "unchanged") {
     return true;
   }
+  // The user can turn off severity gating while still blocking findings that lack a review.
   if (gate.failOn === "none") {
     return false;
   }
@@ -390,8 +407,8 @@ function analyzerInfo(): { name: "gruff-ts"; version: string } {
  * @param scopedReport - scoped scan that supplies the initial candidates
  * @param input - hook request that supplies changed-region mode and whether a baseline was named
  * @param baseIdentities - stable match-key counts from the diff base, or undefined to skip diff-base filtering
- * @param statuses - baseline classifications used to remove reviewed occurrences marked unchanged
- * @returns the findings kept after changed-region, diff-base, and baseline filtering
+ * @param statuses - baseline classifications. An empty map leaves the published list unfiltered by review.
+ * @returns the findings shown to the user after scope and review filtering. An empty list means none remain to publish.
  */
 function hookFindings(
   currentReport: AnalysisReport,
@@ -409,11 +426,12 @@ function hookFindings(
   const withNewFileAndProject = hasChangedRegion && hasPriorBase
     ? [...scopedFindings, ...newFileAndProjectFindings(currentReport, scopedFindings, covered)]
     : scopedFindings;
+  // Without replay counts, there is no earlier Git snapshot to match against the current edit.
   const afterNewOnly = baseIdentities
     ? withNewFileAndProject.filter((finding) => !spendCoveredOccurrence(covered, finding))
     : withNewFileAndProject;
   // A finding marked unchanged has already been reviewed against the baseline, so it stays out of the published list.
-  return afterNewOnly.filter((finding) => statuses.get(finding) !== "unchanged");
+  return afterNewOnly.filter((finding) => statuses.get(hookOccurrenceKey(finding)) !== "unchanged");
 }
 
 // Returns file and project findings in currentReport whose fingerprints are absent from scopedFindings and have no remaining base occurrence.
@@ -638,23 +656,29 @@ function keysFromDiffBase(
   currentReport: AnalysisReport,
 ): Map<string, number> {
   const ref = diffBaseRef(diffBase);
+  // A patch read from stdin has no revision to replay.
   if (ref === undefined) {
     return new Map();
   }
   const files = [...new Set(currentReport.findings.flatMap(findingBasePaths))];
+  // With no current finding paths, the agent has nothing to compare with the base.
   if (files.length === 0) {
     return new Map();
   }
   const tempRoot = mkdtempSync(join(tmpdir(), "gruff-ts-hook-base-"));
   const previous = cwd();
+  const projectRoot = currentReport.run.projectRoot;
   try {
-    const baseFiles = materializeBaseFiles(ref, files, tempRoot);
+    const baseFiles = materializeBaseFiles(ref, files, tempRoot, projectRoot);
+    // New files may exist only in the current checkout, leaving no prior occurrences to spend.
     if (baseFiles.length === 0) {
       return new Map();
     }
+    const baseOptions = baseAnalysisOptions(options, baseFiles, projectRoot);
     chdir(tempRoot);
-    const baseReport = runAnalyse(baseAnalysisOptions(options, baseFiles, previous));
+    const baseReport = runAnalyse(baseOptions);
     const counts = new Map<string, number>();
+    // Each prior match covers one occurrence so a duplicate introduced by this edit can still appear.
     for (const key of baseReport.findings.map(hookMatchKey)) {
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
@@ -682,48 +706,46 @@ function findingBasePaths(finding: Finding): string[] {
 // Returns the Git revision to replay for new-only filtering. The working-tree and staged selectors use HEAD, and explicit refs pass through.
 // Unstaged diffs use the index via an empty revision. A stdin patch has no replayable base, so its selector returns undefined.
 function diffBaseRef(diffBase: string): string | undefined {
+  // A pasted patch supplies changed lines but no Git snapshot for inherited findings.
   if (diffBase === "-") {
     return undefined;
   }
+  // For unstaged edits, the user's staged file contents are the comparison point.
   if (diffBase === "unstaged") {
     return "";
   }
   return diffBase === "working-tree" || diffBase === "staged" ? "HEAD" : diffBase;
 }
 
-// Writes each file's blob at the base ref into the temp dir via git; a blob missing at the ref is a
-// recover path so that file's findings count as new (filesystem writes).
-function materializeBaseFiles(ref: string, files: string[], root: string): string[] {
+// Recreates the selected files from Git so the hook can compare what the user had before the edit.
+// Side effects: writes available files into the temporary comparison directory.
+function materializeBaseFiles(ref: string, files: string[], root: string, projectRoot: string): string[] {
   const materialized: string[] = [];
+  // Replay the prior versions of files associated with current findings, including related import-cycle files.
   for (const file of files) {
     try {
-      const source = execFileSync("git", ["show", `${ref}:${file}`], { encoding: "utf8" });
+      const source = execFileSync("git", ["show", "--end-of-options", `${ref}:./${file}`], { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
       const target = join(root, file);
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, source);
       materialized.push(file);
     } catch {
-      // File is missing at the base ref, so every current finding in it is new.
+      // For example, a file created in this edit does not exist at HEAD, so there is no earlier match to apply.
     }
   }
   return materialized;
 }
 
 // Returns base-scan options from options, using paths as scan targets and disabling baseline and changed-region selection.
-// Resolves config against originalRoot, or discovers its .gruff-ts.yaml when present unless options.shouldSkipConfig disables discovery.
+// Uses an explicit config relative to the launch directory or the selected project's supported default config.
 function baseAnalysisOptions(options: AnalysisOptions, paths: string[], originalRoot: string): AnalysisOptions {
+  // Resolve settings before entering the temporary directory. With no selected config, the base run uses defaults.
+  const config = options.config ? absolutize(cwd(), options.config) : options.shouldSkipConfig ? undefined : defaultConfigPath(originalRoot);
   return {
     ...withoutChangedRegion(options),
     paths,
-    ...(options.config ? { config: absolutize(originalRoot, options.config) } : defaultConfigPathOption(originalRoot, options)),
+    ...(config === undefined ? {} : { config }),
   };
-}
-
-// Returns a config option for originalRoot/.gruff-ts.yaml when present unless options.shouldSkipConfig disables it.
-// Returns an empty object otherwise, leaving the base scan without this config override.
-function defaultConfigPathOption(originalRoot: string, options: AnalysisOptions): Partial<Pick<AnalysisOptions, "config">> {
-  const defaultConfigPath = join(originalRoot, ".gruff-ts.yaml");
-  return !options.shouldSkipConfig && existsSync(defaultConfigPath) ? { config: defaultConfigPath } : {};
 }
 
 // Returns a copy of options for a deterministic full base-ref scan, dropping changedRanges, diff, diffPatch and since.

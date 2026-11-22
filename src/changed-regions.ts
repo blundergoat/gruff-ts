@@ -1,6 +1,9 @@
-// Diff-aware changed-region filtering for analyse runs. The public JSON finding shape stays intact:
-// this module only decides which already-produced findings are attributable to the requested change.
+// Selects the findings that belong to a user's Git changes, patch, or explicit line ranges.
+//
+// Use `analyse --diff staged` to review the next commit, or `--changed-ranges` for specific lines.
+// A full scan supplies context for findings that span functions, files, or imports.
 import { execFileSync } from "node:child_process";
+import { cwd } from "node:process";
 import { functionBlocks } from "./blocks.ts";
 import type { SourceFile } from "./discovery.ts";
 import type { ParsedScript } from "./parsed-script.ts";
@@ -8,10 +11,10 @@ import { maskNonCode } from "./source-text.ts";
 import type { AnalysisOptions, ChangedScopeMode, Finding, RunDiagnostic } from "./types.ts";
 
 /**
- * Raised when the requested changed region cannot be read, so the caller reports which input was wrong.
+ * Signals that Gruff could not read the lines the user asked to review.
  *
- * The hook publishes it as a fatal diagnostic naming `changed-region`, which is what tells an agent the run never
- * happened rather than that the file was clean. `analyse` reports it under the same type.
+ * For example, a mistyped revision makes `analyse --since` fail with a `changed-region` diagnostic.
+ * Hooks can show the same diagnostic when an edit could not be reviewed.
  */
 export class ChangedRegionError extends Error {}
 
@@ -62,25 +65,30 @@ const FILE_WIDE_RULE_IDS = new Set(["design.large-module-concentration", "docs.m
 // so changed-region attribution must consult the member list, not only the anchor `filePath`.
 const PROJECT_RELATIONSHIP_RULE_IDS = new Set(["design.circular-import"]);
 
-// Returns a scope in options.changedScope mode, giving explicit ranges priority because they name the exact lines to check.
-// Supplied patch text wins over since and diff. An empty patch selects no files. With no selector, returns undefined for an unscoped scan.
-// Otherwise reads Git changes using since before diff and propagates command failures.
-// @throws {ChangedRegionError} - the range list is empty or malformed, or the selected diff requires stdin patch text that was not supplied.
-export function changedRegionScope(options: AnalysisOptions): ChangedRegionScope | undefined {
+// Resolves the changed lines requested for `analyse` or a hook. Returns undefined when the user asks for a full scan.
+//
+// Explicit ranges take priority, then supplied patch text, then `--since` or `--diff`.
+// @throws {ChangedRegionError} when a range, patch input, or Git comparison cannot be read.
+export function changedRegionScope(options: AnalysisOptions, projectRoot = cwd()): ChangedRegionScope | undefined {
+  // Editor integrations can specify the exact line ranges the user edited.
   if (options.changedRanges !== undefined) {
     return { mode: options.changedScope, rangesByFile: new Map(), wholeFiles: new Set(), changedFiles: new Set(), explicitRanges: parseChangedRanges(options.changedRanges) };
   }
+  // An empty supplied patch means nothing changed and still takes priority over Git selectors.
   if (options.diffPatch !== undefined) {
     return parseUnifiedDiff(options.diffPatch, options.changedScope);
   }
+  // A commit range lets a user see findings introduced since a known revision.
   if (options.since) {
-    return gitDiffScope(options.since, options.changedScope);
+    return gitDiffScope(options.since, options.changedScope, projectRoot);
   }
+  // A named diff compares the requested part of the checkout.
   if (options.diff) {
+    // A lone dash expects patch text from stdin, supplied by the CLI before the scan.
     if (options.diff === "-") {
       throw new ChangedRegionError("--diff - requires diffPatch input; the CLI reads stdin before analysis.");
     }
-    return gitDiffScope(options.diff, options.changedScope);
+    return gitDiffScope(options.diff, options.changedScope, projectRoot);
   }
   return undefined;
 }
@@ -322,26 +330,34 @@ function parseChangedRange(rawRange: string): ChangedRange {
 /*
  * Returns a scope using changedScope for finding attribution. The mode selects staged, unstaged, working-tree or Git-ref changes.
  * Reads Git changes with paths relative to the scan directory so nested scans can match findings.
- * Working-tree mode combines staged, unstaged and non-ignored untracked changes. Failed Git commands propagate their errors.
+ * Working-tree mode combines staged, unstaged, and non-ignored untracked changes for a review of all local edits.
  */
-function gitDiffScope(mode: string, changedScope: ChangedScopeMode): ChangedRegionScope {
+function gitDiffScope(mode: string, changedScope: ChangedScopeMode, projectRoot: string): ChangedRegionScope {
+  // Read paths relative to the selected project so a scan launched from its parent directory sees the right edits.
+  const readDiff = (extra: string[]) => parseUnifiedDiff(
+    gitOutput(["-c", "core.quotepath=false", "diff", "--unified=0", "--no-color", "--no-ext-diff", "--relative", ...extra], projectRoot),
+    changedScope,
+  );
+  // Staged mode reviews the contents selected for the next commit.
   if (mode === "staged") {
-    return parseUnifiedDiff(gitOutput(["diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff", "--relative"]), changedScope);
+    return readDiff(["--cached"]);
   }
+  // Unstaged mode reviews changes made since the last staging operation.
   if (mode === "unstaged") {
-    return parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", "--relative"]), changedScope);
+    return readDiff([]);
   }
+  // A working-tree review also includes new files the user has yet to add.
   if (mode === "working-tree") {
     return mergeScopes(
       [
-        parseUnifiedDiff(gitOutput(["diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff", "--relative"]), changedScope),
-        parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", "--relative"]), changedScope),
-        untrackedFileScope(changedScope),
+        readDiff(["--cached"]),
+        readDiff([]),
+        untrackedFileScope(changedScope, projectRoot),
       ],
       changedScope,
     );
   }
-  return parseUnifiedDiff(gitOutput(["diff", "--unified=0", "--no-color", "--no-ext-diff", "--relative", "--end-of-options", mode]), changedScope);
+  return readDiff(["--end-of-options", mode]);
 }
 
 // Returns changed target files and addition ranges from the diffText patch, carrying changedScope forward for later filtering.
@@ -439,10 +455,10 @@ function diffPath(rawPath: string): string {
   return trimmed.replace(/^"?(?:a|b)\//, "").replace(/"$/, "").replaceAll("\\", "/");
 }
 
-// Spawns Git to list untracked paths after applying its ignore rules. They get whole-file coverage because they have no hunks.
-// Returns a scope in changedScope mode. An empty listing selects no paths, and Git command failures propagate.
-function untrackedFileScope(changedScope: ChangedScopeMode): ChangedRegionScope {
-  const untracked = new Set(gitOutput(["ls-files", "--others", "--exclude-standard"]).split(/\r?\n/).filter(Boolean).map((path) => path.replaceAll("\\", "/")));
+// Adds new, non-ignored files to a working-tree review because Git has no hunks yet for these files.
+// An empty list means there are no new files to add. NUL separators keep filenames with spaces or newlines intact.
+function untrackedFileScope(changedScope: ChangedScopeMode, projectRoot: string): ChangedRegionScope {
+  const untracked = new Set(gitOutput(["ls-files", "-z", "--others", "--exclude-standard"], projectRoot).split("\0").filter(Boolean));
   return { mode: changedScope, rangesByFile: new Map(), wholeFiles: untracked, changedFiles: new Set(untracked) };
 }
 
@@ -491,7 +507,16 @@ function mergeRanges(ranges: ChangedRange[]): ChangedRange[] {
 }
 
 // Spawns git with the caller's argument array and returns UTF-8 stdout, which can be empty when git has no changes to report.
-// Git execution errors propagate to the scope loader.
-function gitOutput(args: string[]): string {
-  return execFileSync("git", args, { encoding: "utf8" });
+// @throws {ChangedRegionError} if Git cannot read the changes from projectRoot.
+function gitOutput(args: string[], projectRoot: string): string {
+  try {
+    return execFileSync("git", args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error) {
+    // For example, `--since main` can fail in a shallow checkout where that branch is missing.
+    // When Git supplies no detail, the user still sees that the change selection failed.
+    const detail = error instanceof Error && "stderr" in error && typeof error.stderr === "string"
+      ? error.stderr.split(/\r?\n/u)[0]
+      : undefined;
+    throw new ChangedRegionError(`Unable to read the requested Git changes${detail ? `: ${detail}` : "."}`);
+  }
 }

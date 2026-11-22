@@ -1,6 +1,7 @@
-// Scan-surface guardrail tests: zero-file inputs report a note instead of a silent clean exit,
-// huge files get a bounded deep scan with text-level rules intact, and generated/copied files
-// drop docs/naming churn while keeping sensitive-data coverage.
+// Checks what users see when a scan has no files, reaches its budget, or encounters generated code.
+//
+// Report diagnostics explain when a budget skipped deeper checks. Text-level checks still run.
+// Generated files skip documentation and naming checks while keeping sensitive-data coverage.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -185,16 +186,18 @@ test("the deep-scan budget never applies to non-code text", () => {
   assert.equal(report.diagnostics.some((entry) => entry.diagnosticType === "bounded-deep-scan"), false);
 });
 
-test("bounded deep-scan diagnostics are visible in every supported report surface", () => {
+test("bounded deep-scan diagnostics are visible in diagnostic report formats", () => {
   const report = analyseProject(
     { "small.ts": "export const value = 1;\n" },
     { config: { deepScanBudget: { enabled: true, maxLines: 1, maxBytes: 1 } } },
   );
-  for (const format of ["text", "json", "html", "markdown", "github", "hotspot", "sarif"] as const) {
+  // A reader must see the scan-budget notice in each format that publishes diagnostics.
+  for (const format of ["text", "json", "html", "markdown", "github", "sarif"] as const) {
     assert.match(renderReport(report, format), /bounded-deep-scan/, format);
   }
   assert.match(renderSummary(report), /bounded-deep-scan/);
   assert.match(renderSummaryJson(report), /bounded-deep-scan/);
+  assert.deepEqual(Object.keys(JSON.parse(renderReport(report, "hotspot"))).sort(), ["files", "schemaVersion", "score", "tool"]);
 });
 
 test("generated files skip docs/naming findings but keep sensitive-data findings", () => {

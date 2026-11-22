@@ -11,7 +11,7 @@ Use these docs with the top-level README for the stable user-facing surface.
 - [Output Formats](output-formats.md) - text, JSON, HTML, Markdown, GitHub annotations, hotspot, and SARIF.
 - [CI Integration](ci-integration.md) - GitHub Actions, SARIF upload, baselines, and diff scans.
 - [Dashboard](dashboard.md) - local dashboard flags and safety model.
-- [Upgrading](https://github.com/blundergoat/gruff-ts/blob/main/UPGRADING.md) - what each release line breaks and how to retreat; `package.json` omits it from the npm package, so this link is absolute.
+- [Upgrading](../UPGRADING.md) - breaking changes, migration commands, and rollback steps.
 
 ## Extra Docs
 

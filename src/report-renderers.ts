@@ -1,7 +1,7 @@
-// Text, SARIF, hotspot, markdown, GitHub, and summary renderers for the stable analysis report.
-// HTML output and dashboard chrome live in `report-html.ts` so this module stays under the
-// `size.file-length` threshold; both files source `buildPillarRows` + `grade` from
-// `pillar-summary.ts` so the cross-format Pillars table stays byte-aligned.
+// Turns scan results into terminal output, shareable reports, and formats consumed by CI.
+//
+// Use JSON for individual findings, summary JSON for totals, and hotspot JSON for the highest-priority files.
+// Converts report paths to project-relative form so a reader can compare output from different machines.
 import { findingIdentities } from "./baseline-identity.ts";
 import { isAbsolute, relative } from "node:path";
 import type { AnalysisReport, Finding, OutputFormat, ScanSurfaceNote, Severity, SkippedPath, SuppressionSummary } from "./types.ts";
@@ -15,16 +15,17 @@ import { compositeLine, exitFor, severityGradeBreakdown } from "./scoring.ts";
 import { totalSuppressedFindings } from "./sensitive-exclusions.ts";
 
 /**
- * Render the analysis for the requested output consumer.
+ * Renders the result in the format the user selected, including the compact hotspot view for prioritizing fixes.
  *
  * @param report - Native analysis report supplying the data for the selected format.
  * @param format - Selects the human-readable renderer or machine output projection.
+ * @param exitCode - decided status for JSON. Omit it when rendering directly to use the run's severity threshold.
  * @returns Rendered report text. Hotspot JSON uses the stable gruff.hotspot.v1 schema and includes up to ten top offenders.
  */
-function renderReport(report: AnalysisReport, format: OutputFormat): string {
+function renderReport(report: AnalysisReport, format: OutputFormat, exitCode?: number): string {
   switch (format) {
     case "json":
-      return JSON.stringify(toJsonReport(report), null, 2);
+      return JSON.stringify(toJsonReport(report, exitCode), null, 2);
     case "html":
       return renderHtml(report);
     case "markdown":
@@ -32,7 +33,7 @@ function renderReport(report: AnalysisReport, format: OutputFormat): string {
     case "github":
       return renderGithub(report);
     case "hotspot":
-      return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders.slice(0, 10), diagnostics: report.diagnostics }, null, 2);
+      return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders.slice(0, 10) }, null, 2);
     case "sarif":
       return renderSarif(report);
     case "text":
@@ -127,29 +128,31 @@ interface MachineEnvelopeCore {
 type JsonAnalysisReport = MachineEnvelopeCore & { schemaVersion: "gruff.analysis.v3"; findings: MachineFinding[] };
 type JsonSummaryReport = MachineEnvelopeCore & { schemaVersion: "gruff.summary.v3" };
 
-// JSON boundary adapter for native report state.
+// Builds the JSON report for readers who need the run details and each individual finding.
 // Invariant: the result is the exact v3 envelope, without legacy aliases or volatile timestamps.
-function toJsonReport(report: AnalysisReport): JsonAnalysisReport {
+function toJsonReport(report: AnalysisReport, exitCode?: number): JsonAnalysisReport {
   return {
     schemaVersion: "gruff.analysis.v3",
-    ...machineEnvelopeCore(report),
+    ...machineEnvelopeCore(report, exitCode),
     findings: report.findings.map((finding) => machineFinding(finding, report.run.projectRoot)),
   };
 }
 
-// Returns the report's shared machine fields under the summary v3 schema and omits the per-finding array.
-function toJsonSummary(report: AnalysisReport): JsonSummaryReport {
-  return { schemaVersion: "gruff.summary.v3", ...machineEnvelopeCore(report) };
+// Builds the JSON summary for automation that needs the outcome and totals without each finding.
+// Invariant: summary v3 has the same run details as analysis v3 and omits the individual finding list.
+function toJsonSummary(report: AnalysisReport, exitCode?: number): JsonSummaryReport {
+  return { schemaVersion: "gruff.summary.v3", ...machineEnvelopeCore(report, exitCode) };
 }
 
-// Return the machine envelope from the native analysis report so both writers publish the same stable fields.
-// Omit baseline and diff sections when their data is absent. Include the notes extension only when the report supplies notes.
-function machineEnvelopeCore(report: AnalysisReport): MachineEnvelopeCore {
+// Shares run details and totals between analyse and summary JSON so both report the same exit outcome.
+// Invariant: a missing baseline, change selection, or note list leaves that section out of the result.
+function machineEnvelopeCore(report: AnalysisReport, exitCode = exitFor(report, report.run.failOn)): MachineEnvelopeCore {
   const { details, ignoredPaths } = machinePathProjection(report);
+  const missingPaths = machinePaths(report.paths.missingPaths, report.run.projectRoot);
   return {
     tool: report.tool,
     run: machineRun(report),
-    summary: machineSummary(report, details.length),
+    summary: machineSummary(report, details.length, missingPaths.length, exitCode),
     score: {
       composite: { grade: report.score.grade, score: report.score.composite },
       evaluatedFiles: report.score.evaluatedFiles,
@@ -169,9 +172,10 @@ function machineEnvelopeCore(report: AnalysisReport): MachineEnvelopeCore {
       analysedFiles: report.paths.analysedFiles,
       details,
       ignoredPaths,
-      missingPaths: machinePaths(report.paths.missingPaths, report.run.projectRoot),
+      missingPaths,
     },
     suppressions: report.suppressions.map((suppression) => machineSuppression(suppression, report.run.projectRoot)),
+    // Include review details only when the user applied or generated a baseline.
     ...(report.baseline === undefined ? {} : {
       baseline: {
         applied: !report.baseline.generated,
@@ -179,8 +183,7 @@ function machineEnvelopeCore(report: AnalysisReport): MachineEnvelopeCore {
         ...optionalMachinePath("path", report.baseline.path, report.run.projectRoot),
         source: report.baseline.source,
         suppressedFindings: report.baseline.suppressed,
-        // A generate run has no comparison. Default missing baseline counts to zero so both formats publish numeric counts.
-        // The baseline path is omitted if it lies outside the project.
+        // Generating a baseline does not compare reviews yet, so comparison counts start at zero.
         entries: report.baseline.entries ?? 0,
         newFindings: report.baseline.newFindings ?? 0,
         unchangedFindings: report.baseline.unchangedFindings ?? 0,
@@ -191,7 +194,10 @@ function machineEnvelopeCore(report: AnalysisReport): MachineEnvelopeCore {
       diff: { enabled: true as const, filteredFindings: report.suppressedCount, mode: "changed-regions" as const },
     }),
     ...(report.notes === undefined ? {} : {
-      extensions: { ts: { topLevel: { notes: report.notes } } },
+      extensions: { ts: { topLevel: { notes: report.notes.map((note) => {
+        const path = machinePath(note.path, report.run.projectRoot);
+        return { ...note, path, message: note.message.replace(note.path, () => path) };
+      }) } } },
     }),
   };
 }
@@ -210,20 +216,20 @@ function machineRun(report: AnalysisReport): MachineEnvelopeCore["run"] {
   };
 }
 
-// Return the machine summary from the native report, combining recorded totals with diagnostic and pillar tallies and the fail-on exit code.
-// The count invariant uses the supplied skippedFiles count for both skipped and ignored paths. An absent suppression count is omitted.
-// Pillars with no findings have no key in the tally.
-function machineSummary(report: AnalysisReport, skippedFiles: number): MachineEnvelopeCore["summary"] {
+// Summarizes the visible findings and path counts while preserving the exit status decided by the CLI.
+// Invariant: skipped and ignored counts both reflect the published path details. Empty pillars have no finding-count entry.
+function machineSummary(report: AnalysisReport, skippedFiles: number, missingPaths: number, exitCode: number): MachineEnvelopeCore["summary"] {
   const pillarCounts = new Map<string, number>();
+  // Count displayed findings so drill-down filters and pillar totals describe the same set.
   report.findings.forEach((finding) => pillarCounts.set(finding.pillar, (pillarCounts.get(finding.pillar) ?? 0) + 1));
   return {
     analysedFiles: report.paths.analysedFiles,
     diagnostics: report.diagnostics.length,
-    exitCode: exitFor(report, report.run.failOn),
+    exitCode,
     findings: report.summary,
     findingsByPillar: Object.fromEntries([...pillarCounts.entries()].sort(([left], [right]) => left.localeCompare(right))),
     ignoredPaths: skippedFiles,
-    missingPaths: report.paths.missingPaths.length,
+    missingPaths,
     skippedFiles,
     ...(report.suppressedCount === undefined ? {} : { suppressedFindings: report.suppressedCount }),
   };
@@ -259,9 +265,8 @@ function machineFinding(finding: Finding, projectRoot: string): MachineFinding {
   };
 }
 
-// Return the canonical machine record for the native diagnostic, using projectRoot to make any supplied file path portable.
-// The invalidation invariant defaults to true unless the diagnostic explicitly opts out.
-// Omit the file when absent and the line when absent or invalid.
+// Formats a diagnostic for CI readers. A scan-budget notice can leave the run valid even though some checks were skipped.
+// Invariant: defaults to invalidating the run. Missing or external file paths and missing line numbers have no location field.
 function machineDiagnostic(
   diagnostic: AnalysisReport["diagnostics"][number],
   projectRoot: string,
@@ -271,7 +276,7 @@ function machineDiagnostic(
     type: diagnostic.diagnosticType,
     message: diagnostic.message,
     invalidatesRun: diagnostic.invalidatesRun !== false,
-    ...(diagnostic.filePath === undefined ? {} : { file: machinePath(diagnostic.filePath, projectRoot) }),
+    ...(diagnostic.filePath === undefined ? {} : optionalMachinePath("file", diagnostic.filePath, projectRoot)),
     ...(line === undefined ? {} : { line }),
   };
 }
@@ -348,32 +353,36 @@ function machinePaths(values: readonly string[], projectRoot: string): string[] 
   return [...new Set(values.map((value) => machinePath(value, projectRoot)))];
 }
 
-// Returns a field named key containing the portable pathValue, using projectRoot as the base for absolute paths.
-// Returns an empty object when the relative spelling is .. or starts with ../ to avoid publishing a host path.
-// Other paths go through machinePath, which can reject an escape through a later parent segment.
+// Includes a portable path when a report can point to a file inside the selected project.
+// An empty object omits an external path, such as a config the user keeps in a sibling project.
 function optionalMachinePath<Key extends string>(key: Key, pathValue: string, projectRoot: string): Partial<Record<Key, string>> {
   const relativeValue = (isAbsolute(pathValue) ? relative(projectRoot, pathValue) : pathValue).replaceAll("\\", "/");
-  if (relativeValue === ".." || relativeValue.startsWith("../")) {
+  // An external settings file can affect the run without appearing as a location in its JSON.
+  if (isAbsolute(relativeValue) || relativeValue === ".." || relativeValue.startsWith("../")) {
     return {};
   }
   return { [key]: machinePath(pathValue, projectRoot) } as Partial<Record<Key, string>>;
 }
 
-// Returns pathValue relative to projectRoot with POSIX separators; a path resolving to the root returns ".".
-// Rejects host-specific and escaping paths to preserve portable report paths.
-// @throws {Error} - pathValue is empty, UNC, drive-qualified, or normalization steps above projectRoot.
+// Converts a report location to a project-relative path with slash separators. The project root is shown as ".".
+// @throws {Error} when a required location is empty or cannot be written as a path inside the project.
 function machinePath(pathValue: string, projectRoot: string): string {
-  const slashValue = pathValue.replaceAll("\\", "/");
-  if (slashValue.length === 0 || slashValue.startsWith("//") || /^[A-Za-z]:/u.test(slashValue)) {
+  const nativeRelative = isAbsolute(pathValue) ? relative(projectRoot, pathValue) : pathValue;
+  const relativeValue = nativeRelative.replaceAll("\\", "/");
+  // An input such as an absolute path on another drive must resolve inside the project before it can appear as a report location.
+  if (pathValue.length === 0 || relativeValue.startsWith("/") || /^[A-Za-z]:/u.test(relativeValue)) {
     throw new Error(`Machine path must be project-relative: ${JSON.stringify(pathValue)}`);
   }
-  const relativeValue = isAbsolute(pathValue) ? relative(projectRoot, pathValue).replaceAll("\\", "/") : slashValue;
   const parts: string[] = [];
+  // Normalize each path segment so readers see the same file regardless of how the target was typed.
   for (const part of relativeValue.split("/")) {
+    // Repeated slashes and explicit current-directory segments do not add a directory to the reported path.
     if (part.length === 0 || part === ".") {
       continue;
     }
+    // A user can type a path containing ".." as long as it stays inside the selected project.
     if (part === "..") {
+      // Moving above the selected project leaves no valid link for a consumer to follow.
       if (parts.length === 0) {
         throw new Error(`Machine path must stay inside the project root: ${JSON.stringify(pathValue)}`);
       }
@@ -638,13 +647,15 @@ function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: s
 }
 
 /**
- * Use the gruff.summary.v3 schema for summary --format=json.
+ * Renders the JSON digest used by scripts that need the summary totals and exit outcome.
+ * Invariant: the digest uses gruff.summary.v3 and carries no individual finding list.
  *
  * @param report - Native analysis report supplying the common machine envelope.
- * @returns Indented summary JSON with a trailing newline and without the per-finding array.
+ * @param exitCode - gate result before filtering. Omit it to use the run's severity threshold.
+ * @returns indented summary JSON with a trailing newline. A scan with no findings still includes its run details.
  */
-function renderSummaryJson(report: AnalysisReport): string {
-  return `${JSON.stringify(toJsonSummary(report), null, 2)}\n`;
+function renderSummaryJson(report: AnalysisReport, exitCode?: number): string {
+  return `${JSON.stringify(toJsonSummary(report, exitCode), null, 2)}\n`;
 }
 
 // Returns a diagnostic row shared by terminal summaries and text reports, with type and message from diagnostic.

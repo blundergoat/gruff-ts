@@ -1,6 +1,7 @@
-// Covers the best-effort field extraction used by `gruff-ts init --force` to preserve curated
-// `paths.ignore` and per-command gate entries across a config regeneration, including the
-// pre-0.2.0 migration path where the source config lacks a `schemaVersion:` field.
+// Checks which project settings survive regeneration when a user runs `init --force`.
+//
+// Valid ignored paths, command gates, and sensitive exclusions carry forward from older files.
+// An invalid entry is left behind so the regenerated config can load and the user's other choices survive.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -81,6 +82,10 @@ test("extractPreservedConfigFields carries reviewed sensitive exclusions through
         "    reason: Synthetic token used by the session fixture.",
         "  - rule: sensitive-data.private-key",
         "    path: src/fixtures/key.ts",
+        "  - rule: sensitive-data.aws-access-key",
+        "    path: src/fixtures/scoped.ts",
+        "    symbol: 123",
+        "    reason: An invalid symbol must never become a file-wide exclusion.",
         "",
       ].join("\n"),
     );

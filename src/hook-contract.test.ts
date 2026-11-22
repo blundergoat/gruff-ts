@@ -688,6 +688,25 @@ test("hook reads the same generated baseline analyse writes, and it hides no sec
   });
 });
 
+// Checks a developer's changed-range review after they add the same note elsewhere.
+//
+// Invariant: one reviewed occurrence covers one finding across the full scan and the changed range.
+// Side effects: runs the CLI, writes a baseline, and updates the temporary source file.
+test("a scoped hook cannot spend one baseline occurrence twice", () => {
+  const note = "// TODO record undated note\n";
+  const original = `${note}export const label = 1;\n`;
+  withProject({ "notes.ts": original }, (dir) => {
+    execFileSync("bash", [BIN, "analyse", "notes.ts", "--no-config", "--generate-baseline", "review.json", "--fail-on", "none"], { cwd: dir });
+    writeFileSync(join(dir, "notes.ts"), original + note);
+    const run = spawnSync("bash", [BIN, "hook", "notes.ts", "--no-config", "--baseline", "review.json", "--changed-ranges", "3", "--fail-on-new"], { cwd: dir, encoding: "utf8" });
+    const payload = JSON.parse(run.stdout) as HookPayload;
+    assert.equal(run.status, 1);
+    const added = requiredFinding(payload, "docs.todo-without-tracking");
+    assert.equal(added.line, 3);
+    assert.equal(added.baselineStatus, "new");
+  });
+});
+
 // Spawns the gruff-ts CLI through Bash in the supplied working directory with the hook invocation arguments.
 // Returns the parsed hook payload from stdout. A failed command or invalid JSON throws.
 function runHook(cwdPath: string, args: string[]): HookPayload {

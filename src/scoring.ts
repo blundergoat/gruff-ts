@@ -1,4 +1,7 @@
-// Score, grade, and fail-on helpers derived from finding severities for reports and CLI exits.
+// Computes the quality scores and grades a user sees in reports and score history.
+//
+// A scan scores the rules and files it evaluated. Correlated findings share a penalty when they describe the same declaration.
+// CI uses the configured finding threshold to decide whether to pass or fail independently of the score.
 import { grade } from "./pillar-summary.ts";
 import { ruleDescriptors } from "./rules.ts";
 import type { AnalysisReport, Confidence, FailThreshold, Finding, Pillar, Severity } from "./types.ts";
@@ -33,19 +36,22 @@ function roundScore(rawScore: number): number {
   return rounded === 0 ? 0 : rounded;
 }
 
-// Returns the native score breakdown, using the scan findings as penalties and the evaluated-file count to normalize pillar scores.
-// Invariant: each rule-backed or finding-bearing pillar appears once. With evaluated files, a clean pillar scores 100.
-// The composite averages numeric pillar scores. Only files with findings are listed, lowest score first or unscored when no files were evaluated.
-function scoreReport(findings: Finding[], evaluatedFiles: number): AnalysisReport["score"] {
+// Builds the overall grade, pillar scores, and highest-priority files for the user's report.
+//
+// Invariant: each evaluated or finding-bearing pillar appears once. A clean pillar scores 100 with evaluated files.
+// A scan that evaluates no files shows null for the scores and grades because there is no measurement.
+function scoreReport(findings: Finding[], evaluatedFiles: number, evaluatedPillars: Iterable<Pillar> = SCOREABLE_PILLARS): AnalysisReport["score"] {
   const byPillar = new Map<Pillar, Finding[]>();
   const byFile = new Map<string, Finding[]>();
   const penalties = scoringPenaltyMap(findings);
+  // Use each finding in both the pillar breakdown and the list of files a user can address.
   for (const finding of findings) {
     byPillar.set(finding.pillar, [...(byPillar.get(finding.pillar) ?? []), finding]);
     byFile.set(finding.filePath, [...(byFile.get(finding.filePath) ?? []), finding]);
   }
-  const scoredPillars = [...new Set([...SCOREABLE_PILLARS, ...byPillar.keys()])];
+  const scoredPillars = [...new Set([...evaluatedPillars, ...byPillar.keys()])];
   const pillars = scoredPillars.map((pillar) => {
+    // Evaluated pillars with no findings still appear as clean in the report.
     const pillarFindings = byPillar.get(pillar) ?? [];
     const penalty = roundScore(pillarFindings.reduce((sum, finding) => sum + findingPenalty(penalties, finding), 0));
     const score = curveScore(penalty, evaluatedFiles);
@@ -208,14 +214,15 @@ function scoringPenaltyMap(findings: Finding[]): Map<Finding, number> {
   return penalties;
 }
 
-// Return the file-and-symbol key for a finding from a correlated complexity rule.
-// Return undefined if the symbol is missing or the rule is outside that set, so the finding keeps its own penalty.
-// The stable key excludes the line because related rules can report the same function at different lines.
+// Groups related complexity findings for one declaration so the report can share their penalty.
+// Invariant: findings without a symbol or a matching rule keep their own penalty and return no group key.
 function complexityClusterKey(finding: Finding): string | undefined {
+  // Without a declaration to match, keep the finding visible as its own contribution to the score.
   if (!finding.symbol || !CORRELATED_COMPLEXITY_RULE_IDS.has(finding.ruleId)) {
     return undefined;
   }
-  return `${finding.filePath}\0${finding.symbol}`;
+  // Prefer the declaration identity when present so same-named functions can receive separate penalties.
+  return `${finding.filePath}\0${finding.baselineSubject ?? finding.symbol}`;
 }
 
 // Invariant: returns the finding's precomputed penalty, including zero, or its severity and confidence weight when the map has no entry.

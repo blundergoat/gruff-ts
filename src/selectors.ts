@@ -1,13 +1,13 @@
 /*
  * The two families of rule selector, kept apart because they answer different questions.
  *
- * An execution selector decides which rules run, so the score moves with it and a hidden problem is genuinely not
- * counted. A presentation selector decides what the report shows, so the score, the summary's denominator and the
- * exit code stay exactly what the full run produced.
+ * Applies the rule and pillar choices a user makes when running or viewing an analysis.
  *
- * Mixing the two is the failure this module exists to prevent: a user who narrowed their screen to one rule must
- * not be told their project improved (FAMILY-CONTRACT.md, search: `## 7. CLI surface`).
+ * Use `--include-rule` to run a narrower set of rules and score that set.
+ * Use `--show-rule` to focus the report while keeping the score and exit status of the evaluated scan.
  */
+import { ConfigLoadError } from "./config-load-error.ts";
+import { isKnownRuleId, isPillarName } from "./profiles.ts";
 import { ruleDescriptors } from "./rules.ts";
 import type { Config, ExecutionSelectors, Finding, Pillar, Severity } from "./types.ts";
 
@@ -15,8 +15,7 @@ import type { Config, ExecutionSelectors, Finding, Pillar, Severity } from "./ty
 const SEVERITY_RANK: Record<Severity, number> = { advisory: 0, warning: 1, error: 2 };
 
 /*
- * What the finished report shows, chosen by `--min-severity`, `--show-rule`, `--hide-rule`, `--show-pillar` and
- * `--hide-pillar`. None of these changes what ran, so none of them moves the score.
+ * The user's report view, selected by severity and included or hidden rules and pillars.
  */
 export interface DisplaySelectors {
   minSeverity?: Severity;
@@ -40,32 +39,50 @@ export function isDisplayRequested(selectors: DisplaySelectors): boolean {
 }
 
 /**
- * Turns off rules excluded by execution selectors before scanning because a rule that never runs cannot lower the score.
- * Display filters only change which findings are shown.
+ * Limits the scan before scoring when the user passes rule or pillar execution flags.
  *
  * @param config - analysis settings whose rule map is updated in place
  * @param selectors - execution filters for rules and pillars. Missing or inactive selectors leave the config unchanged.
  * @returns - Nothing. Disables excluded rules in the config while preserving their other settings.
+ * @throws {ConfigLoadError} when a selector is unknown or leaves no enabled rules.
  */
 export function applyExecutionSelectors(config: Config, selectors: ExecutionSelectors | undefined): void {
   // A run that named no selector keeps the catalogue the user's config already chose.
   if (selectors === undefined || !isExecutionRequested(selectors)) {
     return;
   }
-  for (const descriptor of ruleDescriptors()) {
+  const unknownRule = [...selectors.includeRules, ...selectors.excludeRules].find((ruleId) => !isKnownRuleId(ruleId));
+  // A mistyped rule ID can lead the user to expect coverage that never ran.
+  if (unknownRule !== undefined) {
+    throw new ConfigLoadError(`Unknown execution selector rule: ${JSON.stringify(unknownRule)}.`, "Use a rule ID from gruff-ts list-rules.");
+  }
+  const unknownPillar = [...selectors.includePillars, ...selectors.excludePillars].find((pillar) => !isPillarName(pillar));
+  // A misspelled pillar gets feedback before the CLI can show a misleading empty report.
+  if (unknownPillar !== undefined) {
+    throw new ConfigLoadError(`Unknown execution selector pillar: ${JSON.stringify(unknownPillar)}.`, "Use a pillar name from gruff-ts list-rules.");
+  }
+  const descriptors = ruleDescriptors();
+  // Evaluate the user's include and exclude flags against every rule in the catalogue.
+  for (const descriptor of descriptors) {
     // An excluded rule is switched off outright; every other setting the user configured for it survives.
     if (!executionAllows(selectors, descriptor.ruleId, descriptor.pillar)) {
       const existing = config.rules.get(descriptor.ruleId);
       config.rules.set(descriptor.ruleId, { ...existing, options: existing?.options ?? new Map(), enabled: false });
     }
   }
+  // If these flags and project settings leave no active rule, the scan cannot produce a meaningful score.
+  if (!descriptors.some((descriptor) => config.rules.get(descriptor.ruleId)?.enabled ?? descriptor.isEnabledByDefault !== false)) {
+    throw new ConfigLoadError("Execution selectors leave no rules enabled.", "Select an enabled rule or enable a rule in your configuration.");
+  }
 }
 
 // Returns whether ruleId and its pillar pass selectors: every nonempty include list must match, and either exclude list vetoes.
 function executionAllows(selectors: ExecutionSelectors, ruleId: string, pillar: Pillar): boolean {
+  // An empty rule include list keeps all rules eligible for the other filters.
   if (selectors.includeRules.length > 0 && !selectors.includeRules.includes(ruleId)) {
     return false;
   }
+  // An empty pillar include list keeps all pillars eligible for the other filters.
   if (selectors.includePillars.length > 0 && !selectors.includePillars.includes(pillar)) {
     return false;
   }

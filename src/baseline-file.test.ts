@@ -1,6 +1,7 @@
-// Baseline v3 as users meet it: reviewed debt that survives an edit, and secrets that never do.
-// The cases here are the family cases, so a reviewed finding stays hidden through line movement while a new
-// sibling, a grown count, and every secret stay visible and keep failing the run.
+// Tests how users generate, apply, and migrate reviews in gruff-baseline.json.
+//
+// Moving a finding to another line keeps its review. A new occurrence and any sensitive finding stay visible.
+// The upgrade cases protect the earlier review file if regeneration or migration cannot read it.
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
@@ -196,6 +197,19 @@ test("a 0.5 baseline fails closed and names the migration command", () => {
     writeLegacyInput(dir);
 
     assert.throws(() => applyBaseline(join(dir, "legacy.json"), [finding()]), /--migrate-baseline/u);
+  });
+});
+
+// Writes a malformed default baseline in a temporary project and checks that the generation guard preserves it.
+// Invariant: an existing unreadable default is protected unless force is explicit.
+test("an unreadable default baseline is refused without force", () => {
+  withProject((dir) => {
+    const path = join(dir, "gruff-baseline.json");
+    const original = "{damaged baseline";
+    writeFileSync(path, original);
+    assert.throws(() => requireOverwritableDefaultPath(path, false), /destroy the retreat path/u);
+    assert.equal(readFileSync(path, "utf8"), original);
+    assert.doesNotThrow(() => requireOverwritableDefaultPath(path, true));
   });
 });
 

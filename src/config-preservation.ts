@@ -1,26 +1,17 @@
-// Best-effort field extraction for `gruff-ts init --force`. The strict loader in `config.ts`
-// throws on schemaVersion mismatch (deliberate: pre-1.0 break, no migration shim), but the init
-// migration path needs to lift `paths.ignore` and the per-command gate off whatever the user has on
-// disk so regeneration does not silently clobber curated entries. This module exists because the
-// strict validator is the wrong tool for that handoff - the next analyser load will run it.
+// Recovers supported settings when a user regenerates an older config with `init --force`.
+//
+// Keeps ignored paths, command gates, and valid sensitive exclusions with their reasons.
+// Empty collections mean no usable entries were recovered for that setting.
 import { objectValue, parseConfigFile } from "./config-parse.ts";
-import type { FailThreshold, MinimumSeverityCommand } from "./types.ts";
+import { ConfigLoadError } from "./config-load-error.ts";
+import { parseSensitiveExclusions } from "./sensitive-exclusions.ts";
+import type { FailThreshold, MinimumSeverityCommand, SensitiveExclusion } from "./types.ts";
 
-// Carry-over bundle returned to `gruff-ts init --force`. Both fields are best-effort: empty
-// values mean nothing was preserved, not that the existing config was empty.
+// Settings recovered for `init --force`. Each empty collection leaves the new config with its generated settings.
 interface PreservedConfigFields {
   ignoredPaths: string[];
   failOn: Map<MinimumSeverityCommand, FailThreshold>;
-  sensitiveExclusions: PreservedSensitiveExclusion[];
-}
-
-// One carried-over `sensitiveExclusions:` entry. Kept as plain strings because regeneration only
-// needs to re-emit what the user wrote; the strict parser validates it at the next analyser load.
-interface PreservedSensitiveExclusion {
-  rule: string;
-  path: string;
-  symbol?: string;
-  reason: string;
+  sensitiveExclusions: SensitiveExclusion[];
 }
 
 /**
@@ -44,40 +35,40 @@ export function extractPreservedConfigFields(configPath: string): PreservedConfi
 /**
  * Carries existing sensitive exclusions and their written reasons into the regenerated config.
  *
- * @param raw - parsed existing config that may contain a sensitiveExclusions list
- * @returns - entries with string rule, path, and reason fields and any string symbol, or an empty list when no entries qualify
+ * @param raw - parsed config. An absent or empty sensitiveExclusions list supplies no exclusions to carry forward.
+ * @returns validated exclusion scopes in order. An invalid entry contributes no exclusion.
+ * @throws unexpected errors from the exclusion validator.
  */
-function extractSensitiveExclusions(raw: Record<string, unknown>): PreservedSensitiveExclusion[] {
+function extractSensitiveExclusions(raw: Record<string, unknown>): SensitiveExclusion[] {
   const entries = raw.sensitiveExclusions;
+  // Some older projects have no exclusion list to carry over.
   if (!Array.isArray(entries)) {
     return [];
   }
-  const preserved: PreservedSensitiveExclusion[] = [];
+  const preserved: SensitiveExclusion[] = [];
+  const seen = new Set<string>();
+  // Review each entry separately so one malformed scope does not discard the user's other exclusions.
   for (const entry of entries) {
-    const candidate = preservedSensitiveExclusion(entry);
-    if (candidate !== undefined) {
-      preserved.push(candidate);
+    try {
+      const [candidate] = parseSensitiveExclusions({ sensitiveExclusions: [entry] });
+      // A validator result without a scope adds nothing to the regenerated file.
+      if (candidate === undefined) {
+        continue;
+      }
+      const scope = JSON.stringify([candidate.rule, candidate.path, candidate.symbol]);
+      // A pasted duplicate keeps the first scope and its original written reason.
+      if (!seen.has(scope)) {
+        preserved.push(candidate);
+        seen.add(scope);
+      }
+    } catch (error) {
+      // A user might have left an exclusion's scope incomplete. Skip invalid config entries and surface unexpected failures.
+      if (!(error instanceof ConfigLoadError)) {
+        throw error;
+      }
     }
   }
   return preserved;
-}
-
-// Copies one existing sensitive exclusion for regeneration, keeping rule, path, reason, and a string symbol if supplied.
-// Returns undefined for a non-mapping or when rule, path, or reason is missing or is not a string.
-// The caller skips entries that return undefined.
-function preservedSensitiveExclusion(entry: unknown): PreservedSensitiveExclusion | undefined {
-  const block = objectValue(entry);
-  if (!block) {
-    return undefined;
-  }
-  const rule = block.rule;
-  const path = block.path;
-  const reason = block.reason;
-  const symbol = block.symbol;
-  if (typeof rule !== "string" || typeof path !== "string" || typeof reason !== "string") {
-    return undefined;
-  }
-  return typeof symbol === "string" ? { rule, path, symbol, reason } : { rule, path, reason };
 }
 
 // Returns the glob strings from paths.ignore in the parsed existing config for regeneration.

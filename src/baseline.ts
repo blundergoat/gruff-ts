@@ -1,11 +1,10 @@
-// Score-history side effects and the canonical finding order every report and baseline is built from.
+// File overview: Saves score history and keeps findings in a predictable order.
 //
-// Baseline reading, writing, and matching live in `baseline-file.ts`; this module keeps the ordering and dedupe
-// rules that decide which findings a run reports at all, and the history file the dashboard sparkline reads.
+// A user who passes `--history-file` gets one score entry for a valid full scan, which the dashboard can plot.
+// The ordering and duplicate checks also keep the reports and baseline comparisons stable between scans.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
-import { scoreReport } from "./scoring.ts";
-import type { Finding, RunDiagnostic } from "./types.ts";
+import type { AnalysisReport, Finding, RunDiagnostic } from "./types.ts";
 
 const DEFAULT_BASELINE = "gruff-baseline.json";
 
@@ -22,23 +21,25 @@ function displayPath(projectRoot: string, path: string): string {
 }
 
 /**
- * Writes a score-history row and keeps the latest 100 entries to bound the dashboard sparkline. An absent file starts a new history.
- * The stable contract is to report a history failure so that analysis can continue.
+ * Append the result of a valid full scan for the dashboard's score trend.
+ * Invariant: keep the latest 100 entries. A missing history file starts a new trend.
  *
  * @param projectRoot - base directory for resolving the history path and displaying it in a diagnostic
- * @param historyFile - JSON history destination
- * @param findings - run findings used for the count and score
- * @param evaluatedFiles - number of evaluated files used to calculate the score
+ * @param historyFile - destination from `--history-file`. A missing file starts with no earlier score entries.
+ * @param score - score for the same run. A null composite means no files could be scored.
+ * @param findings - count of findings in that run
  * @param diagnostics - run diagnostics array that receives a history-error if recording fails
  * @returns Nothing. It writes the updated history or appends a failure diagnostic.
  */
-function recordHistory(projectRoot: string, historyFile: string, findings: Finding[], evaluatedFiles: number, diagnostics: RunDiagnostic[]): void {
+function recordHistory(projectRoot: string, historyFile: string, score: AnalysisReport["score"], findings: number, diagnostics: RunDiagnostic[]): void {
   const path = absolutize(projectRoot, historyFile);
   try {
+    // A first run has no history file to read, so the dashboard gets one point after this write.
     const entries = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as unknown[]) : [];
-    entries.push({ recordedAt: new Date().toISOString(), findings: findings.length, score: scoreReport(findings, evaluatedFiles).composite });
+    entries.push({ recordedAt: new Date().toISOString(), findings, score: score.composite });
     writeFileSync(path, JSON.stringify(entries.slice(-100), null, 2));
   } catch (error) {
+    // A read-only directory or a malformed existing history file adds a diagnostic to the scan report.
     diagnostics.push({ diagnosticType: "history-error", message: `Unable to write history file: ${String(error)}`, filePath: displayPath(projectRoot, path) });
   }
 }

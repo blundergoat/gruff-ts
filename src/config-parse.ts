@@ -1,8 +1,7 @@
-// Config parsing layer: the zero-dependency YAML-subset parser, the file reader, the shared
-// user-facing suggestion strings, and the value-narrowing helpers. Split out of `config.ts` so the
-// config semantics module (defaults, validation, profile resolution) stays under the size budget and
-// so both `config.ts` and the profile resolver can read files without a circular import. This module
-// depends only on Node IO and `ConfigLoadError`; it never imports `config.ts` or `profiles.ts`.
+// Reads the JSON and supported YAML syntax used by project settings and profiles.
+//
+// When a user passes `--config`, this layer turns the file into values the settings loader can validate.
+// Syntax errors tell the user which part of the file to edit before trying the command again.
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
 import { ConfigLoadError } from "./config-load-error.ts";
@@ -148,14 +147,26 @@ function parseYamlObject(parser: YamlParser, indent: number): Record<string, unk
   return result;
 }
 
-// Returns nothing. Adds the current YAML mapping entry to the destination object and advances the parser past its value.
-// Uses the mapping indent to detect a nested value. An empty value with no deeper block becomes an empty object.
-// Unquotes keys so quoted and bare spellings of the same key share an entry.
+// Reads one key and its value so the settings loader can validate a user's YAML mapping.
+//
+// An empty value with no indented settings represents an empty mapping. Quoting a key keeps the same meaning.
+// @throws {ConfigLoadError} when the mapping contains an invalid or duplicate key.
 function addYamlObjectEntry(parser: YamlParser, indent: number, line: YamlLine, result: Record<string, unknown>): void {
   const [rawKey, rawValue] = yamlKeyValuePair(line.content);
+  const key = unquoteYaml(rawKey.trim());
+  // Two copies of `failOn` could come from a config merge. Ask the user to reconcile them before scanning.
+  if (Object.hasOwn(result, key)) {
+    throw new ConfigLoadError(`Duplicate configuration key ${JSON.stringify(key)}.`, SUGGEST_EDIT_CONFIG);
+  }
   const scalarText = rawValue.trim();
   parser.index += 1;
-  result[unquoteYaml(rawKey.trim())] = scalarText.length > 0 ? parseYamlScalar(scalarText) : parseNestedYamlValue(parser, indent, {});
+  // A key followed by an indented block, such as `failOn:`, gets its settings from those lines.
+  Object.defineProperty(result, key, {
+    value: scalarText.length > 0 ? parseYamlScalar(scalarText) : parseNestedYamlValue(parser, indent, {}),
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
 }
 
 // Returns the block sequence at the supplied indent and advances the YAML cursor through its items and nested values.
@@ -502,4 +513,4 @@ function isString(configValue: unknown): configValue is string {
   return typeof configValue === "string";
 }
 
-export { arrayValue, isString, objectValue, parseConfigFile, SUGGEST_EDIT_CONFIG, SUGGEST_INIT_FORCE };
+export { arrayValue, isString, objectValue, parseConfigFile, parseYamlConfig, stripYamlComment, SUGGEST_EDIT_CONFIG, SUGGEST_INIT_FORCE };

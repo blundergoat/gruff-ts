@@ -1,11 +1,11 @@
-// Analyser pipeline behind `gruff-ts analyse`, and the module the CLI shell calls into.
+// File overview: Builds the analysis report used by the CLI, dashboard, and coding-agent hook.
 //
-// It walks the discovered sources, runs every rule pass across the eleven pillars, and aggregates the
-// results into native report state for the `gruff.analysis.v3` machine adapter to serialise.
+// A command such as `gruff-ts analyse src --diff staged` still reads project context before selecting findings from staged changes.
+// This module also applies reviewed findings from a baseline and records history after a valid full scan.
 import { Buffer, isUtf8 } from "node:buffer";
 import { readFileSync, statSync } from "node:fs";
 import { cwd } from "node:process";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { recordHistory, sortedUniqueFindings } from "./baseline.ts";
 import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan } from "./baseline-identity.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
@@ -35,6 +35,7 @@ import { analyseGithubActionsRules } from "./github-actions-rules.ts";
 import { analyseProjectConfigRules } from "./project-config-rules.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { scoreReport, summarize } from "./scoring.ts";
+import { isExecutionRequested } from "./selectors.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
 import { codeLineFlags, maskDecorators, parseScript, type ParsedScript } from "./parsed-script.ts";
 import { maskNonCode, maskTemplateLiteralBodies } from "./source-text.ts";
@@ -50,61 +51,61 @@ export interface HookAnalysisReports {
 }
 
 /**
- * Analyse the requested paths and return the stable gruff.analysis.v3 report.
- * Writes the requested history entry and writes a baseline when generation or migration is requested.
+ * Build a report for an `analyse`, `summary`, or `report` request.
+ * Invariant: an invalid scan or any changed-region scan is excluded from the user's full-scan score history.
  *
- * @param requestedOptions - selects paths, rules, baseline settings, changed scope and optional history output.
- * @returns Versioned report with fingerprinted findings, diagnostics, paths and score data. An unreadable changed scope leaves no findings.
+ * @param requestedOptions - paths, rules, and scan scope. An empty path list scans the launch directory. Omit history to skip writing it.
+ * @returns A report ready for the caller's formatter. An unreadable changed scope returns a diagnostic and an empty findings list.
+ * @throws ConfigLoadError for invalid configuration. Unexpected scope errors propagate to the caller.
  */
 export function analyse(requestedOptions: AnalysisOptions): AnalysisReport {
   const options = targetsFromLaunchDirectory(requestedOptions);
   const preparation = prepareAnalysis(options);
-  const { changedScope, scopeDiagnostics } = changedRegionScopeOrDiagnostic(options);
-  const run = completeAnalysis(preparation, options, "diagnose");
-  const changedResult = filterChangedFindings(run.baselineResult.findings, changedScope, run.scanned.sources);
-
-  if (options.historyFile) {
-    // Use the discovered script count so the history score is normalised to this run's scan size.
-    recordHistory(
-      run.projectRoot,
-      options.historyFile,
-      changedResult.findings,
-      run.discovery.files.filter((file) => file.isScript).length,
-      run.diagnostics,
-    );
-  }
-
-  // Diff scope limits file-content diagnostics to changed targets. Operational diagnostics and explicit-range diagnostics stay visible.
-  const diagnostics = [...filterScopedDiagnostics(run.diagnostics, changedScope), ...scopeDiagnostics];
-  // A scope the run could not read leaves nothing scoped to report. Publishing the unscoped findings beside the
-  // diagnostic would read as a successful narrow scan at a scope the run never applied.
-  const findings = scopeDiagnostics.length === 0 ? changedResult.findings : [];
-  return reportFromRun({ ...run, diagnostics }, options, { ...run.baselineResult, findings }, changedResult.suppressedCount);
-}
-
-// Returns the scope requested in options and an empty diagnostic list. Without a filter, the scope is undefined.
-// On ChangedRegionError, returns undefined scope and one fatal diagnostic, so the CLI exits 2 with no findings per FAMILY-CONTRACT.md section 6.
-// @throws Any other value thrown during scope resolution, rethrown unchanged.
-function changedRegionScopeOrDiagnostic(options: AnalysisOptions): { changedScope: ChangedRegionScope | undefined; scopeDiagnostics: RunDiagnostic[] } {
+  let changedScope: ChangedRegionScope | undefined;
   try {
-    return { changedScope: changedRegionScope(options), scopeDiagnostics: [] };
+    changedScope = changedRegionScope(options, preparation.projectRoot);
   } catch (error) {
+    // A typo in `--changed-ranges` or a missing Git ref can be reported as an invalid scan before writing a baseline.
     if (!(error instanceof ChangedRegionError)) {
       throw error;
     }
-    return { changedScope: undefined, scopeDiagnostics: [{ diagnosticType: CHANGED_REGION_DIAGNOSTIC_TYPE, message: error.message }] };
+    return failedRunReport(preparation.projectRoot, options.format, CHANGED_REGION_DIAGNOSTIC_TYPE, error.message);
   }
+  const run = completeAnalysis(preparation, options, "diagnose");
+  const changedResult = filterChangedFindings(run.baselineResult.findings, changedScope, run.scanned.sources);
+
+  // Generation uses the full scan, so errors anywhere in that scan must stay visible.
+  const diagnostics = options.generateBaseline ? run.diagnostics : filterScopedDiagnostics(run.diagnostics, changedScope);
+  const baseline = run.baselineResult.baseline;
+  // When a baseline was applied, `--fail-on-new` counts only unreviewed findings that remain in the requested scope.
+  const scopedBaseline = {
+    ...run.baselineResult,
+    findings: changedResult.findings,
+    ...(changedScope !== undefined && baseline && !baseline.generated
+      ? { baseline: { ...baseline, newFindings: changedResult.findings.length } }
+      : {}),
+  };
+  const report = reportFromRun({ ...run, diagnostics }, options, scopedBaseline, changedResult.suppressedCount);
+  // An invalid baseline or a changed-region scan cannot add a point to the user's full-scan trend history.
+  if (options.historyFile && changedScope === undefined && !diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false)) {
+    recordHistory(run.projectRoot, options.historyFile, report.score, report.findings.length, diagnostics);
+  }
+  return report;
 }
 
-// Scan with currentOptions and return the full report plus the changed-region view selected by scopedOptions.
-// When hasChangedRegion is false, the report contract gives both fields the same object. Baseline writes follow currentOptions.
+// Build the full and changed-region views the hook needs to distinguish a new finding from one already covered by a baseline.
+// Both views use one read of the user's files. With no change selector, both fields point to that full scan.
 export function analyseHookReports(currentOptions: AnalysisOptions, scopedOptions: AnalysisOptions, hasChangedRegion: boolean): HookAnalysisReports {
+  currentOptions = targetsFromLaunchDirectory(currentOptions);
+  scopedOptions = targetsFromLaunchDirectory(scopedOptions);
+  // A hook without `--diff`, `--since`, or `--changed-ranges` has no narrower view to resolve.
+  const scopedChangedScope = hasChangedRegion ? changedRegionScope(scopedOptions, projectRootFromTargets(scopedOptions.paths)) : undefined;
   const run = completeAnalysis(prepareAnalysis(currentOptions), currentOptions);
   const currentReport = reportFromRun(run, currentOptions, run.baselineResult);
+  // An unscoped hook presents the same findings it uses for baseline comparison.
   if (!hasChangedRegion) {
     return { currentReport, scopedReport: currentReport };
   }
-  const scopedChangedScope = changedRegionScope(scopedOptions);
   const scopedChangedResult = filterChangedFindings(run.baselineResult.findings, scopedChangedScope, run.scanned.sources);
   // Same file-scoped diagnostics policy as diff-scoped analyse, so both surfaces agree.
   const scopedReport = reportFromRun({ ...run, diagnostics: filterScopedDiagnostics(run.diagnostics, scopedChangedScope) }, scopedOptions, { ...run.baselineResult, findings: scopedChangedResult.findings }, scopedChangedResult.suppressedCount);
@@ -112,14 +113,14 @@ export function analyseHookReports(currentOptions: AnalysisOptions, scopedOption
 }
 
 /**
- * Anchor reported paths at the launch directory when all usable targets are inside it or none are usable.
- * Otherwise use the nearest shared directory for all usable targets. Files contribute their containing directories.
+ * Choose the directory that owns the user's scan configuration, Git diff, and report paths.
+ * Use the launch directory for local targets and the common parent for targets outside it.
  *
  * @param paths - Scan targets resolved from the launch directory; an empty list selects the launch directory.
- * @returns The launch directory or a shared ancestor of usable targets; never empty.
+ * @returns The launch directory or a common ancestor. A lone missing external target uses its parent so JSON can name the missing file.
  * @throws When targets cannot share a filesystem root.
  */
-function projectRootFromTargets(paths: string[]): string {
+export function projectRootFromTargets(paths: string[]): string {
   const launchDirectory = cwd();
 
   // No target was named, so the directory the command ran from is the project.
@@ -138,8 +139,11 @@ function projectRootFromTargets(paths: string[]): string {
         directory = dirname(absolute);
       }
     } catch {
-      // A failed stat keeps the path from setting the root. Discovery checks the original targets and reports missing inputs.
-      continue;
+      // A typo such as `analyse ../app/mising.ts` keeps a project-relative diagnostic. A missing file in a list cannot move its root.
+      if (paths.length !== 1) {
+        continue;
+      }
+      directory = dirname(absolute);
     }
 
     // The first target sets the starting answer; later ones can only widen it.
@@ -147,6 +151,7 @@ function projectRootFromTargets(paths: string[]): string {
       common = directory;
       continue;
     }
+    // Expand the root until all usable targets can share one project-relative report.
     while (!isSameOrDescendant(directory, common)) {
       const parent = dirname(common);
       // Reaching a filesystem root without containing this target means no single root can anchor both paths.
@@ -165,11 +170,11 @@ function projectRootFromTargets(paths: string[]): string {
 }
 
 /**
- * Keep scan targets and baseline paths stable because discovery and baseline handling resolve paths from the project root.
- * Absolute baseline paths stay unchanged.
+ * Invariant: explicit paths keep their launch-directory meaning when a target selects a different project root.
+ * For example, `analyse ../app --baseline reviewed.json` still reads `reviewed.json` from the launch directory.
  *
- * @param options - Scan options containing targets and any baseline paths entered from the launch directory.
- * @returns The original options when launched from the project root, or a copy with absolute targets and rebased relative baseline paths.
+ * @param options - Scan options with paths from the command line. Omitted baseline and history options stay omitted.
+ * @returns The original options for a local scan, or a copy with absolute targets and baseline and history paths pointing to the same files.
  */
 function targetsFromLaunchDirectory(options: AnalysisOptions): AnalysisOptions {
   const launchDirectory = cwd();
@@ -186,20 +191,21 @@ function targetsFromLaunchDirectory(options: AnalysisOptions): AnalysisOptions {
     ...(options.baseline ? { baseline: fromRoot(options.baseline) } : {}),
     ...(options.generateBaseline ? { generateBaseline: fromRoot(options.generateBaseline) } : {}),
     ...(options.migrateBaseline ? { migrateBaseline: fromRoot(options.migrateBaseline) } : {}),
+    ...(options.historyFile ? { historyFile: fromRoot(options.historyFile) } : {}),
   };
 }
 
 /**
- * Report whether one directory is another or sits inside it.
- *
- * Comparison is by whole path segment, so a sibling folder such as /work/apidocs is never mistaken for something inside /work/api.
+ * Check whether a target is inside a launch or scan directory using native path separators.
+ * Use this before accepting multiple targets so `/work/apidocs` is treated as a sibling of `/work/api`.
  *
  * @param candidate - Directory being tested.
  * @param ancestor - Directory that may contain it.
  * @returns True when candidate is the ancestor or sits inside it.
  */
 function isSameOrDescendant(candidate: string, ancestor: string): boolean {
-  return candidate === ancestor || candidate.startsWith(ancestor.replace(/\/+$/u, "") + "/");
+  const fromAncestor = relative(ancestor, candidate);
+  return !isAbsolute(fromAncestor) && fromAncestor !== ".." && !fromAncestor.startsWith(`..${sep}`);
 }
 
 // Return the project root, loaded config, discovered inputs and an empty diagnostic array selected by options for a scan.
@@ -225,12 +231,13 @@ function withCatalogueConfidence(finding: Finding): Finding {
 }
 
 /**
- * Complete a prepared scan. Preserve stable finding identities by assigning them before inline and baseline suppression.
+ * Run the checks for the user's resolved project and apply its exclusions and baseline.
+ * Invariant: assign baseline identities before filtering so the hook and SARIF can refer to the same finding.
  *
  * @param preparation - project scope, discovery and config, with the caller's diagnostic array to append to
- * @param options - request settings for project scope and baseline selection. Generation or migration writes the requested baseline file.
- * @param unusableBaseline - defaults to throw for hooks. Diagnose mode records a fatal baseline-error and keeps the findings.
- * @returns Run data for reporting, including findings after baseline handling, suppression records, notes and accumulated diagnostics.
+ * @param options - scope and baseline choices. An unset baseline path lets the scan use the project's default when enabled.
+ * @param unusableBaseline - `throw` lets the hook report a refusal. `diagnose` keeps findings and adds a fatal baseline diagnostic.
+ * @returns Findings, diagnostics, and suppression counts for rendering. An empty findings list can still have diagnostics.
  * @throws {BaselineFileError} - a baseline file failure in throw mode.
  */
 function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOptions, unusableBaseline: "throw" | "diagnose" = "throw"): AnalysisRun {
@@ -242,32 +249,36 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
     ...scanned.findings,
     ...analyseProjectIndex(projectRoot, options, discovery.files, scanned.projectSources, config).filter((finding) => ruleEnabled(config, finding.ruleId)),
   ].map((finding) => applyConfiguredSeverity(config, withCatalogueConfidence(finding))));
-  // Reviewed sensitive exclusions apply before the baseline so a suppressed finding never reaches
-  // the report, the score, or the exit code, and each entry's count covers the whole scan.
+  // An approved sensitive exclusion removes the finding from the report and gate, but its audit count still covers the full scan.
   const excluded = partitionSensitiveExclusions(allFindings, config.sensitiveExclusions);
   // A configured entry claims its findings first, so its count stays what the user wrote it for.
   const testPathSkipped = applyBuiltInTestPathSkip(excluded.findings, excluded.suppressions);
-  // Naming every finding before the baseline filters any of them keeps one alert one alert: code scanning reads the
-  // same identity the baseline does, and a finding hidden from this report keeps the ordinal it was ranked with.
+  // Assign baseline identities before filtering so hiding one declaration cannot renumber another in SARIF or the hook.
   const spans = declarationSpans(scanned);
   const namedFindings = withBaselineIdentities(testPathSkipped.findings, spans);
-  // Another tool's comment and a repeated claim are judged on named findings, so a suppressed result keeps its identity
-  // in SARIF and the findings left keep the ordinals they had without the comment (FAMILY-CONTRACT.md section 13c).
-  const inline = applyInlineSuppressions(namedFindings, testPathSkipped.suppressions, discovery.files);
-  const baselineResult = applyBaselineOptions(projectRoot, options, inline.findings, spans, unusableBaseline);
+  // Apply inline suppressions to findings with identities so SARIF can still identify a suppressed result.
+  const inline = applyInlineSuppressions(namedFindings, testPathSkipped.suppressions, scanned.sources);
+  // A missing file or parse error makes `--generate-baseline` unsafe because it would save a partial review.
+  const baselineResult = options.generateBaseline && diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false)
+    ? { findings: inline.findings, diagnostics: [] }
+    : applyBaselineOptions(projectRoot, options, inline.findings, spans, unusableBaseline);
   // A baseline collision records a non-fatal diagnostic and leaves every finding with that identity visible.
   diagnostics.push(...baselineResult.diagnostics);
   const notes = [...discovery.notes, ...scanned.notes];
-  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes, suppressions: inline.suppressions, suppressedFindings: inline.suppressed };
+  // A selective scan scores only pillars backed by enabled rules. Omitting selectors keeps the normal score denominator.
+  const evaluatedPillars = options.execution && isExecutionRequested(options.execution)
+    ? ruleDescriptors().filter((rule) => ruleEnabled(config, rule.ruleId)).map((rule) => rule.pillar)
+    : undefined;
+  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes, evaluatedPillars, suppressions: inline.suppressions, suppressedFindings: inline.suppressed };
 }
 
 /**
- * Assemble report state for the stable gruff.analysis.v3 schema from the findings the caller selected for this view.
- * Keep suppression audit counts scan-wide so that a changed-region view preserves what the exclusions hid.
+ * Builds the analysis report from the findings selected for this command.
+ * Invariant: suppression audit counts cover the full scan, even when the report shows only the requested changes.
  *
  * @param run - completed scan supplying discovery totals, diagnostics, notes and suppression records
- * @param options - request metadata to record, including input paths and failure threshold
- * @param baselineResult - baseline metadata and the findings to report, already scoped when needed
+ * @param options - request inputs and threshold. No explicit inputs are shown as "." for a project scan.
+ * @param baselineResult - the selected findings and any baseline details. No baseline leaves out the review section.
  * @param suppressedCount - number of findings omitted by changed-region filtering. Omit it to leave the field out of the report.
  * @returns Native report state with the supplied findings, scan totals, and any baseline or changed-region count supplied.
  */
@@ -284,7 +295,7 @@ function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResul
       // Record explicit inputs as absolute paths so they keep their launch-directory meaning if the project root differs.
       // With no explicit input, a single dot denotes the default project scan.
       inputs: options.paths.length === 0 ? ["."] : options.paths.map((path) => resolve(cwd(), path)),
-      ...(options.config === undefined ? {} : { config: options.config }),
+      ...(options.config === undefined ? {} : { config: resolve(cwd(), options.config) }),
       ...(options.shouldIncludeIgnored ? { includeIgnored: true as const } : {}),
     },
     summary: summarize(findings),
@@ -300,9 +311,8 @@ function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResul
     suppressedFindings: run.suppressedFindings,
     findings,
     ...(suppressedCount === undefined ? {} : { suppressedCount }),
-    // Only script files carry code to score, so the ratified denominator is narrower than
-    // paths.analysedFiles, which also counts the text inputs the raw-text rules read.
-    score: scoreReport(findings, run.discovery.files.filter((file) => file.isScript).length),
+    // Score uses evaluated script files. The analysed file count also includes text assets that received raw-text checks.
+    score: scoreReport(findings, run.scanned.evaluatedFiles, run.evaluatedPillars),
     ...(baselineResult.baseline ? { baseline: baselineResult.baseline } : {}),
   };
 }
@@ -369,6 +379,7 @@ interface DiscoverySummary {
 // Contract invariant: `notes` records non-text scan-surface changes without changing finding order.
 interface SourceScanResult {
   findings: Finding[];
+  evaluatedFiles: number;
   projectSources: ProjectSource[];
   sources: Map<string, { file: SourceFile; source: string; parsed?: ParsedScript }>;
   notes: ScanSurfaceNote[];
@@ -391,6 +402,7 @@ interface AnalysisRun {
   discovery: DiscoverySummary;
   diagnostics: RunDiagnostic[];
   scanned: SourceScanResult;
+  evaluatedPillars: Pillar[] | undefined;
   baselineResult: BaselineApplication;
   notes: ScanSurfaceNote[];
   // Configured sensitive-exclusion rows, then built-in test-path and section 13c rows, counted over the full scan
@@ -416,16 +428,18 @@ function pushMissingPathDiagnostics(missingPaths: string[], diagnostics: RunDiag
  * Read and scan inputs in stable discovery order so that project-index snapshots keep their graph anchors.
  * Record failures caught during a file's read or scan as read-error diagnostics so the remaining files can still be checked.
  *
- * @param files - discovered inputs in the order used for project-index snapshots
+ * @param files - discovered inputs in a stable order. An empty list leaves the scan with no files to score.
  * @param config - scan budget, rule settings and project-source selection settings
  * @param diagnostics - caller's array for budget, parser and caught file-scan diagnostics
  * @returns Findings, retained project snapshots, text sources with optional parses, and notes for skipped non-text inputs.
  */
 function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics: RunDiagnostic[]): SourceScanResult {
   const findings: Finding[] = [];
+  let evaluatedFiles = 0;
   const projectSources: ProjectSource[] = [];
   const sources = new Map<string, { file: SourceFile; source: string; parsed?: ParsedScript }>();
   const notes: ScanSurfaceNote[] = [];
+  // Check each supported input so one unreadable file can be diagnosed without discarding the other files' findings.
   for (const file of files) {
     try {
       const fileBytes = readFileSync(file.absolutePath);
@@ -443,16 +457,23 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
       // Over-budget scripts skip parsing and project snapshots but still get enabled text checks. Other scripts share one parse.
       const parsed = budgetDiagnostic ? undefined : parseScript(file, source);
       sources.set(file.displayPath, { file, source, ...(parsed ? { parsed } : {}) });
+      // The user can still see text findings from a script that exceeds the deep-scan budget.
       if (budgetDiagnostic) {
         diagnostics.push(budgetDiagnostic);
       } else {
+        // Retain files that can contribute to cross-file findings such as import cycles.
         if (shouldRetainProjectSource(file, source)) {
           projectSources.push(projectSource(file, source, parsed));
         }
         diagnostics.push(...(parsed?.diagnostics ?? []));
       }
       findings.push(...analyseSource(file, source, config, budgetDiagnostic === undefined, parsed));
+      // Text assets can produce findings, but only evaluated scripts contribute to the file count used for scoring.
+      if (file.isScript) {
+        evaluatedFiles += 1;
+      }
     } catch (error) {
+      // A file deleted during the scan produces a diagnostic. Findings from other files remain available.
       diagnostics.push({
         diagnosticType: "read-error",
         message: `Unable to read file: ${String(error)}`,
@@ -461,7 +482,7 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
       });
     }
   }
-  return { findings, projectSources, sources, notes };
+  return { findings, evaluatedFiles, projectSources, sources, notes };
 }
 
 /**
@@ -481,16 +502,20 @@ function withBaselineIdentities(findings: Finding[], spansByFile: Map<string, De
 }
 
 /*
- * Return declaration names and inclusive line spans by display path from scanned.sources for baseline identity ranking.
- * Entries without parsed syntax still go through ordinary block discovery, but cannot add the measured-only callable forms.
+ * Collect declaration positions so a baseline can distinguish same-named functions in one file.
+ * Files with no syntax tree use finding positions, including scripts scanned under the deep-scan budget limit.
  */
 function declarationSpans(scanned: SourceScanResult): Map<string, DeclarationSpan[]> {
   const spansByFile = new Map<string, DeclarationSpan[]>();
+  // Rank declarations per file so a same-named function in another file has its own reviewed identity.
   for (const [displayPath, entry] of scanned.sources) {
+    // A text-only file or budget-limited script has no syntax tree and cannot supply declaration positions.
+    if (!entry.parsed) {
+      continue;
+    }
     const blocks = functionBlocks(entry.source, entry.source, entry.parsed);
-    // The callables only the size and complexity rules measure, such as two IIFEs both named `<iife>`, are declarations
-    // too; read them from the masked source those rules use, so the names and lines match their findings.
-    const measuredOnly = entry.parsed ? measuredOnlyFunctionBlocks(entry.source, maskNonCode(entry.source), entry.parsed) : [];
+    // Keep positions for measured inline functions too, so two functions named `<iife>` can have separate baseline entries.
+    const measuredOnly = measuredOnlyFunctionBlocks(entry.source, maskNonCode(entry.source), entry.parsed);
     spansByFile.set(
       displayPath,
       [...blocks, ...measuredOnly].map((block) => ({ name: block.name, startLine: block.startLine, endLine: block.startLine + block.lineCount - 1 })),

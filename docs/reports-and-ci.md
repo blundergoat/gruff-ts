@@ -207,9 +207,9 @@ Append score history to a JSON file:
 gruff-ts analyse . --history-file .gruff-history.json --fail-on=none
 ```
 
-`--history-file` requires a full scan. Combining it with `--diff`, `--since`, or
-`--changed-ranges` exits `2` before anything is written, so a filtered scan can
-never append a partial trend point.
+`--history-file` requires a valid full scan. Combining it with `--diff`,
+`--diff-base`, `--since`, or `--changed-ranges` exits `2` before writing. An invalid
+baseline or another run-invalidating diagnostic also prevents a history entry.
 
 History files are local artifacts. Commit them only if your project explicitly
 wants trend data in version control.

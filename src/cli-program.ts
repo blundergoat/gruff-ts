@@ -1,10 +1,13 @@
-// Commander CLI shell wiring that keeps option normalization and stdout behavior outside the analyzer.
+// Connects the user's command and flags to analysis, output, and exit status.
+//
+// Use analyse for individual findings, summary for overall patterns, and report for an artifact to share.
+// Machine-readable output carries the same run status that automation receives from the process.
 import { Command, Help, InvalidArgumentError } from "commander";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { extname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { cwd } from "node:process";
-import { CONFIG_ERROR_DIAGNOSTIC_TYPE, failedRunReport, TARGET_ERROR_DIAGNOSTIC_TYPE, targetOutsideLaunchDirectory } from "./analyser.ts";
+import { CONFIG_ERROR_DIAGNOSTIC_TYPE, failedRunReport, projectRootFromTargets, TARGET_ERROR_DIAGNOSTIC_TYPE, targetOutsideLaunchDirectory } from "./analyser.ts";
 import { DEFAULT_BASELINE } from "./baseline.ts";
 import { checkIgnore, checkIgnoreExitCode, renderCheckIgnore, type CheckIgnoreFormat } from "./check-ignore.ts";
 import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError } from "./changed-regions.ts";
@@ -17,7 +20,7 @@ import { promptYesNo, shouldPromptForInit, writeDefaultConfig } from "./init-con
 import { migrateConfigText } from "./migrate-config.ts";
 import { renderReport, renderSummary, renderSummaryJson } from "./report-renderers.ts";
 import { completionShell, getRuleDescriptor, renderCompletionScript, renderConsoleList, renderProfileList, renderRuleDetail, renderRuleList, type RuleListFormat } from "./rule-list.ts";
-import { exitFor } from "./scoring.ts";
+import { exitFor, summarize } from "./scoring.ts";
 import { applyDisplaySelectors, type DisplaySelectors } from "./selectors.ts";
 import type { AnalysisOptions, AnalysisReport, Confidence, DeepScanBudgetOverride, ExecutionSelectors, MinimumSeverityCommand, Severity } from "./types.ts";
 
@@ -196,64 +199,81 @@ function registerMigrateConfigCommand(program: Command): void {
     .command("migrate-config")
     .description("Rewrite a 0.5 config for the current schema, writing the result to a different file.")
     .requiredOption("--config <path>", "The 0.5 config to read. It is never modified.")
-    .option("--output <path>", "Where to write the migrated config. Required unless --dry-run.")
+    .option("--output <path>", "New file for the migrated config. Required unless --dry-run.")
     .option("--dry-run", "Print what would change and write nothing.")
-    .action((rawOptions: Record<string, unknown>) => {
-      runMigrateConfig(program, rawOptions);
-    });
+    .action((rawOptions: Record<string, unknown>) => runWithConfigErrorHandling(() => runMigrateConfig(program, rawOptions)));
 }
 
 /*
- * Read the named config, rewrite it, and put the result where the user asked.
+ * Previews or writes the migrated config requested by `migrate-config`.
  *
- * Refuses rather than guessing when no destination was named, and refuses to write over the input, because the
- * copy the user may want back is the whole point of migrating out of place.
- *
- * Reads the named config and writes one file: whatever `--output` names. Nothing else on disk is touched.
+ * Side effects: writes one new file when the user supplies --output.
+ * @throws {ConfigLoadError} when the input, format, or destination prevents migration.
  */
 function runMigrateConfig(program: Command, rawOptions: Record<string, unknown>): void {
   const inputPath = resolve(String(rawOptions.config));
-
-  if (!existsSync(inputPath)) {
-    process.stderr.write(`gruff-ts: config to migrate does not exist: ${inputPath}\n`);
-    process.exitCode = USAGE_EXIT_CODE;
-    return;
+  const inputFormat = migrationConfigFormat(inputPath);
+  let source: string;
+  try {
+    source = readFileSync(inputPath, "utf8");
+  } catch (error) {
+    // A user may pass `--config old.yaml` from a directory that has no such file.
+    throw new ConfigLoadError(`Cannot read migration input ${inputPath}: ${(error as NodeJS.ErrnoException).code ?? "read failed"}.`, "Pass a readable config file to --config.");
   }
-
-  const migration = migrateConfigText(readFileSync(inputPath, "utf8"));
+  const migration = migrateConfigText(source, inputFormat);
+  // An empty change list tells the user their configuration settings are already current.
   const summary = migration.changes.length === 0
     ? `${inputPath} is already current; no changes.`
     : ["Migration changes:", ...migration.changes.map((change) => `  - line ${change.line}: ${change.description}`)].join("\n");
 
-  writeCommandOutput(program, summary);
-
+  // A dry run shows what to expect before the user chooses a destination.
   if (rawOptions.dryRun === true) {
+    writeCommandOutput(program, summary);
     writeCommandOutput(program, `Dry run: nothing written.`);
     return;
   }
 
   const outputPath = typeof rawOptions.output === "string" ? resolve(rawOptions.output) : "";
 
-  // Without a destination there is nowhere to put the result, and writing over the input is the one thing
-  // migration must never do; refusing is better than choosing a path the user did not name.
+  // With no destination, show how to supply a path or preview the changes.
   if (outputPath.length === 0) {
     process.stderr.write("gruff-ts: migrate-config needs --output <path>, or --dry-run to print the changes.\n");
     process.exitCode = USAGE_EXIT_CODE;
     return;
   }
-  if (outputPath === inputPath) {
-    process.stderr.write(`gruff-ts: --output must name a different file from --config; ${inputPath} is the copy you may want back.\n`);
-    process.exitCode = USAGE_EXIT_CODE;
-    return;
+  // A user upgrading old.yaml needs a YAML destination so its existing syntax still loads.
+  if (migrationConfigFormat(outputPath) !== inputFormat) {
+    throw new ConfigLoadError("The migration output must use the input config's format.", "Choose a new output path with a matching YAML or JSON extension.");
   }
-
-  writeFileSync(outputPath, migration.text);
-  writeCommandOutput(program, `Wrote ${outputPath}; ${inputPath} is unchanged.`);
+  try {
+    // Exclusive creation refuses every existing directory entry, including aliases of the input.
+    writeFileSync(outputPath, migration.text, { flag: "wx" });
+  } catch (error) {
+    // For example, a user may select the same destination twice or choose a read-only directory.
+    throw new ConfigLoadError(`Cannot create migration output ${outputPath}: ${(error as NodeJS.ErrnoException).code ?? "write failed"}.`, "Choose a new output file in a writable directory.");
+  }
+  writeCommandOutput(program, summary);
+  writeCommandOutput(program, `Wrote ${outputPath}.`);
 }
 
-// Returns nothing. Registers analyse on program and installs an action that uses runAnalyse to produce a report.
-// The action sets process.exitCode because output must have time to flush. By default, advisory findings and above fail the run.
-// CI can select --fail-on=error or set failOn.analyse to error in .gruff-ts.yaml.
+// Selects the migration encoding from a supported config extension.
+// @throws {ConfigLoadError} for an unsupported extension.
+function migrationConfigFormat(path: string): "yaml" | "json" {
+  const extension = extname(path).toLowerCase();
+  // Both common YAML suffixes are valid when the user names a source or destination.
+  if (extension === ".yaml" || extension === ".yml") {
+    return "yaml";
+  }
+  // A project with a JSON config can review the migration in the same format.
+  if (extension === ".json") {
+    return "json";
+  }
+  throw new ConfigLoadError(`Unsupported migration config extension: ${extension || "(none)"}.`, "Use a .yaml, .yml, or .json config file.");
+}
+
+// Registers analyse for users who want individual findings in the terminal or a machine-readable report.
+//
+// The default gate fails on advisory or higher. Users can set `--fail-on=error` or configure `failOn.analyse`.
 function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("analyse")
@@ -300,13 +320,16 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
         const baseOptions = normalizeOptions(paths, rawOptions, { shouldAllowBaselineFlag: true });
         const configured = configuredSeverities(baseOptions, "analyse", command);
         const options = configured.options;
-        await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
+        await maybePromptInitConfig(program, projectRootFromTargets(options.paths), promptOptionsFromAnalysis(options));
         const report = runAnalyse(options);
-        // The exit code is decided by everything that ran, before any presentation filter hides part of it.
-        process.exitCode = Math.max(exitFor(report, options.failOn, confidenceFloor(rawOptions)), newDebtExitCode(report, rawOptions));
+        const findingExit = exitFor(report, options.failOn, confidenceFloor(rawOptions));
+        // A failed scan keeps exit 2. A successful scan can still fail either the severity gate or the new-finding gate.
+        const status = findingExit === 2 ? findingExit : Math.max(findingExit, newDebtExitCode(report, rawOptions));
+        process.exitCode = status;
         writeChangedRegionFailure(report, options.format);
-        report.findings = applyDisplaySelectors(report.findings, displaySelectorsFrom(rawOptions), configured.displayFloor);
-        writeCommandOutput(program, renderReport(report, options.format));
+        // A user can narrow the visible findings while CI keeps the exit status calculated from the full evaluated set.
+        filterReportForDisplay(report, rawOptions, configured.displayFloor);
+        writeCommandOutput(program, renderReport(report, options.format, status));
       }, (error) => writeFailedRunEnvelope(program, rawOptions.format, error));
     });
 }
@@ -332,9 +355,10 @@ function registerCheckIgnoreCommand(program: Command): void {
     });
 }
 
-// Returns nothing. Registers hook on program and uses runAnalyse for full and symbol-scoped views with analysis baselines disabled.
-// Writes gruff.hook.v2 JSON when stdout is enabled. The capabilities flag prints metadata and exits 0 without analysis.
-// The opt-in gate sets exit status from the published payload. Caught Errors exit 2, and config failures include remediation in config.error.
+// Registers hook for coding agents to review an edit and apply a project gate using the findings in the JSON response.
+//
+// Invariant: a refused input or missing required baseline produces an envelope and exit 2.
+// Config failures include a suggested next step inside the response.
 // @throws from the registered action when the caught failure is not an Error.
 function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
@@ -357,6 +381,7 @@ function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void 
     .option("--baseline <path>", "Compare hook findings against a gruff baseline JSON file using stableIdentity.")
     .option("--fail-on-diagnostics", "Exit 1 when parse/read diagnostics affect the analysed change; the default reports them in-band with exit 0.")
     .action((paths: string[], rawOptions: Record<string, unknown>) => {
+      // An integration can discover supported options before sending any files to scan.
       if (rawOptions.capabilities === true) {
         writeCommandOutput(program, renderHookCapabilities());
         process.exitCode = 0;
@@ -364,11 +389,25 @@ function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void 
       }
       try {
         const scopedOptions = hookScopedOptions(paths, rawOptions);
+        const outsideTarget = targetOutsideLaunchDirectory(scopedOptions.paths);
+        // A request naming several files must be launched from a directory containing them all.
+        if (outsideTarget !== null) {
+          writeCommandOutput(program, renderHookFatal(TARGET_ERROR_DIAGNOSTIC_TYPE, outsideTargetMessage(outsideTarget)));
+          process.exitCode = USAGE_EXIT_CODE;
+          return;
+        }
+        const baseline = hookBaselinePath(rawOptions);
+        // A user needs to choose a review file before the hook can gate on findings they have yet to review.
+        if (rawOptions.failOnNew === true && baseline.baselinePath === undefined) {
+          writeCommandOutput(program, renderHookFatal("baseline-error", "--fail-on-new requires --baseline <path>."));
+          process.exitCode = USAGE_EXIT_CODE;
+          return;
+        }
         const currentOptions = hookCurrentOptions(scopedOptions);
         const rendered = renderHookReport(runAnalyse, {
           currentOptions,
           scopedOptions,
-          ...hookBaselinePath(rawOptions),
+          ...baseline,
           ...hookDiffBase(scopedOptions),
           hasChangedRegion: hasHookChangedRegion(scopedOptions),
         });
@@ -376,11 +415,13 @@ function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void 
         // Read findings and diagnostics from the rendered payload so the gate uses the same results as the report.
         process.exitCode = hookExitCode(rendered, hookGateFrom(rawOptions));
       } catch (error) {
+        // A project may still use an older config schema. Give the integration the loader's instructions.
         if (error instanceof ConfigLoadError) {
           writeCommandOutput(program, renderHookConfigError(error.message, error.suggestion));
           process.exitCode = USAGE_EXIT_CODE;
           return;
         }
+        // A missing review file, for example, is a fatal diagnostic in the hook's standard response.
         if (error instanceof Error) {
           // Render a fatal diagnostic under the gruff.hook.v2 schema so consumers can read the failure when stdout is enabled.
           writeCommandOutput(program, renderHookFatal(hookFatalType(error, rawOptions), error.message));
@@ -523,9 +564,9 @@ function registerListRulesCommand(program: Command): void {
     });
 }
 
-// Registers report on program and scans paths with runAnalyse. The output contract is HTML by default or JSON, with baseline suppression disabled.
-// The action may write config after user approval. It writes to the requested output file or to stdout when enabled.
-// Registration returns nothing. The action sets process.exitCode from the report and finding gate, or to 2 for a handled config error.
+// Registers report for users who want an HTML or JSON artifact of all findings, including reviewed baseline debt.
+//
+// Side effects: the action writes to --output or stdout, and can write project config after the user approves initialization.
 function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("report")
@@ -540,26 +581,35 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     .option("--fail-on <severity>", "Finding severity that fails the run: advisory, warning, error, or none.", parseFailOn, "none")
     .option("--include-ignored", "Include files under default and Git ignored paths; config ignores still apply.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
+      const outsideTarget = targetOutsideLaunchDirectory(paths);
+      // Refuse a mixed-project target list before trying to render or write a report.
+      if (outsideTarget !== null) {
+        refuseTargetsOutsideLaunchDirectory(program, rawOptions.format, outsideTarget);
+        return;
+      }
       await runWithConfigErrorHandling(async () => {
         const format = rawOptions.format === "json" ? "json" : "html";
         const baseOptions = normalizeOptions(paths, { ...rawOptions, format }, { shouldAllowBaselineFlag: false });
-        const options = applyMinimumSeverityPrecedence(baseOptions, "report", command);
-        await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
+        const { options, displayFloor } = configuredSeverities(baseOptions, "report", command);
+        await maybePromptInitConfig(program, projectRootFromTargets(options.paths), promptOptionsFromAnalysis(options));
         const report = runAnalyse(options);
-        const rendered = renderReport(report, format);
+        const status = exitFor(report, options.failOn);
+        filterReportForDisplay(report, rawOptions, displayFloor);
+        const rendered = renderReport(report, format, status);
+        // A user can save report.html for a browser. With no file selected, use stdout.
         if (typeof rawOptions.output === "string") {
           writeFileSync(rawOptions.output, rendered);
         } else {
           writeCommandOutput(program, rendered);
         }
-        process.exitCode = exitFor(report, options.failOn);
-      });
+        process.exitCode = status;
+      }, (error) => writeFailedRunEnvelope(program, rawOptions.format, error));
     });
 }
 
-// Registers summary on program. One scan by runAnalyse supplies either the text pillar, rule and offender digest or the JSON summary envelope.
-// The action may write config after approval and request baseline or history writes. It writes the digest to stdout when enabled.
-// Registration returns nothing. The action sets process.exitCode from diagnostics and the finding gate, or to 2 for a handled config error.
+// Registers summary for users who want pillar counts and top rules or files without opening a per-finding report.
+//
+// Side effects: the action writes the digest to stdout and can save config, a baseline, or score history when requested.
 function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("summary")
@@ -584,22 +634,31 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--force", "Overwrite a 0.5 baseline at the default path; without it a generate that would destroy the retreat path is refused.")
     .option("--no-baseline", "Skip auto-applying the default baseline file for this run.")
     .action(async (paths: string[], rawOptions: Record<string, unknown>, command: Command) => {
+      const outsideTarget = targetOutsideLaunchDirectory(paths);
+      // Use one launch directory to keep paths and totals comparable within the digest.
+      if (outsideTarget !== null) {
+        refuseTargetsOutsideLaunchDirectory(program, rawOptions.format, outsideTarget);
+        return;
+      }
       await runWithConfigErrorHandling(async () => {
         const summaryFormat = rawOptions.format === "json" ? "json" : "text";
         const baseOptions = normalizeOptions(paths, { ...rawOptions, format: summaryFormat }, { shouldAllowBaselineFlag: true });
-        const options = applyMinimumSeverityPrecedence(baseOptions, "summary", command);
+        const { options, displayFloor } = configuredSeverities(baseOptions, "summary", command);
         const top = typeof rawOptions.top === "number" ? rawOptions.top : 10;
-        await maybePromptInitConfig(program, process.cwd(), promptOptionsFromAnalysis(options));
+        await maybePromptInitConfig(program, projectRootFromTargets(options.paths), promptOptionsFromAnalysis(options));
         const startedAt = performance.now();
         const report = runAnalyse(options);
         const elapsedMs = performance.now() - startedAt;
         const pathLabel = summaryPathLabel(options.paths, report.run.projectRoot);
+        const status = exitFor(report, options.failOn);
+        // Keep the decision from the full scan when the user hides lower-severity entries from the digest.
+        filterReportForDisplay(report, rawOptions, displayFloor);
         const rendered = summaryFormat === "json"
-          ? renderSummaryJson(report)
+          ? renderSummaryJson(report, status)
           : renderSummary(report, elapsedMs, pathLabel, top);
         writeCommandOutput(program, rendered);
-        process.exitCode = exitFor(report, options.failOn);
-      });
+        process.exitCode = status;
+      }, (error) => writeFailedRunEnvelope(program, rawOptions.format, error));
     });
 }
 
@@ -682,6 +741,12 @@ function displaySelectorsFrom(rawOptions: Record<string, unknown>): DisplaySelec
     showPillars: selectorList(rawOptions.showPillar),
     hidePillars: selectorList(rawOptions.hidePillar),
   };
+}
+
+// Projects display findings and counts. The already computed exit status and score must stay stable across display filters.
+function filterReportForDisplay(report: AnalysisReport, rawOptions: Record<string, unknown>, displayFloor: Severity | undefined): void {
+  report.findings = applyDisplaySelectors(report.findings, displaySelectorsFrom(rawOptions), displayFloor);
+  report.summary = summarize(report.findings);
 }
 
 // Returns string entries from rawValue, a collected selector flag; a non-array or an array without strings means no selectors.
@@ -774,14 +839,23 @@ function summaryPathLabel(paths: string[], projectRoot: string): string {
  * Converts a parsed CLI request into analysis options and enforces the baseline option contract for the command.
  * Reads the patch from stdin when selected so that analysis receives the patch text with its options.
  *
- * @param paths - positional scan targets, which can include the stdin marker for --diff
+ * @param paths - positional scan targets, including the stdin marker for --diff. No targets defaults to the project.
  * @param rawOptions - parsed Commander flags used to select analysis settings and defaults
  * @param context - command policy that controls whether baseline input is allowed
  * @returns Normalized analysis options, including the resolved scan targets and diff, history and baseline settings.
- * @throws {ConfigLoadError} - for history with --diff, --since or --changed-ranges, or an invalid deep-scan budget object with an enabled field
+ * @throws {ConfigLoadError} for incompatible history or baseline flags, or an invalid deep-scan budget override.
  */
 function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, context: NormalizeContext): AnalysisOptions {
   assertFullScanHistoryOptions(rawOptions);
+  const generation = generateBaselineOption(rawOptions);
+  // The source tells migration which reviews to keep. The generation flag tells it where to put them.
+  if (typeof rawOptions.migrateBaseline === "string" && !generation.generateBaseline) {
+    throw new ConfigLoadError("--migrate-baseline requires --generate-baseline.", "Pass --generate-baseline <output path>.", false);
+  }
+  // A generation starts a review. A new-debt gate needs a review that already exists.
+  if (rawOptions.failOnNew === true && generation.generateBaseline) {
+    throw new ConfigLoadError("--fail-on-new requires an applied baseline.", "Generate the baseline first, then run with --baseline <path>.", false);
+  }
   const format = stringChoice(rawOptions.format, ["text", "json", "html", "markdown", "github", "hotspot", "sarif"], "text");
   const failOn = stringChoice(rawOptions.failOn, ["none", "advisory", "warning", "error"], "advisory");
   const diffInput = diffOption(paths, rawOptions);
@@ -807,7 +881,7 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
     ...sinceOption(rawOptions),
     ...historyFileOption(rawOptions),
     ...baselineOption(baselineValue, context),
-    ...generateBaselineOption(rawOptions),
+    ...generation,
     ...migrateBaselineOption(rawOptions),
     ...(rawOptions.force === true ? { shouldForceBaselineOverwrite: true } : {}),
     shouldSkipBaseline,
@@ -816,22 +890,23 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
 }
 
 /**
- * Reject a history path paired with a changed-region selector before analysis or rendering.
- * A configuration error lets analyse and summary emit the same exit-2 guidance with no stdout.
+ * Rejects a history write for a filtered scan so the user's score trend compares full scans.
+ * The command reports the conflicting flags and exits 2 before rendering or writing history.
  *
  * @param rawOptions - parsed CLI options checked for a history path and changed-region flags
  * @returns Nothing. Lets the command proceed when the supplied options are compatible.
- * @throws {ConfigLoadError} - when --history-file is combined with --diff, --since, or --changed-ranges.
+ * @throws {ConfigLoadError} when --history-file is combined with --diff, --diff-base, --since, or --changed-ranges.
  */
 function assertFullScanHistoryOptions(rawOptions: Record<string, unknown>): void {
   const hasChangedRegionSelector = rawOptions.diff === true
     || typeof rawOptions.diff === "string"
+    || typeof rawOptions.diffBase === "string"
     || typeof rawOptions.since === "string"
     || typeof rawOptions.changedRanges === "string";
   // A filtered request would mix partial scores into the full-project trend users review.
   if (typeof rawOptions.historyFile === "string" && hasChangedRegionSelector) {
     throw new ConfigLoadError(
-      "`--history-file` requires a full scan and cannot be combined with `--diff`, `--since`, or `--changed-ranges`.",
+      "`--history-file` requires a full scan and cannot be combined with `--diff`, `--diff-base`, `--since`, or `--changed-ranges`.",
       "Remove the changed-region option, or omit `--history-file` for this filtered scan.",
       false,
     );
@@ -1026,19 +1101,14 @@ interface ConfiguredSeverities {
  * @throws {ConfigLoadError} - if configuration loading fails, for runWithConfigErrorHandling to report.
  */
 function configuredSeverities(options: AnalysisOptions, command: MinimumSeverityCommand, commanderCommand: Command): ConfiguredSeverities {
-  const config = loadConfig(cwd(), options);
+  // A scan of a sibling project should use that project's settings even if launched elsewhere.
+  const config = loadConfig(projectRootFromTargets(options.paths), options);
+  // An explicit --fail-on wins. If neither source sets a gate, keep this command's default.
   const configuredFailOn = commanderCommand.getOptionValueSource("failOn") === "cli" ? undefined : minimumSeverityFor(config, command);
   return {
     options: configuredFailOn === undefined ? options : { ...options, failOn: configuredFailOn },
     ...(config.displayFloor === undefined ? {} : { displayFloor: config.displayFloor }),
   };
-}
-
-// Read the configured gate for command and return options with that threshold.
-// Return options unchanged when no gate is configured or commanderCommand records an explicit --fail-on.
-// Keep the configured display floor out of this result; other analysis settings in options are preserved.
-function applyMinimumSeverityPrecedence(options: AnalysisOptions, command: MinimumSeverityCommand, commanderCommand: Command): AnalysisOptions {
-  return configuredSeverities(options, command, commanderCommand).options;
 }
 
 /**
@@ -1065,12 +1135,18 @@ function writeFailedRunEnvelope(program: Command, requestedFormat: unknown, erro
  * @returns nothing. It writes the reason to stderr and sets process.exitCode to 2.
  */
 function refuseTargetsOutsideLaunchDirectory(program: Command, requestedFormat: unknown, target: string): void {
-  const message = `target "${target}" is outside the launch directory; gruff-ts analyses several targets only from a directory that contains them all`;
+  const message = outsideTargetMessage(target);
   process.stderr.write(`gruff-ts: ${message}\n`);
+  // Automation reading JSON or SARIF receives the same refusal in its chosen format.
   if (requestedFormat === "json" || requestedFormat === "sarif") {
     writeCommandOutput(program, renderReport(failedRunReport(cwd(), requestedFormat, TARGET_ERROR_DIAGNOSTIC_TYPE, message), requestedFormat));
   }
   process.exitCode = 2;
+}
+
+// Describes why a multi-target scan cannot be anchored at its launch directory.
+function outsideTargetMessage(target: string): string {
+  return `target "${target}" is outside the launch directory; gruff-ts analyses several targets only from a directory that contains them all`;
 }
 
 /**

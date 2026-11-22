@@ -1,13 +1,10 @@
-// Reads and writes `gruff-baseline.json`, and reconciles a fresh scan against the debt a user already reviewed.
+// Saves reviewed findings for `analyse --generate-baseline` and loads those reviews for `analyse --baseline`.
 //
-// A baseline row stores one line-free identity and a count and nothing positional, so everyday reformatting never
-// re-flags accepted debt, while a second occurrence beyond the reviewed count is still reported as new.
-//
-// Sensitive-data findings are counted here and never stored: withholding their identity is what stops a durable
-// review from hiding a secret. A 0.5 baseline is refused with the command that carries its reviews forward.
-import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { basename } from "node:path";
-import { type DeclarationPositionResolver, findingIdentities, TOOL_LANGUAGE, type FindingIdentity } from "./baseline-identity.ts";
+// Moving code leaves a review in place. An extra occurrence beyond the reviewed count appears as new.
+// Sensitive findings contribute counts only. Users upgrading a 0.5 file can carry their reviews forward with `--migrate-baseline`.
+import { lstatSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { type DeclarationPositionResolver, findingIdentities, isBaselineEligible, TOOL_LANGUAGE, type FindingIdentity } from "./baseline-identity.ts";
 import type { Finding } from "./types.ts";
 
 // The family baseline this port writes and reads; a file naming anything else is refused rather than guessed at.
@@ -106,10 +103,24 @@ interface BaselineDocument {
  * @param findings - current findings to aggregate into baseline rows
  * @param declarationPosition - optional resolver for declaration positions. Omit it to rank by finding line.
  * @returns The number of occurrence rows written, or zero when no finding has an identity.
+ * @throws {BaselineFileError} when the temporary write or replacement fails.
  */
 export function writeBaseline(path: string, findings: Finding[], declarationPosition?: DeclarationPositionResolver): number {
   const document = baselineDocument(findings, declarationPosition);
-  writeFileSync(path, `${JSON.stringify(document, null, 2)}\n`);
+  try {
+    // Stage the replacement beside the destination so an interrupted write leaves the user's earlier baseline intact.
+    const temporaryDirectory = mkdtempSync(join(dirname(path), ".gruff-baseline-"));
+    try {
+      const temporaryPath = join(temporaryDirectory, "baseline.json");
+      writeFileSync(temporaryPath, `${JSON.stringify(document, null, 2)}\n`);
+      renameSync(temporaryPath, path);
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
+  } catch (error) {
+    // A user may choose a baseline destination in a read-only checkout.
+    throw new BaselineFileError(`baseline ${path} cannot be written: ${unreadableReason(error)}`);
+  }
   return document.occurrences.length;
 }
 
@@ -159,12 +170,17 @@ export function applyBaseline(path: string, findings: Finding[], declarationPosi
  * Returns counts of written rows, matched findings, and findings tallied in the sensitive summary.
  *
  * @throws {BaselineFileError} - the paths name the same file or the legacy schema or row container is invalid
- * @throws {SyntaxError} - the input is malformed JSON
  * @throws {Error} - a file operation fails or the input bytes differ after the write
  */
 export function migrateBaseline(inputPath: string, outputPath: string, findings: Finding[], declarationPosition?: DeclarationPositionResolver): BaselineMigration {
   requireDistinctPaths(inputPath, outputPath);
-  const original = readFileSync(inputPath);
+  let original: Buffer;
+  try {
+    original = readFileSync(inputPath);
+  } catch (error) {
+    // For example, `--migrate-baseline old.json` points to a file omitted from this checkout.
+    throw new BaselineFileError(`migration input ${inputPath} cannot be read: ${unreadableReason(error)}`);
+  }
   const accepted = acceptedByLegacy(legacyRows(inputPath, original), findings);
   const entries = writeBaseline(outputPath, accepted, declarationPosition);
 
@@ -178,41 +194,30 @@ export function migrateBaseline(inputPath: string, outputPath: string, findings:
 
 /**
  * Guard the shared default filename because regenerating after an upgrade could overwrite the legacy baseline needed for rollback.
- * Stable contract: generation proceeds here when the file declares the current schema or the guard finds no schema string.
+ * Generation proceeds for an absent path or a baseline that can be read by this analyzer.
  *
  * @param outputPath - proposed baseline destination, checked only when it uses the shared default filename
  * @param shouldForce - explicit user permission to bypass the overwrite guard
  * @returns Nothing. Allows the caller to continue when the overwrite guard passes.
- * @throws {BaselineFileError} - force is off and the default-named output declares a different schema version.
+ * @throws {BaselineFileError} - force is off and the existing default path cannot be read as a current regular baseline file.
  */
 export function requireOverwritableDefaultPath(outputPath: string, shouldForce: boolean): void {
   // An explicit force flag or a different filename bypasses the shared-default safeguard.
   if (shouldForce || basename(outputPath) !== DEFAULT_BASELINE_FILENAME) {
     return;
   }
-  const schemaVersion = existingSchemaVersion(outputPath);
-  if (schemaVersion === undefined || schemaVersion === BASELINE_SCHEMA_VERSION) {
-    return;
-  }
-  throw new BaselineFileError(
-    `${outputPath} is a "${schemaVersion}" baseline, not "${BASELINE_SCHEMA_VERSION}"; generating over it would destroy the retreat path. ` +
-      `Migrate it with \`gruff-ts analyse --migrate-baseline ${outputPath} --generate-baseline <new path>\`, or pass --force to overwrite it`,
-  );
-}
-
-/*
- * Reads the schema string of whatever already sits at a path.
- * Nothing there, or nothing this can classify, reads as undefined: that is the ordinary first-generate case, and a
- * file gruff cannot parse is left alone rather than destroyed on a guess. The fallback recovers from a read or
- * parse failure rather than throwing, because a missing file is the normal state, not an error.
- */
-function existingSchemaVersion(outputPath: string): string | undefined {
   try {
-    const existing = JSON.parse(readFileSync(outputPath, "utf8")) as { schemaVersion?: unknown };
-    return typeof existing.schemaVersion === "string" ? existing.schemaVersion : undefined;
-  } catch {
-    // The fallback is the ordinary case: a first generate has no file to protect.
-    return undefined;
+    // A directory or symlink at the default filename needs an explicit overwrite decision from the user.
+    if (!lstatSync(outputPath).isFile()) {
+      throw new BaselineFileError(`baseline ${outputPath} is not a regular file`);
+    }
+    readBaselineDocument(outputPath);
+  } catch (error) {
+    // A project generating its first baseline has no previous review file to protect.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw new BaselineFileError(`${unreadableReason(error)}; generating over it would destroy the retreat path. Pass --force to overwrite it or choose a different output path.`);
   }
 }
 
@@ -223,13 +228,18 @@ function baselineDocument(findings: Finding[], declarationPosition?: Declaration
   const rows = new Map<string, BaselineEntry>();
   const sensitiveByRule: Record<string, number> = {};
 
+  // A review covers one occurrence for each eligible finding in the scan snapshot.
   findings.forEach((finding, index) => {
     const named = identities[index];
-    // A finding without an identity contributes to the sensitive tally by rule and gets no row that could hide it.
+    // An absent identity leaves this finding visible on later runs.
     if (named === undefined) {
-      sensitiveByRule[finding.ruleId] = (sensitiveByRule[finding.ruleId] ?? 0) + 1;
+      // Sensitive findings still contribute to the category totals. The first finding for a rule starts at zero.
+      if (!isBaselineEligible(finding)) {
+        sensitiveByRule[finding.ruleId] = (sensitiveByRule[finding.ruleId] ?? 0) + 1;
+      }
       return;
     }
+    // The first occurrence creates a row. Later matches extend the same review count.
     const existing = rows.get(named.identity);
     rows.set(named.identity, {
       identity: named.identity,
@@ -255,14 +265,14 @@ function baselineDocument(findings: Finding[], declarationPosition?: Declaration
 }
 
 /**
- * A baseline file that cannot be applied as written: missing, unreadable, malformed, a 0.5 layout, another port's file,
- * or a row that could expire or leak. A direct analysis reports it as a fatal `baseline-error` diagnostic and exits 2;
- * any other error from applying a baseline is a defect and keeps its stack.
+ * Signals a baseline that cannot be safely applied or written.
+ *
+ * For example, `analyse --baseline review.json` reports `baseline-error` and exits 2 if that review file contains broken JSON.
+ * The CLI can then surface a file or migration error without applying any of its review rows.
  */
 export class BaselineFileError extends Error {}
 
 // Returns the v3 baseline at path for this tool language after validating its occurrence rows.
-// A missing occurrence list becomes an empty review, so the baseline covers no findings.
 // @throws {BaselineFileError} - the file is unreadable, malformed, from an unsupported schema or port, or contains an invalid row
 function readBaselineDocument(path: string): BaselineDocument {
   const parsed = parsedBaselineFile(path);
@@ -272,6 +282,7 @@ function readBaselineDocument(path: string): BaselineDocument {
       `baseline ${path} is a 0.5 baseline; migrate it to a separate file with \`gruff-ts analyse --migrate-baseline ${path} --generate-baseline <new path>\`, the original is preserved`,
     );
   }
+  // Reject files whose review format this version cannot interpret.
   if (parsed.schemaVersion !== BASELINE_SCHEMA_VERSION) {
     throw new BaselineFileError(`unsupported baseline schema in ${path}`);
   }
@@ -279,7 +290,16 @@ function readBaselineDocument(path: string): BaselineDocument {
   if (parsed.toolLanguage !== TOOL_LANGUAGE) {
     throw new BaselineFileError(`baseline ${path} was written by ${writerName(parsed.toolLanguage)} and this run is ${TOOL_LANGUAGE}; baselines are not shared across languages`);
   }
-  return { ...(parsed as BaselineDocument), occurrences: (parsed.occurrences ?? []).map((row, index) => validatedRow(path, row, index)) };
+  // A review with no entries can use an empty list. An omitted list cannot establish what was reviewed.
+  if (!parsed.occurrences) {
+    throw new BaselineFileError(`baseline ${path} occurrences must be a list`);
+  }
+  const occurrences = parsed.occurrences.map((row, index) => validatedRow(path, row, index));
+  // A hand-edited duplicate would make the reviewed count for that finding ambiguous.
+  if (new Set(occurrences.map((entry) => entry.identity)).size !== occurrences.length) {
+    throw new BaselineFileError(`baseline ${path} contains a duplicate occurrence identity`);
+  }
+  return { ...(parsed as BaselineDocument), occurrences };
 }
 
 // A baseline file as parsed, before its rows are validated: every field may be missing and a row may be anything.
@@ -487,25 +507,47 @@ function sameInode(inputPath: string, outputPath: string): boolean {
   }
 }
 
-// Reads the rows of a 0.5 baseline, the only shape a migration accepts as its input.
-// Throws when the input is not a 0.5 baseline, names more than one row container, or carries no row list at all.
-// Stable contract: exactly one of the three 0.5 containers is accepted, because a file naming two of them migrates
-// differently in different ports.
-// @throws {BaselineFileError} when the parsed input is not a 0.5 baseline or has no row container or more than one, or {SyntaxError} when the input is not JSON.
+// Reads the 0.5 review rows for `analyse --migrate-baseline`. An empty list carries forward zero reviews.
+//
+// Invariant: a file with conflicting row lists leaves the user's previous reviews ambiguous, so migration requires exactly one list.
+// @throws {BaselineFileError} when the input is not a valid 0.5 baseline with exactly one row container.
 function legacyRows(path: string, contents: Buffer): Array<Record<string, unknown>> {
-  const parsed = JSON.parse(contents.toString("utf8")) as Record<string, unknown>;
-  if (parsed.schemaVersion !== LEGACY_BASELINE_SCHEMA_VERSION) {
+  let parsed: Record<string, unknown> | null;
+  try {
+    parsed = JSON.parse(contents.toString("utf8")) as Record<string, unknown> | null;
+  } catch (error) {
+    // A legacy JSON file can contain a merge-conflict marker after a branch merge.
+    throw new BaselineFileError(`migration input ${path} cannot be read: ${unreadableReason(error)}`);
+  }
+  // A null object or a newer file does not provide the 0.5 review format migration expects.
+  if (parsed?.schemaVersion !== LEGACY_BASELINE_SCHEMA_VERSION) {
     throw new BaselineFileError(`migration input ${path} is not a 0.5 baseline`);
   }
   const present = LEGACY_ROW_CONTAINERS.filter((container) => Array.isArray(parsed[container]));
+  // When two valid lists exist, the user must choose which list represents the reviews they want to keep.
   if (present.length > 1) {
     throw new BaselineFileError(`migration input ${path} carries more than one row container (${present.join(", ")}); a migration input must name exactly one`);
   }
   const rows = present.length === 1 ? parsed[present[0] as string] : undefined;
+  // Missing review lists usually mean the wrong input file was supplied.
   if (!Array.isArray(rows)) {
     throw new BaselineFileError(`migration input ${path} must carry an "entries" or "findings" list`);
   }
-  return rows.filter((row): row is Record<string, unknown> => typeof row === "object" && row !== null);
+  return rows.map((row: unknown, index) => {
+    // Each review needs named fields. A blank list item cannot be matched to a finding.
+    if (typeof row !== "object" || row === null || Array.isArray(row)) {
+      throw new BaselineFileError(`migration input ${path} row ${index} must be an object`);
+    }
+    const entry = row as Record<string, unknown>;
+    // Check both legacy path names and the optional details used to match a review.
+    for (const key of ["ruleId", "filePath", "file", "symbol", "message"]) {
+      // An omitted detail is valid. A number or null can accidentally broaden which current findings match.
+      if (entry[key] !== undefined && typeof entry[key] !== "string") {
+        throw new BaselineFileError(`migration input ${path} row ${index}.${key} must be a string`);
+      }
+    }
+    return entry;
+  });
 }
 
 /**
@@ -552,7 +594,7 @@ function acceptanceKey(ruleId: string, path: string, symbol: string, message: st
   return [ruleId, path, symbol, message].join("\0");
 }
 
-// Returns the requested legacy row field as text, using an empty string for a missing or non-text value so matching can use its fallback.
+// Returns the requested legacy row field as text, using the matching fallback when it is absent.
 function rowText(row: Record<string, unknown>, key: string): string {
   const storedText = row[key];
   return typeof storedText === "string" ? storedText : "";

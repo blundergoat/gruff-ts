@@ -1,15 +1,12 @@
 /*
- * Carries a 0.5 configuration forward to the 0.6 schema, out of place and line by line.
+ * Updates a 0.5 project config for 0.6 when the user runs `migrate-config`.
  *
- * Two keys moved in 0.6.0 and a user's committed file still spells them the old way: the per-command exit gate left
- * `minimumSeverity:` for `failOn:`, and `allowlists.secretPreviews` was removed outright because section 5 makes
- * category markers unconditional. A file carrying either is refused by the loader, so a user upgrading needs a way
- * across that does not mean re-typing their configuration.
- *
- * The rewrite is line-oriented rather than a parse-and-re-render, which keeps every comment, every blank line and
- * every value the user wrote exactly as written. Only the lines that must change are touched, and everything the
- * migration does not understand passes through untouched rather than being dropped as unrecognised.
+ * Moves per-command exit gates to `failOn` and drops the obsolete secret preview setting.
+ * YAML keeps surrounding comments and settings. JSON is rewritten as a document when a change is needed.
  */
+import { ConfigLoadError } from "./config-load-error.ts";
+import { objectValue, parseYamlConfig, SUGGEST_EDIT_CONFIG } from "./config-parse.ts";
+
 // The one schema version this build reads; a migrated file that named another would be refused on the next run.
 const SCHEMA_VERSION = "gruff-ts.config.v0.1";
 
@@ -22,8 +19,7 @@ export interface ConfigMigrationChange {
 /*
  * The result of migrating one configuration file.
  *
- * `text` is what the destination should contain; `changes` is empty when the input was already current, in which
- * case `text` is the input byte for byte.
+ * `text` is what the CLI can write to the destination. An empty `changes` list means no settings needed updating.
  */
 export interface ConfigMigration {
   text: string;
@@ -37,33 +33,55 @@ const REMOVED_ALLOWLIST_KEY = "secretPreviews";
 const RENAMED_GATE_KEY = "minimumSeverity";
 
 /**
- * Rewrite one configuration's text for the current schema, leaving everything the migration does not understand alone.
+ * Converts legacy settings for `migrate-config` and returns the changes the CLI can show during a dry run.
  *
- * @param original - the whole 0.5 configuration file, as written
- * @returns the migrated text and one entry per rewrite; no rewrites means the text is returned unchanged
+ * @param original - the whole config file. Empty YAML has no settings yet, while empty JSON is invalid.
+ * @param format - syntax selected by the config file's extension. An omitted format uses YAML.
+ * @returns the destination text and one entry per rewrite. An empty change list means the settings were current.
+ * @throws {ConfigLoadError} when the input cannot be parsed or contains conflicting migration keys.
  */
-export function migrateConfigText(original: string): ConfigMigration {
-  const lines = original.split("\n");
+export function migrateConfigText(original: string, format: "yaml" | "json" = "yaml"): ConfigMigration {
+  // An editor may add a byte-order mark. Strip it before parsing the selected file format.
+  const source = original.replace(/^\uFEFF/u, "");
+  return format === "json" ? migrateJsonConfig(source) : migrateYamlConfig(source, original);
+}
+
+// Rewrites only the YAML lines the loader identified as legacy keys, preserving user comments and other settings.
+// @throws {ConfigLoadError} when the input has conflicting keys or the revised text still carries a legacy key.
+function migrateYamlConfig(source: string, original: string): ConfigMigration {
+  const shouldRenameGate = hasLegacyCommandGate(parseYamlConfig(source));
+  const lines = source.split(/\r?\n/u);
+  const rootIndent = leadingSpaces(lines[nextContentLine(lines, 0)] ?? "");
   const changes: ConfigMigrationChange[] = [];
   const migrated: string[] = [];
+  // Until the scan enters an allowlists block, no line can be one of its settings.
+  let allowlistEntryIndent: number | undefined;
   let index = 0;
 
+  // Rewrite settings in place within the text so users can compare the two YAML files line by line.
   while (index < lines.length) {
     const line = lines[index] ?? "";
-    const skipped = skippedBlockLength(lines, index);
+    const indent = leadingSpaces(line);
+    const isRootKey = indent === rootIndent && line.trim().length > 0 && !line.trimStart().startsWith("#");
+    // A new top-level setting ends the previous block. Blank lines and comments keep the current block open.
+    if (isRootKey) {
+      allowlistEntryIndent = allowlistChildIndent(lines, index);
+    }
+    const removedLineCount = indent === allowlistEntryIndent ? skippedBlockLength(lines, index) : 0;
 
-    // The removed key takes its whole indented block with it, or an empty list stays behind meaning nothing.
-    if (skipped > 0) {
+    // The retired preview setting and its indented list go together so the user gets a readable config.
+    if (removedLineCount > 0) {
       changes.push({ line: index + 1, description: `allowlists.${REMOVED_ALLOWLIST_KEY} removed; FAMILY-CONTRACT.md section 5 makes category markers unconditional` });
-      index += skipped;
-      dropEmptiedParent(migrated, lines, index);
+      index += removedLineCount;
       continue;
     }
 
-    const renamed = renamedGateLine(lines, index);
+    const renamed = isRootKey && shouldRenameGate
+      ? line.replace(/^(\s*)(?:minimumSeverity|"minimumSeverity"|'minimumSeverity')(\s*:)/u, "$1failOn$2")
+      : line;
 
     // A per-command map under the old key is the exit gate, which now has its own name.
-    if (renamed !== null) {
+    if (renamed !== line) {
       changes.push({ line: index + 1, description: `${RENAMED_GATE_KEY}: renamed to failOn:, which is the key that gates the exit code in 0.6` });
       migrated.push(renamed);
       index += 1;
@@ -74,99 +92,121 @@ export function migrateConfigText(original: string): ConfigMigration {
     index += 1;
   }
 
-  return withSchemaVersion(migrated, changes, original);
+  const result = withSchemaVersion(migrated, changes, original, rootIndent);
+  const updated = parseYamlConfig(result.text);
+  // For example, a YAML key written in flow style can survive a line edit. Stop before emitting unusable settings.
+  if (objectValue(updated.minimumSeverity) !== undefined || Object.hasOwn(objectValue(updated.allowlists) ?? {}, REMOVED_ALLOWLIST_KEY)) {
+    throw new ConfigLoadError("The legacy gate or allowlist could not be migrated safely.", SUGGEST_EDIT_CONFIG);
+  }
+  return result;
+}
+
+// Migrates JSON as a mapping. Its schema version and gate must be readable by the config loader.
+// The change list uses line 1 for whole-document rewrites.
+// @throws {ConfigLoadError} when the input is malformed or the legacy gate conflicts with an existing gate.
+function migrateJsonConfig(source: string): ConfigMigration {
+  let parsed: Record<string, unknown> | undefined;
+  try {
+    parsed = objectValue(JSON.parse(source));
+  } catch {
+    // A user may select a JSON file with a trailing comma copied from JavaScript.
+    throw new ConfigLoadError("The migration input is not valid JSON.", SUGGEST_EDIT_CONFIG);
+  }
+  // The config must name settings. A JSON null or array supplies no mapping to migrate.
+  if (!parsed) {
+    throw new ConfigLoadError("The migration input must be a JSON object.", SUGGEST_EDIT_CONFIG);
+  }
+  const changes: ConfigMigrationChange[] = [];
+  // Carry over per-command gates. A scalar minimumSeverity still represents a display floor.
+  if (hasLegacyCommandGate(parsed)) {
+    parsed.failOn = parsed.minimumSeverity;
+    delete parsed.minimumSeverity;
+    changes.push({ line: 1, description: "Renamed the per-command minimumSeverity mapping to failOn" });
+  }
+  const allowlists = objectValue(parsed.allowlists);
+  // Files with no allowlists or no legacy preview entry have nothing to remove.
+  if (allowlists && Object.hasOwn(allowlists, REMOVED_ALLOWLIST_KEY)) {
+    delete allowlists[REMOVED_ALLOWLIST_KEY];
+    changes.push({ line: 1, description: `Removed allowlists.${REMOVED_ALLOWLIST_KEY}` });
+  }
+  // A missing or older version needs the current version before the user can select the migrated file.
+  if (parsed.schemaVersion !== SCHEMA_VERSION) {
+    parsed.schemaVersion = SCHEMA_VERSION;
+    changes.push({ line: 1, description: `Set schemaVersion to ${SCHEMA_VERSION}` });
+  }
+  return { changes, text: changes.length > 0 ? `${JSON.stringify(parsed, null, 2)}\n` : source };
+}
+
+// Tells migration whether the user set per-command gates under the old minimumSeverity key.
+// @throws {ConfigLoadError} if the two gate spellings conflict.
+function hasLegacyCommandGate(parsed: Record<string, unknown>): boolean {
+  const hasCommandThresholds = objectValue(parsed.minimumSeverity) !== undefined;
+  // A user who started upgrading by hand needs to reconcile both gate settings before continuing.
+  if (hasCommandThresholds && "failOn" in parsed) {
+    throw new ConfigLoadError("Both minimumSeverity and failOn define command gates.", "Combine the gates under failOn before migrating.");
+  }
+  return hasCommandThresholds;
+}
+
+// Finds the indentation of allowlists entries so migration can remove the retired setting within that block.
+// Returns undefined when the current line starts another setting or the allowlists block has no children.
+function allowlistChildIndent(lines: string[], index: number): number | undefined {
+  const header = lines[index] ?? "";
+  // Keep the user's other top-level settings outside the removal scope.
+  if (!/^\s*(?:allowlists|"allowlists"|'allowlists')\s*:\s*(?:#.*)?$/u.test(header)) {
+    return undefined;
+  }
+  const childIndent = leadingSpaces(lines[nextContentLine(lines, index + 1)] ?? "");
+  return childIndent > leadingSpaces(header) ? childIndent : undefined;
 }
 
 /**
- * Report how many lines the removed redaction key occupies, counting any block indented beneath it.
- *
- * Reads the lines it is given and writes nothing; the caller decides what to do with the length.
+ * Counts the preview setting's YAML lines so migration can remove the full block.
  *
  * @param lines - the whole file, split on newlines
  * @param index - the line being considered
- * @returns the number of lines to drop, or 0 when this line is not the removed key
+ * @returns the number of lines to drop, or zero when the user's current line should be kept
  */
 function skippedBlockLength(lines: string[], index: number): number {
   const line = lines[index] ?? "";
-  const match = /^(\s+)secretPreviews\s*:/u.exec(line);
+  const match = /^\s+(?:secretPreviews|"secretPreviews"|'secretPreviews')\s*:/u.test(line);
 
-  // Only the nested allowlists entry is removed; a root key of the same name is not a thing any port ever wrote.
-  if (match === null) {
+  // A different setting in the user's allowlists block stays in the file.
+  if (!match) {
     return 0;
   }
 
-  const indent = (match[1] ?? "").length;
-  let length = 1;
-
-  while (index + length < lines.length && isDeeperThan(lines[index + length] ?? "", indent)) {
-    length += 1;
+  const indent = leadingSpaces(line);
+  let end = index + 1;
+  // Include every nested preview entry, such as items a user listed on separate lines.
+  for (let child = nextContentLine(lines, end); child < lines.length; child = nextContentLine(lines, end)) {
+    // The next sibling setting belongs to the user and must survive the removal.
+    if (leadingSpaces(lines[child] ?? "") <= indent) {
+      break;
+    }
+    end = child + 1;
   }
-
-  return length;
+  return end - index;
 }
 
-/**
- * Rewrite the old gate key when it introduces a per-command block, and leave the scalar display floor alone.
- *
- * Reads the lines it is given and writes nothing; the rewritten line is returned rather than applied.
- *
- * @param lines - the whole file, split on newlines
- * @param index - the line being considered
- * @returns the rewritten line, or null when this line is not the old gate key in its block form
- */
-function renamedGateLine(lines: string[], index: number): string | null {
-  const line = lines[index] ?? "";
-  const match = /^(\s*)minimumSeverity\s*:\s*(.*)$/u.exec(line);
-
-  // A commented-out key is prose, and a key with a value on the same line is the 0.6 display floor.
-  if (match === null || (match[2] ?? "").trim().length > 0) {
-    return null;
+// Finds the next YAML setting or value that affects which block migration may edit.
+// Returns the line count when no settings remain after the starting position.
+function nextContentLine(lines: string[], index: number): number {
+  // Comments and blank lines can sit inside a block without changing which setting owns it.
+  while (index < lines.length) {
+    const content = (lines[index] ?? "").trim();
+    // The first non-comment line gives migration the indentation of the user's next setting.
+    if (content.length > 0 && !content.startsWith("#")) {
+      break;
+    }
+    index += 1;
   }
-
-  const indent = (match[1] ?? "").length;
-
-  // An empty block would be a key with nothing under it, which the loader reads as neither shape.
-  return isDeeperThan(lines[index + 1] ?? "", indent) ? `${match[1] ?? ""}failOn:` : null;
+  return index;
 }
 
-/**
- * Drop the block header the removal just emptied, because a key with nothing under it is not a valid mapping.
- *
- * Only a header whose last child was removed is dropped: if any line still belongs to the block, or anything
- * follows it at a deeper indent, the header stays exactly as the user wrote it.
- *
- * @param migrated - the lines kept so far, whose tail may now be an emptied header
- * @param lines - the whole input, read ahead to see whether the block has any child left
- * @param index - the first input line after the removed block
- * @returns nothing; the emptied header is removed from `migrated` in place
- */
-function dropEmptiedParent(migrated: string[], lines: string[], index: number): void {
-  const header = migrated.at(-1) ?? "";
-
-  // A header is a bare `key:` with no value; anything else is a line the user wants kept.
-  if (!/^\s*[^\s#][^:]*:\s*$/u.test(header)) {
-    return;
-  }
-
-  const headerIndent = header.length - header.trimStart().length;
-
-  // A block that still has a child is not empty, so its header stays.
-  if (isDeeperThan(lines[index] ?? "", headerIndent)) {
-    return;
-  }
-
-  migrated.pop();
-}
-
-/**
- * Returns whether a non-blank input line is indented farther than the block header.
- *
- * @param line - configuration line whose leading whitespace is compared with the block header's indentation
- * @param indent - leading-whitespace width of the block's header line
- * @returns - true when the line is non-blank and indented deeper than indent; a blank line returns false
- */
-function isDeeperThan(line: string, indent: number): boolean {
-  return line.trim().length > 0 && line.length - line.trimStart().length > indent;
+// Counts the indentation before a YAML key or sequence item.
+function leadingSpaces(line: string): number {
+  return line.length - line.trimStart().length;
 }
 
 /**
@@ -175,19 +215,22 @@ function isDeeperThan(line: string, indent: number): boolean {
  * @param lines - migrated lines, mutated in place to insert or replace schemaVersion
  * @param changes - the rewrite log, appended to when schemaVersion is inserted or its existing line needs repinning
  * @param original - the file as written, returned unchanged when nothing needed rewriting
+ * @param rootIndent - column where root mapping keys begin
  * @returns - text and the same changes array; text is original when no rewrites were recorded
  */
-function withSchemaVersion(lines: string[], changes: ConfigMigrationChange[], original: string): ConfigMigration {
-  const existing = lines.findIndex((line) => /^schemaVersion\s*:/u.test(line));
-  const pinned = `schemaVersion: "${SCHEMA_VERSION}"`;
+function withSchemaVersion(lines: string[], changes: ConfigMigrationChange[], original: string, rootIndent: number): ConfigMigration {
+  const existing = lines.findIndex((line) => leadingSpaces(line) === rootIndent && /^\s*(?:schemaVersion|"schemaVersion"|'schemaVersion')\s*:/u.test(line));
+  const pinned = `${" ".repeat(rootIndent)}schemaVersion: "${SCHEMA_VERSION}"`;
 
+  // Older projects may have no schema key. Add one without requiring the user to format it by hand.
   if (existing < 0) {
     changes.push({ line: 1, description: `schemaVersion added as ${SCHEMA_VERSION}; every 0.6 loader requires it` });
     lines.unshift(pinned);
-  } else if ((lines[existing] ?? "").trim() !== pinned) {
+  // Bring an existing schema line into the format emitted for the current loader.
+  } else if (lines[existing] !== pinned) {
     changes.push({ line: existing + 1, description: `schemaVersion pinned to ${SCHEMA_VERSION}` });
     lines[existing] = pinned;
   }
 
-  return changes.length === 0 ? { text: original, changes } : { text: lines.join("\n"), changes };
+  return changes.length === 0 ? { text: original, changes } : { text: lines.join(original.includes("\r\n") ? "\r\n" : "\n"), changes };
 }

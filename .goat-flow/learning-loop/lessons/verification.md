@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-08-21
+last_reviewed: 2026-11-22
 ---
 
 # Verification lessons
@@ -37,7 +37,7 @@ last_reviewed: 2026-08-21
 
 **What happened:** The milestone said to add `resolveProfile` and the profile machinery to `src/config.ts`. `config.ts` was 749 lines - one under the `size.file-length` 750 default - so the ~180-line resolver pushed it to ~960 and `analyse src --no-config` flagged `size.file-length` on `config.ts` itself (the self-scan is normally 0). Moving the resolver out would have created a `config.ts` <-> resolver cycle because the resolver needs `parseConfigFile`.
 
-**Evidence:** the clean baseline was `./bin/gruff-ts analyse src --no-config` = 0 findings against pristine HEAD; after the additions it reported `config.ts:1 size.file-length`. The fix extracted the zero-dependency YAML parser + `parseConfigFile` + narrowing helpers to a new `src/config-parse.ts` (search: `Config parsing layer`) that imports nothing from `config.ts`, breaking the cycle and dropping `config.ts` to ~505 lines; `resolveProfile` stayed in `config.ts` per the plan.
+**Evidence:** the clean baseline was `./bin/gruff-ts analyse src --no-config` = 0 findings against pristine HEAD; after the additions it reported `config.ts:1 size.file-length`. The fix extracted the zero-dependency YAML parser + `parseConfigFile` + narrowing helpers to a new `src/config-parse.ts` (search: `function parseYamlConfig`) that imports nothing from `config.ts`, breaking the cycle and dropping `config.ts` to ~505 lines; `resolveProfile` stayed in `config.ts` per the plan.
 
 **Prevention:** When a task says "put new code in file Y", check Y's line count against the `size.file-length` threshold first (`wc -l`). If adding the feature crosses it, plan the supporting extraction up front and pick a split that does not import back into Y. Establish the pristine self-scan baseline (scan HEAD in a throwaway worktree, or before editing) so you can tell which findings you introduced.
 
@@ -292,3 +292,5 @@ The pre-1.14 policy blocked every pipe into `python3 -c` or `node -e`, so local-
 **Evidence:** Pre-fix tree with `"properties"` added - `# pass 3 # fail 0`. Post-fix same edit - `not ok 2 - discovery allowlist matches the documented scan surface`.
 
 **Prevention:** When a gate claims to cover N directions, run N experiments, one per direction, and pick each probe so it is NOT already named in the fixture data - a probe drawn from the fixture set proves only that the fixture set is wired up. More generally, a behavioural assertion over an enumerated fixture set gates the fixtures, not the enumeration: to gate a list, assert the list.
+
+**Recurrence 2026-11-22:** Restoring the hotspot renderer's previous field set tripped the diagnostic-format test, which expected diagnostics in every format. Check the prior renderer before changing a versioned format. `src/scan-surface.test.ts` now checks the hotspot key set and diagnostic output in the formats that carry it.

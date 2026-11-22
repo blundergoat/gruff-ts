@@ -23,4 +23,4 @@ last_reviewed: 2026-08-22
 
 **Measurement integrity:** `scripts/test-performance.sh` records host, Node, Git, runtime-source, live-wrapper, and harness identities in `scripts/performance-baselines/linux-x86_64.json`. The 12-cell baseline's runtime-source and wrapper digests match the source-bound M11 cohort run.
 
-**Verification:** `src/scan-surface.test.ts` (search: `bounded deep-scan diagnostics are visible in every supported report surface`) protects boundary, retention, non-code, precedence, disable, and visibility behavior; `src/hook-contract.test.ts` (search: `hook projects bounded deep-scan diagnostics`) protects non-fatal hook projection.
+**Verification:** `src/scan-surface.test.ts` (search: `bounded deep-scan diagnostics are visible in diagnostic report formats`) covers scan bounds, retained checks, non-code inputs, overrides, and report visibility. `src/hook-contract.test.ts` (search: `hook projects bounded deep-scan diagnostics`) checks that the hook can publish a budget notice without invalidating the run.

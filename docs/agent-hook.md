@@ -31,8 +31,11 @@ than the `analyse` ones above:
 | Code | Meaning |
 | --- | --- |
 | `0` | Nothing reached a gate the caller asked for. The default `--fail-on none` lands here however severe the findings are. |
-| `1` | Something did: a published finding met `--fail-on`, `--fail-on-new` saw a finding the applied baseline calls new, or `--fail-on-diagnostics` saw a relevant diagnostic. |
+| `1` | A published finding met `--fail-on`, a finding remained unreviewed under `--fail-on-new`, or `--fail-on-diagnostics` saw a relevant diagnostic. |
 | `2` | The run could not happen. A config failure also fills `config.error`; an unusable baseline or changed range is a fatal entry in `diagnostics`. |
+
+Pass `--baseline <path>` with `--fail-on-new`. An absent baseline or missing input
+file exits `2` and includes a fatal diagnostic.
 
 Parse and read diagnostics are file-scoped and reported in-band via the additive
 `diagnostics` array (`{ type, message, file, line }`): a full scan carries every

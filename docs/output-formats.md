@@ -100,7 +100,8 @@ Use `github` inside GitHub Actions to emit workflow annotations.
 
 ## Hotspot
 
-Use `hotspot` for compact score and offender analysis.
+Use `hotspot` for the compact score and offender list. Use `json` or `sarif`
+when an integration also needs scan diagnostics.
 
 ## SARIF
 

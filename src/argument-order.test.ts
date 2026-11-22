@@ -1,13 +1,8 @@
 /*
- * Pins the argument-order clause FAMILY-CONTRACT.md section 7 ratifies on 2026-09-06.
+ * Checks how the CLI handles flags placed before or after a file or directory.
  *
- * Every operand-accepting command must produce the same output and the same exit code whether its flags are written
- * before or after the path. The defect the clause exists to prevent is real and was shipped: gruff-go silently
- * discarded flags placed after a path, so `analyse . --fail-on=error` ran at the default threshold and a CI gate
- * nobody had disabled stopped gating.
- *
- * Reach for this file when adding a command that takes paths, or when changing how commander is wired.
- * Spawns the built binary once per case in a temporary project; it writes nothing outside that directory.
+ * For example, `analyse . --fail-on=error` must honor the selected threshold even when the path comes first.
+ * Use these cases when changing command registration or adding a command that takes a path.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -55,10 +50,12 @@ function runInProject(dir: string, args: string[]): { status: number | null; out
 
 test("every operand-accepting command accepts its flags after the path", () => {
   withProbeProject((dir) => {
+    // Compare both orders for each command so a user can expect the same output and exit status either way.
     for (const { command, flags } of ORDER_CASES) {
       const before = runInProject(dir, [command, ...flags, "probe.ts"]);
       const after = runInProject(dir, [command, "probe.ts", ...flags]);
 
+      assert.equal(before.status, command === "check-ignore" ? 1 : 0, `${command} failed in the reference flag order`);
       assert.equal(after.status, before.status, `${command} exits differently when its flags follow the path`);
       assert.equal(after.output, before.output, `${command} prints differently when its flags follow the path`);
     }
