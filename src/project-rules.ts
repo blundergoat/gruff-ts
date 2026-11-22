@@ -22,8 +22,8 @@ export interface ProjectSource {
   codeLineCount: number;
 }
 
-// Project-wide aggregate built once per scan and reused by every architecture rule (cycle detection,
-// large-module concentration, deep-relative-import). `scriptSources` is a pre-filtered view of
+// Project-wide aggregate built once per scan and reused by every architecture rule (cycle detection and
+// large-module concentration). `scriptSources` is a pre-filtered view of
 // `sources` so per-rule code paths don't repeat the script-file check.
 export interface ProjectIndex {
   sources: ProjectSource[];
@@ -32,12 +32,11 @@ export interface ProjectIndex {
   importsByFile: Map<string, ImportEdge[]>;
 }
 
-// One import statement in the graph. `parentSegments` counts `../` hops for the deep-relative-import
-// rule; `targetPath` is set only when the specifier resolves to a file gruff has actually discovered.
+// One import statement in the graph. `targetPath` is set only when the specifier resolves to a file
+// gruff has actually discovered.
 interface ImportEdge {
   specifier: string;
   line: number;
-  parentSegments: number;
   isTypeOnly: boolean;
   targetPath?: string;
 }
@@ -97,13 +96,10 @@ export function buildProjectIndex(projectSources: ProjectSource[]): ProjectIndex
   return { sources, scriptSources, sourcePaths, importsByFile };
 }
 
-// Runs enabled deep-import, cycle and large-module checks in that stable order.
+// Runs enabled cycle and large-module checks in that stable order.
 // The index supplies sources and import edges. Config supplies rule settings. The options can suppress the otherwise enabled cycle check.
 // Returns nothing. Appends any reported findings to the supplied list.
 export function analyseArchitectureRules(index: ProjectIndex, config: Config, findings: Finding[], options: ArchitectureRuleOptions = {}): void {
-  if (ruleEnabled(config, DEEP_RELATIVE_IMPORT_RULE_ID)) {
-    analyseDeepRelativeImports(index, config, findings);
-  }
   if (!options.shouldSkipCircularImports && ruleEnabled(config, CIRCULAR_IMPORT_RULE_ID)) {
     analyseCircularImportRule(index, findings);
   }
@@ -112,45 +108,8 @@ export function analyseArchitectureRules(index: ProjectIndex, config: Config, fi
   }
 }
 
-const DEEP_RELATIVE_IMPORT_RULE_ID = "design.deep-relative-import";
 export const CIRCULAR_IMPORT_RULE_ID = "design.circular-import";
 const LARGE_MODULE_CONCENTRATION_RULE_ID = "design.large-module-concentration";
-
-/**
- * Reports relative imports above the configured parent-hop limit.
- * Uses parsed import edges because they supply both the hop count and the source line for a stable finding location.
- *
- * @param index - supplies importing scripts and their parsed import edges
- * @param config - supplies the parent-hop limit and finding severity
- * @param findings - destination for one finding per import above the limit
- * @returns Nothing. Appends findings to the supplied list, leaving it unchanged if no import qualifies.
- */
-function analyseDeepRelativeImports(index: ProjectIndex, config: Config, findings: Finding[]): void {
-  const maxParentSegments = threshold(config, "design.deep-relative-import", 2);
-  const severity = ruleSeverity(config, DEEP_RELATIVE_IMPORT_RULE_ID, "advisory");
-  for (const source of index.scriptSources) {
-    const edges = index.importsByFile.get(source.file.displayPath) ?? [];
-    for (const edge of edges) {
-      if (edge.parentSegments <= maxParentSegments) {
-        continue;
-      }
-      findings.push(
-        makeFinding({
-          ruleId: DEEP_RELATIVE_IMPORT_RULE_ID,
-          message: `Relative import \`${edge.specifier}\` climbs ${edge.parentSegments} directories.`,
-          filePath: source.file.displayPath,
-          line: edge.line,
-          severity,
-          pillar: "design",
-          confidence: "medium",
-          symbol: edge.specifier,
-          remediation: "Move the shared module closer to the caller or introduce a local barrel/module boundary.",
-          metadata: { specifier: edge.specifier, parentSegments: edge.parentSegments, maxParentSegments },
-        }),
-      );
-    }
-  }
-}
 
 // Appends one finding to findings for each cyclic runtime-import component in index that has an available anchor source.
 // importCycles supplies deterministic component order. Components without an anchor are skipped.
@@ -352,7 +311,6 @@ function importEdgeForSpecifier(importerPath: string, specifier: string, line: n
   return {
     specifier,
     line,
-    parentSegments: specifier.split("/").filter((segment) => segment === "..").length,
     isTypeOnly,
     ...(targetPath ? { targetPath } : {}),
   };

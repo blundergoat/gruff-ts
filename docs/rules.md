@@ -1,6 +1,6 @@
 # Rules
 
-`gruff-ts` exposes 83 rules across 11 pillars. This list is maintained by hand
+`gruff-ts` exposes 81 rules across 11 pillars. This list is maintained by hand
 against the public rule catalogue used by `gruff-ts list-rules`; severity,
 confidence, thresholds, and option names are the defaults before project config
 overrides.
@@ -40,7 +40,6 @@ A rule's confidence follows its measured precision: high at an error-adjusted sc
 | `docs.fixture-purpose-missing` | medium | insufficient |
 | `docs.missing-error-behavior-doc` | medium | insufficient |
 | `modernisation.date-now-candidate` | high | unmeasured |
-| `modernisation.object-spread-candidate` | medium | unmeasured |
 | `modernisation.readonly-property-candidate` | medium | insufficient |
 | `modernisation.tsconfig-exact-optional-disabled` | high | insufficient |
 | `modernisation.tsconfig-index-safety-disabled` | high | insufficient |
@@ -82,10 +81,10 @@ itself suppress any rule family.
 
 - complexity: 1
 - dead-code: 1
-- design: 5
+- design: 4
 - documentation: 15
 - maintainability: 8
-- modernisation: 10
+- modernisation: 9
 - naming: 3
 - security: 23
 - sensitive-data: 8
@@ -113,7 +112,6 @@ Both rules consume the same parsed callable measurement as `docs.missing-why-for
 ## Design
 
 - `design.circular-import` (warning; medium confidence): Flags strongly connected relative import components. Each component reports once, anchored on the lexicographically first member path, with sorted member paths and a representative cycle path in metadata. Narrow path scans build root graph context for this rule only, then emit SCCs that include a requested file; per-file rules and `paths.analysedFiles` remain scoped to the requested paths.
-- `design.deep-relative-import` (advisory; medium confidence; threshold 2): Flags relative imports that climb too many parent directories.
 - `design.large-module-concentration` (advisory; medium confidence; threshold 55; options: minFiles, minLines): Flags a production module that dominates project source lines. The share counts code lines only: blank, comment-only and decorator-only lines do not count.
 - `design.package-bin-missing` (warning; high confidence): Flags package bin entries that point at missing files.
 - `design.package-bin-not-executable` (warning; high confidence): Flags package bin targets that are not executable.
@@ -156,7 +154,6 @@ existing config overrides and baselines keep matching.
 - `modernisation.date-now-candidate` (advisory; high confidence): Flags verbose current-time expressions that can use Date.now().
 - `modernisation.double-cast` (warning; medium confidence): Flags casts through unknown or any into another type.
 - `modernisation.non-null-assertion` (warning; medium confidence): Flags non-null assertions that bypass null checks.
-- `modernisation.object-spread-candidate` (advisory; medium confidence): Flags Object.assign({}, ...) cloning that can use object spread.
 - `modernisation.readonly-property-candidate` (advisory; medium confidence): Flags private class fields their class assigns only in its own constructor, so marking them `readonly` compiles. Public and protected fields are not reported, because another file can write them. Nor is a field the class writes anywhere else, including another instance's field and a callback inside the constructor, any field of a class that writes through `this[...]` or `Object.assign(this, ...)`, or any field in a file that does not parse cleanly.
 - `modernisation.ts-comment-without-rationale` (warning; medium confidence): Flags TypeScript suppression comments without a rationale; the rationale may follow the `@ts-` directive or sit in the `//` comment lines directly above it, and a match for `allowlists.trackingTokens` counts as one.
 - `modernisation.tsconfig-exact-optional-disabled` (warning; high confidence): Flags tsconfig files without exactOptionalPropertyTypes enabled.

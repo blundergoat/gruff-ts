@@ -365,9 +365,6 @@ rules:
   complexity.cyclomatic:
     threshold: 10
     severity: warning
-  design.deep-relative-import:
-    threshold: 2
-    severity: advisory
   size.function-length:
     threshold: 30
     severity: warning

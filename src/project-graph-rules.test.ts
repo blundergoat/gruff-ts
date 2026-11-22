@@ -43,7 +43,6 @@ test("project architecture index finds deterministic cross-file findings", () =>
   const first = analyseProject(CROSS_FILE_GRAPH_FIXTURE, { config: CROSS_FILE_GRAPH_CONFIG });
   const second = analyseProject(CROSS_FILE_GRAPH_FIXTURE, { config: CROSS_FILE_GRAPH_CONFIG });
   const ruleIds = new Set(first.findings.map((finding) => finding.ruleId));
-  assert.equal(ruleIds.has("design.deep-relative-import"), true);
   assert.equal(ruleIds.has("design.circular-import"), true);
   assert.equal(ruleIds.has("design.large-module-concentration"), true);
   assert.deepEqual(
@@ -180,7 +179,6 @@ export const value = helper;
   assert.equal(cycles.length, 1);
   assert.equal(cycles[0]?.filePath, "src/cycle/a.ts");
   assert.deepEqual(cycles[0]?.metadata.files, ["src/cycle/a.ts", "src/cycle/sub/b.ts"]);
-  assert.equal(report.findings.some((finding) => finding.ruleId === "design.deep-relative-import" && finding.filePath === "src/unrequested/deep.ts"), false);
 });
 
 test("changed-region diff keeps a cycle through a changed member and suppresses unrelated cycles", () => {

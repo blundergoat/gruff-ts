@@ -604,12 +604,10 @@ function analyseProjectIndex(projectRoot: string, options: AnalysisOptions, scop
 }
 
 const PROJECT_INDEX_RULE_IDS = [
-  "design.deep-relative-import",
   CIRCULAR_IMPORT_RULE_ID,
   "design.large-module-concentration",
 ] as const;
 const SCOPED_PROJECT_INDEX_RULE_IDS = [
-  "design.deep-relative-import",
   "design.large-module-concentration",
 ] as const;
 

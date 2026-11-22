@@ -181,7 +181,7 @@ function assertRuleListJsonOutput(): boolean {
   // Checks example threshold maps and requires thresholds to be absent if security.eval-call is listed.
   // Every rule must have string id and defaultSeverity fields and omit the legacy top-level keys.
   assert.equal(ruleListJsonHasThreshold(parsed, "complexity.cyclomatic", { maxComplexity: 15 }), true);
-  assert.equal(ruleListJsonHasThreshold(parsed, "design.deep-relative-import", { threshold: 2 }), true);
+  assert.equal(ruleListJsonHasThreshold(parsed, "design.large-module-concentration", { threshold: 55 }), true);
   assert.equal(parsed.rules?.find((rule) => rule.id === "security.eval-call")?.thresholds, undefined);
   assert.equal(parsed.rules?.every((rule) => typeof rule.id === "string" && typeof rule.defaultSeverity === "string"), true);
   assert.equal(parsed.rules?.some((rule) => "ruleId" in rule || "severity" in rule || "threshold" in rule), false);

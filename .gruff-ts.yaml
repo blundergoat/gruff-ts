@@ -83,11 +83,6 @@ rules:
   # design/warning: Flags simple relative import cycles inside the discovered source set.
   design.circular-import:
     enabled: true
-  # design/advisory: Flags relative imports that climb too many parent directories.
-  design.deep-relative-import:
-    enabled: true
-    threshold: 2
-    severity: advisory
   # design/advisory: Flags a production module that dominates project source lines.
   design.large-module-concentration:
     enabled: true
@@ -159,9 +154,6 @@ rules:
     enabled: true
   # modernisation/warning: Flags non-null assertions that bypass null checks.
   modernisation.non-null-assertion:
-    enabled: true
-  # modernisation/advisory: Flags Object.assign({}, ...) cloning that can use object spread.
-  modernisation.object-spread-candidate:
     enabled: true
   # modernisation/advisory: Flags class properties that appear readonly-worthy.
   modernisation.readonly-property-candidate:

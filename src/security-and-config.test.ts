@@ -549,7 +549,7 @@ function finish(): void {
 }
 `, withDefaultOffRulesOn());
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  ["modernisation.date-now-candidate", "modernisation.object-spread-candidate", "waste.useless-catch", "waste.useless-return"].forEach((ruleId) => {
+  ["modernisation.date-now-candidate", "waste.useless-catch", "waste.useless-return"].forEach((ruleId) => {
     assert.equal(ruleIds.has(ruleId), true, `expected ${ruleId}`);
   });
 });

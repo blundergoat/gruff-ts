@@ -555,8 +555,6 @@ function thresholdMetadataFor(finding: Finding): Record<string, unknown> | undef
   switch (finding.ruleId) {
     case "complexity.cyclomatic":
       return metricMetadata(metadata.complexity, metadata.threshold, "points");
-    case "design.deep-relative-import":
-      return metricMetadata(metadata.parentSegments, metadata.maxParentSegments, "segments");
     case "design.large-module-concentration":
       return metricMetadata(metadata.sharePercent, metadata.maxSharePercent, "percent");
     case "size.file-length":

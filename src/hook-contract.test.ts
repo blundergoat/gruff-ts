@@ -19,7 +19,6 @@ const SEVERITIES = new Set(["advisory", "warning", "error"]);
 const SCOPES = new Set(["line", "symbol", "file", "project"]);
 const HOOK_MEASUREMENT_RULE_IDS = new Set([
   "complexity.cyclomatic",
-  "design.deep-relative-import",
   "design.large-module-concentration",
   "size.file-length",
   "size.function-length",
