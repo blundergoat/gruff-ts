@@ -62,15 +62,14 @@ field table; this page does not restate them.
 limits without changing exit codes. A fatal `diagnostics` entry owns exit `2`; a
 non-fatal one leaves the exit code alone.
 
-`gruff.analysis.v3` always carries a `suppressions` array: one row per
-configured `sensitiveExclusions:` entry, then one `source: "built-in"` row per
-file and rule that the built-in test-path skip removed findings from, then one
-`source: "inline"` or `source: "duplicate"` row per file and rule that another
-tool's suppression comment or a repeated claim removed (FAMILY-CONTRACT.md section
-13c), so it is empty only when nothing is configured and nothing was removed. A
-suppressed finding leaves `findings`, the score, and the `--fail-on` exit code,
-but its count is always reported. A malformed entry exits `2` before the scan
-starts. See [Configuration](./configuration.md).
+`gruff.analysis.v3` always carries a `suppressions` array: first any configured
+`sensitiveExclusions:` rows, then `source: "built-in"` rows for security and
+sensitive-data skips in test, fixture, and example paths, and finally
+`source: "inline"` and `source: "duplicate"` rows for honoured tool comments and
+merged `eval` claims. Suppressed findings leave `findings`, the score, and the
+`--fail-on` exit code, but their counts stay visible. A malformed exclusion
+exits `2` before scanning starts. See [Configuration](./configuration.md) and
+[Output Formats](./output-formats.md).
 
 Current note types:
 
@@ -150,14 +149,10 @@ Review baseline diffs carefully. A baseline suppresses findings whose identity a
 accepted count it already records, so
 unexpected additions can hide findings.
 
-The `gruff.baseline.v1` limitations - entries matched on
-`(fingerprint, ruleId, filePath)`, a fingerprint that hashed the line rather
-than the column, and code movement that resurfaced reviewed findings as new -
-are resolved by `gruff.baseline.v3`, the coordinated cross-analyser schema
-release those limitations were recorded against (ADR-013, ADR-017). Each row now
-carries a line-free identity and the count it accepts, so code movement no longer
-resurfaces a reviewed finding. Two distinct same-line findings from one rule have
-been reported separately since 0.5.0 and now hold separate reviews.
+`gruff.baseline.v3` stores a line-free identity and an accepted count per row
+(ADR-013, ADR-017), so shifting lines no longer re-opens reviewed findings, and
+distinct same-line findings from one rule can be reviewed separately. Sensitive
+findings are never stored in baselines; use `sensitiveExclusions:` instead.
 
 `report` intentionally renders raw scan results and does not accept a
 `--baseline` option. Use `analyse` for baseline-aware machine output.

@@ -214,3 +214,48 @@ test("failOn accepts the four canonical values per command", () => {
   }, { shouldSkipConfig: false });
   assert.equal(report.schemaVersion, "gruff.analysis.v3");
 });
+
+test("design.package-bin-missing downgrades unbuilt dist/build/lib bin targets to advisory even under an init warning config", () => {
+  // Starter config explicitly sets severity: warning for design.package-bin-missing, matching `gruff-ts init`.
+  const initStyleConfig = `schemaVersion: gruff-ts.config.v0.1
+rules:
+  design.package-bin-missing:
+    enabled: true
+    severity: warning
+`;
+  const unbuiltDistReport = analyseProject({
+    ".gruff-ts.yaml": initStyleConfig,
+    "package.json": JSON.stringify({
+      name: "compiled-cli",
+      bin: { "compiled-cli": "./dist/cli/cli.js" },
+      scripts: { build: "tsc" },
+    }, null, 2),
+  }, { shouldSkipConfig: false });
+  const distFindings = unbuiltDistReport.findings.filter((entry) => entry.ruleId === "design.package-bin-missing");
+  assert.equal(distFindings.length, 1);
+  assert.equal(distFindings[0]?.severity, "advisory");
+  assert.match(distFindings[0]?.message ?? "", /unbuilt/i);
+
+  // Non-build bin targets and packages without a build script stay warning.
+  const brokenBinReport = analyseProject({
+    ".gruff-ts.yaml": initStyleConfig,
+    "package.json": JSON.stringify({
+      name: "broken-cli",
+      bin: { "broken-cli": "bin/missing.mjs" },
+      scripts: { build: "tsc" },
+    }, null, 2),
+  }, { shouldSkipConfig: false });
+  const brokenFindings = brokenBinReport.findings.filter((entry) => entry.ruleId === "design.package-bin-missing");
+  assert.equal(brokenFindings.length, 1);
+  assert.equal(brokenFindings[0]?.severity, "warning");
+
+  const noBuildScriptReport = analyseProject({
+    "package.json": JSON.stringify({
+      name: "unscripted-cli",
+      bin: { "unscripted-cli": "dist/cli.js" },
+    }, null, 2),
+  });
+  const noBuildFindings = noBuildScriptReport.findings.filter((entry) => entry.ruleId === "design.package-bin-missing");
+  assert.equal(noBuildFindings.length, 1);
+  assert.equal(noBuildFindings[0]?.severity, "warning");
+});

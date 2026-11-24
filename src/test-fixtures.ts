@@ -76,8 +76,13 @@ export const M02_DEFAULT_OFF_RULES_ON_YAML = [
   ...M02_DEFAULT_OFF_RULE_IDS.flatMap((ruleId) => [`  ${ruleId}:`, "    enabled: true"]),
 ].join("\n") + "\n";
 
-// Returns a copy of options with the rules in M02_DEFAULT_OFF_RULE_IDS enabled; explicit rule settings win.
-// Other settings stay unchanged; omitted options start from an empty configuration.
+/**
+ * Returns a copy of `options` with the rules in `M02_DEFAULT_OFF_RULE_IDS` enabled; explicit rule settings win.
+ * Other settings stay unchanged; omitted options start from an empty configuration.
+ *
+ * @param options - Fixture scan options whose `config.rules` entries are merged over the default-off rules.
+ * @returns Copy of `options` with `M02_DEFAULT_OFF_RULE_IDS` enabled unless already configured.
+ */
 export function withDefaultOffRulesOn<T extends AnalyseFixtureOptions>(options: T = {} as T): T {
   const config = options.config ?? {};
   const rules = (config["rules"] ?? {}) as Record<string, Record<string, unknown>>;
@@ -85,8 +90,14 @@ export function withDefaultOffRulesOn<T extends AnalyseFixtureOptions>(options: 
   return { ...options, config: { ...config, rules: { ...rules, ...switchedOn } } };
 }
 
-// Return an analysis report for source, using options.fileName or bad.ts and forwarding only config, configPath and shouldSkipConfig.
-// The delegated scan writes a temporary project and changes into it before restoring the working directory and removing the project.
+/**
+ * Returns an analysis report for `source`, using `options.fileName` or `bad.ts` and forwarding only `config`, `configPath`, and `shouldSkipConfig`.
+ * The delegated scan writes a temporary project and changes the working directory before restoring it and removing the project.
+ *
+ * @param source - Synthetic file content written into the temporary fixture project for scanning.
+ * @param options - Fixture filename override and config-loading options forwarded to `analyseProject`.
+ * @returns Analysis report produced by running the analyzer on the temporary single-file project.
+ */
 export function analyseFixture(source: string, options: AnalyseFixtureOptions = {}) {
   return analyseProject(
     { [options.fileName ?? "bad.ts"]: source },
@@ -98,9 +109,14 @@ export function analyseFixture(source: string, options: AnalyseFixtureOptions = 
   );
 }
 
-// Writes the supplied path-to-content map into a temporary project and returns its analysis report.
-// options controls executable files, fixture config, and scan settings. Omit it to scan the project root with config loading disabled.
-// Changes the process working directory for the scan, then restores it and removes the fixture tree in cleanup.
+/**
+ * Writes the supplied path-to-content map into a temporary project and returns its analysis report.
+ * Changes the process working directory for the scan, then restores it and removes the fixture tree in cleanup.
+ *
+ * @param files - Map of project-relative file paths to source text written into the temporary directory.
+ * @param options - Controls executable files, fixture config, and scan settings; omit to scan the project root with config loading disabled.
+ * @returns Analysis report emitted for the temporary project.
+ */
 export function analyseProject(files: Record<string, string>, options: AnalyseProjectOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), "gruff-ts-"));
   const previous = cwd();
@@ -153,8 +169,13 @@ export function analyseProjectInCurrentDirectory(options: AnalyseProjectOptions)
   });
 }
 
-// Returns optional analyse arguments from fixture options, mapping configPath to config.
-// Absent values are omitted to preserve exactOptionalPropertyTypes.
+/**
+ * Returns optional `analyse` arguments from fixture options, mapping `configPath` to `config`.
+ * Absent values are omitted to preserve `exactOptionalPropertyTypes`.
+ *
+ * @param options - Fixture scan options supplying optional config, profile, diff, and budget overrides.
+ * @returns Partial `analyse` options containing only the explicitly provided fields.
+ */
 function optionalFixtureScanFields(options: AnalyseProjectOptions): Partial<Pick<Parameters<typeof analyse>[0], "config" | "profile" | "diff" | "diffPatch" | "since" | "changedRanges" | "deepScanBudget">> {
   return {
     ...(typeof options.configPath === "string" ? { config: options.configPath } : {}),
@@ -167,26 +188,40 @@ function optionalFixtureScanFields(options: AnalyseProjectOptions): Partial<Pick
   };
 }
 
-/*
- * Serializes a test YAML config object from the root indentation level. Every fixture YAML is
- * stamped with the required `schemaVersion: gruff-ts.config.v0.1` field at the top (per ADR-004)
- * because the config loader throws when it's missing. The schema invariant is preserved by
- * spreading the input object AFTER schemaVersion so callers can't accidentally override it; tests
- * that need to assert against a missing schemaVersion must write the YAML by hand instead.
+/**
+ * Serializes a test YAML config object from the root indentation level with `schemaVersion: gruff-ts.config.v0.1` first (per ADR-004)
+ * because the config loader throws when it is missing. Preserves the schema invariant by spreading `configObject` after `schemaVersion`
+ * so callers cannot override it; tests asserting against a missing `schemaVersion` must write YAML by hand instead.
+ *
+ * @param configObject - Config keys and values serialized below the stamped `schemaVersion` header.
+ * @returns YAML document string ready to write to `.gruff-ts.yaml`.
  */
 export function yamlConfigFixture(configObject: Record<string, unknown>): string {
   return yamlConfigObject({ schemaVersion: "gruff-ts.config.v0.1", ...configObject }, 0);
 }
 
-// Returns fixture YAML for configObject's entries using indent leading spaces; an empty object returns an empty string.
+/**
+ * Returns fixture YAML for `configObject`'s entries using `indent` leading spaces; an empty object returns an empty string.
+ *
+ * @param configObject - Key-value mapping whose entries are serialized in object insertion order.
+ * @param indent - Number of leading spaces prepended to each emitted entry at this nesting level.
+ * @returns Serialized YAML block for all entries in `configObject`.
+ */
 export function yamlConfigObject(configObject: Record<string, unknown>, indent: number): string {
   return Object.entries(configObject)
     .map(([key, nested]) => yamlConfigEntry(key, nested, indent))
     .join("");
 }
 
-// Returns a fixture YAML entry for key and nestedValue, prefixed with indent spaces and ending with a newline.
-// Non-null, non-array objects use nested entries. An object with no entries emits just the key and colon. Other values use the scalar serializer.
+/**
+ * Returns a fixture YAML entry for `key` and `nestedValue`, prefixed with `indent` spaces and ending with a newline.
+ * Non-null, non-array objects emit nested entries (or just key and colon if empty); other values use the scalar serializer.
+ *
+ * @param key - YAML mapping key written at the start of the line.
+ * @param nestedValue - Value serialized either as nested YAML entries or as an inline scalar.
+ * @param indent - Number of leading spaces before `key`, increased by two for nested mappings.
+ * @returns Formatted YAML line or nested block ending with a newline.
+ */
 export function yamlConfigEntry(key: string, nestedValue: unknown, indent: number): string {
   const prefix = " ".repeat(indent);
   if (isYamlConfigObject(nestedValue)) {
@@ -195,8 +230,13 @@ export function yamlConfigEntry(key: string, nestedValue: unknown, indent: numbe
   return prefix + key + ": " + yamlConfigScalar(nestedValue) + "\n";
 }
 
-// Returns fixture YAML for scalarValue, including nested arrays, quoted strings, numbers and booleans.
-// Null, undefined and all other values become the empty mapping {}.
+/**
+ * Returns fixture YAML for `scalarValue`, including nested arrays, quoted strings, numbers, and booleans.
+ * Null, undefined, and all other values become the empty mapping `{}`.
+ *
+ * @param scalarValue - Arbitrary config leaf value or array to format inline.
+ * @returns Inline YAML representation of `scalarValue`.
+ */
 export function yamlConfigScalar(scalarValue: unknown): string {
   if (Array.isArray(scalarValue)) {
     return `[${scalarValue.map(yamlConfigScalar).join(", ")}]`;
@@ -210,13 +250,23 @@ export function yamlConfigScalar(scalarValue: unknown): string {
   return "{}";
 }
 
-// Returns whether configValue is a non-null, non-array object that the fixture serializer will treat as a mapping.
+/**
+ * Returns whether `configValue` is a non-null, non-array object that the fixture serializer will treat as a mapping.
+ *
+ * @param configValue - Unknown value inspected before choosing nested mapping or scalar serialization.
+ * @returns True when `configValue` is a non-null, non-array object.
+ */
 export function isYamlConfigObject(configValue: unknown): configValue is Record<string, unknown> {
   return typeof configValue === "object" && configValue !== null && !Array.isArray(configValue);
 }
 
-// Writes each relative path and its source text from files under fixture root dir, creating parent directories as needed.
-// Returns nothing after populating the fixture directory on disk.
+/**
+ * Writes each relative path and its source text from `files` under fixture root `dir`, creating parent directories as needed.
+ *
+ * @param dir - Root directory where the fixture files are written on disk.
+ * @param files - Map of project-relative paths to their file contents.
+ * @returns Nothing. Populates the fixture directory on disk.
+ */
 export function writeFixtureFiles(dir: string, files: Record<string, string>): void {
   for (const [fileName, source] of Object.entries(files)) {
     const path = join(dir, fileName);
@@ -225,18 +275,32 @@ export function writeFixtureFiles(dir: string, files: Record<string, string>): v
   }
 }
 
-// Returns declaration lines named with prefix and an index, enough to cross the fixture-purpose line threshold.
+/**
+ * Returns 13 declaration lines named with `prefix` and an index, enough to cross the fixture-purpose line threshold.
+ *
+ * @param prefix - Identifier prefix prepended to the zero-based declaration index on each line.
+ * @returns Array of TypeScript `const` declaration lines for synthetic large fixtures.
+ */
 export function largeFixtureSourceLines(prefix: string): string[] {
   return Array.from({ length: 13 }, (_, index) => "const " + prefix + index + " = " + index + ";");
 }
 
-// Returns the distinct file paths in the report with a security.eval-call finding, using the analyzer's stable rule ID for test assertions.
+/**
+ * Returns the distinct file paths in `report` with a `security.eval-call` finding, using the analyzer's stable rule ID for test assertions.
+ *
+ * @param report - Completed analysis report whose `findings` array is filtered for `security.eval-call`.
+ * @returns Set of unique `filePath` values containing at least one `security.eval-call` finding.
+ */
 export function evalFindingFiles(report: AnalysisReport): Set<string> {
   return new Set(report.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.filePath));
 }
 
-// Spawns git --version and returns true on success. A launch or command failure returns false so Git-dependent tests can skip.
-// The probe stays quiet because an unusable Git command is an expected skip condition for these tests.
+/**
+ * Spawns `git --version` and returns true on success; a launch or command failure returns false so Git-dependent tests can skip.
+ * The probe stays quiet because an unusable Git command is an expected skip condition for these tests.
+ *
+ * @returns True when `git --version` exits cleanly, or false if spawning or running `git` fails.
+ */
 export function gitAvailable(): boolean {
   try {
     execFileSync("git", ["--version"], { stdio: "ignore" });
@@ -246,8 +310,14 @@ export function gitAvailable(): boolean {
   }
 }
 
-// Spawns git check-ignore from projectRoot to check path. Returns true if Git reports the path ignored and false if it reports no match.
-// @throws {Error} when `git check-ignore` cannot run or exits with a status other than 0 (ignored) or 1 (not ignored).
+/**
+ * Spawns `git check-ignore` from `projectRoot` to check whether `path` is ignored by Git.
+ *
+ * @param projectRoot - Working directory passed to `git check-ignore`.
+ * @param path - Repository-relative or filesystem path checked against ignore rules.
+ * @returns True when Git reports `path` as ignored (exit status 0), or false when unmatched (exit status 1).
+ * @throws {Error} When `git check-ignore` cannot run or exits with a status other than 0 or 1.
+ */
 export function isGitIgnoredByGit(projectRoot: string, path: string): boolean {
   try {
     execFileSync("git", ["check-ignore", "--quiet", path], { cwd: projectRoot });
@@ -261,8 +331,14 @@ export function isGitIgnoredByGit(projectRoot: string, path: string): boolean {
   }
 }
 
-// Starts a dashboard for the supplied project root and passes its base URL to the test callback after the health check.
-// Resolves with no value after the callback and cleanup. Cleanup requests shutdown and waits up to one second for exit, even on failure.
+/**
+ * Spawns a dashboard process for `projectRoot` and passes its base URL to `run` once the `/health` endpoint responds.
+ * Cleanup kills the child process and waits up to one second for exit, even on failure.
+ *
+ * @param projectRoot - Project root directory passed via `--project-root` to the dashboard server.
+ * @param run - Async test callback invoked with the live base endpoint URL.
+ * @returns Nothing. Resolves after `run` completes and the dashboard process exits or times out on cleanup.
+ */
 export async function withDashboard(projectRoot: string, run: (endpoint: string) => Promise<void>): Promise<void> {
   const port = await freePort();
   const child = spawn("./bin/gruff-ts", ["dashboard", "--host", "127.0.0.1", "--port", String(port), "--project-root", projectRoot], {
@@ -295,8 +371,12 @@ export async function withDashboard(projectRoot: string, run: (endpoint: string)
   }
 }
 
-// Starts a temporary loopback listener to obtain a port for dashboard tests. The promise resolves with the port after closing the listener.
-// The caller receives an unreserved port. The promise rejects on a listener error or if no TCP address is available.
+/**
+ * Starts a temporary loopback listener to obtain an unreserved port for dashboard tests and closes it before resolving.
+ * Rejects on a listener error or if no TCP address is available.
+ *
+ * @returns Promise resolving to the ephemeral port number assigned on `127.0.0.1`.
+ */
 export async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createNetServer();
@@ -314,9 +394,14 @@ export async function freePort(): Promise<number> {
   });
 }
 
-// Polls the dashboard URL in endpoint. It saves the latest failure for the final diagnostic so that transient failures stay quiet.
-// The promise resolves with nothing on an OK response. output supplies the captured server text for a failure.
-// @throws {Error} - after the five-second retry window without an OK response. An in-flight fetch can finish after that window.
+/**
+ * Polls the dashboard URL in `endpoint`, saving the latest failure for the final diagnostic so transient failures stay quiet.
+ *
+ * @param endpoint - Full URL polled every 50ms until it returns an OK HTTP response or times out.
+ * @param output - Captured server output appended to the timeout error message on failure.
+ * @returns Nothing. Resolves as soon as `endpoint` returns an OK response.
+ * @throws {Error} After the five-second retry window without an OK response; an in-flight fetch can finish after that window.
+ */
 export async function waitForEndpoint(endpoint: string, output: string): Promise<void> {
   const deadline = Date.now() + 5000;
   const processOutput = output;
@@ -336,7 +421,13 @@ export async function waitForEndpoint(endpoint: string, output: string): Promise
   throw new Error(`timed out waiting for ${endpoint}: ${String(lastError)}\n${processOutput}`);
 }
 
-// Returns the response body from endpoint for test assertions; a non-OK status fails with the endpoint, status and body.
+/**
+ * Fetches `endpoint` and returns its response body text for test assertions.
+ * Asserts `response.ok` and fails with the endpoint, HTTP status, and body when the response is not OK.
+ *
+ * @param endpoint - Target HTTP URL requested with `fetch`.
+ * @returns Response body text when the server replies with an OK status.
+ */
 export async function fetchText(endpoint: string): Promise<string> {
   const response = await fetch(endpoint);
   const text = await response.text();
@@ -344,18 +435,30 @@ export async function fetchText(endpoint: string): Promise<string> {
   return text;
 }
 
-// Writes a broad temporary catalogue fixture because one scan must cover many rule families. Returns the distinct rule IDs the scan emits.
+/**
+ * Writes a broad temporary catalogue fixture because one scan must cover many rule families, then collects emitted rule IDs.
+ *
+ * @returns Set of distinct `ruleId` values emitted when scanning the catalogue coverage fixture.
+ */
 export function ruleCatalogueCoverageRuleIds(): Set<string> {
   return new Set(ruleCatalogueCoverageFindings().map((finding) => finding.ruleId));
 }
 
-// Returns every finding from the broad catalogue fixture in stable sorted report order for assertions about finding fields.
-// Writes a temporary fixture project, changes into it for the scan, then restores the working directory and removes the project.
+/**
+ * Returns every finding from the broad catalogue fixture in stable sorted report order for assertions about finding fields.
+ * Writes a temporary fixture project, changes into it for the scan, then restores the working directory and removes the project.
+ *
+ * @returns Ordered `Finding` array produced by running `analyseProject` on the catalogue coverage fixture.
+ */
 export function ruleCatalogueCoverageFindings(): Finding[] {
   return analyseProject(catalogueCoverageFiles(), catalogueCoverageOptions()).findings;
 }
 
-// Return project-relative paths and file contents for the catalogue fixture, including source, tests, credentials and configuration.
+/**
+ * Returns project-relative paths and file contents for the catalogue fixture, including source, tests, credentials, and configuration.
+ *
+ * @returns Map of relative file paths to synthetic file contents for full-catalogue rule coverage.
+ */
 function catalogueCoverageFiles(): Record<string, string> {
   return {
       "src/catalogue.ts": catalogueRuntimeCoverageSource(),
@@ -435,7 +538,11 @@ API_TOKEN=${API_TOKEN_FIXTURE_VALUE}
     };
 }
 
-// Returns GitHub Actions YAML with risky settings and steps for workflow-security catalogue coverage.
+/**
+ * Returns GitHub Actions YAML with risky settings and steps for workflow-security catalogue coverage.
+ *
+ * @returns Workflow YAML source exercising `pull_request_target`, `write-all`, unpinned actions, piped curl, and secret echo rules.
+ */
 function githubActionsCoverageWorkflowSource(): string {
   return `on:
   pull_request_target:
@@ -451,7 +558,11 @@ jobs:
 `;
 }
 
-// Returns synthetic module text for catalogue coverage of runtime, naming, schema documentation, security, and waste rules.
+/**
+ * Returns synthetic module text for catalogue coverage of runtime, naming, schema documentation, security, and waste rules.
+ *
+ * @returns Synthetic TypeScript source containing deliberate violations across the non-test runtime rule families.
+ */
 function catalogueRuntimeCoverageSource(): string {
   return `import { createHash } from "node:crypto";
 import { exec, spawn } from "node:child_process";
@@ -624,7 +735,11 @@ export function unsafePublicApi(input: any): any {
 `;
 }
 
-// Provides generated test source, including deliberate environment mutation coverage.
+/**
+ * Provides generated test source, including deliberate environment mutation coverage for test-quality rule assertions.
+ *
+ * @returns Synthetic test file text exercising assertion-quality, mock, timing, focus, and environment-mutation rules.
+ */
 function catalogueTestCoverageSource(): string {
   return `import assert from "node:assert/strict";
 
@@ -707,7 +822,11 @@ ${"test"}("setup bloat and control flow", () => {
 `;
 }
 
-// Return scan options that enable optional catalogue checks and lower thresholds for the synthetic fixture's positive cases.
+/**
+ * Returns scan options that enable optional catalogue checks and lower thresholds for the synthetic fixture's positive cases.
+ *
+ * @returns `AnalyseProjectOptions` configuring rule enablement and lowered thresholds for the catalogue coverage scan.
+ */
 function catalogueCoverageOptions(): AnalyseProjectOptions {
   return {
       config: {

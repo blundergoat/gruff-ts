@@ -11,7 +11,7 @@ import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan }
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
 import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError, changedRegionScope, filterChangedFindings, filterScopedDiagnostics, type ChangedRegionScope } from "./changed-regions.ts";
 import { loadConfig, optionBoolean, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
-import { applyInlineSuppressions } from "./inline-suppressions.ts";
+import { applyInlineSuppressions, isInlineSuppressionRelevantRule } from "./inline-suppressions.ts";
 import { applyBuiltInTestPathSkip, partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
@@ -19,7 +19,7 @@ import { makeFinding } from "./findings.ts";
 import { applyConfiguredSeverity, finding, parameterNames } from "./findings-helpers.ts";
 import { commentRecords, type CommentRecord } from "./comment-scanner.ts";
 import { catalogueConfidence } from "./rules.ts";
-import { analyseArchitectureRules, analyseCircularImportRule, buildProjectIndex, CIRCULAR_IMPORT_RULE_ID, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
+import { analyseArchitectureRules, analyseCircularImportRule, buildProjectIndex, CIRCULAR_IMPORT_RULE_ID, extractImportStatements, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
 import { analyseBlockMeasures, analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks, measuredOnlyFunctionBlocks } from "./blocks.ts";
 import { bandedFields, LOWER_BAND_FILE, SPLIT_FILE } from "./limit-band.ts";
 import { analyseClassRules } from "./class-rules.ts";
@@ -71,7 +71,7 @@ export function analyse(requestedOptions: AnalysisOptions): AnalysisReport {
     }
     return failedRunReport(preparation.projectRoot, options.format, CHANGED_REGION_DIAGNOSTIC_TYPE, error.message);
   }
-  const run = completeAnalysis(preparation, options, "diagnose");
+  const run = completeAnalysis(preparation, options, "diagnose", changedScope);
   const changedResult = filterChangedFindings(run.baselineResult.findings, changedScope, run.scanned.sources);
 
   // Generation uses the full scan, so errors anywhere in that scan must stay visible.
@@ -93,14 +93,21 @@ export function analyse(requestedOptions: AnalysisOptions): AnalysisReport {
   return report;
 }
 
-// Build the full and changed-region views the hook needs to distinguish a new finding from one already covered by a baseline.
-// Both views use one read of the user's files. With no change selector, both fields point to that full scan.
+/**
+ * Build the full and changed-region views the hook needs to distinguish a new finding from one already covered by a baseline.
+ * Both views use one read of the user's files. With no change selector, both fields point to that full scan.
+ *
+ * @param currentOptions - full-scan options resolved from the launch directory
+ * @param scopedOptions - change-scoped options providing the diff or range selector and formatting choices
+ * @param hasChangedRegion - true when scopedOptions selects a changed region; false skips scope resolution
+ * @returns Both reports sharing one file scan; when hasChangedRegion is false, scopedReport aliases currentReport.
+ */
 export function analyseHookReports(currentOptions: AnalysisOptions, scopedOptions: AnalysisOptions, hasChangedRegion: boolean): HookAnalysisReports {
   currentOptions = targetsFromLaunchDirectory(currentOptions);
   scopedOptions = targetsFromLaunchDirectory(scopedOptions);
   // A hook without `--diff`, `--since`, or `--changed-ranges` has no narrower view to resolve.
   const scopedChangedScope = hasChangedRegion ? changedRegionScope(scopedOptions, projectRootFromTargets(scopedOptions.paths)) : undefined;
-  const run = completeAnalysis(prepareAnalysis(currentOptions), currentOptions);
+  const run = completeAnalysis(prepareAnalysis(currentOptions), currentOptions, "throw", scopedChangedScope);
   const currentReport = reportFromRun(run, currentOptions, run.baselineResult);
   // An unscoped hook presents the same findings it uses for baseline comparison.
   if (!hasChangedRegion) {
@@ -183,7 +190,12 @@ function targetsFromLaunchDirectory(options: AnalysisOptions): AnalysisOptions {
   if (projectRoot === launchDirectory) {
     return options;
   }
-  // Return path unchanged when absolute, or relative to projectRoot when it names a baseline from launchDirectory.
+  /**
+   * Re-anchor a launch-directory path option against projectRoot while keeping absolute paths untouched.
+   *
+   * @param path - file path supplied relative to launchDirectory or as an absolute path
+   * @returns Path unchanged when absolute, or relative to projectRoot when resolved from launchDirectory.
+   */
   const fromRoot = (path: string): string => (isAbsolute(path) ? path : relative(projectRoot, resolve(launchDirectory, path)));
   return {
     ...options,
@@ -208,7 +220,12 @@ function isSameOrDescendant(candidate: string, ancestor: string): boolean {
   return !isAbsolute(fromAncestor) && fromAncestor !== ".." && !fromAncestor.startsWith(`..${sep}`);
 }
 
-// Return the project root, loaded config, discovered inputs and an empty diagnostic array selected by options for a scan.
+/**
+ * Resolve project inputs and configuration needed before scanning files.
+ *
+ * @param options - scan options specifying target paths, config overrides, and discovery settings
+ * @returns The project root, loaded config, discovered inputs, and an empty diagnostic array selected by options for a scan.
+ */
 function prepareAnalysis(options: AnalysisOptions): AnalysisPreparation {
   const projectRoot = projectRootFromTargets(options.paths);
   const config = loadConfig(projectRoot, options);
@@ -237,14 +254,20 @@ function withCatalogueConfidence(finding: Finding): Finding {
  * @param preparation - project scope, discovery and config, with the caller's diagnostic array to append to
  * @param options - scope and baseline choices. An unset baseline path lets the scan use the project's default when enabled.
  * @param unusableBaseline - `throw` lets the hook report a refusal. `diagnose` keeps findings and adds a fatal baseline diagnostic.
+ * @param changedScope - optional changed-region scope indicating which files need retained source and AST snapshots for symbol expansion
  * @returns Findings, diagnostics, and suppression counts for rendering. An empty findings list can still have diagnostics.
  * @throws {BaselineFileError} - a baseline file failure in throw mode.
  */
-function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOptions, unusableBaseline: "throw" | "diagnose" = "throw"): AnalysisRun {
+function completeAnalysis(
+  preparation: AnalysisPreparation,
+  options: AnalysisOptions,
+  unusableBaseline: "throw" | "diagnose" = "throw",
+  changedScope?: ChangedRegionScope,
+): AnalysisRun {
   const { projectRoot, config, diagnostics, discovery } = preparation;
   pushMissingPathDiagnostics(discovery.missingPaths, diagnostics);
 
-  const scanned = scanDiscoveredSources(discovery.files, config, diagnostics);
+  const scanned = scanDiscoveredSources(discovery.files, config, diagnostics, changedScope);
   const allFindings = sortedUniqueFindings([
     ...scanned.findings,
     ...analyseProjectIndex(projectRoot, options, discovery.files, scanned.projectSources, config).filter((finding) => ruleEnabled(config, finding.ruleId)),
@@ -254,7 +277,7 @@ function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOpt
   // A configured entry claims its findings first, so its count stays what the user wrote it for.
   const testPathSkipped = applyBuiltInTestPathSkip(excluded.findings, excluded.suppressions);
   // Assign baseline identities before filtering so hiding one declaration cannot renumber another in SARIF or the hook.
-  const spans = declarationSpans(scanned);
+  const spans = scanned.declarationSpans;
   const namedFindings = withBaselineIdentities(testPathSkipped.findings, spans);
   // Apply inline suppressions to findings with identities so SARIF can still identify a suppressed result.
   const inline = applyInlineSuppressions(namedFindings, testPathSkipped.suppressions, scanned.sources);
@@ -382,6 +405,7 @@ interface SourceScanResult {
   evaluatedFiles: number;
   projectSources: ProjectSource[];
   sources: Map<string, { file: SourceFile; source: string; parsed?: ParsedScript }>;
+  declarationSpans: Map<string, DeclarationSpan[]>;
   notes: ScanSurfaceNote[];
 }
 
@@ -412,8 +436,13 @@ interface AnalysisRun {
   suppressedFindings: SuppressedFinding[];
 }
 
-// Append one missing-path diagnostic to diagnostics for each requested path in missingPaths that discovery could not resolve.
-// Returns nothing. These diagnostics invalidate the run and force exit 2. An empty list adds nothing.
+/**
+ * Record a run-invalidating diagnostic for every unresolved target path so callers report missing inputs.
+ *
+ * @param missingPaths - requested target paths that discovery could not resolve
+ * @param diagnostics - caller's diagnostic array mutated by appending one missing-path entry per item
+ * @returns Nothing. Appends one diagnostic per missing path to diagnostics, forcing exit 2; an empty list adds nothing.
+ */
 function pushMissingPathDiagnostics(missingPaths: string[], diagnostics: RunDiagnostic[]): void {
   for (const missingPath of missingPaths) {
     diagnostics.push({
@@ -427,17 +456,25 @@ function pushMissingPathDiagnostics(missingPaths: string[], diagnostics: RunDiag
 /**
  * Read and scan inputs in stable discovery order so that project-index snapshots keep their graph anchors.
  * Record failures caught during a file's read or scan as read-error diagnostics so the remaining files can still be checked.
+ * Computes declaration spans per file so parsed syntax trees can be garbage-collected immediately on large repositories.
  *
  * @param files - discovered inputs in a stable order. An empty list leaves the scan with no files to score.
  * @param config - scan budget, rule settings and project-source selection settings
  * @param diagnostics - caller's array for budget, parser and caught file-scan diagnostics
- * @returns Findings, retained project snapshots, text sources with optional parses, and notes for skipped non-text inputs.
+ * @param changedScope - optional changed-region scope naming files that must retain source and parsed ASTs after per-file analysis
+ * @returns Findings, retained project snapshots, minimal retained sources, per-file declaration spans, and notes for skipped non-text inputs.
  */
-function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics: RunDiagnostic[]): SourceScanResult {
+function scanDiscoveredSources(
+  files: SourceFile[],
+  config: Config,
+  diagnostics: RunDiagnostic[],
+  changedScope?: ChangedRegionScope,
+): SourceScanResult {
   const findings: Finding[] = [];
   let evaluatedFiles = 0;
   const projectSources: ProjectSource[] = [];
   const sources = new Map<string, { file: SourceFile; source: string; parsed?: ParsedScript }>();
+  const spansByFile = new Map<string, DeclarationSpan[]>();
   const notes: ScanSurfaceNote[] = [];
   // Check each supported input so one unreadable file can be diagnosed without discarding the other files' findings.
   for (const file of files) {
@@ -456,7 +493,6 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
       const budgetDiagnostic = deepScanBudgetDiagnostic(file, source, config);
       // Over-budget scripts skip parsing and project snapshots but still get enabled text checks. Other scripts share one parse.
       const parsed = budgetDiagnostic ? undefined : parseScript(file, source);
-      sources.set(file.displayPath, { file, source, ...(parsed ? { parsed } : {}) });
       // The user can still see text findings from a script that exceeds the deep-scan budget.
       if (budgetDiagnostic) {
         diagnostics.push(budgetDiagnostic);
@@ -465,9 +501,19 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
         if (shouldRetainProjectSource(file, source)) {
           projectSources.push(projectSource(file, source, parsed));
         }
+        if (parsed) {
+          spansByFile.set(file.displayPath, fileDeclarationSpans(source, parsed));
+        }
         diagnostics.push(...(parsed?.diagnostics ?? []));
       }
-      findings.push(...analyseSource(file, source, config, budgetDiagnostic === undefined, parsed));
+      const fileFindings = analyseSource(file, source, config, budgetDiagnostic === undefined, parsed);
+      findings.push(...fileFindings);
+      // Retain full AST snapshots only for files needed by changed-region symbol expansion, and raw text only when inline suppression applies.
+      if (shouldRetainParsedForChangedScope(file.displayPath, changedScope)) {
+        sources.set(file.displayPath, { file, source, ...(parsed ? { parsed } : {}) });
+      } else if (fileFindings.some((entry) => isInlineSuppressionRelevantRule(entry.ruleId))) {
+        sources.set(file.displayPath, { file, source });
+      }
       // Text assets can produce findings, but only evaluated scripts contribute to the file count used for scoring.
       if (file.isScript) {
         evaluatedFiles += 1;
@@ -482,7 +528,21 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
       });
     }
   }
-  return { findings, evaluatedFiles, projectSources, sources, notes };
+  return { findings, evaluatedFiles, projectSources, sources, declarationSpans: spansByFile, notes };
+}
+
+/**
+ * Reports whether a file's source and parsed syntax tree must stay cached after per-file analysis for changed-region symbol expansion.
+ *
+ * @param filePath - project-relative display path of the scanned file
+ * @param changedScope - optional changed-region scope active for this run
+ * @returns True when `changedScope` uses explicit ranges or lists `filePath` as a changed file; false for full scans and untouched files.
+ */
+function shouldRetainParsedForChangedScope(filePath: string, changedScope: ChangedRegionScope | undefined): boolean {
+  if (changedScope === undefined) {
+    return false;
+  }
+  return changedScope.explicitRanges !== undefined || changedScope.changedFiles.has(filePath);
 }
 
 /**
@@ -501,31 +561,34 @@ function withBaselineIdentities(findings: Finding[], spansByFile: Map<string, De
   });
 }
 
-/*
- * Collect declaration positions so a baseline can distinguish same-named functions in one file.
- * Files with no syntax tree use finding positions, including scripts scanned under the deep-scan budget limit.
+/**
+ * Collects declaration spans for one parsed script so a baseline can distinguish same-named functions in one file
+ * without keeping the full TypeScript AST alive across the entire repository scan.
+ *
+ * @param source - raw UTF-8 source text of the script
+ * @param parsed - shared parsed syntax tree for the script
+ * @returns Declaration spans covering named functions, methods, callable bindings, and measured-only inline callables.
  */
-function declarationSpans(scanned: SourceScanResult): Map<string, DeclarationSpan[]> {
-  const spansByFile = new Map<string, DeclarationSpan[]>();
-  // Rank declarations per file so a same-named function in another file has its own reviewed identity.
-  for (const [displayPath, entry] of scanned.sources) {
-    // A text-only file or budget-limited script has no syntax tree and cannot supply declaration positions.
-    if (!entry.parsed) {
-      continue;
-    }
-    const blocks = functionBlocks(entry.source, entry.source, entry.parsed);
-    // Keep positions for measured inline functions too, so two functions named `<iife>` can have separate baseline entries.
-    const measuredOnly = measuredOnlyFunctionBlocks(entry.source, maskNonCode(entry.source), entry.parsed);
-    spansByFile.set(
-      displayPath,
-      [...blocks, ...measuredOnly].map((block) => ({ name: block.name, startLine: block.startLine, endLine: block.startLine + block.lineCount - 1 })),
-    );
-  }
-  return spansByFile;
+function fileDeclarationSpans(source: string, parsed: ParsedScript): DeclarationSpan[] {
+  const blocks = functionBlocks(source, source, parsed);
+  // Keep positions for measured inline functions too, so two functions named `<iife>` can have separate baseline entries.
+  const measuredOnly = measuredOnlyFunctionBlocks(source, maskNonCode(source), parsed);
+  return [...blocks, ...measuredOnly].map((block) => ({
+    name: block.name,
+    startLine: block.startLine,
+    endLine: block.startLine + block.lineCount - 1,
+  }));
 }
 
-// Return a non-fatal budget diagnostic for script file and source using config.deepScanBudget.
-// Return undefined for non-scripts, a disabled budget or source within both limits; a diagnostic requests skipping deep script checks.
+/**
+ * Check whether a script exceeds the configured line or byte limits for deep syntax analysis.
+ *
+ * @param file - candidate input whose script classification and display path guide budget enforcement
+ * @param source - UTF-8 source text measured for line count and byte length
+ * @param config - scan configuration supplying deepScanBudget thresholds and enabled state
+ * @returns A non-fatal diagnostic requesting skipped deep checks, or undefined for non-scripts,
+ *   a disabled budget, or sources within both limits.
+ */
 function deepScanBudgetDiagnostic(file: SourceFile, source: string, config: Config): RunDiagnostic | undefined {
   const budget = config.deepScanBudget;
   if (!file.isScript || !budget.enabled) {
@@ -545,23 +608,38 @@ function deepScanBudgetDiagnostic(file: SourceFile, source: string, config: Conf
   };
 }
 
-// Return whether script file belongs in the project index: production code, tests or source with possible import/export edges.
-// Non-script files are excluded; the retained categories support exported-surface, test-coverage and graph rules.
+/**
+ * Decide whether a scanned file belongs in the project index for exported-surface, test-coverage, and graph rules.
+ *
+ * @param file - discovered file providing script classification and display path
+ * @param source - file text inspected for potential import or export syntax candidates
+ * @returns True for script files that are production code, tests, or import/export candidates; false for non-scripts or unrelated scripts.
+ */
 function shouldRetainProjectSource(file: SourceFile, source: string): boolean {
   return file.isScript && (isProductionSourcePath(file.displayPath) || isTestPath(file.displayPath) || hasImportSyntaxCandidate(source));
 }
 
-// Return project-index data for file and raw source, including line views and a code-line count.
-// Use parsed to exclude decorator text from the count. Without it, decorator-only lines count.
-// Mask template bodies only for import candidates so template fixture text cannot become graph edges; otherwise reuse raw lines.
+/**
+ * Build compact project-index data for a retained script, pre-extracting import statements from template-masked lines
+ * so template fixture text cannot become graph edges and large scans do not retain full file line arrays.
+ *
+ * @param file - retained source file metadata
+ * @param source - raw UTF-8 source text scanned for import statements and code lines
+ * @param parsed - optional script parse used to exclude decorator text from the code-line count; without it, decorator-only lines count
+ * @returns Compact ProjectSource carrying pre-extracted import statements and substantive code-line count.
+ */
 function projectSource(file: SourceFile, source: string, parsed?: ParsedScript): ProjectSource {
-  const lines = source.split(/\r?\n/);
-  const templateMaskedLines = hasImportSyntaxCandidate(source) ? maskTemplateLiteralBodies(source).split(/\r?\n/) : lines;
-  return { file, lines, templateMaskedLines, codeLineCount: codeLineFlags(source, parsed).filter(Boolean).length };
+  const statements = hasImportSyntaxCandidate(source) ? extractImportStatements(maskTemplateLiteralBodies(source).split(/\r?\n/)) : [];
+  return { file, importStatements: statements, codeLineCount: codeLineFlags(source, parsed).filter(Boolean).length };
 }
 
-// Cheap prefilter for files that might contain real import/export edges or fixture strings that
-// mention them. False positives are acceptable; false negatives would drop graph edges.
+/**
+ * Cheap prefilter for files that might contain real import/export edges or fixture strings that mention them.
+ * False positives are acceptable; false negatives would drop graph edges.
+ *
+ * @param source - raw source text checked for import or from substrings
+ * @returns True when source contains `import` or `from`; false otherwise.
+ */
 function hasImportSyntaxCandidate(source: string): boolean {
   return source.includes("import") || source.includes("from");
 }
@@ -593,9 +671,14 @@ function analyseSource(file: SourceFile, source: string, config: Config, isWithi
 // test-quality...) still applies - a generated file can leak a real credential.
 const GENERATED_SKIPPED_PILLARS = new Set<Pillar>(["documentation", "naming"]);
 
-// Marker-based generated/copied classification over the file's opening lines. Deliberately
-// requires an explicit marker rather than path hints - a `fixtures/` path alone must never change
-// rule behaviour, and `classifyIgnore` in discovery.ts stays the only directory-level exclusion surface.
+/**
+ * Marker-based generated or copied classification over the file's opening lines. Deliberately requires an
+ * explicit marker rather than path hints so a `fixtures/` path alone must never change rule behaviour,
+ * and `classifyIgnore` in discovery.ts stays the only directory-level exclusion surface.
+ *
+ * @param source - file text whose first 10 lines are tested for generated or copied markers
+ * @returns True when any opening line matches a generated or copied header marker; false otherwise.
+ */
 function isGeneratedSource(source: string): boolean {
   return source.split(/\r?\n/, 10).some((line) => /AUTO-?GENERATED|@generated\b|GENERATED FILE|Code generated|Generated by|DO NOT EDIT|Copied from/i.test(line));
 }
@@ -636,8 +719,14 @@ const SCOPED_PROJECT_INDEX_RULE_IDS = [
   "design.large-module-concentration",
 ] as const;
 
-// Return whether options' targets need extra graph context rooted at projectRoot to find cycles through scopedFiles.
-// No scopedFiles, no explicit targets, or a target resolving to projectRoot means no extra scan.
+/**
+ * Determine whether a scoped scan needs extra graph context rooted at projectRoot to find cycles through scopedFiles.
+ *
+ * @param projectRoot - project root directory used to resolve requested target paths
+ * @param options - scan options whose explicit path operands determine if the scan is already root-wide
+ * @param scopedFiles - files discovered for the requested targets
+ * @returns True when scopedFiles and explicit paths are non-empty and none resolve to projectRoot; false otherwise.
+ */
 function shouldBuildRootCircularContext(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[]): boolean {
   if (scopedFiles.length === 0 || options.paths.length === 0) {
     return false;
@@ -663,8 +752,14 @@ function rootCircularImportFindings(projectRoot: string, options: AnalysisOption
   return findings.filter((finding) => circularImportFindingTouchesRequestedFile(finding, requestedFiles));
 }
 
-// Read root-context candidates from files and return retained script snapshots that satisfy config's deep-scan budget.
-// Unreadable or unprocessable candidates are skipped; the primary scoped scan owns requested-file diagnostics.
+/**
+ * Read root-context candidates from files and collect retained script snapshots that satisfy the deep-scan budget.
+ * Unreadable or unprocessable candidates are skipped; the primary scoped scan owns requested-file diagnostics.
+ *
+ * @param files - discovered root-level source candidates to read from disk
+ * @param config - scan configuration supplying deep-scan budget limits
+ * @returns Retained project-index snapshots for readable, within-budget scripts.
+ */
 function graphProjectSources(files: SourceFile[], config: Config): ProjectSource[] {
   const projectSources: ProjectSource[] = [];
   for (const file of files) {
@@ -680,8 +775,14 @@ function graphProjectSources(files: SourceFile[], config: Config): ProjectSource
   return projectSources;
 }
 
-// Returns whether a circular-import finding lists a requested display path among its cycle members.
-// The scope contract falls back to the finding's path for a missing or non-array list. Empty arrays and non-string members never match.
+/**
+ * Check whether a circular-import finding lists a requested display path among its cycle members.
+ * The scope contract falls back to the finding's path for a missing or non-array list; empty arrays and non-string members never match.
+ *
+ * @param finding - circular-import finding whose `metadata.files` or `filePath` is inspected
+ * @param requestedFiles - set of display paths belonging to the scoped request
+ * @returns True when at least one cycle member path is in requestedFiles; false otherwise.
+ */
 function circularImportFindingTouchesRequestedFile(finding: Finding, requestedFiles: Set<string>): boolean {
   const files = Array.isArray(finding.metadata.files) ? finding.metadata.files : [finding.filePath];
   return files.some((file) => typeof file === "string" && requestedFiles.has(file));
@@ -792,7 +893,11 @@ const TYPESCRIPT_RULE_IDS = [
   ...TEST_QUALITY_RULE_IDS,
 ];
 
-// Groups rule ids from the public catalogue once so broad pass gates stay aligned with profiles.
+/**
+ * Group rule ids from the public catalogue once so broad pass gates stay aligned with profiles.
+ *
+ * @returns Read-only map from each pillar to its catalogue rule ids.
+ */
 function ruleIdsByPillar(): ReadonlyMap<Pillar, readonly string[]> {
   const byPillar = new Map<Pillar, string[]>();
   for (const descriptor of ruleDescriptors()) {
@@ -803,12 +908,23 @@ function ruleIdsByPillar(): ReadonlyMap<Pillar, readonly string[]> {
   return byPillar;
 }
 
-// Looks up a precomputed pillar group; missing groups are empty so callers can stay branch-free.
+/**
+ * Look up a precomputed pillar group from the catalogue index; missing groups are empty so callers stay branch-free.
+ *
+ * @param pillar - quality pillar whose registered rule ids are requested
+ * @returns Array of rule ids for pillar, or an empty array when the pillar has none.
+ */
 function ruleIdsForPillar(pillar: Pillar): readonly string[] {
   return RULE_IDS_BY_PILLAR.get(pillar) ?? [];
 }
 
-// Return whether any id in ruleIds is enabled by config, including profile and explicit overrides; an empty group returns false.
+/**
+ * Check whether at least one rule in a group is active under the resolved configuration.
+ *
+ * @param config - scan configuration including profile defaults and explicit rule overrides
+ * @param ruleIds - candidate rule identifiers to test
+ * @returns True when any id in ruleIds is enabled by config; false when none are enabled or ruleIds is empty.
+ */
 function isAnyRuleEnabled(config: Config, ruleIds: readonly string[]): boolean {
   return ruleIds.some((ruleId) => ruleEnabled(config, ruleId));
 }
@@ -859,8 +975,15 @@ function analyseTextRules(file: SourceFile, source: string, comments: CommentRec
   }
 }
 
-// Return the nonblank source line count after masking comments at their recorded spans. Skip any trimmed line that starts with #!.
-// parsed enables masking decorator text. Without it, decorator-only lines count. String text otherwise counts. Empty source returns zero.
+/**
+ * Count nonblank lines after masking recorded comments and, when available, decorators, while skipping `#!` lines.
+ * String text otherwise counts.
+ *
+ * @param source - raw script text to measure
+ * @param comments - recorded comment spans replaced with spaces before counting
+ * @param parsed - optional script parse enabling decorator masking; without it, decorator-only lines count
+ * @returns Count of substantive lines, or 0 for empty source.
+ */
 function substantiveLineCount(source: string, comments: CommentRecord[], parsed?: ParsedScript): number {
   const withoutComments = maskRecordedComments(source, comments);
   // Mask only the decorator spans so code sharing a line with a decorator still counts.
@@ -872,7 +995,13 @@ function substantiveLineCount(source: string, comments: CommentRecord[], parsed?
     .length;
 }
 
-// Replaces comment text with spaces while retaining newlines and UTF-16 offsets from CommentRecord.
+/**
+ * Replace comment text with spaces while retaining newlines and UTF-16 offsets from CommentRecord.
+ *
+ * @param source - original script text
+ * @param comments - ordered comment spans whose non-newline characters are masked
+ * @returns Source text with recorded comments blanked out and line structure preserved.
+ */
 function maskRecordedComments(source: string, comments: CommentRecord[]): string {
   let cursor = 0;
   let masked = "";
@@ -885,13 +1014,24 @@ function maskRecordedComments(source: string, comments: CommentRecord[]): string
   return masked + source.slice(cursor);
 }
 
-// A blank line and a `#!` interpreter line are free; a TypeScript private field such as `#count = 0;` still counts.
+/**
+ * Test whether a line contributes to substantive code length.
+ * A blank line and a `#!` interpreter line are free; a TypeScript private field such as `#count = 0;` still counts.
+ *
+ * @param line - single comment-masked and decorator-masked source line
+ * @returns True when the trimmed line is non-empty and does not start with `#!`; false otherwise.
+ */
 function isSubstantiveLine(line: string): boolean {
   const trimmed = line.trim();
   return trimmed !== "" && !trimmed.startsWith("#!");
 }
 
-// Return the logical line count of source without allocating a split array; empty source is one line and a trailing newline adds one.
+/**
+ * Count logical lines in source without allocating a split array.
+ *
+ * @param source - text whose newline characters are counted
+ * @returns Logical line count, where empty source is 1 and each trailing newline adds 1.
+ */
 function lineCount(source: string): number {
   let count = 1;
   for (let index = 0; index < source.length; index += 1) {
@@ -934,7 +1074,7 @@ function analyseTypeScriptRules(file: SourceFile, source: string, comments: Comm
       }
     }
   });
-  runRulePass(config, "waste.unused-import", () => analyseUnusedImports(file, codeSource, source, findings));
+  runRulePass(config, "waste.unused-import", () => analyseUnusedImports(file, codeSource, source, findings, parsed));
   runRuleGroupPass(config, LINE_RULE_IDS, () => analyseLineRules(file, source, codeSource, config, findings, parsed));
   runRuleGroupPass(config, SECURITY_FLOW_RULE_IDS, () => analyseSecurityFlow(file, source, findings, parsed?.sourceFile));
   runRulePass(config, "waste.unreachable-code", () => analyseUnreachable(file, codeSource, findings));
@@ -953,14 +1093,28 @@ function analyseTypeScriptRules(file: SourceFile, source: string, comments: Comm
   runRulePass(config, "dead-code.unused-private-method", () => analyseDeadCode(file, codeSource, findings));
 }
 
-// Returns nothing. Runs action, the pass for ruleId, only when config enables that rule.
+/**
+ * Gate a single-rule pass on its enablement in config so disabled rules incur no execution cost.
+ *
+ * @param config - resolved scan configuration tested for rule enablement
+ * @param ruleId - identifier of the rule guarded by this pass
+ * @param action - callback executed only when config enables ruleId
+ * @returns Nothing. Invokes action when ruleId is enabled; otherwise does nothing.
+ */
 function runRulePass(config: Config, ruleId: string, action: () => void): void {
   if (ruleEnabled(config, ruleId)) {
     action();
   }
 }
 
-// Returns nothing. Runs action for the group only when config enables at least one of the rules named by ruleIds.
+/**
+ * Gate a multi-rule pass so it runs only when at least one rule in the group is enabled.
+ *
+ * @param config - resolved scan configuration tested against the rule group
+ * @param ruleIds - rule identifiers belonging to the pass
+ * @param action - callback executed only when at least one id in ruleIds is enabled
+ * @returns Nothing. Invokes action if any rule in ruleIds is enabled; otherwise does nothing.
+ */
 function runRuleGroupPass(config: Config, ruleIds: readonly string[], action: () => void): void {
   if (isAnyRuleEnabled(config, ruleIds)) {
     action();
@@ -999,7 +1153,7 @@ function analyseBlocks(file: SourceFile, source: string, codeSource: string, blo
 }
 
 /**
- * The naming contract exempts local bindings, tests and recognized comparator pairs from short-name checks.
+ * The naming contract exempts local bindings, tests, recognized comparator pairs, and `TestContext` `t` parameters from short-name checks.
  * Placeholder checks still cover every parameter.
  *
  * @param context - callable and location to check, configured rules, and destination findings array
@@ -1009,16 +1163,37 @@ function pushParameterNamingFindings(context: BlockRuleContext): void {
   const line = context.block.declarationLine;
   const params = parameterNames(context.block.params);
   const hasLocallyBoundParameters = isLocallyBoundParameterOwner(context.block);
+  const isTestSourceFile = isTestPath(context.file.displayPath);
   for (const parameter of params) {
-    if (!hasLocallyBoundParameters && !isComparatorShortParameter(context, params, parameter.name)) {
+    if (!hasLocallyBoundParameters && !isComparatorShortParameter(context, params, parameter.name) && !isTestContextShortParameter(parameter, isTestSourceFile)) {
       pushShortVariableAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
     }
     pushIdentifierQualityAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
   }
 }
 
-// Return whether block is a test callback or non-exported const/let-bound callable, exempting its parameters from short-name checks.
-// Exported bindings, declarations, methods and unrecognized binding syntax remain covered.
+/**
+ * Recognizes the standard `node:test` context parameter `t` so test helpers are not flagged as too short.
+ * Matches when the parameter is named `t` and either lives in a test file or carries a `TestContext` type annotation.
+ *
+ * @param parameter - parsed parameter name and raw declaration text from the callable signature
+ * @param isTestSourceFile - true when the enclosing file matches `isTestPath`
+ * @returns True when parameter `t` qualifies for the test-context exemption; false for every other parameter.
+ */
+function isTestContextShortParameter(parameter: { name: string; raw: string }, isTestSourceFile: boolean): boolean {
+  if (parameter.name !== "t") {
+    return false;
+  }
+  return isTestSourceFile || /:\s*(?:import\([^)]+\)\.)?(?:[A-Za-z_$][A-Za-z0-9_$]*\.)?TestContext\b/.test(parameter.raw);
+}
+
+/**
+ * Determine whether a callable's parameters are exempt from short-name checks as a test callback or local binding.
+ * Exported bindings, declarations, methods, and unrecognized binding syntax remain covered.
+ *
+ * @param block - parsed function or callback block inspected for test status, export flag, and const/let binding
+ * @returns True when block is a test callback or non-exported const/let-bound callable; false otherwise.
+ */
 function isLocallyBoundParameterOwner(block: FunctionBlock): boolean {
   if (block.isTest) {
     return true;
@@ -1034,8 +1209,15 @@ function isLocallyBoundParameterOwner(block: FunctionBlock): boolean {
   return bindingName === block.name;
 }
 
-// Return whether parameter name may use the conventional comparator exemption for the callable in context.
-// params must contain exactly a then b, and the callable's name or body must match comparator heuristics.
+/**
+ * Check whether a parameter name qualifies for the conventional comparator exemption for the callable in context.
+ * params must contain exactly `a` then `b`, and the callable's name or body must match comparator heuristics.
+ *
+ * @param context - callable block rule context supplying the enclosing callable's name and body
+ * @param params - ordered parameter descriptors parsed from the callable signature
+ * @param name - parameter name being evaluated for exemption
+ * @returns True when name is `a` or `b` in an `(a, b)` comparator callable; false otherwise.
+ */
 function isComparatorShortParameter(context: BlockRuleContext, params: Array<{ name: string; raw: string }>, name: string): boolean {
   const names = params.map((parameter) => parameter.name);
   if (names.length !== 2 || names[0] !== "a" || names[1] !== "b" || (name !== "a" && name !== "b")) {
@@ -1044,8 +1226,14 @@ function isComparatorShortParameter(context: BlockRuleContext, params: Array<{ n
   return isComparatorCallable(context.block.name, context.block.codeBody);
 }
 
-// Return whether the callable name or codeBody matches comparator heuristics used to permit conventional short parameters.
-// A dotted localeCompare matches with or without whitespace before the opening parenthesis, regardless of receiver or arguments.
+/**
+ * Test whether a callable's name or body matches comparator heuristics permitting conventional `(a, b)` parameters.
+ * A dotted localeCompare matches with or without whitespace before the opening parenthesis, regardless of receiver or arguments.
+ *
+ * @param name - callable identifier tested against compare/Comparator/by naming prefixes
+ * @param codeBody - comment-masked callable body tested for localeCompare or subtraction/comparison returns
+ * @returns True when name or codeBody matches comparator heuristics; false otherwise.
+ */
 function isComparatorCallable(name: string, codeBody: string): boolean {
   return (
     /^(?:compare[A-Z0-9_]?|.*Comparator$|by[A-Z])/.test(name) ||

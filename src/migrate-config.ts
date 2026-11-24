@@ -1,11 +1,15 @@
 /*
  * Updates a 0.5 project config for 0.6 when the user runs `migrate-config`.
  *
- * Moves per-command exit gates to `failOn` and drops the obsolete secret preview setting.
- * YAML keeps surrounding comments and settings. JSON is rewritten as a document when a change is needed.
+ * Moves per-command exit gates to `failOn`, drops obsolete secret previews, prunes retired 0.5
+ * rules, allowlist keys, and sensitive exclusions, pins `schemaVersion`, and validates the result
+ * through the 0.6 loader before returning. YAML keeps surrounding comments and settings; JSON is
+ * rewritten as a document when a change is needed.
  */
+import { validateParsedConfig } from "./config.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
-import { objectValue, parseYamlConfig, SUGGEST_EDIT_CONFIG } from "./config-parse.ts";
+import { arrayValue, isString, objectValue, parseYamlConfig, SUGGEST_EDIT_CONFIG } from "./config-parse.ts";
+import { isKnownRuleId } from "./profiles.ts";
 
 // The one schema version this build reads; a migrated file that named another would be refused on the next run.
 const SCHEMA_VERSION = "gruff-ts.config.v0.1";
@@ -32,13 +36,79 @@ const REMOVED_ALLOWLIST_KEY = "secretPreviews";
 // The per-command exit gate's former spelling; as a scalar the same key is the 0.6 display floor and stays put.
 const RENAMED_GATE_KEY = "minimumSeverity";
 
+// The seven allowlist keys read only by retired 0.5 rules (UPGRADING.md item 24); removed during migration while real typos stay rejected.
+const RETIRED_ALLOWLIST_KEYS: ReadonlySet<string> = new Set([
+  "acceptedBooleanNames",
+  "acceptedCasingPairs",
+  "bannedGenericNames",
+  "booleanPrefixes",
+  "hungarianPrefixes",
+  "knownAcronyms",
+  "negativeBooleanAllowed",
+]);
+
+// The 40 rules retired in 0.6.0 under ADR-021 (UPGRADING.md items 21, 24, and 26). Only known retired ids are
+// pruned automatically so genuine typos in `rules:` or `sensitiveExclusions:` still fail validation loudly.
+const RETIRED_0_5_RULE_IDS: ReadonlySet<string> = new Set([
+  "complexity.cognitive",
+  "design.deep-relative-import",
+  "docs.magic-threshold-without-rationale",
+  "docs.stale-comment",
+  "docs.useless-docblock",
+  "modernisation.loose-equality",
+  "modernisation.nullish-coalescing-candidate",
+  "modernisation.object-spread-candidate",
+  "modernisation.optional-chaining-candidate",
+  "modernisation.public-property",
+  "naming.acronym-case",
+  "naming.boolean-prefix",
+  "naming.generic-function",
+  "naming.generic-parameter",
+  "naming.hungarian-notation",
+  "naming.inconsistent-casing",
+  "naming.negative-boolean",
+  "security.floating-promise",
+  "security.github-actions-broad-permissions",
+  "security.insecure-random",
+  "security.process-exec",
+  "security.proto-access",
+  "security.risky-lifecycle-script",
+  "sensitive-data.hardcoded-env-value",
+  "sensitive-data.high-entropy-string",
+  "test-quality.conditional-logic",
+  "test-quality.exception-type-only",
+  "test-quality.magic-number-assertion",
+  "test-quality.mock-only-test",
+  "test-quality.no-assertions",
+  "test-quality.no-throw-only-test",
+  "test-quality.only-skip",
+  "test-quality.sleep-in-test",
+  "test-quality.snapshot-only-test",
+  "waste.commented-out-code",
+  "waste.console-log",
+  "waste.empty-function",
+  "waste.redundant-boolean-cast",
+  "waste.redundant-variable",
+  "waste.unused-parameter",
+]);
+
+/** Active top-level YAML block tracked while scanning lines so pruning only touches matching child sections. */
+interface ActiveYamlSection {
+  name: "allowlists" | "rules" | "sensitiveExclusions";
+  childIndent: number;
+  headerMigratedIndex: number;
+  keptEntryCount: number;
+  removedEntryCount: number;
+}
+
 /**
  * Converts legacy settings for `migrate-config` and returns the changes the CLI can show during a dry run.
+ * Validates the migrated result against the 0.6 loader before returning so broken output is never written.
  *
  * @param original - the whole config file. Empty YAML has no settings yet, while empty JSON is invalid.
  * @param format - syntax selected by the config file's extension. An omitted format uses YAML.
  * @returns the destination text and one entry per rewrite. An empty change list means the settings were current.
- * @throws {ConfigLoadError} when the input cannot be parsed or contains conflicting migration keys.
+ * @throws {ConfigLoadError} when the input cannot be parsed, contains conflicting migration keys, or fails 0.6 validation after migration.
  */
 export function migrateConfigText(original: string, format: "yaml" | "json" = "yaml"): ConfigMigration {
   // An editor may add a byte-order mark. Strip it before parsing the selected file format.
@@ -46,33 +116,35 @@ export function migrateConfigText(original: string, format: "yaml" | "json" = "y
   return format === "json" ? migrateJsonConfig(source) : migrateYamlConfig(source, original);
 }
 
-// Rewrites only the YAML lines the loader identified as legacy keys, preserving user comments and other settings.
-// @throws {ConfigLoadError} when the input has conflicting keys or the revised text still carries a legacy key.
+/**
+ * Rewrites legacy YAML lines in place while preserving user comments and unaffected settings, then validates through the 0.6 loader.
+ *
+ * @param source - BOM-stripped YAML config text
+ * @param original - untouched original text returned verbatim when zero rewrites apply
+ * @returns Migrated YAML text and ordered change descriptions.
+ * @throws {ConfigLoadError} when the input has conflicting keys, flow-style legacy keys survive, or 0.6 validation rejects the result.
+ */
 function migrateYamlConfig(source: string, original: string): ConfigMigration {
   const shouldRenameGate = hasLegacyCommandGate(parseYamlConfig(source));
   const lines = source.split(/\r?\n/u);
   const rootIndent = leadingSpaces(lines[nextContentLine(lines, 0)] ?? "");
   const changes: ConfigMigrationChange[] = [];
   const migrated: string[] = [];
-  // Until the scan enters an allowlists block, no line can be one of its settings.
-  let allowlistEntryIndent: number | undefined;
+  let activeSection: ActiveYamlSection | undefined;
   let index = 0;
 
-  // Rewrite settings in place within the text so users can compare the two YAML files line by line.
   while (index < lines.length) {
     const line = lines[index] ?? "";
     const indent = leadingSpaces(line);
     const isRootKey = indent === rootIndent && line.trim().length > 0 && !line.trimStart().startsWith("#");
-    // A new top-level setting ends the previous block. Blank lines and comments keep the current block open.
     if (isRootKey) {
-      allowlistEntryIndent = allowlistChildIndent(lines, index);
+      finalizeEmptiedYamlSection(activeSection, migrated);
+      activeSection = enterYamlSection(lines, index, migrated.length);
     }
-    const removedLineCount = indent === allowlistEntryIndent ? skippedBlockLength(lines, index) : 0;
 
-    // The retired preview setting and its indented list go together so the user gets a readable config.
-    if (removedLineCount > 0) {
-      changes.push({ line: index + 1, description: `allowlists.${REMOVED_ALLOWLIST_KEY} removed; FAMILY-CONTRACT.md section 5 makes category markers unconditional` });
-      index += removedLineCount;
+    const skipped = activeSection ? tryPruneYamlSectionEntry(activeSection, lines, index, changes) : 0;
+    if (skipped > 0) {
+      index += skipped;
       continue;
     }
 
@@ -80,7 +152,6 @@ function migrateYamlConfig(source: string, original: string): ConfigMigration {
       ? line.replace(/^(\s*)(?:minimumSeverity|"minimumSeverity"|'minimumSeverity')(\s*:)/u, "$1failOn$2")
       : line;
 
-    // A per-command map under the old key is the exit gate, which now has its own name.
     if (renamed !== line) {
       changes.push({ line: index + 1, description: `${RENAMED_GATE_KEY}: renamed to failOn:, which is the key that gates the exit code in 0.6` });
       migrated.push(renamed);
@@ -92,53 +163,310 @@ function migrateYamlConfig(source: string, original: string): ConfigMigration {
     index += 1;
   }
 
+  finalizeEmptiedYamlSection(activeSection, migrated);
   const result = withSchemaVersion(migrated, changes, original, rootIndent);
   const updated = parseYamlConfig(result.text);
-  // For example, a YAML key written in flow style can survive a line edit. Stop before emitting unusable settings.
+  // A YAML key written in flow style can survive line-level removal. Stop before emitting unusable settings.
   if (objectValue(updated.minimumSeverity) !== undefined || Object.hasOwn(objectValue(updated.allowlists) ?? {}, REMOVED_ALLOWLIST_KEY)) {
     throw new ConfigLoadError("The legacy gate or allowlist could not be migrated safely.", SUGGEST_EDIT_CONFIG);
   }
+  validateParsedConfig(updated);
   return result;
 }
 
-// Migrates JSON as a mapping. Its schema version and gate must be readable by the config loader.
-// The change list uses line 1 for whole-document rewrites.
-// @throws {ConfigLoadError} when the input is malformed or the legacy gate conflicts with an existing gate.
+const EMPTIED_SECTION_HEADER = /^(\s*["']?(?:allowlists|rules|sensitiveExclusions)["']?\s*:)(\s*(?:#.*)?)$/u;
+
+/**
+ * Rewrites an emptied `sensitiveExclusions:`, `allowlists:`, or `rules:` YAML header to `[]` or `{}` so the migrated YAML stays valid.
+ *
+ * @param section - section state closing at a new root key or end-of-file
+ * @param migrated - mutable migrated lines array whose header line may be updated
+ * @returns Nothing. Updates `migrated[section.headerMigratedIndex]` only when every entry in `section` was pruned.
+ */
+function finalizeEmptiedYamlSection(section: ActiveYamlSection | undefined, migrated: string[]): void {
+  if (!section || section.removedEntryCount === 0 || section.keptEntryCount > 0) {
+    return;
+  }
+  const headerLine = migrated[section.headerMigratedIndex];
+  if (headerLine !== undefined) {
+    const emptyLiteral = section.name === "sensitiveExclusions" ? "[]" : "{}";
+    migrated[section.headerMigratedIndex] = headerLine.replace(EMPTIED_SECTION_HEADER, `$1 ${emptyLiteral}$2`);
+  }
+}
+
+/**
+ * Identifies whether a root YAML key opens a migratable block (`allowlists`, `rules`, or `sensitiveExclusions`) and records its child indentation.
+ *
+ * @param lines - split YAML source lines
+ * @param index - current root key line index
+ * @param headerMigratedIndex - index where this header line will be written in `migrated`
+ * @returns Active section tracker when the root key has indented children, or undefined otherwise.
+ */
+function enterYamlSection(lines: string[], index: number, headerMigratedIndex: number): ActiveYamlSection | undefined {
+  const header = lines[index] ?? "";
+  const match = header.match(/^\s*(?:(allowlists|rules|sensitiveExclusions)|"(allowlists|rules|sensitiveExclusions)"|'(allowlists|rules|sensitiveExclusions)')\s*:\s*(?:#.*)?$/u);
+  const sectionName = (match?.[1] ?? match?.[2] ?? match?.[3]) as ActiveYamlSection["name"] | undefined;
+  if (!sectionName) {
+    return undefined;
+  }
+  const childLineIndex = nextContentLine(lines, index + 1);
+  const childIndent = leadingSpaces(lines[childLineIndex] ?? "");
+  if (childIndent <= leadingSpaces(header)) {
+    return undefined;
+  }
+  return { name: sectionName, childIndent, headerMigratedIndex, keptEntryCount: 0, removedEntryCount: 0 };
+}
+
+/**
+ * Attempts to prune one retired entry at `index` inside the active YAML section (`allowlists`, `rules`, or `sensitiveExclusions`).
+ * Tracks kept vs removed entries so an emptied section header can be rewritten to `[]` or `{}`.
+ *
+ * @param section - active YAML section metadata, mutated with kept/removed counts
+ * @param lines - full YAML lines array
+ * @param index - current line index
+ * @param changes - migration change log appended when an entry is pruned
+ * @returns Number of lines skipped (0 when the line is kept).
+ */
+function tryPruneYamlSectionEntry(section: ActiveYamlSection, lines: string[], index: number, changes: ConfigMigrationChange[]): number {
+  const line = lines[index] ?? "";
+  const trimmed = line.trim();
+  if (trimmed.length === 0 || trimmed.startsWith("#") || leadingSpaces(line) !== section.childIndent) {
+    return 0;
+  }
+  if (section.name === "allowlists") {
+    return pruneYamlAllowlistEntry(section, lines, index, changes);
+  }
+  if (section.name === "rules") {
+    return pruneYamlRuleEntry(section, lines, index, changes);
+  }
+  return pruneYamlSensitiveExclusionEntry(section, lines, index, changes);
+}
+
+/**
+ * Drops `secretPreviews` or any retired 0.5 allowlist key and its indented children inside `allowlists:`.
+ *
+ * @param section - active `allowlists` tracker updated with kept/removed counts
+ * @param lines - full YAML lines array
+ * @param index - line index of one key inside `allowlists:`
+ * @param changes - migration change log appended on removal
+ * @returns Count of lines to skip, or 0 when the allowlist key is current.
+ */
+function pruneYamlAllowlistEntry(section: ActiveYamlSection, lines: string[], index: number, changes: ConfigMigrationChange[]): number {
+  const key = yamlMappingKey(lines[index] ?? "");
+  if (!key) {
+    return 0;
+  }
+  if (key === REMOVED_ALLOWLIST_KEY) {
+    section.removedEntryCount += 1;
+    changes.push({ line: index + 1, description: `allowlists.${REMOVED_ALLOWLIST_KEY} removed; FAMILY-CONTRACT.md section 5 makes category markers unconditional` });
+    return indentedBlockLength(lines, index);
+  }
+  if (RETIRED_ALLOWLIST_KEYS.has(key)) {
+    section.removedEntryCount += 1;
+    changes.push({ line: index + 1, description: `allowlists.${key} removed; only read by rules retired in 0.6.0` });
+    return indentedBlockLength(lines, index);
+  }
+  section.keptEntryCount += 1;
+  return 0;
+}
+
+/**
+ * Drops a retired 0.5 rule block and its indented settings inside `rules:`.
+ *
+ * @param section - active `rules` tracker updated with kept/removed counts
+ * @param lines - full YAML lines array
+ * @param index - line index of one rule key inside `rules:`
+ * @param changes - migration change log appended on removal
+ * @returns Count of lines to skip, or 0 when the rule key is active or unrecognized (left for loader validation).
+ */
+function pruneYamlRuleEntry(section: ActiveYamlSection, lines: string[], index: number, changes: ConfigMigrationChange[]): number {
+  const ruleId = yamlMappingKey(lines[index] ?? "");
+  if (!ruleId) {
+    return 0;
+  }
+  if (!isRetiredRuleId(ruleId)) {
+    section.keptEntryCount += 1;
+    return 0;
+  }
+  section.removedEntryCount += 1;
+  changes.push({ line: index + 1, description: `rules.${ruleId} removed; rule retired in 0.6.0` });
+  return indentedBlockLength(lines, index);
+}
+
+/**
+ * Drops a YAML sequence entry under `sensitiveExclusions:` when its `rule:` names a rule retired in 0.6.0.
+ *
+ * @param section - active `sensitiveExclusions` tracker updated with kept/removed counts
+ * @param lines - full YAML lines array
+ * @param index - line index of one `- ...` sequence item
+ * @param changes - migration change log appended on removal
+ * @returns Count of lines to skip, or 0 when the entry stays.
+ */
+function pruneYamlSensitiveExclusionEntry(section: ActiveYamlSection, lines: string[], index: number, changes: ConfigMigrationChange[]): number {
+  const line = lines[index] ?? "";
+  if (!/^\s*-\s*/u.test(line)) {
+    return 0;
+  }
+  const length = yamlSequenceItemLength(lines, index);
+  const itemLines = lines.slice(index, index + length);
+  const ruleId = yamlSequenceItemRuleId(itemLines);
+  if (ruleId && isRetiredRuleId(ruleId)) {
+    section.removedEntryCount += 1;
+    changes.push({ line: index + 1, description: `sensitiveExclusions entry for ${ruleId} removed; rule retired in 0.6.0` });
+    return length;
+  }
+  section.keptEntryCount += 1;
+  return 0;
+}
+
+/**
+ * Extracts an unquoted or quoted YAML mapping key from one indented key line.
+ *
+ * @param line - single YAML line expected to start with a mapping key and colon
+ * @returns Unquoted key string, or undefined when the line is not a mapping key.
+ */
+function yamlMappingKey(line: string): string | undefined {
+  const match = line.match(/^\s+(?:"([^"]+)"|'([^']+)'|([^:#\s][^:]*?))\s*:/u);
+  const key = match?.[1] ?? match?.[2] ?? match?.[3];
+  return key?.trim();
+}
+
+/**
+ * Extracts the `rule:` scalar from a single YAML `sensitiveExclusions:` sequence item's lines.
+ *
+ * @param itemLines - lines spanning one `- ...` item inside `sensitiveExclusions:`
+ * @returns Trimmed rule id string, or undefined when no `rule:` field is present.
+ */
+function yamlSequenceItemRuleId(itemLines: readonly string[]): string | undefined {
+  for (const itemLine of itemLines) {
+    const match = itemLine.match(/^\s*(?:-\s+)?(?:rule|"rule"|'rule')\s*:\s*(?:"([^"]+)"|'([^']+)'|([^#\s]+))/u);
+    const ruleId = match?.[1] ?? match?.[2] ?? match?.[3];
+    if (ruleId) {
+      return ruleId.trim();
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Reports whether `ruleId` is a known retired 0.5 rule that is no longer part of the 0.6.0 rule catalogue.
+ *
+ * @param ruleId - candidate rule identifier from a 0.5 configuration
+ * @returns True when `ruleId` is retired and absent from the live catalogue; false otherwise.
+ */
+function isRetiredRuleId(ruleId: string): boolean {
+  return RETIRED_0_5_RULE_IDS.has(ruleId) && !isKnownRuleId(ruleId);
+}
+
+/**
+ * Migrates JSON config as a mapping, pruning retired allowlists, rules, and sensitive exclusions, then validates the stable schema contract.
+ *
+ * @param source - BOM-stripped JSON config text
+ * @returns Migrated JSON text and change descriptions (using line 1 for whole-document rewrites).
+ * @throws {ConfigLoadError} when the input is malformed, keys conflict, or 0.6 validation rejects the result.
+ */
 function migrateJsonConfig(source: string): ConfigMigration {
   let parsed: Record<string, unknown> | undefined;
   try {
     parsed = objectValue(JSON.parse(source));
   } catch {
-    // A user may select a JSON file with a trailing comma copied from JavaScript.
     throw new ConfigLoadError("The migration input is not valid JSON.", SUGGEST_EDIT_CONFIG);
   }
-  // The config must name settings. A JSON null or array supplies no mapping to migrate.
   if (!parsed) {
     throw new ConfigLoadError("The migration input must be a JSON object.", SUGGEST_EDIT_CONFIG);
   }
   const changes: ConfigMigrationChange[] = [];
-  // Carry over per-command gates. A scalar minimumSeverity still represents a display floor.
   if (hasLegacyCommandGate(parsed)) {
     parsed.failOn = parsed.minimumSeverity;
     delete parsed.minimumSeverity;
     changes.push({ line: 1, description: "Renamed the per-command minimumSeverity mapping to failOn" });
   }
-  const allowlists = objectValue(parsed.allowlists);
-  // Files with no allowlists or no legacy preview entry have nothing to remove.
-  if (allowlists && Object.hasOwn(allowlists, REMOVED_ALLOWLIST_KEY)) {
-    delete allowlists[REMOVED_ALLOWLIST_KEY];
-    changes.push({ line: 1, description: `Removed allowlists.${REMOVED_ALLOWLIST_KEY}` });
-  }
-  // A missing or older version needs the current version before the user can select the migrated file.
+  pruneJsonAllowlists(parsed, changes);
+  pruneJsonRules(parsed, changes);
+  pruneJsonSensitiveExclusions(parsed, changes);
   if (parsed.schemaVersion !== SCHEMA_VERSION) {
     parsed.schemaVersion = SCHEMA_VERSION;
     changes.push({ line: 1, description: `Set schemaVersion to ${SCHEMA_VERSION}` });
   }
+  validateParsedConfig(parsed);
   return { changes, text: changes.length > 0 ? `${JSON.stringify(parsed, null, 2)}\n` : source };
 }
 
-// Tells migration whether the user set per-command gates under the old minimumSeverity key.
-// @throws {ConfigLoadError} if the two gate spellings conflict.
+/**
+ * Removes `secretPreviews` and retired 0.5 allowlist keys from a parsed JSON config object in place.
+ *
+ * @param parsed - mutable JSON config mapping
+ * @param changes - change log appended with one entry per removed allowlist key
+ * @returns Nothing. Mutates `parsed.allowlists` and `changes` in place.
+ */
+function pruneJsonAllowlists(parsed: Record<string, unknown>, changes: ConfigMigrationChange[]): void {
+  const allowlists = objectValue(parsed.allowlists);
+  if (!allowlists) {
+    return;
+  }
+  if (Object.hasOwn(allowlists, REMOVED_ALLOWLIST_KEY)) {
+    delete allowlists[REMOVED_ALLOWLIST_KEY];
+    changes.push({ line: 1, description: `Removed allowlists.${REMOVED_ALLOWLIST_KEY}` });
+  }
+  for (const key of Object.keys(allowlists)) {
+    if (RETIRED_ALLOWLIST_KEYS.has(key)) {
+      delete allowlists[key];
+      changes.push({ line: 1, description: `Removed allowlists.${key}; only read by rules retired in 0.6.0` });
+    }
+  }
+}
+
+/**
+ * Removes retired 0.5 rule entries from a parsed JSON config's `rules` mapping in place.
+ *
+ * @param parsed - mutable JSON config mapping
+ * @param changes - change log appended with one entry per removed rule id
+ * @returns Nothing. Mutates `parsed.rules` and `changes` in place.
+ */
+function pruneJsonRules(parsed: Record<string, unknown>, changes: ConfigMigrationChange[]): void {
+  const rules = objectValue(parsed.rules);
+  if (!rules) {
+    return;
+  }
+  for (const ruleId of Object.keys(rules)) {
+    if (isRetiredRuleId(ruleId)) {
+      delete rules[ruleId];
+      changes.push({ line: 1, description: `Removed rules.${ruleId}; rule retired in 0.6.0` });
+    }
+  }
+}
+
+/**
+ * Removes `sensitiveExclusions` items targeting retired 0.5 rules from a parsed JSON config in place.
+ *
+ * @param parsed - mutable JSON config mapping
+ * @param changes - change log appended with one entry per removed exclusion
+ * @returns Nothing. Mutates `parsed.sensitiveExclusions` and `changes` in place.
+ */
+function pruneJsonSensitiveExclusions(parsed: Record<string, unknown>, changes: ConfigMigrationChange[]): void {
+  if (!Array.isArray(parsed.sensitiveExclusions)) {
+    return;
+  }
+  const kept: unknown[] = [];
+  for (const entry of arrayValue(parsed.sensitiveExclusions)) {
+    const record = objectValue(entry);
+    const ruleId = isString(record?.rule) ? record.rule.trim() : undefined;
+    if (ruleId && isRetiredRuleId(ruleId)) {
+      changes.push({ line: 1, description: `Removed sensitiveExclusions entry for ${ruleId}; rule retired in 0.6.0` });
+      continue;
+    }
+    kept.push(entry);
+  }
+  parsed.sensitiveExclusions = kept;
+}
+
+/**
+ * Tells migration whether the user set per-command gates under the old minimumSeverity key.
+ *
+ * @param parsed - parsed configuration object to inspect for legacy gate settings
+ * @returns True when `minimumSeverity` defines command threshold overrides; false otherwise.
+ * @throws {ConfigLoadError} if the two gate spellings conflict.
+ */
 function hasLegacyCommandGate(parsed: Record<string, unknown>): boolean {
   const hasCommandThresholds = objectValue(parsed.minimumSeverity) !== undefined;
   // A user who started upgrading by hand needs to reconcile both gate settings before continuing.
@@ -148,39 +476,17 @@ function hasLegacyCommandGate(parsed: Record<string, unknown>): boolean {
   return hasCommandThresholds;
 }
 
-// Finds the indentation of allowlists entries so migration can remove the retired setting within that block.
-// Returns undefined when the current line starts another setting or the allowlists block has no children.
-function allowlistChildIndent(lines: string[], index: number): number | undefined {
-  const header = lines[index] ?? "";
-  // Keep the user's other top-level settings outside the removal scope.
-  if (!/^\s*(?:allowlists|"allowlists"|'allowlists')\s*:\s*(?:#.*)?$/u.test(header)) {
-    return undefined;
-  }
-  const childIndent = leadingSpaces(lines[nextContentLine(lines, index + 1)] ?? "");
-  return childIndent > leadingSpaces(header) ? childIndent : undefined;
-}
-
 /**
- * Counts the preview setting's YAML lines so migration can remove the full block.
+ * Counts how many lines belong to an indented YAML mapping entry (its header line plus all deeper child lines).
  *
- * @param lines - the whole file, split on newlines
- * @param index - the line being considered
- * @returns the number of lines to drop, or zero when the user's current line should be kept
+ * @param lines - full YAML lines array
+ * @param index - line index of the mapping entry header
+ * @returns Number of lines covered by the entry (>= 1).
  */
-function skippedBlockLength(lines: string[], index: number): number {
-  const line = lines[index] ?? "";
-  const match = /^\s+(?:secretPreviews|"secretPreviews"|'secretPreviews')\s*:/u.test(line);
-
-  // A different setting in the user's allowlists block stays in the file.
-  if (!match) {
-    return 0;
-  }
-
-  const indent = leadingSpaces(line);
+function indentedBlockLength(lines: string[], index: number): number {
+  const indent = leadingSpaces(lines[index] ?? "");
   let end = index + 1;
-  // Include every nested preview entry, such as items a user listed on separate lines.
   for (let child = nextContentLine(lines, end); child < lines.length; child = nextContentLine(lines, end)) {
-    // The next sibling setting belongs to the user and must survive the removal.
     if (leadingSpaces(lines[child] ?? "") <= indent) {
       break;
     }
@@ -189,8 +495,34 @@ function skippedBlockLength(lines: string[], index: number): number {
   return end - index;
 }
 
-// Finds the next YAML setting or value that affects which block migration may edit.
-// Returns the line count when no settings remain after the starting position.
+/**
+ * Counts how many lines belong to one YAML sequence item starting with `- ` at `index`, stopping before the next sibling item or dedent.
+ *
+ * @param lines - full YAML lines array
+ * @param index - line index of the `- ` sequence item opener
+ * @returns Number of lines covered by the sequence item (>= 1).
+ */
+function yamlSequenceItemLength(lines: string[], index: number): number {
+  const indent = leadingSpaces(lines[index] ?? "");
+  let end = index + 1;
+  for (let child = nextContentLine(lines, end); child < lines.length; child = nextContentLine(lines, end)) {
+    const childLine = lines[child] ?? "";
+    const childIndent = leadingSpaces(childLine);
+    if (childIndent < indent || (childIndent === indent && /^\s*-\s*/u.test(childLine))) {
+      break;
+    }
+    end = child + 1;
+  }
+  return end - index;
+}
+
+/**
+ * Finds the next YAML setting or value that affects which block migration may edit.
+ *
+ * @param lines - YAML file lines to scan forward through
+ * @param index - starting line index for the forward scan
+ * @returns Index of the next non-empty, non-comment line, or `lines.length` when no settings remain.
+ */
 function nextContentLine(lines: string[], index: number): number {
   // Comments and blank lines can sit inside a block without changing which setting owns it.
   while (index < lines.length) {
@@ -204,7 +536,12 @@ function nextContentLine(lines: string[], index: number): number {
   return index;
 }
 
-// Counts the indentation before a YAML key or sequence item.
+/**
+ * Counts the indentation before a YAML key or sequence item.
+ *
+ * @param line - single YAML line whose leading indentation is measured
+ * @returns Count of leading whitespace characters before the trimmed line content.
+ */
 function leadingSpaces(line: string): number {
   return line.length - line.trimStart().length;
 }

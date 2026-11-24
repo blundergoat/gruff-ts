@@ -62,17 +62,24 @@ export interface DeclarationPositionResolver {
 /** Raised when a finding cannot be given a durable name, so the run reports a baseline failure instead of guessing. */
 export class BaselineIdentityError extends Error {}
 
-/*
- * Returns false for findings in the sensitive-data pillar or with a rule ID starting with sensitive-data followed by a dot.
- * Stable contract: those findings receive no baseline identity, so a stored review cannot suppress them.
+/**
+ * Check baseline eligibility. Stable contract: sensitive findings receive no baseline identity, so a stored review cannot suppress them.
  * A matching sensitiveExclusions entry with a written reason can remove a finding before baseline application.
+ *
+ * @param finding - finding whose pillar and rule ID are checked against sensitive-data
+ * @returns False for findings in the sensitive-data pillar or with a rule ID starting with sensitive-data followed by a dot; otherwise true.
  */
 export function isBaselineEligible(finding: Finding): boolean {
   return finding.pillar !== SENSITIVE_PILLAR && !finding.ruleId.startsWith(`${SENSITIVE_PILLAR}.`);
 }
 
-// Returns the finding message with numeric sequences, including digits joined by periods or commas, replaced by #.
-// This keeps a symbol-less finding's subject stable as measurements change. Changes to the surrounding text still affect the subject.
+/**
+ * Normalise numeric sequences in a finding message to keep a symbol-less finding's subject stable as measurements change.
+ * Changes to the surrounding text still affect the subject.
+ *
+ * @param message - finding message text whose numeric sequences are replaced
+ * @returns The message with numeric sequences, including digits joined by periods or commas, replaced by #.
+ */
 export function normaliseMeasuredValues(message: string): string {
   return message.replace(MEASURED_VALUE_PATTERN, MEASURED_VALUE_PLACEHOLDER);
 }
@@ -102,8 +109,16 @@ export function baselineSubject(finding: Finding, ordinal: number): string | und
   return `${symbol}${ORDINAL_SEPARATOR}${ordinal}`;
 }
 
-// Returns the stable 16-character baseline digest for the writer language, finding rule ID, file path, and identity subject.
-// The explicit language lets conformance tests compare the calculation with pinned identities for other ports.
+/**
+ * Compute the stable 16-character baseline digest for a finding identity.
+ * The explicit language lets conformance tests compare the calculation with pinned identities for other ports.
+ *
+ * @param toolLanguage - writer language token included in the hash input
+ * @param ruleId - finding rule identifier included in the digest input
+ * @param path - finding file path included in the digest input
+ * @param subject - finding identity subject included in the digest input
+ * @returns The 16-character lowercase hex prefix of the SHA-256 digest over the null-joined inputs.
+ */
 export function computeIdentityFor(toolLanguage: string, ruleId: string, path: string, subject: string): string {
   return createHash("sha256").update([toolLanguage, ruleId, path, subject].join("\0")).digest("hex").slice(0, 16);
 }
@@ -173,27 +188,48 @@ function symbolOrdinals(findings: Finding[], declarationPosition: DeclarationPos
   });
 }
 
-// Returns a stable collision key for the current finding. A named finding uses the supplied resolver's declaration position.
-// Findings without an eligible symbol share a file-level key so repeated measurements can be matched by count.
-// Distinct keys under the same baseline identity mark a collision.
+/**
+ * Build a stable collision key for the current finding, where distinct keys under the same baseline identity mark a collision.
+ * Findings without an eligible symbol share a file-level key so repeated measurements can be matched by count.
+ *
+ * @param finding - finding whose symbol eligibility and position determine the collision key
+ * @param declarationPosition - resolver returning the declaration position for a named finding
+ * @returns The file-level key for findings without an eligible symbol, or a declaration key using the resolved position.
+ */
 function declarationKey(finding: Finding, declarationPosition: DeclarationPositionResolver): string {
   return namedSymbol(finding) === undefined ? "declaration:file" : `declaration:${declarationPosition(finding)}`;
 }
 
-// Returns the stable collision key for a finding reusing its baseline identity.
-// A finding without an eligible symbol uses the file-level key. A named finding uses its stored subject to preserve grouping.
+/**
+ * Build the stable collision key for a finding reusing its baseline identity to preserve grouping.
+ *
+ * @param finding - finding checked for an eligible symbol
+ * @param subject - stored baseline subject used in the key for a named finding
+ * @returns The file-level key when there is no eligible symbol, or a subject-scoped declaration key for a named finding.
+ */
 function storedDeclarationKey(finding: Finding, subject: string): string {
   return namedSymbol(finding) === undefined ? "declaration:file" : `declaration:subject:${subject}`;
 }
 
-// Returns the symbol used for stable declaration grouping. A missing or empty symbol returns undefined and receives no declaration rank.
-// Findings ineligible for baseline matching also return undefined, even when they carry a symbol.
+/**
+ * Extract the symbol used for stable declaration grouping, excluding findings ineligible for baseline matching.
+ *
+ * @param finding - finding checked for baseline eligibility and a non-empty symbol
+ * @returns The non-empty symbol, or undefined when missing, empty, or ineligible (even when carrying a symbol) so it gets no rank.
+ */
 function namedSymbol(finding: Finding): string | undefined {
   if (!isBaselineEligible(finding)) {
     return undefined;
   }
   return finding.symbol && finding.symbol.length > 0 ? finding.symbol : undefined;
 }
+
+// Rules whose finding line anchors on a leading comment or tag above the callable declaration rather than inside its body span.
+const DOCBLOCK_COMMENT_ANCHORED_RULES = new Set([
+  "docs.missing-param-tag",
+  "docs.missing-return-tag",
+  "docs.stale-param-tag",
+]);
 
 /**
  * Build a stable position resolver so moving a finding within a matched declaration preserves its position for ranking.
@@ -216,7 +252,15 @@ export function declarationPositionFromSpans(spansByFile: Map<string, Declaratio
       return line;
     }
     const wanted = symbol.split(".").at(-1) ?? symbol;
-    const enclosing = (spansByFile.get(finding.filePath) ?? []).find((span) => span.name === wanted && span.startLine <= line && line <= span.endLine);
+    const fileSpans = spansByFile.get(finding.filePath) ?? [];
+    // Docblock findings anchor on the leading comment above the declaration, so map them to the nearest same-named span at or after that line.
+    if (DOCBLOCK_COMMENT_ANCHORED_RULES.has(finding.ruleId)) {
+      const following = nearestSpanAtOrAfterLine(fileSpans, wanted, line);
+      if (following !== undefined) {
+        return following.startLine;
+      }
+    }
+    const enclosing = fileSpans.find((span) => span.name === wanted && span.startLine <= line && line <= span.endLine);
     return enclosing?.startLine ?? line;
   };
   resolver.sameNamedPositions = (finding: Finding) => {
@@ -231,8 +275,33 @@ export function declarationPositionFromSpans(spansByFile: Map<string, Declaratio
   return resolver;
 }
 
-// Returns the finding's own line as a stable declaration position when parsed declarations are unavailable.
-// Unlocated findings use position 1.
+/**
+ * Finds the nearest same-named declaration span starting at or after a leading-comment finding line.
+ *
+ * @param spans - parsed declaration spans for the finding's file
+ * @param wantedName - unqualified declaration symbol name being matched
+ * @param line - one-based comment or tag line where the docblock finding is anchored
+ * @returns The matching span with the smallest `startLine >= line`, or undefined when none follows.
+ */
+function nearestSpanAtOrAfterLine(spans: readonly DeclarationSpan[], wantedName: string, line: number): DeclarationSpan | undefined {
+  let nearest: DeclarationSpan | undefined;
+  for (const span of spans) {
+    if (span.name !== wantedName || span.startLine < line) {
+      continue;
+    }
+    if (nearest === undefined || span.startLine < nearest.startLine) {
+      nearest = span;
+    }
+  }
+  return nearest;
+}
+
+/**
+ * Resolve a stable declaration position from the finding's own line when parsed declarations are unavailable.
+ *
+ * @param finding - finding whose line property supplies the fallback position
+ * @returns The finding's line number, or 1 for unlocated findings.
+ */
 export function declarationPositionByLine(finding: Finding): number {
   return finding.line ?? 1;
 }

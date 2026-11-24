@@ -1,20 +1,22 @@
 # gruff-ts
 
-`gruff-ts` governs AI-generated code. Wired in as a coding-agent hook, it forces the agent to produce changes a human who did not write them can actually sign off on: legible enough to verify by reading, secure where the human eye slips, and tested for real behaviour instead of padded with low-signal ceremony. Mechanically it is a dependency-light, opinionated static analyser for TypeScript and JavaScript - it scans source, tests, package metadata, and common config files, then emits reports for terminals, CI annotations, SARIF consumers, static HTML, and a local dashboard. It is heuristic static analysis; run it beside `tsc`, ESLint, tests, dependency scanners, and code review, not instead of them.
+`gruff-ts` governs AI-generated code. Wired in as a coding-agent hook, it pushes an agent to produce changes a human who did not write them can sign off on: readable enough to verify by eye, guarded against unsafe patterns reviewers easily miss, and backed by tests that check real behavior instead of padding coverage.
+
+Under the hood it is a lightweight static analyser for TypeScript and JavaScript. It scans source, tests, package metadata, and config files, then outputs reports for terminals, CI annotations, SARIF code scanning, static HTML, and a local dashboard. Because it relies on static heuristics, run it alongside `tsc`, ESLint, tests, dependency scanners, and code review rather than instead of them.
 
 ## Why gruff-ts Exists
 
-The reviewer of AI-generated code is not its author. A coding agent holds the full context while it writes; the human who has to read, review, and trust the result does not. Conventional linters optimise for the author who already understands the code and just wants it tidy. gruff-ts optimises for that reviewer instead, which is the position every human signing off on an agent's output is in.
+When AI writes the code, the reviewer is never the author. The agent holds full context while editing; the human asked to approve the diff does not. Conventional linters assume an author who already understands the code and just wants it tidy. `gruff-ts` optimises for the person reviewing code they did not write.
 
-That goal breaks into three:
+That breaks into three goals:
 
-- **Verifiable.** A reviewer can read the change and confirm it does what was asked, rather than re-deriving what the agent was thinking. The complexity, size, naming, and documentation pillars push toward code whose intent is visible on its face.
-- **Secure where the eye slips.** Human review reliably scans past a known set of unsafe patterns - disabled TLS verification, `eval` and dynamic `Function` construction, injection-shaped string building, committed secrets. The security and sensitive-data pillars catch those mechanically so the reviewer does not have to.
-- **Honestly tested.** A suite should raise confidence, not just coverage. The test-quality pillar flags low-signal ceremony - mock-only, snapshot-only, assertion-free, and tautological tests - so an agent cannot satisfy a "write tests" instruction with padding.
+- **Verifiable.** A reviewer should be able to confirm what a change does by reading it, without reconstructing what the agent had in mind. Complexity, size, naming, and documentation rules push code toward plain intent.
+- **Secure where the eye slips.** Human reviewers routinely skim past disabled TLS verification, `eval` and `new Function`, injection-shaped string building, and committed secrets. Security and sensitive-data rules catch those mechanically.
+- **Honestly tested.** Tests should buy confidence, not line count. The test-quality pillar flags tautological assertions, shape-only checks that duplicate TypeScript, unused mocks, unlabelled assertion loops, global state mutation, and copy-pasted test bodies so an agent cannot clear a "write tests" step with padding.
 
-Documentation rules carry extra weight here, which is why a doc comment is expected even on a private one-liner. Coding agents routinely produce code that superficially works while misunderstanding the requirement. Forcing the agent to state intent, usage, contract, and failure behaviour in prose gives a reviewer something to check the implementation against - a mismatch between the doc comment and the code is itself a signal that the change needs a deeper look.
+Documentation rules are strict on purpose, even on a private one-liner. Coding agents often write code that looks plausible while misunderstanding the requirement. Requiring a doc comment stating intent, parameters, return behavior, and error conditions gives the reviewer an independent claim to check against the implementation - a mismatch between the comment and the code is an immediate warning sign.
 
-Used as a hook on an agent's output, gruff-ts is a forcing function rather than advice: a finding is friction the agent must resolve before the change reaches a human, so what finally lands is already shaped for sign-off. See [Philosophy](docs/philosophy.md) for the longer form.
+Run as a hook on agent edits, `gruff-ts` acts as a forcing function rather than passive advice: findings stay in the agent's way until it fixes them, so what reaches a human is already shaped for review. See [Philosophy](docs/philosophy.md) for more background.
 
 ## Status At A Glance
 
@@ -96,7 +98,7 @@ Open `http://127.0.0.1:8767/` for the dashboard.
 | `summary [paths...]` | Print compact score, pillar, rule, and file summaries. |
 | `report [paths...]` | Render an HTML or JSON report to stdout or `--output`. |
 | `init` | Write the default `.gruff-ts.yaml` to the current directory (`--force` to overwrite). |
-| `migrate-config` | Rewrite a 0.5 config for the current schema, writing the result to a different file. |
+| `migrate-config` | Rewrite a 0.5 config for 0.6 (pruning retired rules, allowlists, and exclusions and validating output), writing to a different file. |
 | `list-rules` | Print rule metadata as text or JSON. |
 | `list-profiles` | Print the built-in profiles (`gruff.minimal`, `gruff.recommended`, `gruff.strict`) with their rule-count summary, as text or JSON. |
 | `check-ignore <paths...>` | Report whether each path is ignored (config, gitignore, or default) with the matching source and pattern; runs no analysis. |
@@ -131,7 +133,7 @@ Global console options match the broader gruff CLI surface: `--silent`, `--quiet
 | `1` | At least one finding met `--fail-on`. |
 | `2` | Fatal diagnostic such as missing input, parse error, config error, diff failure, baseline failure, or invalid input. |
 
-`analyse` defaults to `--fail-on advisory`; `summary`, `report` and `hook` default to `--fail-on none`, so a first `summary` reports its findings and exits `0`. This table covers `analyse`, `summary` and `report`; `hook` gates only on an explicit consumer request and has its own table in the Baselines And Changed-Code Scans section. The defaults can be overridden per-project by a `failOn:` block in `.gruff-ts.yaml`. CLI flag wins over config; config wins over the binary default. See ADR-004 and the Configuration section.
+`analyse` defaults to `--fail-on advisory`, while `summary`, `report`, and `hook` default to `--fail-on none` so an initial `summary` prints findings and exits `0`. The table above covers `analyse`, `summary`, and `report`; `hook` gates only when the caller asks and has its own exit table under Baselines And Changed-Code Scans. You can override defaults per project with `failOn:` in `.gruff-ts.yaml` (precedence: CLI flag > config > binary default; see ADR-004 and [Configuration](docs/configuration.md)).
 
 ## CI Usage
 
@@ -315,13 +317,13 @@ In polyglot repositories, `gruff-ts` defaults to port `8767`, `gruff-rs` default
 
 ## Trust Boundary
 
-Default scans are local source inspections. `gruff-ts` parses supported source, config, and package metadata files; it does not execute target application code, run tests, type-check or emit through the TypeScript compiler, query package registries, or read vulnerability feeds. The runtime `typescript` dependency is used only for syntax parsing, while `tsx` launches the shipped TypeScript source and `commander` owns the CLI. Git is used only for explicit diff modes. Secret-like findings use redacted previews; raw secret values should not appear in terminal, JSON, SARIF, GitHub, Markdown, hotspot, or HTML output.
+Default scans read local source, config, and package metadata files only. `gruff-ts` does not execute target application code, run tests, type-check or emit through `tsc`, query package registries, or fetch vulnerability feeds. The runtime `typescript` dependency is used for syntax parsing only, `tsx` runs the shipped TypeScript source, and `commander` owns CLI parsing. Git runs only when you pass a diff mode. Sensitive-data findings print fixed category markers rather than matched secret characters or lengths across terminal, JSON, SARIF, GitHub, Markdown, hotspot, and HTML output.
 
 ## Stability Contract
 
-`gruff-ts` treats rule IDs, finding fingerprints, baseline identity, `gruff.analysis.v3`, `gruff.summary.v3`, `gruff.baseline.v3`, `gruff.hotspot.v1`, `gruff.hook.v2`, `gruff-ts.config.v0.1`, SARIF rendering, and CLI exit semantics as compatibility-sensitive. The three `v3` strings arrive in `0.6.0`; the published `0.5.x` line emitted `gruff.analysis.v2`, `gruff.summary.v2`, and `gruff.baseline.v1`, and [Upgrading](https://github.com/blundergoat/gruff-ts/blob/main/UPGRADING.md) states every break between them. Breaking changes belong in a coordinated future release and must be recorded in [`CHANGELOG.md`](CHANGELOG.md).
+`gruff-ts` treats rule IDs, finding fingerprints, baseline identities, `gruff.analysis.v3`, `gruff.summary.v3`, `gruff.baseline.v3`, `gruff.hotspot.v1`, `gruff.hook.v2`, `gruff-ts.config.v0.1`, SARIF output, and CLI exit codes as compatibility-sensitive. The three `v3` schemas arrive in `0.6.0` (replacing `gruff.analysis.v2`, `gruff.summary.v2`, and `gruff.baseline.v1` from `0.5.x`); see [Upgrading](UPGRADING.md) for every breaking change and migration step. Future breaking changes land only in coordinated releases and are documented in [CHANGELOG.md](CHANGELOG.md).
 
-Analysis JSON emits the canonical `file` for findings and top offenders; the legacy `filePath` alias is gone, removed with the coordinated family JSON unification. [Output formats](docs/output-formats.md) carries the full v2-to-v3 field table.
+Analysis JSON uses `file` for findings and top offenders (the legacy `filePath` alias was removed in `0.6.0`). See [Output formats](docs/output-formats.md) for the v2-to-v3 field mapping.
 
 ## How It Compares
 
@@ -349,7 +351,7 @@ Source lives under `src/`: `src/cli.ts` is the bootstrap, `src/cli-program.ts` o
 
 - [Docs index](docs/README.md)
 - [Output formats](docs/output-formats.md)
-- [Upgrading](https://github.com/blundergoat/gruff-ts/blob/main/UPGRADING.md)
+- [Upgrading](UPGRADING.md)
 - [Changelog](CHANGELOG.md)
 - [Configuration](docs/configuration.md)
 - [Rules catalogue](docs/rules.md)

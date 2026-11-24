@@ -25,14 +25,23 @@ export interface DisplaySelectors {
   hidePillars: string[];
 }
 
-// Returns whether selectors contains rule or pillar include/exclude entries; false preserves the configured rule enablement.
+/**
+ * Checks whether execution selectors request any rule or pillar filtering, preserving configured enablement when false.
+ *
+ * @param selectors - execution include and exclude lists for rules and pillars
+ * @returns True if any include or exclude list is non-empty; false preserves configured rule enablement.
+ */
 export function isExecutionRequested(selectors: ExecutionSelectors): boolean {
   return selectors.includeRules.length > 0 || selectors.excludeRules.length > 0
     || selectors.includePillars.length > 0 || selectors.excludePillars.length > 0;
 }
 
-// Returns true when the effective selectors specify a severity floor or a rule or pillar filter.
-// With every selector unset or empty, the display keeps all findings it receives.
+/**
+ * Checks whether the effective display selectors specify a severity floor or any rule or pillar filter.
+ *
+ * @param selectors - display filter settings; when every selector is unset or empty, all received findings stay visible
+ * @returns True when a minimum severity or any show/hide rule or pillar filter is active.
+ */
 export function isDisplayRequested(selectors: DisplaySelectors): boolean {
   return selectors.minSeverity !== undefined || selectors.showRules.length > 0 || selectors.hideRules.length > 0
     || selectors.showPillars.length > 0 || selectors.hidePillars.length > 0;
@@ -76,7 +85,14 @@ export function applyExecutionSelectors(config: Config, selectors: ExecutionSele
   }
 }
 
-// Returns whether ruleId and its pillar pass selectors: every nonempty include list must match, and either exclude list vetoes.
+/**
+ * Evaluates whether a rule and its pillar pass the execution selectors; every non-empty include list must match and either exclude list vetoes.
+ *
+ * @param selectors - execution include and exclude lists for rules and pillars
+ * @param ruleId - identifier of the candidate rule being evaluated
+ * @param pillar - pillar to which the candidate rule belongs
+ * @returns True if the rule and pillar match all non-empty include lists and appear in neither exclude list.
+ */
 function executionAllows(selectors: ExecutionSelectors, ruleId: string, pillar: Pillar): boolean {
   // An empty rule include list keeps all rules eligible for the other filters.
   if (selectors.includeRules.length > 0 && !selectors.includeRules.includes(ruleId)) {
@@ -107,8 +123,14 @@ export function applyDisplaySelectors(findings: Finding[], selectors: DisplaySel
   return findings.filter((finding) => displayAllows(effective, finding));
 }
 
-// Uses the severity floor and the rule and pillar lists in selectors to decide whether to show a finding.
-// To return true, the finding must meet any configured floor, match each nonempty show list, and match neither hide list.
+/**
+ * Decides whether to show a finding using the severity floor and rule and pillar lists.
+ * To pass, the finding must meet any configured floor, match each non-empty show list, and match neither hide list.
+ *
+ * @param selectors - display filter settings including optional severity floor and show/hide lists
+ * @param finding - scored finding evaluated for report visibility
+ * @returns True when the finding satisfies the severity floor, show lists, and hide lists.
+ */
 function displayAllows(selectors: DisplaySelectors, finding: Finding): boolean {
   if (selectors.minSeverity !== undefined && SEVERITY_RANK[finding.severity] < SEVERITY_RANK[selectors.minSeverity]) {
     return false;

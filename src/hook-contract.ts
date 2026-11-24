@@ -146,8 +146,11 @@ const DESCRIPTORS = new Map(ruleDescriptors().map((descriptor) => [descriptor.ru
 const TRAILING_ORDINAL = /#(\d+)$/u;
 const CONFIG_ERROR_REMEDIATION = "Fix the reported problem in .gruff-ts.yaml, or pass --no-config to run without it.";
 
-// Returns the gruff.hook.v2 capability handshake as pretty-printed JSON with a trailing newline.
-// Consumers use its stable supports and flags fields to select options before submitting an analysis request.
+/**
+ * Builds the `gruff.hook.v2` capability handshake so consumers can use its stable `supports` and `flags` fields before requesting analysis.
+ *
+ * @returns Pretty-printed JSON with a trailing newline advertising contract version, analyzer info, supported features, and CLI flags.
+ */
 export function renderHookCapabilities(): string {
   return JSON.stringify({
     contractVersion: HOOK_CONTRACT_VERSION,
@@ -202,8 +205,13 @@ export function renderHookReport(runAnalyse: HookAnalysisRunner, input: HookRepo
   return JSON.stringify(hookReport(scopedReport, findings, suppressedCount, hookRun(scopedReport, input)), null, 2) + "\n";
 }
 
-// Gets all findings and those in the user's edit so hook filtering can compare the two views.
-// Without a change selector, both views describe the full scan.
+/**
+ * Collects full-scan and edit-scoped analysis views so hook filtering can compare both views.
+ *
+ * @param runAnalyse - Analysis runner or pre-bundled dual-view provider used to execute the scans.
+ * @param input - Hook request containing full-scan options, scoped options, and whether a change selector is active.
+ * @returns Current full-scan and scoped analysis reports; without a change selector, both views describe the full scan.
+ */
 function hookAnalysisViews(runAnalyse: HookAnalysisRunner, input: HookReportInput): HookAnalysisViews {
   // The CLI runner supplies both views from one scan so the user sees a consistent result.
   if (runAnalyse.hookViews) {
@@ -239,7 +247,13 @@ function hookBaselineStatuses(views: HookAnalysisViews, baselinePath: string | u
   return statuses;
 }
 
-// Invariant: one occurrence has the same key in both views, but different columns distinguish multiple matches on one line.
+/**
+ * Builds an occurrence lookup key for baseline matching.
+ * Invariant: one occurrence keeps the same key in both views, while different columns distinguish multiple matches on one line.
+ *
+ * @param finding - Finding whose fingerprint and optional column identify the occurrence.
+ * @returns Null-delimited key pairing the finding fingerprint with its column or an empty suffix when absent.
+ */
 function hookOccurrenceKey(finding: Finding): string {
   return `${finding.fingerprint}\0${finding.column ?? ""}`;
 }
@@ -255,16 +269,27 @@ export function renderHookFatal(diagnosticType: string, message: string): string
   return JSON.stringify(fatalReport(diagnosticType, message), null, 2) + "\n";
 }
 
-// Returns newline-terminated hook JSON with the loader's message in the fatal diagnostic and config error, and schemaOk set to false.
-// Remediation defaults to general advice so callers without a specific fix can still tell the user what to try.
+/**
+ * Formats a configuration failure payload with the loader's message in both the fatal diagnostic and `config.error`, and `schemaOk` set to false.
+ *
+ * @param message - Configuration failure message recorded in the diagnostic and config error object.
+ * @param remediation - Actionable fix guidance; defaults to general advice so callers without a specific fix can still tell the user what to try.
+ * @returns Newline-terminated `gruff.hook.v2` JSON string for the fatal config error envelope.
+ */
 export function renderHookConfigError(message: string, remediation: string = CONFIG_ERROR_REMEDIATION): string {
   const report = fatalReport("config", message);
   report.config = { schemaOk: false, error: { message, remediation } };
   return JSON.stringify(report, null, 2) + "\n";
 }
 
-// Returns a hook envelope with one fatal diagnostic built from the supplied type and message, so the caller has a payload to publish before exit 2.
-// The stable contract retains the required envelope fields, with no findings or analysed files.
+/**
+ * Builds a fatal hook envelope so the caller has a payload to publish before exit 2.
+ * The stable contract retains the required envelope fields, with no findings or analysed files.
+ *
+ * @param diagnosticType - Category assigned to the sole fatal diagnostic entry.
+ * @param message - Failure description surfaced on the fatal diagnostic.
+ * @returns Envelope containing one fatal diagnostic and empty findings, suppressions, and ignored paths.
+ */
 function fatalReport(diagnosticType: string, message: string): HookReport {
   return {
     contractVersion: HOOK_CONTRACT_VERSION,
@@ -279,8 +304,16 @@ function fatalReport(diagnosticType: string, message: string): HookReport {
   };
 }
 
-// Returns a gruff.hook.v2 envelope for a completed analysis with the supplied run audit, visible findings, and suppressed count.
-// The analysis report supplies diagnostics, the exclusion audit, and skipped paths. The contract presents findings in stable order.
+/**
+ * Assembles the `gruff.hook.v2` envelope for a completed analysis, keeping findings in stable order.
+ * The analysis report supplies diagnostics, the exclusion audit, and skipped paths.
+ *
+ * @param report - Completed scoped analysis report providing diagnostics, suppressions, and skipped paths.
+ * @param findings - Visible hook findings to sort and include in the payload.
+ * @param suppressedCount - Total count of suppressed findings for the run.
+ * @param run - Run audit metadata describing mode, scope, paths, and baseline application.
+ * @returns Completed hook envelope with `schemaOk: true` and sorted findings.
+ */
 function hookReport(report: AnalysisReport, findings: HookFinding[], suppressedCount: number, run: HookRun): HookReport {
   return {
     contractVersion: HOOK_CONTRACT_VERSION,
@@ -295,9 +328,14 @@ function hookReport(report: AnalysisReport, findings: HookFinding[], suppressedC
   };
 }
 
-// Returns the run audit using report for the project root and analysed-file count and input for selectors and paths.
-// Empty scoped paths are reported as the current directory; a present baselinePath marks applied true and reports its path.
-// Without a baseline, applied is false and its schema version and path are null, so consumers can see that no review was used.
+/**
+ * Builds the run audit so consumers can see what ran and whether a review baseline was applied.
+ * Empty scoped paths report as `"."`; without a baseline, `applied` is false with null schema version and path.
+ *
+ * @param report - Analysis report supplying the project root and analysed-file count.
+ * @param input - Hook request supplying selectors, scoped paths, and optional baseline path.
+ * @returns Run audit detailing mode, scope, target paths, analysed-file count, and baseline metadata.
+ */
 function hookRun(report: AnalysisReport, input: HookReportInput): HookRun {
   const applied = input.baselinePath !== undefined;
   return {
@@ -314,7 +352,12 @@ function hookRun(report: AnalysisReport, input: HookReportInput): HookRun {
   };
 }
 
-// Names which region selector chose the work, so a consumer can tell a targeted run from a whole-tree one.
+/**
+ * Names which region selector chose the work so a consumer can tell a targeted run from a whole-tree one.
+ *
+ * @param input - Hook request whose scoped options determine the active selection mode.
+ * @returns `"changed-ranges"`, `"diff"`, `"since"`, or `"full"` in selector precedence order.
+ */
 function hookRunMode(input: HookReportInput): HookRun["mode"] {
   // Explicit ranges are the narrowest selector and win when more than one is given, and an empty value is
   // still a request to scope: presence decides, not truthiness.
@@ -327,7 +370,13 @@ function hookRunMode(input: HookReportInput): HookRun["mode"] {
   return input.scopedOptions.since ? "since" : "full";
 }
 
-// Projects a scan suppression summary into a hook audit row; an empty path list yields an empty path and a null symbol is omitted.
+/**
+ * Projects a scan suppression summary into a hook audit row.
+ * An empty path list yields an empty path, and a null symbol or undefined source is omitted.
+ *
+ * @param summary - Suppression summary entry emitted by the analysis run.
+ * @returns Hook suppression row with a single path, optional symbol and source, reason, and count.
+ */
 function toHookSuppression(summary: SuppressionSummary): HookSuppression {
   return {
     rule: summary.rule,
@@ -341,8 +390,13 @@ function toHookSuppression(summary: SuppressionSummary): HookSuppression {
   };
 }
 
-// Returns a hook diagnostic without throwing and omits unavailable file and line anchors.
-// In the hook contract, an explicit invalidatesRun value of false means warning. An unset or true value means fatal.
+/**
+ * Projects a run diagnostic into the hook contract without throwing, omitting unavailable file and line anchors.
+ * In the hook contract, an explicit `invalidatesRun` value of false means warning, while unset or true means fatal.
+ *
+ * @param diagnostic - Run diagnostic from the analysis report.
+ * @returns Hook diagnostic with mapped severity, message, and optional file, line, and `invalidatesRun` fields.
+ */
 function toHookDiagnostic(diagnostic: RunDiagnostic): HookDiagnostic {
   return {
     type: diagnostic.diagnosticType,
@@ -379,8 +433,14 @@ export function hookExitCode(renderedEnvelope: string, gate: HookExitGate): numb
   return findings.some((finding) => reachesHookGate(finding, gate)) ? 1 : 0;
 }
 
-// Decides whether a published finding blocks the edit under the user's review or severity settings.
-// Invariant: `--fail-on none` disables severity gating while leaving an explicitly requested review gate active.
+/**
+ * Decides whether a published finding blocks the edit under the user's review or severity settings.
+ * Invariant: `--fail-on none` disables severity gating while leaving an explicitly requested review gate active.
+ *
+ * @param finding - Published hook finding evaluated against the gate.
+ * @param gate - Configured severity, confidence, and new-only blocking thresholds.
+ * @returns True if the finding triggers the review gate or meets both severity and confidence floors; otherwise false.
+ */
 function reachesHookGate(finding: HookFinding, gate: HookExitGate): boolean {
   // The review gate blocks unreviewed findings, including those that cannot be recorded. Null means the user supplied no baseline.
   if (gate.shouldFailOnNew && finding.baselineStatus !== null && finding.baselineStatus !== "unchanged") {
@@ -395,7 +455,11 @@ function reachesHookGate(finding: HookFinding, gate: HookExitGate): boolean {
   return severity >= SEVERITY_GATE_RANK[gate.failOn] && confidence >= CONFIDENCE_GATE_RANK[gate.minConfidence];
 }
 
-// Analyzer identity block shared by the capability and report envelopes.
+/**
+ * Builds the analyzer identity block shared by the capability and report envelopes.
+ *
+ * @returns Object identifying the analyzer name (`"gruff-ts"`) and current `VERSION`.
+ */
 function analyzerInfo(): { name: "gruff-ts"; version: string } {
   return { name: "gruff-ts", version: VERSION };
 }
@@ -434,8 +498,15 @@ function hookFindings(
   return afterNewOnly.filter((finding) => statuses.get(hookOccurrenceKey(finding)) !== "unchanged");
 }
 
-// Returns file and project findings in currentReport whose fingerprints are absent from scopedFindings and have no remaining base occurrence.
-// Mutates covered, the remaining base counts by fingerprint, to spend one count per eligible match so that repeated occurrences compare correctly.
+/**
+ * Selects file-scope and project-scope findings in `currentReport` absent from `scopedFindings` and not covered by the base.
+ * Mutates `covered` to spend one count per eligible match so that repeated occurrences compare correctly.
+ *
+ * @param currentReport - Full-scan report providing candidate file and project findings.
+ * @param scopedFindings - Findings already selected from the scoped scan, used to avoid duplicates.
+ * @param covered - Remaining base-covered counts keyed by fingerprint; decremented in place for covered matches.
+ * @returns Newly attributable file and project findings from the current full scan.
+ */
 function newFileAndProjectFindings(currentReport: AnalysisReport, scopedFindings: Finding[], covered: Map<string, number>): Finding[] {
   const alreadyIncluded = new Set(scopedFindings.map((finding) => finding.fingerprint));
   return currentReport.findings.filter((finding) => {
@@ -448,8 +519,14 @@ function newFileAndProjectFindings(currentReport: AnalysisReport, scopedFindings
   });
 }
 
-// Returns counts of covered current findings by report fingerprint. Missing base counts yield an empty map.
-// For each stable hook match key, spend at most its base count in line and column order to avoid covering extra matches.
+/**
+ * Tallies how many current findings are covered by the diff base per fingerprint.
+ * For each stable hook match key, spends at most its base count in line and column order to avoid covering extra matches.
+ *
+ * @param currentReport - Full-scan report whose findings are matched against the base counts.
+ * @param baseCounts - Occurrence counts from the diff base keyed by stable hook match key, or undefined when unavailable.
+ * @returns Counts of covered current findings keyed by fingerprint, or an empty map when base counts are missing.
+ */
 function baseCoveredOccurrences(currentReport: AnalysisReport, baseCounts: Map<string, number> | undefined): Map<string, number> {
   const covered = new Map<string, number>();
   if (baseCounts === undefined) {
@@ -470,9 +547,14 @@ function baseCoveredOccurrences(currentReport: AnalysisReport, baseCounts: Map<s
   return covered;
 }
 
-// Mutates the caller's coverage map when the finding's fingerprint count is nonzero. Returns true after spending one occurrence.
-// Returns false if the fingerprint is missing or its count is exhausted.
-// The stable contract lets each covered occurrence hide one finding across file/project re-admission and the new-only filter.
+/**
+ * Consumes one covered occurrence for a finding's fingerprint, mutating the caller's coverage map when nonzero.
+ * The stable contract lets each covered occurrence hide one finding across file/project re-admission and the new-only filter.
+ *
+ * @param covered - Remaining base-covered occurrence counts keyed by fingerprint; decremented on match.
+ * @param finding - Finding whose fingerprint is checked against the remaining covered count.
+ * @returns True after spending one occurrence when the count is nonzero; false if missing or exhausted.
+ */
 function spendCoveredOccurrence(covered: Map<string, number>, finding: Finding): boolean {
   const count = covered.get(finding.fingerprint) ?? 0;
   if (count === 0) {
@@ -482,9 +564,15 @@ function spendCoveredOccurrence(covered: Map<string, number>, finding: Finding):
   return true;
 }
 
-// Returns the stable suppressed.count total when hasChangedRegion is true, or zero for a full scan.
-// Adds scopedReport's existing suppression tally, defaulting to zero, to its remaining file and project findings.
-// Uses emittedFindings fingerprints to avoid counting published findings as suppressed.
+/**
+ * Computes the stable `suppressed.count` total for changed-region runs by combining scoped suppressions with unemitted file/project findings.
+ * Uses `emittedFindings` fingerprints to avoid counting published findings as suppressed.
+ *
+ * @param scopedReport - Scoped analysis report supplying `suppressedCount` and candidate anchor findings.
+ * @param emittedFindings - Findings actually published in the hook response.
+ * @param hasChangedRegion - Whether the hook run narrowed analysis to a changed region.
+ * @returns Sum of `scopedReport.suppressedCount` (defaulting to zero) and residual file/project findings, or zero for a full scan.
+ */
 function hookSuppressedCount(scopedReport: AnalysisReport, emittedFindings: Finding[], hasChangedRegion: boolean): number {
   if (!hasChangedRegion) {
     return 0;
@@ -497,9 +585,14 @@ function hookSuppressedCount(scopedReport: AnalysisReport, emittedFindings: Find
   return (scopedReport.suppressedCount ?? 0) + fileOrProjectAnchorResiduals;
 }
 
-// Returns a hook row for finding. The symbol ordinal is 0 without a stored ordinal. Missing remediation uses rule or generic advice.
-// baselineStatus is the supplied review result or null when unclassified; absent symbols and stable identities are also null.
-// Omits missing columns and both lines when the start line is absent. Otherwise uses the start line if the end line is missing or earlier.
+/**
+ * Projects an internal finding into a `HookFinding` row for the hook contract, with normalized lines, remediation, metadata, and review status.
+ * Contract: omits missing columns and lines when start line is absent; missing symbols, `stableIdentity`, and unclassified statuses are null.
+ *
+ * @param finding - Internal finding produced by the analyzer.
+ * @param baselineStatus - Review status from an applied baseline, or null when no baseline was applied.
+ * @returns Hook finding row with 0 ordinal when unstored and rule descriptor or generic fallback remediation.
+ */
 function toHookFinding(finding: Finding, baselineStatus: string | null): HookFinding {
   const endLine = endLineFor(finding);
   return {
@@ -523,8 +616,12 @@ function toHookFinding(finding: Finding, baselineStatus: string | null): HookFin
   };
 }
 
-// Returns the finding's span end for the stable hook contract, using its start when the reported end is absent or earlier than the start.
-// Returns undefined when the finding has no start line, so the hook omits the span end.
+/**
+ * Computes the finding's span end for the stable hook contract, falling back to start line when `endLine` is absent or earlier.
+ *
+ * @param finding - Finding whose optional `line` and `endLine` define the span.
+ * @returns Validated end line number, or undefined when the finding has no start line so the hook omits the span end.
+ */
 function endLineFor(finding: Finding): number | undefined {
   if (finding.line === undefined) {
     return undefined;
@@ -532,16 +629,25 @@ function endLineFor(finding: Finding): number | undefined {
   return finding.endLine !== undefined && finding.endLine >= finding.line ? finding.endLine : finding.line;
 }
 
-// Returns the declaration ordinal the ratified identity hashed, so a consumer can recompute that identity.
-// The identity contract uses 0 when the finding has no stored subject or its subject has no ordinal suffix.
+/**
+ * Extracts the declaration ordinal the ratified identity hashed so a consumer can recompute that identity.
+ * The identity contract uses 0 when the finding has no stored subject or its subject has no ordinal suffix.
+ *
+ * @param finding - Finding whose optional `baselineSubject` may carry a trailing `#<ordinal>` suffix.
+ * @returns Parsed 1-based declaration ordinal, or 0 when absent.
+ */
 function symbolOrdinalOf(finding: Finding): number {
   const trailing = finding.baselineSubject === undefined ? null : TRAILING_ORDINAL.exec(finding.baselineSubject);
   return trailing === null ? 0 : Number(trailing[1]);
 }
 
-// Classifies a finding as line/symbol/file/project scope; this choice drives changed-region
-// attribution and the port-local hook match key.
-// Stable contract: one finding always lands in one scope, so changed-region attribution is deterministic.
+/**
+ * Classifies a finding as line, symbol, file, or project scope to drive changed-region attribution and the port-local hook match key.
+ * Stable contract: one finding always lands in one scope, so changed-region attribution is deterministic.
+ *
+ * @param finding - Finding whose rule ID, symbol, and line span determine its scope.
+ * @returns Deterministic scope classification (`"project"`, `"file"`, `"symbol"`, or `"line"`).
+ */
 function scopeForFinding(finding: Finding): HookScope {
   if (PROJECT_SCOPE_RULE_IDS.has(finding.ruleId)) {
     return "project";
@@ -555,8 +661,13 @@ function scopeForFinding(finding: Finding): HookScope {
   return "line";
 }
 
-// Returns the hook contract's threshold metadata for a supported rule with a numeric measurement and limit.
-// Otherwise returns the finding's original metadata.
+/**
+ * Returns the hook contract's threshold metadata for a supported rule with a numeric measurement and limit, preserving `limitBand` when present.
+ * Otherwise returns the finding's original metadata.
+ *
+ * @param finding - Finding whose rule ID and metadata are inspected for threshold mapping.
+ * @returns Normalized threshold metadata (including `limitBand` if string-valued), or the finding's original metadata otherwise.
+ */
 function hookMetadata(finding: Finding): Record<string, unknown> {
   const thresholdMetadata = thresholdMetadataFor(finding);
   // The hook contract keeps the limit band beside the measurement (FAMILY-CONTRACT.md section 12, The band key).
@@ -566,8 +677,12 @@ function hookMetadata(finding: Finding): Record<string, unknown> {
   return thresholdMetadata ?? finding.metadata;
 }
 
-// Uses the finding's rule ID and metadata to return a stable hook measurement with its threshold, unit, and direction.
-// Returns undefined when the rule has no measurement mapping or either numeric value is unavailable.
+/**
+ * Maps a finding's rule ID and metadata to a stable hook measurement with its threshold, unit, and direction.
+ *
+ * @param finding - Finding providing the rule ID and raw metric values.
+ * @returns Normalized threshold metadata object, or undefined when the rule has no mapping or either numeric value is unavailable.
+ */
 function thresholdMetadataFor(finding: Finding): Record<string, unknown> | undefined {
   const metadata = finding.metadata;
   switch (finding.ruleId) {
@@ -584,8 +699,14 @@ function thresholdMetadataFor(finding: Finding): Record<string, unknown> | undef
   return undefined;
 }
 
-// Returns metadata containing measured as the observed value, threshold as its comparison limit, and unit as their label.
-// The direction is above; returns undefined unless measured and threshold both have number type.
+/**
+ * Builds a normalized threshold metadata record with direction `"above"` when both numeric values are present.
+ *
+ * @param measured - Observed numeric value from the finding's metadata.
+ * @param threshold - Configured numeric comparison limit from the finding's metadata.
+ * @param unit - Unit label describing both `measured` and `threshold` (such as `"lines"` or `"points"`).
+ * @returns Metadata containing `measured`, `threshold`, `unit`, and `direction: "above"`, or undefined unless both inputs are numbers.
+ */
 function metricMetadata(measured: unknown, threshold: unknown, unit: string): Record<string, unknown> | undefined {
   return typeof measured === "number" && typeof threshold === "number"
     ? { measured, threshold, unit, direction: "above" }
@@ -607,9 +728,14 @@ function hookMatchKey(finding: Finding): string {
     .slice(0, 16);
 }
 
-// Returns a stable match-key component from finding according to scope, so that occurrences can be matched across edits.
-// File scope shares one component. Project scope uses a nonempty symbol when present and otherwise shares its scope token.
-// Symbol and line scopes use a nonempty symbol when present. Otherwise they use the message and add the match column when present.
+/**
+ * Builds a stable match-key component from `finding` according to `scope` so occurrences can be matched across edits.
+ * File and unsymboled project scopes share a token; symboled entries use the symbol, and unsymboled line entries fall back to message and column.
+ *
+ * @param finding - Finding contributing symbol, message, and optional column.
+ * @param scope - Classified hook scope determining which fields identify the occurrence.
+ * @returns Scope-specific string component hashed into the hook match key.
+ */
 function matchKeyComponent(finding: Finding, scope: HookScope): string {
   if (scope === "file") {
     return scope;
@@ -629,9 +755,15 @@ function matchKeyComponent(finding: Finding, scope: HookScope): string {
   return finding.column === undefined ? messageComponent : `${messageComponent}\0column:${finding.column}`;
 }
 
-// Returns stable match-key counts from the diff base. The runner uses the input's scan settings on paths drawn from the current report.
-// Replay spawns Git, writes a temporary tree, and temporarily changes the process working directory.
-// An absent diff base returns undefined and skips diff-base filtering. An empty map still lets the hook reconsider whole-file findings.
+/**
+ * Computes stable match-key counts from the diff base using scan settings from `input` on paths from `currentReport`.
+ * Replay spawns Git, writes a temporary tree, and temporarily changes the process working directory.
+ *
+ * @param runAnalyse - Analysis runner used to scan materialized base files.
+ * @param input - Hook request supplying `diffBase` and `currentOptions`.
+ * @param currentReport - Current scan report supplying file paths to replay.
+ * @returns Match-key count map (empty map still lets the hook reconsider whole-file findings), or undefined when `diffBase` is absent.
+ */
 function hookDiffBaseIdentities(runAnalyse: HookAnalysisRunner, input: HookReportInput, currentReport: AnalysisReport): Map<string, number> | undefined {
   if (input.diffBase === undefined) {
     return undefined;
@@ -703,8 +835,13 @@ function findingBasePaths(finding: Finding): string[] {
   return [finding.filePath, ...memberFiles.filter((file): file is string => typeof file === "string")];
 }
 
-// Returns the Git revision to replay for new-only filtering. The working-tree and staged selectors use HEAD, and explicit refs pass through.
-// Unstaged diffs use the index via an empty revision. A stdin patch has no replayable base, so its selector returns undefined.
+/**
+ * Maps a diff-base selector to the Git revision to replay for new-only filtering.
+ * Working-tree and staged selectors use `HEAD`, unstaged uses the index (`""`), explicit refs pass through, and stdin (`"-"`) has no replayable base.
+ *
+ * @param diffBase - Diff selector supplied to the hook request.
+ * @returns Git revision string for `git show`, empty string for the index, or undefined for a stdin patch.
+ */
 function diffBaseRef(diffBase: string): string | undefined {
   // A pasted patch supplies changed lines but no Git snapshot for inherited findings.
   if (diffBase === "-") {
@@ -717,8 +854,16 @@ function diffBaseRef(diffBase: string): string | undefined {
   return diffBase === "working-tree" || diffBase === "staged" ? "HEAD" : diffBase;
 }
 
-// Recreates the selected files from Git so the hook can compare what the user had before the edit.
-// Side effects: writes available files into the temporary comparison directory.
+/**
+ * Recreates the selected files from Git so the hook can compare what the user had before the edit.
+ * Side effects: spawns `git show` and writes available files into the temporary comparison directory.
+ *
+ * @param ref - Git revision or empty string for the index from which to read prior file contents.
+ * @param files - Relative file paths to materialize from the base snapshot.
+ * @param root - Temporary comparison directory receiving the materialized files.
+ * @param projectRoot - Repository root used as the working directory for `git show`.
+ * @returns Relative paths of files that existed in the base snapshot and were written to `root`.
+ */
 function materializeBaseFiles(ref: string, files: string[], root: string, projectRoot: string): string[] {
   const materialized: string[] = [];
   // Replay the prior versions of files associated with current findings, including related import-cycle files.
@@ -736,8 +881,15 @@ function materializeBaseFiles(ref: string, files: string[], root: string, projec
   return materialized;
 }
 
-// Returns base-scan options from options, using paths as scan targets and disabling baseline and changed-region selection.
-// Uses an explicit config relative to the launch directory or the selected project's supported default config.
+/**
+ * Derives base-scan options from `options`, targeting `paths` while disabling baseline and changed-region selection.
+ * Uses an explicit config resolved from the launch directory or the selected project's supported default config.
+ *
+ * @param options - Original full-scan analysis options.
+ * @param paths - Materialized base file paths to analyse.
+ * @param originalRoot - Original project root used to locate a default config file when none is explicit.
+ * @returns Analysis options configured for a deterministic full scan of the materialized base files.
+ */
 function baseAnalysisOptions(options: AnalysisOptions, paths: string[], originalRoot: string): AnalysisOptions {
   // Resolve settings before entering the temporary directory. With no selected config, the base run uses defaults.
   const config = options.config ? absolutize(cwd(), options.config) : options.shouldSkipConfig ? undefined : defaultConfigPath(originalRoot);
@@ -748,15 +900,24 @@ function baseAnalysisOptions(options: AnalysisOptions, paths: string[], original
   };
 }
 
-// Returns a copy of options for a deterministic full base-ref scan, dropping changedRanges, diff, diffPatch and since.
-// Drops the baseline path and generation request and sets shouldSkipBaseline so that default baseline lookup is disabled too.
+/**
+ * Copies `options` for a deterministic full base-ref scan, dropping changed-region selectors and baseline flags.
+ * Sets `shouldSkipBaseline` to true so default baseline lookup is disabled too.
+ *
+ * @param options - Analysis options from which `changedRanges`, `diff`, `diffPatch`, `since`, `baseline`, and `generateBaseline` are stripped.
+ * @returns Cloned options object configured to run a full scan without baseline lookup.
+ */
 function withoutChangedRegion(options: AnalysisOptions): AnalysisOptions {
   const { baseline: _baseline, changedRanges: _changedRanges, diff: _diff, diffPatch: _diffPatch, generateBaseline: _generateBaseline, since: _since, ...rest } = options;
   return { ...rest, shouldSkipBaseline: true };
 }
 
-// Returns a copy of the supplied hook findings in stable severity, file, line, and rule ID order.
-// A finding without a line sorts as line 0.
+/**
+ * Sorts a copy of the supplied hook findings in stable severity, file, line, and rule ID order.
+ *
+ * @param findings - Hook findings to order; a finding without a line sorts as line 0.
+ * @returns New array of hook findings ordered deterministically.
+ */
 function sortHookFindings(findings: HookFinding[]): HookFinding[] {
   return [...findings].sort(
     (left, right) =>

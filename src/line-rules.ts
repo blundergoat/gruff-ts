@@ -160,8 +160,12 @@ export function analyseLineRules(file: SourceFile, source: string, codeSource: s
   }
 }
 
-// Runs per-line checks using the current line and rule gates in the supplied context.
-// Returns nothing and appends matches to the context's findings in stable order so that emission is repeatable.
+/**
+ * Runs per-line checks using the current line and rule gates in the supplied context.
+ *
+ * @param context - Per-line scratch state holding the current line, rule gates, and findings array.
+ * @returns Nothing. Appends matches to the context's findings in stable order so that emission is repeatable.
+ */
 function analyseLineRuleContext(context: LineRuleContext): void {
   if (context.gates.shouldRunTypeSafety) {
     analyseTypeSafetyLine(context.file, context.line, context.codeLine, context.lineNumber, context.findings, context.sourceLines, context.config.trackingTokens);
@@ -184,8 +188,11 @@ function analyseLineRuleContext(context: LineRuleContext): void {
 // Each pattern check's advice is its catalogue remediation, carried on the finding so every output shows it.
 const PATTERN_CHECK_REMEDIATION = new Map(ruleDescriptors().map((descriptor) => [descriptor.ruleId, descriptor.remediation]));
 
-// Code-shape rules: those that must match against the masked code (no comment or literal noise).
-// Returns the eval, Function-constructor, innerHTML and document.write security checks.
+/**
+ * Code-shape rules that must match against the masked code without comment or literal noise.
+ *
+ * @returns The eval, Function-constructor, innerHTML, and document.write security checks.
+ */
 function codeLineChecks(): LineRuleCheck[] {
   return [
     { ruleId: "security.eval-call", pattern: /\beval\s*\(/, message: "eval() executes dynamic code.", severity: "error", pillar: "security" },
@@ -195,9 +202,12 @@ function codeLineChecks(): LineRuleCheck[] {
   ];
 }
 
-// Rules that need to see the raw line including literals (e.g., "javascript:" URL detection,
-// "md5" weak-crypto match). Global patterns are auto-generated so global-match operations stay
-// safe - see withGlobalPattern.
+/**
+ * Rules that need to see the raw line including literals, such as "javascript:" URLs and "md5" matches.
+ * Global patterns are generated via withGlobalPattern so global-match operations stay safe.
+ *
+ * @returns Security, maintainability, and modernisation line checks with global patterns attached.
+ */
 function literalLineChecks(): LineRuleCheck[] {
   const checks: LineRuleCheck[] = [
     { ruleId: "security.weak-crypto", pattern: /\bcreateHash\s*\(\s*["'](?:md5|sha1)["']|\bcreateHmac\s*\(\s*["']md5["']|\bcreateCipher\s*\(|\b(?:secureProtocol|minVersion|maxVersion)\s*:\s*["'](?:SSLv2_method|SSLv3_method|TLSv1(?:_method)?|TLSv1\.1)["']/i, message: "Weak cryptographic primitive is used.", severity: "warning", pillar: "security" },
@@ -211,8 +221,13 @@ function literalLineChecks(): LineRuleCheck[] {
   return checks.map(withGlobalPattern);
 }
 
-// Returns a copy of the supplied line check with a global pattern so that scans can advance past rejected matches.
-// Reuses an already-global pattern. Otherwise it adds the g flag to a copy and keeps the original pattern on the check.
+/**
+ * Copies the supplied line check with a global pattern so that scans can advance past rejected matches.
+ * Reuses an already-global pattern; otherwise adds the g flag to a copy and keeps the original pattern on the check.
+ *
+ * @param check - Line rule descriptor whose pattern is copied or reused as a global regular expression.
+ * @returns Copy of the check with `globalPattern` populated.
+ */
 function withGlobalPattern(check: LineRuleCheck): LineRuleCheck {
   return {
     ...check,
@@ -232,9 +247,13 @@ function pushStringTimerFinding(context: LineRuleContext): void {
   }
 }
 
-// Runs context's enabled checks for the current line, skipping exempt eval, innerHTML and literal matches.
-// Returns nothing. Appends one stable finding per matched rule to context.findings, using configured severity or the rule default.
-// Literal checks reset and advance shared regex state so that scanning can continue past masked or exempt match starts.
+/**
+ * Runs enabled code and literal checks for the current line, skipping exempt eval, innerHTML, and literal matches.
+ * Literal checks reset and advance shared regex state so that scanning can continue past masked or exempt match starts.
+ *
+ * @param context - Per-line state providing enabled checks, the raw and masked lines, and the findings target.
+ * @returns Nothing. Appends one stable finding per matched rule to `context.findings` using configured or default severity.
+ */
 function pushPatternCheckFindings(context: LineRuleContext): void {
   for (const check of context.codeChecks) {
     if (check.ruleId === "security.eval-call" && context.fixedEvalLines.has(context.lineNumber)) {
@@ -255,9 +274,14 @@ function pushPatternCheckFindings(context: LineRuleContext): void {
   }
 }
 
-// Returns a match-index predicate for ruleId using the current line in context, or undefined when the rule has no exemption.
-// TLS matches are exempt when the nearest unmatched opening parenthesis within the lookback belongs to a recognized deep-equality assertion.
-// JavaScript URL literals next to equality or inequality operators are exempt.
+/**
+ * Selects a match-index exemption predicate for the current line when the rule supports exemptions.
+ * TLS matches are exempt inside recognized deep-equality assertions; JavaScript URL literals next to equality operators are exempt.
+ *
+ * @param ruleId - Rule identifier being evaluated on the current line.
+ * @param context - Per-line state supplying masked lines, raw line text, and line number.
+ * @returns Predicate testing whether a match at a column index is exempt, or undefined when the rule has no exemption.
+ */
 function literalCheckExemption(ruleId: string, context: LineRuleContext): ((index: number) => boolean) | undefined {
   if (ruleId === "security.disabled-tls-verification") {
     return (index: number) => isInsideDeepEqualityAssertion(context.codeLines, context.lineNumber - 1, index);
@@ -268,8 +292,14 @@ function literalCheckExemption(ruleId: string, context: LineRuleContext): ((inde
   return undefined;
 }
 
-// Returns true when the raw source line has an equality or inequality operator beside the literal that starts at index.
-// This lets the URL rule exempt defensive checks such as href === 'javascript:void(0)'.
+/**
+ * Checks whether the raw source line has an equality or inequality operator beside the literal starting at index.
+ * This lets the URL rule exempt defensive checks such as `href === 'javascript:void(0)'`.
+ *
+ * @param rawLine - Unmasked source line containing the matched literal.
+ * @param index - Zero-based column where the opening quote of the literal starts.
+ * @returns True when an equality or inequality operator precedes or follows the literal; otherwise false.
+ */
 function isComparisonOperandLiteral(rawLine: string, index: number): boolean {
   if (/[=!]==?\s*$/.test(rawLine.slice(0, index))) {
     return true;
@@ -283,9 +313,13 @@ function isComparisonOperandLiteral(rawLine: string, index: number): boolean {
   return /^\s*[=!]==?(?!=)/.test(rawLine.slice(position + 1));
 }
 
-// Returns 1-based lines where every identifier or dot-property eval call has exactly one string or substitution-free template argument.
-// syntax supplies the clean parse; undefined or incompatible line separators returns an empty set and preserves text checks.
-// A recognized eval call with any other argument shape prevents the line exemption even when a fixed call shares that line.
+/**
+ * Collects 1-based lines where every identifier or dot-property eval call has one string or substitution-free template argument.
+ * A recognized eval call with any other argument shape prevents the line exemption even when a fixed call shares that line.
+ *
+ * @param syntax - Clean TypeScript syntax tree, or undefined to preserve text-based checks on missing or incompatible parses.
+ * @returns 1-based line numbers eligible for eval exemption, or empty when syntax is undefined or uses non-LF line breaks.
+ */
 function fixedEvalCallLines(syntax: TsSourceFile | undefined): Set<number> {
   const fixed = new Set<number>();
   const dynamic = new Set<number>();
@@ -293,8 +327,12 @@ function fixedEvalCallLines(syntax: TsSourceFile | undefined): Set<number> {
   if (syntax === undefined || /\r(?!\n)|[\u2028\u2029]/.test(syntax.text)) {
     return fixed;
   }
-  // Records fixed and dynamic eval calls in the supplied syntax subtree so a literal call cannot hide a dynamic call on the same line.
-  // Returns nothing and adds each matching line number to the applicable enclosing set.
+  /**
+   * Records fixed and dynamic eval calls in the supplied syntax subtree so a literal call cannot hide a dynamic call on the same line.
+   *
+   * @param node - AST node to inspect and traverse recursively.
+   * @returns Nothing. Adds each matching line number to the applicable enclosing `fixed` or `dynamic` set.
+   */
   const visit = (node: TsNode): void => {
     if (typescriptSyntax.isCallExpression(node)) {
       const callee = node.expression;
@@ -314,15 +352,25 @@ function fixedEvalCallLines(syntax: TsSourceFile | undefined): Set<number> {
   return new Set([...fixed].filter((line) => !dynamic.has(line)));
 }
 
-// Returns whether the current line in context can skip security.inner-html. The line must be in the fixed-assignment set.
-// Any occurrence of the text dangerouslySetInnerHTML in the masked line keeps the rule active there.
+/**
+ * Determines whether the current line in context can skip security.inner-html.
+ * The line must be in the fixed-assignment set, and any `dangerouslySetInnerHTML` in the masked line keeps the rule active.
+ *
+ * @param context - Per-line state supplying the line number, masked code line, and precomputed fixed innerHTML lines.
+ * @returns True when the line is in `fixedInnerHtmlLines` and does not mention `dangerouslySetInnerHTML`.
+ */
 function isFixedInnerHtmlLine(context: LineRuleContext): boolean {
   return context.fixedInnerHtmlLines.has(context.lineNumber) && !context.codeLine.includes("dangerouslySetInnerHTML");
 }
 
-// Returns 1-based lines of fixed innerHTML writes. With clean syntax, every recognized write on the line must use plain equals and a literal.
-// A string or substitution-free template qualifies, including a multiline template. Compound writes prevent the line exemption.
-// Without syntax, checks sourceLines for one .innerHTML occurrence and a single-line literal because masking would hide the literal text.
+/**
+ * Finds 1-based lines of fixed innerHTML writes using plain equals and a string or substitution-free template literal.
+ * Compound writes prevent the exemption; without syntax, falls back to sourceLines because masking would hide the literal text.
+ *
+ * @param sourceLines - Raw source lines inspected when no clean syntax tree is available.
+ * @param syntax - Clean TypeScript syntax tree, or undefined when falling back to single-line literal matching.
+ * @returns 1-based line numbers whose only recognized innerHTML writes assign fixed literals.
+ */
 function fixedInnerHtmlAssignmentLines(sourceLines: readonly string[], syntax: TsSourceFile | undefined): Set<number> {
   const fixed = new Set<number>();
   if (syntax === undefined) {
@@ -336,8 +384,13 @@ function fixedInnerHtmlAssignmentLines(sourceLines: readonly string[], syntax: T
   }
   const dynamic = new Set<number>();
   const { EqualsToken, FirstCompoundAssignment, LastCompoundAssignment } = typescriptSyntax.SyntaxKind;
-  // Returns nothing. Visits node and its descendants to add innerHTML assignment lines to the shared fixed or dynamic sets.
-  // Compound assignments remain dynamic because they depend on existing markup or an unmodelled operation.
+  /**
+   * Visits a syntax node and its descendants to record innerHTML assignment lines in the shared fixed or dynamic sets.
+   * Compound assignments remain dynamic because they depend on existing markup or an unmodelled operation.
+   *
+   * @param node - AST node to inspect and traverse recursively.
+   * @returns Nothing. Adds each innerHTML assignment line number to `fixed` or `dynamic`.
+   */
   const visit = (node: TsNode): void => {
     const operator = typescriptSyntax.isBinaryExpression(node) ? node.operatorToken.kind : undefined;
     const isAssignment = operator === EqualsToken
@@ -390,9 +443,13 @@ function isInsideDeepEqualityAssertion(codeLines: readonly string[], lineIndex: 
   return false;
 }
 
-// Checks the context's current code line for short or generic variable names in declarations and destructuring.
-// A for-of binding skips the short-name check when its body scan counts at most 10 code lines because compact loop names are idiomatic.
-// Returns nothing and appends findings to the context's array. Other headers such as for (const k in obj) get the usual checks.
+/**
+ * Checks the current code line for short or generic variable names in declarations and destructuring.
+ * A for-of binding skips the short-name check when its body scan counts at most 10 code lines because compact loop names are idiomatic.
+ *
+ * @param context - Per-line state holding the current masked line, line array, code-line flags, and findings array.
+ * @returns Nothing. Appends variable naming findings to `context.findings`.
+ */
 function pushVariableNameFindings(context: LineRuleContext): void {
   for (const match of context.codeLine.matchAll(context.variables)) {
     const name = match[1] ?? "";
@@ -409,15 +466,14 @@ function pushVariableNameFindings(context: LineRuleContext): void {
   }
 }
 
-/*
- * Counts the line span of a for-of body starting at the opener line index. Brace-less
- * single-statement bodies return 1 because the body is trivially short. When the opener has `{`,
- * brace-balance tracking finds the matching `}` and returns the number of code lines (per `isCodeLine`) from `{` to `}`
- * inclusive. The walker uses the masked codeLines so braces inside string literals are blanked
- * out; this avoids the false "balanced" claim a raw-source walker would make on template strings.
- * A 50-line scan window guards against unterminated scans because malformed input must not stall
- * the whole-file walker; an unbalanced result returns Infinity so a long-but-unclosed for-of
- * still fires the rule rather than getting silently exempted.
+/**
+ * Counts the code-line span of a for-of body starting at the opener line using masked lines so string braces are ignored.
+ * Capped at a 50-line scan window because malformed input must not stall the walker and avoid false exemptions on unclosed loops.
+ *
+ * @param codeLines - Comment-and-literal-masked source lines scanned for brace balance.
+ * @param isCodeLine - Per-line flags counting only non-empty code lines inside the brace span.
+ * @param openerLineIndex - Zero-based index of the line containing the for-of header.
+ * @returns 1 for brace-less single statements, the inclusive code-line count from `{` to `}`, or Infinity if unclosed within 50 lines.
  */
 function forOfBodyLineSpan(codeLines: readonly string[], isCodeLine: readonly boolean[], openerLineIndex: number): number {
   const maxLines = 50;
@@ -439,8 +495,15 @@ interface ForOfBraceScanState {
   bodyOpenerLine: number;
 }
 
-// Returns the next brace-scan state from the current line and prior state so the caller can measure the loop body.
-// lineIndex is zero-based; bodyOpenerLine stays -1 until the first opening brace, and the supplied state is not mutated.
+/**
+ * Computes the next brace-scan state from the current line and prior state so the caller can measure the loop body.
+ * Does not mutate the supplied state; `bodyOpenerLine` stays -1 until the first opening brace is seen.
+ *
+ * @param state - Prior brace-nesting depth and opener line index.
+ * @param line - Masked source line scanned for opening and closing braces.
+ * @param lineIndex - Zero-based index of the current line.
+ * @returns Fresh brace-scan state with updated depth and opener line index.
+ */
 function advanceForOfBraceScan(state: ForOfBraceScanState, line: string, lineIndex: number): ForOfBraceScanState {
   const opens = (line.match(/\{/g) ?? []).length;
   const closes = (line.match(/\}/g) ?? []).length;
@@ -448,9 +511,13 @@ function advanceForOfBraceScan(state: ForOfBraceScanState, line: string, lineInd
   return { depth: state.depth + opens - closes, bodyOpenerLine };
 }
 
-// Returns candidate local names from a shallow scan of const or let object destructuring in codeLine for the naming rules.
-// Splits at every comma, including commas inside defaults. Each fragment yields its alias or plain name after any default suffix is stripped.
-// Fragments without a name match are skipped. No matches yield an empty array.
+/**
+ * Extracts candidate local names from a shallow scan of const or let object destructuring for naming rules.
+ * Splits at every comma, strips any default suffix, and yields the alias or plain identifier for each matching fragment.
+ *
+ * @param codeLine - Masked source line inspected for object destructuring bindings.
+ * @returns Candidate bound local identifier names, or empty when no bindings match.
+ */
 function destructuredLocalNames(codeLine: string): string[] {
   const names: string[] = [];
   for (const block of codeLine.matchAll(/\b(?:const|let)\s+\{([^}]+)\}\s*=/g)) {
@@ -468,22 +535,39 @@ function destructuredLocalNames(codeLine: string): string[] {
   return names;
 }
 
-// Checks declaration name against the short-variable rule using context's file, line and configuration.
-// Returns nothing. Appends any stable finding to context.findings with the declaration surface.
-// loopBodyLineCount is the for-of body's code-line count; undefined disables its short-body exemption.
+/**
+ * Checks a declared identifier against the short-variable rule using the current context's file, line, and configuration.
+ *
+ * @param context - Per-line state supplying file metadata, line number, config, and findings array.
+ * @param name - Declared variable identifier to evaluate.
+ * @param loopBodyLineCount - Optional for-of body code-line count; undefined disables the short-body exemption.
+ * @returns Nothing. Appends any stable finding to `context.findings` with the declaration surface.
+ */
 function pushShortVariableFinding(context: LineRuleContext, name: string, loopBodyLineCount?: number): void {
   pushShortVariableAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration", loopBodyLineCount);
 }
 
-// Checks declaration name for low-information identifiers using context's file, line and configuration.
-// Returns nothing. Appends any stable naming.identifier-quality finding to context.findings with the declaration surface.
+/**
+ * Checks a declared identifier for low-information names using the current context's file, line, and configuration.
+ *
+ * @param context - Per-line state supplying file metadata, line number, config, and findings array.
+ * @param name - Declared variable identifier to evaluate.
+ * @returns Nothing. Appends any stable `naming.identifier-quality` finding to `context.findings` with the declaration surface.
+ */
 function pushIdentifierQualityFinding(context: LineRuleContext, name: string): void {
   pushIdentifierQualityAt(context.file, context.lineNumber, name, context.config, context.findings, "declaration");
 }
 
-// Returns true for a rawLine match starting on a codeLine character other than space, tab, CR or LF unless isExemptMatch returns true.
-// pattern must be global; scanning resets and mutates its lastIndex. No accepted match returns false.
-// Omitting isExemptMatch disables rule-specific exemptions. Rejected empty matches advance the cursor to avoid repeating the same match.
+/**
+ * Tests whether a global pattern matches rawLine at a non-whitespace character in codeLine unless exempted.
+ * Resets and mutates `pattern.lastIndex`, and advances past rejected empty matches to avoid repeating the same match.
+ *
+ * @param rawLine - Unmasked source line searched for pattern matches.
+ * @param codeLine - Masked source line used to verify the match start is not blanked out.
+ * @param pattern - Regular expression that must have the global flag for stateful scanning.
+ * @param isExemptMatch - Optional predicate taking match index to exempt rule-specific hits; omitting it disables exemptions.
+ * @returns True on the first non-exempt match starting on a non-whitespace `codeLine` character; otherwise false.
+ */
 function rawPatternStartsInCode(rawLine: string, codeLine: string, pattern: RegExp, isExemptMatch?: (index: number) => boolean): boolean {
   const globalPattern = pattern;
   let match: RegExpExecArray | null;
@@ -500,13 +584,23 @@ function rawPatternStartsInCode(rawLine: string, codeLine: string, pattern: RegE
   return false;
 }
 
-// Returns whether character is non-empty and is not a space, tab, carriage return or newline, for masked match-start checks.
+/**
+ * Checks whether a single character is non-empty and not a space, tab, carriage return, or newline for masked match-start checks.
+ *
+ * @param character - Single character or empty value from the masked code line at a match start.
+ * @returns True when `character` is non-empty and not space, tab, CR, or LF; otherwise false.
+ */
 function isNonWhitespaceCharacter(character: string): boolean {
   return character !== "" && character !== " " && character !== "\t" && character !== "\r" && character !== "\n";
 }
 
-// Returns whether codeLine matches a call prefix for setTimeout, setInterval or execScript followed by an opening quote or backtick.
-// Matches bare calls and calls through window, self or globalThis so browser string-to-code evaluation can be reported.
+/**
+ * Checks whether codeLine contains a call prefix for setTimeout, setInterval, or execScript followed by an opening quote or backtick.
+ * Matches bare calls and calls through window, self, or globalThis so browser string-to-code evaluation can be reported.
+ *
+ * @param codeLine - Masked source line inspected for string-callback timer or execScript calls.
+ * @returns True when a bare or global-object timer or execScript call starts with a quote or backtick; otherwise false.
+ */
 function stringTimerCandidate(codeLine: string): boolean {
   return (
     /(?:^|[^.\w$])(?:setTimeout|setInterval|execScript)\s*\(\s*["'`]/.test(codeLine) ||

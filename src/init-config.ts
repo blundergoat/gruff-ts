@@ -136,8 +136,13 @@ function renderSensitiveExclusionsSection(preservedEntries: readonly PreservedSe
   return [...guidance, "sensitiveExclusions:", ...preservedEntries.flatMap(renderPreservedExclusionEntry)].join("\n");
 }
 
-// Returns one preserved exclusion as block-sequence YAML lines in the expected key order.
-// An entry without a symbol keeps that selector unset in the generated YAML.
+/**
+ * Format one preserved sensitive exclusion as block-sequence YAML lines in the expected key order.
+ * An entry without a symbol keeps that selector unset in the generated YAML.
+ *
+ * @param entry - reviewed exclusion containing rule, path, reason, and optional symbol
+ * @returns YAML lines for the entry in rule, path, optional symbol, and reason order
+ */
 function renderPreservedExclusionEntry(entry: PreservedSensitiveExclusionEntry): string[] {
   const lines = [`  - rule: ${JSON.stringify(entry.rule)}`, `    path: ${JSON.stringify(entry.path)}`];
   if (entry.symbol !== undefined) {
@@ -147,7 +152,11 @@ function renderPreservedExclusionEntry(entry: PreservedSensitiveExclusionEntry):
   return lines;
 }
 
-// Returns the required top-level schema version field for the generated config.
+/**
+ * Build the required top-level schema version field for the generated config.
+ *
+ * @returns YAML comment and `schemaVersion: gruff-ts.config.v0.1` line joined by a newline
+ */
 function renderSchemaVersionSection(): string {
   return [
     "# Config-schema version. Required as of gruff-ts 0.2.0. See ADR-004 (decision log).",
@@ -155,8 +164,13 @@ function renderSchemaVersionSection(): string {
   ].join("\n");
 }
 
-// Returns the failOn YAML section, using preserved command thresholds when present.
-// Missing analyse defaults to advisory; missing summary and report default to none. Dashboard has no entry.
+/**
+ * Build the `failOn` YAML section using preserved command thresholds when present.
+ * Missing analyse defaults to advisory; missing summary and report default to none. Dashboard has no entry.
+ *
+ * @param preserved - existing per-command fail thresholds recovered from a prior config
+ * @returns YAML header comments and `failOn:` block with analyse, summary, and report entries
+ */
 function renderFailOnSection(preserved: ReadonlyMap<MinimumSeverityCommand, FailThreshold>): string {
   const header = [
     "# Per-command default for `--fail-on`. CLI flag > this block > binary default.",
@@ -203,10 +217,13 @@ function writeDefaultConfig(projectRoot: string, shouldOverwrite: boolean): Init
   return { path: targetPath, status: targetExists ? "overwritten" : "written" };
 }
 
-/*
- * Returns ignore paths, command gates and reviewed sensitive exclusions recovered from the existing config path.
+/**
+ * Recover ignore paths, command gates, and reviewed sensitive exclusions from an existing config file.
  * Uses the permissive extractor so configs without schemaVersion can retain their readable settings.
  * Read or parse failures silently return empty settings because forced regeneration permits replacing unreadable content.
+ *
+ * @param existingConfigPath - path to the incumbent config file to read and extract settings from
+ * @returns recovered preserved config settings, or empty settings if extraction throws
  */
 function readExistingPreservedConfig(existingConfigPath: string): PreservedInitConfig {
   try {
@@ -216,8 +233,13 @@ function readExistingPreservedConfig(existingConfigPath: string): PreservedInitC
   }
 }
 
-// Returns the paths YAML section. With no supplied exclusions, it emits an empty ignore list because discovery already applies built-in ignores.
-// During forced regeneration, the caller supplies existing path exclusions so the user's entries survive.
+/**
+ * Build the `paths` YAML section with guidance comments and configured ignore patterns.
+ * With no supplied exclusions, it emits an empty ignore list because discovery already applies built-in ignores.
+ *
+ * @param ignoredPaths - existing path exclusions preserved so user entries survive forced regeneration
+ * @returns YAML `paths:` block containing either `ignore: []` or JSON-quoted ignore list entries
+ */
 function renderPathsSection(ignoredPaths: readonly string[]): string {
   const header = [
     "paths:",
@@ -239,8 +261,12 @@ function renderPathsSection(ignoredPaths: readonly string[]): string {
   ].join("\n");
 }
 
-// Returns the starter YAML naming allowlists, listing the default abbreviations accepted in identifiers.
-// The other naming allowlists stay commented so users can discover them without changing defaults.
+/**
+ * Build the starter YAML naming allowlists, listing the default abbreviations accepted in identifiers.
+ * The other naming allowlists stay commented so users can discover them without changing defaults.
+ *
+ * @returns YAML `allowlists:` section with `acceptedAbbreviations` and commented optional settings
+ */
 function renderAllowlistsSection(): string {
   return [
     "allowlists:",
@@ -258,7 +284,11 @@ function renderAllowlistsSection(): string {
   ].join("\n");
 }
 
-// Walks the registry in its canonical (sorted) order so the generated YAML is byte-stable.
+/**
+ * Walk the rule registry in its canonical (sorted) order so the generated YAML is byte-stable.
+ *
+ * @returns YAML `rules:` section containing formatted entries for all registered rule descriptors
+ */
 function renderRulesSection(): string {
   const lines = ["rules:"];
   for (const descriptor of ruleDescriptors()) {
@@ -267,8 +297,13 @@ function renderRulesSection(): string {
   return lines.join("\n");
 }
 
-// Returns YAML lines for the supplied rule descriptor, including its description, id and default enabled state.
-// A numeric threshold adds threshold and severity; option fields come from RULE_OPTION_DEFAULTS when registered.
+/**
+ * Format YAML lines for a rule descriptor, including its description, id, and default enabled state.
+ * A numeric threshold adds threshold and severity; option fields come from RULE_OPTION_DEFAULTS when registered.
+ *
+ * @param descriptor - rule metadata entry from the registry to serialize
+ * @returns indented YAML comment and configuration lines for the rule
+ */
 function renderRuleEntry(descriptor: RuleDescriptor): string[] {
   const lines: string[] = [];
   lines.push(`  # ${descriptor.pillar}/${descriptor.severity}: ${descriptor.description}`);

@@ -26,13 +26,28 @@ export interface BandedFields {
   limitBand: LimitBand;
 }
 
-// Names the band a measured value falls in against the limit in force, compared without rounding.
+/**
+ * Names the band a measured value falls in against the limit in force, compared without rounding.
+ *
+ * @param measured - Observed size or complexity value for the unit under analysis.
+ * @param limit - Threshold in force against which `measured` is compared at `UPPER_BAND_RATIO`.
+ * @returns `"upper"` when `measured` is at least `UPPER_BAND_RATIO * limit`, otherwise `"lower"`.
+ */
 export function limitBand(measured: number, limit: number): LimitBand {
   return measured >= UPPER_BAND_RATIO * limit ? "upper" : "lower";
 }
 
-// Returns severity, remediation and band fields by comparing measured with limit for a size or complexity finding.
-// The lower band uses advisory and lowerAdvice; the upper band uses configuredSeverity and upperAdvice.
+/**
+ * Returns severity, remediation and band fields by comparing `measured` with `limit` for a size or complexity finding.
+ * The lower band uses `"advisory"` and `lowerAdvice`; the upper band uses `configuredSeverity` and `upperAdvice`.
+ *
+ * @param measured - Observed size or complexity value for the unit under analysis.
+ * @param limit - Threshold in force passed to `limitBand` to select `"lower"` or `"upper"`.
+ * @param configuredSeverity - Severity applied when the finding lands in the upper band.
+ * @param lowerAdvice - Remediation message used when the finding lands in the lower band.
+ * @param upperAdvice - Remediation message used when the finding lands in the upper band.
+ * @returns Banded fields containing the selected severity, remediation text, and `limitBand`.
+ */
 export function bandedFields(measured: number, limit: number, configuredSeverity: Severity, lowerAdvice: string, upperAdvice: string): BandedFields {
   const band = limitBand(measured, limit);
   return band === "lower"

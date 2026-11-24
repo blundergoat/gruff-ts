@@ -61,8 +61,12 @@ interface ScanStep {
   shouldStopLine: boolean;
 }
 
-// Returns fresh delimiter-scan state for a new file, with no active literal or comment and no prior code character.
-// An empty previousCode lets a slash at the start of code open a regex; later code updates that context.
+/**
+ * Builds fresh delimiter-scan state for a new file with no active literal or comment and no prior code character.
+ * An empty `previousCode` lets a slash at the start of code open a regex; later code updates that context.
+ *
+ * @returns Initialized `DelimiterScanState` with cleared literal, comment, and escape flags.
+ */
 function defaultDelimiterScanState(): DelimiterScanState {
   return {
     quote: undefined,
@@ -76,9 +80,15 @@ function defaultDelimiterScanState(): DelimiterScanState {
   };
 }
 
-// Returns nothing and updates the supplied delimiter totals and scanner state for one source line.
-// Stops at a line comment because the rest of the line is comment text.
-// Block comments, string text and regex bodies leave counts unchanged. Template interpolations resume counting.
+/**
+ * Updates the supplied delimiter totals and scanner state across one source line.
+ * Stops at a line comment because the rest of the line is comment text; block comments, string text, and regex
+ * bodies leave counts unchanged while template interpolations resume counting.
+ *
+ * @param line - Source line text to scan from left to right.
+ * @param ctx - Mutable delimiter counts and lexer state updated in place for `line`.
+ * @returns Nothing. Mutates `ctx.counts` and `ctx.scan` for each scanned character until EOL or a line comment.
+ */
 function scanDelimiterLine(line: string, ctx: DelimiterScanContext): void {
   for (let offset = 0; offset < line.length; offset += 1) {
     const step = scanDelimiterCharacter(line, offset, ctx);
@@ -89,8 +99,14 @@ function scanDelimiterLine(line: string, ctx: DelimiterScanContext): void {
   }
 }
 
-// Scan line at offset according to the lexical mode stored in ctx, updating its counts and scan state.
-// Return a step telling the line walker whether to continue, skip a character, or stop at a line comment.
+/**
+ * Scans `line` at `offset` according to the lexical mode stored in `ctx`, mutating its counts and scan state.
+ *
+ * @param line - Source line text containing the character to inspect.
+ * @param offset - Zero-based index of the current character within `line`.
+ * @param ctx - Mutable delimiter counts and lexer state carried across characters.
+ * @returns Step telling the line walker whether to continue, skip a character, or stop at a line comment.
+ */
 function scanDelimiterCharacter(line: string, offset: number, ctx: DelimiterScanContext): ScanStep {
   const character = line[offset] ?? "";
   const next = line[offset + 1] ?? "";
@@ -107,9 +123,15 @@ function scanDelimiterCharacter(line: string, offset: number, ctx: DelimiterScan
   return scanCodeDelimiter(line, offset, character, next, ctx);
 }
 
-// Inside `/* ... */`. Returns `skip: 1` to swallow the `/` of the closing `*/`, then the next
-// step resumes in code mode. Block-comment contents do not affect delimiter counts.
-// Read character and lookahead next, update scan's lexical mode, and return a continuing step when no closer is found.
+/**
+ * Scans inside a block comment, leaving delimiter counts unchanged until the closing delimiter.
+ * Mutates `scan.isInBlockComment` to false on the closer so the next step resumes in code mode.
+ *
+ * @param character - Current character inside the block comment.
+ * @param next - Lookahead character immediately following `character`.
+ * @param scan - Mutable lexer state updated when the closing delimiter is matched.
+ * @returns Step with `skip: 1` to swallow the trailing `/` on a closer, or a continuing step otherwise.
+ */
 function scanBlockCommentDelimiter(character: string, next: string, scan: DelimiterScanState): ScanStep {
   if (character === "*" && next === "/") {
     scan.isInBlockComment = false;
@@ -118,9 +140,15 @@ function scanBlockCommentDelimiter(character: string, next: string, scan: Delimi
   return continueScan();
 }
 
-// Scan character and lookahead next inside a quoted literal, updating the quote, escape, and delimiter state in ctx.
-// Escapes protect the next character; template interpolation saves brace depth and resumes code until its closing brace.
-// Return a continuing step, skipping the opening brace after a template interpolation marker.
+/**
+ * Scans inside a quoted literal, mutating quote, escape, and template-interpolation state in `ctx`.
+ * Escapes protect the next character; template interpolation saves brace depth and resumes code until its closing brace.
+ *
+ * @param character - Current character inside the quoted literal.
+ * @param next - Lookahead character immediately following `character`.
+ * @param ctx - Mutable delimiter counts and lexer state updated on escapes, quotes, or `${`.
+ * @returns Continuing step, or a skip step after `${` so the opening brace is not re-counted.
+ */
 function scanQuotedDelimiter(character: string, next: string, ctx: DelimiterScanContext): ScanStep {
   const scan = ctx.scan;
   if (scan.isEscaped) {
@@ -144,9 +172,14 @@ function scanQuotedDelimiter(character: string, next: string, ctx: DelimiterScan
   return continueScan();
 }
 
-// Returns nothing. Updates scan from character, tracking escapes and classes. Closing the regex sets previousCode to an operand marker.
-// Inside `/regex/`. `[...]` character classes can legally contain `/`, so the closing slash
-// is only honoured when `isInRegexCharClass` is false; otherwise `/[/]/` would terminate early.
+/**
+ * Scans inside a regex literal, mutating `scan` for escapes, character classes, and the closing slash.
+ * Closing slash is only honoured when `isInRegexCharClass` is false because `[...]` can contain `/`.
+ *
+ * @param character - Current character inside the regex literal body.
+ * @param scan - Mutable lexer state updated for escapes, `[` / `]` class boundaries, and regex exit.
+ * @returns Nothing. Mutates `scan` in place and sets `scan.previousCode` to `"x"` when the regex closes.
+ */
 function scanRegexDelimiter(character: string, scan: DelimiterScanState): void {
   if (scan.isRegexEscaped) {
     scan.isRegexEscaped = false;
@@ -162,8 +195,17 @@ function scanRegexDelimiter(character: string, scan: DelimiterScanState): void {
   }
 }
 
-// Classify character and lookahead next in executable code, using line and offset for the regex-opening heuristic.
-// Update delimiter counts and lexical state in ctx; return the matched token's scan step or the ordinary-code step.
+/**
+ * Classifies `character` and lookahead `next` in executable code, using `line` and `offset` for regex detection.
+ * Mutates delimiter counts and lexical state in `ctx` according to the matched token handler.
+ *
+ * @param line - Source line text providing preceding context for the regex-opening heuristic.
+ * @param offset - Zero-based index of `character` in `line`.
+ * @param character - Current character in executable code.
+ * @param next - Lookahead character immediately following `character`.
+ * @param ctx - Mutable delimiter counts and lexer state updated by the matching token handler.
+ * @returns Matched token's scan step, or the ordinary-code step when no opener matches.
+ */
 function scanCodeDelimiter(line: string, offset: number, character: string, next: string, ctx: DelimiterScanContext): ScanStep {
   return (
     scanLineCommentStart(character, next) ??
@@ -174,8 +216,13 @@ function scanCodeDelimiter(line: string, offset: number, character: string, next
   );
 }
 
-// `//` ends the line for delimiter purposes - anything to the right is comment text.
-// Read character and lookahead next; return a stopping step for the opener or undefined to try another token kind.
+/**
+ * Detects a `//` line-comment opener that ends delimiter scanning for the remainder of the line.
+ *
+ * @param character - Current character in executable code.
+ * @param next - Lookahead character immediately following `character`.
+ * @returns Stopping step when `//` is matched, or `undefined` to try another token kind.
+ */
 function scanLineCommentStart(character: string, next: string): ScanStep | undefined {
   if (character === "/" && next === "/") {
     return stopLineScan();
@@ -183,8 +230,15 @@ function scanLineCommentStart(character: string, next: string): ScanStep | undef
   return undefined;
 }
 
-// `/*` flips the scanner into block-comment mode; `skip: 1` swallows the `*` so it isn't re-evaluated.
-// Inspect character and lookahead next, update scan on an opener, and return a skip step or undefined for another token handler.
+/**
+ * Detects a block-comment opener (`/*`) and mutates `scan.isInBlockComment` so following text is skipped.
+ * Uses `skip: 1` to swallow the `*` so it is not re-evaluated as part of a closer.
+ *
+ * @param character - Current character in executable code.
+ * @param next - Lookahead character immediately following `character`.
+ * @param scan - Mutable lexer state updated when a block comment opens.
+ * @returns Skip step when a block comment opens, or `undefined` to try another token handler.
+ */
 function scanBlockCommentStart(character: string, next: string, scan: DelimiterScanState): ScanStep | undefined {
   if (character === "/" && next === "*") {
     scan.isInBlockComment = true;
@@ -193,8 +247,13 @@ function scanBlockCommentStart(character: string, next: string, scan: DelimiterS
   return undefined;
 }
 
-// Treat character as a possible quote opener and store a recognised quote in the caller's scan state.
-// Return a continuing step for a quote, or undefined so the caller can try another token kind.
+/**
+ * Recognises a string or template quote opener and stores it in `scan.quote`.
+ *
+ * @param character - Current character in executable code.
+ * @param scan - Mutable lexer state updated with the active quote delimiter on match.
+ * @returns Continuing step when `character` is a quote, or `undefined` to try another token kind.
+ */
 function scanQuoteStart(character: string, scan: DelimiterScanState): ScanStep | undefined {
   if (isQuote(character)) {
     scan.quote = character;
@@ -203,8 +262,16 @@ function scanQuoteStart(character: string, scan: DelimiterScanState): ScanStep |
   return undefined;
 }
 
-// Use character, the prefix of line before offset, and scan.previousCode to distinguish a regex opener from division.
-// On an opener, update the caller's scan flags and return a continuing step; otherwise return undefined for the next token handler.
+/**
+ * Distinguishes a regex literal opener from division using `scan.previousCode` and the line prefix before `offset`.
+ * Mutates `scan` regex flags when `/` opens a regex literal.
+ *
+ * @param line - Source line text containing the candidate slash.
+ * @param offset - Zero-based index of `character` in `line`.
+ * @param character - Current character in executable code.
+ * @param scan - Mutable lexer state supplying `previousCode` and receiving updated regex flags.
+ * @returns Continuing step on a regex opener, or `undefined` for the next token handler.
+ */
 function scanRegexStart(line: string, offset: number, character: string, scan: DelimiterScanState): ScanStep | undefined {
   if (character === "/" && isRegexLiteralStart(scan.previousCode, line.slice(0, offset))) {
     scan.isInRegex = true;
@@ -215,9 +282,14 @@ function scanRegexStart(line: string, offset: number, character: string, scan: D
   return undefined;
 }
 
-// Count character in ctx.counts and update ctx.scan so later slashes can be classified as regex or division.
-// Ignore whitespace when remembering code; a closing interpolation brace restores template-literal mode at its saved depth.
-// Return a continuing scan step after updating the caller's state.
+/**
+ * Counts `character` in `ctx.counts` and updates `ctx.scan` so later slashes classify as regex or division.
+ * Ignores whitespace when recording `previousCode`; a closing interpolation brace restores template-literal mode.
+ *
+ * @param character - Current ordinary character in executable code.
+ * @param ctx - Mutable delimiter counts and lexer state updated in place.
+ * @returns Continuing scan step after updating counts and interpolation/code state.
+ */
 function scanPlainCodeDelimiter(character: string, ctx: DelimiterScanContext): ScanStep {
   countDelimiter(character, ctx.counts);
   if (character === "}" && ctx.scan.templateInterpolationStack.length > 0 && ctx.counts.braces === (ctx.scan.templateInterpolationStack[ctx.scan.templateInterpolationStack.length - 1] ?? -1)) {
@@ -232,8 +304,14 @@ function scanPlainCodeDelimiter(character: string, ctx: DelimiterScanContext): S
   return continueScan();
 }
 
-// Returns nothing and updates the supplied delimiter totals for the current character.
-// Openers add to their own total and closers subtract. Other characters are ignored so that callers can pass each character unconditionally.
+/**
+ * Updates the supplied delimiter totals for `character` by incrementing on openers and decrementing on closers.
+ * Other characters are ignored so callers can pass every code character unconditionally.
+ *
+ * @param character - Character tested against `{`, `}`, `(`, `)`, `[`, and `]`.
+ * @param counts - Mutable delimiter totals updated in place.
+ * @returns Nothing. Mutates `counts` when `character` is a tracked delimiter.
+ */
 function countDelimiter(character: string, counts: DelimiterCounts): void {
   if (character === "{") {
     counts.braces += 1;
@@ -250,12 +328,22 @@ function countDelimiter(character: string, counts: DelimiterCounts): void {
   }
 }
 
-// Returns whether counts contains a negative brace, parenthesis, or bracket balance, indicating a closer without an opener.
+/**
+ * Checks whether `counts` has any negative brace, parenthesis, or bracket balance from a closer without an opener.
+ *
+ * @param counts - Running delimiter totals to inspect.
+ * @returns True if any delimiter balance is below zero; otherwise false.
+ */
 function hasNegativeDelimiterCount(counts: DelimiterCounts): boolean {
   return counts.braces < 0 || counts.parentheses < 0 || counts.brackets < 0;
 }
 
-// Returns whether counts has any nonzero brace, parenthesis, or bracket balance, indicating unmatched delimiters.
+/**
+ * Checks whether `counts` has any nonzero brace, parenthesis, or bracket balance indicating unmatched delimiters.
+ *
+ * @param counts - Final delimiter totals at end of file.
+ * @returns True if any delimiter count is nonzero; otherwise false.
+ */
 function hasUnbalancedDelimiterCount(counts: DelimiterCounts): boolean {
   return counts.braces !== 0 || counts.parentheses !== 0 || counts.brackets !== 0;
 }
@@ -277,15 +365,25 @@ function parseErrorDiagnostic(file: DiagnosticSourceFile, line: number, message:
   };
 }
 
-// Returns whether a slash looks like a regex opener. previousCode holds a code character, a synthetic operand marker, or an empty start marker.
-// beforeSlash supplies preceding text. An empty marker, selected punctuation, or the word return after trimming trailing whitespace permits a regex.
-// This conservative heuristic limits the risk of masking real code as a regex body and losing its delimiters.
+/**
+ * Determines whether a slash looks like a regex opener using a conservative heuristic to avoid masking real code.
+ * Empty `previousCode`, selected punctuation, or trailing `return` before the slash permits a regex.
+ *
+ * @param previousCode - Last non-whitespace code character, synthetic operand marker, or empty start marker.
+ * @param beforeSlash - Preceding line slice before the candidate `/` character.
+ * @returns True when the slash context permits a regex literal opener; otherwise false.
+ */
 function isRegexLiteralStart(previousCode: string, beforeSlash: string): boolean {
   return previousCode === "" || "([{=,:!&|?;".includes(previousCode) || /\breturn$/.test(beforeSlash.trimEnd());
 }
 
-// Returns source with recognized comment and literal bodies masked, preserving UTF-16 code-unit offsets and newline positions.
-// Regex-driven rules use the unchanged positions to report source locations without matching text inside those bodies.
+/**
+ * Masks recognized comment and literal bodies in `source` while preserving UTF-16 code-unit offsets and newlines.
+ * Regex-driven rules use the unchanged positions to report source locations without matching text inside those bodies.
+ *
+ * @param source - Raw source file text to mask.
+ * @returns Copy of `source` with comment, string, template, and regex bodies replaced by spaces.
+ */
 function maskNonCode(source: string): string {
   let result = "";
   const state = defaultMaskState();
@@ -297,9 +395,13 @@ function maskNonCode(source: string): string {
   return result;
 }
 
-// Masks template-literal bodies in source with spaces and returns the result, preserving offsets and line-feed characters.
-// Single- and double-quoted bodies remain visible so syntax-pattern rules can read real import specifiers.
-// Import-edge rules use this to ignore fixture text inside backticks. Import calls inside interpolations can also be masked.
+/**
+ * Masks template-literal bodies in `source` with spaces while preserving offsets and line-feed characters.
+ * Single- and double-quoted bodies remain visible so syntax-pattern rules can read real import specifiers.
+ *
+ * @param source - Raw source file text to mask.
+ * @returns Copy of `source` with backtick template contents replaced by spaces.
+ */
 function maskTemplateLiteralBodies(source: string): string {
   let result = "";
   const state = templateMaskState();
@@ -322,14 +424,24 @@ interface TemplateMaskState {
   isBlockComment: boolean;
 }
 
-// Fresh default state for a single-file template-mask pass.
+/**
+ * Creates fresh default state for a single-file template-mask pass.
+ *
+ * @returns Initialized `TemplateMaskState` with no active quote or comment context.
+ */
 function templateMaskState(): TemplateMaskState {
   return { quote: undefined, isEscaped: false, isLineComment: false, isBlockComment: false };
 }
 
-// Transform character with lookahead next for template-body masking, updating the caller's state.
-// Preserve delimiters, newlines, single/double-quoted strings, and comments while masking template body text.
-// Return output text and the extra-character skip count; regex literals receive no dedicated handling.
+/**
+ * Transforms `character` with lookahead `next` for template-body masking, mutating `state` in place.
+ * Preserves delimiters, newlines, single/double-quoted strings, and comments while masking template body text.
+ *
+ * @param character - Current character from the source text.
+ * @param next - Lookahead character immediately following `character`.
+ * @param state - Mutable quote and comment context carried across characters.
+ * @returns Output text and extra-character skip count; regex literals receive no dedicated handling.
+ */
 function templateMaskCharacter(character: string, next: string, state: TemplateMaskState): MaskStep {
   if (character === "\n") return templateMaskNewline(state);
   if (state.isLineComment) return { text: character, skip: 0 };
@@ -338,8 +450,12 @@ function templateMaskCharacter(character: string, next: string, state: TemplateM
   return templateMaskCodeCharacter(character, next, state);
 }
 
-// Newlines clear line-comment state and any non-template quote; template literals survive across lines.
-// Mutate state in place and return a newline with no extra-character skip.
+/**
+ * Clears line-comment state and any non-template quote at a newline while preserving template-literal mode.
+ *
+ * @param state - Mutable template-mask state updated in place at the line boundary.
+ * @returns Step emitting `"\n"` with no extra-character skip.
+ */
 function templateMaskNewline(state: TemplateMaskState): MaskStep {
   state.isLineComment = false;
   if (state.quote !== "`") {
@@ -348,8 +464,14 @@ function templateMaskNewline(state: TemplateMaskState): MaskStep {
   return { text: "\n", skip: 0 };
 }
 
-// Use character and lookahead next to preserve block-comment text, clearing state.isBlockComment on its closer.
-// Return preserved text and an extra-character skip of one for the closer, or zero otherwise.
+/**
+ * Preserves block-comment text and clears `state.isBlockComment` when the closing delimiter is reached.
+ *
+ * @param character - Current character inside the block comment.
+ * @param next - Lookahead character immediately following `character`.
+ * @param state - Mutable template-mask state updated on a block-comment closer.
+ * @returns Preserved text with `skip: 1` on the closing pair, or `skip: 0` otherwise.
+ */
 function templateMaskBlockComment(character: string, next: string, state: TemplateMaskState): MaskStep {
   if (character === "*" && next === "/") {
     state.isBlockComment = false;
@@ -358,9 +480,14 @@ function templateMaskBlockComment(character: string, next: string, state: Templa
   return { text: character, skip: 0 };
 }
 
-// Inside any quoted string: bodies of `` ` `` get masked, single/double-quote bodies pass through.
-// Use character and the active quote in state, updating escape and quote flags in place.
-// Return the transformed character with no extra skip; preserve an unescaped closing quote and leave quote mode.
+/**
+ * Processes a character inside a quoted literal, masking backtick bodies while passing single/double quotes through.
+ * Preserves an unescaped closing quote and mutates escape and quote flags in `state`.
+ *
+ * @param character - Current character inside the active literal.
+ * @param state - Mutable template-mask state tracking escapes and the active quote delimiter.
+ * @returns Transformed character step with `skip: 0`.
+ */
 function templateMaskQuotedCharacter(character: string, state: TemplateMaskState): MaskStep {
   const masked = state.quote === "`";
   if (state.isEscaped) {
@@ -378,8 +505,15 @@ function templateMaskQuotedCharacter(character: string, state: TemplateMaskState
   return { text: masked ? " " : character, skip: 0 };
 }
 
-// In code: detect comment openers and the three quote types, otherwise pass through.
-// Read character and lookahead next, update state on an opener, and return preserved text plus the extra-character skip count.
+/**
+ * Detects comment openers and the three quote types in code, passing ordinary characters through unchanged.
+ * Mutates `state` when a comment or quote opener is matched.
+ *
+ * @param character - Current character in code context.
+ * @param next - Lookahead character immediately following `character`.
+ * @param state - Mutable template-mask state updated on comment or quote entry.
+ * @returns Preserved text and extra-character skip count (`1` for comment openers, `0` otherwise).
+ */
 function templateMaskCodeCharacter(character: string, next: string, state: TemplateMaskState): MaskStep {
   if (character === "/" && next === "/") {
     state.isLineComment = true;
@@ -420,7 +554,11 @@ interface MaskStep {
   skip: number;
 }
 
-// All flags start cleared so the first scanner step treats source as code.
+/**
+ * Builds fresh `MaskState` with all flags cleared so the first scanner step treats source as code.
+ *
+ * @returns Initialized `MaskState` with empty prior code and no active literal or comment flags.
+ */
 function defaultMaskState(): MaskState {
   return {
     quote: undefined,
@@ -435,9 +573,15 @@ function defaultMaskState(): MaskState {
   };
 }
 
-// Returns output text and an extra-character skip for source[index], updating state as comments and literals open or close.
-// source is the complete input and index selects the current character; state carries the masking context between calls.
-// Newlines end line comments and ordinary quote or regex state, while template literals and block comments remain active.
+/**
+ * Masks or preserves `source[index]` according to `state`, mutating `state` as comments and literals open or close.
+ * Newlines end line comments and single-line quote or regex state while template literals and block comments remain active.
+ *
+ * @param source - Complete source text being masked.
+ * @param index - Zero-based UTF-16 offset of the current character in `source`.
+ * @param state - Mutable masking context carried across characters.
+ * @returns Output text and extra-character skip count for the current character or opener/closer pair.
+ */
 function maskNonCodeCharacter(source: string, index: number, state: MaskState): MaskStep {
   const character = source[index] ?? "";
   const next = source[index + 1] ?? "";
@@ -459,9 +603,13 @@ function maskNonCodeCharacter(source: string, index: number, state: MaskState): 
   return maskCodeCharacter(source, index, character, next, state);
 }
 
-// Updates the supplied mask state at a newline by clearing line-comment, single-quote, double-quote, and regex modes.
-// Keeps template-literal and block-comment modes because both can span lines.
-// Returns a step containing the original newline to preserve source offsets.
+/**
+ * Updates `state` at a newline by clearing line-comment, single-quote, double-quote, and regex modes.
+ * Keeps template-literal and block-comment modes because both can span lines, preserving source offsets.
+ *
+ * @param state - Mutable mask state updated in place at the newline.
+ * @returns Step emitting `"\n"` with `skip: 0`.
+ */
 function maskNewline(state: MaskState): MaskStep {
   state.isLineComment = false;
   if (state.quote !== "`") {
@@ -473,9 +621,15 @@ function maskNewline(state: MaskState): MaskStep {
   return { text: "\n", skip: 0 };
 }
 
-// Replaces block-comment text with spaces; the closing `*/` becomes "  " so the two output
-// characters line up with the two consumed characters; character and next are the current source pair.
-// Returns text plus an extra-character skip, clearing state.isBlockComment when the closing pair is consumed.
+/**
+ * Replaces block-comment text with spaces, turning the closing delimiter into two spaces to preserve character alignment.
+ * Clears `state.isBlockComment` when the closing pair is consumed.
+ *
+ * @param character - Current character inside the block comment.
+ * @param next - Lookahead character immediately following `character`.
+ * @param state - Mutable mask state updated when the block comment closes.
+ * @returns Two spaces with `skip: 1` on a closer, or a single masked space step otherwise.
+ */
 function maskBlockComment(character: string, next: string, state: MaskState): MaskStep {
   if (character === "*" && next === "/") {
     state.isBlockComment = false;
@@ -484,9 +638,15 @@ function maskBlockComment(character: string, next: string, state: MaskState): Ma
   return maskSingleCharacter();
 }
 
-// Returns masking text and an extra-character skip for character inside a literal; next is the following source character.
-// Mutates state to track escapes and the closing quote; body text becomes spaces while the closing quote remains visible.
-// In a template, an interpolation opener remains visible, pushes its brace depth, and clears the quote so expression code is scanned.
+/**
+ * Masks characters inside a quoted literal while keeping the closing quote and template `${` openers visible.
+ * Mutates `state` for escapes, closing quotes, and pushing brace depth when a template interpolation opens.
+ *
+ * @param character - Current character inside the quoted literal.
+ * @param next - Lookahead character immediately following `character`.
+ * @param state - Mutable mask state tracking escape, quote, and template interpolation stack state.
+ * @returns Masking step with spaces for literal body text, `"${"` on interpolation, or the closing quote.
+ */
 function maskQuotedCharacter(character: string, next: string, state: MaskState): MaskStep {
   if (state.isEscaped) {
     state.isEscaped = false;
@@ -510,9 +670,14 @@ function maskQuotedCharacter(character: string, next: string, state: MaskState):
   return maskSingleCharacter();
 }
 
-// Inside `/.../`: mask body characters and pass through the closing `/`. `[ ... ]` character classes
-// suspend the closing-slash check so `/[/]/` does not terminate at the inner slash.
-// Returns text for character with skip 0 and updates state for escapes, character classes, and the closing slash.
+/**
+ * Masks regex literal body characters and passes through the closing `/`, tracking escapes and `[...]` classes.
+ * Character classes suspend the closing-slash check so `/[/]/` does not terminate at the inner slash.
+ *
+ * @param character - Current character inside the regex literal.
+ * @param state - Mutable mask state updated for escapes, class boundaries, and regex exit.
+ * @returns Space-mask step for body characters, or the closing `/` with `skip: 0`.
+ */
 function maskRegexCharacter(character: string, state: MaskState): MaskStep {
   if (state.isRegexEscaped) {
     state.isRegexEscaped = false;
@@ -538,9 +703,17 @@ function maskRegexCharacter(character: string, state: MaskState): MaskStep {
   return maskSingleCharacter();
 }
 
-// Returns output text and an extra-character skip for source[index]; character and next are the current and following source characters.
-// Mutates state for template braces, comment or literal starts, or the last code character, preserving positions for rule matching.
-// Checks comment openers before regex starts so a comment opener cannot enter regex mode; unmatched text passes through.
+/**
+ * Dispatches code-context masking for `source[index]`, mutating `state` on openers, braces, or code tokens.
+ * Checks comment openers before regex starts so a comment opener cannot enter regex mode, preserving offsets.
+ *
+ * @param source - Complete source text used to inspect context before a candidate regex slash.
+ * @param index - Zero-based offset of `character` in `source`.
+ * @param character - Current character in code context.
+ * @param next - Lookahead character immediately following `character`.
+ * @param state - Mutable mask state updated by the matching detector or plain-code fallback.
+ * @returns Output text and extra-character skip count from the first matching detector.
+ */
 function maskCodeCharacter(source: string, index: number, character: string, next: string, state: MaskState): MaskStep {
   return (
     maskTemplateInterpolationBrace(character, state) ??
@@ -552,9 +725,14 @@ function maskCodeCharacter(source: string, index: number, character: string, nex
   );
 }
 
-// Returns character with skip 0 for a brace in the active template interpolation, updating state and only its innermost brace depth.
-// character is the current code character; state tracks open interpolations. Closing its final brace resumes template-body masking.
-// Returns undefined outside an interpolation or for other characters so the caller can try the next detector.
+/**
+ * Tracks `{` and `}` inside the active template interpolation, mutating only its innermost brace depth.
+ * Closing the final brace pops the interpolation entry and resumes template-body masking.
+ *
+ * @param character - Current character in code context.
+ * @param state - Mutable mask state carrying `templateInterpolationDepths` and `previousCode`.
+ * @returns Step preserving the brace with `skip: 0`, or `undefined` outside interpolations or for other characters.
+ */
 function maskTemplateInterpolationBrace(character: string, state: MaskState): MaskStep | undefined {
   const openBraceDepths = state.templateInterpolationDepths;
   const innermost = openBraceDepths.length - 1;
@@ -578,8 +756,14 @@ function maskTemplateInterpolationBrace(character: string, state: MaskState): Ma
   return undefined;
 }
 
-// Detects a line-comment opener from character and next, the current and following source characters.
-// On a match, sets state.isLineComment and returns two spaces with skip 1; otherwise returns undefined for the next detector.
+/**
+ * Detects a `//` line-comment opener and mutates `state.isLineComment` so the rest of the line is masked.
+ *
+ * @param character - Current character in code context.
+ * @param next - Lookahead character immediately following `character`.
+ * @param state - Mutable mask state updated when a line comment starts.
+ * @returns Two spaces with `skip: 1` on match, or `undefined` for the next detector.
+ */
 function maskLineCommentStart(character: string, next: string, state: MaskState): MaskStep | undefined {
   if (character === "/" && next === "/") {
     state.isLineComment = true;
@@ -588,8 +772,14 @@ function maskLineCommentStart(character: string, next: string, state: MaskState)
   return undefined;
 }
 
-// Detects a block-comment opener from character and next, the current and following source characters.
-// On a match, sets state.isBlockComment and returns two spaces with skip 1; otherwise returns undefined for the next detector.
+/**
+ * Detects a block-comment opener (`/*`) and mutates `state.isBlockComment` so comment text is masked.
+ *
+ * @param character - Current character in code context.
+ * @param next - Lookahead character immediately following `character`.
+ * @param state - Mutable mask state updated when a block comment starts.
+ * @returns Two spaces with `skip: 1` on match, or `undefined` for the next detector.
+ */
 function maskBlockCommentStart(character: string, next: string, state: MaskState): MaskStep | undefined {
   if (character === "/" && next === "*") {
     state.isBlockComment = true;
@@ -598,9 +788,15 @@ function maskBlockCommentStart(character: string, next: string, state: MaskState
   return undefined;
 }
 
-// Returns character with skip 0 on a recognized regex opener, updating state.isRegex and state.previousCode.
-// source supplies up to 80 characters before index as context; character is the current source character and state holds the prior code.
-// Returns undefined for other characters or contexts so the caller can try the next detector.
+/**
+ * Detects a regex literal opener using up to 80 characters before `index` and mutates `state.isRegex`.
+ *
+ * @param source - Complete source text supplying preceding context for the regex-start heuristic.
+ * @param index - Zero-based offset of `character` in `source`.
+ * @param character - Current character in code context.
+ * @param state - Mutable mask state supplying `previousCode` and updated on regex entry.
+ * @returns Step preserving `/` with `skip: 0` on match, or `undefined` for the next detector.
+ */
 function maskRegexStart(source: string, index: number, character: string, state: MaskState): MaskStep | undefined {
   if (character === "/" && isRegexLiteralStart(state.previousCode, source.slice(Math.max(0, index - 80), index))) {
     state.isRegex = true;
@@ -610,9 +806,14 @@ function maskRegexStart(source: string, index: number, character: string, state:
   return undefined;
 }
 
-// Returns character with skip 0 when it is a string or template delimiter, updating state.quote and state.previousCode.
-// character is the current source character; state carries the masking context. A non-quote returns undefined for the plain-code fallback.
-// Later calls mask literal text while keeping quote boundaries and template interpolation code visible.
+/**
+ * Detects a string or template quote opener and mutates `state.quote` and `state.previousCode`.
+ * Later calls mask literal text while keeping quote boundaries and template interpolation code visible.
+ *
+ * @param character - Current character in code context.
+ * @param state - Mutable mask state updated with the active quote delimiter.
+ * @returns Step preserving the quote with `skip: 0` on match, or `undefined` for the plain-code fallback.
+ */
 function maskQuoteStart(character: string, state: MaskState): MaskStep | undefined {
   if (isQuote(character)) {
     state.quote = character;
@@ -622,8 +823,14 @@ function maskQuoteStart(character: string, state: MaskState): MaskStep | undefin
   return undefined;
 }
 
-// Code characters survive into the masked output; only non-whitespace updates `previousCode` because
-// the regex-start heuristic must look at the last real token, not at the space before it.
+/**
+ * Passes an ordinary code character through into masked output, updating `state.previousCode` only for non-whitespace.
+ * Only non-whitespace updates `previousCode` because the regex-start heuristic must see the last real token.
+ *
+ * @param character - Current ordinary character in code context.
+ * @param state - Mutable mask state whose `previousCode` is updated for non-whitespace characters.
+ * @returns Step preserving `character` with `skip: 0`.
+ */
 function maskPlainCodeCharacter(character: string, state: MaskState): MaskStep {
   if (isNonWhitespaceCharacter(character)) {
     state.previousCode = character;
@@ -631,14 +838,22 @@ function maskPlainCodeCharacter(character: string, state: MaskState): MaskStep {
   return { text: character, skip: 0 };
 }
 
-// Returns one space with skip 0, masking one UTF-16 code unit while preserving source offsets.
+/**
+ * Builds a single-space mask step to obscure one UTF-16 code unit while preserving source offsets.
+ *
+ * @returns `MaskStep` emitting `" "` with `skip: 0`.
+ */
 function maskSingleCharacter(): MaskStep {
   return { text: " ", skip: 0 };
 }
 
-// Returns a source line with string bodies and line comments removed, leaving quote delimiters for matching.
-// The line-local scanner has no block-comment state.
-// Use maskNonCode when rules need to preserve scanner state across lines.
+/**
+ * Strips string bodies and line comments from a single line while leaving quote delimiters for matching.
+ * This line-local scanner has no block-comment state; use `maskNonCode` to preserve state across lines.
+ *
+ * @param line - Single source line to strip for local pattern matching.
+ * @returns Line text with quoted contents and trailing line comments removed.
+ */
 function codeLineForMatching(line: string): string {
   let result = "";
   const state: CodeLineState = { quote: undefined, isEscaped: false };
@@ -665,9 +880,15 @@ interface CodeLineStep {
   shouldStopLine: boolean;
 }
 
-// Returns the output text and stop flag for line[index]; line is raw input and index selects the character.
-// Mutates state to track string delimiters and escapes, emitting quotes but dropping string bodies.
-// A line-comment opener outside a string returns empty text and stops the line; other steps keep scanning.
+/**
+ * Evaluates `line[index]` for line-local matching, mutating `state` to track string delimiters and escapes.
+ * A line-comment opener outside a string emits empty text and stops the line; other characters continue scanning.
+ *
+ * @param line - Raw source line being scanned.
+ * @param index - Zero-based offset of the current character in `line`.
+ * @param state - Mutable quote and escape state carried along the line.
+ * @returns Output text (keeping quotes and code, dropping string bodies) and `shouldStopLine` flag.
+ */
 function codeLineCharacter(line: string, index: number, state: CodeLineState): CodeLineStep {
   const character = line[index] ?? "";
   const next = line[index + 1] ?? "";
@@ -684,9 +905,14 @@ function codeLineCharacter(line: string, index: number, state: CodeLineState): C
   return { text: character, shouldStopLine: false };
 }
 
-// Suppresses literal contents while keeping the closing quote visible so the caller can see the literal boundary.
-// Returns the unescaped closing quote or empty text for any other character. The stop flag is always false inside the quote.
-// Updates state to track escapes and clears the stored quote when the literal closes.
+/**
+ * Suppresses quoted literal contents while keeping the unescaped closing quote visible as the literal boundary.
+ * Mutates `state` to track escapes and clears `state.quote` when the literal closes.
+ *
+ * @param character - Current character inside the quoted literal.
+ * @param state - Mutable quote and escape state updated in place.
+ * @returns Closing quote or empty text, always with `shouldStopLine: false`.
+ */
 function quotedCodeLineCharacter(character: string, state: CodeLineState): CodeLineStep {
   if (state.isEscaped) {
     state.isEscaped = false;
@@ -703,28 +929,50 @@ function quotedCodeLineCharacter(character: string, state: CodeLineState): CodeL
   return { text: "", shouldStopLine: false };
 }
 
-// Default step: caller advances by one, line continues. Centralised so callers stay symmetrical.
+/**
+ * Default scan step advancing by one character while keeping the line scan active.
+ *
+ * @returns `ScanStep` with `skip: 0` and `shouldStopLine: false`.
+ */
 function continueScan(): ScanStep {
   return { skip: 0, shouldStopLine: false };
 }
 
-// Returns a step that skips the second character of a two-character token and continues scanning the line.
+/**
+ * Builds a scan step that skips the second character of a two-character token and keeps scanning.
+ *
+ * @returns `ScanStep` with `skip: 1` and `shouldStopLine: false`.
+ */
 function skipNextCharacter(): ScanStep {
   return { skip: 1, shouldStopLine: false };
 }
 
-// Returns a step that ends the current scan at a line comment so the remaining text contributes no delimiters.
+/**
+ * Builds a scan step that ends the current line scan at a line comment so remaining text contributes no delimiters.
+ *
+ * @returns `ScanStep` with `skip: 0` and `shouldStopLine: true`.
+ */
 function stopLineScan(): ScanStep {
   return { skip: 0, shouldStopLine: true };
 }
 
-// Returns whether character can delimit a single-quoted string, double-quoted string, or template literal.
+/**
+ * Checks whether `character` can delimit a single-quoted string, double-quoted string, or template literal.
+ *
+ * @param character - Single character to check against `"`, `'`, and `` ` ``.
+ * @returns True when `character` is one of the three JS/TS quote delimiters; otherwise false.
+ */
 function isQuote(character: string): boolean {
   return character === "\"" || character === "'" || character === "`";
 }
 
-// Used by `maskPlainCodeCharacter` to decide whether a character should overwrite `previousCode`.
-// Whitespace must not, otherwise the regex-vs-division heuristic would be fed the wrong token.
+/**
+ * Checks whether `character` is non-empty and not horizontal or vertical ASCII whitespace.
+ * Used by `maskPlainCodeCharacter` so whitespace must not overwrite `previousCode` for the regex heuristic.
+ *
+ * @param character - Character inspected before updating `previousCode`.
+ * @returns True if `character` is non-empty and not space, tab, CR, or LF; otherwise false.
+ */
 function isNonWhitespaceCharacter(character: string): boolean {
   return character !== "" && character !== " " && character !== "\t" && character !== "\r" && character !== "\n";
 }

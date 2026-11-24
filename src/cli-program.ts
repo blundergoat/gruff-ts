@@ -48,7 +48,13 @@ const SCAN_TIMEOUT_DESCRIPTION = "Parsed and accepted for cross-port compatibili
 // name or a profile file path; it overrides any config-file `profile:` block (CLI wins, per ADR-010).
 const PROFILE_OPTION_DESCRIPTION = "Apply a built-in profile (gruff.minimal, gruff.recommended, gruff.strict) or a profile file path. Overrides a config-file profile:.";
 
-// Writes output to stdout unless program's silent or quiet flags suppress it; ensures a trailing newline and returns nothing.
+/**
+ * Writes output to stdout unless suppressed by the program's flags, ensuring a trailing newline.
+ *
+ * @param program - root command whose silent and quiet flags govern whether stdout is written
+ * @param output - text to write to stdout with a trailing newline appended when missing
+ * @returns Nothing. Writes to stdout when output is enabled.
+ */
 function writeCommandOutput(program: Command, output: string): void {
   if (outputSuppressed(program)) {
     return;
@@ -56,8 +62,13 @@ function writeCommandOutput(program: Command, output: string): void {
   process.stdout.write(output.endsWith("\n") ? output : `${output}\n`);
 }
 
-// `--silent` and `--quiet` both suppress non-error stdout - they are intentionally treated the same
-// here because Commander exposes them as independent flags but the CLI's contract is uniform.
+/**
+ * Checks whether non-error stdout is suppressed. `--silent` and `--quiet` are intentionally treated
+ * the same here because Commander exposes them as independent flags but the CLI's contract is uniform.
+ *
+ * @param program - root command providing the parsed quiet and silent flags
+ * @returns True when either quiet or silent is enabled; otherwise false.
+ */
 function outputSuppressed(program: Command): boolean {
   const options = program.opts() as { quiet?: boolean; silent?: boolean };
   return options.quiet === true || options.silent === true;
@@ -71,9 +82,16 @@ interface InitPromptOptions {
   hasExplicitConfig: boolean;
 }
 
-// Offer to create a missing default config at projectRoot when program's output and interaction flags, options' config flags and TTYs permit.
-// Resolves without a value. On acceptance, attempts a filesystem write with overwrite disabled and reports a newly written file on stderr.
-// Call before analysis so loadConfig can use the new file during the same invocation.
+/**
+ * Offers to create a missing default config at the target root when interaction flags, config flags, and TTYs permit.
+ * On acceptance, attempts a filesystem write with overwrite disabled and reports a newly written file on stderr;
+ * call before analysis so loadConfig can use the new file during the same invocation.
+ *
+ * @param program - root command supplying interaction and output-suppression flags
+ * @param projectRoot - directory checked for an existing config and used as the write target
+ * @param options - per-command config-loading flags controlling whether prompting is skipped
+ * @returns A promise that resolves without a value after checking, prompting, or writing the config.
+ */
 async function maybePromptInitConfig(program: Command, projectRoot: string, options: InitPromptOptions): Promise<void> {
   const programOptions = program.opts() as { interaction?: boolean };
   const context = {
@@ -99,13 +117,23 @@ async function maybePromptInitConfig(program: Command, projectRoot: string, opti
   }
 }
 
-// Return init-prompt settings from options, preserving config opt-out and marking a string config path as an explicit selection.
+/**
+ * Derives init-prompt settings from analysis options, preserving config opt-out and marking a string config path as explicit.
+ *
+ * @param options - normalized analysis options carrying config opt-out and path selection
+ * @returns Prompt settings indicating whether config loading is skipped and whether a config path was explicitly supplied.
+ */
 function promptOptionsFromAnalysis(options: AnalysisOptions): InitPromptOptions {
   return { shouldSkipConfig: options.shouldSkipConfig, hasExplicitConfig: typeof options.config === "string" };
 }
 
-// Return whether to use colour: program supplies explicit ANSI flags; otherwise only a TTY stdout enables it.
-// Disabling automatic colour for redirected output keeps escape codes out of files and CI logs.
+/**
+ * Determines whether ANSI colour output is enabled, favouring explicit flags over TTY detection.
+ * Disabling automatic colour for redirected output keeps escape codes out of files and CI logs.
+ *
+ * @param program - root command providing explicit `--ansi` or `--no-ansi` flag state
+ * @returns True when ANSI is explicitly enabled or stdout is a TTY without `--no-ansi`; otherwise false.
+ */
 function ansiEnabled(program: Command): boolean {
   const options = program.opts() as { ansi?: boolean };
   if (options.ansi === true) {
@@ -117,8 +145,13 @@ function ansiEnabled(program: Command): boolean {
   return process.stdout.isTTY === true;
 }
 
-// `runAnalyse` is injected rather than imported to keep `cli-program.ts` off the analyser's
-// dependency graph; see `.goat-flow/learning-loop/lessons/verification.md` on the original cli.ts ↔ cli-program.ts cycle.
+/**
+ * Builds the root CLI program and registers every gruff-ts subcommand. The runner is injected rather than
+ * imported to keep `cli-program.ts` off the analyser's dependency graph (see `.goat-flow/learning-loop/lessons/verification.md`).
+ *
+ * @param runAnalyse - analysis runner callback invoked by commands that execute scans or serve the dashboard
+ * @returns The configured root Commander program with all subcommands registered.
+ */
 export function buildProgram(runAnalyse: AnalyseRunner): Command {
   const program = new Command();
   configureRootProgram(program);
@@ -137,8 +170,13 @@ export function buildProgram(runAnalyse: AnalyseRunner): Command {
   return program;
 }
 
-// Configures program with global flags and shows the command catalogue for bare invocations and root help. Returns nothing.
-// The exit override preserves successful help and version exits and maps nonzero Commander exit codes to status 2.
+/**
+ * Configures global CLI flags, help formatting, and the bare-invocation command catalogue action.
+ * The exit override preserves successful help and version exits and maps nonzero Commander exit codes to status 2.
+ *
+ * @param program - root Commander instance to configure with global options and exit behaviour
+ * @returns Nothing. Mutates the root program in place before subcommands are registered.
+ */
 function configureRootProgram(program: Command): void {
   program
     .name("gruff-ts")
@@ -160,8 +198,14 @@ function configureRootProgram(program: Command): void {
     })
     .configureHelp({
 
-      // Return help for command using helper's layout settings and the captured root program.
-      // Root help lists the command catalogue; subcommands use Commander's formatter with global options visible.
+      /**
+       * Formats help text using the helper's layout settings and the captured root program.
+       * Root help lists the command catalogue; subcommands use Commander's formatter with global options visible.
+       *
+       * @param command - command whose help text is being rendered
+       * @param helper - Commander help formatter supplying wrap width settings
+       * @returns The formatted help output for either the root catalogue or a subcommand.
+       */
       formatHelp(command, helper) {
         return rootHelpText(program, command, helper);
       },
@@ -171,8 +215,14 @@ function configureRootProgram(program: Command): void {
     });
 }
 
-// Returns the catalogue for root help, or Commander's subcommand help with global options.
-// program identifies the root and supplies ANSI settings; command is the help target; helper supplies optional wrap widths.
+/**
+ * Returns the command catalogue for root help, or Commander's subcommand help with global options visible.
+ *
+ * @param program - root command used to detect root help and supply ANSI colour settings
+ * @param command - help target command being formatted
+ * @param helper - Commander help instance supplying optional wrap width settings
+ * @returns Rendered command catalogue for the root command, or formatted help text for a subcommand.
+ */
 function rootHelpText(program: Command, command: Command, helper: Help): string {
   if (command === program) {
     return renderConsoleList(ansiEnabled(program));
@@ -204,10 +254,13 @@ function registerMigrateConfigCommand(program: Command): void {
     .action((rawOptions: Record<string, unknown>) => runWithConfigErrorHandling(() => runMigrateConfig(program, rawOptions)));
 }
 
-/*
+/**
  * Previews or writes the migrated config requested by `migrate-config`.
+ * Side effects: reads the input config, writes stdout, and writes one new file on the filesystem when `--output` is supplied.
  *
- * Side effects: writes one new file when the user supplies --output.
+ * @param program - root command whose output flags govern stdout printing
+ * @param rawOptions - parsed flags providing `--config`, `--output`, and `--dry-run`
+ * @returns Nothing. Prints migration details, sets exit code 2 when `--output` is missing without `--dry-run`, or writes the migrated file.
  * @throws {ConfigLoadError} when the input, format, or destination prevents migration.
  */
 function runMigrateConfig(program: Command, rawOptions: Record<string, unknown>): void {
@@ -256,8 +309,13 @@ function runMigrateConfig(program: Command, rawOptions: Record<string, unknown>)
   writeCommandOutput(program, `Wrote ${outputPath}.`);
 }
 
-// Selects the migration encoding from a supported config extension.
-// @throws {ConfigLoadError} for an unsupported extension.
+/**
+ * Selects the migration encoding from a supported config extension.
+ *
+ * @param path - filesystem path to the source or destination configuration file
+ * @returns `"yaml"` for `.yaml`/`.yml` paths or `"json"` for `.json` paths.
+ * @throws {ConfigLoadError} for an unsupported extension.
+ */
 function migrationConfigFormat(path: string): "yaml" | "json" {
   const extension = extname(path).toLowerCase();
   // Both common YAML suffixes are valid when the user names a source or destination.
@@ -271,9 +329,14 @@ function migrationConfigFormat(path: string): "yaml" | "json" {
   throw new ConfigLoadError(`Unsupported migration config extension: ${extension || "(none)"}.`, "Use a .yaml, .yml, or .json config file.");
 }
 
-// Registers analyse for users who want individual findings in the terminal or a machine-readable report.
-//
-// The default gate fails on advisory or higher. Users can set `--fail-on=error` or configure `failOn.analyse`.
+/**
+ * Registers the `analyse` subcommand for users who want individual findings in the terminal or a machine-readable report.
+ * The default gate fails on advisory or higher; users can set `--fail-on=error` or configure `failOn.analyse`.
+ *
+ * @param program - root command that receives the `analyse` subcommand
+ * @param runAnalyse - analysis runner invoked to scan the requested targets
+ * @returns Nothing. Registers options and the action handler on the root program.
+ */
 function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("analyse")
@@ -334,9 +397,13 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     });
 }
 
-// Returns nothing. Registers check-ignore on program to classify paths with analyse's ignore rules.
-// When output is enabled, JSON reports every path and text lists only ignored paths with their match details.
-// The action sets process.exitCode to 0 if any path is ignored, 1 if none are ignored or 2 on config errors.
+/**
+ * Registers `check-ignore` to classify paths with `analyse`'s ignore rules and set exit status 0, 1, or 2.
+ * When output is enabled, JSON reports every path and text lists only ignored paths with their match details.
+ *
+ * @param program - root command that receives the `check-ignore` subcommand
+ * @returns Nothing. Attaches the subcommand, its config/format flags, and the ignore-check action to the program.
+ */
 function registerCheckIgnoreCommand(program: Command): void {
   program
     .command("check-ignore")
@@ -355,11 +422,15 @@ function registerCheckIgnoreCommand(program: Command): void {
     });
 }
 
-// Registers hook for coding agents to review an edit and apply a project gate using the findings in the JSON response.
-//
-// Invariant: a refused input or missing required baseline produces an envelope and exit 2.
-// Config failures include a suggested next step inside the response.
-// @throws from the registered action when the caught failure is not an Error.
+/**
+ * Registers `hook` for coding agents to review an edit and apply a project gate using the JSON response.
+ * Invariant: a refused input or missing required baseline produces an envelope and exit 2; config failures include a suggested next step.
+ *
+ * @param program - root command that receives the `hook` subcommand
+ * @param runAnalyse - analysis runner used to evaluate current and scoped views for the hook payload
+ * @returns Nothing. Registers the hook subcommand and its action handler.
+ * @throws {unknown} - from the registered action when the caught failure is not an Error.
+ */
 function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("hook")
@@ -434,9 +505,14 @@ function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void 
     });
 }
 
-// Build AnalysisOptions for checking paths against ignore rules, using rawOptions to select or skip config.
-// Config selection matches analyse. Git and fallback ignore checks stay enabled for eligible paths. Existing explicit files bypass them.
-// The ignore-check contract reports paths.ignore matches from loaded config and skips analysis baselines.
+/**
+ * Builds analysis options for checking paths against ignore rules, matching `analyse` config selection and skipping baselines.
+ * Git and fallback ignore checks stay enabled for eligible paths while existing explicit files bypass them.
+ *
+ * @param paths - target paths supplied to `check-ignore`
+ * @param rawOptions - parsed CLI flags used to select or skip configuration loading
+ * @returns Analysis options configured for the ignore-check contract with baselines disabled.
+ */
 function checkIgnoreOptions(paths: string[], rawOptions: Record<string, unknown>): AnalysisOptions {
   return {
     paths,
@@ -450,8 +526,12 @@ function checkIgnoreOptions(paths: string[], rawOptions: Record<string, unknown>
   };
 }
 
-// Register completion on program; its action emits the selected shell's completion script, defaulting to bash.
-// Registration returns nothing. The action writes to stdout when enabled, leaving callers to choose where to save the script.
+/**
+ * Registers `completion` to emit the selected shell's completion script to stdout, defaulting to bash.
+ *
+ * @param program - root command that receives the `completion` subcommand
+ * @returns Nothing. Adds the subcommand whose action writes the completion script when stdout is enabled.
+ */
 function registerCompletionCommand(program: Command): void {
   program
     .command("completion")
@@ -462,9 +542,14 @@ function registerCompletionCommand(program: Command): void {
     });
 }
 
-// Register dashboard on program, passing runAnalyse to the server for requested scans.
-// Default to 127.0.0.1:8767 because the unauthenticated dashboard accepts a caller-selected projectRoot.
-// The action may write config after an interactive prompt before it starts serving. Registration returns nothing.
+/**
+ * Registers `dashboard`, defaulting to `127.0.0.1:8767` because the unauthenticated dashboard accepts a caller-selected projectRoot.
+ * The action may write config after an interactive prompt before starting the server.
+ *
+ * @param program - root command that receives the `dashboard` subcommand
+ * @param runAnalyse - analysis runner passed to the dashboard server for requested scans
+ * @returns Nothing. Registers the dashboard subcommand and its startup action.
+ */
 function registerDashboardCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("dashboard")
@@ -484,9 +569,13 @@ function registerDashboardCommand(program: Command, runAnalyse: AnalyseRunner): 
     });
 }
 
-// Register init on program and return nothing. Its action writes the default config in the current directory.
-// On success the action prints adoption guidance when stdout is enabled.
-// Without --force, an existing supported config is preserved and the action writes a refusal to stderr and sets process.exitCode to 1.
+/**
+ * Registers `init` to write the default config in the current directory and print adoption guidance when stdout is enabled.
+ * Without `--force`, an existing supported config is preserved, a refusal is written to stderr, and `process.exitCode` is set to 1.
+ *
+ * @param program - root command that receives the `init` subcommand
+ * @returns Nothing. Adds the subcommand and its config-initialization action.
+ */
 function registerInitCommand(program: Command): void {
   program
     .command("init")
@@ -504,8 +593,13 @@ function registerInitCommand(program: Command): void {
     });
 }
 
-// Return init's success and adoption guidance, using verb to distinguish creation from overwrite and configPath to name the file.
-// The gate command must use the same baseline file the generation command creates.
+/**
+ * Builds the `init` success message and adoption guidance; the gate command must use the same baseline file that generation creates.
+ *
+ * @param verb - action label distinguishing newly created (`Wrote`) from replaced (`Overwrote`) config files
+ * @param configPath - path to the written configuration file shown in the message
+ * @returns Multi-line guidance naming the written config path and matching baseline generation and gating commands.
+ */
 function initSuccessMessage(verb: "Wrote" | "Overwrote", configPath: string): string {
   return [
     `${verb} ${configPath}`,
@@ -517,8 +611,12 @@ function initSuccessMessage(verb: "Wrote" | "Overwrote", configPath: string): st
   ].join("\n");
 }
 
-// Register list on program to mirror bare-root help, using the program's ANSI setting.
-// Users following Symfony console conventions can request the command catalogue explicitly. Registration returns nothing.
+/**
+ * Registers `list` to mirror bare-root help so users following Symfony console conventions can request the command catalogue explicitly.
+ *
+ * @param program - root command that receives the `list` subcommand and supplies ANSI settings
+ * @returns Nothing. Adds the `list` subcommand to the program.
+ */
 function registerListCommand(program: Command): void {
   program
     .command("list")
@@ -528,8 +626,13 @@ function registerListCommand(program: Command): void {
     });
 }
 
-// Returns nothing. Registers list-profiles on program to print the built-in profile catalogue as text or JSON when stdout is enabled.
-// parseSummaryFormat rejects unsupported formats as usage errors. See footguns/schema-and-cli.md for the format validation contract.
+/**
+ * Registers `list-profiles` to print the built-in profile catalogue as text or JSON when stdout is enabled.
+ * `parseSummaryFormat` rejects unsupported formats as usage errors (see `footguns/schema-and-cli.md` for the format validation contract).
+ *
+ * @param program - root command that receives the `list-profiles` subcommand
+ * @returns Nothing. Adds the subcommand and format option to the program.
+ */
 function registerListProfilesCommand(program: Command): void {
   program
     .command("list-profiles")
@@ -541,8 +644,13 @@ function registerListProfilesCommand(program: Command): void {
     });
 }
 
-// Registers list-rules on program; without a rule id it prints the catalogue, otherwise one rule's details.
-// The action prints text or JSON through program's output flags and reports unknown rules or formats as usage errors. Returns nothing.
+/**
+ * Registers `list-rules` to print either the rule catalogue or one rule's details as text or JSON through the program's output flags.
+ * Unknown rules or unsupported formats are reported as usage errors.
+ *
+ * @param program - root command that receives the `list-rules` subcommand
+ * @returns Nothing. Adds the subcommand, optional rule argument, and output action.
+ */
 function registerListRulesCommand(program: Command): void {
   program
     .command("list-rules")
@@ -564,9 +672,14 @@ function registerListRulesCommand(program: Command): void {
     });
 }
 
-// Registers report for users who want an HTML or JSON artifact of all findings, including reviewed baseline debt.
-//
-// Side effects: the action writes to --output or stdout, and can write project config after the user approves initialization.
+/**
+ * Registers `report` for users who want an HTML or JSON artifact of all findings, including reviewed baseline debt.
+ * Side effects: the action writes to `--output` or stdout, and can write project config on the filesystem after user approval.
+ *
+ * @param program - root command that receives the `report` subcommand
+ * @param runAnalyse - analysis runner invoked to produce the report findings
+ * @returns Nothing. Registers the subcommand, its report options, and its action handler.
+ */
 function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("report")
@@ -607,9 +720,14 @@ function registerReportCommand(program: Command, runAnalyse: AnalyseRunner): voi
     });
 }
 
-// Registers summary for users who want pillar counts and top rules or files without opening a per-finding report.
-//
-// Side effects: the action writes the digest to stdout and can save config, a baseline, or score history when requested.
+/**
+ * Registers `summary` for users who want pillar counts and top rules or files without opening a per-finding report.
+ * Side effects: the action writes the digest to stdout and can save config, a baseline, or score history when requested.
+ *
+ * @param program - root command that receives the `summary` subcommand
+ * @param runAnalyse - analysis runner invoked to scan the target paths
+ * @returns Nothing. Registers the summary subcommand and its action handler.
+ */
 function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): void {
   program
     .command("summary")
@@ -676,8 +794,13 @@ function parseSummaryFormat(rawFormat: string): "text" | "json" {
   throw new InvalidArgumentError("must be text or json");
 }
 
-// Validate rawFormat for the hook's JSON-only output contract and return json when accepted.
-// @throws {InvalidArgumentError} when rawFormat is anything other than json.
+/**
+ * Validates the requested hook output format against the hook's JSON-only output contract.
+ *
+ * @param rawFormat - format string supplied to `--format` on the `hook` command
+ * @returns `"json"` when accepted.
+ * @throws {InvalidArgumentError} when `rawFormat` is anything other than `json`.
+ */
 function parseHookFormat(rawFormat: string): "json" {
   if (rawFormat === "json") {
     return rawFormat;
@@ -719,8 +842,13 @@ function collectSelectorList(rawValue: string, previous: string[]): string[] {
   return [...previous, ...rawValue.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0)];
 }
 
-// Build execution selectors from rawOptions; they determine which rules run and which findings contribute to scores.
-// Keep only string entries from selector arrays; absent or non-array selectors become empty lists.
+/**
+ * Builds execution selectors that determine which rules run and which findings contribute to scores.
+ * Keeps only string entries from selector arrays; absent or non-array selectors become empty lists.
+ *
+ * @param rawOptions - parsed CLI options containing include and exclude rule or pillar lists
+ * @returns Execution selector lists for rules and pillars.
+ */
 function executionSelectorsFrom(rawOptions: Record<string, unknown>): ExecutionSelectors {
   return {
     includeRules: selectorList(rawOptions.includeRule),
@@ -730,8 +858,13 @@ function executionSelectorsFrom(rawOptions: Record<string, unknown>): ExecutionS
   };
 }
 
-// Build report-only selectors from rawOptions; these settings affect visibility without changing execution, scores, or exit status.
-// Keep only string list entries; absent or non-array selectors become empty lists and invalid minSeverity is omitted.
+/**
+ * Builds report-only display selectors that affect visibility without changing execution, scores, or exit status.
+ * Keeps only string list entries; absent or non-array selectors become empty lists and invalid `minSeverity` is omitted.
+ *
+ * @param rawOptions - parsed CLI options containing show/hide selectors and optional minimum display severity
+ * @returns Display selector filters for post-analysis report rendering.
+ */
 function displaySelectorsFrom(rawOptions: Record<string, unknown>): DisplaySelectors {
   const minSeverity = rawOptions.minSeverity;
   return {
@@ -743,25 +876,46 @@ function displaySelectorsFrom(rawOptions: Record<string, unknown>): DisplaySelec
   };
 }
 
-// Projects display findings and counts. The already computed exit status and score must stay stable across display filters.
+/**
+ * Filters displayed findings and updates summary counts while keeping the already computed exit status and score stable.
+ *
+ * @param report - analysis report whose `findings` and `summary` are mutated for display
+ * @param rawOptions - parsed CLI options supplying show/hide rules, pillars, and `--min-severity`
+ * @param displayFloor - optional severity floor from configuration applied alongside CLI selectors
+ * @returns Nothing. Mutates `report.findings` and `report.summary` in place.
+ */
 function filterReportForDisplay(report: AnalysisReport, rawOptions: Record<string, unknown>, displayFloor: Severity | undefined): void {
   report.findings = applyDisplaySelectors(report.findings, displaySelectorsFrom(rawOptions), displayFloor);
   report.summary = summarize(report.findings);
 }
 
-// Returns string entries from rawValue, a collected selector flag; a non-array or an array without strings means no selectors.
+/**
+ * Extracts string entries from a collected selector flag value.
+ *
+ * @param rawValue - candidate flag value expected to hold collected selector strings
+ * @returns String entries from `rawValue`, or an empty list for a non-array or an array without strings.
+ */
 function selectorList(rawValue: unknown): string[] {
   return Array.isArray(rawValue) ? rawValue.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
-// Reads the confidence floor the gate applies; an unset flag admits every finding, which is the documented default.
+/**
+ * Reads the confidence floor the gate applies; an unset flag admits every finding, which is the documented default.
+ *
+ * @param rawOptions - parsed CLI options providing an optional `minConfidence` setting
+ * @returns `"medium"` or `"high"` when explicitly configured, or `"low"` by default.
+ */
 function confidenceFloor(rawOptions: Record<string, unknown>): Confidence {
   const configured = rawOptions.minConfidence;
   return configured === "medium" || configured === "high" ? configured : "low";
 }
 
-// Returns the blocking policy from the parsed CLI options. The confidence floor defaults to low.
-// The hook applies it after handling payload output, including when output is suppressed.
+/**
+ * Builds the hook blocking policy applied after handling payload output, including when output is suppressed.
+ *
+ * @param rawOptions - parsed hook CLI flags supplying severity, confidence, new-finding, and diagnostic gates
+ * @returns Hook gate policy with `failOn`, `minConfidence` (defaulting to `low`), and boolean blocking flags.
+ */
 function hookGateFrom(rawOptions: Record<string, unknown>): HookExitGate {
   const failOn = rawOptions.failOn;
   return {
@@ -773,9 +927,14 @@ function hookGateFrom(rawOptions: Record<string, unknown>): HookExitGate {
   };
 }
 
-// Writes one gruff-ts: <message> line per changed-region diagnostic from report to stderr.
-// The format argument limits these writes to text. The report carries the same diagnostic for machine readers.
-// Returns nothing. The stderr line is the stable text-mode contract for reporting the unreadable scope.
+/**
+ * Writes one `gruff-ts: <message>` line per changed-region diagnostic to stderr under the stable text-mode contract.
+ * Machine readers receive the same diagnostic inside the report payload instead.
+ *
+ * @param report - analysis report containing diagnostics from the run
+ * @param format - requested output format; only `"text"` writes diagnostics to stderr
+ * @returns Nothing. Writes matching changed-region diagnostic lines to stderr in text mode.
+ */
 function writeChangedRegionFailure(report: AnalysisReport, format: AnalysisOptions["format"]): void {
   if (format !== "text") {
     return;
@@ -787,8 +946,13 @@ function writeChangedRegionFailure(report: AnalysisReport, format: AnalysisOptio
   }
 }
 
-// Returns the changed-region diagnostic type for a ChangedRegionError under the hook's stable diagnostic contract.
-// For other errors, returns baseline if the parsed options carry a baseline path string, or run otherwise. Message wording has no effect.
+/**
+ * Maps a hook error to its diagnostic type under the hook's stable diagnostic contract without inspecting message wording.
+ *
+ * @param error - thrown error instance caught by the hook command
+ * @param rawOptions - parsed CLI options checked for a string `--baseline` path
+ * @returns The changed-region diagnostic type for `ChangedRegionError`, `"baseline"` when a baseline path string is present, or `"run"`.
+ */
 function hookFatalType(error: Error, rawOptions: Record<string, unknown>): string {
   if (error instanceof ChangedRegionError) {
     return CHANGED_REGION_DIAGNOSTIC_TYPE;
@@ -796,9 +960,13 @@ function hookFatalType(error: Error, rawOptions: Record<string, unknown>): strin
   return typeof rawOptions.baseline === "string" ? "baseline" : "run";
 }
 
-// Parse rawBudget into an enabled override with line and byte limits, or a disabled override for off.
-// Keeping both numeric limits in one value prevents a half-updated budget for the current invocation.
-// @throws {InvalidArgumentError} when the value is not off and not LINES:BYTES with two positive safe integers.
+/**
+ * Parses a deep-scan budget override, keeping both numeric limits in one value to prevent a half-updated budget.
+ *
+ * @param rawBudget - CLI argument string, either `"off"` or `"LINES:BYTES"`
+ * @returns An enabled override with positive `maxLines` and `maxBytes`, or `{ enabled: false }` for `"off"`.
+ * @throws {InvalidArgumentError} when the value is not `"off"` and not `LINES:BYTES` with two positive safe integers.
+ */
 function parseDeepScanBudget(rawBudget: string): DeepScanBudgetOverride {
   if (rawBudget === "off") {
     return { enabled: false };
@@ -827,7 +995,13 @@ function parseNonNegativeInteger(rawCount: string): number {
   return parsed;
 }
 
-// Returns a summary label by resolving paths against the current directory and joining them; an empty paths list returns projectRoot.
+/**
+ * Formats the path label shown in the summary header by resolving target paths against the current directory.
+ *
+ * @param paths - target paths supplied to the summary command
+ * @param projectRoot - fallback project root returned when `paths` is empty
+ * @returns Comma-joined resolved paths, or `projectRoot` when no paths were provided.
+ */
 function summaryPathLabel(paths: string[], projectRoot: string): string {
   if (paths.length === 0) {
     return projectRoot;
@@ -913,8 +1087,14 @@ function assertFullScanHistoryOptions(rawOptions: Record<string, unknown>): void
   }
 }
 
-// Build hook analysis options from positional paths and parsed flags in rawOptions. Without a region selector, the scan is unscoped.
-// The hook comparison contract uses JSON and symbol scope, with no severity gate or baseline suppression.
+/**
+ * Builds hook analysis options under the hook comparison contract (JSON, symbol scope, no severity gate or baseline suppression).
+ * Without a region selector, the scan remains unscoped.
+ *
+ * @param paths - positional paths passed to the hook command
+ * @param rawOptions - parsed CLI flags merged with hook contract defaults
+ * @returns Normalized analysis options for the scoped hook pass.
+ */
 function hookScopedOptions(paths: string[], rawOptions: Record<string, unknown>): AnalysisOptions {
   return normalizeOptions(
     paths,
@@ -923,45 +1103,77 @@ function hookScopedOptions(paths: string[], rawOptions: Record<string, unknown>)
   );
 }
 
-// Return a copy of options with changed-region selectors removed so the hook can find full-file and project findings.
-// The hook comparison contract keeps baseline suppression off so this pass sees the full set of findings.
+/**
+ * Strips changed-region selectors from hook options so the current pass captures full-file and project findings.
+ * Keeps baseline suppression off per the hook comparison contract so this pass sees the full set of findings.
+ *
+ * @param options - scoped hook analysis options to widen
+ * @returns Copy of `options` with changed-region fields omitted and `shouldSkipBaseline` set to true.
+ */
 function hookCurrentOptions(options: AnalysisOptions): AnalysisOptions {
   const { changedRanges: _changedRanges, diff: _diff, diffPatch: _diffPatch, since: _since, ...rest } = options;
   return { ...rest, shouldSkipBaseline: true };
 }
 
-// True when any changed-region selector (ranges, diff, since, stdin patch) is active for the run.
-// `changedRanges` is tested for presence rather than truthiness, matching changedRegionScope: an empty value
-// asks to scope the run and names no range, which the parser refuses instead of widening the scan.
+/**
+ * Reports whether any changed-region selector (ranges, diff, since, or stdin patch) is active for the run.
+ * `changedRanges` is tested for presence rather than truthiness, matching `changedRegionScope`: an empty value
+ * asks to scope the run without naming a range, which the parser refuses instead of widening the scan.
+ *
+ * @param options - normalized analysis options to inspect for region selectors
+ * @returns True when any changed-region selector is active; otherwise false.
+ */
 function hasHookChangedRegion(options: AnalysisOptions): boolean {
   return options.changedRanges !== undefined || Boolean(options.diff || options.since || options.diffPatch);
 }
 
-// Returns baselinePath from the hook's parsed --baseline option to preserve the stable baseline contract for new-only filtering.
-// Returns an empty object when the option is absent or its value is anything other than a path string.
+/**
+ * Extracts `baselinePath` from `--baseline` to preserve the stable baseline contract for hook new-only filtering.
+ *
+ * @param rawOptions - parsed hook CLI flags
+ * @returns `{ baselinePath }` when `--baseline` is a string, or an empty object when absent or non-string.
+ */
 function hookBaselinePath(rawOptions: Record<string, unknown>): Partial<{ baselinePath: string }> {
   return typeof rawOptions.baseline === "string" ? { baselinePath: rawOptions.baseline } : {};
 }
 
-// Return the hook's new-only comparison setting from options.diff, falling back to options.since; neither means an empty object.
+/**
+ * Selects the hook's new-only comparison ref from `diff`, falling back to `since`.
+ *
+ * @param options - normalized hook analysis options
+ * @returns `{ diffBase }` from `options.diff` or `options.since`, or an empty object when neither is set.
+ */
 function hookDiffBase(options: AnalysisOptions): Partial<{ diffBase: string }> {
   return options.diff ? { diffBase: options.diff } : options.since ? { diffBase: options.since } : {};
 }
 
-// Return a config option from rawOptions.config when it is a string; otherwise return an empty object.
-// Omitting the key preserves exactOptionalPropertyTypes instead of assigning undefined.
+/**
+ * Extracts a string config path option while omitting the key to preserve `exactOptionalPropertyTypes` instead of assigning undefined.
+ *
+ * @param rawOptions - parsed CLI flags checked for a string `config` value
+ * @returns `{ config }` when `rawOptions.config` is a string, or an empty object otherwise.
+ */
 function configOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "config">> {
   return typeof rawOptions.config === "string" ? { config: rawOptions.config } : {};
 }
 
-// Return rawOptions.profile as an analysis option when it is a string, or an empty object so config-file selection can supply it.
+/**
+ * Extracts a string profile specifier, omitting the key when absent so config-file selection can supply it.
+ *
+ * @param rawOptions - parsed CLI flags checked for a string `profile` value
+ * @returns `{ profile }` when `rawOptions.profile` is a string, or an empty object otherwise.
+ */
 function profileOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "profile">> {
   return typeof rawOptions.profile === "string" ? { profile: rawOptions.profile } : {};
 }
 
-// Normalize rawOptions.deepScanBudget into an analysis override, or return an empty object for null, non-objects, or no enabled key.
-// Return a disabled override for enabled=false, or a bounded override for enabled=true with both positive safe-integer limits.
-// @throws {ConfigLoadError} when an object has enabled but is neither disabled nor validly bounded.
+/**
+ * Normalizes `rawOptions.deepScanBudget` into a disabled or bounded analysis override.
+ *
+ * @param rawOptions - parsed CLI flags containing an optional `deepScanBudget` override object
+ * @returns `{ deepScanBudget }` for valid overrides, or an empty object for null, non-objects, or missing `enabled`.
+ * @throws {ConfigLoadError} when an object has `enabled` but is neither disabled nor validly bounded.
+ */
 function deepScanBudgetOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "deepScanBudget">> {
   const budgetOverride = rawOptions.deepScanBudget;
   if (typeof budgetOverride !== "object" || budgetOverride === null || !("enabled" in budgetOverride)) {
@@ -1007,9 +1219,14 @@ function newDebtExitCode(report: AnalysisReport, rawOptions: Record<string, unkn
   return (baseline.newFindings ?? 0) > 0 ? 1 : 0;
 }
 
-// Resolve diff settings from rawOptions and return them with paths; a nonempty diffBase overrides diff, and bare diff means working-tree.
-// For diff='-', read stdin into diffPatch. With bare diff and a leading '-' in paths, consume that path in the returned list.
-// Return unchanged paths and no diff settings when no selector applies.
+/**
+ * Resolves `--diff` and `--diff-base` settings, reading stdin into `diffPatch` when `-` is given.
+ * A nonempty `diffBase` overrides `diff`, bare `--diff` means `working-tree`, and a leading `-` in `paths` with bare `--diff` is consumed.
+ *
+ * @param paths - positional scan targets, which may begin with `-` for a stdin patch
+ * @param rawOptions - parsed CLI flags providing `diff` and `diffBase`
+ * @returns Updated `paths` and partial diff options, or unchanged `paths` with empty options when no selector applies.
+ */
 function diffOption(paths: string[], rawOptions: Record<string, unknown>): { paths: string[]; options: Partial<Pick<AnalysisOptions, "diff" | "diffPatch">> } {
   const diffBase = rawOptions.diffBase;
 
@@ -1028,25 +1245,43 @@ function diffOption(paths: string[], rawOptions: Record<string, unknown>): { pat
   return rawOptions.diff === true ? { paths, options: { diff: "working-tree" } } : { paths, options: {} };
 }
 
-// Return a changedRanges option for the string in rawOptions. Analysis rejects an explicitly empty range string.
-// Return an empty object for other values so the explicit line-range filter stays unset.
+/**
+ * Extracts a string `changedRanges` option so analysis can enforce or reject an explicitly empty range string.
+ *
+ * @param rawOptions - parsed CLI flags checked for a string `changedRanges` value
+ * @returns `{ changedRanges }` when a string is present, or an empty object so the filter stays unset.
+ */
 function changedRangesOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "changedRanges">> {
   return typeof rawOptions.changedRanges === "string" ? { changedRanges: rawOptions.changedRanges } : {};
 }
 
-// Return a since option for a string in rawOptions, or an empty object otherwise. An empty string is preserved and selects no comparison ref.
+/**
+ * Extracts a string `since` base ref option, preserving an empty string (which selects no comparison ref).
+ *
+ * @param rawOptions - parsed CLI flags checked for a string `since` value
+ * @returns `{ since }` when `rawOptions.since` is a string, or an empty object otherwise.
+ */
 function sinceOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "since">> {
   return typeof rawOptions.since === "string" ? { since: rawOptions.since } : {};
 }
 
-// Return a historyFile option from a string rawOptions.historyFile, or an empty object to preserve exactOptionalPropertyTypes.
+/**
+ * Extracts a string `historyFile` path while omitting absent values to preserve `exactOptionalPropertyTypes`.
+ *
+ * @param rawOptions - parsed CLI flags checked for a string `historyFile` value
+ * @returns `{ historyFile }` when `rawOptions.historyFile` is a string, or an empty object otherwise.
+ */
 function historyFileOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "historyFile">> {
   return typeof rawOptions.historyFile === "string" ? { historyFile: rawOptions.historyFile } : {};
 }
 
-// Normalize baselineValue from --baseline when context permits the command to use a baseline.
-// The result holds the path string, even if empty, or gruff-baseline.json for a bare flag. An empty object leaves the option unset.
-// Baseline selection is stable for calls with the same flag value and command policy.
+/**
+ * Normalizes `--baseline` when the command policy permits baseline input; selection is stable for identical inputs.
+ *
+ * @param baselineValue - raw `--baseline` value (path string, `true` for a bare flag, or unset)
+ * @param context - command policy controlling whether `--baseline` is permitted
+ * @returns `{ baseline }` holding the path string (even if empty) or `DEFAULT_BASELINE` for `true`, or `{}` when disallowed.
+ */
 function baselineOption(baselineValue: unknown, context: NormalizeContext): Partial<Pick<AnalysisOptions, "baseline">> {
   if (!context.shouldAllowBaselineFlag) {
     return {};
@@ -1057,8 +1292,12 @@ function baselineOption(baselineValue: unknown, context: NormalizeContext): Part
   return baselineValue === true ? { baseline: DEFAULT_BASELINE } : {};
 }
 
-// Return a generateBaseline option from rawOptions when it is a string path; true selects DEFAULT_BASELINE.
-// Other values return an empty object because baseline generation must be requested.
+/**
+ * Resolves `--generate-baseline` into an output path, returning `{}` otherwise because baseline generation must be requested.
+ *
+ * @param rawOptions - parsed CLI flags checked for a string path or boolean `true` on `generateBaseline`
+ * @returns `{ generateBaseline }` with the given string path or `DEFAULT_BASELINE` for `true`, or an empty object otherwise.
+ */
 function generateBaselineOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "generateBaseline">> {
   if (typeof rawOptions.generateBaseline === "string") {
     return { generateBaseline: rawOptions.generateBaseline };
@@ -1066,15 +1305,24 @@ function generateBaselineOption(rawOptions: Record<string, unknown>): Partial<Pi
   return rawOptions.generateBaseline === true ? { generateBaseline: DEFAULT_BASELINE } : {};
 }
 
-/*
- * Returns a migrateBaseline option from the parsed CLI flags, using the 0.5 baseline path to carry reviews into a new baseline.
- * A missing or non-string flag value yields an empty options object.
+/**
+ * Extracts the 0.5 baseline path from parsed CLI flags to carry reviews into a new baseline.
+ *
+ * @param rawOptions - parsed CLI flags checked for a string `migrateBaseline` path
+ * @returns `{ migrateBaseline }` when a string path is supplied, or an empty object for missing or non-string values.
  */
 function migrateBaselineOption(rawOptions: Record<string, unknown>): Partial<Pick<AnalysisOptions, "migrateBaseline">> {
   return typeof rawOptions.migrateBaseline === "string" ? { migrateBaseline: rawOptions.migrateBaseline } : {};
 }
 
-// Normalizes a programmatic option against choices; returns rawValue when it is a listed string, otherwise fallback.
+/**
+ * Normalizes a programmatic option against a list of allowed string values.
+ *
+ * @param rawValue - candidate option value to validate
+ * @param choices - allowed string values accepted for the option
+ * @param fallback - default value returned when `rawValue` is not a listed string
+ * @returns `rawValue` when it is a string included in `choices`; otherwise `fallback`.
+ */
 function stringChoice<T extends string>(rawValue: unknown, choices: readonly T[], fallback: T): T {
   return typeof rawValue === "string" && choices.includes(rawValue as T) ? (rawValue as T) : fallback;
 }
@@ -1144,7 +1392,12 @@ function refuseTargetsOutsideLaunchDirectory(program: Command, requestedFormat: 
   process.exitCode = 2;
 }
 
-// Describes why a multi-target scan cannot be anchored at its launch directory.
+/**
+ * Formats the refusal reason explaining why a multi-target scan cannot be anchored at its launch directory.
+ *
+ * @param target - target path located outside the current launch directory
+ * @returns Human-readable refusal message naming `target`.
+ */
 function outsideTargetMessage(target: string): string {
   return `target "${target}" is outside the launch directory; gruff-ts analyses several targets only from a directory that contains them all`;
 }

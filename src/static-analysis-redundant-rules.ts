@@ -109,8 +109,16 @@ export function pushStaticAnalysisRedundantTestFindings(file: SourceFile, block:
   }
 }
 
-// Returns redundant assertion candidates with recommendations for the test block, in deterministic source order.
-// Uses the file to anchor evidence, rawSource for assertion text, codeSource to check executable code, and staticContext for declaration facts.
+/**
+ * Collect redundant assertion candidates with recommendations for a test block in deterministic source order.
+ *
+ * @param file - source file used to anchor proof locations
+ * @param block - test block checked for importability-sentinel naming and declaration line offsets
+ * @param rawSource - raw test body text matched for assertions and local declarations
+ * @param codeSource - masked test body text used to confirm matches lie in executable code
+ * @param staticContext - surrounding file source used to gather function declaration and import facts
+ * @returns Redundant assertion candidates sorted by source index.
+ */
 function staticAnalysisRedundantAssertions(file: SourceFile, block: FunctionBlock, rawSource: string, codeSource: string, staticContext: StaticAnalysisSourceContext): StaticAnalysisRedundantAssertion[] {
   return [
     ...typeofFunctionAssertions(file, rawSource, codeSource, staticContext),
@@ -121,22 +129,46 @@ function staticAnalysisRedundantAssertions(file: SourceFile, block: FunctionBloc
     .sort((left, right) => left.index - right.index);
 }
 
-// Detects `typeof x === "function"`-style assertions when TypeScript already proves the function.
+/**
+ * Detect `typeof x === "function"`-style assertions when TypeScript already proves the function binding.
+ *
+ * @param file - source file used to anchor static proof locations
+ * @param rawSource - raw test body text scanned against typeof-function assertion patterns
+ * @param codeSource - masked test body text used to confirm matches lie in executable code
+ * @param staticContext - surrounding file source scanned for function declarations and static imports
+ * @returns Matching typeof-function redundant assertion candidates across all supported patterns.
+ */
 function typeofFunctionAssertions(file: SourceFile, rawSource: string, codeSource: string, staticContext: StaticAnalysisSourceContext): StaticAnalysisRedundantAssertion[] {
   const functionFacts = staticFunctionFacts(file, staticContext);
   return TYPEOF_FUNCTION_ASSERTION_PATTERNS.flatMap((pattern) => typeofFunctionAssertionsForPattern(file, rawSource, codeSource, functionFacts, pattern));
 }
 
-// Apply pattern to rawSource and return supported typeof-function candidates, or an empty list when none qualify.
-// Forward file to the builder that discards it. Use codeSource to screen masked matches and functionFacts for declaration or import evidence.
+/**
+ * Apply one typeof-function assertion pattern to raw test source and keep candidates backed by static facts.
+ *
+ * @param file - source file forwarded to the shared candidate builder
+ * @param rawSource - raw test body text matched with the assertion pattern
+ * @param codeSource - masked test body text used to screen out non-executable matches
+ * @param functionFacts - collected identifier and namespace-import facts used as static evidence
+ * @param pattern - global regular expression matching one typeof-function assertion form
+ * @returns Qualifying typeof-function candidates for this pattern, or an empty array when none qualify.
+ */
 function typeofFunctionAssertionsForPattern(file: SourceFile, rawSource: string, codeSource: string, functionFacts: StaticFunctionFacts, pattern: RegExp): StaticAnalysisRedundantAssertion[] {
   return [...rawSource.matchAll(pattern)]
     .map((match) => typeofFunctionCandidateFromMatch(file, rawSource, codeSource, functionFacts, match))
     .filter(isStaticAnalysisRedundantAssertion);
 }
 
-// Convert match from rawSource into a candidate using functionFacts as evidence. The shared builder discards file and rawSource.
-// codeSource checks executable code; return undefined for a non-executable match or an expression without a static fact.
+/**
+ * Convert one typeof-function regex match into a redundant-assertion candidate when static evidence exists.
+ *
+ * @param file - source file forwarded to the shared candidate builder (not retained)
+ * @param rawSource - raw test body text forwarded to the shared candidate builder (not retained)
+ * @param codeSource - masked test body text used to verify the match is executable code
+ * @param functionFacts - collected identifier and namespace-import facts used to look up the tested expression
+ * @param match - regex match carrying the assertion slice, start index, and captured target expression
+ * @returns Candidate with static fact and proof, or undefined when non-executable or lacking a static fact.
+ */
 function typeofFunctionCandidateFromMatch(file: SourceFile, rawSource: string, codeSource: string, functionFacts: StaticFunctionFacts, match: RegExpMatchArray): StaticAnalysisRedundantAssertion | undefined {
   const index = match.index ?? 0;
   if (!isExecutableAssertionAt(codeSource, index)) {
@@ -157,7 +189,13 @@ function typeofFunctionCandidateFromMatch(file: SourceFile, rawSource: string, c
   });
 }
 
-// Build and return identifier and namespace-import facts from context's raw and masked source, using file for proof locations.
+/**
+ * Collect identifier and namespace-import function facts from the surrounding source context.
+ *
+ * @param file - source file whose display path anchors generated proof locations
+ * @param context - full-file raw and masked source context with starting line offset
+ * @returns Collected identifier and namespace-import function fact maps.
+ */
 function staticFunctionFacts(file: SourceFile, context: StaticAnalysisSourceContext): StaticFunctionFacts {
   const facts: StaticFunctionFacts = { identifiers: new Map(), namespaceImports: new Map() };
   pushFunctionDeclarationFacts(file, context, facts.identifiers);
@@ -166,9 +204,14 @@ function staticFunctionFacts(file: SourceFile, context: StaticAnalysisSourceCont
   return facts;
 }
 
-// Adds facts for function declarations, checking context's masked source because comments and strings can mimic declarations.
-// Use context's raw source with file and context.startLine for proof locations.
-// Returns nothing and adds entries to facts in place, replacing any existing entry with the same name.
+/**
+ * Record facts for executable function declarations, checking masked source because comments and strings can mimic declarations.
+ *
+ * @param file - source file whose display path anchors proof locations
+ * @param context - source context supplying raw source, masked code source, and start line
+ * @param facts - identifier fact map populated in place, replacing any existing entry with the same name
+ * @returns Nothing. Adds executable function declaration facts to `facts` in place.
+ */
 function pushFunctionDeclarationFacts(file: SourceFile, context: StaticAnalysisSourceContext, facts: Map<string, StaticFunctionFact>): void {
   for (const match of context.source.matchAll(/\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g)) {
     const index = match.index ?? 0;
@@ -185,9 +228,14 @@ function pushFunctionDeclarationFacts(file: SourceFile, context: StaticAnalysisS
   }
 }
 
-// Adds facts for const-bound functions because these declarations are common test helper shapes.
-// Read executable declarations from context, using file and context.startLine for proof locations.
-// Returns nothing and adds entries to facts in place, replacing any existing entry with the same name.
+/**
+ * Record facts for executable const-bound functions because these declarations are common test helper shapes.
+ *
+ * @param file - source file whose display path anchors proof locations
+ * @param context - source context supplying raw source, masked code source, and start line
+ * @param facts - identifier fact map populated in place, replacing any existing entry with the same name
+ * @returns Nothing. Reads executable declarations from `context` and adds entries to `facts` in place.
+ */
 function pushConstFunctionFacts(file: SourceFile, context: StaticAnalysisSourceContext, facts: Map<string, StaticFunctionFact>): void {
   const pattern = /\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:function\b|(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*(?::\s*[^=;]+?)?=>)/g;
   for (const match of context.source.matchAll(pattern)) {
@@ -205,17 +253,27 @@ function pushConstFunctionFacts(file: SourceFile, context: StaticAnalysisSourceC
   }
 }
 
-// Dispatches named and namespace import evidence into separate maps for later expression lookup.
-// Read context's source and masked code, using file and context.startLine for proof locations.
-// Returns nothing and mutates facts.identifiers and facts.namespaceImports in place, replacing entries with matching names.
+/**
+ * Dispatch named and namespace import evidence into separate fact maps for later expression lookup.
+ *
+ * @param file - source file whose display path anchors proof locations
+ * @param context - source context supplying raw source, masked code source, and start line
+ * @param facts - fact bundle whose `identifiers` and `namespaceImports` maps are populated in place
+ * @returns Nothing. Reads `context` and mutates `facts.identifiers` and `facts.namespaceImports` in place.
+ */
 function pushImportFunctionFacts(file: SourceFile, context: StaticAnalysisSourceContext, facts: StaticFunctionFacts): void {
   pushNamedImportFunctionFacts(file, context, facts.identifiers);
   pushNamespaceImportFunctionFacts(file, context, facts.namespaceImports);
 }
 
-// Adds facts for static named imports, including aliases, when the import is executable code.
-// Use context's raw and masked source with file and context.startLine for proof locations; skip type-only imports and specifiers.
-// Returns nothing and adds entries to facts in place, replacing any existing entry with the same local name.
+/**
+ * Record facts for static named imports, including aliases, while skipping type-only imports and specifiers.
+ *
+ * @param file - source file whose display path anchors proof locations
+ * @param context - source context supplying raw source, masked code source, and start line
+ * @param facts - identifier fact map populated in place, replacing any existing entry with the same local name
+ * @returns Nothing. Adds executable named-import facts to `facts` in place.
+ */
 function pushNamedImportFunctionFacts(file: SourceFile, context: StaticAnalysisSourceContext, facts: Map<string, StaticFunctionFact>): void {
   for (const match of context.source.matchAll(/\bimport\s+(?!type\b)\{([^}]+)\}\s*from\b/g)) {
     const index = match.index ?? 0;
@@ -229,9 +287,14 @@ function pushNamedImportFunctionFacts(file: SourceFile, context: StaticAnalysisS
   }
 }
 
-// Adds facts for namespace imports because namespace member assertions need import-level proof.
-// Use context's raw and masked source with file and context.startLine for proof locations.
-// Returns nothing and adds entries to facts in place, replacing any existing entry with the same namespace name.
+/**
+ * Record facts for namespace imports because namespace member assertions need import-level proof.
+ *
+ * @param file - source file whose display path anchors proof locations
+ * @param context - source context supplying raw source, masked code source, and start line
+ * @param facts - namespace-import fact map populated in place, replacing any existing entry with the same name
+ * @returns Nothing. Adds executable namespace-import facts to `facts` in place.
+ */
 function pushNamespaceImportFunctionFacts(file: SourceFile, context: StaticAnalysisSourceContext, facts: Map<string, StaticFunctionFact>): void {
   for (const match of context.source.matchAll(/\bimport\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\b/g)) {
     const index = match.index ?? 0;
@@ -248,8 +311,13 @@ function pushNamespaceImportFunctionFacts(file: SourceFile, context: StaticAnaly
   }
 }
 
-// Builds the reviewer-facing fact text for one named import.
-// Use importedName in the fact text and preserve proof as sourceProof in the returned fact.
+/**
+ * Build the reviewer-facing static fact record for one named import binding.
+ *
+ * @param importedName - local binding name embedded in the generated static fact text
+ * @param proof - formatted `path:line` proof location preserved as `sourceProof`
+ * @returns Static function fact containing the named-import explanation and source proof.
+ */
 function namedImportFunctionFact(importedName: string, proof: string): StaticFunctionFact {
   return {
     staticFact: `\`${importedName}\` is a static ES module named import, so TypeScript can validate the imported binding's declared function type without executing this test assertion.`,
@@ -257,9 +325,12 @@ function namedImportFunctionFact(importedName: string, proof: string): StaticFun
   };
 }
 
-// Finds the local binding names available to test assertions.
-// importClause supplies the comma-separated text between import braces. Return the local value names.
-// Omit empty, type-only, and unsupported specifiers; return an empty array if none remain.
+/**
+ * Extract local value binding names from a braced named-import clause, omitting empty, type-only, and unsupported specifiers.
+ *
+ * @param importClause - comma-separated specifier text inside an `import { ... }` clause
+ * @returns Local value binding names available to assertions, or an empty array if none remain.
+ */
 function namedImportLocals(importClause: string): string[] {
   return importClause
     .split(",")
@@ -267,8 +338,12 @@ function namedImportLocals(importClause: string): string[] {
     .filter((value): value is string => value !== undefined);
 }
 
-// Returns the local binding name for one named import specifier, ignoring type-only entries.
-// Return undefined for empty text, an initial word type, or text with neither a trailing alias nor a plain identifier.
+/**
+ * Extract the local binding name from a single named-import specifier, ignoring empty and type-only entries.
+ *
+ * @param specifier - single comma-separated import specifier segment to inspect
+ * @returns Local identifier or alias name, or undefined for empty, `type`-prefixed, or unsupported forms.
+ */
 function namedImportLocal(specifier: string): string | undefined {
   const trimmed = specifier.trim();
   if (trimmed === "" || /^type\b/.test(trimmed)) {
@@ -282,9 +357,14 @@ function namedImportLocal(specifier: string): string | undefined {
   return direct?.[1];
 }
 
-// Return declaration or import evidence for expression using the identifier and namespace maps in facts.
-// Returns undefined unless an identifier fact matches or expression names a single member of a recorded namespace import.
-// For a namespace expression, the evidence comes from the import and the member name is checked only for its syntax.
+/**
+ * Look up declaration or import evidence for a tested expression using identifier and namespace-import facts.
+ * For namespace members, evidence comes from the namespace import and the member name is checked only for identifier syntax.
+ *
+ * @param expression - target identifier or `namespace.member` expression from a `typeof` assertion
+ * @param facts - collected identifier and namespace-import facts for the file
+ * @returns Matching static fact, or undefined unless an identifier or valid namespace member matches.
+ */
 function staticFunctionFactForExpression(expression: string, facts: StaticFunctionFacts): StaticFunctionFact | undefined {
   const direct = facts.identifiers.get(expression);
   if (direct) {
@@ -306,28 +386,54 @@ function staticFunctionFactForExpression(expression: string, facts: StaticFuncti
   };
 }
 
-// Return file's display path and 1-based proof line for the UTF-16 code-unit index in context.source, based at context.startLine.
+/**
+ * Format a `displayPath:line` proof string for a UTF-16 code-unit offset within the source context.
+ *
+ * @param file - source file providing the display path
+ * @param context - source context supplying `source` and its 1-based `startLine`
+ * @param index - UTF-16 code-unit index within `context.source`
+ * @returns Formatted `path:line` proof location anchored at `context.startLine`.
+ */
 function sourceProof(file: SourceFile, context: StaticAnalysisSourceContext, index: number): string {
   return `${file.displayPath}:${context.startLine + lineOffset(context.source, index)}`;
 }
 
-// Detects self-instance assertions where the constructor expression itself proves the relationship.
+/**
+ * Detect `new Foo() instanceof Foo`-style assertions where the constructor expression itself proves the instance relationship.
+ *
+ * @param file - source file forwarded to the shared candidate builder
+ * @param rawSource - raw test body text scanned against direct-construction assertion patterns
+ * @param codeSource - masked test body text used to confirm matches lie in executable code
+ * @returns Qualifying direct-construction redundant assertion candidates across all supported patterns.
+ */
 function directConstructionInstanceAssertions(file: SourceFile, rawSource: string, codeSource: string): StaticAnalysisRedundantAssertion[] {
   return DIRECT_CONSTRUCTION_ASSERTION_PATTERNS.flatMap((pattern) => directConstructionInstanceAssertionsForPattern(file, rawSource, codeSource, pattern));
 }
 
-// Evaluates one direct-construction assertion grammar against executable test code.
-// Apply global pattern to rawSource and validate positions with codeSource; file is forwarded to the shared builder but not retained.
-// Return the surviving candidates, or an empty array if none qualify.
+/**
+ * Evaluate one direct-construction assertion pattern against executable test code.
+ *
+ * @param file - source file forwarded to the shared candidate builder (not retained)
+ * @param rawSource - raw test body text matched with the global assertion pattern
+ * @param codeSource - masked test body text used to validate executable match positions
+ * @param pattern - global regular expression matching one direct-construction assertion grammar
+ * @returns Surviving direct-construction candidates, or an empty array when none qualify.
+ */
 function directConstructionInstanceAssertionsForPattern(file: SourceFile, rawSource: string, codeSource: string, pattern: RegExp): StaticAnalysisRedundantAssertion[] {
   return [...rawSource.matchAll(pattern)]
     .map((match) => directConstructionInstanceCandidate(file, rawSource, codeSource, match))
     .filter(isStaticAnalysisRedundantAssertion);
 }
 
-// Builds one direct-construction candidate with a source-order index for stable sorting.
-// Use match for assertion text and codeSource for executable-position checks; file and rawSource are forwarded but not retained.
-// Return undefined for a masked assertion, otherwise return the candidate.
+/**
+ * Build one direct-construction candidate with a source-order index for stable sorting.
+ *
+ * @param file - source file forwarded to the shared candidate builder (not retained)
+ * @param rawSource - raw test body text forwarded to the shared candidate builder (not retained)
+ * @param codeSource - masked test body text used to confirm the match is in executable code
+ * @param match - regex match supplying the assertion text, index, and constructed class name
+ * @returns Candidate for an executable match, or undefined when the match is masked.
+ */
 function directConstructionInstanceCandidate(file: SourceFile, rawSource: string, codeSource: string, match: RegExpMatchArray): StaticAnalysisRedundantAssertion | undefined {
   const index = match.index ?? 0;
   if (!isExecutableAssertionAt(codeSource, index)) {
@@ -343,26 +449,48 @@ function directConstructionInstanceCandidate(file: SourceFile, rawSource: string
   });
 }
 
-// Looks for assertions that repeat non-nullability suggested by a local return annotation, using a text check.
-// Read rawSource for local declarations and assertions, using codeSource to reject masked positions.
-// Use file and block for proof locations; return the matching candidates, or an empty array if none qualify.
+/**
+ * Detect assertions that repeat non-nullability already declared on a local function return annotation.
+ *
+ * @param file - source file whose display path anchors declaration proof locations
+ * @param block - test block providing the starting line for declaration offsets
+ * @param rawSource - raw test body text read for local declarations and non-nullability assertions
+ * @param codeSource - masked test body text used to reject masked declaration and assertion positions
+ * @returns Matching non-nullable-return candidates, or an empty array when none qualify.
+ */
 function nonNullableReturnAssertions(file: SourceFile, block: FunctionBlock, rawSource: string, codeSource: string): StaticAnalysisRedundantAssertion[] {
   const declarations = nonNullableReturnDeclarations(rawSource, codeSource);
   return NON_NULLABLE_ASSERTION_PATTERNS.flatMap((pattern) => nonNullableReturnAssertionsForPattern(file, block, rawSource, codeSource, declarations, pattern));
 }
 
-// Evaluates one non-nullable assertion grammar against collected return-type declarations.
-// Match global pattern against rawSource, using declarations for evidence and codeSource for executable-position checks.
-// Use file and block for proof locations; return matching candidates or an empty array when none qualify.
+/**
+ * Evaluate one non-nullable assertion pattern against collected local return-type declarations.
+ *
+ * @param file - source file whose display path anchors declaration proof locations
+ * @param block - test block providing the starting line for declaration offsets
+ * @param rawSource - raw test body text matched against the global assertion pattern
+ * @param codeSource - masked test body text used to verify executable assertion positions
+ * @param declarations - map of local declarations with non-nullable return annotations
+ * @param pattern - global regular expression matching one non-nullable assertion grammar
+ * @returns Matching candidates for this pattern, or an empty array when none qualify.
+ */
 function nonNullableReturnAssertionsForPattern(file: SourceFile, block: FunctionBlock, rawSource: string, codeSource: string, declarations: Map<string, NonNullableReturnDeclaration>, pattern: RegExp): StaticAnalysisRedundantAssertion[] {
   return [...rawSource.matchAll(pattern)]
     .map((match) => nonNullableReturnCandidate(file, block, rawSource, codeSource, declarations, match))
     .filter(isStaticAnalysisRedundantAssertion);
 }
 
-// Builds one non-nullable-return candidate only when declaration evidence exists.
-// Use match for assertion text and callee lookup in declarations, codeSource to reject masked positions, and file plus block for proof lines.
-// Return a candidate only for an executable match with a declaration, otherwise undefined; rawSource is forwarded but not retained.
+/**
+ * Build one non-nullable-return candidate only when matching local declaration evidence exists.
+ *
+ * @param file - source file used to format the declaration proof path
+ * @param block - test block whose `startLine` anchors the declaration line offset
+ * @param rawSource - raw test body text forwarded to the shared candidate builder (not retained)
+ * @param codeSource - masked test body text used to reject masked match positions
+ * @param declarations - collected local declarations keyed by callee name
+ * @param match - regex match providing the assertion text, index, and called function name
+ * @returns Candidate only for an executable match backed by a declaration, otherwise undefined.
+ */
 function nonNullableReturnCandidate(file: SourceFile, block: FunctionBlock, rawSource: string, codeSource: string, declarations: Map<string, NonNullableReturnDeclaration>, match: RegExpMatchArray): StaticAnalysisRedundantAssertion | undefined {
   const index = match.index ?? 0;
   if (!isExecutableAssertionAt(codeSource, index)) {
@@ -382,8 +510,13 @@ function nonNullableReturnCandidate(file: SourceFile, block: FunctionBlock, rawS
   });
 }
 
-// Collects function and const-arrow declarations whose return annotations pass the text check for non-nullability.
-// Use source for declaration text and codeSource for executable positions; return a map keyed by name, empty when no declarations qualify.
+/**
+ * Collect local function and const-arrow declarations whose return annotations pass the non-nullability text check.
+ *
+ * @param source - raw source text scanned for local declaration signatures
+ * @param codeSource - masked source text used to filter out non-executable declarations
+ * @returns Map of qualifying declarations keyed by function name, empty when none qualify.
+ */
 function nonNullableReturnDeclarations(source: string, codeSource: string): Map<string, NonNullableReturnDeclaration> {
   const declarations = new Map<string, NonNullableReturnDeclaration>();
   for (const pattern of NON_NULLABLE_DECLARATION_PATTERNS) {
@@ -392,9 +525,15 @@ function nonNullableReturnDeclarations(source: string, codeSource: string): Map<
   return declarations;
 }
 
-// Adds declaration evidence for one grammar while ignoring masked comments and strings.
-// Match global pattern against source and use codeSource to reject masked declarations.
-// Returns nothing and mutates declarations in place with accepted return types and line offsets, replacing entries with the same name.
+/**
+ * Collect non-nullable return declaration evidence for one declaration grammar while ignoring masked comments and strings.
+ *
+ * @param declarations - declaration map mutated in place with accepted entries, replacing duplicates by name
+ * @param source - raw source text matched against the declaration pattern
+ * @param codeSource - masked source text used to reject masked declaration matches
+ * @param pattern - global regular expression matching one annotated declaration grammar
+ * @returns Nothing. Mutates `declarations` in place with qualifying return types and line offsets.
+ */
 function pushNonNullableReturnDeclarationsForPattern(declarations: Map<string, NonNullableReturnDeclaration>, source: string, codeSource: string, pattern: RegExp): void {
   for (const match of source.matchAll(pattern)) {
     if (!isExecutableFunctionDeclarationAt(codeSource, match.index ?? 0)) {
@@ -404,7 +543,12 @@ function pushNonNullableReturnDeclarationsForPattern(declarations: Map<string, N
   }
 }
 
-// Return the candidate fields in args with high confidence and shared removal advice, omitting its file and source context.
+/**
+ * Assemble a redundant-assertion candidate with default high confidence and shared removal advice, omitting context fields.
+ *
+ * @param args - candidate payload fields plus transient `file` and `source` context fields to strip
+ * @returns Candidate object with `confidence` set to `"high"` and the shared `recommendation`.
+ */
 function staticRedundantCandidate(args: Omit<StaticAnalysisRedundantAssertion, "confidence" | "recommendation"> & { file: SourceFile; source: string }): StaticAnalysisRedundantAssertion {
   const { file: _file, source: _source, ...candidate } = args;
   return {
@@ -414,9 +558,13 @@ function staticRedundantCandidate(args: Omit<StaticAnalysisRedundantAssertion, "
   };
 }
 
-// Downgrades importability sentinel tests to review/document guidance instead of delete guidance.
-// Use block's test name and candidate's static-import evidence to select the guidance.
-// Return a medium-confidence copy for sentinels or candidate unchanged otherwise; the input candidate is not mutated.
+/**
+ * Downgrade importability sentinel tests to review-or-document guidance instead of mechanical deletion advice.
+ *
+ * @param block - test block whose name is checked for importability-sentinel cues
+ * @param candidate - candidate assertion evaluated for static-import proof without mutating the input
+ * @returns Medium-confidence copy with sentinel guidance when applicable, or `candidate` unchanged.
+ */
 function staticAnalysisActionabilityCandidate(block: FunctionBlock, candidate: StaticAnalysisRedundantAssertion): StaticAnalysisRedundantAssertion {
   if (!isImportabilitySentinelCandidate(block, candidate)) {
     return candidate;
@@ -431,24 +579,44 @@ function staticAnalysisActionabilityCandidate(block: FunctionBlock, candidate: S
   };
 }
 
-// Sentinel candidates need both a module-load style test name and static import evidence.
+/**
+ * Check whether a candidate represents an importability sentinel combining module-load test naming and static import evidence.
+ *
+ * @param block - test block supplying the test name
+ * @param candidate - candidate carrying static fact text and optional source proof
+ * @returns True when both the test name and candidate proof indicate an importability sentinel.
+ */
 function isImportabilitySentinelCandidate(block: FunctionBlock, candidate: StaticAnalysisRedundantAssertion): boolean {
   return hasImportabilitySentinelName(block.name) && hasStaticImportProof(candidate);
 }
 
-// Returns true for test names with importability, module load, load graph, export, or contract cues that suggest a wiring check.
+/**
+ * Check whether a test name contains importability, module-load, load-graph, export, or contract cues suggesting a wiring check.
+ *
+ * @param testName - display name of the test block under review
+ * @returns True if `testName` matches any importability-sentinel keyword.
+ */
 function hasImportabilitySentinelName(testName: string): boolean {
   return /\b(?:importability|module[-\s]+load|load[-\s]+graph|exports?|contract)\b/i.test(testName);
 }
 
-// Static import proof distinguishes module-load sentinels from ordinary type-shape assertions.
-// Return whether candidate has sourceProof and whole-word import plus static or statically in staticFact, ignoring case.
+/**
+ * Check whether a candidate carries static-import proof distinguishing module-load sentinels from ordinary type-shape assertions.
+ *
+ * @param candidate - candidate whose `sourceProof` and `staticFact` fields are inspected
+ * @returns True when `sourceProof` is defined and `staticFact` mentions both `import` and `static`/`statically`.
+ */
 function hasStaticImportProof(candidate: StaticAnalysisRedundantAssertion): boolean {
   return candidate.sourceProof !== undefined && /\bimport\b/i.test(candidate.staticFact) && /\bstatic(?:ally)?\b/i.test(candidate.staticFact);
 }
 
-// Renders the finding message from the final confidence/actionability decision.
-// Return text containing block's test name and candidate's assertion and confidence, with sentinel-specific wording when applicable.
+/**
+ * Render the reviewer-facing finding message from the final confidence and actionability decision.
+ *
+ * @param block - test block supplying the test name embedded in the message
+ * @param candidate - final candidate supplying confidence, normalized assertion, and optional sentinel category
+ * @returns Formatted message with sentinel review wording or standard redundant-candidate wording.
+ */
 function staticAnalysisRedundantMessage(block: FunctionBlock, candidate: StaticAnalysisRedundantAssertion): string {
   if (candidate.reasonCategory === "importability-sentinel") {
     return `Review importability sentinel: ${candidate.confidence} confidence. Test \`${block.name}\` asserts static import shape rather than behaviour: ${candidate.assertion}.`;
@@ -456,38 +624,69 @@ function staticAnalysisRedundantMessage(block: FunctionBlock, candidate: StaticA
   return `Static-analysis-redundant candidate: ${candidate.confidence} confidence. Test \`${block.name}\` asserts code shape rather than behaviour: ${candidate.assertion}.`;
 }
 
-// Type guard used after optional candidate builders so callers keep precise arrays.
-// Return false for undefined candidate values; return true and narrow candidate for retained assertions.
+/**
+ * Narrow optional candidate results after pattern matching so callers retain a non-nullable array.
+ *
+ * @param candidate - candidate value or undefined returned from a single-match builder
+ * @returns True when `candidate` is defined, narrowing its type; false for undefined.
+ */
 function isStaticAnalysisRedundantAssertion(candidate: StaticAnalysisRedundantAssertion | undefined): candidate is StaticAnalysisRedundantAssertion {
   return candidate !== undefined;
 }
 
-// Collapses whitespace so finding messages carry readable one-line assertion snippets.
+/**
+ * Collapse internal whitespace runs and trim an assertion match into a readable one-line snippet.
+ *
+ * @param assertion - raw matched assertion substring from the test body
+ * @returns Normalized single-line assertion text.
+ */
 function normalizedAssertionText(assertion: string): string {
   return assertion.replace(/\s+/g, " ").trim();
 }
 
-// Returns true if assert or expect appears as a whole word in the first 12 masked characters starting at the raw assertion match.
-// The caller discards the candidate when this check fails.
+/**
+ * Verify that an assertion match starts on executable `assert` or `expect` tokens rather than masked text.
+ *
+ * @param codeSource - masked source text where comments and strings are blanked out
+ * @param index - starting UTF-16 offset of the raw assertion match
+ * @returns True if `assert` or `expect` appears as a whole word within the 12-character slice at `index`.
+ */
 function isExecutableAssertionAt(codeSource: string, index: number): boolean {
   return /\b(?:assert|expect)\b/.test(codeSource.slice(index, index + 12));
 }
 
-// Returns true if function or const appears as a whole word in the 12 masked characters starting at the raw declaration match.
-// The caller skips the declaration candidate when this check fails.
+/**
+ * Verify that a declaration match starts on executable `function` or `const` tokens rather than masked text.
+ *
+ * @param codeSource - masked source text where comments and strings are blanked out
+ * @param index - starting UTF-16 offset of the raw declaration match
+ * @returns True if `function` or `const` appears as a whole word within the 12-character slice at `index`.
+ */
 function isExecutableFunctionDeclarationAt(codeSource: string, index: number): boolean {
   return /\b(?:function|const)\b/.test(codeSource.slice(index, index + 12));
 }
 
-// Returns true if import appears as a whole word in the 12 masked characters starting at the raw import match.
-// The caller skips the import candidate when this check fails.
+/**
+ * Verify that an import match starts on an executable `import` keyword rather than masked text.
+ *
+ * @param codeSource - masked source text where comments and strings are blanked out
+ * @param index - starting UTF-16 offset of the raw import match
+ * @returns True if `import` appears as a whole word within the 12-character slice at `index`.
+ */
 function isExecutableImportAt(codeSource: string, index: number): boolean {
   return /\bimport\b/.test(codeSource.slice(index, index + 12));
 }
 
-// Stores one declaration only when the name is present and the return annotation passes the text check for non-nullability.
-// Update declarations in place under name, replacing an existing entry; normalize returnType before checking it.
-// Returns nothing and leaves declarations unchanged for an empty name or rejected return type. Uses source and index for the line offset.
+/**
+ * Store one declaration only when `name` is non-empty and its normalized return annotation passes the non-nullability text check.
+ *
+ * @param declarations - declaration map updated in place under `name`, replacing any existing entry
+ * @param source - raw source text used with `index` to compute the declaration line offset
+ * @param index - UTF-16 offset of the declaration match in `source`
+ * @param name - declared function or const-arrow identifier name
+ * @param returnType - raw captured return-type annotation normalized before validation
+ * @returns Nothing. Updates `declarations` in place, or leaves it unchanged for empty names or rejected return types.
+ */
 function pushNonNullableReturnDeclaration(declarations: Map<string, NonNullableReturnDeclaration>, source: string, index: number, name: string, returnType: string): void {
   const normalizedReturnType = returnType.replace(/\s+/g, " ").trim();
   if (!name || !isNonNullableReturnType(normalizedReturnType)) {
@@ -496,8 +695,13 @@ function pushNonNullableReturnDeclaration(declarations: Map<string, NonNullableR
   declarations.set(name, { name, returnType: normalizedReturnType, lineOffset: lineOffset(source, index) });
 }
 
-// Assess returnType as non-nullability evidence; empty text and standalone any, unknown, void, null, undefined, or never yield false.
-// Otherwise return true unless the annotation contains null or undefined as a word.
+/**
+ * Assess whether a normalized return-type annotation serves as non-nullability evidence.
+ * Rejects empty text, standalone `any`/`unknown`/`void`/`null`/`undefined`/`never`, and annotations mentioning `null` or `undefined`.
+ *
+ * @param returnType - trimmed, whitespace-normalized return-type annotation text
+ * @returns True when the annotation names a non-nullable return type; false otherwise.
+ */
 function isNonNullableReturnType(returnType: string): boolean {
   if (returnType === "" || /^(?:any|unknown|void|null|undefined|never)$/.test(returnType)) {
     return false;

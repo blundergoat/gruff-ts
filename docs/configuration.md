@@ -169,9 +169,10 @@ only when one of these explicit markers appears in the first 10 lines:
 Generated files skip documentation and naming findings only. Security,
 sensitive-data, size, complexity, maintainability, modernisation, and
 test-quality checks still run, so a generated file can still report a leaked
-credential, unsafe execution, or a file-size finding. Path names such as
-`fixtures/`, `testdata/`, or `perf-tests/` do not by themselves suppress any
-rule family.
+credential, unsafe execution, or a file-size finding. Directory names alone never
+trigger this generated-file skip (separately, security and sensitive-data rules
+skip test, fixture, and example paths with counted audit rows - see Sensitive
+Exclusions below).
 
 ## Allowlists
 
@@ -186,13 +187,14 @@ allowlists:
     - env
 ```
 
-The 0.5 key `allowlists.secretPreviews` is removed: FAMILY-CONTRACT.md section 5 makes every sensitive-data marker unconditional and zero-payload, so the key authorised nothing. `gruff-ts init` no longer writes it, a configuration carrying it (even as an empty list) is refused with that explanation, and `gruff-ts migrate-config` deletes it.
+The `0.5` key `allowlists.secretPreviews` is removed because reports now use
+fixed category markers unconditionally, without matched characters or
+secret-derived lengths. `gruff-ts init` no longer writes it, configs containing
+it (even as an empty list) fail with exit `2`, and `gruff-ts migrate-config`
+deletes it. To silence a reviewed sample secret, use `sensitiveExclusions:`
+below rather than preview matching.
 
-The key never suppresses a sensitive finding. Reports use fixed category markers without matched characters or secret-derived lengths.
-
-Tune a documented rule threshold or enabled setting when a sensitive-data detector does not fit the project; preview values cannot be used as exclusions.
-
-Naming allowlists tune the 0.2.0 naming pack without changing rule ids or
+Naming allowlists tune the naming rules without changing rule IDs or
 fingerprints:
 
 | Key | Used by | Default behavior |

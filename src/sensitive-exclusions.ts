@@ -53,11 +53,15 @@ export function parseSensitiveExclusions(parsedConfig: Record<string, unknown>):
   return exclusions;
 }
 
-// Checks entryValue in key, rule, path, optional symbol and reason order, using index to locate the entry in config errors.
-// Returns normalized fields. Unknown keys are rejected first so a message_contains or value key is reported before a sibling field error.
-// An omitted symbol lets the exclusion apply regardless of symbol for the configured rule and path.
-//
-// @throws {ConfigLoadError} - when the entry is not a mapping, has an unsupported key, or any field fails validation
+/**
+ * Checks entry fields in key, rule, path, optional symbol, and reason order; unknown keys fail first before sibling field errors.
+ * An omitted symbol lets the exclusion apply regardless of symbol for the configured rule and path.
+ *
+ * @param entryValue - raw config entry expected to be a mapping with rule, path, optional symbol, and reason
+ * @param index - entry position used to locate the exclusion in config errors
+ * @returns normalized fields for the exclusion, omitting symbol when not configured
+ * @throws {ConfigLoadError} - when the entry is not a mapping, has an unsupported key, or any field fails validation
+ */
 function parseSensitiveExclusionEntry(entryValue: unknown, index: number): SensitiveExclusion {
   const entry = objectValue(entryValue);
   // Only a mapping can carry the named scope keys; a bare string would hide which field is meant.
@@ -123,11 +127,13 @@ function validatedExclusionRule(configuredRule: unknown, index: number): string 
   return rule;
 }
 
-/*
- * Validates `path` as one exact project-relative file path. Rejects a missing or empty value, an
- * absolute path, a `..` traversal, and a glob, so the entry names a file inside the analysed project
- * that a reviewer can open. Throws ConfigLoadError naming `sensitiveExclusions[<index>].path`.
- * @throws {ConfigLoadError} when the path is missing, non-string, blank, absolute, uses `..`, or has a glob character.
+/**
+ * Validates one exact project-relative file path, rejecting absolute paths, `..` traversal, and globs so reviewers can open the named file.
+ *
+ * @param configuredPath - raw config path field to normalise and validate as a project-relative file path
+ * @param index - entry position used to name `sensitiveExclusions[<index>].path` in config errors
+ * @returns normalised project-relative file path with forward slashes and no leading `./`
+ * @throws {ConfigLoadError} - when the path is missing, non-string, blank, absolute, uses `..`, or has a glob character
  */
 function validatedExclusionPath(configuredPath: unknown, index: number): string {
   const path = normalisedExclusionPath(requiredExclusionString(configuredPath, index, "path"));
@@ -146,14 +152,26 @@ function validatedExclusionPath(configuredPath: unknown, index: number): string 
   return path;
 }
 
-// A configured symbol limits an exclusion to findings tagged with it. The caller skips this helper when the symbol is omitted.
-// Returns configuredSymbol trimmed. Undefined, non-string, or blank input throws ConfigLoadError. index locates the entry in config errors.
+/**
+ * Validates a configured symbol that limits an exclusion to matching tagged findings; the caller skips this helper when omitted.
+ *
+ * @param configuredSymbol - raw config symbol field to validate and trim
+ * @param index - entry position used to locate the entry in config errors
+ * @returns trimmed non-empty symbol name
+ * @throws {ConfigLoadError} - when configuredSymbol is undefined, non-string, or blank
+ */
 function validatedExclusionSymbol(configuredSymbol: unknown, index: number): string {
   return requiredExclusionString(configuredSymbol, index, "symbol");
 }
 
-// Returns configuredReason trimmed for the suppression audit; index identifies its entry in config errors.
-// Throws ConfigLoadError for a missing, non-string, empty, or whitespace-only reason; every suppression needs an explanation.
+/**
+ * Validates the mandatory explanation for a suppression audit entry because every exclusion needs a non-empty rationale.
+ *
+ * @param configuredReason - raw config reason field to validate and trim for the suppression audit
+ * @param index - entry position used to identify the entry in config errors
+ * @returns trimmed non-empty reason text for the suppression audit
+ * @throws {ConfigLoadError} - when configuredReason is missing, non-string, empty, or whitespace-only
+ */
 function validatedExclusionReason(configuredReason: unknown, index: number): string {
   return requiredExclusionString(configuredReason, index, "reason");
 }
@@ -187,8 +205,12 @@ function requiredExclusionString(configuredValue: unknown, index: number, key: s
   return trimmedText;
 }
 
-// Returns the configured exclusion path with forward slashes and one leading current-directory prefix removed for exact matching.
-// A path consisting only of that prefix becomes empty and matches no file path.
+/**
+ * Normalises a configured exclusion path for exact matching; a path consisting only of a leading `./` prefix becomes empty and matches no file.
+ *
+ * @param path - configured exclusion path before slash and prefix normalisation
+ * @returns path with backslashes replaced by forward slashes and one leading `./` prefix removed
+ */
 function normalisedExclusionPath(path: string): string {
   return path.replaceAll("\\", "/").replace(/^\.\//, "");
 }
@@ -218,8 +240,13 @@ function assertUniqueSensitiveScopes(exclusions: readonly SensitiveExclusion[]):
   }
 }
 
-// Returns a stable duplicate-check key by JSON-encoding the exclusion's rule, path, and symbol as separate fields.
-// An omitted symbol is encoded as null and identifies the file-wide scope for that rule.
+/**
+ * Builds a stable duplicate-check key by JSON-encoding an exclusion's rule, path, and symbol as separate fields.
+ * An omitted symbol is encoded as null and identifies the file-wide scope for that rule.
+ *
+ * @param exclusion - validated exclusion whose scope fields form the key
+ * @returns stable JSON array key encoding rule, path, and symbol (or null when omitted)
+ */
 function sensitiveExclusionScopeKey(exclusion: SensitiveExclusion): string {
   return JSON.stringify([exclusion.rule, exclusion.path, exclusion.symbol ?? null]);
 }
@@ -277,7 +304,12 @@ const BUILT_IN_TEST_PATH_DIRECTORIES = new Set(["test", "tests", "__tests__", "s
 // `[^\n]` rather than `.`: JavaScript's `.` also refuses \r, U+2028 and U+2029, which the other four ports accept.
 const BUILT_IN_TEST_FILE_NAME = /^(?:[^\n]*_test\.go|test_[^\n]*\.py|[^\n]*_test\.py|[^\n]*Test\.php|[^\n]*\.(?:test|spec)\.(?:js|jsx|ts|tsx|mjs|cjs))$/;
 
-// Returns true when a finding's display path matches a built-in directory or file name convention for tests, fixtures, or examples.
+/**
+ * Checks whether a finding's display path matches a built-in directory or file name convention for tests, fixtures, or examples.
+ *
+ * @param displayPath - finding display path to check across directory segments and base file name
+ * @returns true when any directory segment or the base file name matches the built-in test-path conventions
+ */
 export function isBuiltInTestPath(displayPath: string): boolean {
   const segments = displayPath.replaceAll("\\", "/").split("/");
   const baseName = segments.pop() ?? "";
@@ -285,7 +317,12 @@ export function isBuiltInTestPath(displayPath: string): boolean {
   return segments.some((directory) => BUILT_IN_TEST_PATH_DIRECTORIES.has(directory.toLowerCase())) || BUILT_IN_TEST_FILE_NAME.test(baseName);
 }
 
-// Reports whether the test-path class covers a rule: every sensitive-data rule but the fixture-PII rule, and every security rule.
+/**
+ * Reports whether the test-path skip class covers a rule: every security rule and every sensitive-data rule except the fixture-PII rule.
+ *
+ * @param ruleId - rule identifier on a finding being evaluated for built-in test-path skipping
+ * @returns true for security rules and sensitive-data rules other than the exempt fixture-PII rule
+ */
 function isSkippedOnTestPaths(ruleId: string): boolean {
   // Security rules are skipped whole, because a test exercises insecure calls on purpose.
   if (ruleId.startsWith("security.")) {
@@ -294,10 +331,14 @@ function isSkippedOnTestPaths(ruleId: string): boolean {
   return ruleId.startsWith("sensitive-data.") && ruleId !== BUILT_IN_TEST_PATH_EXEMPT_RULE;
 }
 
-// Filters findings by test path and returns survivors with a copy of suppressions plus one audit row per skipped file and rule.
-//
-// A user scanning a project with sample keys or a deliberate `eval` in `__tests__/` sees `builtInTestPath[...]` rows instead of findings.
-// Every gruff-ts sensitive-data and security rule is covered, including pii-pattern, under FAMILY-CONTRACT.md section 13a.
+/**
+ * Filters findings in test paths so projects with sample keys or `eval` in `__tests__/` report `builtInTestPath[...]` rows instead of findings.
+ * Every gruff-ts sensitive-data and security rule is covered, including pii-pattern, under FAMILY-CONTRACT.md section 13a.
+ *
+ * @param findings - findings to partition between surviving report items and built-in test-path skips
+ * @param suppressions - existing user-exclusion audit rows copied before appending built-in skip rows
+ * @returns surviving findings in input order and a copy of suppressions plus one sorted built-in audit row per skipped file and rule
+ */
 export function applyBuiltInTestPathSkip(findings: readonly Finding[], suppressions: readonly SuppressionSummary[]): SensitiveExclusionResult {
   const skippedCountByFileAndRule = new Map<string, { path: string; rule: string; count: number }>();
   const kept: Finding[] = [];
@@ -333,15 +374,26 @@ export function applyBuiltInTestPathSkip(findings: readonly Finding[], suppressi
   return { findings: kept, suppressions: rows };
 }
 
-// Compares left with right by UTF-8 bytes for test-path row ordering (FAMILY-CONTRACT.md section 13a).
-// Returns a negative number, zero, or a positive number when left's bytes sort before, equal, or sort after right's bytes.
-// JavaScript's own `<` compares UTF-16 units, which can change the relative order of paths containing supplementary characters.
+/**
+ * Compares two strings by UTF-8 bytes for test-path row ordering (FAMILY-CONTRACT.md section 13a),
+ * avoiding JavaScript `<` UTF-16 unit ordering on supplementary characters.
+ *
+ * @param left - first string to encode and compare as UTF-8 bytes
+ * @param right - second string to encode and compare as UTF-8 bytes
+ * @returns negative, zero, or positive integer when left's UTF-8 bytes sort before, equal, or after right's
+ */
 function compareUtf8Bytes(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
-// Returns exclusion's zero-count audit row; index is its configured position. `paths` is a single-element list and `symbol` is null when
-// absent, which is the family row shape (gruff-rs/src/report.rs, search: `struct SuppressionSummary`).
+/**
+ * Builds an exclusion's zero-count audit row in the family row shape (`gruff-rs/src/report.rs`, search: `struct SuppressionSummary`),
+ * with `paths` as a single-element list and `symbol` set to null when absent.
+ *
+ * @param exclusion - validated exclusion whose rule, path, optional symbol, and reason populate the row
+ * @param index - configured declaration position recorded on the audit row
+ * @returns zero-count SuppressionSummary row for the configured exclusion
+ */
 function initialSuppressionSummary(exclusion: SensitiveExclusion, index: number): SuppressionSummary {
   return {
     index,
@@ -353,9 +405,14 @@ function initialSuppressionSummary(exclusion: SensitiveExclusion, index: number)
   };
 }
 
-// Returns true when the finding has the exclusion's exact rule ID and display path.
-// A specified symbol must match exactly. Omitting it leaves every finding in that rule and file eligible.
-// The stable contract uses the stored display path so matching is independent of the caller's working directory.
+/**
+ * Matches a finding against an exclusion by exact rule ID, stored display path, and optional symbol; an omitted symbol matches any symbol.
+ * Stable contract: matching uses the stored display path so results are independent of working directory, and any specified symbol must match.
+ *
+ * @param exclusion - validated exclusion specifying the exact rule, path, and optional symbol
+ * @param finding - finding checked for exact rule ID, display path, and optional symbol match
+ * @returns true when rule ID, display path, and any specified symbol match the exclusion
+ */
 function sensitiveExclusionMatches(exclusion: SensitiveExclusion, finding: Finding): boolean {
   if (finding.ruleId !== exclusion.rule) {
     return false;

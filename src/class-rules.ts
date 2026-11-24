@@ -156,12 +156,21 @@ function analyseReadonlyCandidates(file: SourceFile, source: string, codeSource:
   }
 }
 
-// Scans sourceFile for mutable private instance fields that can proceed to the readonly check.
-// Returns name offsets for fields without disqualifying writes, allowing direct this.name writes in the class's own constructor.
-// Skips classes with bracket writes on this or Object.assign calls targeting this because the scan treats their targets as uncertain.
+/**
+ * Scans the AST for mutable private instance fields that can proceed to the readonly check.
+ * Skips classes with bracket writes on this or Object.assign calls targeting this because the scan treats their targets as uncertain.
+ *
+ * @param sourceFile - parsed syntax tree whose class declarations and expressions are inspected
+ * @returns Name start offsets for fields without disqualifying writes, allowing direct `this.name` writes in the class's own constructor.
+ */
 function constructionOnlyFieldNameStarts(sourceFile: TsSourceFile): Set<number> {
   const starts = new Set<number>();
-  // Returns nothing. Adds candidate field offsets to starts for classes and class expressions in the syntax subtree rooted at node.
+  /**
+   * Visits a syntax subtree and collects readonly candidate field offsets for any class-like declarations or expressions.
+   *
+   * @param node - syntax node whose subtree is traversed for class-like nodes
+   * @returns Nothing. Adds candidate field name offsets to `starts` for classes and class expressions in the subtree rooted at `node`.
+   */
   const visit = (node: TsNode): void => {
     if (typescriptSyntax.isClassLike(node)) {
       addConstructionOnlyFields(sourceFile, node, starts);
@@ -172,7 +181,14 @@ function constructionOnlyFieldNameStarts(sourceFile: TsSourceFile): Set<number> 
   return starts;
 }
 
-// Returns nothing. Adds the sourceFile name offsets of classNode's readonly candidates to starts.
+/**
+ * Collects the source start offsets of mutable private instance fields in a class that have no disqualifying writes.
+ *
+ * @param sourceFile - syntax tree used to resolve each candidate property name's start offset
+ * @param classNode - class declaration or expression whose members are checked for writes
+ * @param starts - set receiving the name start offsets of qualifying readonly candidate fields
+ * @returns Nothing. Adds the `sourceFile` name offsets of `classNode`'s readonly candidates to `starts`.
+ */
 function addConstructionOnlyFields(sourceFile: TsSourceFile, classNode: TsClassLike, starts: Set<number>): void {
   const written = writtenMemberNames(classNode);
   // Skip readonly suggestions for this class when a bracket write on this or Object.assign(this, ...) leaves the target members uncertain.
@@ -187,7 +203,12 @@ function addConstructionOnlyFields(sourceFile: TsSourceFile, classNode: TsClassL
   }
 }
 
-// A `private` field that is neither `static` nor already `readonly`.
+/**
+ * Checks whether a property declaration is a `private` instance field that is neither `static` nor already `readonly`.
+ *
+ * @param member - property declaration whose modifiers are inspected
+ * @returns True when `member` has the `private` modifier and lacks both `readonly` and `static`.
+ */
 function isMutablePrivateInstanceField(member: import("typescript").PropertyDeclaration): boolean {
   const kinds = new Set((member.modifiers ?? []).map((modifier) => modifier.kind));
   return kinds.has(typescriptSyntax.SyntaxKind.PrivateKeyword)
@@ -195,17 +216,24 @@ function isMutablePrivateInstanceField(member: import("typescript").PropertyDecl
     && !kinds.has(typescriptSyntax.SyntaxKind.StaticKeyword);
 }
 
-/*
- * Scans classNode for identifiable member writes, including writes on other receivers and inside nested functions.
- * Returns their names, excluding direct this.name targets in the class's own constructor. An empty set rules out no fields.
- * Returns undefined for bracket writes on this or Object.assign targeting this so the caller skips readonly suggestions for the class.
+/**
+ * Scans `classNode` for identifiable member writes, including writes on other receivers and inside nested functions.
+ * Excludes direct `this.name` writes in the class's own constructor. An empty set rules out no fields.
+ *
+ * @param classNode - class declaration or expression whose subtree is scanned for member writes
+ * @returns Written member names, or `undefined` on bracket writes to `this` or `Object.assign` targeting `this` so the caller skips the class.
  */
 function writtenMemberNames(classNode: TsClassLike): Set<string> | undefined {
   const written = new Set<string>();
   let writesDynamically = false;
-  // Update written for property targets in target, excluding direct this.name writes in classNode's own constructor.
-  // Use write to locate the enclosing constructor; any this[...] target sets writesDynamically instead.
-  // Recurse through destructuring targets. On other receivers, record string literals or templates without substitutions. Returns nothing.
+  /**
+   * Updates `written` for property targets in `target`, excluding direct `this.name` writes in `classNode`'s own constructor.
+   * Sets `writesDynamically` instead on `this[...]` targets, recurses into destructuring, and records static string keys on other receivers.
+   *
+   * @param target - left-hand expression or destructuring pattern being written to
+   * @param write - enclosing write AST node used to check whether the write occurs in `classNode`'s own constructor
+   * @returns Nothing. Updates `written` or `writesDynamically` based on the resolved targets.
+   */
   const record = (target: TsExpression, write: TsNode): void => {
     const inner = withoutWrappers(target);
     if (typescriptSyntax.isPropertyAccessExpression(inner)) {
@@ -224,8 +252,13 @@ function writtenMemberNames(classNode: TsClassLike): Set<string> | undefined {
       }
     }
   };
-  // Scan node and its descendants for writes, updating written and writesDynamically through record.
-  // Object.assign(this, ...) sets writesDynamically because its sources may supply keys known only at runtime. Returns nothing.
+  /**
+   * Scans `node` and its descendants for writes, updating `written` and `writesDynamically` through `record`.
+   * Marks `Object.assign(this, ...)` as dynamic writes because its sources may supply keys known only at runtime.
+   *
+   * @param node - syntax node whose subtree is inspected for assignments, updates, deletions, loop targets, and `Object.assign`
+   * @returns Nothing. Records member writes into `written` or sets `writesDynamically`.
+   */
   const visit = (node: TsNode): void => {
     if (typescriptSyntax.isBinaryExpression(node) && isAssignmentOperator(node.operatorToken.kind)) {
       record(node.left, node);
@@ -246,10 +279,20 @@ function writtenMemberNames(classNode: TsClassLike): Set<string> | undefined {
   return writesDynamically ? undefined : written;
 }
 
-// Returns explicit property-value targets, array targets and rest targets from the destructuring pattern for the member-write scan.
-// Defaults contribute only the assigned target. Array holes and shorthand object properties contribute no member target.
+/**
+ * Extracts explicit property-value, array, and rest targets from a destructuring pattern for the member-write scan.
+ * Defaults contribute only the assigned target; array holes and shorthand object properties contribute no member target.
+ *
+ * @param pattern - object or array literal representing a destructuring assignment target
+ * @returns Target expressions extracted from `pattern` without default value expressions.
+ */
 function destructuringTargets(pattern: import("typescript").ObjectLiteralExpression | import("typescript").ArrayLiteralExpression): TsExpression[] {
-  // Returns the assigned side of `element`: the left of `target = default`, otherwise `element` itself.
+  /**
+   * Unwraps a destructuring default assignment to return only its target expression.
+   *
+   * @param element - destructuring element expression that may be a `target = default` binary expression
+   * @returns The assigned side of `element`: the left of `target = default`, otherwise `element` itself.
+   */
   const withoutDefault = (element: TsExpression): TsExpression =>
     typescriptSyntax.isBinaryExpression(element) && element.operatorToken.kind === typescriptSyntax.SyntaxKind.EqualsToken ? element.left : element;
   if (typescriptSyntax.isArrayLiteralExpression(pattern)) {
@@ -264,8 +307,14 @@ function destructuringTargets(pattern: import("typescript").ObjectLiteralExpress
   });
 }
 
-// Returns true when write reaches a constructor owned by classNode before crossing another function, class, field or static block.
-// This ancestry check also includes writes in constructor parameter initializers.
+/**
+ * Checks whether a write node belongs directly to `classNode`'s own constructor rather than a nested scope.
+ * This ancestry check also includes writes in constructor parameter initializers.
+ *
+ * @param write - syntax node representing the member write expression
+ * @param classNode - owning class declaration or expression to match against the enclosing constructor
+ * @returns True when `write` reaches a constructor owned by `classNode` before crossing another function, class, field, or static block.
+ */
 function isInOwnConstructor(write: TsNode, classNode: TsClassLike): boolean {
   for (let current = write.parent; current !== undefined; current = current.parent) {
     if (typescriptSyntax.isConstructorDeclaration(current)) {
@@ -279,7 +328,12 @@ function isInOwnConstructor(write: TsNode, classNode: TsClassLike): boolean {
   return false;
 }
 
-// Detects a call spelled Object.assign with this as its first argument so the caller can treat the member writes as uncertain.
+/**
+ * Detects a call spelled `Object.assign` with `this` as its first argument so the caller can treat member writes as uncertain.
+ *
+ * @param node - syntax node tested for an `Object.assign(this, ...)` call expression
+ * @returns True when `node` calls `Object.assign` with a wrapped or bare `this` as its first argument.
+ */
 function isObjectAssignToThis(node: TsNode): boolean {
   if (!typescriptSyntax.isCallExpression(node) || !typescriptSyntax.isPropertyAccessExpression(node.expression)) {
     return false;
@@ -290,17 +344,32 @@ function isObjectAssignToThis(node: TsNode): boolean {
     && firstArgument !== undefined && isThisKeyword(firstArgument);
 }
 
-// Returns whether the expression is this after looking through parentheses, non-null assertions, type assertions and satisfies expressions.
+/**
+ * Checks whether an expression resolves to the `this` keyword once type and grouping wrappers are stripped.
+ *
+ * @param expression - syntax expression to unwrap and inspect
+ * @returns True when `expression` is `this` after looking through parentheses, non-null assertions, type assertions, and satisfies expressions.
+ */
 function isThisKeyword(expression: TsExpression): boolean {
   return withoutWrappers(expression).kind === typescriptSyntax.SyntaxKind.ThisKeyword;
 }
 
-// Returns whether `kind` is `=` or a compound assignment such as `+=` or `??=`.
+/**
+ * Checks whether a syntax token kind represents an assignment operator.
+ *
+ * @param kind - TypeScript syntax token kind to test against the assignment operator range
+ * @returns True when `kind` is `=` or a compound assignment such as `+=` or `??=`.
+ */
 function isAssignmentOperator(kind: import("typescript").SyntaxKind): boolean {
   return kind >= typescriptSyntax.SyntaxKind.FirstAssignment && kind <= typescriptSyntax.SyntaxKind.LastAssignment;
 }
 
-// Returns the underlying write target or receiver after stripping parentheses, non-null assertions, type assertions and satisfies expressions.
+/**
+ * Unwraps transparent grouping and type-level expressions around a write target or receiver.
+ *
+ * @param expression - expression potentially wrapped in parentheses, non-null assertions, type assertions, or satisfies expressions
+ * @returns The underlying write target or receiver after stripping all wrapper expressions.
+ */
 function withoutWrappers(expression: TsExpression): TsExpression {
   let current = expression;
   while (typescriptSyntax.isParenthesizedExpression(current) || typescriptSyntax.isNonNullExpression(current)

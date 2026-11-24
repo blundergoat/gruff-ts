@@ -11,7 +11,11 @@ import { ruleDescriptors } from "./rules.ts";
 export type { AnalysisReport, Finding, OutputFormat, Pillar, RuleDescriptor, Severity } from "./types.ts";
 
 const analyseRunner = Object.assign(analyse, { hookViews: analyseHookReports });
-// Builds the commander program with the optimized hook-view runner already attached.
+/**
+ * Builds the commander program with the optimized hook-view runner already attached.
+ *
+ * @returns Configured commander program wired with `analyseRunner`.
+ */
 const buildProgram = (): ReturnType<typeof buildCliProgram> => buildCliProgram(analyseRunner);
 
 if (import.meta.url === pathToFileURL(argv[1] ?? "").href) {

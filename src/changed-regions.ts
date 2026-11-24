@@ -65,10 +65,15 @@ const FILE_WIDE_RULE_IDS = new Set(["design.large-module-concentration", "docs.m
 // so changed-region attribution must consult the member list, not only the anchor `filePath`.
 const PROJECT_RELATIONSHIP_RULE_IDS = new Set(["design.circular-import"]);
 
-// Resolves the changed lines requested for `analyse` or a hook. Returns undefined when the user asks for a full scan.
-//
-// Explicit ranges take priority, then supplied patch text, then `--since` or `--diff`.
-// @throws {ChangedRegionError} when a range, patch input, or Git comparison cannot be read.
+/**
+ * Resolves the changed lines requested for `analyse` or a hook.
+ * Explicit ranges take priority, then supplied patch text, then `--since` or `--diff`.
+ *
+ * @param options - Analysis options carrying changed-range, patch, `--since`, `--diff`, and scope selectors.
+ * @param projectRoot - Working directory used when running Git comparisons; defaults to the current working directory.
+ * @returns Scope describing the requested changes, or undefined when the user asks for a full scan.
+ * @throws {ChangedRegionError} When a range, patch input, or Git comparison cannot be read.
+ */
 export function changedRegionScope(options: AnalysisOptions, projectRoot = cwd()): ChangedRegionScope | undefined {
   // Editor integrations can specify the exact line ranges the user edited.
   if (options.changedRanges !== undefined) {
@@ -98,10 +103,13 @@ export function changedRegionScope(options: AnalysisOptions, projectRoot = cwd()
 // stay, because they describe the request rather than an unchanged context file.
 const FILE_CONTENT_DIAGNOSTIC_TYPES = new Set(["bounded-deep-scan", "parse-error", "read-error"]);
 
-/*
- * Returns the input diagnostics unchanged for an unscoped run or a scope with explicit ranges.
- * Diff scopes keep file-content diagnostics from changed target files, including errors outside the changed lines.
+/**
+ * Filters run diagnostics to changed target files when a diff scope is active.
  * Operational diagnostics and diagnostics without a file path always remain.
+ *
+ * @param diagnostics - Run diagnostics emitted during analysis.
+ * @param scope - Active changed-region scope, or undefined for an unscoped run.
+ * @returns Input diagnostics unchanged for unscoped or explicit-range runs, or diff-filtered diagnostics keeping changed-file content errors.
  */
 export function filterScopedDiagnostics(diagnostics: RunDiagnostic[], scope: ChangedRegionScope | undefined): RunDiagnostic[] {
   if (!scope || scope.explicitRanges !== undefined) {
@@ -116,9 +124,15 @@ export function filterScopedDiagnostics(diagnostics: RunDiagnostic[], scope: Cha
   });
 }
 
-// Filters findings against scope, using sources to resolve declarations for symbol scope.
-// With a scope, returns the kept findings and suppressedCount. The invariant is that kept plus suppressed equals the input total.
-// Without a scope, returns the original findings array in the result and leaves suppressedCount absent.
+/**
+ * Filters findings against the active changed-region scope, using sources to resolve declarations for symbol scope.
+ * The invariant is that kept plus suppressed equals the input total when a scope is provided.
+ *
+ * @param findings - Candidate findings from the full analysis pass.
+ * @param scope - Active changed-region scope, or undefined when no filtering is requested.
+ * @param sources - Snapshot lookup by file path used to resolve enclosing declarations in symbol scope.
+ * @returns Kept findings with suppressedCount when scoped, or the original findings with suppressedCount absent when unscoped.
+ */
 export function filterChangedFindings(
   findings: Finding[],
   scope: ChangedRegionScope | undefined,
@@ -140,9 +154,16 @@ export function filterChangedFindings(
   return { findings: kept, suppressedCount };
 }
 
-// Returns whether scope keeps the finding by relationship member, whole file, hunk overlap or enclosing declaration under the gate contract.
-// Uses sources to look up scripts and fills declarationsByFile on cache misses to avoid rebuilding spans during symbol widening.
-// Hunk checks use line 1 for an absent start and the start for an absent end. Empty ranges disable hunk and symbol matches.
+/**
+ * Determines whether scope keeps a finding by relationship member, whole file, hunk overlap, or enclosing declaration under the gate contract.
+ * Hunk checks use line 1 for an absent start and the start for an absent end; empty ranges disable hunk and symbol matches.
+ *
+ * @param finding - Finding to evaluate against the active scope.
+ * @param scope - Active changed-region selection rules and file ranges.
+ * @param sources - Snapshot lookup used to read script sources on declaration cache misses.
+ * @param declarationsByFile - Mutates this per-file declaration cache on misses to avoid rebuilding spans during symbol widening.
+ * @returns True when the finding belongs in the changed scope under the gate contract; otherwise false.
+ */
 function isFindingInChangedScope(
   finding: Finding,
   scope: ChangedRegionScope,
@@ -170,9 +191,17 @@ function isFindingInChangedScope(
   return symbolScopeWidensFinding(finding, scope, sources, declarationsByFile, changedRanges);
 }
 
-// Returns true when symbol scope keeps a finding because its enclosing declaration overlaps the file's changedRanges.
-// Uses sources for script lookup and fills declarationsByFile on cache misses while resolving the declaration.
-// The invariant is that file-wide findings and findings without a resolvable declaration never widen.
+/**
+ * Checks whether symbol scope widens to keep a finding because its enclosing declaration overlaps changedRanges.
+ * The invariant is that file-wide findings and findings without a resolvable declaration never widen.
+ *
+ * @param finding - Finding outside direct hunk ranges to test for declaration-level widening.
+ * @param scope - Active changed-region scope whose mode must be `symbol` for widening to apply.
+ * @param sources - Snapshot lookup used to load scripts when resolving declarations.
+ * @param declarationsByFile - Mutates this per-file declaration cache on misses while resolving the enclosing declaration.
+ * @param changedRanges - Changed line ranges for the finding's file.
+ * @returns True when symbol scope keeps the finding because its enclosing declaration overlaps changedRanges; otherwise false.
+ */
 function symbolScopeWidensFinding(
   finding: Finding,
   scope: ChangedRegionScope,
@@ -187,8 +216,13 @@ function symbolScopeWidensFinding(
   return declaration !== undefined && overlapsAny(declaration, changedRanges);
 }
 
-// Returns true when a FILE_WIDE_RULE_IDS finding has an explicit line 1 anchor. The symbol-scope invariant then prevents widening.
-// An absent line leaves the finding eligible for ordinary symbol-scope checks.
+/**
+ * Checks whether a finding is a file-wide rule anchored at explicit line 1 so the symbol-scope invariant prevents widening.
+ * An absent line leaves the finding eligible for ordinary symbol-scope checks.
+ *
+ * @param finding - Finding whose rule ID and line anchor are checked.
+ * @returns True when a `FILE_WIDE_RULE_IDS` finding has an explicit line 1 anchor; otherwise false.
+ */
 function isFileWideFinding(finding: Finding): boolean {
   return FILE_WIDE_RULE_IDS.has(finding.ruleId) && finding.line === 1;
 }
@@ -208,15 +242,27 @@ function projectRelationshipTouchesChange(finding: Finding, scope: ChangedRegion
   return files.some((file) => typeof file === "string" && (scope.wholeFiles.has(file) || scope.changedFiles.has(file)));
 }
 
-// Scope contract: explicit ranges take precedence because they apply to every selected file.
-// Otherwise returns the hunk ranges for filePath. An empty list leaves range-based finding checks with no target span to match.
+/**
+ * Resolves the changed line ranges applicable to a finding's file under the scope contract.
+ * Explicit ranges take precedence because they apply to every selected file; an empty list leaves range checks with no target span.
+ *
+ * @param scope - Active changed-region scope holding explicit ranges and per-file hunk ranges.
+ * @param filePath - Path of the finding's file to look up when explicit ranges are absent.
+ * @returns Explicit ranges if configured, otherwise the hunk ranges for filePath or an empty list.
+ */
 function rangesForFindingFile(scope: ChangedRegionScope, filePath: string): ChangedRange[] {
   return scope.explicitRanges ?? scope.rangesByFile.get(filePath) ?? [];
 }
 
-// Returns the narrowest declaration around the finding's line, preferring matching symbols for a stable choice. An absent line means line 1.
-// Uses sources to look up the script and fills declarationsByFile on a cache miss to avoid rebuilding declaration spans.
-// Returns undefined when no script or enclosing declaration is available, leaving symbol scope without a span to widen through.
+/**
+ * Finds the narrowest declaration around the finding's line, preferring matching symbols for a stable choice.
+ * An absent line means line 1; fills declarationsByFile on a cache miss to avoid rebuilding declaration spans.
+ *
+ * @param finding - Finding whose file, symbol name, and line anchor locate the enclosing declaration.
+ * @param sources - Snapshot lookup used to verify script status and retrieve source text on cache misses.
+ * @param declarationsByFile - Mutates this per-file declaration cache on misses.
+ * @returns Narrowest enclosing declaration region, or undefined when no script or enclosing declaration is available.
+ */
 function enclosingDeclaration(
   finding: Finding,
   sources: Map<string, SourceSnapshot>,
@@ -239,8 +285,14 @@ function enclosingDeclaration(
   return candidates.sort((left, right) => (left.end - left.start) - (right.end - right.start))[0];
 }
 
-// Returns the function, class and interface spans in source for symbol scoping.
-// The optional shared parse supplies syntax for function spans. Without it, those spans come from the text-based block scan.
+/**
+ * Collects function, class, and interface spans in source for symbol scoping.
+ * Without the optional shared parse, function spans come from the text-based block scan instead of syntax nodes.
+ *
+ * @param source - Full file text to scan for function, class, and interface declarations.
+ * @param parsed - Optional shared parse supplying syntax for function spans when available.
+ * @returns Combined declaration regions across functions, classes, and interfaces.
+ */
 function declarationRegions(source: string, parsed?: ParsedScript): DeclarationRegion[] {
   const codeSource = maskNonCode(source);
   return [
@@ -253,7 +305,12 @@ function declarationRegions(source: string, parsed?: ParsedScript): DeclarationR
   ];
 }
 
-// Returns named class and interface line spans from masked source text, covering declarations outside the function-block scan.
+/**
+ * Extracts named class and interface line spans from masked source text, covering declarations outside the function-block scan.
+ *
+ * @param codeSource - Source text with comments and non-code literals masked out.
+ * @returns Named declaration regions for matched class and interface declarations.
+ */
 function classLikeRegions(codeSource: string): DeclarationRegion[] {
   const lines = codeSource.split(/\r?\n/);
   const regions: DeclarationRegion[] = [];
@@ -267,8 +324,14 @@ function classLikeRegions(codeSource: string): DeclarationRegion[] {
   return regions;
 }
 
-// Estimates a class or interface's one-based closing line by counting braces in lines from the zero-based declaration index, startIndex.
-// If no closing brace balances the declaration, returns its starting line.
+/**
+ * Estimates a class or interface's one-based closing line by counting braces from the zero-based declaration startIndex.
+ * If no closing brace balances the declaration, returns its one-based starting line.
+ *
+ * @param lines - Masked source lines split at line breaks.
+ * @param startIndex - Zero-based line index where the class or interface declaration starts.
+ * @returns One-based closing line number, or the starting line when braces never balance.
+ */
 function bracedRegionEnd(lines: string[], startIndex: number): number {
   let depth = 0;
   let hasSeenOpen = false;
@@ -288,18 +351,35 @@ function bracedRegionEnd(lines: string[], startIndex: number): number {
   return startIndex + 1;
 }
 
-// Checks whether a finding or declaration span intersects any changed hunk.
+/**
+ * Checks whether a finding or declaration span intersects any changed hunk.
+ *
+ * @param range - Inclusive one-based line span to test.
+ * @param changedRanges - Changed line ranges for the target file.
+ * @returns True when range overlaps at least one entry in changedRanges; otherwise false.
+ */
 function overlapsAny(range: ChangedRange, changedRanges: ChangedRange[]): boolean {
   return changedRanges.some((changedRange) => rangesOverlap(range, changedRange));
 }
 
-// Inclusive range overlap test for one-based source line numbers.
+/**
+ * Performs an inclusive range overlap test for one-based source line numbers.
+ *
+ * @param left - First inclusive line range.
+ * @param right - Second inclusive line range.
+ * @returns True when left and right share at least one line; otherwise false.
+ */
 function rangesOverlap(left: ChangedRange, right: ChangedRange): boolean {
   return left.start <= right.end && right.start <= left.end;
 }
 
-// Returns sorted, merged ranges from the comma-separated CLI text, skipping blank entries.
-// @throws {ChangedRegionError} - no ranges remain or a nonblank entry is outside the valid N or N-M syntax or bounds.
+/**
+ * Parses sorted, merged line ranges from comma-separated CLI text, skipping blank entries.
+ *
+ * @param rawRanges - Comma-separated `--changed-ranges` input text.
+ * @returns Sorted, merged inclusive line ranges.
+ * @throws {ChangedRegionError} When no ranges remain or a nonblank entry is outside the valid N or N-M syntax or bounds.
+ */
 function parseChangedRanges(rawRanges: string): ChangedRange[] {
   const ranges = rawRanges
     .split(",")
@@ -312,8 +392,13 @@ function parseChangedRanges(rawRanges: string): ChangedRange[] {
   return mergeRanges(ranges);
 }
 
-// Returns inclusive line bounds for one --changed-ranges entry. A single number supplies both bounds.
-// @throws {ChangedRegionError} - when the entry is not N or N-M digits, starts below 1, or ends before it starts.
+/**
+ * Parses inclusive line bounds for one `--changed-ranges` entry, using a single number for both bounds.
+ *
+ * @param rawRange - Trimmed single range token in N or N-M form.
+ * @returns Inclusive start and end line numbers for the entry.
+ * @throws {ChangedRegionError} When the entry is not N or N-M digits, starts below 1, or ends before it starts.
+ */
 function parseChangedRange(rawRange: string): ChangedRange {
   const match = rawRange.match(/^(\d+)(?:-(\d+))?$/);
   if (!match?.[1]) {
@@ -327,13 +412,22 @@ function parseChangedRange(rawRange: string): ChangedRange {
   return { start, end };
 }
 
-/*
- * Returns a scope using changedScope for finding attribution. The mode selects staged, unstaged, working-tree or Git-ref changes.
- * Reads Git changes with paths relative to the scan directory so nested scans can match findings.
+/**
+ * Builds a changed-region scope from Git diff output, reading paths relative to the scan directory so nested scans match findings.
  * Working-tree mode combines staged, unstaged, and non-ignored untracked changes for a review of all local edits.
+ *
+ * @param mode - Diff selector: `staged`, `unstaged`, `working-tree`, or a Git revision expression.
+ * @param changedScope - Attribution mode carried onto the resulting scope for downstream filtering.
+ * @param projectRoot - Directory passed to Git so reported paths remain relative to the scan root.
+ * @returns Scope populated with changed files, whole files, and per-file hunk ranges.
  */
 function gitDiffScope(mode: string, changedScope: ChangedScopeMode, projectRoot: string): ChangedRegionScope {
-  // Read paths relative to the selected project so a scan launched from its parent directory sees the right edits.
+  /**
+   * Runs `git diff` with paths relative to the selected project so a scan launched from a parent directory sees the right edits.
+   *
+   * @param extra - Additional Git diff flags or revision arguments appended to the base command.
+   * @returns Parsed changed-region scope from the resulting unified diff output.
+   */
   const readDiff = (extra: string[]) => parseUnifiedDiff(
     gitOutput(["-c", "core.quotepath=false", "diff", "--unified=0", "--no-color", "--no-ext-diff", "--relative", ...extra], projectRoot),
     changedScope,
@@ -360,9 +454,14 @@ function gitDiffScope(mode: string, changedScope: ChangedScopeMode, projectRoot:
   return readDiff(["--end-of-options", mode]);
 }
 
-// Returns changed target files and addition ranges from the diffText patch, carrying changedScope forward for later filtering.
-// A new file with a target header gets whole-file coverage. A surviving file with only deletions can be changed without any target ranges.
-// An empty patch returns a scope with no changed files.
+/**
+ * Parses changed target files and addition ranges from unified diff text, carrying changedScope forward for later filtering.
+ * A new file with a target header gets whole-file coverage; a surviving file with only deletions can be changed without target ranges.
+ *
+ * @param diffText - Unified diff text to walk line by line; an empty patch yields a scope with no changed files.
+ * @param changedScope - Scope attribution mode assigned to the returned scope.
+ * @returns Scope containing changed files, whole-file additions, and per-file target addition ranges.
+ */
 function parseUnifiedDiff(diffText: string, changedScope: ChangedScopeMode): ChangedRegionScope {
   const scope: ChangedRegionScope = { mode: changedScope, rangesByFile: new Map(), wholeFiles: new Set(), changedFiles: new Set() };
   const state: DiffParseState = { currentFile: undefined, isNewFile: false, targetLine: undefined };
@@ -372,8 +471,15 @@ function parseUnifiedDiff(diffText: string, changedScope: ChangedScopeMode): Cha
   return scope;
 }
 
-// Reads one unified-diff line, updating state for the current target file and hunk.
-// Returns nothing. Records changed files and additions in scope, clearing state at each file header to avoid carrying over the previous file.
+/**
+ * Reads one unified-diff line and updates state for the current target file and hunk.
+ * Mutates scope and state, clearing state at each file header to avoid carrying over the previous file.
+ *
+ * @param scope - Mutates changedFiles, wholeFiles, and rangesByFile as target headers and additions are encountered.
+ * @param state - Mutates per-file parser state across headers and hunk lines.
+ * @param line - Single line from the unified diff stream.
+ * @returns Nothing. Records changed files and additions in scope and updates state in place.
+ */
 function applyDiffLine(scope: ChangedRegionScope, state: DiffParseState, line: string): void {
   if (line.startsWith("diff --git ")) {
     state.currentFile = undefined;
@@ -394,8 +500,15 @@ function applyDiffLine(scope: ChangedRegionScope, state: DiffParseState, line: s
   applyHunkBodyLine(scope, state, line);
 }
 
-// Returns true if line is a target-file header. Sets state's current file and clears its hunk cursor.
-// A deleted target leaves no current file. Other targets enter scope's changed-file set, with whole-file coverage for new files.
+/**
+ * Applies a unified-diff target-file header (`+++ `) by updating state's current file and clearing its hunk cursor.
+ * A deleted target leaves no current file; surviving targets enter changedFiles, with whole-file coverage for new files.
+ *
+ * @param scope - Mutates changedFiles and wholeFiles when a surviving or new target file header is matched.
+ * @param state - Mutates currentFile and resets targetLine when the line is a target-file header.
+ * @param line - Candidate unified-diff line to inspect.
+ * @returns True if line is a target-file header; otherwise false.
+ */
 function applyTargetFileLine(scope: ChangedRegionScope, state: DiffParseState, line: string): boolean {
   if (line.startsWith("+++ ")) {
     const path = diffPath(line.slice(4));
@@ -412,8 +525,15 @@ function applyTargetFileLine(scope: ChangedRegionScope, state: DiffParseState, l
   return false;
 }
 
-// Returns true if line is a hunk header and updates state's target cursor for the hunk.
-// A missing target file, whole-file coverage in scope or a zero-length target hunk clears the cursor and skips line tracking.
+/**
+ * Applies a unified-diff hunk header (`@@ ... @@`) and updates state's target line cursor for the hunk.
+ * A missing target file, whole-file coverage in scope, or a zero-length target hunk clears the cursor and skips line tracking.
+ *
+ * @param scope - Active diff scope checked for whole-file coverage on the current file.
+ * @param state - Mutates targetLine to the hunk's starting line or clears it when tracking should be skipped.
+ * @param line - Candidate unified-diff line to inspect.
+ * @returns True if line is a hunk header; otherwise false.
+ */
 function applyHunkHeader(scope: ChangedRegionScope, state: DiffParseState, line: string): boolean {
   const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
   if (!hunk) {
@@ -429,9 +549,15 @@ function applyHunkHeader(scope: ChangedRegionScope, state: DiffParseState, line:
   return true;
 }
 
-// Reads one hunk body line using state's current file and target cursor. Additions update scope's ranges and advance the cursor.
-// Context lines only advance the cursor. Skip the line when no target file or cursor is active or the whole file is already covered.
-// Returns nothing. Line tracking is skipped for whole-file coverage because the scope already includes every line.
+/**
+ * Reads one hunk body line using state's current file and target cursor, recording additions and advancing the cursor on context lines.
+ * Line tracking is skipped when no target file or cursor is active, or for whole-file coverage because the scope already includes every line.
+ *
+ * @param scope - Mutates rangesByFile on added lines unless whole-file coverage already applies.
+ * @param state - Mutates targetLine as added or context lines advance through the hunk.
+ * @param line - Hunk body line prefixed with `+`, space, or `-`.
+ * @returns Nothing. Updates scope ranges and state's targetLine cursor in place.
+ */
 function applyHunkBodyLine(scope: ChangedRegionScope, state: DiffParseState, line: string): void {
   if (!state.currentFile || state.targetLine === undefined || scope.wholeFiles.has(state.currentFile)) {
     return;
@@ -446,7 +572,12 @@ function applyHunkBodyLine(scope: ChangedRegionScope, state: DiffParseState, lin
   }
 }
 
-// Returns the normalized target-header path for finding lookup, preserving /dev/null as the marker for a deleted target.
+/**
+ * Normalizes a unified-diff target-header path for finding lookup while preserving `/dev/null` as the deleted-target marker.
+ *
+ * @param rawPath - Raw path suffix extracted after the `+++ ` header prefix.
+ * @returns Normalized forward-slash path relative to the diff root, or `/dev/null` for deleted targets.
+ */
 function diffPath(rawPath: string): string {
   const trimmed = rawPath.trim();
   if (trimmed === "/dev/null") {
@@ -455,15 +586,27 @@ function diffPath(rawPath: string): string {
   return trimmed.replace(/^"?(?:a|b)\//, "").replace(/"$/, "").replaceAll("\\", "/");
 }
 
-// Adds new, non-ignored files to a working-tree review because Git has no hunks yet for these files.
-// An empty list means there are no new files to add. NUL separators keep filenames with spaces or newlines intact.
+/**
+ * Collects new, non-ignored files for a working-tree review because Git has no hunks yet for these files.
+ * Reads NUL-separated paths from `git ls-files` to keep filenames with spaces or newlines intact.
+ *
+ * @param changedScope - Attribution mode assigned to the resulting scope.
+ * @param projectRoot - Directory passed to Git when listing untracked files.
+ * @returns Scope marking all untracked non-ignored files as whole-file changes, or empty sets if none exist.
+ */
 function untrackedFileScope(changedScope: ChangedScopeMode, projectRoot: string): ChangedRegionScope {
   const untracked = new Set(gitOutput(["ls-files", "-z", "--others", "--exclude-standard"], projectRoot).split("\0").filter(Boolean));
   return { mode: changedScope, rangesByFile: new Map(), wholeFiles: untracked, changedFiles: new Set(untracked) };
 }
 
-// Returns a new scope in changedScope mode by combining the staged, unstaged and untracked input scopes.
-// Whole-file coverage takes precedence over hunk ranges for the same file.
+/**
+ * Combines staged, unstaged, and untracked input scopes into a single scope under changedScope mode.
+ * Whole-file coverage takes precedence over hunk ranges for the same file.
+ *
+ * @param scopes - Input scopes whose changed files, whole files, and hunk ranges are merged.
+ * @param changedScope - Attribution mode assigned to the combined scope.
+ * @returns New merged scope combining all input changes.
+ */
 function mergeScopes(scopes: ChangedRegionScope[], changedScope: ChangedScopeMode): ChangedRegionScope {
   const merged: ChangedRegionScope = { mode: changedScope, rangesByFile: new Map(), wholeFiles: new Set(), changedFiles: new Set() };
   for (const scope of scopes) {
@@ -486,12 +629,24 @@ function mergeScopes(scopes: ChangedRegionScope[], changedScope: ChangedScopeMod
   return merged;
 }
 
-// Returns nothing. Adds range to the rangesByFile entry for filePath, creating it if absent and merging overlaps or adjacent ranges.
+/**
+ * Adds a changed line range to the entry for filePath, creating it if absent and merging overlaps or adjacent ranges.
+ *
+ * @param rangesByFile - Mutates the per-file range list for filePath in place.
+ * @param filePath - Target file path whose changed ranges are being updated.
+ * @param range - Inclusive line range to insert and merge.
+ * @returns Nothing. Mutates rangesByFile in place with the sorted, merged ranges for filePath.
+ */
 function addRange(rangesByFile: Map<string, ChangedRange[]>, filePath: string, range: ChangedRange): void {
   rangesByFile.set(filePath, mergeRanges([...(rangesByFile.get(filePath) ?? []), range]));
 }
 
-// Returns a new sorted list of line ranges, merging overlaps and adjacency so downstream checks stay deterministic.
+/**
+ * Builds a sorted list of line ranges, merging overlaps and adjacency so downstream checks stay deterministic.
+ *
+ * @param ranges - Unsorted or potentially overlapping inclusive line ranges.
+ * @returns New sorted, non-overlapping, non-adjacent inclusive line ranges.
+ */
 function mergeRanges(ranges: ChangedRange[]): ChangedRange[] {
   const sorted = [...ranges].sort((left, right) => left.start - right.start || left.end - right.end);
   const merged: ChangedRange[] = [];
@@ -506,8 +661,14 @@ function mergeRanges(ranges: ChangedRange[]): ChangedRange[] {
   return merged;
 }
 
-// Spawns git with the caller's argument array and returns UTF-8 stdout, which can be empty when git has no changes to report.
-// @throws {ChangedRegionError} if Git cannot read the changes from projectRoot.
+/**
+ * Spawns git with the caller's argument array and returns UTF-8 stdout, which can be empty when git has no changes to report.
+ *
+ * @param args - Git CLI flags and arguments passed directly to the executable.
+ * @param projectRoot - Working directory used for the Git subprocess.
+ * @returns UTF-8 standard output produced by Git.
+ * @throws {ChangedRegionError} If Git cannot read the changes from projectRoot.
+ */
 function gitOutput(args: string[], projectRoot: string): string {
   try {
     return execFileSync("git", args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });

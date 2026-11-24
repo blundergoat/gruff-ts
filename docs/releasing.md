@@ -26,8 +26,7 @@ must already match the requested version.
       accepted.
 - [ ] `LICENSE` is present and matches the package's MIT license declaration.
 - [ ] `npm run check` passes.
-- [ ] `scripts/preflight-checks.sh` passes its version, audit, TypeScript,
-      unit-test, self-scan, and available ShellCheck gates.
+- [ ] `scripts/preflight-checks.sh` passes all gates (version lockstep, npm audit, TypeScript + tests, self-scan, documentation drift + fixtures, ShellCheck, and safety hook self-tests).
 - [ ] `npm pack --dry-run` contains only the reviewed package surface.
 - [ ] `bash scripts/pack-smoke.sh` passes. This installed-tarball gate is
       mandatory and deliberately separate from the fast unit-test path.
@@ -49,12 +48,12 @@ The package should include:
 - runtime `src/*.ts` modules
 - public docs under `docs/`, except the maintainer-only release checklist and
   coding standards
-- `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, and `LICENSE`
+- `README.md`, `CHANGELOG.md`, `UPGRADING.md`, `CONTRIBUTING.md`, `SECURITY.md`, and `LICENSE`
 - `package.json` and `tsconfig.json`
 
 The package must exclude:
 
-- `src/**/*.test.ts` and `src/fixtures/`
+- `src/**/*.test.ts`, `src/test-fixtures.ts`, and `src/fixtures/`
 - `scripts/` and root `fixtures/`
 - `node_modules/`, coverage, and local build output
 - `.agents/`, `.claude/`, `.codex/`, `.github/`, and `.goat-flow/`

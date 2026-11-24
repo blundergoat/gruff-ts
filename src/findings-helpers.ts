@@ -8,9 +8,13 @@ import type { SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import type { Config, Finding, Pillar, Severity } from "./types.ts";
 
-// Returns named entries from parameter-list text params for per-parameter rules; destructured or unrecognized entries are omitted.
-// Each entry has name, raw text without supported modifiers or rest dots, and isParameterProperty set when a modifier was removed.
-// Empty input returns no entries.
+/**
+ * Extracts named entries from parameter-list text for per-parameter rules, omitting destructured or unrecognized entries.
+ * Each entry has name, raw text without supported modifiers or rest dots, and isParameterProperty set when a modifier was removed.
+ *
+ * @param params - raw parameter-list text inside a signature's parentheses
+ * @returns matching parameter entries with stripped raw text and parameter-property flags, or an empty array on empty input
+ */
 export function parameterNames(params: string): Array<{ name: string; raw: string; isParameterProperty: boolean }> {
   return splitTopLevelParameters(params)
     .map((parameter) => parameter.trim())
@@ -35,8 +39,13 @@ interface ParameterSplitState {
   isEscaped: boolean;
 }
 
-// Splits parameter-list text params into original substrings at top-level commas, keeping quoted and nested commas within each parameter.
-// Preserves whitespace and empty segments; empty input returns one empty string for parameterNames to filter out.
+/**
+ * Splits parameter-list text into original substrings at top-level commas, keeping quoted and nested commas within each parameter.
+ * Preserves whitespace and empty segments so `parameterNames` can filter them out.
+ *
+ * @param params - raw parameter-list text to split at top-level commas
+ * @returns original parameter substrings, or a single empty string on empty input
+ */
 function splitTopLevelParameters(params: string): string[] {
   const parameters: string[] = [];
   const state: ParameterSplitState = { parenthesisDepth: 0, bracketDepth: 0, braceDepth: 0, angleDepth: 0, quote: "", isEscaped: false };
@@ -57,8 +66,13 @@ function splitTopLevelParameters(params: string): string[] {
   return parameters;
 }
 
-// Updates state in place for character, tracking quote boundaries and backslash escapes so string contents are not treated as structure.
-// Returns true when character belongs to quoted text or opens a quote; false lets the caller inspect it as a delimiter.
+/**
+ * Updates quote and escape tracking in place so string contents are not treated as parameter structure.
+ *
+ * @param state - mutable splitter state whose `quote` and `isEscaped` fields are updated
+ * @param character - current character being scanned from the parameter list
+ * @returns true when `character` belongs to quoted text or opens a quote, or false when the caller should inspect it as a delimiter
+ */
 function advanceParameterQuoteState(state: ParameterSplitState, character: string): boolean {
   if (state.quote !== "") {
     if (state.isEscaped) {
@@ -77,8 +91,16 @@ function advanceParameterQuoteState(state: ParameterSplitState, character: strin
   return false;
 }
 
-// Updates state in place for the character at index in params so nested commas do not split parameters.
-// Uses start as the current parameter's starting offset when recognizing type arguments; returns no value.
+/**
+ * Updates nesting depths in place for the character at `index` so nested commas do not split parameters.
+ * Uses `start` as the current parameter's starting offset when recognizing type arguments.
+ *
+ * @param state - mutable splitter state whose parenthesis, bracket, brace, and angle depths are updated
+ * @param params - full parameter-list text being scanned
+ * @param index - zero-based character offset in `params` to inspect
+ * @param start - zero-based starting offset of the current parameter segment in `params`
+ * @returns Nothing. Mutates `state` nesting depths in place.
+ */
 function advanceParameterDepths(state: ParameterSplitState, params: string, index: number, start: number): void {
   const character = params[index] ?? "";
   if (character === "(") state.parenthesisDepth += 1;
@@ -91,14 +113,26 @@ function advanceParameterDepths(state: ParameterSplitState, params: string, inde
   else if (character === ">" && state.angleDepth > 0 && params[index - 1] !== "=") state.angleDepth -= 1;
 }
 
-// A comma splits parameters only outside every nesting kind.
+/**
+ * Checks whether the splitter sits outside every nesting kind, because a comma splits parameters only at top level.
+ *
+ * @param state - current splitter nesting depths to inspect
+ * @returns true only when parenthesis, bracket, brace, and angle depths are all zero
+ */
 function isTopLevelParameterPosition(state: ParameterSplitState): boolean {
   return state.parenthesisDepth === 0 && state.bracketDepth === 0 && state.braceDepth === 0 && state.angleDepth === 0;
 }
 
-// Returns whether index in params looks like a type-argument opener so its commas stay within the parameter.
-// parameterStart bounds the prefix. A colon without an equals sign marks type context. Otherwise, the close must be followed by optional space and (.
-// Rejects unrecognized prefixes and unmatched brackets to avoid treating comparison operators as type delimiters.
+/**
+ * Determines whether the `<` at `index` opens a type-argument list so its commas stay within the parameter.
+ * A colon without `=` marks type context; otherwise the matching `>` must precede optional space and `(`.
+ * Rejects unrecognized prefixes and unmatched brackets to avoid treating comparison operators as type delimiters.
+ *
+ * @param params - full parameter-list text being scanned
+ * @param index - zero-based offset of the `<` character in `params`
+ * @param parameterStart - zero-based starting offset of the current parameter segment bounding the prefix
+ * @returns true when the prefix and matching `>` indicate a type-argument list, or false otherwise
+ */
 function opensTypeArgumentList(params: string, index: number, parameterStart: number): boolean {
   const prefix = params.slice(parameterStart, index);
   const previousCharacter = params[index - 1] ?? "";
@@ -125,15 +159,17 @@ function opensTypeArgumentList(params: string, index: number, parameterStart: nu
 
 /**
  * Applies rules.<id>.severity while preserving the finding's stable fingerprint.
+ * Lower-band notices and unbuilt build-output bin advisories keep their assigned severity so starter configs do not promote them.
  *
  * @param config - effective configuration supplying any override for this finding's rule
- * @param finding - scanner result to check. Lower-band notices keep their assigned severity.
+ * @param finding - scanner result to check. Lower-band and unbuilt-output advisories keep their assigned severity.
  * @returns - the original finding if its severity stands, or a copy carrying the configured severity
  */
 export function applyConfiguredSeverity(config: Config, finding: Finding): Finding {
   // A lower-band size or complexity finding is advisory whatever severity the user configured (FAMILY-CONTRACT.md
-  // section 12, search `Size and complexity findings in two bands`).
-  if (finding.metadata.limitBand === "lower") {
+  // section 12, search `Size and complexity findings in two bands`). Unbuilt dist/build/lib bin targets keep advisory
+  // severity for the same reason: starter configs pin `design.package-bin-missing` to `warning`.
+  if (finding.metadata.limitBand === "lower" || finding.metadata.unbuiltOutput === true) {
     return finding;
   }
   const severity = ruleSeverity(config, finding.ruleId, finding.severity);
@@ -155,9 +191,13 @@ export interface LineFindingArgs {
   remediation?: string | undefined;
 }
 
-// Builds a high-confidence, symbol-free finding from args for a per-line report entry.
-// Uses args.file.displayPath and args.line for location; an empty remediation is omitted.
-// Returns a finding whose fingerprint hashes ruleId, filePath, line and an empty symbol slot.
+/**
+ * Builds a high-confidence, symbol-free finding for a per-line report entry.
+ * Uses `args.file.displayPath` and `args.line` for location and omits empty remediation text.
+ *
+ * @param args - rule, message, file, line, severity, pillar, and optional remediation fields
+ * @returns finding whose fingerprint hashes ruleId, filePath, line, and an empty symbol slot
+ */
 export function finding(args: LineFindingArgs): Finding {
   return makeFinding({
     ruleId: args.ruleId, message: args.message, filePath: args.file.displayPath, line: args.line, severity: args.severity, pillar: args.pillar,
@@ -165,9 +205,13 @@ export function finding(args: LineFindingArgs): Finding {
   });
 }
 
-// Returns slash-normalized Git paths for mode: staged, unstaged, working-tree, or a revision compared with the working tree.
-// Working-tree mode includes staged, unstaged and non-ignored untracked paths. An empty set means Git reported no matching paths.
-// Spawns Git without a shell and places revision arguments after --end-of-options. Command failures propagate to the caller.
+/**
+ * Collects slash-normalized Git paths for `staged`, `unstaged`, `working-tree`, or a revision compared with the working tree.
+ * Spawns Git without a shell and places revision arguments after `--end-of-options`; command failures propagate to the caller.
+ *
+ * @param mode - diff selection mode (`staged`, `unstaged`, `working-tree`, or a Git revision)
+ * @returns set of matching slash-normalized paths (including non-ignored untracked paths in working-tree mode), or an empty set when none match
+ */
 export function changedFiles(mode: string): Set<string> {
   if (mode === "staged") {
     return gitPathSet(["diff", "--name-only", "--cached"]);
@@ -181,28 +225,45 @@ export function changedFiles(mode: string): Set<string> {
   return gitPathSet(["diff", "--name-only", "--end-of-options", mode]);
 }
 
-// Spawns Git through execFileSync without a shell, using args as the subcommand and its arguments.
-// Returns a set of Git output paths with backslashes converted to slashes. No paths give an empty set. Git failures propagate.
+/**
+ * Spawns Git through `execFileSync` without a shell and normalizes output paths; Git failures propagate to the caller.
+ *
+ * @param args - Git subcommand and option arguments passed directly without shell interpolation
+ * @returns set of non-empty output paths with backslashes converted to slashes, or an empty set when Git emits no paths
+ */
 function gitPathSet(args: string[]): Set<string> {
   return new Set(execFileSync("git", args, { encoding: "utf8" }).split(/\r?\n/).filter(Boolean).map((line) => line.replaceAll("\\", "/")));
 }
 
-// Strips directory and trailing extension. Used by naming.class-file-mismatch so the exported
-// symbol name and the file stem normalise to the same shape - both sides must agree on this
-// canonical form for the deterministic comparison to be meaningful.
+/**
+ * Strips directory segments and any trailing extension so `naming.class-file-mismatch` can normalize file stems.
+ * Both sides must agree on this canonical form for the deterministic comparison to be meaningful.
+ *
+ * @param path - source file path whose base stem is extracted
+ * @returns file name without parent directories or its final dot extension
+ */
 export function fileBaseName(path: string): string {
   return basename(path).replace(/\.[^.]+$/, "");
 }
 
-// Returns a lowercase ASCII alphanumeric key from identifier so naming rules can compare across case styles.
-// Treats FooBar, foo_bar and foo-bar as the same key. An identifier with no ASCII letters or digits produces an empty key.
+/**
+ * Normalizes an identifier to a lowercase ASCII alphanumeric key so naming rules can compare across case styles.
+ * Treats `FooBar`, `foo_bar`, and `foo-bar` as the same key.
+ *
+ * @param identifier - source identifier to strip and lowercase
+ * @returns lowercase ASCII alphanumeric key, or an empty string when `identifier` contains no ASCII letters or digits
+ */
 export function normalizedIdentifier(identifier: string): string {
   return identifier.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
 }
 
-// Returns lowercase ASCII word tokens from identifier for naming comparisons.
-// Splits where an ASCII lowercase letter or digit precedes an uppercase letter, and at runs outside ASCII letters and digits.
-// Uppercase runs stay together, so HTTPServer yields httpserver; input with no ASCII letters or digits returns an empty array.
+/**
+ * Splits an identifier into lowercase ASCII word tokens for naming comparisons.
+ * Splits where an ASCII lowercase letter or digit precedes an uppercase letter and at non-alphanumeric runs, keeping uppercase runs together.
+ *
+ * @param identifier - source identifier to tokenize into lowercase words
+ * @returns lowercase word tokens (for example `HTTPServer` yields `["httpserver"]`), or an empty array when no ASCII letters or digits exist
+ */
 export function splitIdentifierWords(identifier: string): string[] {
   return identifier
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -211,14 +272,24 @@ export function splitIdentifierWords(identifier: string): string[] {
     .filter(Boolean);
 }
 
-// Returns the zero-based line at the string offset index in source.
-// Negative offsets select the first line so they cannot index from the end. Offsets beyond the end select the final line.
+/**
+ * Computes the zero-based line number at a character offset in source text.
+ * Negative offsets select the first line so they cannot index from the end, and offsets beyond the end select the final line.
+ *
+ * @param source - full text in which lines are counted by newline characters
+ * @param index - zero-based character offset clamped at zero
+ * @returns zero-based line number containing the clamped offset
+ */
 export function lineOffset(source: string, index: number): number {
   return source.slice(0, Math.max(0, index)).split("\n").length - 1;
 }
 
-// Escapes the standard regex metacharacters so user-supplied strings (rule IDs, identifiers,
-// paths) can be embedded in dynamic patterns without altering their meaning.
+/**
+ * Escapes standard regex metacharacters so user-supplied strings (rule IDs, identifiers, paths) can be embedded in dynamic patterns literally.
+ *
+ * @param source - raw string to escape for safe inclusion in a `RegExp` pattern
+ * @returns string with regex metacharacters backslash-escaped
+ */
 export function escapeRegex(source: string): string {
   return source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

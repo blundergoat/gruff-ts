@@ -43,6 +43,25 @@ const ZIZMOR_DIRECTIVE = /#\s*zizmor:\s*ignore\[([^\]]*)\]/g;
 // Matches an `eval(` call, the call on which security.unsafe-deserialization repeats security.eval-call's claim.
 const EVAL_CALL = /\beval\s*\(/;
 
+// Union of every rule that inline directives or duplicate eval-claim merging can touch,
+// so full scans do not need to retain raw source text for files emitting only unrelated rules.
+const INLINE_SUPPRESSION_RELEVANT_RULES: ReadonlySet<string> = new Set([
+  ...ESLINT_RULES.values(),
+  ...BIOME_RULES.values(),
+  ...ZIZMOR_AUDITS.values(),
+  "security.unsafe-deserialization",
+]);
+
+/**
+ * Reports whether `ruleId` can ever be suppressed by a supported inline directive or merged as a duplicate eval claim.
+ *
+ * @param ruleId - native gruff rule identifier to check
+ * @returns True when inline-suppression or duplicate-claim checks may inspect the file's source text for this rule.
+ */
+export function isInlineSuppressionRelevantRule(ruleId: string): boolean {
+  return INLINE_SUPPRESSION_RELEVANT_RULES.has(ruleId);
+}
+
 // A parsed comment and whether the line contains only that comment.
 interface InlineComment {
   text: string;
@@ -55,11 +74,15 @@ interface InlineSource {
   comments: Map<number, InlineComment[]>;
 }
 
-/*
+/**
  * Applies inline suppressions after sensitive exclusions and test-path skips, then combines overlapping findings.
- *
- * Invariant: the directive applies to the selected line only. For example, an ESLint next-line directive covers the line below.
+ * Invariant: the directive applies to the selected line only (for example, an ESLint next-line directive covers the line below).
  * The audit records each removed finding so SARIF can still show it as suppressed.
+ *
+ * @param findings - Candidate findings from the scan to evaluate against inline directives and duplicate eval claims.
+ * @param suppressions - Existing suppression summary rows whose built-in count sets the starting index for new audit rows.
+ * @param sources - Scanned file snapshots keyed by file path so directives and source lines match the analysed text.
+ * @returns Kept findings, combined suppression summary rows, and suppressed finding records with justifications.
  */
 export function applyInlineSuppressions(
   findings: readonly Finding[],
@@ -71,6 +94,10 @@ export function applyInlineSuppressions(
   const suppressed: SuppressedFinding[] = [];
   // A finding leaves only when a comment on its line, or alone on the line above, names a check making its claim.
   for (const finding of findings) {
+    if (!isInlineSuppressionRelevantRule(finding.ruleId)) {
+      kept.push(finding);
+      continue;
+    }
     let source = sourceCache.get(finding.filePath);
     const snapshot = sources.get(finding.filePath);
     // Use the scanned snapshot so an editor save during the run cannot move a directive onto a different finding.
@@ -98,8 +125,14 @@ export function applyInlineSuppressions(
   };
 }
 
-// Finds actual directives in the scanned text so a string containing an example cannot hide a finding.
-// An empty comment map means the user's file supplies no supported inline directives.
+/**
+ * Finds actual directives in the scanned text so a string containing an example cannot hide a finding.
+ * An empty comment map means the user's file supplies no supported inline directives.
+ *
+ * @param source - Raw scanned file text to split into lines and inspect for directive comments.
+ * @param file - Source file metadata indicating whether script comments or YAML workflow comments apply.
+ * @returns Split source lines paired with parsed inline comments indexed by 1-based line number.
+ */
 function collectInlineSource(source: string, file: SourceFile): InlineSource {
   const lines = source.split(/\r?\n/u);
   const comments = new Map<number, InlineComment[]>();
@@ -136,8 +169,14 @@ function collectInlineSource(source: string, file: SourceFile): InlineSource {
   return { lines, comments };
 }
 
-// Reports whether the finding's line, or a comment-only line directly above it, names a check making its claim.
-// Invariant: only those two lines are read, so a comment never reaches past the line below it.
+/**
+ * Reports whether the finding's line, or a comment-only line directly above it, names a check making its claim.
+ * Invariant: only those two lines are read, so a comment never reaches past the line below it.
+ *
+ * @param comments - Parsed inline comments indexed by 1-based line number.
+ * @param finding - Finding whose line and ruleId are checked for a matching suppression directive.
+ * @returns True if a comment on the finding's line or a standalone comment on the preceding line covers its ruleId.
+ */
 function isCoveredByComment(comments: ReadonlyMap<number, InlineComment[]>, finding: Finding): boolean {
   // A finding with no line has no local directive to apply. Lines with no comments supply no matches.
   const line = finding.line ?? 0;
@@ -145,12 +184,26 @@ function isCoveredByComment(comments: ReadonlyMap<number, InlineComment[]>, find
     || (comments.get(line - 1) ?? []).some((comment) => comment.standsAlone && hasCoveringComment(comment.text, finding.ruleId, true));
 }
 
-// Matches the developer's existing directive to the equivalent Gruff finding on the covered line.
+/**
+ * Matches the developer's existing directive to the equivalent Gruff finding on the covered line.
+ *
+ * @param line - Comment text from the candidate line to test against supported directive formats.
+ * @param ruleId - Gruff rule identifier of the finding being evaluated.
+ * @param isPreviousLine - Whether the comment came from the line immediately preceding the finding.
+ * @returns True if an ESLint, Biome, or zizmor directive in the comment suppresses the given rule.
+ */
 function hasCoveringComment(line: string, ruleId: string, isPreviousLine: boolean): boolean {
   return isDisabledByEslint(line, ruleId, isPreviousLine) || isIgnoredByBiome(line, ruleId) || isIgnoredByZizmor(line, ruleId);
 }
 
-// Applies the developer's ESLint directive on its intended line. An empty rule list covers every supported ESLint rule.
+/**
+ * Applies the developer's ESLint directive on its intended line; an empty rule list covers every supported ESLint rule.
+ *
+ * @param line - Comment text tested for an ESLint line or next-line directive.
+ * @param ruleId - Gruff rule identifier to match against `ESLINT_RULES`.
+ * @param isPreviousLine - True when evaluating a standalone comment on the line above the finding, requiring a next-line directive.
+ * @returns True if the directive matches the line position and covers the given rule.
+ */
 function isDisabledByEslint(line: string, ruleId: string, isPreviousLine: boolean): boolean {
   const match = ESLINT_DIRECTIVE.exec(line);
   // A same-line directive applies there. A next-line directive applies only one line down.
@@ -163,7 +216,13 @@ function isDisabledByEslint(line: string, ruleId: string, isPreviousLine: boolea
   return names.length === 0 ? [...ESLINT_RULES.values()].includes(ruleId) : names.some((name) => ESLINT_RULES.get(name) === ruleId);
 }
 
-// Applies a developer's Biome ignore to the matching Gruff rule when the comment names that rule or its group.
+/**
+ * Applies a developer's Biome ignore to the matching Gruff rule when the comment names that rule or its group.
+ *
+ * @param line - Comment text tested for a Biome ignore directive and rule category.
+ * @param ruleId - Gruff rule identifier to match against mapped Biome rules.
+ * @returns True if the Biome ignore category matches the mapped rule or a parent group prefix.
+ */
 function isIgnoredByBiome(line: string, ruleId: string): boolean {
   const category = BIOME_DIRECTIVE.exec(line)?.[1];
   // Compare supported rule pairs so a group directive covers only the findings linked to that group.
@@ -176,7 +235,13 @@ function isIgnoredByBiome(line: string, ruleId: string): boolean {
   return false;
 }
 
-// Reports whether a `# zizmor: ignore[...]` names an audit mapped to the rule.
+/**
+ * Reports whether a `# zizmor: ignore[...]` directive names an audit mapped to the rule.
+ *
+ * @param line - Comment text scanned for `# zizmor: ignore[...]` directives.
+ * @param ruleId - Gruff rule identifier to match against `ZIZMOR_AUDITS`.
+ * @returns True if any listed zizmor audit maps to the given Gruff rule.
+ */
 function isIgnoredByZizmor(line: string, ruleId: string): boolean {
   for (const match of line.matchAll(ZIZMOR_DIRECTIVE)) {
     if ((match[1] ?? "").split(",").some((audit) => ZIZMOR_AUDITS.get(audit.trim()) === ruleId)) {
@@ -186,9 +251,15 @@ function isIgnoredByZizmor(line: string, ruleId: string): boolean {
   return false;
 }
 
-// Returns kept findings and justified removals after checking for duplicate claims about eval calls.
-// The lines callback supplies source by display path. A repeat stays in kept if its line is missing or fails the eval call pattern.
-// Invariant: each security.eval-call finding stays in kept and can justify one security.unsafe-deserialization removal on its file and line.
+/**
+ * Returns kept findings and justified removals after checking for duplicate claims about eval calls.
+ * A repeat stays in kept if its line is missing or fails the eval call pattern.
+ * Invariant: each security.eval-call finding stays in kept and can justify one security.unsafe-deserialization removal on its file and line.
+ *
+ * @param findings - Remaining findings after inline directive filtering.
+ * @param lines - Callback returning source lines by display path to verify `eval(` calls on the finding's line.
+ * @returns Object containing the kept findings and the removed duplicate-claim records.
+ */
 function mergeRepeatedClaims(
   findings: readonly Finding[],
   lines: (displayPath: string) => readonly string[],
@@ -217,9 +288,16 @@ function mergeRepeatedClaims(
   return { kept, removed };
 }
 
-// Folds removed findings into one audit row per file and rule, in UTF-8 byte order of path and then rule.
-// Invariant: the rows are deterministic, and their indexes run contiguously from firstIndex.
-// Each row carries the supplied source label and reason; no removed findings produces an empty list.
+/**
+ * Folds removed findings into one audit row per file and rule, in UTF-8 byte order of path and then rule.
+ * Invariant: the rows are deterministic, and their indexes run contiguously from firstIndex.
+ *
+ * @param removed - Suppressed findings to aggregate by file path and rule identifier.
+ * @param source - Origin label (`"inline"` or `"duplicate"`) recorded on each generated summary row.
+ * @param reason - Justification text attached to every generated audit row.
+ * @param firstIndex - Zero-based starting index assigned to the first emitted summary row.
+ * @returns Deterministic list of suppression summary rows, or an empty list when no findings were removed.
+ */
 function auditRows(removed: readonly SuppressedFinding[], source: "inline" | "duplicate", reason: string, firstIndex: number): SuppressionSummary[] {
   const counts = new Map<string, { path: string; rule: string; count: number }>();
   for (const { finding } of removed) {
@@ -240,7 +318,13 @@ function auditRows(removed: readonly SuppressedFinding[], source: "inline" | "du
   }));
 }
 
-// Returns a negative, zero or positive number when left sorts before, equals or follows right by UTF-8 bytes for audit ordering.
+/**
+ * Returns a negative, zero, or positive number when left sorts before, equals, or follows right by UTF-8 bytes for audit ordering.
+ *
+ * @param left - First string to encode as UTF-8 and compare.
+ * @param right - Second string to encode as UTF-8 and compare.
+ * @returns Negative, zero, or positive byte comparison result from `Buffer.compare`.
+ */
 function compareUtf8Bytes(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }

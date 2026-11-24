@@ -128,8 +128,14 @@ interface MachineEnvelopeCore {
 type JsonAnalysisReport = MachineEnvelopeCore & { schemaVersion: "gruff.analysis.v3"; findings: MachineFinding[] };
 type JsonSummaryReport = MachineEnvelopeCore & { schemaVersion: "gruff.summary.v3" };
 
-// Builds the JSON report for readers who need the run details and each individual finding.
-// Invariant: the result is the exact v3 envelope, without legacy aliases or volatile timestamps.
+/**
+ * Builds the JSON report for readers who need the run details and each individual finding.
+ * Invariant: the result is the exact v3 envelope, without legacy aliases or volatile timestamps.
+ *
+ * @param report - Native analysis report supplying run metadata, scores, diagnostics, and findings.
+ * @param exitCode - Decided CLI exit status; omit to derive it from the report's fail-on threshold.
+ * @returns The gruff.analysis.v3 JSON envelope with project-relative findings.
+ */
 function toJsonReport(report: AnalysisReport, exitCode?: number): JsonAnalysisReport {
   return {
     schemaVersion: "gruff.analysis.v3",
@@ -138,14 +144,26 @@ function toJsonReport(report: AnalysisReport, exitCode?: number): JsonAnalysisRe
   };
 }
 
-// Builds the JSON summary for automation that needs the outcome and totals without each finding.
-// Invariant: summary v3 has the same run details as analysis v3 and omits the individual finding list.
+/**
+ * Builds the JSON summary for automation that needs the outcome and totals without each finding.
+ * Invariant: summary v3 has the same run details as analysis v3 and omits the individual finding list.
+ *
+ * @param report - Native analysis report supplying run details, totals, scores, and diagnostics.
+ * @param exitCode - Decided CLI exit status; omit to derive it from the report's fail-on threshold.
+ * @returns The gruff.summary.v3 JSON envelope without the top-level findings list.
+ */
 function toJsonSummary(report: AnalysisReport, exitCode?: number): JsonSummaryReport {
   return { schemaVersion: "gruff.summary.v3", ...machineEnvelopeCore(report, exitCode) };
 }
 
-// Shares run details and totals between analyse and summary JSON so both report the same exit outcome.
-// Invariant: a missing baseline, change selection, or note list leaves that section out of the result.
+/**
+ * Shares run details and totals between analyse and summary JSON so both report the same exit outcome.
+ * Invariant: a missing baseline, change selection, or note list leaves that section out of the result.
+ *
+ * @param report - Native analysis report supplying run, score, path, diagnostic, and suppression data.
+ * @param exitCode - Exit code recorded in the summary block; defaults to the threshold exit code for the run.
+ * @returns Shared v3 machine envelope with project-relative paths and optional baseline, diff, and note sections.
+ */
 function machineEnvelopeCore(report: AnalysisReport, exitCode = exitFor(report, report.run.failOn)): MachineEnvelopeCore {
   const { details, ignoredPaths } = machinePathProjection(report);
   const missingPaths = machinePaths(report.paths.missingPaths, report.run.projectRoot);
@@ -202,9 +220,14 @@ function machineEnvelopeCore(report: AnalysisReport, exitCode = exitFor(report, 
   };
 }
 
-// Return stable machine run settings from the native report, with project-relative paths and a portable dot for the root.
-// Missing inputs default to the project directory. Missing or out-of-project config paths are omitted.
-// Publish includeIgnored only when enabled.
+/**
+ * Return stable machine run settings from the native report, with project-relative paths and a portable dot for the root.
+ * Missing inputs default to the project directory. Missing or out-of-project config paths are omitted.
+ * Publish includeIgnored only when enabled.
+ *
+ * @param report - Native analysis report supplying run configuration, inputs, and project root.
+ * @returns Normalized run metadata for the v3 machine envelope.
+ */
 function machineRun(report: AnalysisReport): MachineEnvelopeCore["run"] {
   return {
     failOn: report.run.failOn,
@@ -216,8 +239,16 @@ function machineRun(report: AnalysisReport): MachineEnvelopeCore["run"] {
   };
 }
 
-// Summarizes the visible findings and path counts while preserving the exit status decided by the CLI.
-// Invariant: skipped and ignored counts both reflect the published path details. Empty pillars have no finding-count entry.
+/**
+ * Summarizes the visible findings and path counts while preserving the exit status decided by the CLI.
+ * Invariant: skipped and ignored counts both reflect the published path details. Empty pillars have no finding-count entry.
+ *
+ * @param report - Native analysis report supplying findings, diagnostics, summary totals, and analysed file count.
+ * @param skippedFiles - Count of skipped path entries published as both skippedFiles and ignoredPaths.
+ * @param missingPaths - Count of normalized missing input paths.
+ * @param exitCode - Decided CLI exit status preserved in the summary block.
+ * @returns Summary counts and sorted per-pillar finding totals for the machine envelope.
+ */
 function machineSummary(report: AnalysisReport, skippedFiles: number, missingPaths: number, exitCode: number): MachineEnvelopeCore["summary"] {
   const pillarCounts = new Map<string, number>();
   // Count displayed findings so drill-down filters and pillar totals describe the same set.
@@ -235,9 +266,15 @@ function machineSummary(report: AnalysisReport, skippedFiles: number, missingPat
   };
 }
 
-// Return a new machine finding with the native fingerprint and stable identity unchanged and the path relative to projectRoot.
-// Missing or invalid lines use 1. Missing or invalid columns are omitted and give line-only precision. Missing remediation becomes empty text.
-// Omit end lines without a valid position and symbols that are absent or empty.
+/**
+ * Return a new machine finding with the native fingerprint and stable identity unchanged and the path relative to projectRoot.
+ * Missing or invalid lines use 1. Missing or invalid columns are omitted and give line-only precision. Missing remediation becomes empty text.
+ * Omit end lines without a valid position and symbols that are absent or empty.
+ *
+ * @param finding - Native finding to project into the v3 machine schema.
+ * @param projectRoot - Root directory used to normalize the finding's file path.
+ * @returns Normalized machine finding record preserving fingerprint, stable identity, and location precision metadata.
+ */
 function machineFinding(finding: Finding, projectRoot: string): MachineFinding {
   const line = positiveInteger(finding.line) ?? 1;
   const column = positiveInteger(finding.column);
@@ -265,8 +302,14 @@ function machineFinding(finding: Finding, projectRoot: string): MachineFinding {
   };
 }
 
-// Formats a diagnostic for CI readers. A scan-budget notice can leave the run valid even though some checks were skipped.
-// Invariant: defaults to invalidating the run. Missing or external file paths and missing line numbers have no location field.
+/**
+ * Formats a diagnostic for CI readers. A scan-budget notice can leave the run valid even though some checks were skipped.
+ * Invariant: defaults to invalidating the run. Missing or external file paths and missing line numbers have no location field.
+ *
+ * @param diagnostic - Native scan diagnostic supplying type, message, validity flag, and optional source location.
+ * @param projectRoot - Root directory used to resolve an in-project diagnostic file path.
+ * @returns Canonical machine diagnostic record for the v3 envelope.
+ */
 function machineDiagnostic(
   diagnostic: AnalysisReport["diagnostics"][number],
   projectRoot: string,
@@ -281,8 +324,14 @@ function machineDiagnostic(
   };
 }
 
-// Returns a machine suppression from suppression, normalizing its paths relative to projectRoot.
-// Null or empty symbols and an absent source are omitted.
+/**
+ * Returns a machine suppression from suppression, normalizing its paths relative to projectRoot.
+ * Null or empty symbols and an absent source are omitted.
+ *
+ * @param suppression - Native suppression summary record to normalize.
+ * @param projectRoot - Root directory used to convert covered paths to project-relative POSIX form.
+ * @returns Normalized machine suppression entry for the v3 envelope.
+ */
 function machineSuppression(suppression: SuppressionSummary, projectRoot: string): MachineSuppression {
   return {
     index: suppression.index,
@@ -296,9 +345,14 @@ function machineSuppression(suppression: SuppressionSummary, projectRoot: string
   };
 }
 
-// Returns report's normalized skip details and ignored paths, resolving paths against report.run.projectRoot.
-// The ignored path list must exactly match the detail paths in order.
-// @throws {Error} - normalized ignored paths and skip-detail paths differ in length, value, or order.
+/**
+ * Returns report's normalized skip details and ignored paths, resolving paths against report.run.projectRoot.
+ * The ignored path list must exactly match the detail paths in order.
+ *
+ * @param report - Native analysis report supplying skipped path records, ignored paths, and project root.
+ * @returns Normalized skip details and matching ignored paths.
+ * @throws {Error} Normalized ignored paths and skip-detail paths differ in length, value, or order.
+ */
 function machinePathProjection(report: AnalysisReport): { details: MachinePathDetail[]; ignoredPaths: string[] } {
   const details = report.paths.skipped.map((skipped) => machinePathDetail(skipped, report.run.projectRoot));
   const ignoredPaths = machinePaths(report.paths.ignoredPaths, report.run.projectRoot);
@@ -308,8 +362,14 @@ function machinePathProjection(report: AnalysisReport): { details: MachinePathDe
   return { details, ignoredPaths };
 }
 
-// Returns a machine path detail for skipped, making its path relative to projectRoot and mapping its ignore reason.
-// Only config-sourced records include their matching pattern.
+/**
+ * Returns a machine path detail for skipped, making its path relative to projectRoot and mapping its ignore reason.
+ * Only config-sourced records include their matching pattern.
+ *
+ * @param skipped - Skipped path entry with its path, source, and matching pattern.
+ * @param projectRoot - Root directory used to normalize the skipped path.
+ * @returns Canonical machine path detail with normalized path, reason, source, and optional pattern.
+ */
 function machinePathDetail(skipped: SkippedPath, projectRoot: string): MachinePathDetail {
   return {
     path: machinePath(skipped.path, projectRoot),
@@ -328,8 +388,13 @@ const DEFAULT_DIRECTORY_REASONS: ReadonlyMap<string, MachinePathDetail["reason"]
   [".fleet", "local-tooling"], [".idea", "local-tooling"], [".vscode", "local-tooling"],
 ]);
 
-// Returns the canonical ignore reason for skipped, using its source and matched default pattern.
-// @throws {Error} - a default pattern is neither the minified-file pattern nor one with a recognized final directory component.
+/**
+ * Returns the canonical ignore reason for skipped, using its source and matched default pattern.
+ *
+ * @param skipped - Skipped path record whose source and pattern determine the reason classification.
+ * @returns Canonical reason label from the machine path detail vocabulary.
+ * @throws {Error} A default pattern is neither the minified-file pattern nor one with a recognized final directory component.
+ */
 function machineIgnoreReason(skipped: SkippedPath): MachinePathDetail["reason"] {
   if (skipped.source === "config") {
     return "config-ignore";
@@ -348,13 +413,26 @@ function machineIgnoreReason(skipped: SkippedPath): MachinePathDetail["reason"] 
   return reason;
 }
 
-// Returns values as unique project-relative POSIX paths in first-occurrence order, resolving absolute paths against projectRoot.
+/**
+ * Returns values as unique project-relative POSIX paths in first-occurrence order, resolving absolute paths against projectRoot.
+ *
+ * @param values - Candidate file or directory paths to normalize and deduplicate.
+ * @param projectRoot - Root directory against which absolute paths are resolved.
+ * @returns Deduplicated project-relative POSIX path list preserving first-occurrence order.
+ */
 function machinePaths(values: readonly string[], projectRoot: string): string[] {
   return [...new Set(values.map((value) => machinePath(value, projectRoot)))];
 }
 
-// Includes a portable path when a report can point to a file inside the selected project.
-// An empty object omits an external path, such as a config the user keeps in a sibling project.
+/**
+ * Includes a portable path when a report can point to a file inside the selected project.
+ * An empty object omits an external path, such as a config the user keeps in a sibling project.
+ *
+ * @param key - Property name assigned to the normalized path when it resolves inside projectRoot.
+ * @param pathValue - Candidate file path to resolve relative to projectRoot.
+ * @param projectRoot - Root directory that bounds whether the path can be published.
+ * @returns Single-property record keyed by key for in-project paths, or empty when external.
+ */
 function optionalMachinePath<Key extends string>(key: Key, pathValue: string, projectRoot: string): Partial<Record<Key, string>> {
   const relativeValue = (isAbsolute(pathValue) ? relative(projectRoot, pathValue) : pathValue).replaceAll("\\", "/");
   // An external settings file can affect the run without appearing as a location in its JSON.
@@ -364,8 +442,14 @@ function optionalMachinePath<Key extends string>(key: Key, pathValue: string, pr
   return { [key]: machinePath(pathValue, projectRoot) } as Partial<Record<Key, string>>;
 }
 
-// Converts a report location to a project-relative path with slash separators. The project root is shown as ".".
-// @throws {Error} when a required location is empty or cannot be written as a path inside the project.
+/**
+ * Converts a report location to a project-relative path with slash separators. The project root is shown as ".".
+ *
+ * @param pathValue - File or directory path to normalize inside the project.
+ * @param projectRoot - Project root directory used to resolve absolute paths.
+ * @returns Normalized project-relative POSIX path, or "." when it resolves to projectRoot.
+ * @throws {Error} When a required location is empty or cannot be written as a path inside the project.
+ */
 function machinePath(pathValue: string, projectRoot: string): string {
   const nativeRelative = isAbsolute(pathValue) ? relative(projectRoot, pathValue) : pathValue;
   const relativeValue = nativeRelative.replaceAll("\\", "/");
@@ -394,8 +478,13 @@ function machinePath(pathValue: string, projectRoot: string): string {
   return parts.length === 0 ? "." : parts.join("/");
 }
 
-// Returns integerValue if it is a positive integer, or undefined for an absent or invalid location value.
-// Callers omit optional coordinates and use line 1 when a finding has no valid start line.
+/**
+ * Returns integerValue if it is a positive integer, or undefined for an absent or invalid location value.
+ * Callers omit optional coordinates and use line 1 when a finding has no valid start line.
+ *
+ * @param integerValue - Candidate coordinate value to validate as a positive integer.
+ * @returns Validated positive integer, or undefined when absent, non-integer, or non-positive.
+ */
 function positiveInteger(integerValue: number | undefined): number | undefined {
   return integerValue !== undefined && Number.isInteger(integerValue) && integerValue > 0 ? integerValue : undefined;
 }
@@ -465,9 +554,14 @@ function renderSarif(report: AnalysisReport): string {
   return `${JSON.stringify(sarif, null, 2)}\n`;
 }
 
-// Return a SARIF invocation notification from the analysis diagnostic with a file anchor when a path is available.
-// The severity contract treats an explicit non-invalidating flag as a note. An absent or true flag marks the run invalid and emits an error.
-// A path without a line gives a file-level location.
+/**
+ * Return a SARIF invocation notification from the analysis diagnostic with a file anchor when a path is available.
+ * The severity contract treats an explicit non-invalidating flag as a note. An absent or true flag marks the run invalid and emits an error.
+ * A path without a line gives a file-level location.
+ *
+ * @param diagnostic - Analysis diagnostic supplying type, message, validity flag, and optional location.
+ * @returns SARIF toolExecutionNotification entry with level, message, properties, and optional location.
+ */
 function sarifDiagnostic(diagnostic: AnalysisReport["diagnostics"][number]): Record<string, unknown> {
   return {
     descriptor: { id: diagnostic.diagnosticType },
@@ -548,9 +642,12 @@ function sarifResult(finding: Finding, ruleIndices: Map<string, number>): Record
   return result;
 }
 
-/*
+/**
  * Returns the stable SARIF location for the finding's file.
  * With a line, the region includes any supplied column and end line. Without a line, the location identifies only the artifact.
+ *
+ * @param finding - Finding supplying the file path and optional line, column, and end line.
+ * @returns SARIF physicalLocation record with artifactLocation and optional region.
  */
 function sarifPhysicalLocation(finding: Finding): Record<string, unknown> {
   const location: Record<string, unknown> = {
@@ -573,8 +670,13 @@ function sarifPhysicalLocation(finding: Finding): Record<string, unknown> {
   return location;
 }
 
-// Returns a URI-encoded artifact path from filePath, replacing backslashes and stripping leading ./ segments.
-// Encodes segments separately to preserve path separators; absolute and parent-relative paths are not rejected.
+/**
+ * Returns a URI-encoded artifact path from filePath, replacing backslashes and stripping leading ./ segments.
+ * Encodes segments separately to preserve path separators; absolute and parent-relative paths are not rejected.
+ *
+ * @param filePath - Finding or diagnostic file path to convert to a SARIF artifact URI.
+ * @returns Slash-separated URI with each path segment percent-encoded.
+ */
 function sarifUri(filePath: string): string {
   return filePath
     .replaceAll("\\", "/")
@@ -584,7 +686,12 @@ function sarifUri(filePath: string): string {
     .join("/");
 }
 
-// Maps a gruff severity to its SARIF result level: error and warning are unchanged, and advisory returns note.
+/**
+ * Maps a gruff severity to its SARIF result level: error and warning are unchanged, and advisory returns note.
+ *
+ * @param severity - Native finding severity to translate into a SARIF level.
+ * @returns Matching SARIF notification/result level ("error", "warning", or "note").
+ */
 function sarifLevel(severity: Severity): "error" | "warning" | "note" {
   switch (severity) {
     case "error":
@@ -658,16 +765,26 @@ function renderSummaryJson(report: AnalysisReport, exitCode?: number): string {
   return `${JSON.stringify(toJsonSummary(report, exitCode), null, 2)}\n`;
 }
 
-// Returns a diagnostic row shared by terminal summaries and text reports, with type and message from diagnostic.
-// Appends the parenthesized filePath only when present; otherwise the row has no location suffix.
-// Keep this shared shape stable for scripts that grep both output surfaces.
+/**
+ * Returns a diagnostic row shared by terminal summaries and text reports, with type and message from diagnostic.
+ * Appends the parenthesized filePath only when present; otherwise the row has no location suffix.
+ * Keep this shared shape stable for scripts that grep both output surfaces.
+ *
+ * @param diagnostic - Scan diagnostic providing diagnosticType, message, and optional filePath.
+ * @returns Formatted single-line diagnostic bullet for terminal output.
+ */
 function summaryDiagnosticLine(diagnostic: AnalysisReport["diagnostics"][number]): string {
   const location = diagnostic.filePath ? ` (${diagnostic.filePath})` : "";
   return `- ${diagnostic.diagnosticType}: ${diagnostic.message}${location}`;
 }
 
-// Return the summary line from the report's baseline metadata under the baseline contract.
-// A generated baseline leaves current findings visible. An applied baseline reports its source and suppression count.
+/**
+ * Return the summary line from the report's baseline metadata under the baseline contract.
+ * A generated baseline leaves current findings visible. An applied baseline reports its source and suppression count.
+ *
+ * @param baseline - Applied or generated baseline metadata attached to the analysis report.
+ * @returns Single-line human-readable baseline status summary.
+ */
 function summaryBaselineLine(baseline: NonNullable<AnalysisReport["baseline"]>): string {
   if (baseline.generated) {
     return `Baseline: generated ${baseline.path}; current findings still shown`;
@@ -676,8 +793,13 @@ function summaryBaselineLine(baseline: NonNullable<AnalysisReport["baseline"]>):
   return `Baseline: ${baseline.source} ${baseline.path}; suppressed ${baseline.suppressed} ${findingNoun}`;
 }
 
-// Returns elapsedMs as a summary duration, rounding to whole milliseconds below one second and two-decimal seconds otherwise.
-// Negative durations display as 0ms.
+/**
+ * Returns elapsedMs as a summary duration, rounding to whole milliseconds below one second and two-decimal seconds otherwise.
+ * Negative durations display as 0ms.
+ *
+ * @param elapsedMs - Measured run duration in milliseconds.
+ * @returns Human-readable duration formatted in milliseconds or seconds.
+ */
 function formatSummaryDuration(elapsedMs: number): string {
   const bounded = Math.max(0, elapsedMs);
   if (bounded < 1000) {
@@ -686,7 +808,13 @@ function formatSummaryDuration(elapsedMs: number): string {
   return `${(bounded / 1000).toFixed(2)}s`;
 }
 
-// Tallies findings under the caller-supplied key; iteration order stays deterministic for renderers.
+/**
+ * Tallies findings under the caller-supplied key; iteration order stays deterministic for renderers.
+ *
+ * @param findings - Findings to group and count.
+ * @param keyFor - Selector extracting the grouping key from each finding.
+ * @returns Finding counts keyed by the selector result in first-seen order.
+ */
 function countBy<T extends string>(findings: Finding[], keyFor: (finding: Finding) => T): Map<T, number> {
   const counts = new Map<T, number>();
   for (const finding of findings) {
@@ -755,14 +883,26 @@ function renderRankedRuleRows(findings: Finding[], limit?: number): string[] {
  */
 const DESCRIPTION_BODY_LIMIT = 60;
 
-// Returns the rule description text unchanged when it fits DESCRIPTION_BODY_LIMIT.
-// Longer text is cut to that many UTF-16 code units, trimmed at the end, and given an ellipsis; row width remains variable.
+/**
+ * Returns the rule description text unchanged when it fits DESCRIPTION_BODY_LIMIT.
+ * Longer text is cut to that many UTF-16 code units, trimmed at the end, and given an ellipsis; row width remains variable.
+ *
+ * @param text - Raw rule description text to fit within the summary row budget.
+ * @returns Original description or a trimmed prefix followed by a single ellipsis character.
+ */
 function truncateDescription(text: string): string {
   return text.length <= DESCRIPTION_BODY_LIMIT ? text : `${text.slice(0, DESCRIPTION_BODY_LIMIT).trimEnd()}…`;
 }
 
-// Return ranked text bullets from the count map in deterministic order by descending count then ascending key.
-// For an empty map, return one bullet using emptyText. Otherwise apply limit when supplied, or show all entries when omitted.
+/**
+ * Return ranked text bullets from the count map in deterministic order by descending count then ascending key.
+ * For an empty map, return one bullet using emptyText. Otherwise apply limit when supplied, or show all entries when omitted.
+ *
+ * @param counts - Category labels paired with their integer occurrence counts.
+ * @param emptyText - Placeholder bullet label returned when counts is empty.
+ * @param limit - Maximum number of ranked entries to render; omit to include all entries.
+ * @returns Formatted bullet lines sorted by descending count then ascending key.
+ */
 function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText: string, limit?: number): string[] {
   if (counts.size === 0) {
     return [`- ${emptyText}`];
@@ -773,8 +913,14 @@ function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText:
     .map(([key, count]) => `- ${key}: ${count}`);
 }
 
-// Return name and count rows for JSON consumers from the supplied count map, in deterministic order by descending count then ascending name.
-// Use limit as the cap when supplied. An omitted limit keeps every row, and an empty map yields no rows.
+/**
+ * Return name and count rows for JSON consumers from the supplied count map, in deterministic order by descending count then ascending name.
+ * Use limit as the cap when supplied. An omitted limit keeps every row, and an empty map yields no rows.
+ *
+ * @param counts - Category names paired with their occurrence counts.
+ * @param limit - Maximum number of ranked rows to include; omit to return all rows.
+ * @returns Sorted name-and-count entries, or empty when counts has no entries.
+ */
 function renderRankedCountRows<T extends string>(counts: Map<T, number>, limit?: number): Array<{ name: T; count: number }> {
   return [...counts.entries()]
     .sort(([leftKey, leftCount], [rightKey, rightCount]) => rightCount - leftCount || leftKey.localeCompare(rightKey))
@@ -782,9 +928,14 @@ function renderRankedCountRows<T extends string>(counts: Map<T, number>, limit?:
     .map(([name, count]) => ({ name, count }));
 }
 
-// Returns the supplied analysis report as newline-terminated terminal text.
-// Lists full finding messages in the supplied stable order so that grep sees consistent rows.
-// A finding with no source line is displayed at line 1.
+/**
+ * Returns the supplied analysis report as newline-terminated terminal text.
+ * Lists full finding messages in the supplied stable order so that grep sees consistent rows.
+ * A finding with no source line is displayed at line 1.
+ *
+ * @param report - Native analysis report supplying scores, diagnostics, notes, findings, suppressions, and baseline metadata.
+ * @returns Complete terminal report text ending with a newline.
+ */
 function renderText(report: AnalysisReport): string {
   const breakdown = severityGradeBreakdown(report.findings);
   const lines = [
@@ -912,14 +1063,24 @@ function renderMarkdownPillarsTable(rows: PillarRow[]): string[] {
   return lines;
 }
 
-// Returns cell with pipe characters escaped for a Markdown table cell.
-// Callers supply single-line pillar and grade labels; this helper does not escape other Markdown syntax.
+/**
+ * Returns cell with pipe characters escaped for a Markdown table cell.
+ * Callers supply single-line pillar and grade labels; this helper does not escape other Markdown syntax.
+ *
+ * @param cell - Single-line label placed inside a Markdown table column.
+ * @returns Escaped cell text with literal pipe characters prefixed by a backslash.
+ */
 function escapeMarkdownCell(cell: string): string {
   return cell.replaceAll("|", "\\|");
 }
 
-// Wraps a repository-controlled label in a CommonMark code span for PR and issue reports.
-// A fence longer than the label's longest backtick run keeps the label inside one span.
+/**
+ * Wraps a repository-controlled label in a CommonMark code span for PR and issue reports.
+ * A fence longer than the label's longest backtick run keeps the label inside one span.
+ *
+ * @param reportLabel - Rule ID, diagnostic type, or file path label to wrap in inline code.
+ * @returns Single-line CommonMark inline code span safely fenced around the label.
+ */
 function markdownInlineCode(reportLabel: string): string {
   const singleLineLabel = reportLabel.replace(/[\r\n]+/g, " ");
   // An empty analyzer label still needs content so Markdown does not merge its two fences.
@@ -931,8 +1092,13 @@ function markdownInlineCode(reportLabel: string): string {
   return `${fence}${paddedLabel}${fence}`;
 }
 
-// Escapes finding and diagnostic messages to preserve the Markdown report's stable entry layout.
-// Line breaks collapse so a message cannot start a new heading, list, or HTML block.
+/**
+ * Escapes finding and diagnostic messages to preserve the Markdown report's stable entry layout.
+ * Line breaks collapse so a message cannot start a new heading, list, or HTML block.
+ *
+ * @param findingMessage - Raw finding or diagnostic message text to sanitize for Markdown output.
+ * @returns Single-line message with HTML entities and Markdown control characters escaped.
+ */
 function escapeMarkdownFindingMessage(findingMessage: string): string {
   return findingMessage
     .replace(/[\r\n]+/g, " ")
@@ -959,8 +1125,14 @@ interface ComplexityCluster {
 
 const CORRELATED_COMPLEXITY_RULE_IDS = new Set(["complexity.cyclomatic", "size.function-length"]);
 
-// Returns a text heading and one line per selected complexity cluster from the supplied findings, in stable rank order.
-// The limit is the end position in that list and defaults to 10. An empty selection returns no heading or rows.
+/**
+ * Returns a text heading and one line per selected complexity cluster from the supplied findings, in stable rank order.
+ * The limit is the end position in that list and defaults to 10. An empty selection returns no heading or rows.
+ *
+ * @param findings - Analysis findings inspected for overlapping complexity rules on the same symbol.
+ * @param limit - Maximum number of clusters to render; defaults to 10.
+ * @returns Heading and cluster bullet lines, or empty when no symbol has overlapping complexity findings.
+ */
 function renderComplexityClusterLines(findings: Finding[], limit = 10): string[] {
   const clusters = complexityClusters(findings).slice(0, limit);
   if (clusters.length === 0) {
@@ -972,7 +1144,12 @@ function renderComplexityClusterLines(findings: Finding[], limit = 10): string[]
   ];
 }
 
-// Returns the Markdown heading and rows for all clusters in the supplied findings, using the same grouping contract as text output.
+/**
+ * Returns the Markdown heading and rows for all clusters in the supplied findings, using the same grouping contract as text output.
+ *
+ * @param findings - Analysis findings inspected for overlapping complexity rules on the same symbol.
+ * @returns Markdown section heading and bullet lines, or empty when no clusters exist.
+ */
 function renderMarkdownComplexityClusterLines(findings: Finding[]): string[] {
   const clusters = complexityClusters(findings);
   // A scan with no overlapping complexity findings should not show an empty review section.
@@ -989,7 +1166,12 @@ function renderMarkdownComplexityClusterLines(findings: Finding[]): string[] {
   ];
 }
 
-// Formats one correlated cluster for the Markdown list a reviewer sees in pull-request output.
+/**
+ * Formats one correlated cluster for the Markdown list a reviewer sees in pull-request output.
+ *
+ * @param cluster - Correlated complexity cluster identifying a file, symbol, and linked rule IDs.
+ * @returns Markdown list item showing the inline-coded symbol anchor, finding count, and rule IDs.
+ */
 function renderMarkdownComplexityClusterRow(cluster: ComplexityCluster): string {
   const clusterLabel = `${cluster.filePath}#${cluster.symbol}`;
   // Every linked rule remains its own code span so a reviewer can copy its exact identifier.
@@ -997,9 +1179,14 @@ function renderMarkdownComplexityClusterRow(cluster: ComplexityCluster): string 
   return `- ${markdownInlineCode(clusterLabel)}: ${cluster.ruleIds.length} linked findings (${linkedRuleLabels})`;
 }
 
-// Returns stable clusters from the supplied complexity findings so that renderers explain overlaps consistently.
-// A file and symbol qualify only when at least two distinct correlated rules fired there. Otherwise no cluster is emitted for that pair.
-// The list is empty without a qualifying overlap. Clusters rank by descending rule count, then path and symbol, with sorted rule IDs.
+/**
+ * Returns stable clusters from the supplied complexity findings so that renderers explain overlaps consistently.
+ * A file and symbol qualify only when at least two distinct correlated rules fired there. Otherwise no cluster is emitted for that pair.
+ * The list is empty without a qualifying overlap. Clusters rank by descending rule count, then path and symbol, with sorted rule IDs.
+ *
+ * @param findings - Findings to group by file path and symbol across correlated complexity rules.
+ * @returns Ranked list of complexity clusters with sorted rule IDs, or empty when none qualify.
+ */
 function complexityClusters(findings: Finding[]): ComplexityCluster[] {
   const bySymbol = new Map<string, ComplexityCluster>();
   for (const finding of findings) {
@@ -1019,9 +1206,14 @@ function complexityClusters(findings: Finding[]): ComplexityCluster[] {
     .sort((left, right) => right.ruleIds.length - left.ruleIds.length || left.filePath.localeCompare(right.filePath) || left.symbol.localeCompare(right.symbol));
 }
 
-// Returns newline-separated GitHub Actions annotations for report diagnostics and findings; missing finding lines use line 1.
-// File paths are normalized, and file and title values must be command-escaped because commas and colons are delimiters.
-// Returns an empty string when the report has neither diagnostics nor findings.
+/**
+ * Returns newline-separated GitHub Actions annotations for report diagnostics and findings; missing finding lines use line 1.
+ * File paths are normalized, and file and title values must be command-escaped because commas and colons are delimiters.
+ * Returns an empty string when the report has neither diagnostics nor findings.
+ *
+ * @param report - Native analysis report supplying diagnostics and findings to annotate.
+ * @returns Newline-joined GitHub workflow command lines, or an empty string when there is nothing to report.
+ */
 function renderGithub(report: AnalysisReport): string {
   return [
     ...report.diagnostics.map(githubDiagnostic),
@@ -1030,8 +1222,13 @@ function renderGithub(report: AnalysisReport): string {
     .join("\n");
 }
 
-// Returns a GitHub Actions annotation for the supplied run diagnostic. The level contract uses notice only when invalidatesRun is false.
-// Without a file path the annotation has no location. With a file path and no line, it defaults to line 1.
+/**
+ * Returns a GitHub Actions annotation for the supplied run diagnostic. The level contract uses notice only when invalidatesRun is false.
+ * Without a file path the annotation has no location. With a file path and no line, it defaults to line 1.
+ *
+ * @param diagnostic - Analysis diagnostic supplying type, message, validity flag, and optional location.
+ * @returns Single GitHub Actions workflow command for the diagnostic.
+ */
 function githubDiagnostic(diagnostic: AnalysisReport["diagnostics"][number]): string {
   const level = diagnostic.invalidatesRun === false ? "notice" : "error";
   const location = diagnostic.filePath
@@ -1040,26 +1237,46 @@ function githubDiagnostic(diagnostic: AnalysisReport["diagnostics"][number]): st
   return `::${level}${location}title=${escapeCommandProperty(diagnostic.diagnosticType)}::${escapeCommand(diagnostic.message)}`;
 }
 
-// Returns filePath for a GitHub annotation with forward slashes and without leading dot-slash segments.
-// Equivalent slash and dot-prefix spellings share one path. Absolute paths and parent segments are preserved.
+/**
+ * Returns filePath for a GitHub annotation with forward slashes and without leading dot-slash segments.
+ * Equivalent slash and dot-prefix spellings share one path. Absolute paths and parent segments are preserved.
+ *
+ * @param filePath - Raw file path from a finding or diagnostic.
+ * @returns Normalized forward-slash path stripped of leading dot-slash prefixes.
+ */
 function githubAnnotationPath(filePath: string): string {
   return filePath.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "");
 }
 
-// Three GitHub annotation levels - gruff's "advisory" collapses to "notice" because Actions has
-// no fourth tier and "notice" is the documented soft-warning level.
+/**
+ * Three GitHub annotation levels - gruff's "advisory" collapses to "notice" because Actions has
+ * no fourth tier and "notice" is the documented soft-warning level.
+ *
+ * @param severity - Native finding severity to map onto GitHub Actions annotation levels.
+ * @returns Corresponding GitHub annotation command name ("error", "warning", or "notice").
+ */
 function githubLevel(severity: Severity): "notice" | "warning" | "error" {
   return severity === "error" ? "error" : severity === "warning" ? "warning" : "notice";
 }
 
-// Returns commandText with the base GitHub Actions escapes for messages and property values. % must be first, otherwise the
-// %0A replacement would itself be re-encoded.
+/**
+ * Returns commandText with the base GitHub Actions escapes for messages and property values. % must be first, otherwise the
+ * %0A replacement would itself be re-encoded.
+ *
+ * @param commandText - Raw message or property value emitted in a GitHub workflow command.
+ * @returns Percent-escaped text safe for GitHub Actions workflow command payloads.
+ */
 function escapeCommand(commandText: string): string {
   return commandText.replaceAll("%", "%25").replaceAll("\n", "%0A").replaceAll("\r", "%0D");
 }
 
-// Returns propertyText with the base command escapes plus colon and comma escapes because GitHub workflow
-// commands use commas between properties and double colons around the command header.
+/**
+ * Returns propertyText with the base command escapes plus colon and comma escapes because GitHub workflow
+ * commands use commas between properties and double colons around the command header.
+ *
+ * @param propertyText - Raw property value such as a file path or rule title for a workflow command.
+ * @returns Escaped property value safe for key-value pairs inside a GitHub Actions command header.
+ */
 function escapeCommandProperty(propertyText: string): string {
   return escapeCommand(propertyText).replaceAll(":", "%3A").replaceAll(",", "%2C");
 }

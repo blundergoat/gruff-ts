@@ -19,9 +19,14 @@ type TsNode = import("typescript").Node;
 type TsCallLikeExpression = import("typescript").CallExpression | import("typescript").NewExpression;
 type TsNamedImportBindings = import("typescript").NamedImportBindings;
 
-// Parse source text for discovered file through the shared syntax-only parser; script parsing increments the shared parse count.
-// Return an AST even with syntax diagnostics, or null for non-script input or parser exceptions.
-// Null skips AST flow. Parser exceptions stay silent because full scans retain their separate same-line pass.
+/**
+ * Parse source text for a discovered file through the shared syntax-only parser; script parsing increments the shared parse count.
+ * Parser exceptions stay silent because full scans retain their separate same-line pass.
+ *
+ * @param file - discovered file passed to the shared script parser
+ * @param source - source text to parse into a syntax tree
+ * @returns An AST even with syntax diagnostics, or null to skip AST flow for non-script input or parser exceptions.
+ */
 function getSourceFile(file: SourceFile, source: string): TsSourceFile | null {
   try {
     return parseScript(file, source)?.sourceFile ?? null;
@@ -30,8 +35,13 @@ function getSourceFile(file: SourceFile, source: string): TsSourceFile | null {
   }
 }
 
-// Walk the subtree rooted at node depth-first, calling visit before its children. A false result skips that node's children.
-// Returns nothing. The visitor performs the work at each visited node.
+/**
+ * Walk the subtree rooted at a node depth-first, calling the visitor before its children.
+ *
+ * @param node - root AST node of the subtree to traverse
+ * @param visit - callback invoked for each visited node; returning false skips that node's children
+ * @returns Nothing. The visitor performs the work at each visited node.
+ */
 function walk(node: TsNode, visit: (node: TsNode) => boolean | void): void {
   if (visit(node) === false) {
     return;
@@ -41,7 +51,13 @@ function walk(node: TsNode, visit: (node: TsNode) => boolean | void): void {
   });
 }
 
-// Return node's zero-based start line within parsedSource so callers can convert it to a one-based finding line.
+/**
+ * Compute a node's zero-based start line so callers can convert it to a one-based finding line.
+ *
+ * @param parsedSource - parsed syntax tree that owns the node's character offsets
+ * @param node - AST node whose start position is mapped to a line index
+ * @returns Zero-based start line of node within parsedSource.
+ */
 function lineIndexOf(parsedSource: TsSourceFile, node: TsNode): number {
   return parsedSource.getLineAndCharacterOfPosition(node.getStart(parsedSource)).line;
 }
@@ -106,9 +122,16 @@ const SECURITY_FLOW_RULES: readonly SecurityFlowRule[] = [
   },
 ];
 
-// Same-line matching is intentional: reports stable candidate findings without implying full taint analysis.
-// Returns nothing. Appends to findings at lineNumber in file for sinks using the first catalogue source pattern found in codeLine.
-// Resets shared sink matchers before checking a recognized source. With no source token, the sink matchers and findings are untouched.
+/**
+ * Scan one source line for same-line external-input-to-sink matches. Same-line matching is intentional: reports stable candidate findings without
+ * implying full taint analysis, and resets shared sink matchers only when a recognized source token is found.
+ *
+ * @param file - discovered file whose display path anchors emitted findings
+ * @param codeLine - single source line checked for the first catalogue source pattern and matching sink calls
+ * @param lineNumber - one-based line number assigned to appended findings
+ * @param findings - accumulator that receives matching candidate findings
+ * @returns Nothing. Appends to findings at lineNumber in file for matching sinks, leaving matchers and findings untouched if no source matches.
+ */
 export function analyseSecurityFlowLine(file: SourceFile, codeLine: string, lineNumber: number, findings: Finding[]): void {
   const source = sourceToken(codeLine);
   if (!source) {
@@ -121,15 +144,25 @@ export function analyseSecurityFlowLine(file: SourceFile, codeLine: string, line
   }
 }
 
-// Return the first SOURCE_TOKENS entry whose pattern matches codeLine, using catalogue order for deterministic metadata.
-// Return undefined when the line contains no recognized external-input token.
+/**
+ * Match a source line against SOURCE_TOKENS in catalogue order for deterministic metadata.
+ *
+ * @param codeLine - single source line checked for recognized external-input tokens
+ * @returns The first matching SOURCE_TOKENS entry, or undefined when the line contains no recognized external-input token.
+ */
 function sourceToken(codeLine: string): SourceToken | undefined {
   return SOURCE_TOKENS.find((source) => source.pattern.test(codeLine));
 }
 
-// Return whether sourcePattern matches a bounded call segment selected by global callPattern in codeLine.
-// Reset callPattern.lastIndex to zero; testing a global or sticky sourcePattern can also advance or reset its lastIndex.
-// Return false when no selected segment contains source evidence; callPattern must have the global flag.
+/**
+ * Check whether a bounded sink call segment contains external-input evidence.
+ * Resets callPattern.lastIndex to zero; testing a global or sticky sourcePattern can also advance or reset its lastIndex.
+ *
+ * @param codeLine - single source line searched for sink calls
+ * @param sourcePattern - external-input pattern tested against each bounded call segment
+ * @param callPattern - sink matcher that must have the global flag to enumerate call sites
+ * @returns True if sourcePattern matches a bounded call segment selected by callPattern, or false when no segment contains source evidence.
+ */
 function sourceAppearsInSink(codeLine: string, sourcePattern: RegExp, callPattern: RegExp): boolean {
   callPattern.lastIndex = 0;
   for (const call of codeLine.matchAll(callPattern)) {
@@ -141,8 +174,14 @@ function sourceAppearsInSink(codeLine: string, sourcePattern: RegExp, callPatter
   return false;
 }
 
-// Return a bounded source slice from callStart in codeLine for same-line sink matching.
-// Stop at the first closing parenthesis or 240 characters; if no closing parenthesis occurs, return the available bounded text.
+/**
+ * Extract a bounded source slice from a sink call start for same-line sink matching.
+ * Stops at the first closing parenthesis or 240 characters.
+ *
+ * @param codeLine - single source line containing the candidate sink call
+ * @param callStart - zero-based start offset of the call match within codeLine
+ * @returns Bounded slice from callStart up to the first closing parenthesis, or up to 240 characters if none occurs.
+ */
 function singleLineCallSegment(codeLine: string, callStart: number): string {
   // Cap the text inspected per candidate call; this is a bounded heuristic, not balanced-parenthesis parsing.
   const maxSegmentLength = 240;
@@ -151,8 +190,15 @@ function singleLineCallSegment(codeLine: string, callStart: number): string {
   return close === -1 ? segment : segment.slice(0, close + 1);
 }
 
-// Returns a warning at the supplied file and line, using the rule for its identity, message, and remediation.
-// Stable finding contract: confidence is medium, and metadata contains the supplied source kind and the rule's sink kind.
+/**
+ * Build a warning finding with a stable finding contract: medium confidence and metadata containing sourceKind and the rule's sink kind.
+ *
+ * @param file - discovered file whose display path locates the finding
+ * @param line - one-based line number of the candidate sink
+ * @param rule - rule definition supplying the finding's id, message, remediation, and sink kind
+ * @param sourceKind - external-input category recorded in finding metadata
+ * @returns A medium-confidence security warning at the supplied file and line.
+ */
 function securityFlowFinding(file: SourceFile, line: number, rule: SecurityFlowRule, sourceKind: string): Finding {
   return makeFinding({
     ruleId: rule.ruleId,
@@ -258,9 +304,13 @@ const AST_FLOW_SINKS: readonly AstFlowSink[] = [
 const MAX_ALIAS_DEPTH = 2;
 const MAX_SCOPE_NODES = 4000;
 
-// Return runtime filesystem-reader names imported by parsedSource, including default/namespace member paths and named local aliases.
-// Recognize fs and node:fs, including their promises modules; promises support readFile only. Return an empty set if none qualify.
-// Only these imports establish the filename/content boundary; unrelated helpers retain ordinary taint.
+/**
+ * Collect runtime filesystem-reader names imported from fs, node:fs, and their promises modules (promises support readFile only).
+ * Only these imports establish the filename/content boundary; unrelated helpers retain ordinary taint.
+ *
+ * @param parsedSource - parsed syntax tree whose top-level imports are inspected
+ * @returns Set of imported reader callees including default/namespace member paths and named local aliases, or an empty set if none qualify.
+ */
 function importedFileReadCallees(parsedSource: TsSourceFile): ReadonlySet<string> {
   const callees = new Set<string>();
   for (const statement of parsedSource.statements) {
@@ -275,9 +325,14 @@ function importedFileReadCallees(parsedSource: TsSourceFile): ReadonlySet<string
   return callees;
 }
 
-// Return callable names exposed by import clause for the reader names in methods.
-// Include default and namespace member paths and matching named aliases; skip named type-only imports and return an empty array if none match.
-// The caller must exclude whole type-only import clauses.
+/**
+ * Extract callable reader names exposed by a non-type-only import clause for the requested methods.
+ * Skips named type-only imports; the caller must exclude whole type-only import clauses.
+ *
+ * @param clause - import clause whose default, namespace, and named bindings are inspected
+ * @param methods - filesystem reader method names allowed for the imported module
+ * @returns Default/namespace member paths and matching named local aliases, or an empty array if none match.
+ */
 function fileReadBindingNames(clause: import("typescript").ImportClause, methods: readonly string[]): string[] {
   const names: string[] = [];
   if (clause.name) for (const method of methods) names.push(`${clause.name.text}.${method}`);
@@ -293,17 +348,29 @@ function fileReadBindingNames(clause: import("typescript").ImportClause, methods
   return names;
 }
 
-// Return whether node is a call whose callee text in parsedSource belongs to bindings and has no visible reader shadowing.
-// bindings supplies imported-reader names and hoisted shadowing scopes; false leaves the expression eligible for content taint.
+/**
+ * Check whether an AST node is an unshadowed call to an imported filesystem reader.
+ * Returning false leaves the expression eligible for content taint.
+ *
+ * @param node - AST node tested as a call expression
+ * @param parsedSource - parsed syntax tree used to extract the callee text
+ * @param bindings - imported-reader names and their hoisted shadowing scopes
+ * @returns True if node is a call whose callee text belongs to bindings with no visible reader shadowing; otherwise false.
+ */
 function isImportedFileRead(node: TsNode, parsedSource: TsSourceFile, bindings: FileReadBindings): boolean {
   if (!typescriptSyntax.isCallExpression(node)) return false;
   const callee = node.expression.getText(parsedSource);
   return bindings.has(callee) && !isFileReadBindingShadowed(node, callee, bindings);
 }
 
-// Build reader exemptions from imports in parsedSource and the scope boundaries supplied in scopes.
-// Return a map of reader names to shadowing scopes; no readers or any scope exceeding the node budget produces an empty map.
-// Drop exemptions for unshadowed assignments that match a tracked reader member so that replacement methods remain eligible for content taint.
+/**
+ * Build reader exemptions from imports in parsedSource and drop exemptions for unshadowed assignments to tracked reader members
+ * so that replacement methods remain eligible for content taint.
+ *
+ * @param parsedSource - parsed syntax tree providing imports and assignment target text
+ * @param scopes - function, module, and static-block scope roots scanned for hoisted shadowing and member writes
+ * @returns Map of reader names to shadowing scopes, or an empty map when no readers exist or any scope exceeds the node budget.
+ */
 function fileReadBindingsForScopes(parsedSource: TsSourceFile, scopes: readonly TsNode[]): FileReadBindings {
   const bindings = new Map([...importedFileReadCallees(parsedSource)].map((callee) => [callee, new Set<TsNode>()]));
   if (bindings.size === 0) return bindings;
@@ -318,9 +385,15 @@ function fileReadBindingsForScopes(parsedSource: TsSourceFile, scopes: readonly 
   return bindings;
 }
 
-// Scan scope for hoisted reader shadowing in bindings and append assignment targets to writes; skip nested functions and static blocks.
-// bindings maps reader names to shadowing scopes, and writes collects targets for replacement checks; both arguments are mutated.
-// Return false on node-budget exhaustion, leaving partial records for the caller to discard; otherwise return true.
+/**
+ * Scan a scope for hoisted reader shadowing and assignment targets while skipping nested functions and static blocks.
+ * Mutates both bindings and writes in place.
+ *
+ * @param scope - root AST node of the scope to scan up to MAX_SCOPE_NODES
+ * @param bindings - mutable map from reader names to shadowing scopes updated with hoisted var declarations
+ * @param writes - mutable list receiving assignment left-hand targets for replacement checks
+ * @returns True when the scan completes within the node budget, or false on exhaustion leaving partial records to discard.
+ */
 function indexFileReadScope(scope: TsNode, bindings: Map<string, Set<TsNode>>, writes: TsNode[]): boolean {
   let budget = MAX_SCOPE_NODES;
   walk(scope, (node) => {
@@ -335,8 +408,15 @@ function indexFileReadScope(scope: TsNode, bindings: Map<string, Set<TsNode>>, w
   return budget >= 0;
 }
 
-// Returns nothing. For var declaration-list node, record its enclosing scope as shadowing in bindings for each matching reader root name.
-// bindings holds mutable reader-to-scope sets; scope is the indexing boundary, and let/const or non-declaration nodes leave it unchanged.
+/**
+ * Record hoisted var declarations that shadow an imported reader root name in the enclosing scope.
+ * Block-scoped let/const declarations and non-declaration nodes leave bindings unchanged.
+ *
+ * @param node - AST node inspected as a non-block-scoped variable declaration list
+ * @param scope - enclosing scope boundary recorded when a reader root name matches
+ * @param bindings - mutable reader-to-scope sets updated in place for matching reader root names
+ * @returns Nothing. Adds scope to matching entries in bindings when a var declaration binds a reader root name.
+ */
 function recordHoistedFileReadBindings(node: TsNode, scope: TsNode, bindings: Map<string, Set<TsNode>>): void {
   if (!typescriptSyntax.isVariableDeclarationList(node) || (node.flags & typescriptSyntax.NodeFlags.BlockScoped)) return;
   for (const [callee, shadowedScopes] of bindings) {
@@ -344,8 +424,13 @@ function recordHoistedFileReadBindings(node: TsNode, scope: TsNode, bindings: Ma
   }
 }
 
-// Normalize assignment target node from parsedSource to a reader call spelling, unwrapping parentheses and string-literal element access.
-// Return dotted property text, or undefined for other target shapes that cannot supply a reader-method spelling.
+/**
+ * Normalize an assignment target to a reader call spelling, unwrapping parentheses and string-literal element access.
+ *
+ * @param node - assignment left-hand AST node to normalize
+ * @param parsedSource - parsed syntax tree used to read expression text
+ * @returns Dotted property text for property or string-literal element access, or undefined for other target shapes.
+ */
 function writtenFileReadCallee(node: TsNode, parsedSource: TsSourceFile): string | undefined {
   if (typescriptSyntax.isParenthesizedExpression(node)) return writtenFileReadCallee(node.expression, parsedSource);
   if (typescriptSyntax.isPropertyAccessExpression(node)) return node.getText(parsedSource);
@@ -355,9 +440,15 @@ function writtenFileReadCallee(node: TsNode, parsedSource: TsSourceFile): string
   return undefined;
 }
 
-// Return whether node's use of callee is hidden by a lexical binding, a scope recorded in bindings, or a named class expression.
-// callee is the imported reader's call spelling; bindings supplies hoisted shadowing scopes. A missing entry adds no hoisted evidence.
-// These extra guards apply to reader exemptions; redirect matching uses the common lexical checks.
+/**
+ * Check whether an imported reader call is hidden by a lexical binding, a hoisted shadowing scope, or a named class expression.
+ * These extra guards apply only to reader exemptions; redirect matching uses the common lexical checks.
+ *
+ * @param node - AST call or write site where the imported reader appears
+ * @param callee - imported reader call spelling whose root identifier is checked
+ * @param bindings - hoisted shadowing scopes per reader name; a missing entry adds no hoisted evidence
+ * @returns True if callee is shadowed at node by lexical bindings, recorded scopes, or a named class expression; otherwise false.
+ */
 function isFileReadBindingShadowed(node: TsNode, callee: string, bindings: FileReadBindings): boolean {
   if (isImportedCalleeShadowed(node, callee)) return true;
   const shadowedScopes = bindings.get(callee);
@@ -369,8 +460,12 @@ function isFileReadBindingShadowed(node: TsNode, callee: string, bindings: FileR
   return false;
 }
 
-// Return local redirect call names imported by parsedSource from supported frameworks; an empty set means no matching runtime import.
-// Named imports contribute local aliases and namespace imports contribute their redirect member; unrelated and type-only bindings are ignored.
+/**
+ * Collect local redirect call names imported from supported framework packages, ignoring unrelated and type-only bindings.
+ *
+ * @param parsedSource - parsed syntax tree whose top-level imports are inspected
+ * @returns Set of local redirect aliases from named imports and member paths from namespace imports, or an empty set if none match.
+ */
 function importedFrameworkRedirectCallees(parsedSource: TsSourceFile): ReadonlySet<string> {
   const callees = new Set<string>();
   for (const statement of parsedSource.statements) {
@@ -389,17 +484,26 @@ function importedFrameworkRedirectCallees(parsedSource: TsSourceFile): ReadonlyS
   return callees;
 }
 
-// Return whether import-source text moduleName belongs to the supported framework redirect allowlist.
-// Recognize next/navigation, React Router's core and DOM packages, and the listed Remix runtime packages to exclude unrelated redirect helpers.
+/**
+ * Check whether a module specifier belongs to the supported framework redirect allowlist to exclude unrelated redirect helpers.
+ * Recognizes next/navigation, React Router's core and DOM packages, and supported Remix runtime packages.
+ *
+ * @param moduleName - import-source module specifier text
+ * @returns True if moduleName matches the framework redirect allowlist; otherwise false.
+ */
 function isFrameworkRedirectModule(moduleName: string): boolean {
   return moduleName === "next/navigation" ||
     /^react-router(?:-dom)?$/.test(moduleName) ||
     /^@remix-run\/(?:node|cloudflare|deno|server-runtime)$/.test(moduleName);
 }
 
-// Records the local alias each binding style gives the framework redirect export: the member
-// path for a namespace import, the (possibly renamed) local name for named imports.
-// Returns nothing and adds redirect aliases from namedBindings to callees in place, skipping named specifiers marked type-only.
+/**
+ * Record the local alias each binding style gives the framework redirect export, skipping named specifiers marked type-only.
+ *
+ * @param namedBindings - namespace or named import bindings from a framework redirect import
+ * @param callees - mutable set receiving the namespace member path or renamed local redirect names
+ * @returns Nothing. Adds redirect aliases from namedBindings to callees in place.
+ */
 function collectRedirectAliases(namedBindings: TsNamedImportBindings, callees: Set<string>): void {
   if (typescriptSyntax.isNamespaceImport(namedBindings)) {
     callees.add(`${namedBindings.name.text}.redirect`);
@@ -499,9 +603,16 @@ function analyseFlowScope(
   });
 }
 
-// Returns nothing. Updates tainted for declarations or identifier assignments in node, using parsedSource for text and line positions.
-// tainted holds local provenance. Clear an assignment's entry when its new value has no source. Function initializers add no record.
-// fileReads masks proven reader calls and enables depth-bounded compound alias lookup. Without it, alias lookup uses bare identifiers.
+/**
+ * Update local provenance for variable declarations or identifier assignments, clearing an assignment's entry when its new value has no source.
+ * Function initializers add no record; without fileReads, alias lookup uses bare identifiers instead of compound expressions.
+ *
+ * @param parsedSource - parsed syntax tree used for expression text and line positions
+ * @param node - AST node inspected as a variable declaration or simple identifier assignment
+ * @param tainted - mutable map of local variable names to source provenance records
+ * @param fileReads - optional reader bindings that mask proven reader calls and enable depth-bounded compound alias lookup
+ * @returns Nothing. Updates tainted in place for declarations and identifier assignments.
+ */
 function recordTaint(parsedSource: TsSourceFile, node: TsNode, tainted: Map<string, TaintRecord>, fileReads?: FileReadBindings): void {
   if (typescriptSyntax.isVariableDeclaration(node)) {
     recordVariableTaint(parsedSource, node, tainted, fileReads);
@@ -517,9 +628,16 @@ function recordTaint(parsedSource: TsSourceFile, node: TsNode, tainted: Map<stri
   }
 }
 
-// Returns nothing. Records provenance from node's initializer in parsedSource for each identifier bound by the declaration.
-// tainted is updated in place, including nested destructuring; missing initializers or untainted values leave existing entries unchanged.
-// fileReads masks proven reader calls and enables compound aliases. Destructured names share one record regardless of keys or defaults.
+/**
+ * Record source provenance from a variable declaration's initializer for each bound identifier, including nested destructuring.
+ * Missing initializers or untainted values leave existing entries unchanged; destructured names share one record regardless of keys or defaults.
+ *
+ * @param parsedSource - parsed syntax tree used to inspect the initializer and compute source lines
+ * @param node - variable declaration whose initializer and binding pattern are analysed
+ * @param tainted - mutable map of local provenance updated in place
+ * @param fileReads - optional reader bindings that mask proven reader calls and enable compound alias lookup
+ * @returns Nothing. Writes provenance entries into tainted for each identifier bound by node.
+ */
 function recordVariableTaint(parsedSource: TsSourceFile, node: import("typescript").VariableDeclaration, tainted: Map<string, TaintRecord>, fileReads?: FileReadBindings): void {
   if (!node.initializer) {
     return;
@@ -535,9 +653,15 @@ function recordVariableTaint(parsedSource: TsSourceFile, node: import("typescrip
   taintBindingNames(node.name, record, tainted);
 }
 
-// Derive provenance for expression in parsedSource from direct sources or bounded aliases already held in tainted.
-// fileReads optionally masks reader calls and enables compound-value alias searches; successful alias propagation increments its depth.
-// Return a direct record at depth 1 or an incremented alias record; return undefined when neither is eligible, including function values.
+/**
+ * Derive provenance for an expression from direct sources or bounded aliases, incrementing depth on successful alias propagation.
+ *
+ * @param parsedSource - parsed syntax tree used to classify direct sources and extract text
+ * @param expression - initializer or right-hand expression evaluated for provenance
+ * @param tainted - existing local provenance records consulted for identifier or compound aliases
+ * @param fileReads - optional reader bindings that mask reader calls and enable compound-value alias searches
+ * @returns Direct record at depth 1, incremented alias record below MAX_ALIAS_DEPTH, or undefined when ineligible including function values.
+ */
 function taintRecordFromExpression(parsedSource: TsSourceFile, expression: TsNode, tainted: Map<string, TaintRecord>, fileReads?: FileReadBindings): TaintRecord | undefined {
   if (isFunctionLike(expression)) {
     return undefined;
@@ -555,8 +679,15 @@ function taintRecordFromExpression(parsedSource: TsSourceFile, expression: TsNod
   return undefined;
 }
 
-// Returns nothing. Writes record into tainted for every identifier bound by name, including nested object and array destructuring.
-// name is the binding pattern and record is its shared source provenance; array holes are ignored and tainted is mutated in place.
+/**
+ * Propagate shared source provenance across every identifier in a binding pattern, including nested object and array destructuring.
+ * Array holes are ignored and tainted is mutated in place.
+ *
+ * @param name - identifier or destructuring binding pattern receiving provenance
+ * @param record - shared source provenance record assigned to each bound identifier
+ * @param tainted - mutable local provenance map updated in place
+ * @returns Nothing. Writes record into tainted for every identifier bound by name.
+ */
 function taintBindingNames(name: import("typescript").BindingName, record: TaintRecord, tainted: Map<string, TaintRecord>): void {
   if (typescriptSyntax.isIdentifier(name)) {
     tainted.set(name.text, record);
@@ -570,8 +701,14 @@ function taintBindingNames(name: import("typescript").BindingName, record: Taint
   }
 }
 
-// Inspect declaration node in parsedSource for XMLParser with processEntities: true or DOMParser with resolveEntity in the constructor text.
-// Returns nothing. Adds matching local names to unsafeXmlParsers in place for later XXE sink checks.
+/**
+ * Record local variables initialized with XMLParser (processEntities: true) or DOMParser (resolveEntity) constructor options.
+ *
+ * @param parsedSource - parsed syntax tree used to inspect constructor text
+ * @param node - AST node tested as an identifier-bound variable declaration
+ * @param unsafeXmlParsers - mutable set receiving flagged local parser variable names for later XXE sink checks
+ * @returns Nothing. Adds matching local parser names to unsafeXmlParsers in place.
+ */
 function recordUnsafeXmlParser(parsedSource: TsSourceFile, node: TsNode, unsafeXmlParsers: Set<string>): void {
   if (!typescriptSyntax.isVariableDeclaration(node) || !typescriptSyntax.isIdentifier(node.name) || !node.initializer) {
     return;
@@ -628,8 +765,14 @@ function reportSink(
   findings.push(flowFinding(file, sinkLine, sink.ruleId, sink.sinkKind, hit.kind, hit.depth));
 }
 
-// Return whether callee's root name is rebound around call by a parameter, local value declaration, loop binding or catch binding.
-// call is the use site and callee is its source spelling; scan ancestors below the source file, returning false for an empty root.
+/**
+ * Check whether an imported callee's root name is rebound around a call by a parameter, local declaration, loop binding, or catch binding.
+ * Scans ancestors below the source file.
+ *
+ * @param call - AST call use site from which enclosing scopes are walked upward
+ * @param callee - source spelling of the callee whose root identifier is checked
+ * @returns True if callee's root name is shadowed by an enclosing binding, or false if unshadowed or root is empty.
+ */
 function isImportedCalleeShadowed(call: TsNode, callee: string): boolean {
   const rootName = callee.split(".", 1)[0];
   if (!rootName) {
@@ -643,9 +786,14 @@ function isImportedCalleeShadowed(call: TsNode, callee: string): boolean {
   return false;
 }
 
-// Return whether function-like node binds identifier name through a parameter or its own function declaration or expression name.
-// Methods and accessors contribute only parameter bindings: their property names do not hide imported functions.
-// Non-function nodes return false.
+/**
+ * Check whether a function-like node binds an identifier through a parameter or its own declaration/expression name.
+ * Methods and accessors contribute only parameter bindings because their property names do not hide imported functions.
+ *
+ * @param node - AST node inspected as a function-like scope boundary
+ * @param name - identifier name checked for local binding
+ * @returns True if node binds name via parameter or function declaration/expression name; false for non-function nodes or no match.
+ */
 function functionLikeBindsName(node: TsNode, name: string): boolean {
   if (!isFunctionLike(node)) {
     return false;
@@ -661,8 +809,13 @@ function functionLikeBindsName(node: TsNode, name: string): boolean {
   return functionNode.parameters.some((parameter) => bindingNameContains(parameter.name, name));
 }
 
-// Block-level value declarations shadow an import across the whole lexical block, including its
-// temporal-dead-zone prefix. Case clauses carry their own direct statement list.
+/**
+ * Check whether a lexical block or switch clause binds a name via direct runtime statements, including its temporal-dead-zone prefix.
+ *
+ * @param node - AST block, module block, case clause, or default clause to inspect
+ * @param name - identifier name checked against direct value declarations
+ * @returns True if node is a block or switch clause whose direct statements bind name; otherwise false.
+ */
 function lexicalStatementsBindName(node: TsNode, name: string): boolean {
   if (typescriptSyntax.isBlock(node) || typescriptSyntax.isModuleBlock(node) || typescriptSyntax.isCaseClause(node) || typescriptSyntax.isDefaultClause(node)) {
     return node.statements.some((statement) => statementBindsName(statement, name));
@@ -670,8 +823,13 @@ function lexicalStatementsBindName(node: TsNode, name: string): boolean {
   return false;
 }
 
-// Return whether loop or catch node binds identifier name in its catch variable or variable-declaration initializer.
-// Missing catch variables, non-declaration loop initializers and other node kinds return false.
+/**
+ * Check whether a loop or catch clause binds an identifier in its catch variable or variable-declaration initializer.
+ *
+ * @param node - AST node inspected as a catch clause or for/for-in/for-of loop
+ * @param name - identifier name checked against the clause's local bindings
+ * @returns True if node binds name; missing catch variables, non-declaration loop initializers, and other node kinds return false.
+ */
 function loopOrCatchBindsName(node: TsNode, name: string): boolean {
   if (typescriptSyntax.isCatchClause(node)) {
     return node.variableDeclaration ? bindingNameContains(node.variableDeclaration.name, name) : false;
@@ -689,7 +847,14 @@ function loopOrCatchBindsName(node: TsNode, name: string): boolean {
   return false;
 }
 
-// Only runtime declarations count: type-only declarations do not shadow an imported value.
+/**
+ * Check whether a statement introduces a runtime value binding for name; only runtime declarations count
+ * because type-only declarations do not shadow an imported value.
+ *
+ * @param statement - AST statement checked for variable, function, class, enum, import-equals, or identifier namespace declarations
+ * @param name - identifier name tested against the statement's runtime bindings
+ * @returns True if statement declares a runtime binding matching name; otherwise false.
+ */
 function statementBindsName(statement: import("typescript").Statement, name: string): boolean {
   if (typescriptSyntax.isVariableStatement(statement)) {
     return variableDeclarationListBindsName(statement.declarationList, name);
@@ -706,13 +871,25 @@ function statementBindsName(statement: import("typescript").Statement, name: str
   return false;
 }
 
-// Return whether any declaration in list binds identifier name, including nested destructuring, for import-shadow checks.
+/**
+ * Check whether any declaration in a variable declaration list binds an identifier, including nested destructuring, for import-shadow checks.
+ *
+ * @param list - variable declaration list whose declarators are inspected
+ * @param name - identifier name checked across all declarator binding patterns
+ * @returns True if any declaration in list binds name; otherwise false.
+ */
 function variableDeclarationListBindsName(list: import("typescript").VariableDeclarationList, name: string): boolean {
   return list.declarations.some((declaration) => bindingNameContains(declaration.name, name));
 }
 
-// Return whether bindingName declares the local identifier name, including nested object and array destructuring.
-// Property keys and omitted array elements are ignored; an empty binding pattern returns false.
+/**
+ * Check whether a binding pattern declares a local identifier, including nested object and array destructuring.
+ * Property keys and omitted array elements are ignored.
+ *
+ * @param bindingName - identifier or destructuring pattern inspected recursively
+ * @param name - target identifier name to match against bound locals
+ * @returns True if bindingName declares name; an empty binding pattern or non-matching pattern returns false.
+ */
 function bindingNameContains(bindingName: import("typescript").BindingName, name: string): boolean {
   if (typescriptSyntax.isIdentifier(bindingName)) {
     return bindingName.text === name;
@@ -722,9 +899,17 @@ function bindingNameContains(bindingName: import("typescript").BindingName, name
   );
 }
 
-// Check node in parsedSource for a location.href or window.location.href assignment with a direct source or a tracked value from tainted.
-// Same-line invariant: skip these hits here. The legacy scanner looks for direct source tokens in the sink segment.
-// Returns nothing. Appends a finding for the source file to the supplied findings list when a cross-line match qualifies.
+/**
+ * Check for a location.href or window.location.href assignment receiving a direct source or tracked tainted value.
+ * Same-line invariant: skips same-line hits because the legacy scanner looks for direct source tokens in the sink segment.
+ *
+ * @param parsedSource - parsed syntax tree used to inspect assignment text and sink line
+ * @param node - AST node tested as an equals assignment to location.href or window.location.href
+ * @param tainted - local provenance map consulted for right-hand side taint
+ * @param file - discovered file whose display path locates emitted findings
+ * @param findings - accumulator receiving cross-line open-redirect candidate findings
+ * @returns Nothing. Appends a finding to findings when a cross-line assignment match qualifies.
+ */
 function reportRedirectAssignmentSink(parsedSource: TsSourceFile, node: TsNode, tainted: Map<string, TaintRecord>, file: SourceFile, findings: Finding[]): void {
   if (!typescriptSyntax.isBinaryExpression(node) || node.operatorToken.kind !== typescriptSyntax.SyntaxKind.EqualsToken) {
     return;
@@ -744,15 +929,26 @@ function reportRedirectAssignmentSink(parsedSource: TsSourceFile, node: TsNode, 
   findings.push(flowFinding(file, sinkLine, "security.open-redirect-candidate", "redirect", hit.kind, hit.depth));
 }
 
-// Return node unchanged when it is a call or constructor expression, or undefined when it is neither.
-// Both forms can be dynamic-regexp sinks, so the syntax-only pass handles them through the same interface.
+/**
+ * Narrow an AST node to a call or constructor expression because both forms can be dynamic-regexp sinks handled through one interface.
+ *
+ * @param node - AST node checked for CallExpression or NewExpression syntax
+ * @returns node unchanged when it is a call or constructor expression, or undefined when it is neither.
+ */
 function callLikeExpression(node: TsNode): TsCallLikeExpression | undefined {
   return typescriptSyntax.isCallExpression(node) || typescriptSyntax.isNewExpression(node) ? node : undefined;
 }
 
-// Search call's arguments in order using parsedSource and local provenance in tainted; return the first source record found.
-// The walk prunes functions and sanitizer calls. Supplying fileReads also masks proven reader calls and excludes property-key aliases.
-// Return undefined for absent arguments or no match. Direct-source checks can still see pruned function or sanitizer text in an ancestor.
+/**
+ * Search call arguments in order for the first tainted expression record; prunes functions and sanitizer calls, though direct-source checks
+ * can still see pruned function or sanitizer text in an ancestor.
+ *
+ * @param call - call or constructor expression whose arguments are searched in order
+ * @param parsedSource - parsed syntax tree used for source-text extraction and line mapping
+ * @param tainted - local provenance map consulted for tainted identifier references
+ * @param fileReads - optional reader bindings that mask proven reader calls and exclude property-key aliases
+ * @returns First source record found across arguments, or undefined for absent arguments or no match.
+ */
 function taintedInput(call: TsCallLikeExpression, parsedSource: TsSourceFile, tainted: Map<string, TaintRecord>, fileReads?: FileReadBindings): TaintRecord | undefined {
   for (const argument of call.arguments ?? []) {
     const found = taintedExpression(argument, parsedSource, tainted, fileReads);
@@ -763,9 +959,17 @@ function taintedInput(call: TsCallLikeExpression, parsedSource: TsSourceFile, ta
   return undefined;
 }
 
-// Search expression in parsedSource for direct sources or records in tainted. maxAliasDepth limits alias records only.
-// The walk prunes functions and sanitizer calls. Direct-source checks can still see their text because they scan ancestor text.
-// With fileReads, skip proven reader calls and exclude property-key aliases. Return the first eligible record, or undefined if none qualifies.
+/**
+ * Search an expression for direct sources or tainted aliases while pruning functions and sanitizer calls (direct-source checks can still see
+ * their text because they scan ancestor text). With fileReads, skips proven reader calls and excludes property-key aliases.
+ *
+ * @param expression - root expression node walked for taint evidence
+ * @param parsedSource - parsed syntax tree used for text extraction and line lookup
+ * @param tainted - local provenance map consulted for tracked identifiers
+ * @param fileReads - optional reader bindings enabling content-only filtering of proven reads and property keys
+ * @param maxAliasDepth - depth limit applied to alias records only (defaults to MAX_ALIAS_DEPTH)
+ * @returns First eligible taint record found, or undefined if none qualifies.
+ */
 function taintedExpression(expression: TsNode, parsedSource: TsSourceFile, tainted: Map<string, TaintRecord>, fileReads?: FileReadBindings, maxAliasDepth = MAX_ALIAS_DEPTH): TaintRecord | undefined {
   let found: TaintRecord | undefined;
   if (isFunctionLike(expression)) {
@@ -797,9 +1001,15 @@ function taintedExpression(expression: TsNode, parsedSource: TsSourceFile, taint
   return found;
 }
 
-// Look up identifier node in tainted and return its source record only when its depth does not exceed maxAliasDepth.
-// contentOnly excludes property-access names and identifier keys on property assignments so that key spelling cannot stand in for a local value.
-// Return undefined for non-identifiers, excluded keys, unknown locals or records beyond the depth limit.
+/**
+ * Look up an identifier in tainted only when its alias depth does not exceed maxAliasDepth.
+ *
+ * @param node - AST node tested as a local identifier reference
+ * @param tainted - local provenance map indexed by identifier name
+ * @param maxAliasDepth - maximum alias depth permitted for returned records
+ * @param contentOnly - when true, excludes property-access names and property-assignment keys so key spelling cannot stand in for a local value
+ * @returns Matching source record within the depth limit, or undefined for non-identifiers, excluded keys, unknown locals, or deeper records.
+ */
 function taintedIdentifierRecord(node: TsNode, tainted: Map<string, TaintRecord>, maxAliasDepth: number, contentOnly: boolean): TaintRecord | undefined {
   if (!typescriptSyntax.isIdentifier(node)) return undefined;
   const propertyKey = isPropertyAccessName(node) || (typescriptSyntax.isPropertyAssignment(node.parent) && node.parent.name === node);
@@ -808,8 +1018,14 @@ function taintedIdentifierRecord(node: TsNode, tainted: Map<string, TaintRecord>
   return record && record.depth <= maxAliasDepth ? record : undefined;
 }
 
-// Return whether callee's source spelling identifies a supported deserialization or dynamic-code sink for call.
-// call supplies arguments and parsedSource supplies their text for YAML schema checks; safe-schema YAML loads and other names return false.
+/**
+ * Check whether a call's spelling identifies a supported deserialization or dynamic-code sink.
+ *
+ * @param callee - source text of the call or constructor callee
+ * @param call - call expression supplying arguments for YAML schema checks
+ * @param parsedSource - parsed syntax tree used to read argument text
+ * @returns True for supported deserialization or dynamic-code sinks; safe-schema YAML loads and other names return false.
+ */
 function isUnsafeDeserializationSink(callee: string, call: TsCallLikeExpression, parsedSource: TsSourceFile): boolean {
   return (
     /^eval$/.test(callee) ||
@@ -821,8 +1037,14 @@ function isUnsafeDeserializationSink(callee: string, call: TsCallLikeExpression,
   );
 }
 
-// Return whether callee names a recognized YAML load call whose second argument in call lacks safe-schema text.
-// parsedSource supplies the option text; other callees return false, and missing options make a recognized load unsafe.
+/**
+ * Check whether a call is a recognized YAML load lacking safe-schema option text; missing options make a recognized load unsafe.
+ *
+ * @param callee - source text of the call target matched against recognized YAML loaders
+ * @param call - call expression whose second argument is checked for safe-schema options
+ * @param parsedSource - parsed syntax tree used to inspect option text
+ * @returns True if callee is a recognized YAML load without safe-schema options; other callees return false.
+ */
 function isUnsafeYamlLoad(callee: string, call: TsCallLikeExpression, parsedSource: TsSourceFile): boolean {
   if (!/^(?:yaml|YAML|jsYaml|jsyaml)\.load$/.test(callee)) {
     return false;
@@ -830,16 +1052,27 @@ function isUnsafeYamlLoad(callee: string, call: TsCallLikeExpression, parsedSour
   return !hasSafeYamlSchema(call, parsedSource);
 }
 
-// Return whether call's second argument text in parsedSource contains schema: followed by FAILSAFE_SCHEMA, JSON_SCHEMA or CORE_SCHEMA.
-// The text match accepts an optional qualifier and can also match nested, quoted, or commented text.
-// Missing options return false, so the YAML load receives no safe-schema exemption.
+/**
+ * Check whether a YAML load's second argument text contains schema: followed by FAILSAFE_SCHEMA, JSON_SCHEMA, or CORE_SCHEMA.
+ * Accepts an optional qualifier and can also match nested, quoted, or commented text.
+ *
+ * @param call - call expression whose second argument supplies YAML options
+ * @param parsedSource - parsed syntax tree used to read the options argument text
+ * @returns True when safe-schema text is found; missing options return false so the YAML load receives no safe-schema exemption.
+ */
 function hasSafeYamlSchema(call: TsCallLikeExpression, parsedSource: TsSourceFile): boolean {
   const options = call.arguments?.[1];
   return options !== undefined && /\bschema\s*:\s*(?:[A-Za-z_$][A-Za-z0-9_$]*\.)?(?:FAILSAFE_SCHEMA|JSON_SCHEMA|CORE_SCHEMA)\b/.test(options.getText(parsedSource));
 }
 
-// Check callee text and call options for XXE sink syntax, using unsafeXmlParsers for locals initialized by flagged parser constructions.
-// Return true for flagged libxml options, recorded parser methods or inline unsafe parser constructions; otherwise return false.
+/**
+ * Check callee text and call options for XXE sink syntax, including locals initialized by flagged parser constructions.
+ *
+ * @param callee - source text of the call target checked for parser methods or inline construction
+ * @param call - call expression whose arguments are checked for unsafe libxml options
+ * @param unsafeXmlParsers - local parser variable names recorded as constructed with entity expansion enabled
+ * @returns True for flagged libxml options, recorded parser methods, or inline unsafe parser constructions; otherwise false.
+ */
 function isXxeSink(callee: string, call: TsCallLikeExpression, unsafeXmlParsers: ReadonlySet<string>): boolean {
   const parserMethod = callee.match(/^([A-Za-z_$][A-Za-z0-9_$]*)\.(?:parse|parseFromString)$/);
   return (
@@ -849,20 +1082,33 @@ function isXxeSink(callee: string, call: TsCallLikeExpression, unsafeXmlParsers:
   );
 }
 
-// Return whether callee names parseXml or parseXmlString, optionally qualified by libxmljs, for subsequent unsafe-option checks.
-// A name match alone does not establish entity expansion; the caller checks the call's options.
+/**
+ * Check whether a callee names parseXml or parseXmlString, optionally qualified by libxmljs, for subsequent unsafe-option checks.
+ * A name match alone does not establish entity expansion because the caller checks the call's options.
+ *
+ * @param callee - source text of the call expression target
+ * @returns True if callee matches parseXml or parseXmlString (optionally prefixed with libxmljs); otherwise false.
+ */
 function isLibxmlEntityExpandingCall(callee: string): boolean {
   return /^(?:libxmljs\.)?(?:parseXml|parseXmlString)$/.test(callee);
 }
 
-// Return whether any argument of call contains noent, dtdload or processEntities set to true, or a resolveEntity property.
-// Missing arguments return false; these are textual option checks.
+/**
+ * Perform textual option checks on call arguments for unsafe XML entity-expansion flags.
+ *
+ * @param call - call expression whose arguments are inspected as source text
+ * @returns True if any argument contains noent, dtdload, or processEntities set to true, or a resolveEntity property; missing arguments return false.
+ */
 function hasUnsafeXmlParserOption(call: TsCallLikeExpression): boolean {
   return (call.arguments ?? []).some((argument) => /\b(?:noent|dtdload|processEntities)\s*:\s*true\b|\bresolveEntity\s*:/.test(argument.getText()));
 }
 
-// Return whether callee text matches an inline parser call with entity-expansion option syntax.
-// Matches new XMLParser(...).parse with processEntities text starting with true, or new DOMParser(...).parseFromString with resolveEntity.
+/**
+ * Check whether callee text matches an inline XMLParser or DOMParser call with entity-expansion option syntax.
+ *
+ * @param callee - source text of the call target
+ * @returns True for inline new XMLParser(...).parse with processEntities: true or new DOMParser(...).parseFromString with resolveEntity; else false.
+ */
 function isInlineUnsafeXmlParserCall(callee: string): boolean {
   return (
     /\bnew\s+XMLParser\s*\([^)]*\bprocessEntities\s*:\s*true[^)]*\)\.parse$/.test(callee) ||
@@ -870,8 +1116,13 @@ function isInlineUnsafeXmlParserCall(callee: string): boolean {
   );
 }
 
-// Return whether expr is a recognized XML parser construction whose text in parsedSource contains unsafe-option syntax.
-// XMLParser forms require processEntities: true; DOMParser forms require a resolveEntity property. Other expressions return false.
+/**
+ * Check whether an expression constructs XMLParser (with processEntities: true) or DOMParser (with resolveEntity).
+ *
+ * @param parsedSource - parsed syntax tree used to inspect constructor callee and argument text
+ * @param expr - AST expression tested as a NewExpression parser construction
+ * @returns True for recognized XMLParser or DOMParser constructions containing unsafe-option syntax; other expressions return false.
+ */
 function isUnsafeXmlParserConstruction(parsedSource: TsSourceFile, expr: TsNode): boolean {
   if (!typescriptSyntax.isNewExpression(expr)) {
     return false;
@@ -884,8 +1135,14 @@ function isUnsafeXmlParserConstruction(parsedSource: TsSourceFile, expr: TsNode)
   );
 }
 
-// Identifies the first recognized input source so a flow finding can tell the user where an unchecked value came from.
-// Returns undefined when the expression supplies no input evidence, such as plain text or a recognized escaping call.
+/**
+ * Identify the first recognized external-input source in an expression so a flow finding can report where an unchecked value came from.
+ *
+ * @param parsedSource - parsed syntax tree used to inspect wrapper calls and blank nested handler parameters
+ * @param expr - AST expression evaluated for external-input tokens
+ * @param fileReads - optional reader bindings whose calls are masked so file contents remain distinct from file paths
+ * @returns First matching source kind string, or undefined for no input evidence such as plain text or a recognized escaping call.
+ */
 function sourceKindOf(parsedSource: TsSourceFile, expr: TsNode, fileReads?: FileReadBindings): string | undefined {
   // A recognized escaping helper is evidence that the developer prepared the value for this check.
   if (isSafeWrapperExpression(parsedSource, expr)) {
@@ -918,8 +1175,13 @@ function sourceKindOf(parsedSource: TsSourceFile, expr: TsNode, fileReads?: File
   return undefined;
 }
 
-// Separates nested handlers from the value being reviewed so one handler's local request does not flag another expression.
-// Retains source offsets and input evidence from callbacks that contribute to the current value, such as a map callback.
+/**
+ * Blank local request parameters inside nested non-contributing handlers while retaining source offsets and evidence from value-producing callbacks.
+ *
+ * @param parsedSource - parsed syntax tree used to locate expression and parameter offsets
+ * @param expr - AST expression whose text is filtered for nested handler request bindings
+ * @returns Expression text with non-contributing nested handler request parameters replaced by spaces.
+ */
 function textOutsideRequestHandlers(parsedSource: TsSourceFile, expr: TsNode): string {
   const expressionStart = expr.getStart(parsedSource);
   let text = expr.getText(parsedSource);
@@ -946,14 +1208,23 @@ function textOutsideRequestHandlers(parsedSource: TsSourceFile, expr: TsNode): s
   return text;
 }
 
-// Returns the function-like node's direct identifier parameters named req, request or ctx for the scanner's name-based filter.
-// An empty set means the scanner skips blanking for this function.
+/**
+ * Collect direct identifier parameter names matching req, request, or ctx for the scanner's name-based filter.
+ *
+ * @param node - function-like AST node whose direct parameter list is inspected
+ * @returns Set of matching parameter names; an empty set means the scanner skips blanking for this function.
+ */
 function declaredRequestParameterNames(node: TsNode): Set<string> {
   const { parameters } = node as import("typescript").SignatureDeclaration;
   return new Set(parameters.flatMap((parameter) => (typescriptSyntax.isIdentifier(parameter.name) && REQUEST_RECEIVER_NAMES.has(parameter.name.text) ? [parameter.name.text] : [])));
 }
 
-// Keeps known value-producing callbacks in the input scan so the developer can trace a result through a function call.
+/**
+ * Check whether a function-like node is immediately invoked or passed to a known value-producing collection/promise method.
+ *
+ * @param node - function-like AST node whose parent call context is inspected
+ * @returns True when the callback can contribute its return value to the enclosing expression; otherwise false.
+ */
 function contributesCallbackValue(node: TsNode): boolean {
   // Extra parentheses around a function do not change whether its value is used.
   while (typescriptSyntax.isParenthesizedExpression(node.parent)) {
@@ -978,19 +1249,33 @@ function contributesCallbackValue(node: TsNode): boolean {
     && /^(?:map|flatMap|reduce|reduceRight|then|catch)$/u.test(parent.expression.name.text);
 }
 
-// Returns true when the identifier names a property in a dotted access such as this.req, where req reads no local binding.
+/**
+ * Check whether a node is the property name of a dotted property access (such as this.req), where it reads no local binding.
+ *
+ * @param identifier - AST node compared against its parent PropertyAccessExpression name
+ * @returns True when identifier names the property in a dotted access; otherwise false.
+ */
 function isPropertyAccessName(identifier: TsNode): boolean {
   return typescriptSyntax.isPropertyAccessExpression(identifier.parent) && identifier.parent.name === identifier;
 }
 
-// Return whether expr is a string literal or substitution-free template literal, which source classification treats as literal text.
-// Other expressions return false, including templates that interpolate values.
+/**
+ * Check whether an expression is plain literal text rather than an interpolated template or dynamic expression.
+ *
+ * @param expr - AST expression tested as a string literal or substitution-free template literal
+ * @returns True for string literals and substitution-free template literals; other expressions including interpolating templates return false.
+ */
 function isSourceTextLiteral(expr: TsNode): boolean {
   return typescriptSyntax.isStringLiteral(expr) || typescriptSyntax.isNoSubstitutionTemplateLiteral(expr);
 }
 
-// Return whether expr is a call to a recognized regexp-escaping helper, using parsedSource to read its callee.
-// Callers treat a match as sanitizer evidence and skip its argument subtree; non-calls and other names return false.
+/**
+ * Check whether an expression calls a recognized regexp-escaping helper so callers can treat it as sanitizer evidence and skip its argument subtree.
+ *
+ * @param parsedSource - parsed syntax tree used to extract the call target text
+ * @param expr - AST node tested as a CallExpression
+ * @returns True when expr calls a recognized regexp-escaping helper; non-calls and other names return false.
+ */
 function isSafeWrapperExpression(parsedSource: TsSourceFile, expr: TsNode): boolean {
   if (!typescriptSyntax.isCallExpression(expr)) {
     return false;
@@ -999,8 +1284,12 @@ function isSafeWrapperExpression(parsedSource: TsSourceFile, expr: TsNode): bool
   return /^(?:escapeRegExp|escapeStringRegexp|regexpEscape|RegExp\.escape)$/.test(callee);
 }
 
-// Return whether node is a function-like AST boundary that receives separate taint analysis.
-// Recognize functions, arrows, methods, constructors and accessors; other nodes return false.
+/**
+ * Check whether an AST node is a function-like boundary that receives separate taint analysis.
+ *
+ * @param node - AST node tested against function, arrow, method, constructor, and accessor kinds
+ * @returns True for functions, arrows, methods, constructors, and accessors; other nodes return false.
+ */
 function isFunctionLike(node: TsNode): boolean {
   return (
     typescriptSyntax.isFunctionDeclaration(node) ||
@@ -1040,7 +1329,12 @@ function flowFinding(file: SourceFile, lineIndex: number, ruleId: string, sinkKi
   });
 }
 
-// Supplies messages/remediation for both same-line rule ids and AST-only security candidates.
+/**
+ * Look up message and remediation text for both same-line rule ids and AST-only security candidates.
+ *
+ * @param ruleId - security rule identifier emitted by a same-line or AST flow sink
+ * @returns Message and remediation pair for known rules, or undefined if ruleId is unrecognized.
+ */
 function securityRuleDetails(ruleId: string): Pick<SecurityFlowRule, "message" | "remediation"> | undefined {
   return (
     SECURITY_FLOW_RULES.find((rule) => rule.ruleId === ruleId) ??

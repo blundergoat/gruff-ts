@@ -40,6 +40,7 @@
     "bin/",
     "src/",
     "!src/**/*.test.ts",
+    "!src/test-fixtures.ts",
     "!src/fixtures/",
     "docs/",
     "!docs/releasing.md",

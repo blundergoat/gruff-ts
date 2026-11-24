@@ -1,11 +1,11 @@
 # Dashboard
 
-`gruff-ts dashboard` serves a local browser dashboard for repeated analysis.
+`gruff-ts dashboard` starts a local web UI for running and inspecting scans interactively.
 
 ## Start
 
 ```sh
-./bin/gruff-ts dashboard --host 127.0.0.1 --port 8767 --project-root .
+npx gruff-ts dashboard --host 127.0.0.1 --port 8767 --project-root .
 ```
 
 ## Options
@@ -18,19 +18,12 @@
 
 ## Safety
 
-The dashboard has no authentication and should stay bound to loopback unless the
-network is trusted. The `/scan` endpoint analyses filesystem paths from request
-parameters, so the bind address is the safety boundary.
+The dashboard has no authentication. Keep it bound to `127.0.0.1` unless you trust every machine on the network: its `/scan` endpoint reads filesystem paths from request parameters, so loopback binding is the main safety boundary.
 
-## Gating threshold (none)
+## No Gating Threshold
 
-`dashboard` has no `--fail-on` flag and does not participate in the `failOn:`
-config block - setting `failOn.dashboard:` in `.gruff-ts.yaml` is rejected at
-config load. Whether the dashboard should gate is a deferred design question;
-raise it as an issue if your workflow needs it.
+`dashboard` has no `--fail-on` flag and cannot appear under `failOn:` in `.gruff-ts.yaml` (setting `failOn.dashboard:` fails config validation with exit `2`).
 
 ## Polyglot Repos
 
-`gruff-ts` defaults to port `8767`, `gruff-rs` defaults to `8766`, and
-`gruff-go`, `gruff-php`, and `gruff-py` default to `8765`. Use `--port` when
-running multiple dashboards at once.
+`gruff-ts` defaults to port `8767`, `gruff-rs` to `8766`, and `gruff-go`, `gruff-php`, and `gruff-py` to `8765`. Pass `--port` if you run several dashboards side by side.

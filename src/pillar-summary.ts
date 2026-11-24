@@ -48,8 +48,13 @@ function buildPillarRows(report: AnalysisReport): PillarRow[] {
   return rows;
 }
 
-// Returns a map of severity counts by pillar from the report's findings for the stable Pillars table schema.
-// A pillar with no findings has no map entry, so the row builder supplies its zero counts.
+/**
+ * Tallies severity counts by pillar from the report's findings for the stable Pillars table schema.
+ * A pillar with no findings has no map entry, so the row builder supplies its zero counts.
+ *
+ * @param findings - reported findings whose pillar and severity values are tallied
+ * @returns map of per-pillar advisory, warning, and error counts for pillars with at least one finding
+ */
 function countSeverityByPillar(findings: Finding[]): Map<Pillar, PillarSeverityCounts> {
   const severityByPillar = new Map<Pillar, PillarSeverityCounts>();
   for (const finding of findings) {
@@ -84,8 +89,13 @@ function buildPillarRow(pillar: Pillar, scoreEntry: AnalysisReport["score"]["pil
   };
 }
 
-// Compares leftRow with rightRow for descending finding count, then ascending pillar name in the shared renderer order.
-// Returns a negative number when leftRow sorts first, zero for equal keys, and a positive number when rightRow sorts first.
+/**
+ * Compares two pillar rows for descending finding count, then ascending pillar name in the shared renderer order.
+ *
+ * @param leftRow - first pillar row to compare
+ * @param rightRow - second pillar row to compare
+ * @returns negative when leftRow sorts first, zero for equal keys, and positive when rightRow sorts first
+ */
 function comparePillarRows(leftRow: PillarRow, rightRow: PillarRow): number {
   if (leftRow.findings !== rightRow.findings) {
     return rightRow.findings - leftRow.findings;
@@ -93,8 +103,12 @@ function comparePillarRows(leftRow: PillarRow, rightRow: PillarRow): number {
   return leftRow.pillar.localeCompare(rightRow.pillar);
 }
 
-// Pillar applicability comes from the rule catalogue. This keeps the cross-port human table stable:
-// every pillar that could fire appears even when the current run produced no findings for it.
+/**
+ * Collects applicable pillars from the rule catalogue so the cross-port human table stays stable.
+ * Every pillar that could fire appears even when the current run produced no findings for it.
+ *
+ * @returns set of pillars represented by the registered rule descriptors
+ */
 function applicablePillarSet(): Set<Pillar> {
   const pillars = new Set<Pillar>();
   for (const descriptor of ruleDescriptors()) {
@@ -103,8 +117,13 @@ function applicablePillarSet(): Set<Pillar> {
   return pillars;
 }
 
-// Converts the supplied composite or pillar score to a letter grade using the stable 90, 80, 70 and 60 thresholds.
-// Returns F below 60; changing a threshold changes grades only for scores that cross the revised boundary.
+/**
+ * Converts a composite or pillar score to a letter grade using the stable 90, 80, 70, and 60 thresholds.
+ * Changing a threshold changes grades only for scores that cross the revised boundary.
+ *
+ * @param score - composite or pillar score to convert to a letter grade
+ * @returns letter grade A through D at or above 90, 80, 70, and 60 respectively, or F below 60
+ */
 function grade(score: number): string {
   if (score >= 90) {
     return "A";

@@ -69,7 +69,11 @@ interface ComplexityWalkContext {
   accumulator: ComplexityAccumulator;
 }
 
-// Returns the base measurement used only when a caller has no parsed script, such as a legacy span probe.
+/**
+ * Base measurement used only when a caller has no parsed script, such as a legacy span probe.
+ *
+ * @returns Base complexity metrics with cyclomatic and cognitive complexity of 1, 0 nesting, and a zeroed breakdown.
+ */
 export function baseComplexityMetrics(): ComplexityMetrics {
   return {
     cyclomatic: 1,
@@ -79,9 +83,13 @@ export function baseComplexityMetrics(): ComplexityMetrics {
   };
 }
 
-// Measures the supplied parsed callable for complexity findings and documentation checks.
-// The ownership set identifies separately reported nested callables to skip.
-// Returns cyclomatic and cognitive complexity, maximum nesting and a breakdown of the counts.
+/**
+ * Measures the supplied parsed callable for complexity findings and documentation checks.
+ *
+ * @param callableNode - Root parsed callable syntax node to measure.
+ * @param ownedCallableNodes - Ownership set identifying separately reported nested callables to skip.
+ * @returns Cyclomatic and cognitive complexity, maximum nesting, and a breakdown of the counts.
+ */
 export function complexityMetrics(callableNode: TypeScriptNode, ownedCallableNodes: ReadonlySet<TypeScriptNode>): ComplexityMetrics {
   const accumulator: ComplexityAccumulator = {
     ifCount: 0,
@@ -122,8 +130,15 @@ export function complexityMetrics(callableNode: TypeScriptNode, ownedCallableNod
   };
 }
 
-// Measures the supplied syntax node and its owned descendants from the current control-flow depth.
-// Returns nothing. Updates counts and maximum nesting in the walk context, pruning reported nested callables to preserve separate totals.
+/**
+ * Measures the supplied syntax node and its owned descendants from the current control-flow depth,
+ * pruning reported nested callables to preserve separate totals.
+ *
+ * @param node - Current syntax node being visited during traversal.
+ * @param controlFlowDepth - Current control-flow nesting depth at this node.
+ * @param context - Walk state carrying the root callable, ownership set, and mutable accumulator.
+ * @returns Nothing. Updates counts and maximum nesting in the walk context.
+ */
 function walkComplexityNode(node: TypeScriptNode, controlFlowDepth: number, context: ComplexityWalkContext): void {
   // A separately reported nested callable contributes to its own measurements.
   if (node !== context.callableNode && context.ownedCallableNodes.has(node)) {
@@ -169,8 +184,15 @@ function walkComplexityNode(node: TypeScriptNode, controlFlowDepth: number, cont
   walkChildrenAtDepth(node, controlFlowDepth, context);
 }
 
-// Returns nothing. Records the supplied if statement and its branches in the walk context's complexity totals.
-// Uses the incoming depth for an early-exit guard and else-if peers. Other branch bodies add a nesting level.
+/**
+ * Records the supplied if statement and its branches in the walk context's complexity totals.
+ * Uses the incoming depth for an early-exit guard and else-if peers; other branch bodies add a nesting level.
+ *
+ * @param node - Parsed `if` statement whose condition and branches are visited.
+ * @param controlFlowDepth - Incoming control-flow nesting depth before entering this statement.
+ * @param context - Walk state holding the mutable complexity accumulator and ownership set.
+ * @returns Nothing. Increments `ifCount` and recurses through the condition, then, and else branches.
+ */
 function walkIfStatement(node: import("typescript").IfStatement, controlFlowDepth: number, context: ComplexityWalkContext): void {
   context.accumulator.ifCount += 1;
   const nestedDepth = isEarlyExitGuard(node) ? controlFlowDepth : enterControlFlow(controlFlowDepth, context.accumulator);
@@ -187,8 +209,15 @@ function walkIfStatement(node: import("typescript").IfStatement, controlFlowDept
   walkComplexityNode(node.elseStatement, nestedDepth, context);
 }
 
-// Returns nothing. Counts a logical AND or OR in the supplied walk context. Other binary operators add no decision of their own.
-// Visits both operands of the expression at the supplied control-flow depth.
+/**
+ * Counts a logical AND or OR in the supplied walk context and visits both operands at the supplied depth.
+ * Other binary operators add no decision of their own.
+ *
+ * @param node - Binary expression syntax node to inspect for logical operators.
+ * @param controlFlowDepth - Current control-flow nesting depth passed to both operands.
+ * @param context - Walk state holding the accumulator updated with logical operator counts.
+ * @returns Nothing. Updates `logicalAndCount` or `logicalOrCount` in `context` and walks child operands.
+ */
 function walkBinaryExpression(node: import("typescript").BinaryExpression, controlFlowDepth: number, context: ComplexityWalkContext): void {
   if (node.operatorToken.kind === typescriptSyntax.SyntaxKind.AmpersandAmpersandToken) {
     context.accumulator.logicalAndCount += 1;
@@ -199,28 +228,52 @@ function walkBinaryExpression(node: import("typescript").BinaryExpression, contr
   walkChildrenAtDepth(node, controlFlowDepth, context);
 }
 
-// Visits the construct's children one level deeper than the supplied depth.
-// Returns nothing. Updates maximum nesting and accumulates the children's decisions in the walk context.
+/**
+ * Visits a control-flow construct's children one level deeper than the supplied depth.
+ *
+ * @param node - Control-flow construct whose children execute at increased nesting depth.
+ * @param controlFlowDepth - Control-flow nesting depth prior to entering this construct.
+ * @param context - Walk state whose accumulator tracks maximum nesting and child decisions.
+ * @returns Nothing. Updates maximum nesting and accumulates the children's decisions in the walk context.
+ */
 function walkNestedControlFlow(node: TypeScriptNode, controlFlowDepth: number, context: ComplexityWalkContext): void {
   const nestedDepth = enterControlFlow(controlFlowDepth, context.accumulator);
   walkChildrenAtDepth(node, nestedDepth, context);
 }
 
-// Visits the supplied node's children at the given depth so ordinary braces add no nesting.
-// Returns nothing. Uses the supplied walk context to enforce callable ownership and accumulate the children's measurements.
+/**
+ * Visits the supplied node's children at the given depth so ordinary braces add no nesting.
+ *
+ * @param node - Parent syntax node whose direct children are traversed.
+ * @param controlFlowDepth - Control-flow nesting depth preserved across the child traversal.
+ * @param context - Walk state used to enforce callable ownership and accumulate child measurements.
+ * @returns Nothing. Accumulates the children's measurements into the supplied walk context.
+ */
 function walkChildrenAtDepth(node: TypeScriptNode, controlFlowDepth: number, context: ComplexityWalkContext): void {
   // Every child stays with the nearest reported callable unless the ownership guard prunes it.
   node.forEachChild((child) => walkComplexityNode(child, controlFlowDepth, context));
 }
 
-// Returns the current control-flow depth plus one and raises the supplied accumulator's maximum if the new depth exceeds it.
+/**
+ * Enters a nested control-flow level and raises the supplied accumulator's maximum if the new depth exceeds it.
+ *
+ * @param controlFlowDepth - Current control-flow nesting depth before entering the construct.
+ * @param accumulator - Mutable complexity accumulator whose `maximumControlFlowNesting` is updated.
+ * @returns Current control-flow depth plus one.
+ */
 function enterControlFlow(controlFlowDepth: number, accumulator: ComplexityAccumulator): number {
   const nestedDepth = controlFlowDepth + 1;
   accumulator.maximumControlFlowNesting = Math.max(accumulator.maximumControlFlowNesting, nestedDepth);
   return nestedDepth;
 }
 
-// A guard clause has no else and a body of one return, throw, break or continue, braced or not.
+/**
+ * Determines whether an `if` statement is an early-exit guard clause.
+ * A guard clause has no else and a body of one return, throw, break, or continue, braced or not.
+ *
+ * @param node - Parsed `if` statement to check for early-exit guard structure.
+ * @returns True when `node` has no `elseStatement` and a single exit statement body; otherwise false.
+ */
 function isEarlyExitGuard(node: import("typescript").IfStatement): boolean {
   if (node.elseStatement) {
     return false;
@@ -233,7 +286,12 @@ function isEarlyExitGuard(node: import("typescript").IfStatement): boolean {
     || typescriptSyntax.isContinueStatement(exit));
 }
 
-// Recognizes every loop syntax counted by the public complexity policy.
+/**
+ * Recognizes every loop syntax counted by the public complexity policy.
+ *
+ * @param node - Syntax node to test against `for`, `for..in`, `for..of`, `while`, and `do..while` forms.
+ * @returns True when `node` is one of the counted loop statement kinds; otherwise false.
+ */
 function isLoopStatement(node: TypeScriptNode): boolean {
   return typescriptSyntax.isForStatement(node)
     || typescriptSyntax.isForInStatement(node)
@@ -242,7 +300,11 @@ function isLoopStatement(node: TypeScriptNode): boolean {
     || typescriptSyntax.isDoStatement(node);
 }
 
-// Returns a fresh zeroed breakdown for the base measurement used when a callable has no computed metrics.
+/**
+ * Creates a fresh zeroed breakdown for the base measurement used when a callable has no computed metrics.
+ *
+ * @returns Fresh breakdown with every decision counter and `maxNesting` set to zero.
+ */
 function emptyBreakdown(): ComplexityBreakdown {
   return {
     if: 0,

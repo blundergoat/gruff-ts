@@ -25,8 +25,12 @@ interface FindingInput {
   metadata?: Record<string, unknown>;
 }
 
-// Builds a report finding from findingInput, which supplies the rule, location, message, severity and supporting evidence.
-// Returns the finding with a stable baseline fingerprint and cross-edit identity.
+/**
+ * Builds a report finding with a stable baseline fingerprint and cross-edit identity, omitting absent optional fields.
+ *
+ * @param findingInput - Rule evidence supplying the rule id, message, file path, severity, pillar, confidence, and optional location or metadata.
+ * @returns The complete finding carrying deterministic `fingerprint` and `stableIdentity` hashes.
+ */
 function makeFinding(findingInput: FindingInput): Finding {
   // Missing line or symbol values occupy stable empty slots so that the fields keep their positions in the fingerprint input.
   const fingerprint = createHash("sha256")
@@ -54,8 +58,12 @@ function makeFinding(findingInput: FindingInput): Finding {
   };
 }
 
-// Builds the line-insensitive identity external diff tools use to track a finding across edits.
-// Match columns distinguish same-line occurrences without storing secret-derived text.
+/**
+ * Builds the line-insensitive identity external diff tools use to track a finding across edits.
+ *
+ * @param findingInput - Rule evidence supplying the rule id, file path, symbol or message, and optional column to separate same-line occurrences.
+ * @returns A deterministic 16-character hex SHA-256 prefix that distinguishes same-line occurrences without storing secret-derived text.
+ */
 function stableIdentityFor(findingInput: FindingInput): string {
   // Empty or missing symbols cannot identify the user's code, so those findings fall back to their user-facing message.
   const hasNamedSymbol = typeof findingInput.symbol === "string" && findingInput.symbol.length > 0;

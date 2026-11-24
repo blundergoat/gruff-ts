@@ -347,16 +347,18 @@ test("fixture-purpose-missing treats JSDoc and // run purpose comments identical
   assert.deepEqual(ruleFindings(lineRunVariant, "docs.fixture-purpose-missing", "recovery.test.ts"), []);
 });
 
-test("docblock tag rules stay a deliberate JSDoc-only asymmetry", () => {
-  // A // comment physically cannot carry @param or @returns, so the tag pack only audits JSDoc.
+test("docblock tag rules require /** ... */ JSDoc instead of // comments when everyCallable is on", () => {
+  // Closing the // loophole: non-JSDoc comments on non-test source draw tag findings asking for /** ... */.
   const untaggedBody = `export function formatLabel(value: string): string {
   return value.trim();
 }`;
   const variants = commentStyleVariants(["Formats a label for the report header."], untaggedBody);
   assert.equal(ruleFindings(variants.jsdoc, "docs.missing-param-tag").length, 1);
   assert.equal(ruleFindings(variants.jsdoc, "docs.missing-return-tag").length, 1);
-  assert.deepEqual(ruleFindings(variants.lineRun, "docs.missing-param-tag"), []);
-  assert.deepEqual(ruleFindings(variants.lineRun, "docs.missing-return-tag"), []);
+  assert.equal(ruleFindings(variants.lineRun, "docs.missing-param-tag").length, 1);
+  assert.equal(ruleFindings(variants.lineRun, "docs.missing-return-tag").length, 1);
+  assert.match(ruleFindings(variants.lineRun, "docs.missing-param-tag")[0]?.message ?? "", /must be a JSDoc block/);
+  assert.match(ruleFindings(variants.lineRun, "docs.missing-return-tag")[0]?.message ?? "", /must be a JSDoc block/);
 });
 
 test("loop-in-test lets labeled data-driven loops opt out", () => {
@@ -460,8 +462,8 @@ test("the missing-doc message names each parameter and asks for the return value
   assert.equal(signatureMessages().get("joinChecked"), expected);
 });
 
-test("the missing-doc message skips this and destructured parameters and asks no return value of a void callable", () => {
-  assert.equal(signatureMessages().get("logPair"), "Exported function `logPair` is missing a leading maintainer comment; describe parameter `label`.");
+test("the missing-doc message skips this and destructured parameters and still asks for the return contract on a void callable", () => {
+  assert.equal(signatureMessages().get("logPair"), "Exported function `logPair` is missing a leading maintainer comment; describe parameter `label`; describe the return value.");
 });
 
 test("the missing-doc message reads an unannotated return value from the body and keeps the internal wording", () => {
@@ -469,8 +471,382 @@ test("the missing-doc message reads an unannotated return value from the body an
   assert.equal(signatureMessages().get("countInferred"), expected);
 });
 
-test("the missing-doc message stays plain when the signature has no parameter, value or error to describe", () => {
+test("the missing-doc message asks for the return contract even on parameterless void or async void functions", () => {
   const messages = signatureMessages();
-  assert.equal(messages.get("flushAll"), "Exported function `flushAll` is missing a leading maintainer comment.");
-  assert.equal(messages.get("resetState"), "Internal function `resetState` is missing a leading maintainer comment.");
+  assert.equal(messages.get("flushAll"), "Exported function `flushAll` is missing a leading maintainer comment; describe the return value.");
+  assert.equal(messages.get("resetState"), "Internal function `resetState` is missing a leading maintainer comment; describe the return value.");
+});
+
+test("docs.stale-param-tag accepts destructured JSDoc object and matching dotted property tags while flagging bogus tags", () => {
+  // Fixture purpose: valid JSDoc object name and matching dotted keys for a destructured object parameter.
+  const validSource = `// File overview: destructured JSDoc parameter contract.
+
+/**
+ * Adapt a launcher failure into a bounded delivery payload.
+ *
+ * @param {object} launchContract - decoded host contract
+ * @param {object} failureContext - optional delivery facts
+ * @param {string} failureContext.childStandardError - bounded child stderr
+ * @param {number} failureContext.launcherDurationMs - measured launcher wait
+ * @returns {string} rendered delivery detail
+ */
+export function formatDelivery(
+  launchContract: { id: string },
+  { childStandardError = "", launcherDurationMs = 0 }: { childStandardError?: string; launcherDurationMs?: number } = {},
+): string {
+  return \`\${launchContract.id}:\${childStandardError}:\${launcherDurationMs}\`;
+}
+`;
+  assert.deepEqual(
+    analyseFixture(validSource).findings.filter((entry) => entry.ruleId === "docs.stale-param-tag"),
+    [],
+  );
+
+  // Fixture purpose: invalid dotted property and extra ghost parameter tag listed before the valid destructured object tag.
+  const invalidSource = `// File overview: invalid destructured JSDoc parameter contract.
+
+/**
+ * Adapt a launcher failure into a bounded delivery payload.
+ *
+ * @param {string} ghostParam - stale unrelated parameter listed first
+ * @param {object} [failureContext] - optional delivery facts
+ * @param {string} [failureContext.childStandardError=""] - bounded child stderr
+ * @param {string} failureContext.removedField - stale dotted property
+ * @returns {string} rendered delivery detail
+ */
+export function formatBrokenDelivery(
+  { childStandardError = "" }: { childStandardError?: string } = {},
+): string {
+  return childStandardError;
+}
+`;
+  assert.deepEqual(
+    analyseFixture(invalidSource).findings
+      .filter((entry) => entry.ruleId === "docs.stale-param-tag")
+      .map((entry) => [entry.symbol, entry.metadata.parameter]),
+    [["formatBrokenDelivery", "ghostParam, failureContext.removedField"]],
+  );
+});
+
+test("docs.stale-param-tag checks non-export everyCallable targets in source files while skipping test files", () => {
+  // Fixture purpose: private helper and class method carrying stale @param tags across source and test paths.
+  const source = `// File overview: internal helper and method stale @param tags.
+
+/**
+ * Format an internal badge.
+ * @param oldLabel - removed parameter name
+ * @param label - current parameter name
+ * @returns formatted badge text
+ */
+function formatBadge(label: string): string {
+  return label.trim();
+}
+
+export class BadgePrinter {
+  /**
+   * Render one badge.
+   * @param oldBadge - removed method parameter
+   * @param badge - current method parameter
+   * @returns rendered badge text
+   */
+  render(badge: string): string {
+    return formatBadge(badge);
+  }
+}
+`;
+  const srcFindings = analyseFixture(source, { fileName: "src/badges.ts" }).findings.filter((entry) => entry.ruleId === "docs.stale-param-tag");
+  assert.deepEqual(
+    srcFindings.map((entry) => [entry.symbol, entry.metadata.parameter]),
+    [
+      ["formatBadge", "oldLabel"],
+      ["render", "oldBadge"],
+    ],
+  );
+
+  const testFindings = analyseFixture(source, { fileName: "test/badges.test.ts" }).findings.filter((entry) => entry.ruleId === "docs.stale-param-tag");
+  assert.deepEqual(testFindings, []);
+});
+
+test("docs.missing-why-for-complex-code skips complex it/test callbacks while still flagging non-test helpers", () => {
+  // Fixture purpose: four-level nested branch shared between an it() callback and a production helper.
+  const complexBody = `
+  let score = 0;
+  if (flags.a) {
+    if (flags.b) {
+      if (flags.c) {
+        if (flags.d) {
+          score += 1;
+        }
+      }
+    }
+  }
+  return score;`;
+  const testCallbackSource = `// File overview: complex test callback should not draw missing-why-for-complex-code.
+import { it } from "node:test";
+
+/** Fixture purpose: check nested status combinations across all formats. */
+it("checks nested status combinations across all formats", () => {
+  const flags = { a: true, b: true, c: true, d: true };${complexBody}
+});
+`;
+  assert.deepEqual(
+    analyseFixture(testCallbackSource, { fileName: "test/status.test.ts" }).findings.filter((entry) => entry.ruleId === "docs.missing-why-for-complex-code"),
+    [],
+  );
+
+  const helperSource = `// File overview: complex non-test helper without rationale still fires.
+
+/** Compute a score from nested flag checks. */
+export function computeScore(flags: { a: boolean; b: boolean; c: boolean; d: boolean }): number {${complexBody}
+}
+`;
+  assert.equal(
+    analyseFixture(helperSource, { fileName: "src/score.ts" }).findings.some((entry) => entry.ruleId === "docs.missing-why-for-complex-code" && entry.symbol === "computeScore"),
+    true,
+  );
+});
+
+test("docs.missing-return-tag enforces @returns on void, Promise<void>, asserts, never, and undefined while exempting constructors and setters", () => {
+  // Fixture purpose: void-family return types missing @returns or carrying bare @returns {void}, alongside a class constructor and setter.
+  const source = `// File overview: return-tag contract across void-family signatures and class special members.
+
+/**
+ * Emit a log entry.
+ * @param message - line to emit
+ */
+export function emitLog(message: string): void {
+  console.log(message);
+}
+
+/**
+ * Flush pending entries asynchronously.
+ * @param target - output target
+ */
+export async function flushAsync(target: string): Promise<void> {
+  await Promise.resolve(target);
+}
+
+/**
+ * Assert that an input is a non-empty string.
+ * @param candidate - untrusted value
+ */
+export function assertText(candidate: unknown): asserts candidate is string {
+  if (typeof candidate !== "string") {
+    throw new Error("expected string");
+  }
+}
+
+/**
+ * Abort execution with a fatal error.
+ * @param reason - fatal message
+ */
+export function failAlways(reason: string): never {
+  throw new Error(reason);
+}
+
+/**
+ * Explicitly return undefined after clearing state.
+ * @param key - entry key
+ */
+export function clearSlot(key: string): undefined {
+  void key;
+  return undefined;
+}
+
+/**
+ * Store and update a label with a bare void return tag on reset.
+ */
+export class LabelStore {
+  private current = "";
+
+  /**
+   * Initialize the store with an opening label.
+   * @param initial - opening label
+   */
+  constructor(initial: string) {
+    this.current = initial;
+  }
+
+  /**
+   * Update the stored label.
+   * @param next - replacement label
+   */
+  set label(next: string) {
+    this.current = next;
+  }
+
+  /**
+   * Clear the stored label.
+   * @returns {void}
+   */
+  clear(): void {
+    this.current = "";
+  }
+}
+`;
+  const returnFindings = analyseFixture(source, { fileName: "src/returns.ts" }).findings
+    .filter((entry) => entry.ruleId === "docs.missing-return-tag")
+    .map((entry) => `${entry.symbol}: ${entry.message}`)
+    .sort();
+  assert.deepEqual(returnFindings, [
+    "assertText: Docblock for `assertText` is missing @returns.",
+    "clear: Docblock for `clear` has no description for @returns.",
+    "clearSlot: Docblock for `clearSlot` is missing @returns.",
+    "emitLog: Docblock for `emitLog` is missing @returns.",
+    "failAlways: Docblock for `failAlways` is missing @returns.",
+    "flushAsync: Docblock for `flushAsync` is missing @returns.",
+  ]);
+
+  // Constructors and setters stay exempt from missing-doc return hints as well.
+  const undocumentedClass = `// File overview: undocumented constructor and setter.
+export class BareStore {
+  constructor() {}
+  set label(next: string) {
+    void next;
+  }
+}
+`;
+  const missingDocMessages = analyseFixture(undocumentedClass, { fileName: "src/bare-store.ts" }).findings
+    .filter((entry) => entry.ruleId === "docs.missing-internal-function-doc" || entry.ruleId === "docs.missing-exported-function-doc")
+    .map((entry) => `${entry.symbol}: ${entry.message}`);
+  assert.equal(missingDocMessages.some((line) => line.includes("describe the return value")), false);
+});
+
+test("docs.missing-param-tag and docs.missing-return-tag close both // and /* */ comment loopholes on non-test source", () => {
+  // Fixture purpose: slash and plain block comments (including fake tag text) beside a compliant JSDoc helper.
+  const source = `// File overview: non-JSDoc comment loophole coverage.
+
+// Formats a slash-commented helper.
+// @param label - slash tags are not JSDoc
+// @returns formatted string
+export function slashHelper(label: string): string {
+  return label.trim();
+}
+
+/*
+ * Formats a plain block-commented helper.
+ * @param label - non-JSDoc block tags are not JSDoc
+ * @returns formatted string
+ */
+function blockHelper(label: string): string {
+  return label.trim();
+}
+
+/**
+ * Formats a compliant JSDoc helper.
+ * @param label - label to trim
+ * @returns trimmed label
+ */
+export function jsdocHelper(label: string): string {
+  return blockHelper(label);
+}
+`;
+  const defaultFindings = analyseFixture(source, { fileName: "src/comments.ts" }).findings
+    .filter((entry) => entry.ruleId === "docs.missing-param-tag" || entry.ruleId === "docs.missing-return-tag")
+    .map((entry) => `${entry.ruleId} ${entry.symbol}: ${entry.message}`)
+    .sort();
+  assert.deepEqual(defaultFindings, [
+    "docs.missing-param-tag blockHelper: Comment for `blockHelper` must be a JSDoc block (`/** ... */`) with @param for `label`.",
+    "docs.missing-param-tag slashHelper: Comment for `slashHelper` must be a JSDoc block (`/** ... */`) with @param for `label`.",
+    "docs.missing-return-tag blockHelper: Comment for `blockHelper` must be a JSDoc block (`/** ... */`) with @returns.",
+    "docs.missing-return-tag slashHelper: Comment for `slashHelper` must be a JSDoc block (`/** ... */`) with @returns.",
+  ]);
+
+  const optOutFindings = analyseFixture(source, {
+    fileName: "src/comments.ts",
+    config: {
+      rules: {
+        "docs.missing-param-tag": { options: { everyCallable: false } },
+        "docs.missing-return-tag": { options: { everyCallable: false } },
+      },
+    },
+  }).findings.filter((entry) => entry.ruleId === "docs.missing-param-tag" || entry.ruleId === "docs.missing-return-tag");
+  assert.deepEqual(optOutFindings, []);
+});
+
+test("docs.missing-param-tag and docs.missing-return-tag skip test paths while keeping fixture directories checked", () => {
+  // Fixture purpose: untagged JSDoc and slash helper reused across test and fixture paths.
+  const source = `// File overview: path-policy check for doc tags.
+
+/** Formats one label. */
+export function formatOne(label: string): string {
+  return label.trim();
+}
+
+// Formats another label with a slash comment.
+function formatTwo(label: string): string {
+  return formatOne(label);
+}
+export const sample = formatTwo("ok");
+`;
+  const tagRules = new Set(["docs.missing-param-tag", "docs.missing-return-tag"]);
+  assert.deepEqual(
+    analyseFixture(source, { fileName: "test/unit/format.test.ts" }).findings.filter((entry) => tagRules.has(entry.ruleId)),
+    [],
+  );
+  assert.deepEqual(
+    analyseFixture(source, { fileName: "src/format.test.ts" }).findings.filter((entry) => tagRules.has(entry.ruleId)),
+    [],
+  );
+  assert.equal(
+    analyseFixture(source, { fileName: "fixtures/sample-format.ts" }).findings.filter((entry) => tagRules.has(entry.ruleId)).length,
+    4,
+  );
+  assert.equal(
+    analyseFixture(source, { fileName: "testdata/sample-format.ts" }).findings.filter((entry) => tagRules.has(entry.ruleId)).length,
+    4,
+  );
+});
+
+test("docs.missing-error-behavior-doc keeps requiring explicit @throws on throwing source callables", () => {
+  const source = `// File overview: strict @throws contract remains active.
+
+/**
+ * Parse a required positive limit.
+ * @param rawLimit - caller-provided limit text
+ * @returns parsed positive integer
+ */
+export function parsePositiveLimit(rawLimit: string): number {
+  const parsed = Number(rawLimit);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error("limit must be a positive integer");
+  }
+  return parsed;
+}
+`;
+  const errorDocFindings = analyseFixture(source, { fileName: "src/limits.ts" }).findings.filter(
+    (entry) => entry.ruleId === "docs.missing-error-behavior-doc",
+  );
+  assert.equal(errorDocFindings.length, 1);
+  assert.equal(errorDocFindings[0]?.symbol, "parsePositiveLimit");
+});
+
+test("waste.unused-import recognises $-bearing bindings while still catching unused $ beside template interpolations", () => {
+  const usedDollarSource = `// File overview: $-bearing imports exercised in tagged templates, calls, and property access.
+import { $, $state, events$ } from "./runtime";
+
+export async function runShell(target: string): Promise<void> {
+  const count = $state(0);
+  await $\`echo \${target} \${count}\`;
+  events$.emit(target);
+}
+`;
+  assert.deepEqual(
+    analyseFixture(usedDollarSource, { fileName: "src/dollar-used.ts" }).findings.filter((entry) => entry.ruleId === "waste.unused-import"),
+    [],
+  );
+
+  const unusedDollarSource = `// File overview: unused $ import beside an unrelated template interpolation.
+import { $, $unused } from "./runtime";
+
+export function greet(name: string): string {
+  return \`hello \${name}\`;
+}
+`;
+  assert.deepEqual(
+    analyseFixture(unusedDollarSource, { fileName: "src/dollar-unused.ts" }).findings
+      .filter((entry) => entry.ruleId === "waste.unused-import")
+      .map((entry) => entry.symbol),
+    ["$", "$unused"],
+  );
 });

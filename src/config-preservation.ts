@@ -71,8 +71,12 @@ function extractSensitiveExclusions(raw: Record<string, unknown>): SensitiveExcl
   return preserved;
 }
 
-// Returns the glob strings from paths.ignore in the parsed existing config for regeneration.
-// Skips non-string entries and returns an empty list when the ignore list is missing or has another shape.
+/**
+ * Extracts glob strings from `paths.ignore` in a parsed config for regeneration, skipping non-string entries.
+ *
+ * @param raw - parsed existing config mapping to inspect for a `paths.ignore` list
+ * @returns glob strings from `paths.ignore`, or an empty list when missing or not an array
+ */
 function extractIgnoredPaths(raw: Record<string, unknown>): string[] {
   const ignore = objectValue(raw.paths)?.ignore;
   return Array.isArray(ignore) ? ignore.filter((entry): entry is string => typeof entry === "string") : [];
@@ -96,8 +100,14 @@ function extractFailOn(raw: Record<string, unknown>): Map<MinimumSeverityCommand
   return result;
 }
 
-// Returns nothing. Stores the existing config's failure threshold for the command in the destination map used for regeneration.
-// An unsupported command or threshold leaves the destination map unchanged.
+/**
+ * Stores an existing config's failure threshold for a supported command in the destination map used for regeneration.
+ *
+ * @param result - destination map mutated with the validated command threshold when both inputs are supported
+ * @param commandName - command name key from the parsed config; only `analyse`, `summary`, and `report` are accepted
+ * @param rawThreshold - candidate threshold value; only `none`, `advisory`, `warning`, and `error` are stored
+ * @returns Nothing. Leaves `result` unchanged when the command or threshold is unsupported.
+ */
 function addPreservedSeverityEntry(result: Map<MinimumSeverityCommand, FailThreshold>, commandName: string, rawThreshold: unknown): void {
   if (commandName !== "analyse" && commandName !== "summary" && commandName !== "report") {
     return;

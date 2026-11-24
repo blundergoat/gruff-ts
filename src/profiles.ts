@@ -126,8 +126,13 @@ function profileDefinitionFromSpec(spec: BuiltInProfile): ProfileDefinition {
   return { name: spec.name, rules, ignoredPaths: [] };
 }
 
-// Returns the enabled override for ruleId using threshold and severity from spec.
-// Returns undefined when spec provides neither override, so the flattened profile omits that rule.
+/**
+ * Builds the enabled override for a rule using threshold and severity overrides from the preset.
+ *
+ * @param spec - built-in preset supplying threshold and severity override maps
+ * @param ruleId - catalogue rule id to look up in the preset's overrides
+ * @returns the enabled rule setting with configured overrides, or undefined when neither is set so the flattened profile omits that rule
+ */
 function enabledRuleSetting(spec: BuiltInProfile, ruleId: string): ProfileRuleSetting | undefined {
   const threshold = spec.thresholds[ruleId];
   const severity = spec.severities[ruleId];
@@ -246,8 +251,13 @@ export function profileSummaries(): ProfileSummary[] {
   });
 }
 
-// Returns the enabled-rule count for the flattened profile, using descriptor defaults for unset rules or when no profile is supplied.
-// A rule that ships off by default counts only when the profile explicitly enables it.
+/**
+ * Counts enabled rules for a flattened profile, using descriptor defaults for unset rules or when no profile is supplied.
+ * A rule that ships off by default counts only when the profile explicitly enables it.
+ *
+ * @param definition - flattened profile definition to inspect, or undefined to evaluate catalogue defaults
+ * @returns total number of rules in the catalogue that are enabled for the profile
+ */
 function countEnabledRules(definition: ProfileDefinition | undefined): number {
   return DESCRIPTORS.filter((descriptor) => definition?.rules.get(descriptor.ruleId)?.enabled ?? descriptor.isEnabledByDefault !== false).length;
 }

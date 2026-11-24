@@ -8,13 +8,25 @@ import type { AnalysisReport, Finding, RunDiagnostic } from "./types.ts";
 
 const DEFAULT_BASELINE = "gruff-baseline.json";
 
-// Treats already-absolute paths as-is; otherwise anchors at the project root the CLI was launched against.
+/**
+ * Resolves a path against the project root unless it is already absolute.
+ *
+ * @param projectRoot - base project directory the CLI was launched against
+ * @param path - candidate path that may be relative or already absolute
+ * @returns The unchanged absolute path, or `path` joined onto `projectRoot`.
+ */
 function absolutize(projectRoot: string, path: string): string {
   return isAbsolute(path) ? path : join(projectRoot, path);
 }
 
-// Project-relative form with forward slashes - the report contract uses POSIX-style display paths on
-// every platform. "" collapses to "." so the project root has a stable label in history entries.
+/**
+ * Formats a path in project-relative POSIX form with forward slashes.
+ * The report contract uses POSIX-style display paths on every platform; "" collapses to "." for a stable history label.
+ *
+ * @param projectRoot - base directory used to compute the relative path
+ * @param path - target file or directory path to format
+ * @returns The forward-slash relative path, or "." when `path` matches `projectRoot`.
+ */
 function displayPath(projectRoot: string, path: string): string {
   const relativePath = relative(projectRoot, path).replaceAll("\\", "/");
   return relativePath === "" ? "." : relativePath;
@@ -44,9 +56,14 @@ function recordHistory(projectRoot: string, historyFile: string, score: Analysis
   }
 }
 
-// Returns the first finding per dedupe key in input order, preserving the original fingerprints.
-// Only docs.missing-public-doc findings with a symbol use rule, path and symbol. Other keys use the fingerprint and any column.
-// Columns preserve separate same-line matches. gruff.baseline.v3 uses line-free matching under the identity separation in ADR-017.
+/**
+ * Keeps the first finding per dedupe key in input order while preserving original fingerprints.
+ * Only docs.missing-public-doc findings with a symbol key on rule, path, and symbol; others use fingerprint and column.
+ * Columns preserve separate same-line matches, while gruff.baseline.v3 uses line-free matching per ADR-017.
+ *
+ * @param findings - candidate findings to deduplicate in their current order
+ * @returns A filtered array containing the first occurrence of each dedupe key.
+ */
 function dedupeFindings(findings: Finding[]): Finding[] {
   const seen = new Set<string>();
   return findings.filter((finding) => {
@@ -59,9 +76,14 @@ function dedupeFindings(findings: Finding[]): Finding[] {
   });
 }
 
-// Returns a stable in-memory dedupe key. Outside the per-symbol rule below, distinct columns keep same-line occurrences separate.
-// When a finding has no column, its fingerprint alone groups duplicates outside the per-symbol rule.
-// The key stays in memory as required by ADR-017. applyBaseline receives the deduplicated findings with their original fingerprints.
+/**
+ * Builds a stable in-memory dedupe key for a finding, keeping distinct columns separate on the same line.
+ * Outside docs.missing-public-doc with a symbol, findings without a column group by fingerprint alone.
+ * The key stays in memory per ADR-017 so applyBaseline receives deduplicated findings with original fingerprints.
+ *
+ * @param finding - finding whose rule, path, symbol, fingerprint, and column determine the key
+ * @returns The NUL-delimited in-memory dedupe key, or the bare fingerprint when no column or per-symbol key applies.
+ */
 function dedupeKey(finding: Finding): string {
   // One file legitimately surfaces many undocumented public symbols; keep each per-symbol entry.
   if (finding.ruleId === "docs.missing-public-doc" && finding.symbol) {
@@ -74,8 +96,13 @@ function dedupeKey(finding: Finding): string {
   return finding.fingerprint;
 }
 
-// Sorts the caller's findings in place by path, line, rule and message to give reports a stable order. Missing lines sort as zero.
-// Returns a new array with the first occurrence of each dedupe key in that order.
+/**
+ * Sorts and mutates the caller's findings in place by path, line, rule, and message for a stable report order.
+ * Missing lines sort as zero, then duplicates are removed while preserving the sorted order.
+ *
+ * @param findings - caller array sorted in place before deduplication
+ * @returns A new array containing the first occurrence of each dedupe key in sorted order.
+ */
 function sortedUniqueFindings(findings: Finding[]): Finding[] {
   findings.sort(
     (left, right) =>

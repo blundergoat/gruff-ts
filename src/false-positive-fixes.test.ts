@@ -1004,3 +1004,40 @@ test("T-10 public, protected, static and unparseable fields are not readonly can
   }
 `), []);
 });
+
+test("waste.unused-import handles inline type specifiers and aliases via AST without flagging the type keyword", () => {
+  // Inline type modifiers (`import { test, type TestContext }`) must resolve to the local binding,
+  // never the `type` keyword, and must still catch truly unused inline type imports even when
+  // another `type` keyword appears in the file.
+  const usedInlineReport = analyseFixture(`import { test, type TestContext } from "node:test";
+
+test("uses context", (context: TestContext) => {
+  void context;
+});
+`);
+  assert.deepEqual(
+    usedInlineReport.findings.filter((entry) => entry.ruleId === "waste.unused-import").map((entry) => entry.symbol),
+    [],
+  );
+
+  // Fixture purpose: mix used and unused inline type imports, aliases, and value imports alongside a local type keyword.
+  const mixedInlineReport = analyseFixture(`import {
+  usedHelper,
+  type UsedContract,
+  type UnusedContract,
+  type RawRecord as UnusedAlias,
+  type RawShape as UsedAlias,
+  unusedHelper,
+} from "./contracts";
+
+type LocalMarker = UsedContract | UsedAlias;
+
+export function run(input: LocalMarker): string {
+  return usedHelper(input);
+}
+`);
+  assert.deepEqual(
+    mixedInlineReport.findings.filter((entry) => entry.ruleId === "waste.unused-import").map((entry) => entry.symbol),
+    ["UnusedAlias", "UnusedContract", "unusedHelper"],
+  );
+});

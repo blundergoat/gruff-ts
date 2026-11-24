@@ -242,3 +242,49 @@ test("naming class-file mismatch requires one public declaration across export f
   }).findings.filter((finding) => finding.ruleId === "naming.class-file-mismatch");
   assert.deepEqual(acceptedPairFindings, []);
 });
+
+test("naming.short-variable exempts parameter t when typed as TestContext or inside a test file", () => {
+  const typedHelperReport = analyseFixture(`import { type TestContext } from "node:test";
+
+export function createFixture(t: TestContext, x: string): string {
+  t.after(() => {});
+  return x;
+}
+`, { fileName: "helpers/fixture.ts" });
+  assert.deepEqual(
+    typedHelperReport.findings.filter((entry) => entry.ruleId === "naming.short-variable").map((entry) => entry.symbol),
+    ["x"],
+  );
+
+  const testFileReport = analyseFixture(`function createFixture(t: unknown, q: string): string {
+  void t;
+  return q;
+}
+export const helperResult = createFixture(null, "ready");
+`, { fileName: "test/unit/fixture.test.ts" });
+  assert.deepEqual(
+    testFileReport.findings.filter((entry) => entry.ruleId === "naming.short-variable").map((entry) => entry.symbol),
+    ["q"],
+  );
+
+  const prodUntypedReport = analyseFixture(`export function computeOffset(t: number): number {
+  return t + 1;
+}
+`, { fileName: "src/offset.ts" });
+  assert.deepEqual(
+    prodUntypedReport.findings.filter((entry) => entry.ruleId === "naming.short-variable").map((entry) => entry.symbol),
+    ["t"],
+  );
+});
+
+test("naming.identifier-quality keeps flagging value as a placeholder identifier in 0.6.0", () => {
+  const report = analyseFixture(`export function recordEntry(value: string): string {
+  const temp = value.trim();
+  return temp;
+}
+`, { fileName: "src/record.ts" });
+  assert.deepEqual(
+    report.findings.filter((entry) => entry.ruleId === "naming.identifier-quality").map((entry) => entry.symbol),
+    ["value", "temp"],
+  );
+});

@@ -80,10 +80,15 @@ export function applyBaselineOptions(projectRoot: string, options: AnalysisOptio
   }
 }
 
-/*
+/**
  * Writes eligible baseline entries or carries forward matching reviews with --migrate-baseline while preserving the input file.
- * Uses projectRoot for relative paths, options for write and migration controls, and declarationPosition to locate enclosing declarations.
  * Stable contract: returns every finding with write metadata, zero suppressions, and an empty diagnostics list.
+ *
+ * @param projectRoot - Base directory used to resolve relative target and migration paths and format the output display path.
+ * @param options - Supplies the generate target path, optional migrate source path, and force-overwrite flag.
+ * @param findings - Findings to write or migrate and count for sensitive-data metadata.
+ * @param declarationPosition - Resolves enclosing declaration positions for stable baseline identities.
+ * @returns Every finding unchanged along with generated or migrated baseline metadata and an empty diagnostics list.
  */
 function generateBaselineResult(projectRoot: string, options: AnalysisOptions, findings: Finding[], declarationPosition: DeclarationPositionResolver): BaselineApplication {
   const baselinePath = absolutize(projectRoot, options.generateBaseline ?? DEFAULT_BASELINE);
@@ -136,8 +141,13 @@ function applySelectedBaseline(projectRoot: string, selected: BaselineSelection,
   };
 }
 
-// Returns a non-fatal diagnostic naming the colliding review's identity, rule, path, and reported subjects.
-// Under the baseline contract, findings sharing the identity stay visible, so their severities can still affect the run's result.
+/**
+ * Builds a non-fatal diagnostic for a baseline collision.
+ * Under the baseline contract, findings sharing the identity stay visible, so their severities can still affect the run's result.
+ *
+ * @param collision - Collision record providing the shared identity, rule ID, file path, and colliding subjects.
+ * @returns Non-fatal diagnostic naming the colliding review's identity, rule, path, and reported subjects.
+ */
 function collisionDiagnostic(collision: BaselineCollision): RunDiagnostic {
   return {
     diagnosticType: "baseline-collision",
@@ -147,9 +157,14 @@ function collisionDiagnostic(collision: BaselineCollision): RunDiagnostic {
   };
 }
 
-// Return the baseline path, source and display label selected by options, resolving relative paths against projectRoot.
-// Without an explicit path, select gruff-baseline.json only if it exists at projectRoot.
-// Return undefined otherwise. The no-baseline contract keeps all findings visible.
+/**
+ * Selects the baseline path, source, and display label from options, resolving relative paths against projectRoot.
+ * Without an explicit path, selects gruff-baseline.json only if it exists at projectRoot; the no-baseline contract keeps all findings visible.
+ *
+ * @param projectRoot - Base directory used to resolve explicit relative paths or locate the default baseline file.
+ * @param options - Supplies an optional explicit baseline path.
+ * @returns Selected baseline path, source, and display label, or undefined when no explicit path is set and no default file exists.
+ */
 function selectedBaseline(projectRoot: string, options: AnalysisOptions): BaselineSelection | undefined {
   if (options.baseline) {
     return { path: absolutize(projectRoot, options.baseline), source: "explicit", label: options.baseline };

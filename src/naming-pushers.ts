@@ -79,9 +79,14 @@ export function pushIdentifierQualityAt(file: SourceFile, line: number, name: st
   );
 }
 
-// Returns generic when the lowercased name is in placeholderNames. Otherwise checks for a numbered placeholder.
-// A numbered name ends in digits after a stem made of ASCII letters, underscores or dollar signs.
-// Returns numbered when that lowercased stem is in either placeholder set. Undefined means no identifier-quality advisory.
+/**
+ * Classifies an identifier as a generic or numbered placeholder; returns undefined when no identifier-quality advisory applies.
+ * A numbered name ends in digits after a stem made of ASCII letters, underscores or dollar signs.
+ *
+ * @param name - identifier checked lowercased against placeholderNames or split into a stem and trailing digits
+ * @param placeholderNames - configured placeholder names checked for full-name and lowercased stem matches
+ * @returns "generic" if lowercased name is in placeholderNames, "numbered" if its lowercased stem is in either placeholder set, or undefined.
+ */
 function identifierQualityVariant(name: string, placeholderNames: Set<string>): string | undefined {
   if (placeholderNames.has(name.toLowerCase())) {
     return "generic";

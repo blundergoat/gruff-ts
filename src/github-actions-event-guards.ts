@@ -17,9 +17,15 @@ type GuardOperand =
   | { kind: "literal"; result: string }
   | { kind: "truth"; result: GuardTruth };
 
-// Returns source line numbers in workflow YAML source covered by job or step guards proved false for every event in events.
-// Empty events, missing jobs, or structure rejected by the ownership scan return an empty set, leaving warnings in place.
-// Only a proved guard contributes a range. A proved job also covers steps whose own guards are unproven.
+/**
+ * Computes source line numbers in workflow YAML covered by job or step guards proved false for every event.
+ * Empty events, missing jobs, or structure rejected by the ownership scan yield an empty set, leaving warnings in place.
+ * Only a proved guard contributes a range, and a proved job also covers steps whose own guards are unproven.
+ *
+ * @param source - Workflow YAML file text to scan for job and step guards.
+ * @param events - Trigger event names to test against each guard condition.
+ * @returns Source line numbers inside proved unreachable job or step ranges.
+ */
 export function unreachableWorkflowSecretLines(source: string, events: readonly string[]): Set<number> {
   const root = guardOwnership(source);
   const unreachable = new Set<number>();
@@ -33,9 +39,15 @@ export function unreachableWorkflowSecretLines(source: string, events: readonly 
   return unreachable;
 }
 
-// Returns nothing and adds each qualifying step's own source-line range from job to unreachable.
-// A step qualifies when its guard rejects every event in events. With empty events, an if entry alone qualifies the step without evaluation.
-// Missing steps add nothing.
+/**
+ * Marks each qualifying step's own source-line range from `job` in `unreachable`.
+ * A step qualifies when its guard rejects every event, or when it has an `if` entry with empty events; missing steps add nothing.
+ *
+ * @param job - Job ownership node whose `steps` child sequence is inspected.
+ * @param events - Trigger event names tested against each step guard.
+ * @param unreachable - Collected unreachable lines updated in place with qualifying step source ranges.
+ * @returns Nothing. Adds each qualifying step's inclusive source-line range to `unreachable`.
+ */
 function markUnreachableSteps(job: GuardNode, events: readonly string[], unreachable: Set<number>): void {
   const steps = job.children.find((node) => node.key === "steps" && node.result === "");
   for (const step of steps?.children ?? []) {
@@ -43,21 +55,38 @@ function markUnreachableSteps(job: GuardNode, events: readonly string[], unreach
   }
 }
 
-// Returns whether node's direct-child if condition is provably false for every event in events.
-// A missing condition or any unknown result returns false; an existing condition with no events returns true.
-// Nested inputs and shell text cannot guard the node.
+/**
+ * Checks whether `node`'s direct-child `if` condition is provably false for every event.
+ * A missing condition or any unknown result fails the check; an existing condition with no events passes.
+ * Nested inputs and shell text cannot guard `node`.
+ *
+ * @param node - Job or step ownership node whose direct `if` child is evaluated.
+ * @param events - Trigger event names required to evaluate to false.
+ * @returns True only when a direct `if` condition exists and evaluates to false for every event.
+ */
 function guardRejectsEvents(node: GuardNode, events: readonly string[]): boolean {
   const condition = node.children.find((child) => child.key === "if" && !child.isItem)?.result;
   return condition !== undefined && events.every((event) => eventGuardTruth(condition, event) === false);
 }
 
-// Returns nothing and adds node's inclusive source-line range to lines, including references before its guard.
+/**
+ * Records `node`'s inclusive source-line range in `lines`, including references before its guard.
+ *
+ * @param node - Ownership node supplying the inclusive start and end line numbers.
+ * @param lines - Target collection updated in place with each covered line number.
+ * @returns Nothing. Adds every line from `node.start` through `node.end` to `lines`.
+ */
 function markGuardLines(node: GuardNode, lines: Set<number>): void {
   for (let line = node.start; line <= node.end; line++) lines.add(line);
 }
 
-// Returns raw YAML text without trailing whitespace or an unquoted comment, preserving hashes inside quoted spans.
-// Blank or comment-only input returns an empty string; an unterminated quoted span returns undefined, abandoning guard proof.
+/**
+ * Strips trailing whitespace and any unquoted YAML comment from `raw`, preserving hashes inside quoted spans.
+ * Blank or comment-only input yields an empty result; an unterminated quoted span abandons guard proof.
+ *
+ * @param raw - Single raw line of workflow YAML text.
+ * @returns Trimmed text without unquoted comments, or undefined when a quoted span is unterminated.
+ */
 function guardYamlText(raw: string): string | undefined {
   for (let index = 0; index < raw.length; index++) {
     const char = raw[index];
@@ -72,8 +101,13 @@ function guardYamlText(raw: string): string | undefined {
   return raw.trimEnd();
 }
 
-// Builds an ownership tree from workflow YAML source so late job and step guards also cover earlier references.
-// Returns the root, or undefined when the scan detects unsupported or ambiguous structure, so callers retain warnings.
+/**
+ * Builds an ownership tree from workflow YAML `source` so late job and step guards also cover earlier references.
+ * Aborts on tabs before content, malformed quotes, or ambiguous structure so callers retain warnings.
+ *
+ * @param source - Complete workflow YAML document text.
+ * @returns Root ownership node, or undefined when the scan detects unsupported or ambiguous structure.
+ */
 function guardOwnership(source: string): GuardNode | undefined {
   const lines = source.split(/\r?\n/);
   const root: GuardNode = { key: "", result: "", indent: -1, start: 1, end: lines.length, isItem: false, children: [] };
@@ -98,9 +132,18 @@ function guardOwnership(source: string): GuardNode | undefined {
   return root;
 }
 
-// Pops entries from stack at or deeper than indent, updating their end lines from zero-based index; total is the source line count.
-// Without a prefix, returns the mapping parent. A dash adds the returned item to the parent's children and pushes it onto stack.
-// Returns undefined for a missing or scalar-valued parent or mixed child kinds to avoid guessing line ownership.
+/**
+ * Pops entries from `stack` at or deeper than `indent`, closing their end lines from `index`, and resolves the active parent.
+ * Without `prefix`, returns the mapping parent; a dash adds a new sequence item to its parent's children and pushes it onto `stack`.
+ * Rejects a missing or scalar-valued parent or mixed child kinds to avoid guessing line ownership.
+ *
+ * @param stack - Open ownership ancestor stack mutated by closing deeper nodes and pushing new sequence items.
+ * @param indent - Leading space count of the current YAML line.
+ * @param index - Zero-based line index of the current YAML line.
+ * @param prefix - Optional sequence dash marker preceding the entry on the line.
+ * @param total - Total line count of the YAML document used as the initial end line.
+ * @returns Active parent or newly pushed sequence item, or undefined on invalid parent or mixed child kinds.
+ */
 function guardParent(stack: GuardNode[], indent: number, index: number, prefix: string | undefined, total: number): GuardNode | undefined {
   while (stack.length > 1 && (stack.at(-1)?.indent ?? -1) >= indent) {
     const closed = stack.pop();
@@ -116,9 +159,18 @@ function guardParent(stack: GuardNode[], indent: number, index: number, prefix: 
   return stepItem;
 }
 
-// Parses text under parent; indent is its source depth, index its zero-based line, total the line count, and prefix an optional sequence marker.
-// Adds and returns a child node, or stores a non-key sequence value in parent.result and returns parent.
-// Returns undefined for anchor or alias patterns even in quotes, merge or duplicate keys, or unsupported mapping entries to avoid false proof.
+/**
+ * Parses `text` under `parent`, adding a mapping child node or storing a non-key sequence value in `parent.result`.
+ * Rejects anchor or alias patterns even in quotes, merge or duplicate keys, or unsupported entries to avoid false proof.
+ *
+ * @param parent - Enclosing mapping or sequence-item node receiving the parsed entry.
+ * @param text - Trimmed line text with unquoted comments removed.
+ * @param prefix - Optional sequence dash marker stripped before matching a mapping key.
+ * @param indent - Leading space count of the line before any sequence prefix.
+ * @param index - Zero-based line index of the current YAML line.
+ * @param total - Total line count of the YAML document used as the child's initial end line.
+ * @returns Newly created child node, `parent` for a plain sequence scalar, or undefined on unsupported syntax.
+ */
 function guardEntry(parent: GuardNode, text: string, prefix: string | undefined, indent: number, index: number, total: number): GuardNode | undefined {
   if (/(?:^|\s)[&*][A-Za-z0-9_-]+/.test(text)) return undefined;
   const entry = text.slice(prefix?.length ?? 0).match(/^(?:([A-Za-z0-9_.-]+)|'([^']+)'|"([^"\\]+)"|(<<)):\s*(.*)$/);
@@ -136,9 +188,13 @@ function guardEntry(parent: GuardNode, text: string, prefix: string | undefined,
   return node;
 }
 
-// Returns guard tokens after decoding supported YAML quoting and an enclosing expression wrapper from yamlValue.
-// Malformed quoting or wrappers, unsupported syntax, or too many tokens return undefined; empty input returns an empty array.
-// An absent token result cannot justify suppressing a warning, so malformed double-quoted values need no separate JSON parse log.
+/**
+ * Decodes supported YAML quoting and an enclosing `${{ ... }}` wrapper from `yamlValue`, then tokenizes the expression.
+ * An absent token result cannot justify suppressing a warning, so malformed double-quoted values need no separate JSON parse log.
+ *
+ * @param yamlValue - Raw YAML scalar text from a job or step `if` field.
+ * @returns Guard tokens, an empty list for empty input, or undefined on malformed quoting, wrappers, or unsupported syntax.
+ */
 function guardTokens(yamlValue: string): string[] | undefined {
   let expression = yamlValue.trim();
   if (expression.startsWith('"')) {
@@ -159,8 +215,12 @@ function guardTokens(yamlValue: string): string[] | undefined {
   return tokenizeGuard(expression);
 }
 
-// Splits expression into supported guard tokens, omitting whitespace, to bound the work of recursive parsing.
-// Returns the tokens, an empty array for whitespace-only input, or undefined for unsupported syntax or more than 128 tokens.
+/**
+ * Splits `expression` into supported guard tokens while omitting whitespace to bound the work of recursive parsing.
+ *
+ * @param expression - Unwrapped expression body to scan sequentially.
+ * @returns Guard tokens, an empty list for whitespace-only input, or undefined on unsupported syntax or over 128 tokens.
+ */
 function tokenizeGuard(expression: string): string[] | undefined {
   const tokens: string[] = [];
   while (expression) {
@@ -173,19 +233,32 @@ function tokenizeGuard(expression: string): string[] | undefined {
   return tokens;
 }
 
-// Evaluates the workflow if value in yamlValue for the GitHub event named by event.
-// Returns true or false when proved, or undefined for empty input, invalid syntax or an undecided guard.
-// Complete parsing is required because false AND a malformed expression must retain the warning.
+/**
+ * Evaluates the workflow `if` value in `yamlValue` for the GitHub event named by `event`.
+ * Complete parsing is required because false AND a malformed expression must retain the warning.
+ *
+ * @param yamlValue - Raw YAML `if` expression value to tokenize and parse.
+ * @param event - GitHub Actions event name compared against `github.event_name`.
+ * @returns True or false when proved for `event`, or undefined for empty input, invalid syntax, or an undecided guard.
+ */
 function eventGuardTruth(yamlValue: string, event: string): GuardTruth {
   const tokens = guardTokens(yamlValue) ?? [];
   if (tokens.length === 0) return undefined;
   let position = 0;
   let isValid = true;
-  // Returns the boolean result carried by operand, or undefined for unknown truth, an event marker or a string literal.
+  /**
+   * Extracts the proved boolean truth carried by `operand`, discarding non-boolean operands.
+   *
+   * @param operand - Parsed guard operand (event marker, literal, or truth value).
+   * @returns Proved boolean result from `operand`, or undefined for unknown truth, an event marker, or a literal.
+   */
   const truth = (operand: GuardOperand): GuardTruth => operand.kind === "truth" ? operand.result : undefined;
-  // Consumes the next operand from tokens, advancing position and marking isValid false for invalid syntax.
-  // Returns an event marker, decoded string literal, or three-valued truth operand; undefined truth means no proof.
-  // Negation binds before equality, and parentheses parse a complete nested expression.
+  /**
+   * Consumes the next operand from `tokens`, advancing `position` and marking `isValid` false on invalid syntax.
+   * Negation binds before equality, and parentheses parse a complete nested expression.
+   *
+   * @returns Event marker, decoded literal, or three-valued truth operand where undefined truth means no proof.
+   */
   function unary(): GuardOperand {
     const token = tokens[position++];
     if (token === "!") {
@@ -202,9 +275,12 @@ function eventGuardTruth(yamlValue: string, event: string): GuardTruth {
     if (!token || !/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(token)) isValid = false;
     return { kind: "truth", result: undefined };
   }
-  // Consumes one comparison from tokens, advancing position and propagating syntax failures to isValid.
-  // Returns a case-insensitive equality or inequality result for an event and string literal. A lone operand keeps its known truth.
-  // Returns undefined for a lone operand without known truth or an unsupported pair, leaving the comparison undecided.
+  /**
+   * Consumes one comparison from `tokens`, advancing `position` and propagating syntax failures to `isValid`.
+   * A lone operand keeps its known truth; unsupported pairs leave the comparison undecided.
+   *
+   * @returns Case-insensitive equality or inequality result for an event and literal, lone operand truth, or undefined.
+   */
   function comparison(): GuardTruth {
     const left = unary();
     const operator = tokens[position];
@@ -217,8 +293,12 @@ function eventGuardTruth(yamlValue: string, event: string): GuardTruth {
     const equal = event.toLowerCase() === literal.result.toLowerCase();
     return operator === "==" ? equal : !equal;
   }
-  // Consumes an AND expression from tokens, advancing position and propagating invalid operands to isValid.
-  // Returns false if any term is false, true if all are true, otherwise undefined; every term is parsed to detect malformed syntax.
+  /**
+   * Consumes an AND expression from `tokens`, advancing `position` and propagating invalid operands to `isValid`.
+   * Every term is parsed to detect malformed syntax even when an earlier term is already false.
+   *
+   * @returns False if any term is false, true if all terms are true, or undefined otherwise.
+   */
   function conjunction(): GuardTruth {
     let result = comparison();
     while (tokens[position] === "&&") {
@@ -228,8 +308,12 @@ function eventGuardTruth(yamlValue: string, event: string): GuardTruth {
     }
     return result;
   }
-  // Consumes an OR expression from tokens, advancing position and propagating invalid operands to isValid.
-  // Returns true if any term is true, false if all are false, otherwise undefined; every term is parsed to detect malformed syntax.
+  /**
+   * Consumes an OR expression from `tokens`, advancing `position` and propagating invalid operands to `isValid`.
+   * Every term is parsed to detect malformed syntax even when an earlier term is already true.
+   *
+   * @returns True if any term is true, false if all terms are false, or undefined otherwise.
+   */
   function disjunction(): GuardTruth {
     let result = conjunction();
     while (tokens[position] === "||") {

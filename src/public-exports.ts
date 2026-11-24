@@ -70,8 +70,12 @@ export function publicExportDeclarations(parsed: ParsedScript): PublicExportDecl
   return [...publicDeclarations.values()].sort(comparePublicDeclarations);
 }
 
-// Indexes sourceFile's supported named top-level declarations by local name before export statements are resolved.
-// Returns an empty map when the source has no supported named declarations.
+/**
+ * Indexes supported named top-level declarations by local name before export statements are resolved.
+ *
+ * @param sourceFile - Parsed TypeScript syntax tree whose top-level statements are indexed.
+ * @returns Map of local names to declarations; empty when the source has no supported named declarations.
+ */
 function localDeclarationIndex(sourceFile: TsSourceFile): Map<string, PublicExportDeclaration> {
   const declarations = new Map<string, PublicExportDeclaration>();
   // A named export can precede the declaration it exposes, so index the whole module before resolving exports.
@@ -91,8 +95,14 @@ function localDeclarationIndex(sourceFile: TsSourceFile): Map<string, PublicExpo
   return declarations;
 }
 
-// Uses sourceFile for source anchors and inspects statement for a supported declaration with an export modifier.
-// Returns nothing. Adds a qualifying declaration to publicDeclarations and leaves the map alone otherwise.
+/**
+ * Collects a directly exported supported declaration from a top-level statement.
+ *
+ * @param sourceFile - Parsed syntax tree used to compute source line anchors.
+ * @param statement - Top-level statement inspected for a supported declaration with an export modifier.
+ * @param publicDeclarations - Destination map updated with any qualifying declaration.
+ * @returns Nothing. Adds a qualifying declaration to `publicDeclarations` and leaves the map alone otherwise.
+ */
 function collectDirectExport(sourceFile: TsSourceFile, statement: TsStatement, publicDeclarations: Map<string, PublicExportDeclaration>): void {
   const declaration = supportedDeclaration(sourceFile, statement);
   // A separate export list can expose a declaration that has no export modifier.
@@ -102,8 +112,15 @@ function collectDirectExport(sourceFile: TsSourceFile, statement: TsStatement, p
   addPublicDeclaration(publicDeclarations, declaration);
 }
 
-// Resolves statement against localDeclarations and adds public entries to publicDeclarations for class/file naming diagnostics.
-// Returns nothing. Uses sourceFile for export anchors and records external or unresolved names as re-exports to avoid sole-class advice.
+/**
+ * Resolves named, namespace, wildcard, and external exports for class/file naming diagnostics.
+ *
+ * @param sourceFile - Parsed syntax tree used for export line anchors.
+ * @param statement - Export declaration statement to resolve.
+ * @param localDeclarations - Index of local top-level declarations keyed by local name.
+ * @param publicDeclarations - Destination map updated with resolved local or re-export entries.
+ * @returns Nothing. Records local entries or external and unresolved names as re-exports to avoid sole-class advice.
+ */
 function collectNamedOrExternalExport(sourceFile: TsSourceFile, statement: TsExportDeclaration, localDeclarations: Map<string, PublicExportDeclaration>, publicDeclarations: Map<string, PublicExportDeclaration>): void {
   const exportLine = sourceLine(sourceFile, statement);
   const exportClause = statement.exportClause;
@@ -131,9 +148,16 @@ function collectNamedOrExternalExport(sourceFile: TsSourceFile, statement: TsExp
   }
 }
 
-// Returns nothing. Resolves statement's default or export-equals assignment via localDeclarations and adds the result to publicDeclarations.
-// sourceFile supplies source anchors; a locally resolved identifier retains its declaration kind, name, and line.
-// Unresolved identifiers and expressions use one default or export-equals placeholder anchored at the assignment.
+/**
+ * Resolves a default or export-equals assignment so locally resolved identifiers retain their declaration kind, name, and line.
+ * Unresolved identifiers and expressions record a default or export-equals placeholder anchored at the assignment.
+ *
+ * @param sourceFile - Parsed syntax tree supplying source line anchors.
+ * @param statement - Export assignment statement (`export default` or `export =`) to resolve.
+ * @param localDeclarations - Index of local declarations used to resolve exported identifiers.
+ * @param publicDeclarations - Destination map updated with the resolved entry or placeholder.
+ * @returns Nothing. Adds the locally resolved declaration or a default/export-equals placeholder to `publicDeclarations`.
+ */
 function collectExportAssignment(sourceFile: TsSourceFile, statement: TsExportAssignment, localDeclarations: Map<string, PublicExportDeclaration>, publicDeclarations: Map<string, PublicExportDeclaration>): void {
   const localDeclaration = typescriptSyntax.isIdentifier(statement.expression) ? localDeclarations.get(statement.expression.text) : undefined;
   // A named local class exported as default must retain its class name and declaration anchor.
@@ -147,8 +171,14 @@ function collectExportAssignment(sourceFile: TsSourceFile, statement: TsExportAs
   addPublicDeclaration(publicDeclarations, unresolvedExport);
 }
 
-// Returns the supported statement's kind, name, and starting line from sourceFile for class/file naming diagnostics.
-// Returns undefined for unsupported statements or declarations without a usable name; anonymous defaults use the name default.
+/**
+ * Extracts a supported statement's kind, name, and starting line for class/file naming diagnostics.
+ * Anonymous default declarations use the placeholder name `default`.
+ *
+ * @param sourceFile - Parsed syntax tree supplying source line positions.
+ * @param statement - Top-level statement to inspect.
+ * @returns Declaration metadata, or undefined for unsupported statements or declarations without a usable name.
+ */
 function supportedDeclaration(sourceFile: TsSourceFile, statement: TsStatement): PublicExportDeclaration | undefined {
   // Other top-level statements, such as imports and exported constants, do not enter this policy slice.
   if (!isSupportedDeclaration(statement)) {
@@ -164,7 +194,12 @@ function supportedDeclaration(sourceFile: TsSourceFile, statement: TsStatement):
   return { kind, name, line: sourceLine(sourceFile, statement) };
 }
 
-// Narrows top-level syntax to the declaration forms named by the class/file rule policy.
+/**
+ * Narrows top-level syntax to the declaration forms named by the class/file rule policy.
+ *
+ * @param statement - Top-level AST statement to check.
+ * @returns True when `statement` is a supported class, interface, type alias, enum, or function declaration.
+ */
 function isSupportedDeclaration(statement: TsStatement): statement is SupportedDeclaration {
   return typescriptSyntax.isClassDeclaration(statement)
     || typescriptSyntax.isInterfaceDeclaration(statement)
@@ -173,7 +208,12 @@ function isSupportedDeclaration(statement: TsStatement): statement is SupportedD
     || typescriptSyntax.isFunctionDeclaration(statement);
 }
 
-// Converts a narrowed syntax declaration to the stable lowercase metadata category.
+/**
+ * Converts a narrowed syntax declaration to the stable lowercase metadata category.
+ *
+ * @param declaration - Narrowed supported AST declaration.
+ * @returns Stable lowercase kind string (`class`, `interface`, `type`, `enum`, or `function`).
+ */
 function supportedDeclarationKind(declaration: SupportedDeclaration): Exclude<PublicExportKind, "default" | "re-export"> {
   // The class/file rule uses this category to recognize a sole public class.
   if (typescriptSyntax.isClassDeclaration(declaration)) {
@@ -191,15 +231,27 @@ function supportedDeclarationKind(declaration: SupportedDeclaration): Exclude<Pu
   return "function";
 }
 
-// Returns whether statement has modifierKind, using the syntax API to support declaration checks across statement kinds.
+/**
+ * Checks whether a statement carries a given TypeScript modifier using the syntax API.
+ *
+ * @param statement - Top-level statement whose modifiers are inspected.
+ * @param modifierKind - TypeScript syntax kind of the modifier to look up.
+ * @returns True when `statement` can have modifiers and includes `modifierKind`.
+ */
 function hasModifier(statement: TsStatement, modifierKind: import("typescript").SyntaxKind): boolean {
   // Statement kinds without modifier storage behave as an empty modifier list for the user.
   const modifiers = typescriptSyntax.canHaveModifiers(statement) ? typescriptSyntax.getModifiers(statement) : undefined;
   return modifiers?.some((modifier) => modifier.kind === modifierKind) === true;
 }
 
-// Adds declaration to publicDeclarations by kind/name key. Repeated aliases and same-kind merged declarations stay one
-// public item, with the earliest source anchor retained for deterministic user output. Returns nothing.
+/**
+ * Records a public declaration keyed by kind and name, keeping the earliest source anchor for deterministic user output.
+ * Repeated aliases and same-kind merged declarations stay one public item.
+ *
+ * @param publicDeclarations - Destination map of public declarations keyed by `kind:name`.
+ * @param declaration - Candidate public declaration to insert if unseen or earlier in source order.
+ * @returns Nothing. Updates `publicDeclarations` only when the key is new or `declaration.line` is earlier.
+ */
 function addPublicDeclaration(publicDeclarations: Map<string, PublicExportDeclaration>, declaration: PublicExportDeclaration): void {
   const key = `${declaration.kind}:${declaration.name}`;
   const existingDeclaration = publicDeclarations.get(key);
@@ -209,12 +261,24 @@ function addPublicDeclaration(publicDeclarations: Map<string, PublicExportDeclar
   }
 }
 
-// Returns statement's one-based starting line in sourceFile for the public export inventory and class/file finding anchors.
+/**
+ * Computes a statement's one-based starting line for the public export inventory and class/file finding anchors.
+ *
+ * @param sourceFile - Parsed syntax tree containing the statement.
+ * @param statement - AST statement whose starting line is measured.
+ * @returns One-based line number of `statement`'s start position.
+ */
 function sourceLine(sourceFile: TsSourceFile, statement: TsStatement): number {
   return sourceFile.getLineAndCharacterOfPosition(statement.getStart(sourceFile)).line + 1;
 }
 
-// Returns a negative, zero, or positive comparison for left versus right, ordered by kind:name then line for stable export output.
+/**
+ * Compares two public declarations by `kind:name` and then starting line for stable export output.
+ *
+ * @param left - First public declaration to compare.
+ * @param right - Second public declaration to compare.
+ * @returns Negative, zero, or positive comparison value for sorting `left` relative to `right`.
+ */
 function comparePublicDeclarations(left: PublicExportDeclaration, right: PublicExportDeclaration): number {
   const labelOrder = `${left.kind}:${left.name}`.localeCompare(`${right.kind}:${right.name}`);
   return labelOrder || left.line - right.line;

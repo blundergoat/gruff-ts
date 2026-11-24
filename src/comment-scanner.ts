@@ -26,8 +26,12 @@ interface CommentScanState {
 
 type CommentScanHandler = (source: string, index: number, state: CommentScanState, records: CommentRecord[]) => number | undefined;
 
-// Scans a file's source text and returns comment records in source order for checks that inspect comment text and locations.
-// The result is empty when the lexer recognises no source comments.
+/**
+ * Scans a file's source text and collects comment records in source order for checks that inspect comment text and locations.
+ *
+ * @param source - the whole file text to scan for line and block comments
+ * @returns comment records in source order, or an empty array when the lexer recognises no source comments
+ */
 export function commentRecords(source: string): CommentRecord[] {
   const records: CommentRecord[] = [];
   const state = initialCommentScanState();
@@ -289,9 +293,14 @@ function updateCommentScanPreviousCode(state: CommentScanState, character: strin
   }
 }
 
-// Computes the next quote and escape flags for one character inside a string or template.
-// The quote is the opening delimiter, and the incoming escape flag says whether the current character is escaped.
-// An unescaped matching delimiter yields an undefined quote, so the caller resumes scanning outside the literal.
+/**
+ * Computes the next quote and escape flags for one character inside a string or template.
+ *
+ * @param character - current source character inside the quoted literal
+ * @param quote - opening delimiter of the active string or template literal
+ * @param isEscaped - whether the current character is escaped by a preceding backslash
+ * @returns updated quote and escape flags; an unescaped matching delimiter yields an undefined quote so scanning resumes outside the literal
+ */
 function scanQuotedCommentCharacter(character: string, quote: string, isEscaped: boolean): { quote: string | undefined; isEscaped: boolean } {
   if (isEscaped) {
     return { quote, isEscaped: false };
@@ -305,8 +314,14 @@ function scanQuotedCommentCharacter(character: string, quote: string, isEscaped:
   return { quote, isEscaped: false };
 }
 
-// Computes the next regex state from the current character, whether it is escaped, and whether it is in a character class.
-// Returns the open, escape, and character-class flags. An unescaped slash outside a class closes the regex.
+/**
+ * Computes the next regex state from one character inside a regex literal.
+ *
+ * @param character - current source character inside the regex literal
+ * @param isEscaped - whether the current character is escaped by a preceding backslash
+ * @param isCharClass - whether the scanner is currently inside a `[...]` character class
+ * @returns updated open, escape, and character-class flags; an unescaped slash outside a class closes the regex
+ */
 function scanRegexCommentCharacter(character: string, isEscaped: boolean, isCharClass: boolean): { isRegex: boolean; isEscaped: boolean; isCharClass: boolean } {
   if (isEscaped) {
     return { isRegex: true, isEscaped: false, isCharClass };
@@ -326,15 +341,25 @@ function scanRegexCommentCharacter(character: string, isEscaped: boolean, isChar
   return { isRegex: true, isEscaped: false, isCharClass };
 }
 
-// Returns whether to open a regex literal using the last code character and the available source text before the slash.
-// With no previous code character, the lexer treats the slash as a regex start.
-// This mirrors the masking pass and keeps the comment lexer independent of it.
+/**
+ * Determines whether a slash opens a regex literal, mirroring the masking pass to keep the comment lexer independent.
+ *
+ * @param previousCode - last non-whitespace code character before the slash, or empty when none was seen yet
+ * @param beforeSlash - available source slice immediately preceding the slash, checked for a trailing `return` keyword
+ * @returns true when `previousCode` is empty or a regex-preceding token, or `beforeSlash` ends with `return`; false otherwise
+ */
 function isCommentRegexStart(previousCode: string, beforeSlash: string): boolean {
   return previousCode === "" || "([{=,:!&|?;".includes(previousCode) || /\breturn$/.test(beforeSlash.trimEnd());
 }
 
-// Builds a record for the line comment at the opener offset in the source, using the supplied one-based line number for both line bounds.
-// Trims the body for rule comparisons. The exclusive end offset is the newline's index or the source length if there is no newline.
+/**
+ * Builds a record for a line comment at its opener offset and trims its body for rule comparisons.
+ *
+ * @param source - whole file text being scanned
+ * @param startIndex - zero-based offset of the `//` opener in `source`
+ * @param line - one-based line number used for both `line` and `endLine`
+ * @returns line comment record whose exclusive `endIndex` is the newline index, or `source.length` when no newline follows
+ */
 function lineCommentRecord(source: string, startIndex: number, line: number): CommentRecord {
   const newline = source.indexOf("\n", startIndex + 2);
   const endIndex = newline === -1 ? source.length : newline;
@@ -348,9 +373,14 @@ function lineCommentRecord(source: string, startIndex: number, line: number): Co
   };
 }
 
-// Builds a record for the block comment at the opener offset in the source, using the supplied one-based line number.
-// The text drops leading asterisks so the same prose compares equally in JSDoc and plain blocks.
-// The end index points to the closer's last character, or the final source character when no closer is found.
+/**
+ * Builds a record for a block comment, dropping leading asterisks so prose compares equally in JSDoc and plain blocks.
+ *
+ * @param source - whole file text being scanned
+ * @param startIndex - zero-based offset of the block comment opener in `source`
+ * @param line - one-based line number of the opener
+ * @returns block comment record whose `endIndex` points to the closer's last character, or the final source character when unclosed
+ */
 function blockCommentRecord(source: string, startIndex: number, line: number): CommentRecord {
   let endIndex = source.length - 1;
   let endLine = line;
@@ -373,8 +403,12 @@ function blockCommentRecord(source: string, startIndex: number, line: number): C
   };
 }
 
-// Returns comparison text from a delimiter-free block comment body by removing leading asterisks and joining nonblank lines.
-// A body containing only decoration and whitespace yields an empty string.
+/**
+ * Extracts comparison text from a delimiter-free block comment body by removing leading asterisks and joining nonblank lines.
+ *
+ * @param text - block comment body with opening and closing delimiters already removed
+ * @returns normalized space-joined prose, or an empty string when the body contains only decoration and whitespace
+ */
 function normalizedBlockCommentText(text: string): string {
   return text
     .split(/\r?\n/)
@@ -384,9 +418,13 @@ function normalizedBlockCommentText(text: string): string {
     .trim();
 }
 
-// Reads consecutive line comments as one maintainer comment while keeping the final record's source position.
-// Pass comments in source order so context on earlier lines of the header still counts.
-// A block comment or a final record absent from the supplied list is returned unchanged.
+/**
+ * Reads consecutive line comments as one maintainer comment while keeping the final record's source position.
+ *
+ * @param comments - comment records in source order so context on earlier lines of the header still counts
+ * @param finalComment - trailing comment record whose contiguous preceding line comments should be merged
+ * @returns merged comment record anchored at `finalComment`, or `finalComment` unchanged if it is a block comment or absent from `comments`
+ */
 export function combinedContextLineComment(comments: CommentRecord[], finalComment: CommentRecord): CommentRecord {
   if (finalComment.kind !== "line") {
     return finalComment;
@@ -411,13 +449,24 @@ export function combinedContextLineComment(comments: CommentRecord[], finalComme
   return { ...finalComment, text };
 }
 
-// Splits the file text and returns whether there is usable leading comment text above the one-based declaration line.
+/**
+ * Splits file text into lines and checks whether usable leading comment text precedes a declaration line.
+ *
+ * @param source - whole file text to split on line breaks
+ * @param line - one-based line number of the declaration
+ * @returns true when a nonblank comment with usable text precedes `line`, otherwise false
+ */
 export function hasLeadingCommentBeforeLine(source: string, line: number): boolean {
   return hasLeadingCommentBeforeLines(source.split(/\r?\n/), line);
 }
 
-// Checks the source lines above a one-based declaration line, skipping blank padding.
-// Returns true if the preceding nonblank line yields comment text and false if there is no usable text.
+/**
+ * Checks source lines above a declaration line, skipping blank padding, for a usable leading comment.
+ *
+ * @param lines - source file split into zero-based lines
+ * @param line - one-based line number of the declaration
+ * @returns true if the nearest preceding nonblank line yields comment text, and false if there is no usable text
+ */
 export function hasLeadingCommentBeforeLines(lines: string[], line: number): boolean {
   let index = line - 2;
   while (index >= 0 && (lines[index] ?? "").trim() === "") {
@@ -426,8 +475,13 @@ export function hasLeadingCommentBeforeLines(lines: string[], line: number): boo
   return index >= 0 && commentTextAtLine(lines, index) !== undefined;
 }
 
-// Checks the source lines above the one-based function declaration line for text that counts as its own documentation.
-// Skips blank lines and returns false if there is no comment text or the comment is a section divider or file overview.
+/**
+ * Checks source lines above a function declaration for leading text that counts as its own documentation.
+ *
+ * @param lines - source file split into zero-based lines
+ * @param line - one-based line number of the function declaration
+ * @returns false when blank-skipped preceding text is missing or is a section divider or file overview, otherwise true
+ */
 export function hasFunctionLeadingCommentBeforeLines(lines: string[], line: number): boolean {
   let endIndex = line - 2;
   while (endIndex >= 0 && (lines[endIndex] ?? "").trim() === "") {
@@ -439,8 +493,13 @@ export function hasFunctionLeadingCommentBeforeLines(lines: string[], line: numb
   return !isOverviewOrDividerCommentAt(lines, commentStartIndex(lines, endIndex), endIndex, line - 1);
 }
 
-// The opener line of the comment that ends on `endIndex`: the line itself for `//` and one-line
-// `/* */` comments, else the nearest `/*` above a `*/` closer.
+/**
+ * Finds the opener line of the comment ending on `endIndex` (the same line for `//` and single-line blocks, else the nearest `/*` above).
+ *
+ * @param lines - source file split into zero-based lines
+ * @param endIndex - zero-based line index where the comment ends
+ * @returns zero-based line index of the comment opener, or `endIndex` if no opener line is found above
+ */
 function commentStartIndex(lines: string[], endIndex: number): number {
   for (let index = endIndex; index >= 0; index -= 1) {
     const trimmedLine = (lines[index] ?? "").trim();
@@ -451,17 +510,26 @@ function commentStartIndex(lines: string[], endIndex: number): number {
   return endIndex;
 }
 
-// Returns true for a section divider or a file-opening comment with a file-level tag or a blank gap before the declaration.
-// Supply the source file's lines from the beginning so earlier code can rule out a file overview.
-// startIndex and endIndex are the zero-based inclusive comment bounds. declarationIndex marks the declaration and bounds the gap.
+/**
+ * Checks whether a comment is a section divider or a file-opening overview rather than declaration documentation.
+ *
+ * @param lines - source file lines from the beginning so earlier code can rule out a file overview
+ * @param startIndex - zero-based inclusive start line index of the comment
+ * @param endIndex - zero-based inclusive end line index of the comment
+ * @param declarationIndex - zero-based line index of the following declaration, bounding the gap lines
+ * @returns true for a section divider or a file-opening comment with a file-level tag or a blank gap before the declaration
+ */
 export function isOverviewOrDividerCommentAt(lines: string[], startIndex: number, endIndex: number, declarationIndex: number): boolean {
   const commentText = lines.slice(startIndex, endIndex + 1).join("\n");
   return isDividerComment(commentText) || (isFileOverviewComment(commentText, lines.slice(endIndex + 1, declarationIndex)) && isFileOpeningLine(lines, startIndex));
 }
 
-// A one-line comment whose text opens with a run of three or more `-`, `=`, `*`, `_`, `#`, `~`, `+`
-// or `/`, such as `// ---- helpers` or `/* ==== */`, divides sections; it does not describe the
-// function below it.
+/**
+ * Detects one-line section-divider comments (such as `// ---- helpers` or a `====` block comment) that do not describe the function below.
+ *
+ * @param commentText - raw comment text across one or more source lines
+ * @returns true when `commentText` is a single line opening with three or more `-`, `=`, `*`, `_`, `#`, `~`, `+`, or `/` characters
+ */
 export function isDividerComment(commentText: string): boolean {
   if (commentText.includes("\n")) {
     return false;
@@ -470,14 +538,24 @@ export function isDividerComment(commentText: string): boolean {
   return /^[-=*_#~+/]{3,}/.test(text);
 }
 
-// Returns true when the comment text has a file-level tag or the lines before the next declaration contain a blank separator.
-// The caller checks whether the comment is at the file opening before treating it as an overview.
+/**
+ * Determines whether a comment looks like a file overview (the caller separately checks that it sits at the file opening).
+ *
+ * @param commentText - raw comment text checked for file-level JSDoc tags
+ * @param gapLines - source lines between the end of the comment and the next declaration
+ * @returns true when `commentText` has a file-level tag or `gapLines` contains a blank separator line
+ */
 export function isFileOverviewComment(commentText: string, gapLines: string[]): boolean {
   return gapLines.some((gapLine) => gapLine.trim() === "") || /@(?:file|fileoverview|overview|packageDocumentation|module|license)\b/.test(commentText);
 }
 
-// True when only a shebang, blank lines and other comments come before line `startIndex`, so a
-// comment that starts there opens the file. Stops at the first code line.
+/**
+ * Checks whether a comment at `startIndex` opens the file, stopping as soon as any preceding code line appears.
+ *
+ * @param lines - source file split into zero-based lines
+ * @param startIndex - zero-based start line index of the comment being tested
+ * @returns true when only a shebang, blank lines, and earlier comments precede `startIndex`; false if code appears first
+ */
 function isFileOpeningLine(lines: string[], startIndex: number): boolean {
   let isInBlockComment = false;
   for (let index = 0; index < startIndex; index += 1) {
@@ -493,8 +571,13 @@ function isFileOpeningLine(lines: string[], startIndex: number): boolean {
   return true;
 }
 
-// Returns text at the given source line index from a leading line comment or block opener, or a block closer at the end of the trimmed line.
-// Block extraction drops tag lines. Returns undefined if no text remains, if an opener has no closer or if the line has no comment to extract.
+/**
+ * Extracts comment prose at a source line from a line comment, block opener, or trailing block closer, dropping block tag lines.
+ *
+ * @param lines - source file split into zero-based lines
+ * @param index - zero-based line index to inspect
+ * @returns extracted comment text, or undefined when no text remains, an opener lacks a closer, or the line has no comment
+ */
 export function commentTextAtLine(lines: string[], index: number): string | undefined {
   const trimmedLine = (lines[index] ?? "").trim();
   if (trimmedLine.startsWith("//")) {
@@ -510,9 +593,13 @@ export function commentTextAtLine(lines: string[], index: number): string | unde
   return undefined;
 }
 
-// Walks upward from a `*/` closer to its matching `/*` opener, then delegates to
-// `blockCommentText` to extract the joined body. Used when a declaration's leading comment is a
-// block comment whose closer sits on the line above the declaration.
+/**
+ * Walks upward from a block closer to its matching opener and extracts the joined body for a leading declaration comment.
+ *
+ * @param lines - source file split into zero-based lines
+ * @param endIndex - zero-based line index ending with the block comment closer
+ * @returns extracted block comment text from `blockCommentText`, or undefined if no matching opener line is found
+ */
 function blockCommentTextEndingAt(lines: string[], endIndex: number): string | undefined {
   for (let index = endIndex; index >= 0; index -= 1) {
     if ((lines[index] ?? "").trim().startsWith("/*")) {
@@ -522,9 +609,14 @@ function blockCommentTextEndingAt(lines: string[], endIndex: number): string | u
   return undefined;
 }
 
-// Extracts text from the source lines beginning at the block opener index, removing delimiters, leading asterisks, and tag lines.
-// The remaining lines are trimmed and joined with spaces. A supplied closer index skips the search for the end of the block.
-// Returns undefined if the search finds no closer or no text remains for the documentation checks.
+/**
+ * Extracts space-joined prose from a block comment starting at `startIndex`, stripping delimiters, leading asterisks, and tag lines.
+ *
+ * @param lines - source file split into zero-based lines
+ * @param startIndex - zero-based line index of the block opener
+ * @param knownEndIndex - optional zero-based closer line index that skips searching for the end of the block
+ * @returns trimmed, space-joined comment text, or undefined when no closer is found or no prose remains
+ */
 function blockCommentText(lines: string[], startIndex: number, knownEndIndex?: number): string | undefined {
   const endIndex = knownEndIndex ?? blockCommentEndIndex(lines, startIndex);
   if (endIndex === undefined) {
@@ -539,8 +631,13 @@ function blockCommentText(lines: string[], startIndex: number, knownEndIndex?: n
   return text === "" ? undefined : text;
 }
 
-// Returns the first source line index containing a block closer, starting at the opener's zero-based line index.
-// Returns undefined if no closer is found, so the caller has no comment text to inspect.
+/**
+ * Finds the first source line index containing a block closer at or after the block opener.
+ *
+ * @param lines - source file split into zero-based lines
+ * @param startIndex - zero-based line index of the block comment opener
+ * @returns zero-based line index of the closing line, or undefined when no closer is found
+ */
 function blockCommentEndIndex(lines: string[], startIndex: number): number | undefined {
   for (let index = startIndex; index < lines.length; index += 1) {
     if ((lines[index] ?? "").includes("*/")) {

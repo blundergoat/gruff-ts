@@ -35,9 +35,17 @@ export function analyseTestBlock(file: SourceFile, block: FunctionBlock, finding
   analyseTestStructureChecks(file, block, body, findings);
 }
 
-// Checks the test body for assertion-quality problems, using the file and block to anchor stable findings.
-// Uses the block's original text and staticContext to assess whether static evidence makes an assertion redundant.
-// Returns nothing. Appends findings from both checks to the supplied list.
+/**
+ * Checks the test body for assertion-quality problems and static-analysis redundancy.
+ * Uses the block's original text and staticContext to assess whether static evidence makes an assertion redundant.
+ *
+ * @param file - source file used to anchor stable findings
+ * @param block - test block providing original text and location metadata for findings
+ * @param body - masked test body scanned by assertion-quality checks
+ * @param staticContext - surrounding source context used to evaluate redundant assertions
+ * @param findings - caller's list that receives findings from both checks
+ * @returns Nothing. Appends stable findings from both assertion-quality checks to the supplied list.
+ */
 function analyseAssertionQuality(file: SourceFile, block: FunctionBlock, body: string, staticContext: StaticAnalysisSourceContext, findings: Finding[]): void {
   for (const check of assertionQualityChecks(block, body)) {
     findings.push(blockFinding({ ruleId: check.ruleId, message: check.message, file, block, severity: check.severity, pillar: "test-quality" }));
@@ -45,8 +53,14 @@ function analyseAssertionQuality(file: SourceFile, block: FunctionBlock, body: s
   pushStaticAnalysisRedundantTestFindings(file, block, block.body, body, staticContext, findings);
 }
 
-// Return active assertion-quality checks for masked body, using block.name in their messages; an empty list means none matched.
-// Predicates are evaluated before filtering, and retained checks keep their declared emission order.
+/**
+ * Return active assertion-quality checks for the masked test body.
+ * Predicates are evaluated before filtering, and retained checks keep their declared emission order.
+ *
+ * @param block - test block whose name appears in emitted check messages
+ * @param body - masked test body scanned for trivial assertions
+ * @returns Matched assertion-quality checks in declared order, or an empty list when none matched.
+ */
 function assertionQualityChecks(block: FunctionBlock, body: string): TestBlockCheck[] {
   const testName = block.name;
   const checks: Array<TestBlockCheck & { active: boolean }> = [
@@ -55,8 +69,15 @@ function assertionQualityChecks(block: FunctionBlock, body: string): TestBlockCh
   return checks.filter((check) => check.active).map(({ active: _active, ...check }) => check);
 }
 
-// Checks the test body for unused mock variables, using the file and block to locate each advisory.
-// Returns nothing. Appends one stable test-quality.unused-mock finding with the mock name to the supplied list for each match.
+/**
+ * Checks the test body for unused mock variables.
+ *
+ * @param file - source file used to locate each advisory
+ * @param block - test block used to anchor each advisory
+ * @param body - masked test body scanned for unused mock declarations
+ * @param findings - caller's list that receives one advisory per unused mock
+ * @returns Nothing. Appends one stable test-quality.unused-mock finding with the mock name to the supplied list for each match.
+ */
 function analyseMockQuality(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
   const unusedMocks = unusedMockVariables(body);
   for (const mock of unusedMocks) {
@@ -74,8 +95,15 @@ function analyseMockQuality(file: SourceFile, block: FunctionBlock, body: string
   }
 }
 
-// Checks the test body for changes to process or runtime state that other tests may share.
-// Returns nothing. On a match, appends a stable test-quality.global-state-mutation warning for the supplied file and block to findings.
+/**
+ * Checks the test body for changes to process or runtime state that other tests may share.
+ *
+ * @param file - source file used to locate the warning
+ * @param block - test block used to anchor and name the warning
+ * @param body - masked test body checked for shared-state assignments
+ * @param findings - caller's list that receives the warning when a mutation matches
+ * @returns Nothing. On a match, appends a stable test-quality.global-state-mutation warning for the supplied file and block to findings.
+ */
 function analyseGlobalStateMutation(file: SourceFile, block: FunctionBlock, body: string, findings: Finding[]): void {
   if (hasGlobalStateMutation(body)) {
     findings.push(blockFinding({ ruleId: "test-quality.global-state-mutation", message: `Test \`${block.name}\` mutates global process or runtime state.`, file, block, severity: "warning", pillar: "test-quality" }));
@@ -97,8 +125,12 @@ function analyseTestStructureChecks(file: SourceFile, block: FunctionBlock, body
   }
 }
 
-// Return true when masked source contains a for or while segment with an assertion that neither fixture nor labeled-case checks exempt.
-// Return false when all scanned loops are exempt or no assertion-bearing loop is found.
+/**
+ * Checks whether masked source contains a reportable for or while loop with an assertion.
+ *
+ * @param source - masked test body scanned for loop segments
+ * @returns True when a loop with an assertion is exempt by neither fixture nor labeled-case checks; false otherwise.
+ */
 function controlFlowContainsNonFixtureLoop(source: string): boolean {
   for (const match of source.matchAll(/\b(?:for|while)\b/g)) {
     const start = match.index ?? 0;
@@ -150,9 +182,13 @@ const ASSERTION_CALL_OPENER = /\b(?:assert(?:\.[A-Za-z]+|[A-Z][A-Za-z0-9_$]*)?|e
 // One chained call such as `.toBe(` after a closed call.
 const CHAINED_CALL_LINK = /^\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*\s*(?:<[^;]*?>\s*)?\(/;
 
-// Return recognized assertion-chain slices from the masked loop body, including nested calls inside their outer assertion slice.
-// Skip an unmatched opening call; if a later chained call is unclosed, retain the complete prefix already measured.
-// Return an empty list when no opener can be matched.
+/**
+ * Return recognized assertion-chain slices from the masked loop body, including nested calls inside their outer assertion slice.
+ * Skip an unmatched opening call; if a later chained call is unclosed, retain the complete prefix already measured.
+ *
+ * @param body - masked loop body scanned for assertion openers and chained calls
+ * @returns Matched assertion-chain slices in source order, or an empty list when no opener can be matched.
+ */
 function assertionCallChains(body: string): string[] {
   const calls: string[] = [];
   let measuredUntil = 0;
@@ -178,8 +214,14 @@ function assertionCallChains(body: string): string[] {
   return calls;
 }
 
-// Return const-local names whose initializer text in body has a whole-word match from boundNames, for use as assertion labels.
-// Follow one level only; locals derived solely from other derived locals and unmatched declarations are excluded.
+/**
+ * Return const-local names whose initializer text in body has a whole-word match from boundNames, for use as assertion labels.
+ * Follow one level only; locals derived solely from other derived locals and unmatched declarations are excluded.
+ *
+ * @param body - masked loop body searched for const declarations
+ * @param boundNames - loop-bound identifier names tested against each const initializer
+ * @returns Derived local names eligible as assertion labels.
+ */
 function loopDerivedLocalNames(body: string, boundNames: string[]): string[] {
   const derived: string[] = [];
   for (const match of body.matchAll(/\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\n]+)/g)) {
@@ -191,8 +233,13 @@ function loopDerivedLocalNames(body: string, boundNames: string[]): string[] {
   return derived.filter(Boolean);
 }
 
-// Identifier names bound by for-of, for-in or C-style headers.
-// While-loops bind nothing here, so they never take the labeled opt-out.
+/**
+ * Extract identifier names bound by for-of, for-in or C-style headers.
+ * While-loops bind nothing here, so they never take the labeled opt-out.
+ *
+ * @param header - loop header text preceding the body brace
+ * @returns Bound identifier names from the loop header, or an empty list when none are declared.
+ */
 function loopBoundNames(header: string): string[] {
   const binding = header.match(/\b(?:const|let|var)\s+([^)]*?)\s+(?:of|in)\b/)?.[1]
     ?? header.match(/\b(?:let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/)?.[1]
@@ -200,9 +247,14 @@ function loopBoundNames(header: string): string[] {
   return [...binding.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)].map((match) => match[0] ?? "").filter(Boolean);
 }
 
-// Return whether the assertion call text in statement labels a case with one of the loop bindings or derived locals in boundNames.
-// Look for a whole-word match in argument three for recognized binary assert calls, or in argument two for all other calls.
-// A bare name also counts in a binary assert's second argument or a direct expect call's first matcher argument. No match returns false.
+/**
+ * Return whether the assertion call text in statement labels a case with one of the loop bindings or derived locals.
+ * Looks for a whole-word match in argument three for binary assert calls or argument two otherwise, plus bare expected operands.
+ *
+ * @param statement - recognized assertion-chain text from a loop body
+ * @param boundNames - loop bindings and derived local names accepted as case labels
+ * @returns True when the assertion message or expected operand matches a label name; false otherwise.
+ */
 function hasLoopCaseLabel(statement: string, boundNames: string[]): boolean {
   const argumentsList = assertionArguments(statement);
   const isBinaryAssert = /^assert\.(?:(?:not)?(?:strictEqual|deepStrictEqual|equal|deepEqual)|throws|rejects|match|doesNotMatch)\b/i.test(statement);
@@ -213,8 +265,13 @@ function hasLoopCaseLabel(statement: string, boundNames: string[]): boolean {
   return boundNames.some((name) => new RegExp(`\\b${escapeRegex(name)}\\b`).test(message) || expected.trim() === name);
 }
 
-// Return comma-separated argument slices from statement's outer call; strings and comments must already be masked.
-// Nested delimiters stay within a slice. Unmatched outer parentheses yield an empty list; an empty call retains its interior slice.
+/**
+ * Return comma-separated argument slices from statement's outer call; strings and comments must already be masked.
+ * Nested delimiters stay within a slice.
+ *
+ * @param statement - masked call expression whose outer argument list is split
+ * @returns Argument slices from the outer call (retaining an interior slice on an empty call), or an empty list if parentheses are unmatched.
+ */
 function assertionArguments(statement: string): string[] {
   const open = statement.indexOf("(");
   const close = matchingCloseParen(statement, open);
@@ -237,9 +294,15 @@ function assertionArguments(statement: string): string[] {
   return argumentsList;
 }
 
-// Return whether segment has an accepted fixture iterable and a final non-ignored statement starting with a recognized assertion.
-// Uses source before offset start for iterable lookup. Switch, case, or default markers disqualify the loop.
-// An if containing an assertion disqualifies it unless the condition matches the fixture membership heuristic.
+/**
+ * Return whether segment has an accepted fixture iterable and a final non-ignored statement starting with a recognized assertion.
+ * Switch, case, or default markers disqualify the loop; an assertion-bearing if disqualifies it unless matched as a fixture guard.
+ *
+ * @param source - masked source surrounding the loop for preceding declaration lookup
+ * @param start - character offset in source where the loop keyword begins
+ * @param segment - bounded loop text containing header and body
+ * @returns True when the loop iterates an accepted fixture table safely and ends with a recognized assertion; false otherwise.
+ */
 function isFixtureLoop(source: string, start: number, segment: string): boolean {
   const parts = loopSegmentParts(segment);
   if (!parts || !hasFixtureIterable(source, start, parts.header)) {
@@ -254,9 +317,13 @@ function isFixtureLoop(source: string, start: number, segment: string): boolean 
   return /^(?:assert\.[a-z]+\s*\(|expect\s*\(|[a-z][A-Za-z0-9_]*\.should(?:Be|Equal)?\s*\()/i.test(lastStatement);
 }
 
-// Splits a loop segment into header and body at the body-opening brace, walking past the header's
-// balanced parentheses first so that a destructured binding such as `for (const { name } of rows)`
-// does not end the header at the destructuring brace. Braceless bodies return undefined.
+/**
+ * Splits a loop segment into header and body at the body-opening brace, walking past the header's balanced parentheses first
+ * so that a destructured binding such as `for (const { name } of rows)` does not end the header at the destructuring brace.
+ *
+ * @param segment - bounded loop text beginning at the loop keyword
+ * @returns Header slice, body interior slice, and body-brace offset, or undefined for braceless or unclosed headers.
+ */
 function loopSegmentParts(segment: string): { header: string; body: string; bodyBraceIndex: number } | undefined {
   const parenIndex = segment.indexOf("(");
   if (parenIndex === -1) {
@@ -273,8 +340,13 @@ function loopSegmentParts(segment: string): { header: string; body: string; body
   return { header: segment.slice(0, bodyBraceIndex), body: segment.slice(bodyBraceIndex + 1, segment.length - 1), bodyBraceIndex };
 }
 
-// Return the closing-parenthesis index for the loop-header opener at parenIndex in segment, counting nested parentheses.
-// Return undefined if the outer group does not close before segment ends.
+/**
+ * Find the closing-parenthesis index for the loop-header opener at parenIndex in segment, counting nested parentheses.
+ *
+ * @param segment - loop text containing the header parentheses
+ * @param parenIndex - offset of the header's opening parenthesis inside segment
+ * @returns Closing-parenthesis offset in segment, or undefined if the outer group does not close before segment ends.
+ */
 function matchingHeaderCloseParen(segment: string, parenIndex: number): number | undefined {
   let depth = 0;
   for (let index = parenIndex; index < segment.length; index += 1) {
@@ -291,8 +363,14 @@ function matchingHeaderCloseParen(segment: string, parenIndex: number): number |
   return undefined;
 }
 
-// Return whether loop body contains a switch-like construct or an assertion-bearing if segment without a recognized fixture-membership guard.
-// sourceBeforeLoopBody supplies preceding declarations for guard lookup; other if segments do not reject the fixture loop.
+/**
+ * Return whether loop body contains a switch-like construct or an assertion-bearing if segment without a recognized fixture-membership guard.
+ * Other if segments without assertions do not reject the fixture loop.
+ *
+ * @param sourceBeforeLoopBody - preceding source text supplying declarations for fixture guard lookup
+ * @param body - loop body text checked for switch markers and conditional assertions
+ * @returns True when an unsafe switch or unguarded assertion branch is found; false otherwise.
+ */
 function hasUnsafeFixtureLoopBranch(sourceBeforeLoopBody: string, body: string): boolean {
   if (/\bswitch\s*\(|\bcase\s|\bdefault\s*:/.test(body)) {
     return true;
@@ -308,8 +386,14 @@ function hasUnsafeFixtureLoopBranch(sourceBeforeLoopBody: string, body: string):
   return false;
 }
 
-// Return whether header looks like an inline fixture iterable or names a recognized fixture constant or const-bound table.
-// source and the loop offset start provide preceding declarations for the const-bound check; false means no accepted shape was found.
+/**
+ * Return whether header looks like an inline fixture iterable or names a recognized fixture constant or const-bound table.
+ *
+ * @param source - masked source providing preceding declarations for const-bound lookup
+ * @param start - character offset in source where the loop begins
+ * @param header - loop header text inspected for an inline or named fixture iterable
+ * @returns True when the header iterates a recognized fixture iterable; false when no accepted shape was found.
+ */
 function hasFixtureIterable(source: string, start: number, header: string): boolean {
   if (/\bof\s*\[/.test(header) || /\bof\s+Object\.(?:entries|keys|values)\s*\(/.test(header)) {
     return true;
@@ -318,9 +402,14 @@ function hasFixtureIterable(source: string, start: number, header: string): bool
   return iterableName !== "" && (isFixtureConstantIterableName(iterableName) || hasConstBoundFixtureIterable(source.slice(0, start), iterableName));
 }
 
-// Return whether iterableName has fixture vocabulary and a const assignment in sourceBeforeLoop with an accepted initializer shape.
-// The assignment text must reach a semicolon at the end of the prefix, ignoring trailing whitespace.
-// A leading array or Object.entries/keys/values call qualifies, as does a recognized discovery call anywhere in that text. No match returns false.
+/**
+ * Return whether iterableName has fixture vocabulary and a const assignment in sourceBeforeLoop with an accepted initializer shape.
+ * The assignment text must reach a semicolon at the end of the prefix; arrays, Object.entries/keys/values, or discovery calls qualify.
+ *
+ * @param sourceBeforeLoop - source prefix preceding the loop header
+ * @param iterableName - identifier bound by the loop's `of` clause
+ * @returns True when the identifier matches fixture vocabulary and an accepted const initializer; false otherwise.
+ */
 function hasConstBoundFixtureIterable(sourceBeforeLoop: string, iterableName: string): boolean {
   if (!isFixtureIterableName(iterableName)) {
     return false;
@@ -330,31 +419,58 @@ function hasConstBoundFixtureIterable(sourceBeforeLoop: string, iterableName: st
   return initializer.startsWith("[") || /^Object\.(?:entries|keys|values)\s*\(/.test(initializer) || isFixtureDiscoveryCall(initializer);
 }
 
-// Return whether name has a recognized fixture-table suffix for the loop-exemption heuristic.
+/**
+ * Check whether an identifier carries a recognized fixture-table suffix for the loop-exemption heuristic.
+ *
+ * @param name - identifier name from a loop iterable
+ * @returns True when the name ends with an accepted fixture-table suffix; false otherwise.
+ */
 function isFixtureIterableName(name: string): boolean {
   return /(?:agents|cases|checks|entries|examples|fixtures|files|ids|paths|records|scenarios|scores|snapshots)$/i.test(name);
 }
 
-// Return whether name uses only uppercase letters, digits and underscores and has a fixture suffix; no local declaration is required.
+/**
+ * Check whether an identifier uses only uppercase letters, digits and underscores and has a fixture suffix; no local declaration is required.
+ *
+ * @param name - identifier name from a loop iterable
+ * @returns True when the name matches constant-case naming and a fixture suffix; false otherwise.
+ */
 function isFixtureConstantIterableName(name: string): boolean {
   return /^[A-Z0-9_]+$/.test(name) && isFixtureIterableName(name);
 }
 
-// Return whether initializer contains a call named glob, globSync, readdir, readdirSync, or beginning with discover, find or list.
-// This name heuristic does not verify where the function was declared or whether it discovers fixtures.
+/**
+ * Check whether initializer contains a call named glob, globSync, readdir, readdirSync, or beginning with discover, find or list.
+ * This name heuristic does not verify where the function was declared or whether it discovers fixtures.
+ *
+ * @param initializer - trimmed initializer expression from a const fixture binding
+ * @returns True when a recognized discovery call pattern appears in the initializer; false otherwise.
+ */
 function isFixtureDiscoveryCall(initializer: string): boolean {
   return /\b(?:glob|globSync|readdir|readdirSync|discover[A-Za-z0-9_$]*|find[A-Za-z0-9_$]*|list[A-Za-z0-9_$]*)\s*\(/.test(initializer);
 }
 
-// Return whether segment's condition matches the fixture-membership guard heuristic using source text before offset start.
-// The invariant heuristic checks text before the first opening brace as the condition. With no brace, the guard cannot qualify.
+/**
+ * Check whether segment's condition matches the fixture-membership guard heuristic using source text before offset start.
+ * The invariant heuristic checks text before the first opening brace as the condition; with no brace, the guard cannot qualify.
+ *
+ * @param source - preceding source text containing declarations visible before the conditional
+ * @param start - character offset in source where the conditional segment starts
+ * @param segment - conditional segment text beginning at `if`
+ * @returns True when the condition matches the fixture-membership guard heuristic; false otherwise.
+ */
 function isInvariantAssertionConditional(source: string, start: number, segment: string): boolean {
   const condition = segment.slice(0, Math.max(0, segment.indexOf("{"))).trim();
   return isFixtureMembershipGuard(source.slice(0, start), condition);
 }
 
-// Return whether condition's first has/includes target is declared as a const with a new Set or array initializer in sourceBeforeCondition.
-// Return false when the target or its declaration cannot be matched.
+/**
+ * Check whether condition's first has/includes target is declared as a const with a new Set or array initializer in sourceBeforeCondition.
+ *
+ * @param sourceBeforeCondition - source prefix preceding the conditional statement
+ * @param condition - conditional header text before the opening brace
+ * @returns True when the guarded target is declared as a const Set or array; false when the target or declaration cannot be matched.
+ */
 function isFixtureMembershipGuard(sourceBeforeCondition: string, condition: string): boolean {
   const guardTarget = condition.match(/\b([A-Za-z_$][A-Za-z0-9_$]*)\.(?:has|includes)\s*\(/)?.[1] ?? "";
   if (!guardTarget) {
@@ -363,8 +479,14 @@ function isFixtureMembershipGuard(sourceBeforeCondition: string, condition: stri
   return new RegExp(`\\bconst\\s+${escapeRegex(guardTarget)}\\s*=\\s*(?:new\\s+Set\\s*\\(|\\[)`).test(sourceBeforeCondition);
 }
 
-// Return bounded control-flow text in masked source beginning at keyword offset start for assertion detection.
-// With no same-line body brace, return the rest of that line; an unmatched brace limits the result to the header and opening brace.
+/**
+ * Extract bounded control-flow text in masked source beginning at keyword offset start for assertion detection.
+ * With no same-line body brace, returns the rest of that line; an unmatched brace limits the result to the header and opening brace.
+ *
+ * @param source - masked source text containing the control-flow construct
+ * @param start - character offset in source where the control-flow keyword begins
+ * @returns Bounded control-flow slice starting at the keyword offset.
+ */
 function controlFlowSegment(source: string, start: number): string {
   const lineEnd = source.indexOf("\n", start);
   const openBrace = controlFlowBodyBraceIndex(source, start, lineEnd);
@@ -375,8 +497,14 @@ function controlFlowSegment(source: string, start: number): string {
   return source.slice(start, closeBrace === undefined ? openBrace + 1 : closeBrace + 1);
 }
 
-// In masked source, scan from the keyword offset start up to lineEnd for the first opening brace outside parentheses.
-// Return its index, or undefined if none is found; lineEnd of -1 uses the end of source.
+/**
+ * In masked source, scan from the keyword offset start up to lineEnd for the first opening brace outside parentheses.
+ *
+ * @param source - masked source text being scanned
+ * @param start - character offset of the control-flow keyword
+ * @param lineEnd - end-of-line offset bounding the scan, or -1 to scan to the end of source
+ * @returns Offset of the first body-opening brace outside parentheses, or undefined if none is found.
+ */
 function controlFlowBodyBraceIndex(source: string, start: number, lineEnd: number): number | undefined {
   const limit = lineEnd === -1 ? source.length : lineEnd;
   let parenDepth = 0;
@@ -393,8 +521,13 @@ function controlFlowBodyBraceIndex(source: string, start: number, lineEnd: numbe
   return undefined;
 }
 
-// Return the closing-brace index for the opening-brace offset openBrace in masked source, to bound a loop or conditional body.
-// Return undefined when the braces never balance before source ends.
+/**
+ * Find the closing-brace index for the opening-brace offset openBrace in masked source, to bound a loop or conditional body.
+ *
+ * @param source - masked source text containing the braced block
+ * @param openBrace - offset of the opening brace in source
+ * @returns Offset of the matching closing brace, or undefined when the braces never balance before source ends.
+ */
 function matchingCloseBrace(source: string, openBrace: number): number | undefined {
   let depth = 0;
   for (let index = openBrace; index < source.length; index += 1) {
@@ -411,13 +544,22 @@ function matchingCloseBrace(source: string, openBrace: number): number | undefin
   return undefined;
 }
 
-// Returns true for assert.ok(true) or for matching operands in the supported assert or expect equality checks in the test source.
-// Returns false when none of these forms match, so the caller can skip `test-quality.trivial-assertion`.
+/**
+ * Check whether the test source contains assert.ok(true) or matching operands in supported assert or expect equality checks.
+ *
+ * @param source - masked test body scanned for trivial assertions
+ * @returns True when a trivial assertion form matches; false when none match, so the caller can skip `test-quality.trivial-assertion`.
+ */
 function hasTrivialAssertion(source: string): boolean {
   return hasLiteralTrivialAssertion(source) || hasRepeatedAssertArgument(source) || hasRepeatedExpectArgument(source);
 }
 
-// Return true for supported assert.ok(true) or identical-literal equality patterns in source, and false otherwise.
+/**
+ * Check for supported assert.ok(true) or identical-literal equality patterns in source.
+ *
+ * @param source - masked test body scanned for literal trivial assertions
+ * @returns True when a literal trivial assertion matches; false otherwise.
+ */
 function hasLiteralTrivialAssertion(source: string): boolean {
   return (
     /\bassert\.ok\s*\(\s*true\s*\)/.test(source) ||
@@ -425,9 +567,13 @@ function hasLiteralTrivialAssertion(source: string): boolean {
   );
 }
 
-// Walks every `assert.equal(a, b)` call and normalises both arguments before comparison so that
-// `foo;` and `foo` collapse to the same key. Mirrored expressions indicate the assertion would
-// pass regardless of behaviour - reports as a trivial assertion.
+/**
+ * Walks every `assert.equal(a, b)` call and normalises both arguments before comparison so that
+ * `foo;` and `foo` collapse to the same key, because mirrored expressions pass regardless of behaviour.
+ *
+ * @param source - masked test body scanned for repeated assert arguments
+ * @returns True when an assert equality call compares identical normalized arguments; false otherwise.
+ */
 function hasRepeatedAssertArgument(source: string): boolean {
   for (const match of source.matchAll(/\bassert\.(?:equal|strictEqual|deepEqual)\s*\(\s*([^,\n]+?)\s*,\s*([^,\n)]+?)(?:\s*,|\s*\))/g)) {
     if (normalizeAssertionExpression(match[1] ?? "") === normalizeAssertionExpression(match[2] ?? "")) {
@@ -437,8 +583,13 @@ function hasRepeatedAssertArgument(source: string): boolean {
   return false;
 }
 
-// Return whether source contains a direct expect equality call using toBe, toEqual or toStrictEqual with identical normalized argument text.
-// Async and negated matcher chains do not match; false means no supported pair was found.
+/**
+ * Check whether source contains a direct expect equality call using toBe, toEqual or toStrictEqual with identical normalized argument text.
+ * Async and negated matcher chains do not match.
+ *
+ * @param source - masked test body scanned for repeated expect arguments
+ * @returns True when a direct expect equality call has identical normalized operands; false means no supported pair was found.
+ */
 function hasRepeatedExpectArgument(source: string): boolean {
   for (const match of source.matchAll(/\bexpect\s*\(\s*([^)]+?)\s*\)\s*\.\s*to(?:Be|Equal|StrictEqual)\s*\(\s*([^)]+?)\s*\)/g)) {
     if (normalizeAssertionExpression(match[1] ?? "") === normalizeAssertionExpression(match[2] ?? "")) {
@@ -448,14 +599,23 @@ function hasRepeatedExpectArgument(source: string): boolean {
   return false;
 }
 
-// Return expression's comparison key after trimming surrounding whitespace and one trailing semicolon, so mirrored arguments compare equally.
+/**
+ * Build expression's comparison key after trimming surrounding whitespace and one trailing semicolon, so mirrored arguments compare equally.
+ *
+ * @param expression - raw operand text captured from an assertion call
+ * @returns Normalized comparison key for the assertion operand.
+ */
 function normalizeAssertionExpression(expression: string): string {
   return expression.trim().replace(/;$/, "");
 }
 
-// `const mockX = vi.fn(...)` declarations whose binding appears only once in the body - that one
-// occurrence is the declaration itself, so the mock is created but never wired in. Reports the
-// names for `test-quality.unused-mock` to anchor on.
+/**
+ * Find `const mockX = vi.fn(...)` declarations whose binding appears only once in the body,
+ * because that single occurrence is the declaration itself and the mock is never wired in.
+ *
+ * @param source - masked test body scanned for mock variable declarations and references
+ * @returns Unused mock variable names for `test-quality.unused-mock` to anchor on.
+ */
 function unusedMockVariables(source: string): string[] {
   const names: string[] = [];
   for (const match of source.matchAll(/\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:(?:vi|jest)\.fn|sinon\.stub|createMock|mock)\s*\(/g)) {
@@ -470,8 +630,13 @@ function unusedMockVariables(source: string): string[] {
   return names;
 }
 
-// Return whether source matches the supported process.env, globalThis, Date.now or Math.random assignment patterns.
-// The caller uses true to report possible shared-state mutation; this textual check does not establish whether state is restored.
+/**
+ * Check whether source matches the supported process.env, globalThis, Date.now or Math.random assignment patterns.
+ * This textual check does not establish whether state is restored.
+ *
+ * @param source - masked test body scanned for shared-state assignments
+ * @returns True when a supported shared-state assignment pattern matches, used to report possible mutation; false otherwise.
+ */
 function hasGlobalStateMutation(source: string): boolean {
   return /\bprocess\.env\.[A-Za-z0-9_]+\s*=/.test(source) || /\bglobalThis\.[A-Za-z0-9_$]+\s*=/.test(source) || /\b(?:Date\.now|Math\.random)\s*=/.test(source);
 }

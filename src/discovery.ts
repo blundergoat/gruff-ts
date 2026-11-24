@@ -44,9 +44,15 @@ interface GitIgnoreRule {
   hasSlash: boolean;
 }
 
-// Reads the filesystem, resolving options' paths against projectRoot and using config and options to decide what to skip.
-// With no paths, scans projectRoot. Deduplicates files by absolute path and sorts files and skips to preserve stable report order.
-// Returns files, missing paths, skipped paths and reasons, and notes for inputs that add no files or missing paths.
+/**
+ * Reads the filesystem, resolving options' paths against projectRoot and using config and options to decide what to skip.
+ * With no paths, scans projectRoot. Deduplicates files by absolute path and sorts files and skips to preserve stable report order.
+ *
+ * @param projectRoot - base directory used to resolve requested paths and format report paths
+ * @param options - scan options supplying target paths and ignore bypass settings
+ * @param config - user configuration supplying explicit ignore patterns
+ * @returns discovered files, missing paths, skipped paths and reasons, and notes for inputs that add no files or missing paths
+ */
 export function discoverSources(projectRoot: string, options: AnalysisOptions, config: Config): SourceDiscoveryResult {
   const discovery: SourceDiscovery = { files: [], missingPaths: [], skipped: new Map<string, SkippedPath>() };
   const inputs = options.paths.length > 0 ? options.paths : ["."];
@@ -67,8 +73,14 @@ export function discoverSources(projectRoot: string, options: AnalysisOptions, c
   return { files: uniqueFiles(discovery.files), missingPaths: discovery.missingPaths, ignoredPaths: skipped.map((entry) => entry.path), skipped, notes };
 }
 
-// Returns an informational note for an existing input that contributed no analysable files, so zero findings cannot be mistaken for a clean scan.
-// A positive count reports newly recorded skips. A zero count reports no analysable source files.
+/**
+ * Builds an informational note for an existing input that contributed no analysable files, so zero findings cannot be mistaken for a clean scan.
+ * A positive count reports newly recorded skips, while a zero count reports no analysable source files.
+ *
+ * @param input - requested file or directory path that produced no analysable files
+ * @param skippedCount - number of newly recorded skipped paths under the input
+ * @returns scan surface note describing why the input contributed no analysable files
+ */
 function zeroFileInputNote(input: string, skippedCount: number): ScanSurfaceNote {
   const cause = skippedCount > 0
     ? `${skippedCount} path(s) under it were excluded by ignore rules`
@@ -196,14 +208,24 @@ function pushSourceFile(projectRoot: string, absolutePath: string, files: Source
   }
 }
 
-// Reports whether pushSourceFile would admit a path, so the walk lists a skipped minified file only when it is scannable.
+/**
+ * Reports whether pushSourceFile would admit a path, so the walk lists a skipped minified file only when it is scannable.
+ *
+ * @param absolutePath - candidate file path whose extension and basename are checked against script and text allowlists
+ * @returns true when the file matches a supported script, text, or secret-file allowlist entry
+ */
 function isScannableSourceFile(absolutePath: string): boolean {
   const name = basename(absolutePath);
   const isText = TEXT_FILE_EXTENSIONS.includes(extname(absolutePath).slice(1).toLowerCase()) || name.startsWith(".env") || EXACT_SECRET_TEXT_FILES.includes(name);
   return isScriptFile(absolutePath) || isText;
 }
 
-// Reports whether a path's extension is parsed as code.
+/**
+ * Reports whether a path's extension is parsed as code.
+ *
+ * @param absolutePath - candidate file path whose lowercase extension is checked
+ * @returns true when the extension belongs to the script file allowlist
+ */
 function isScriptFile(absolutePath: string): boolean {
   return SCRIPT_FILE_EXTENSIONS.includes(extname(absolutePath).slice(1).toLowerCase());
 }
@@ -220,21 +242,36 @@ const THIRD_PARTY_DIRECTORIES: readonly string[] = ["bower_components", "dist", 
 /** Pattern recorded for a minified file such as `jquery.min.js`, which section 7 skips as generated. */
 export const MINIFIED_FILE_PATTERN = "*.min.*";
 
-// Returns the path component with only ASCII capitals lowercased so directory and filename checks use consistent case folding.
+/**
+ * Folds only ASCII capital letters to lowercase so directory and filename checks use consistent case folding.
+ *
+ * @param pathComponent - single path segment or filename to normalize
+ * @returns the path component with ASCII uppercase letters converted to lowercase
+ */
 function asciiLower(pathComponent: string): string {
   return pathComponent.replace(/[A-Z]/gu, (character) => character.toLowerCase());
 }
 
-// Returns the lowercase outermost third-party or build-output directory on display, or undefined when this policy supplies no exclusion.
-// isDirectory controls whether to check the final component, so a/Vendor/x.ts gives vendor and the filename dist alone gives no match.
+/**
+ * Finds the outermost third-party or build-output directory on display using ASCII-lowercased components.
+ *
+ * @param display - slash-separated display path to inspect
+ * @param isDirectory - controls whether to check the final component, so a/Vendor/x.ts gives vendor and a file named dist gives no match
+ * @returns lowercase matched directory name, or undefined when this policy supplies no exclusion
+ */
 function matchedThirdPartyDirectory(display: string, isDirectory: boolean): string | undefined {
   const components = display.split("/");
   const directories = isDirectory ? components : components.slice(0, -1);
   return directories.map(asciiLower).find((component) => THIRD_PARTY_DIRECTORIES.includes(component));
 }
 
-// Reports whether the base name has an ASCII case-insensitive .min. marker directly before its final extension.
-// For example, jquery.MIN.js matches, while app.min.js.map and admin.mini.js do not.
+/**
+ * Reports whether the base name has an ASCII case-insensitive .min. marker directly before its final extension.
+ * For example, jquery.MIN.js matches, while app.min.js.map and admin.mini.js do not.
+ *
+ * @param name - file basename to check for a minified marker
+ * @returns true when the name ends with a .min. marker followed by a single final extension
+ */
 function isMinifiedName(name: string): boolean {
   return /\.min\.[^.]+$/u.test(asciiLower(name));
 }
@@ -257,9 +294,13 @@ interface IgnoreClassificationInput {
   isExplicitFile: boolean;
 }
 
-// Classifies the path in input using its location, kind, scan options, config and Git ignore rules.
-// Returns the first ignore source and pattern, or undefined to keep the path eligible. Config and VCS exclusions always apply.
-// Explicit files and --include-ignored bypass Git and the remaining default exclusions after those checks.
+/**
+ * Classifies the path in input using its location, kind, scan options, config, and Git ignore rules.
+ * Config and VCS exclusions always apply; explicit files and --include-ignored bypass Git and remaining default exclusions.
+ *
+ * @param input - bundled path coordinates, kind, options, config, and inherited Git ignore rules
+ * @returns the first matching ignore source and pattern, or undefined to keep the path eligible
+ */
 function classifyIgnore(input: IgnoreClassificationInput): IgnoreMatch | undefined {
   const { projectRoot, absolute, display, isDirectory, options, config, gitIgnoreRules, isExplicitFile } = input;
   const configPattern = config.ignoredPaths.find((pattern) => pathMatches(pattern, display));
@@ -334,14 +375,25 @@ export function classifyPathIgnore(projectRoot: string, input: string, options: 
   return match ? { path: display, isIgnored: true, source: match.source, pattern: match.pattern } : { path: display, isIgnored: false };
 }
 
-// Finds the first path component owned by one directory-policy set.
-// Returns undefined when no component belongs to candidates, so this directory policy contributes no exclusion.
+/**
+ * Finds the first path component owned by one directory-policy set.
+ *
+ * @param path - slash-separated path whose components are inspected
+ * @param candidates - directory names belonging to a specific exclusion policy
+ * @returns the first matching component, or undefined when no component belongs to candidates
+ */
 function matchedDirectoryComponent(path: string, candidates: readonly string[]): string | undefined {
   return path.split("/").find((component) => candidates.includes(component));
 }
 
-// Reports whether fallback exclusions apply to absolute: outside projectRoot they always apply.
-// Inside projectRoot they apply only if no regular .gitignore exists from the root through the candidate's parent.
+/**
+ * Reports whether fallback exclusions apply to absolute: outside projectRoot they always apply.
+ * Inside projectRoot they apply only if no regular .gitignore exists from the root through the candidate's parent.
+ *
+ * @param projectRoot - run root directory that bounds .gitignore lookup
+ * @param absolute - resolved candidate path being evaluated
+ * @returns true when fallback directory exclusions govern the candidate path
+ */
 function fallbackAppliesAt(projectRoot: string, absolute: string): boolean {
   if (!isInsideProject(projectRoot, absolute)) {
     return true;
@@ -361,13 +413,24 @@ function fallbackAppliesAt(projectRoot: string, absolute: string): boolean {
   return true;
 }
 
-// Distinguishes a regular .gitignore file from a missing path or directory.
+/**
+ * Distinguishes a regular .gitignore file from a missing path or directory.
+ *
+ * @param path - filesystem path to check for a regular file
+ * @returns true when the path exists on the filesystem and is a regular file
+ */
 function isGitIgnoreFile(path: string): boolean {
   return existsSync(path) && statSync(path).isFile();
 }
 
-// Returns .gitignore rules from projectRoot through directory in parent-before-child order, so later child rules can override parents.
-// Reads every regular .gitignore along the chain. Returns an empty list outside projectRoot or when no file contributes usable rules.
+/**
+ * Collects .gitignore rules from projectRoot through directory in parent-before-child order, so later child rules can override parents.
+ * Reads every regular .gitignore along the chain.
+ *
+ * @param projectRoot - root directory beyond which .gitignore files are not read
+ * @param directory - target directory whose ancestor .gitignore chain is loaded
+ * @returns ordered ignore rules, or an empty list outside projectRoot or when no file contributes usable rules
+ */
 function gitIgnoreRulesForDirectory(projectRoot: string, directory: string): GitIgnoreRule[] {
   if (!isInsideProject(projectRoot, directory)) {
     return [];
@@ -384,9 +447,15 @@ function gitIgnoreRulesForDirectory(projectRoot: string, directory: string): Git
   return rules;
 }
 
-// Reads directory's .gitignore with rule paths based at projectRoot and returns its rules after inheritedRules.
-// Returns inheritedRules unchanged when .gitignore is missing, is not a regular file, or has no usable rules.
-// Otherwise returns a new array, preserving the caller's inherited stack.
+/**
+ * Reads directory's .gitignore with rule paths based at projectRoot and appends its rules after inheritedRules.
+ * Preserves the caller's inherited stack by returning a new array when rules are added.
+ *
+ * @param projectRoot - root directory used to compute the .gitignore basePath
+ * @param directory - directory inspected for a regular .gitignore file
+ * @param inheritedRules - parent ignore rules that stay unchanged when no usable rules are found
+ * @returns inheritedRules unchanged if no usable rules apply, otherwise a new combined array
+ */
 function appendGitIgnoreRules(projectRoot: string, directory: string, inheritedRules: GitIgnoreRule[]): GitIgnoreRule[] {
   const ignoreFile = join(directory, ".gitignore");
   if (!existsSync(ignoreFile) || !statSync(ignoreFile).isFile()) {
@@ -398,8 +467,13 @@ function appendGitIgnoreRules(projectRoot: string, directory: string, inheritedR
   return parsedRules.length > 0 ? [...inheritedRules, ...parsedRules] : inheritedRules;
 }
 
-// Parses .gitignore source into ordered rules owned by basePath; an empty basePath means the project root.
-// Drops comments, blanks, and marker-only lines; returns an empty array when no usable rules remain.
+/**
+ * Parses .gitignore source into ordered rules owned by basePath, dropping comments, blanks, and marker-only lines.
+ *
+ * @param source - raw .gitignore file text with LF or CRLF line endings
+ * @param basePath - directory path owning these rules relative to the project root, or empty string for the root
+ * @returns ordered parsed rules, or an empty array when no usable rules remain
+ */
 function parseGitIgnoreRules(source: string, basePath: string): GitIgnoreRule[] {
   const rules: GitIgnoreRule[] = [];
   for (const rawLine of source.replace(/\r\n/g, "\n").split("\n")) {
@@ -411,9 +485,13 @@ function parseGitIgnoreRules(source: string, basePath: string): GitIgnoreRule[] 
   return rules;
 }
 
-// Parses rawLine from the .gitignore owned by basePath into its normalized pattern and matching flags.
-// Returns undefined for comments, blank lines, or lines whose negation or slash markers leave no pattern.
-// An empty basePath attaches the rule to the project root.
+/**
+ * Parses rawLine from the .gitignore owned by basePath into its normalized pattern and matching flags.
+ *
+ * @param rawLine - single line from a .gitignore file
+ * @param basePath - owning directory path relative to the project root; an empty string attaches the rule to the root
+ * @returns parsed rule, or undefined for comments, blank lines, or lines whose negation or slash markers leave no pattern
+ */
 function parseGitIgnoreRule(rawLine: string, basePath: string): GitIgnoreRule | undefined {
   const initial = unescapedGitIgnoreLine(rawLine);
   if (!initial) {
@@ -433,8 +511,12 @@ function parseGitIgnoreRule(rawLine: string, basePath: string): GitIgnoreRule | 
   return { basePath, pattern, isNegated, isDirectoryOnly, isAnchored, hasSlash: pattern.includes("/") };
 }
 
-// Blank and comment lines return undefined so the caller can skip them cleanly. Trailing spaces are
-// ignored only when they are not escaped, matching gitignore's literal-space escape.
+/**
+ * Normalizes a raw .gitignore line, ignoring trailing spaces only when they are not escaped to match gitignore's literal-space escape.
+ *
+ * @param rawLine - single line read from a .gitignore file
+ * @returns trimmed pattern text, or undefined for blank or comment lines so the caller can skip them cleanly
+ */
 function unescapedGitIgnoreLine(rawLine: string): string | undefined {
   const line = trimUnescapedTrailingSpaces(rawLine);
   if (line.length === 0 || line.startsWith("#")) {
@@ -443,8 +525,13 @@ function unescapedGitIgnoreLine(rawLine: string): string | undefined {
   return line;
 }
 
-// Returns the raw .gitignore line without unescaped trailing spaces because Git treats them as padding.
-// A backslash-escaped trailing space stays part of the pattern.
+/**
+ * Strips unescaped trailing spaces from a .gitignore line because Git treats them as padding.
+ * A backslash-escaped trailing space stays part of the pattern.
+ *
+ * @param rawLine - raw line from a .gitignore file
+ * @returns line text without unescaped trailing spaces
+ */
 function trimUnescapedTrailingSpaces(rawLine: string): string {
   let end = rawLine.length;
   while (end > 0 && rawLine[end - 1] === " " && !isEscapedAt(rawLine, end - 1)) {
@@ -453,8 +540,14 @@ function trimUnescapedTrailingSpaces(rawLine: string): string {
   return rawLine.slice(0, end);
 }
 
-// True when the character at index in source has an odd number of backslashes immediately before it.
-// Even runs cancel out because a pair represents a literal backslash and leaves the next character unescaped.
+/**
+ * Checks whether the character at index in source has an odd number of backslashes immediately before it.
+ * Even runs cancel out because a pair represents a literal backslash and leaves the next character unescaped.
+ *
+ * @param source - string containing the character to test
+ * @param index - zero-based position of the character in source
+ * @returns true when an odd run of backslashes precedes index
+ */
 function isEscapedAt(source: string, index: number): boolean {
   let slashCount = 0;
   for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) {
@@ -463,8 +556,13 @@ function isEscapedAt(source: string, index: number): boolean {
   return slashCount % 2 === 1;
 }
 
-// Returns the canonical matcher pattern for a gitignore line after its anchor and directory-only flags have been captured.
-// Removes edge slashes and empty internal segments; an all-slash line returns an empty string so the caller drops the rule.
+/**
+ * Builds the canonical matcher pattern for a gitignore line after its anchor and directory-only flags have been captured.
+ * Removes edge slashes and empty internal segments.
+ *
+ * @param line - unescaped gitignore line without negation prefix
+ * @returns normalized pattern, or an empty string for an all-slash line so the caller drops the rule
+ */
 function normalizedGitIgnorePattern(line: string): string {
   return line
     .replace(/^\/+/, "")
@@ -474,9 +572,15 @@ function normalizedGitIgnorePattern(line: string): string {
     .join("/");
 }
 
-// Evaluates rules in inherited file order against display; isDirectory identifies the candidate's kind.
-// The last matching rule decides whether the path is ignored, allowing later negations to clear an earlier exclusion.
-// Returns the deciding rule for an ignored path, or undefined when no rule matches or the last match is a negation.
+/**
+ * Evaluates rules in inherited file order against display so later negations can clear an earlier exclusion.
+ * The last matching rule decides whether the path is ignored.
+ *
+ * @param rules - ordered .gitignore rules from root through parent directories
+ * @param display - candidate path formatted relative to the project root
+ * @param isDirectory - identifies whether the candidate path is a directory
+ * @returns the deciding rule for an ignored path, or undefined when no rule matches or the last match is a negation
+ */
 function matchedGitIgnoreRule(rules: GitIgnoreRule[], display: string, isDirectory: boolean): GitIgnoreRule | undefined {
   let matched: GitIgnoreRule | undefined;
   let isIgnored = false;
@@ -489,9 +593,15 @@ function matchedGitIgnoreRule(rules: GitIgnoreRule[], display: string, isDirecto
   return isIgnored ? matched : undefined;
 }
 
-// Reports whether rule matches the candidate display path after rebasing it against the rule's owning directory. The owner never matches.
-// Nested rules reject paths outside their base. Discovery supplies project paths to project-root rules.
-// isDirectory tells directory-only rules whether they can test the leaf itself. A file can still match through an ancestor directory.
+/**
+ * Reports whether rule matches the candidate display path after rebasing it against the rule's owning directory.
+ * The owner never matches, and nested rules reject paths outside their base; files can still match through an ancestor directory.
+ *
+ * @param rule - parsed .gitignore rule to evaluate
+ * @param display - candidate project-relative display path supplied by discovery
+ * @param isDirectory - tells directory-only rules whether they can test the leaf itself
+ * @returns true when the rule matches the rebased path
+ */
 function gitIgnoreRuleMatches(rule: GitIgnoreRule, display: string, isDirectory: boolean): boolean {
   const relativePath = pathRelativeToBase(rule.basePath, display);
   if (relativePath === undefined || relativePath.length === 0) {
@@ -504,9 +614,14 @@ function gitIgnoreRuleMatches(rule: GitIgnoreRule, display: string, isDirectory:
   return gitIgnoreFileRuleMatches(rule, relativePath, isDirectory);
 }
 
-// Reports whether rule matches relativePath, a path relative to the rule's owning directory.
-// isDirectory passes the candidate kind to the prefix helper. Both files and directories include the leaf among the candidates.
-// Path-scoped patterns test successive prefixes, while bare patterns test individual components.
+/**
+ * Reports whether a non-directory-only rule matches relativePath, testing successive prefixes for path-scoped patterns and segments for bare ones.
+ *
+ * @param rule - parsed .gitignore rule without a trailing slash restriction
+ * @param relativePath - candidate path relative to the rule's owning directory
+ * @param isDirectory - candidate kind passed to the prefix helper while both files and directories include the leaf
+ * @returns true when the rule pattern matches any candidate prefix or segment
+ */
 function gitIgnoreFileRuleMatches(rule: GitIgnoreRule, relativePath: string, isDirectory: boolean): boolean {
   if (isPathScopedGitIgnoreRule(rule)) {
     return gitIgnorePathCandidates(relativePath, isDirectory, true).some((candidate) => gitIgnoreGlobMatches(rule.pattern, candidate));
@@ -514,8 +629,15 @@ function gitIgnoreFileRuleMatches(rule: GitIgnoreRule, relativePath: string, isD
   return relativePath.split("/").some((segment) => gitIgnoreGlobMatches(rule.pattern, segment));
 }
 
-// Returns whether rule matches a directory in relativePath. Includes the final segment as a candidate only when isDirectory is true.
-// Path-scoped rules match directory prefixes. A rule such as node_modules/ must skip a same-named file leaf.
+/**
+ * Reports whether a directory-only rule matches a directory in relativePath.
+ * A rule such as node_modules/ must skip a same-named file leaf while still matching ancestor directories.
+ *
+ * @param rule - parsed directory-only .gitignore rule
+ * @param relativePath - candidate path relative to the rule's owning directory
+ * @param isDirectory - includes the final segment as a candidate only when true
+ * @returns true when the rule pattern matches a directory prefix or directory segment
+ */
 function gitIgnoreDirectoryRuleMatches(rule: GitIgnoreRule, relativePath: string, isDirectory: boolean): boolean {
   if (isPathScopedGitIgnoreRule(rule)) {
     return gitIgnorePathCandidates(relativePath, isDirectory, false).some((candidate) => gitIgnoreGlobMatches(rule.pattern, candidate));
@@ -525,15 +647,26 @@ function gitIgnoreDirectoryRuleMatches(rule: GitIgnoreRule, relativePath: string
   return directorySegments.some((segment) => gitIgnoreGlobMatches(rule.pattern, segment));
 }
 
-// Returns whether rule has a leading slash or an internal slash, so its pattern is tested against prefixes from its owning directory.
-// A prefix can be a single component, such as the candidate for an anchored pattern with one name.
+/**
+ * Reports whether rule has a leading slash or an internal slash, so its pattern is tested against prefixes from its owning directory.
+ * A prefix can be a single component, such as the candidate for an anchored pattern with one name.
+ *
+ * @param rule - parsed .gitignore rule to inspect
+ * @returns true when the rule is anchored or contains an internal slash
+ */
 function isPathScopedGitIgnoreRule(rule: GitIgnoreRule): boolean {
   return rule.isAnchored || rule.hasSlash;
 }
 
-// Returns successive prefixes of relativePath so a matching ancestor can exclude descendants.
-// When isDirectory is true the leaf is included. For files, shouldIncludeFilePath decides whether to include it.
-// Excluding the leaf of a single-component file path returns an empty list because there is no ancestor prefix to test.
+/**
+ * Builds successive prefixes of relativePath so a matching ancestor can exclude descendants.
+ * Excluding the leaf of a single-component file path yields an empty list because there is no ancestor prefix to test.
+ *
+ * @param relativePath - slash-separated path relative to the rule's owning directory
+ * @param isDirectory - includes the leaf prefix when true
+ * @param shouldIncludeFilePath - decides whether to include the leaf when isDirectory is false
+ * @returns ordered path prefixes from shallowest ancestor to the permitted leaf
+ */
 function gitIgnorePathCandidates(relativePath: string, isDirectory: boolean, shouldIncludeFilePath: boolean): string[] {
   const segments = relativePath.split("/");
   const limit = isDirectory || shouldIncludeFilePath ? segments.length : segments.length - 1;
@@ -544,13 +677,24 @@ function gitIgnorePathCandidates(relativePath: string, isDirectory: boolean, sho
   return candidates;
 }
 
-// Reports whether candidatePath matches the complete gitignore pattern.
+/**
+ * Reports whether candidatePath matches the complete gitignore pattern.
+ *
+ * @param pattern - normalized gitignore glob pattern
+ * @param candidatePath - path prefix or segment tested against the compiled pattern
+ * @returns true when the entire candidatePath matches the pattern
+ */
 function gitIgnoreGlobMatches(pattern: string, candidatePath: string): boolean {
   return gitIgnoreGlobRegex(pattern).test(candidatePath);
 }
 
-// Translates a git glob pattern into a JS RegExp with Git wildcard semantics.
-// Single stars stay within a segment, supported double-star forms can cross segments, and question marks match one non-slash character.
+/**
+ * Translates a git glob pattern into a JS RegExp with Git wildcard semantics.
+ * Single stars stay within a segment, supported double-star forms cross segments, and question marks match one non-slash character.
+ *
+ * @param pattern - normalized gitignore glob pattern
+ * @returns anchored regular expression matching complete candidate strings
+ */
 function gitIgnoreGlobRegex(pattern: string): RegExp {
   let source = "^";
   for (let index = 0; index < pattern.length; index += 1) {
@@ -561,9 +705,14 @@ function gitIgnoreGlobRegex(pattern: string): RegExp {
   return new RegExp(`${source}$`);
 }
 
-// Returns the regex fragment at index in the gitignore pattern, plus the number of extra characters consumed.
-// Handles stars, single-character wildcards, classes, and backslash escapes; other characters are matched literally.
-// An unparsed class opener is matched literally; a final backslash is also kept as a literal.
+/**
+ * Converts the token at index in pattern into a regex fragment, handling stars, wildcards, classes, and escapes.
+ * An unparsed class opener or trailing backslash is kept as a literal.
+ *
+ * @param pattern - normalized gitignore glob pattern
+ * @param index - zero-based cursor position in pattern
+ * @returns regex source fragment and the number of extra characters consumed past index
+ */
 function gitIgnoreGlobFragment(pattern: string, index: number): { source: string; skip: number } {
   const character = pattern[index] ?? "";
   if (character === "*") {
@@ -581,9 +730,14 @@ function gitIgnoreGlobFragment(pattern: string, index: number): { source: string
   return { source: escapeRegex(character), skip: 0 };
 }
 
-// Converts the star at index in pattern to regex source and returns how many extra pattern characters were consumed.
-// A leading or slash-delimited star pair followed by a slash can consume zero or more directories.
-// A trailing star pair after a slash can cross directories; other stars and pairs stay within one path segment.
+/**
+ * Converts the star at index in pattern to regex source according to Git single-star and double-star rules.
+ * Leading or slash-delimited star pairs followed by a slash consume zero or more directories; trailing star pairs after a slash cross directories.
+ *
+ * @param pattern - normalized gitignore glob pattern
+ * @param index - index of the leading asterisk in pattern
+ * @returns regex source fragment and extra pattern character count consumed
+ */
 function gitIgnoreStarFragment(pattern: string, index: number): { source: string; skip: number } {
   const next = pattern[index + 1];
   const afterNext = pattern[index + 2];
@@ -599,8 +753,13 @@ function gitIgnoreStarFragment(pattern: string, index: number): { source: string
   return { source: "[^/]*", skip: 1 };
 }
 
-// Converts the character class starting at index in pattern to regex source and an extra-character skip count.
-// Returns undefined for an unterminated or empty class so the caller can match the opening bracket literally.
+/**
+ * Converts the character class starting at index in pattern to regex source and an extra-character skip count.
+ *
+ * @param pattern - normalized gitignore glob pattern
+ * @param index - index of the opening bracket in pattern
+ * @returns regex fragment and skip count, or undefined for an unterminated or empty class so the caller matches `[` literally
+ */
 function gitIgnoreCharacterClassFragment(pattern: string, index: number): { source: string; skip: number } | undefined {
   const parsed = parseGitIgnoreCharacterClass(pattern, index);
   if (!parsed) {
@@ -616,8 +775,13 @@ interface GitIgnoreCharacterClass {
   skip: number;
 }
 
-// Parses a character class beginning at index in pattern, including a literal ] allowed first after optional negation.
-// Returns its regex body, negation flag, and extra-character skip count, or undefined when no valid closing bracket is found.
+/**
+ * Parses a character class beginning at index in pattern, including a literal `]` allowed first after optional negation.
+ *
+ * @param pattern - normalized gitignore glob pattern
+ * @param index - index of the opening bracket in pattern
+ * @returns regex body, negation flag, and extra-character skip count, or undefined when no valid closing bracket is found
+ */
 function parseGitIgnoreCharacterClass(pattern: string, index: number): GitIgnoreCharacterClass | undefined {
   const header = gitIgnoreCharacterClassHeader(pattern, index);
   let cursor = header.cursor;
@@ -634,8 +798,13 @@ function parseGitIgnoreCharacterClass(pattern: string, index: number): GitIgnore
   return undefined;
 }
 
-// Reads negation (! or ^) and an initial literal ] after the opening bracket at index in pattern.
-// Returns the next body cursor, body text (empty unless ] was consumed), and the negation flag.
+/**
+ * Parses optional negation (`!` or `^`) and an initial literal `]` after the opening bracket at index in pattern.
+ *
+ * @param pattern - normalized gitignore glob pattern
+ * @param index - index of the opening bracket in pattern
+ * @returns next body cursor, initial body text (empty unless `]` was consumed), and negation flag
+ */
 function gitIgnoreCharacterClassHeader(pattern: string, index: number): { cursor: number; body: string; isNegated: boolean } {
   let cursor = index + 1;
   const isNegated = pattern[cursor] === "!" || pattern[cursor] === "^";
@@ -648,8 +817,13 @@ function gitIgnoreCharacterClassHeader(pattern: string, index: number): { cursor
   return { cursor, body: "", isNegated };
 }
 
-// Returns the regex-ready body fragment for one class character, consuming an escaped literal pair
-// when gitignore used a backslash.
+/**
+ * Builds the regex-ready body fragment for one class character, consuming an escaped literal pair when gitignore used a backslash.
+ *
+ * @param pattern - normalized gitignore glob pattern
+ * @param cursor - index of the current character inside the character class
+ * @returns escaped class character fragment and extra character skip count (1 for a backslash pair, 0 otherwise)
+ */
 function gitIgnoreClassBodyFragment(pattern: string, cursor: number): { source: string; skip: number } {
   if (pattern[cursor] === "\\" && pattern[cursor + 1]) {
     return { source: escapeRegexClassCharacter(pattern[cursor + 1] ?? ""), skip: 1 };
@@ -657,14 +831,24 @@ function gitIgnoreClassBodyFragment(pattern: string, cursor: number): { source: 
   return { source: escapeRegexClassCharacter(pattern[cursor] ?? ""), skip: 0 };
 }
 
-// Escapes only characters with special meaning inside a regex character class. Escaping hyphen would
-// change valid git ranges like [a-z], so the set is intentionally narrower than normal regex escaping.
+/**
+ * Escapes only characters with special meaning inside a regex character class, preserving hyphens so valid git ranges like `[a-z]` stay intact.
+ *
+ * @param character - single character to place inside a JavaScript RegExp character class
+ * @returns escaped character safe for regex character-class interpolation without altering range hyphens
+ */
 function escapeRegexClassCharacter(character: string): string {
   return character.replace(/[\\\]^]/g, "\\$&");
 }
 
-// Returns display relative to basePath for matching rules owned by that directory; undefined means the path is outside the base.
-// An empty basePath means the project root; the base itself returns an empty string and is not matched by the caller.
+/**
+ * Rebases display relative to basePath for matching rules owned by that directory.
+ * An empty basePath means the project root; the base itself yields an empty string and is not matched by the caller.
+ *
+ * @param basePath - project-relative owning directory of a .gitignore rule, or empty string for the root
+ * @param display - candidate project-relative display path
+ * @returns path relative to basePath, empty string for the base itself, or undefined when outside the base
+ */
 function pathRelativeToBase(basePath: string, display: string): string | undefined {
   if (basePath.length === 0) {
     return display === "." ? "" : display;
@@ -675,16 +859,27 @@ function pathRelativeToBase(basePath: string, display: string): string | undefin
   return display.startsWith(`${basePath}/`) ? display.slice(basePath.length + 1) : undefined;
 }
 
-// Reports whether path is lexically equal to projectRoot or lies below it.
-// The ignore walker uses this check to restrict project .gitignore lookup to paths within the requested root.
+/**
+ * Reports whether path is lexically equal to projectRoot or lies below it.
+ * The ignore walker uses this check to restrict project .gitignore lookup to paths within the requested root.
+ *
+ * @param projectRoot - root directory defining the project boundary
+ * @param path - filesystem path tested for lexical containment
+ * @returns true when path equals projectRoot or is a descendant of it
+ */
 function isInsideProject(projectRoot: string, path: string): boolean {
   const relativePath = relative(projectRoot, path).replaceAll("\\", "/");
   return relativePath === "" || (!relativePath.startsWith("../") && relativePath !== ".." && !isAbsolute(relativePath));
 }
 
-// Reports whether the candidate path matches a user config ignore pattern; these exclusions are additive and have no negation.
-// Supports literal directory prefixes and star globs.
-// A pattern ending in slash and two stars includes the literal prefix and its descendants, even if that prefix contains stars.
+/**
+ * Reports whether the candidate path matches a user config ignore pattern; these exclusions are additive and have no negation.
+ * Supports literal directory prefixes, star globs, and patterns ending in slash and two stars for a literal prefix and its descendants.
+ *
+ * @param pattern - user config ignore pattern from config.ignoredPaths
+ * @param path - candidate display path to test
+ * @returns true when the candidate path matches the config ignore pattern
+ */
 function pathMatches(pattern: string, path: string): boolean {
   if (pattern === path) {
     return true;
@@ -701,8 +896,13 @@ function pathMatches(pattern: string, path: string): boolean {
   return path === prefix || path.startsWith(`${prefix}/`);
 }
 
-// Returns a new list with one entry per absolute path because multiple CLI inputs can reach the same file.
-// Keeps the first entry for each path in files to preserve the deterministic sort imposed by discoverSources.
+/**
+ * Deduplicates files by absolute path because multiple CLI inputs can reach the same file.
+ * Keeps the first entry for each path in files to preserve the deterministic sort imposed by discoverSources.
+ *
+ * @param files - sorted list of discovered source file records
+ * @returns new array containing the first record for each unique absolutePath
+ */
 function uniqueFiles(files: SourceFile[]): SourceFile[] {
   const seen = new Set<string>();
   return files.filter((file) => {
@@ -714,7 +914,13 @@ function uniqueFiles(files: SourceFile[]): SourceFile[] {
   });
 }
 
-// Anchors a relative CLI argument against the project root; absolute paths pass through unchanged.
+/**
+ * Anchors a relative CLI argument against the project root; absolute paths pass through unchanged.
+ *
+ * @param projectRoot - base directory used to resolve relative paths
+ * @param path - CLI path argument, either relative or absolute
+ * @returns resolved absolute path
+ */
 export function absolutize(projectRoot: string, path: string): string {
   return isAbsolute(path) ? path : join(projectRoot, path);
 }
@@ -741,7 +947,12 @@ export function displayPath(projectRoot: string, inputPath: string): string {
   return projectRelativePath;
 }
 
-// Escapes the standard regex metacharacters so untrusted patterns can be embedded literally.
+/**
+ * Escapes the standard regex metacharacters so untrusted patterns can be embedded literally.
+ *
+ * @param rawText - raw literal text to embed in a regular expression
+ * @returns text with regex metacharacters backslash-escaped
+ */
 function escapeRegex(rawText: string): string {
   return rawText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

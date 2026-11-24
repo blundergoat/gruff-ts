@@ -627,11 +627,12 @@ test("everyCallable on docs.missing-param-tag covers arrow and function-expressi
   ]);
 });
 
-test("everyCallable on docs.missing-return-tag asks only non-void callable constants for @returns", () => {
+test("everyCallable on docs.missing-return-tag asks all documented callable constants including void ones for @returns", () => {
   assert.deepEqual(tagFindings({ config: RETURN_SWITCH_ONLY }), [
     "advisory Docblock for `joinArrow` is missing @returns.",
     "advisory Docblock for `joinDeclared` is missing @param for `left`.",
     "advisory Docblock for `joinDeclared` is missing @returns.",
+    "advisory Docblock for `logLabel` is missing @returns.",
     "advisory Docblock for `pickFirst` is missing @returns.",
   ]);
 });
@@ -705,10 +706,11 @@ test("everyCallable on docs.missing-param-tag covers class and object-literal me
   ]);
 });
 
-test("everyCallable on docs.missing-return-tag asks only non-void methods for @returns", () => {
+test("everyCallable on docs.missing-return-tag asks all documented methods including void ones for @returns", () => {
   assert.deepEqual(methodFindings(TAG_RULE_IDS, { config: RETURN_SWITCH_ONLY }), [
     "advisory Docblock for `joinStatic` is missing @returns.",
     "advisory Docblock for `join` is missing @returns.",
+    "advisory Docblock for `logHidden` is missing @returns.",
     "advisory Docblock for `pickFirst` is missing @returns.",
   ]);
 });
@@ -875,12 +877,13 @@ test("everyCallable on docs.missing-param-tag covers private and nested function
   ]);
 });
 
-test("everyCallable on docs.missing-return-tag asks only non-void private and nested callables for @returns", () => {
+test("everyCallable on docs.missing-return-tag asks all documented private and nested callables including void ones for @returns", () => {
   assert.deepEqual(privateCallableFindings(TAG_RULE_IDS, { config: RETURN_SWITCH_ONLY }), [
     "advisory inner Docblock for `inner` is missing @returns.",
     "advisory innerArrow Docblock for `innerArrow` is missing @returns.",
     "advisory joinPrivate Docblock for `joinPrivate` is missing @returns.",
     "advisory joinPrivateArrow Docblock for `joinPrivateArrow` is missing @returns.",
+    "advisory logPrivate Docblock for `logPrivate` is missing @returns.",
   ]);
 });
 
@@ -981,17 +984,28 @@ export function buildHolder(left: string) {
 }
 `;
 
-test("docs.missing-return-tag needs a return annotation with both everyCallable switches off and with only the param rule's switch on", () => {
-  const expected = ["advisory joinExplicit Docblock for `joinExplicit` is missing @returns."];
+test("docs.missing-return-tag checks every exported function declaration even with everyCallable switches off", () => {
+  const expected = [
+    "advisory buildHolder Docblock for `buildHolder` is missing @returns.",
+    "advisory joinExplicit Docblock for `joinExplicit` is missing @returns.",
+    "advisory joinInferred Docblock for `joinInferred` is missing @returns.",
+    "advisory logInferred Docblock for `logInferred` is missing @returns.",
+    "advisory registerNested Docblock for `registerNested` is missing @returns.",
+    "advisory resolveInferred Docblock for `resolveInferred` is missing @returns.",
+  ];
   assert.deepEqual(exportFormTagFindings([INFERRED_RETURN_SOURCE], { config: TAG_SWITCHES_OFF }), expected);
   assert.deepEqual(exportFormTagFindings([INFERRED_RETURN_SOURCE], { config: PARAM_SWITCH_ONLY }), expected);
 });
 
-test("everyCallable on docs.missing-return-tag infers a returned value from the body, skipping bare, undefined, void and nested returns", () => {
+test("everyCallable on docs.missing-return-tag checks every documented callable regardless of return type or void body", () => {
   assert.deepEqual(exportFormTagFindings([INFERRED_RETURN_SOURCE], { config: RETURN_SWITCH_ONLY }), [
+    "advisory buildHolder Docblock for `buildHolder` is missing @returns.",
+    "advisory discardArrow Docblock for `discardArrow` is missing @returns.",
     "advisory joinArrow Docblock for `joinArrow` is missing @returns.",
     "advisory joinExplicit Docblock for `joinExplicit` is missing @returns.",
     "advisory joinInferred Docblock for `joinInferred` is missing @returns.",
+    "advisory logInferred Docblock for `logInferred` is missing @returns.",
+    "advisory registerNested Docblock for `registerNested` is missing @returns.",
     "advisory resolveInferred Docblock for `resolveInferred` is missing @returns.",
   ]);
 });
@@ -1061,8 +1075,9 @@ test("everyCallable on docs.missing-param-tag reports each parameter whose @para
   ]);
 });
 
-test("everyCallable on docs.missing-return-tag reports a @returns tag with no description only on a callable that returns a value", () => {
+test("everyCallable on docs.missing-return-tag reports a @returns tag with no description on every checked callable including void", () => {
   assert.deepEqual(bareTagFindings({ config: RETURN_SWITCH_ONLY }), [
+    "27 advisory Docblock for `logTyped` has no description for @returns.",
     "36 advisory Docblock for `pickTyped` has no description for @returns.",
     "6 advisory Docblock for `joinBare` has no description for @returns.",
   ]);

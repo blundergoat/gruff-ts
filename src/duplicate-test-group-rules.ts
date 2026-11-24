@@ -50,7 +50,12 @@ export function analyseDuplicateTestGroups(file: SourceFile, parsed: ParsedScrip
     return;
   }
   const groups = new Map<string, TestMember[]>();
-  // Walks node and its descendants without another parse and adds qualifying tests to the shared groups map. Returns no value.
+  /**
+   * Walks node and its descendants without another parse and adds qualifying tests to the shared groups map.
+   *
+   * @param node - syntax node whose subtree is walked for call expressions
+   * @returns Nothing. Adds qualifying tests to the shared groups map in place.
+   */
   const visit = (node: Node): void => {
     if (syntax.isCallExpression(node)) {
       collectTestMember(node, parsed.sourceFile, groups);
