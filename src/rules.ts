@@ -1,4 +1,7 @@
-// Rule descriptor catalogue that defines the public rule metadata emitted by list-rules and reports.
+// Canonical catalogue of all active gruff-ts rules, severities, confidences, thresholds, and remediation guidance.
+//
+// Single source of truth consumed by `list-rules`, `gruff-ts init`, profile expansion, config validation, and report renderers.
+// Order and IDs stay deterministic so CLI listings, baselines, and documentation checks never drift.
 import type { Confidence, RuleDescriptor } from "./types.ts";
 
 const RULE_DESCRIPTORS: readonly RuleDescriptor[] = [

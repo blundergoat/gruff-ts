@@ -323,6 +323,27 @@ test("a written baseline carries no sentinel, raw, partial, hashed or encoded", 
   });
 });
 
+test("requireOverwritableDefaultPath rejects uppercase legacy baseline filenames", () => {
+  withProject((dir) => {
+    const legacyPath = join(dir, "GRUFF-BASELINE.JSON");
+    writeFileSync(legacyPath, JSON.stringify({ schemaVersion: "gruff.baseline.v1", entries: [] }));
+    assert.throws(() => requireOverwritableDefaultPath(legacyPath, false), /retreat path/);
+  });
+});
+
+test("declarationPositionFromSpans selects the innermost enclosing span for nested declarations", () => {
+  const resolver = declarationPositionFromSpans(new Map([
+    ["src/app.ts", [
+      { name: "work", startLine: 1, endLine: 20 },
+      { name: "work", startLine: 8, endLine: 12 },
+    ]],
+  ]));
+  assert.equal(
+    resolver(finding({ ruleId: "size.function-length", message: "Function `work` is long.", line: 10, pillar: "size", symbol: "work" })),
+    8,
+  );
+});
+
 // Returns the test secret as raw text, its first eight characters, SHA-256 hex, and Base64 for the baseline leak assertions.
 function sentinelForms(sentinel: string): Record<string, string> {
   return {

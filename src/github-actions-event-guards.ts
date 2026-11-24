@@ -1,4 +1,7 @@
-// Bounded event proof for existing secret sinks; this is not a general YAML parser.
+// Bounded event-guard evaluator for GitHub Actions `if:` conditions on jobs and steps.
+//
+// Proves when a `secrets.*` reference cannot execute under a `pull_request_target` trigger so guarded steps stay quiet.
+// Intentionally scoped to workflow event guards rather than general YAML or expression evaluation.
 type GuardTruth = boolean | undefined;
 
 // Own mapping key or sequence entry, with an inclusive source range and direct children.

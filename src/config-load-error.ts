@@ -1,9 +1,8 @@
 /*
- * Error class for user-facing config-load failures. CLI action handlers catch this specifically so
- * a malformed `.gruff-ts.yaml` produces a clean stderr message and exit code 2, instead of a raw
- * Node stack trace. The `suggestion` field carries the user-actionable next step (run init --force,
- * edit a specific value, etc.) so the CLI layer can format it consistently across all throw sites.
- * Reports a tagged error that the CLI layer recognises via `instanceof`.
+ * User-facing configuration and flag-conflict error caught by CLI command handlers to exit 2 cleanly.
+ *
+ * Carries a structured `suggestion` alongside the message so broken `.gruff-ts.yaml` files or invalid selectors print actionable guidance
+ * instead of a raw Node stack trace, and lets machine consumers distinguish load failures from CLI flag refusals via `isConfigLoadFailure`.
  */
 export class ConfigLoadError extends Error {
   readonly suggestion: string;

@@ -125,7 +125,8 @@ function rawCatchBody(rawSource: string, codeSource: string, match: RegExpMatchA
  */
 function hasIntentionalCatchRationale(body: string, trackingTokens: readonly RegExp[]): boolean {
   const commentText = (body.match(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g) ?? []).map((comment) => comment.replace(/^\/\/+|^\/\*+|\*+\/$/g, "")).join(" ");
-  if (commentText.trim() === "" || /\b(?:TODO|FIXME|XXX)\b/.test(commentText)) {
+  // Reject placeholder markers regardless of letter case so `// todo: retry later` never counts as an intentional catch rationale.
+  if (commentText.trim() === "" || /\b(?:TODO|FIXME|XXX)\b/i.test(commentText)) {
     return false;
   }
   const words = commentText.match(/[A-Za-z][A-Za-z'-]*/g) ?? [];
@@ -357,11 +358,12 @@ function hasDirectiveRationale(directiveSuffix: string, trackingTokens: readonly
 }
 
 /**
- * Join consecutive line comments above the target in source order so a rationale can sit above the directive.
+ * Join consecutive prose line comments above the target in source order so a rationale can sit above a TypeScript directive.
+ * Skips lint and TypeScript directive-only lines so an adjacent linter suppression comment never substitutes for a rationale.
  *
  * @param lines - Source file lines searched backwards from the target line.
  * @param index - Zero-based position of the target line.
- * @returns Joined preceding comment text in source order, or empty text when no preceding comments exist.
+ * @returns Joined preceding prose comment text in source order, or empty text when no qualifying comments exist.
  */
 function lineCommentsAbove(lines: readonly string[], index: number): string {
   const texts: string[] = [];
@@ -370,7 +372,12 @@ function lineCommentsAbove(lines: readonly string[], index: number): string {
     if (!trimmed.startsWith("//")) {
       break;
     }
-    texts.unshift(trimmed.replace(/^\/\/+\s*/, ""));
+    const body = trimmed.replace(/^\/\/+\s*/, "");
+    // Another tool's suppression directive (ESLint, Biome, or TypeScript) explains nothing on its own; skip it and keep checking above.
+    if (/^(?:eslint-disable(?:-(?:next-)?line)?|biome-ignore|@ts-(?:expect-error|ignore|nocheck))\b/i.test(body)) {
+      continue;
+    }
+    texts.unshift(body);
   }
   return texts.join(" ");
 }

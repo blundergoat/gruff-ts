@@ -76,8 +76,9 @@ test("a flag-shaped token that is not registered is an error wherever it appears
   withProbeProject((dir) => {
     const afterPath = runInProject(dir, ["analyse", "probe.ts", "--not-a-registered-flag"]);
 
-    // Exit 2 is the family's usage exit; treating the token as an operand would scan a file nobody named.
+    // Exit 2 is the family's usage exit; assert Commander rejected the unknown option rather than treating it as a missing file.
     assert.equal(afterPath.status, 2, afterPath.output);
+    assert.match(afterPath.output, /unknown option/i, afterPath.output);
   });
 });
 

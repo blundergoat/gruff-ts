@@ -1,12 +1,8 @@
-// Sensitive-data suppression: the `sensitiveExclusions:` config section, its validator, its matcher,
-// and the audit counter that publishes one row per configured entry.
+// Implements `sensitiveExclusions:` config validation, matching, built-in test-path skips, and suppression audit rows.
 //
-// The section is deliberately separate from every other config surface so the prohibition on
-// matching a finding's message or detected value is structural rather than a conditional a later
-// edit can lose (FAMILY-CONTRACT.md, search: `### 13a. Sensitive exclusions`). Scope is exactly one
-// rule id in exactly one project-relative file, optionally narrowed to one symbol, and a reviewed
-// reason is mandatory. Nothing here reads finding text, so no suppression can depend on secret
-// material (FAMILY-CONTRACT.md, search: `## 5. Secret-preview & redaction semantics`).
+// Kept structurally separate from other config surfaces so matching never inspects finding text or secret values (FAMILY-CONTRACT section 13a):
+// - each configured exclusion targets exactly one sensitive-data rule ID, one project-relative path, an optional symbol, and a mandatory reason;
+// - produces deterministic audit rows surfaced across JSON, text, summary, SARIF, and hook envelopes.
 import { arrayValue, isString, objectValue, SUGGEST_EDIT_CONFIG } from "./config-parse.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
 import { isKnownRuleId, isPillarName, rulePillar } from "./profiles.ts";

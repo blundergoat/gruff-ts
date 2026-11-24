@@ -84,3 +84,23 @@ test("text and SARIF keep every section 13c removal visible", () => {
     `inSource ${DUPLICATE_SUPPRESSION_REASON}`,
   ]);
 });
+
+test("inline suppressions require preceding-line biome-ignore and keep co-located vm sinks alongside eval", () => {
+  const source = [
+    "// File overview: inline suppression fixture.",
+    "export function run(req: { body: { code: string } }, safe: string): void {",
+    "  eval(safe); // biome-ignore lint/security/noGlobalEval: trailing line does not apply in Biome",
+    "  eval(safe); vm.runInNewContext(req.body.code);",
+    "}",
+    "",
+  ].join("\n");
+  const report = analyseProject(
+    { "src/inline.ts": source },
+    { config: { rules: { "security.unsafe-deserialization": { enabled: true } } } },
+  );
+  const evalFindings = report.findings.filter((finding) => finding.ruleId === "security.eval-call");
+  const vmFindings = report.findings.filter((finding) => finding.ruleId === "security.unsafe-deserialization");
+  assert.equal(evalFindings.length, 2);
+  assert.equal(vmFindings.length, 1);
+  assert.equal(vmFindings[0]?.line, 4);
+});

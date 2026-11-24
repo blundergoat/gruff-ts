@@ -1,4 +1,7 @@
-// Loopback dashboard HTTP surface that renders live analyzer reports without exposing remote scans.
+// Loopback-only HTTP server powering `gruff-ts dashboard` on `127.0.0.1:8767`.
+//
+// Runs live analyses on request and renders the interactive HTML control panel via `report-html.ts`.
+// Binds exclusively to a loopback host by default so unauthenticated callers cannot trigger remote directory scans.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { chdir, cwd, stdout } from "node:process";
 import { dashboardErrorHtml, dashboardHomeHtml, renderHtml } from "./report-html.ts";

@@ -1,6 +1,6 @@
 ---
 category: schema-and-cli
-last_reviewed: 2026-10-03
+last_reviewed: 2026-11-25
 ---
 
 # Schema + CLI surface footguns
@@ -183,6 +183,19 @@ type on a `--history-file` conflict, which `src/history-scope.test.ts` caught. T
 already produced with an empty envelope claiming nothing was analysed. The type now records which it is
 (`src/config-load-error.ts`, search: `isConfigLoadFailure`), and only a genuine load failure publishes.
 
+
+## Footgun: line-level YAML pruning that deletes every child leaves a bare header that breaks list or YAML 1.2 contracts
+
+**Status:** active | **Created:** 2026-11-25 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Whenever line-level YAML migration removes children of a block section, track kept vs removed counts and rewrite emptied headers to `[]` or `{}` before validating with `validateParsedConfig`.
+**Trigger phase:** ACT
+**Caught at:** VERIFY
+
+**Prevention:** Do not leave bare `sensitiveExclusions:`, `allowlists:`, or `rules:` headers after pruning all of their child lines; rewrite emptied list headers to `[]` and emptied mapping headers to `{}`, then run `validateParsedConfig` before writing output.
+
+**Why it happens:** `parseNestedYamlValue` (`src/config-parse.ts`, search: `function parseNestedYamlValue`) decodes a bare key with no indented block as `{}`, which fails `Array.isArray` validation for `sensitiveExclusions:`, while standard YAML 1.2 parsers decode bare `allowlists:` or `rules:` as `null` instead of `{}`.
+
+**Evidence:** `src/migrate-config.ts` (search: `function finalizeEmptiedYamlSection`), `src/config.ts` (search: `function validateParsedConfig`), and `src/config-preservation.test.ts` (search: `rewrites emptied YAML sensitiveExclusions`).
 
 ## Resolved Entries
 

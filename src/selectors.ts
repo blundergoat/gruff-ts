@@ -106,14 +106,38 @@ function executionAllows(selectors: ExecutionSelectors, ruleId: string, pillar: 
 }
 
 /**
- * Select which findings appear in the report. Stable contract: the score and exit code are already decided.
+ * Validates every rule ID and pillar name passed to `--show-rule`, `--hide-rule`, `--show-pillar`, or `--hide-pillar`.
+ * Rejects typos or retired IDs before rendering so a misspelled display filter cannot silently hide findings.
  *
- * @param findings - scored findings available for display
+ * @param selectors - display filter settings whose show/hide rule and pillar lists are checked; empty lists pass immediately
+ * @returns Nothing. Completes when every named display selector exists in the active catalogue.
+ * @throws {ConfigLoadError} when any show/hide rule ID or pillar name is unknown.
+ */
+export function validateDisplaySelectors(selectors: DisplaySelectors): void {
+  const unknownRule = [...selectors.showRules, ...selectors.hideRules].find((ruleId) => !isKnownRuleId(ruleId));
+  // A mistyped or retired rule ID would silently hide or keep findings the user intended to filter.
+  if (unknownRule !== undefined) {
+    throw new ConfigLoadError(`Unknown display selector rule: ${JSON.stringify(unknownRule)}.`, "Use a rule ID from gruff-ts list-rules.", false);
+  }
+  const unknownPillar = [...selectors.showPillars, ...selectors.hidePillars].find((pillar) => !isPillarName(pillar));
+  // A misspelled pillar gets immediate feedback instead of producing an empty report view.
+  if (unknownPillar !== undefined) {
+    throw new ConfigLoadError(`Unknown display selector pillar: ${JSON.stringify(unknownPillar)}.`, "Use a pillar name from gruff-ts list-rules.", false);
+  }
+}
+
+/**
+ * Select which findings appear in the report. Stable contract: the score and exit code are already decided.
+ * Validates show/hide rule and pillar names before filtering so typos fail loudly instead of silently hiding results.
+ *
+ * @param findings - scored findings available for display; an empty list still validates selector names and stays empty
  * @param selectors - display restrictions for this run, including any explicit minimum severity
- * @param configuredFloor - project minimum severity used when the run supplies none
+ * @param configuredFloor - project minimum severity used when the run supplies none; undefined applies no config floor
  * @returns A filtered list when an effective restriction is active, or the original list when none is active.
+ * @throws {ConfigLoadError} when a display selector names an unknown rule ID or pillar.
  */
 export function applyDisplaySelectors(findings: Finding[], selectors: DisplaySelectors, configuredFloor: Severity | undefined): Finding[] {
+  validateDisplaySelectors(selectors);
   const floor = selectors.minSeverity ?? configuredFloor;
   const effective: DisplaySelectors = { ...selectors, ...(floor === undefined ? {} : { minSeverity: floor }) };
   // Nothing was asked for, so the report shows exactly what the run found.

@@ -713,7 +713,6 @@ function sarifLevel(severity: Severity): "error" | "warning" | "note" {
  * @returns terminal summary text followed by a newline
  */
 function renderSummary(report: AnalysisReport, elapsedMs?: number, pathLabel?: string, top = 10): string {
-  const ruleCounts = countBy(report.findings, (finding) => finding.ruleId);
   const pillarRows = buildPillarRows(report);
   const breakdown = severityGradeBreakdown(report.findings);
   // FAMILY-CONTRACT section 1 keeps the masthead, composite, and finding totals ahead of port-specific summary lines.
@@ -809,27 +808,11 @@ function formatSummaryDuration(elapsedMs: number): string {
 }
 
 /**
- * Tallies findings under the caller-supplied key; iteration order stays deterministic for renderers.
- *
- * @param findings - Findings to group and count.
- * @param keyFor - Selector extracting the grouping key from each finding.
- * @returns Finding counts keyed by the selector result in first-seen order.
- */
-function countBy<T extends string>(findings: Finding[], keyFor: (finding: Finding) => T): Map<T, number> {
-  const counts = new Map<T, number>();
-  for (const finding of findings) {
-    const key = keyFor(finding);
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  return counts;
-}
-
-/**
  * Render the terminal Pillars block with a two-space row indent and three spaces between count cells.
- * Names and counts expand to fit; count cells use at least three characters and scores use two decimals in at least six.
+ * Names and counts expand to fit; count cells use at least three characters and scores use two decimals in at least six (or `n/a` when unevaluated).
  *
- * @param rows - pillar summaries to display in their supplied order
- * @returns heading and formatted rows, or a heading and none marker when rows is empty
+ * @param rows - pillar summaries to display in their supplied order; an empty list renders a `(none)` placeholder
+ * @returns Heading and formatted rows, or a heading and `(none)` marker when rows is empty.
  */
 function renderPillarsBlock(rows: PillarRow[]): string[] {
   if (rows.length === 0) {
@@ -843,7 +826,7 @@ function renderPillarsBlock(rows: PillarRow[]): string[] {
   const lines = ["Pillars"];
   for (const row of rows) {
     const name = row.pillar.padEnd(nameWidth);
-    const score = row.score.toFixed(2).padStart(6);
+    const score = (row.score === null ? "n/a" : row.score.toFixed(2)).padStart(6);
     const findingsCell = `findings=${String(row.findings).padEnd(findingsWidth)}`;
     const advisoryCell = `advisory=${String(row.advisory).padEnd(advisoryWidth)}`;
     const warningCell = `warning=${String(row.warning).padEnd(warningWidth)}`;
@@ -876,11 +859,7 @@ function renderRankedRuleRows(findings: Finding[], limit?: number): string[] {
   });
 }
 
-/*
- * 60-char description budget that keeps the rule-row line under ~100 columns even with the longest
- * ruleId and severity-split. The trailing ellipsis is a single Unicode glyph so terminals that
- * don't render `...` still see the truncation marker.
- */
+// 60-char description budget that keeps the rule-row line compact even with long rule IDs; uses a single Unicode ellipsis glyph on truncation.
 const DESCRIPTION_BODY_LIMIT = 60;
 
 /**
@@ -892,40 +871,6 @@ const DESCRIPTION_BODY_LIMIT = 60;
  */
 function truncateDescription(text: string): string {
   return text.length <= DESCRIPTION_BODY_LIMIT ? text : `${text.slice(0, DESCRIPTION_BODY_LIMIT).trimEnd()}…`;
-}
-
-/**
- * Return ranked text bullets from the count map in deterministic order by descending count then ascending key.
- * For an empty map, return one bullet using emptyText. Otherwise apply limit when supplied, or show all entries when omitted.
- *
- * @param counts - Category labels paired with their integer occurrence counts.
- * @param emptyText - Placeholder bullet label returned when counts is empty.
- * @param limit - Maximum number of ranked entries to render; omit to include all entries.
- * @returns Formatted bullet lines sorted by descending count then ascending key.
- */
-function renderRankedCounts<T extends string>(counts: Map<T, number>, emptyText: string, limit?: number): string[] {
-  if (counts.size === 0) {
-    return [`- ${emptyText}`];
-  }
-  return [...counts.entries()]
-    .sort(([leftKey, leftCount], [rightKey, rightCount]) => rightCount - leftCount || leftKey.localeCompare(rightKey))
-    .slice(0, limit ?? counts.size)
-    .map(([key, count]) => `- ${key}: ${count}`);
-}
-
-/**
- * Return name and count rows for JSON consumers from the supplied count map, in deterministic order by descending count then ascending name.
- * Use limit as the cap when supplied. An omitted limit keeps every row, and an empty map yields no rows.
- *
- * @param counts - Category names paired with their occurrence counts.
- * @param limit - Maximum number of ranked rows to include; omit to return all rows.
- * @returns Sorted name-and-count entries, or empty when counts has no entries.
- */
-function renderRankedCountRows<T extends string>(counts: Map<T, number>, limit?: number): Array<{ name: T; count: number }> {
-  return [...counts.entries()]
-    .sort(([leftKey, leftCount], [rightKey, rightCount]) => rightCount - leftCount || leftKey.localeCompare(rightKey))
-    .slice(0, limit ?? counts.size)
-    .map(([name, count]) => ({ name, count }));
 }
 
 /**
@@ -1056,8 +1001,9 @@ function renderMarkdownPillarsTable(rows: PillarRow[]): string[] {
     return lines;
   }
   for (const row of rows) {
+    const scoreText = row.score === null ? "n/a" : row.score.toFixed(2);
     lines.push(
-      `| ${escapeMarkdownCell(row.pillar)} | ${escapeMarkdownCell(row.grade)} | ${row.score.toFixed(2)} | ${row.findings} | ${row.advisory} | ${row.warning} | ${row.error} |`,
+      `| ${escapeMarkdownCell(row.pillar)} | ${escapeMarkdownCell(row.grade)} | ${scoreText} | ${row.findings} | ${row.advisory} | ${row.warning} | ${row.error} |`,
     );
   }
   return lines;

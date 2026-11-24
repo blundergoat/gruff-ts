@@ -212,8 +212,8 @@ export function migrateBaseline(inputPath: string, outputPath: string, findings:
  * @throws {BaselineFileError} - force is off and the existing default path cannot be read as a current regular baseline file.
  */
 export function requireOverwritableDefaultPath(outputPath: string, shouldForce: boolean): void {
-  // An explicit force flag or a different filename bypasses the shared-default safeguard.
-  if (shouldForce || basename(outputPath) !== DEFAULT_BASELINE_FILENAME) {
+  // An explicit force flag or a different filename bypasses the shared-default safeguard; compare case-insensitively for macOS/Windows paths.
+  if (shouldForce || basename(outputPath).toLowerCase() !== DEFAULT_BASELINE_FILENAME) {
     return;
   }
   try {

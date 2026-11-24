@@ -460,3 +460,17 @@ test("flags React Router redirect imports without widening local helper matching
   assert.equal(domFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length, 1);
   assert.equal(localFindings.filter((finding) => finding.ruleId === "security.open-redirect-candidate").length, 0);
 });
+
+test("reassigned fs.readFileSync with whitespace around the dot still propagates taint to yaml.load", () => {
+  const readerWrite = [
+    'import fs from "node:fs";',
+    "export function parse(req: { body: { yaml: string } }): unknown {",
+    "  fs . readFileSync = (value: string) => value;",
+    "  const text = fs.readFileSync(req.body.yaml);",
+    "  return yaml.load(text);",
+    "}",
+    "",
+  ].join("\n");
+  const findings = analyseSecurityFixture(readerWrite);
+  assert.equal(findings.some((finding) => finding.ruleId === "security.unsafe-deserialization"), true);
+});

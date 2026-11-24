@@ -260,7 +260,8 @@ export function declarationPositionFromSpans(spansByFile: Map<string, Declaratio
         return following.startLine;
       }
     }
-    const enclosing = fileSpans.find((span) => span.name === wanted && span.startLine <= line && line <= span.endLine);
+    // Choose the innermost enclosing span so a nested same-named declaration gets its own start line rather than the outer function's.
+    const enclosing = innermostEnclosingSpan(fileSpans, wanted, line);
     return enclosing?.startLine ?? line;
   };
   resolver.sameNamedPositions = (finding: Finding) => {
@@ -273,6 +274,30 @@ export function declarationPositionFromSpans(spansByFile: Map<string, Declaratio
     return (spansByFile.get(finding.filePath) ?? []).filter((span) => span.name === symbol).map((span) => span.startLine);
   };
   return resolver;
+}
+
+/**
+ * Selects the tightest enclosing declaration span covering `line` so nested same-named functions keep distinct declaration anchors.
+ *
+ * @param spans - parsed declaration spans for the finding's file
+ * @param wantedName - unqualified declaration symbol name being matched
+ * @param line - one-based finding line that must lie within `[startLine, endLine]`
+ * @returns The matching enclosing span with the smallest line span (tie-broken by latest `startLine`), or undefined if none encloses `line`.
+ */
+function innermostEnclosingSpan(spans: readonly DeclarationSpan[], wantedName: string, line: number): DeclarationSpan | undefined {
+  let best: DeclarationSpan | undefined;
+  let bestLength = Number.POSITIVE_INFINITY;
+  for (const span of spans) {
+    if (span.name !== wantedName || span.startLine > line || line > span.endLine) {
+      continue;
+    }
+    const spanLength = span.endLine - span.startLine;
+    if (best === undefined || spanLength < bestLength || (spanLength === bestLength && span.startLine > best.startLine)) {
+      best = span;
+      bestLength = spanLength;
+    }
+  }
+  return best;
 }
 
 /**

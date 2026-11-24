@@ -707,6 +707,67 @@ test("a scoped hook cannot spend one baseline occurrence twice", () => {
   });
 });
 
+// Fixture purpose: exercises a stdin patch (`--diff -`) on a long file so hook skips Git base replay instead of re-admitting file-wide findings.
+// Stable contract: writes a temporary project, spawns the hook CLI with stdin patch text, and removes the directory via withProject.
+test("hook stdin diff skips false file-wide re-admission", () => {
+  withProject({ "long.ts": `${longSource(1006, 0)}\n` }, (dir) => {
+    const stdinPatch = [
+      "diff --git a/long.ts b/long.ts",
+      "--- a/long.ts",
+      "+++ a/long.ts",
+      "@@ -500,1 +500,2 @@",
+      " const filler499 = 499;",
+      "+const filler500 = 500;",
+      "",
+    ].join("\n");
+    const hookResult = spawnSync("bash", [BIN, "hook", "--format", "json", "--no-config", "--diff", "-", "long.ts"], {
+      cwd: dir,
+      input: stdinPatch,
+      encoding: "utf8",
+    });
+    assert.equal(hookResult.status, 0, hookResult.stderr);
+    const payload = JSON.parse(hookResult.stdout) as HookPayload;
+    assert.equal(payload.findings.some((finding) => finding.ruleId === "size.file-length"), false);
+  });
+});
+
+// Fixture purpose: exercises a committed file growing past 1000 lines near EOF so the hook re-admits line-1 size.file-length without double-counting.
+// Stable contract: writes a temporary Git repository, spawns git and the CLI binary, and removes the directory via withProject.
+test("hook does not count a newly re-admitted file finding as suppressed when edited far from line 1", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  withProject({ "grown.ts": `${longSource(999, 0)}\n` }, (dir) => {
+    initGitCommit(dir);
+    // Append lines near line 1000 to cross the 1000-line limit; line 1 is outside the hunk, so replay re-admits it cleanly.
+    writeProjectFile(dir, "grown.ts", `${longSource(1003, 0)}\n`);
+    const payload = runHook(dir, ["hook", "--format", "json", "--no-config", "--diff", "working-tree", "grown.ts"]);
+    assert.equal(payload.findings.some((finding) => finding.ruleId === "size.file-length"), true);
+    assert.equal(payload.suppressed.count, 0);
+  });
+});
+
+// Fixture purpose: exercises a config file referencing a relative profile path during git diff base replay after hook chdir into a temp directory.
+// Stable contract: writes a temporary Git repository, spawns git and the CLI binary, and removes the directory via withProject.
+test("hook base replay resolves a relative profile path declared inside .gruff-ts.yaml", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  withProject(
+    {
+      "team-profile.yaml": "extends: gruff.recommended\nrules:\n  size.file-length:\n    threshold: 5\n",
+      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nprofile: ./team-profile.yaml\n",
+      "small.ts": `${longSource(3, 0)}\n`,
+    },
+    (dir) => {
+      initGitCommit(dir);
+      writeProjectFile(dir, "small.ts", `${longSource(7, 0)}\n`);
+      const payload = runHook(dir, ["hook", "--format", "json", "--diff", "working-tree", "small.ts"]);
+      assert.equal(payload.findings.some((finding) => finding.ruleId === "size.file-length"), true);
+    },
+  );
+});
+
 // Spawns the gruff-ts CLI through Bash in the supplied working directory with the hook invocation arguments.
 // Returns the parsed hook payload from stdout. A failed command or invalid JSON throws.
 function runHook(cwdPath: string, args: string[]): HookPayload {

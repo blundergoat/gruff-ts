@@ -304,3 +304,10 @@ test("migrateConfigText and CLI reject unknown non-retired keys before writing o
     assert.match(run.stderr, /docs\.not-a-real-rule/);
   });
 });
+
+test("migrateConfigText leaves unquoted current schemaVersion unchanged", () => {
+  const current = "schemaVersion: gruff-ts.config.v0.1\nfailOn:\n  analyse: advisory\n";
+  const result = migrateConfigText(current, "yaml");
+  assert.deepEqual(result.changes, []);
+  assert.equal(result.text, current);
+});

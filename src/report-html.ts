@@ -1,7 +1,7 @@
-// HTML renderer for native `AnalysisReport` state plus the dashboard chrome (home shell + error
-// page) that serves the same report inside a control panel. JSON uses the separate v3 machine adapter.
-// Extracted from `report-renderers.ts` so the renderer module stays under the `size.file-length`
-// threshold; the HTML output is part of the stable archived-report contract.
+// Renders standalone HTML reports (`analyse --format html`, `report --format html`) and the local dashboard shell.
+//
+// Shares pillar rows and grade helpers with `report-renderers.ts` so terminal, Markdown, HTML, and dashboard views stay consistent.
+// Kept separate from `report-renderers.ts` to keep both renderer modules cleanly below the file-length threshold.
 import type { AnalysisReport, Finding, Severity } from "./types.ts";
 import { buildPillarRows, grade } from "./pillar-summary.ts";
 import { severityGradeBreakdown } from "./scoring.ts";
@@ -217,7 +217,8 @@ function htmlPillars(report: AnalysisReport): string {
       : rows
           .map((row) => {
             const letter = row.grade;
-            return `<tr><td class="pillar-name">${escapeHtml(row.pillar)}</td><td class="num"><span class="grade-pill ${gradeClass(letter)}">${escapeHtml(letter)}</span></td><td class="num">${row.score.toFixed(2)}</td><td class="num">${row.findings}</td><td class="num">${row.advisory}</td><td class="num">${row.warning}</td><td class="num">${row.error}</td></tr>`;
+            const scoreCell = row.score === null ? "n/a" : row.score.toFixed(2);
+            return `<tr><td class="pillar-name">${escapeHtml(row.pillar)}</td><td class="num"><span class="grade-pill ${gradeClass(letter)}">${escapeHtml(letter)}</span></td><td class="num">${scoreCell}</td><td class="num">${row.findings}</td><td class="num">${row.advisory}</td><td class="num">${row.warning}</td><td class="num">${row.error}</td></tr>`;
           })
           .join("");
   return `<section class="pillars"><h2 class="section-head">Pillars <span class="aside">grade, score, findings by severity</span></h2><div class="pillar-grid"><table class="pillar-table"><thead><tr><th scope="col">pillar</th><th scope="col" class="num">grade</th><th scope="col" class="num">score</th><th scope="col" class="num">findings</th><th scope="col" class="num">advisory</th><th scope="col" class="num">warning</th><th scope="col" class="num">error</th></tr></thead><tbody>${body}</tbody></table></div></section>`;

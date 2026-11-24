@@ -214,11 +214,9 @@ function securityFlowFinding(file: SourceFile, line: number, rule: SecurityFlowR
 }
 
 // --- Bounded intra-function AST flow (ADR-012) -------------------------
-// Augments the same-line checks above: detects an external-input value assigned
-// to a local variable and later passed (across lines, within one function) to a
-// known sink. The same-line pass above is untouched, so its findings and
-// fingerprints are unchanged; this pass only adds genuinely cross-line cases and
-// skips any flow whose source and sink share a line.
+//
+// Augments the same-line checks above by tracking local variables assigned from external input to sinks across lines within one function.
+// Same-line flows remain owned by the line pass so existing fingerprints never move; this pass adds cross-line flows and AST-only sinks.
 
 // One tainted local: the 0-based line of the originating external source, the
 // source kind for metadata, and how many alias hops removed it is (cap below).
@@ -349,17 +347,37 @@ function fileReadBindingNames(clause: import("typescript").ImportClause, methods
 }
 
 /**
+ * Normalizes a simple identifier or dotted property chain (such as `fs . readFileSync`) into compact `a.b` text without whitespace or comments.
+ *
+ * @param expr - AST expression inspected as an identifier or chain of property accesses
+ * @returns Compact dotted name when `expr` is an identifier or property-access chain, or undefined for other expression shapes.
+ */
+function dottedIdentifierPath(expr: TsNode): string | undefined {
+  if (typescriptSyntax.isParenthesizedExpression(expr)) {
+    return dottedIdentifierPath(expr.expression);
+  }
+  if (typescriptSyntax.isIdentifier(expr)) {
+    return expr.text;
+  }
+  if (typescriptSyntax.isPropertyAccessExpression(expr)) {
+    const receiver = dottedIdentifierPath(expr.expression);
+    return receiver === undefined ? undefined : `${receiver}.${expr.name.text}`;
+  }
+  return undefined;
+}
+
+/**
  * Check whether an AST node is an unshadowed call to an imported filesystem reader.
  * Returning false leaves the expression eligible for content taint.
  *
  * @param node - AST node tested as a call expression
  * @param parsedSource - parsed syntax tree used to extract the callee text
  * @param bindings - imported-reader names and their hoisted shadowing scopes
- * @returns True if node is a call whose callee text belongs to bindings with no visible reader shadowing; otherwise false.
+ * @returns True if node is a call whose normalized callee belongs to bindings with no visible reader shadowing; otherwise false.
  */
 function isImportedFileRead(node: TsNode, parsedSource: TsSourceFile, bindings: FileReadBindings): boolean {
   if (!typescriptSyntax.isCallExpression(node)) return false;
-  const callee = node.expression.getText(parsedSource);
+  const callee = dottedIdentifierPath(node.expression) ?? node.expression.getText(parsedSource);
   return bindings.has(callee) && !isFileReadBindingShadowed(node, callee, bindings);
 }
 
@@ -433,9 +451,11 @@ function recordHoistedFileReadBindings(node: TsNode, scope: TsNode, bindings: Ma
  */
 function writtenFileReadCallee(node: TsNode, parsedSource: TsSourceFile): string | undefined {
   if (typescriptSyntax.isParenthesizedExpression(node)) return writtenFileReadCallee(node.expression, parsedSource);
-  if (typescriptSyntax.isPropertyAccessExpression(node)) return node.getText(parsedSource);
+  // Normalize property access so `fs . readFileSync = ...` invalidates the `fs.readFileSync` reader binding reliably.
+  if (typescriptSyntax.isPropertyAccessExpression(node)) return dottedIdentifierPath(node) ?? node.getText(parsedSource);
   if (typescriptSyntax.isElementAccessExpression(node) && typescriptSyntax.isStringLiteral(node.argumentExpression)) {
-    return `${node.expression.getText(parsedSource)}.${node.argumentExpression.text}`;
+    const receiver = dottedIdentifierPath(node.expression) ?? node.expression.getText(parsedSource);
+    return `${receiver}.${node.argumentExpression.text}`;
   }
   return undefined;
 }
@@ -762,7 +782,32 @@ function reportSink(
   if (sinkLine === hit.line && !reportsSameLine) {
     return;
   }
-  findings.push(flowFinding(file, sinkLine, sink.ruleId, sink.sinkKind, hit.kind, hit.depth));
+  const sinkForm = sink.ruleId === "security.unsafe-deserialization" ? unsafeDeserializationSinkForm(callee) : undefined;
+  findings.push(flowFinding(file, sinkLine, sink.ruleId, sink.sinkKind, hit.kind, hit.depth, sinkForm));
+}
+
+type DeserializationSinkForm = "eval" | "function-constructor" | "unserialize" | "yaml-load" | "vm";
+
+/**
+ * Classifies an unsafe-deserialization callee into a closed token so duplicate-eval merging never suppresses a co-located `vm` or `yaml` sink.
+ *
+ * @param callee - normalized sink callee text matched by `isUnsafeDeserializationSink`
+ * @returns Closed sink mechanism token (`"eval"`, `"function-constructor"`, `"unserialize"`, `"yaml-load"`, or `"vm"`).
+ */
+function unsafeDeserializationSinkForm(callee: string): DeserializationSinkForm {
+  if (/^eval$/.test(callee)) {
+    return "eval";
+  }
+  if (/^Function$/.test(callee)) {
+    return "function-constructor";
+  }
+  if (/(?:^|\.)unserialize$/.test(callee)) {
+    return "unserialize";
+  }
+  if (/^(?:yaml|YAML|jsYaml|jsyaml)\.load$/.test(callee)) {
+    return "yaml-load";
+  }
+  return "vm";
 }
 
 /**
@@ -1312,9 +1357,18 @@ function isFunctionLike(node: TsNode): boolean {
  * @param sinkKind - sink category for machine-readable metadata
  * @param sourceKind - external input category for machine-readable metadata
  * @param flowDepth - bounded alias distance between source and sink
- * @returns a medium-confidence security warning on the one-based sink line, with the rule's own message and remediation or generic cross-line text
+ * @param sinkForm - closed sink mechanism token attached for `security.unsafe-deserialization`; omit for other rules
+ * @returns A medium-confidence security warning on the one-based sink line, with the rule's own message and remediation or generic cross-line text.
  */
-function flowFinding(file: SourceFile, lineIndex: number, ruleId: string, sinkKind: string, sourceKind: string, flowDepth: number): Finding {
+function flowFinding(
+  file: SourceFile,
+  lineIndex: number,
+  ruleId: string,
+  sinkKind: string,
+  sourceKind: string,
+  flowDepth: number,
+  sinkForm?: DeserializationSinkForm,
+): Finding {
   const base = securityRuleDetails(ruleId);
   return makeFinding({
     ruleId,
@@ -1325,7 +1379,7 @@ function flowFinding(file: SourceFile, lineIndex: number, ruleId: string, sinkKi
     pillar: "security",
     confidence: "medium",
     remediation: base ? base.remediation : "Validate external input before it reaches the sink.",
-    metadata: { sourceKind, sinkKind, flowDepth },
+    metadata: { sourceKind, sinkKind, flowDepth, ...(sinkForm === undefined ? {} : { sinkForm }) },
   });
 }
 

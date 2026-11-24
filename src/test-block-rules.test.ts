@@ -4,7 +4,7 @@
 // Full analysis-path cases in false-positive-fixes.test.ts also cover source masking.
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { FunctionBlock } from "./blocks.ts";
+import { hasAssertion, type FunctionBlock } from "./blocks.ts";
 import type { SourceFile } from "./discovery.ts";
 import { analyseTestBlock } from "./test-block-rules.ts";
 import { analyseFixture } from "./test-fixtures.ts";
@@ -437,3 +437,28 @@ for (const { name, body, rule, reports } of M15_STRUCTURE_CASES) {
     assert.equal(actual, reports, name);
   });
 }
+
+test("assertion detection rejects comparisons with expect and loop-in-test catches mixed should and nested assertions", () => {
+  assert.equal(hasAssertion("if (expect < high && high > (low)) { prepare(); }"), false);
+  assert.equal(hasAssertion("expect<Result>(actual).toEqual(expected);"), true);
+  const testFile = [
+    "// File overview: loop assertion fixture.",
+    'test("mixed should assertion", () => {',
+    "  const items = [1, 2];",
+    "  for (const item of items) {",
+    "    assert.ok(item > 0, String(item));",
+    "    item.should.be.equal(item);",
+    "  }",
+    "});",
+    'test("nested unlabeled assertion", () => {',
+    "  const items = [1, 2];",
+    "  for (const item of items) {",
+    "    assert.ok((assert.ok(item > 0), true), String(item));",
+    "  }",
+    "});",
+    "",
+  ].join("\n");
+  const report = analyseFixture(testFile, { fileName: "src/sample.test.ts" });
+  const loopFindings = report.findings.filter((finding) => finding.ruleId === "test-quality.loop-in-test");
+  assert.equal(loopFindings.length, 2);
+});

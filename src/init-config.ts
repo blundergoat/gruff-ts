@@ -11,20 +11,16 @@ import type { FailThreshold, MinimumSeverityCommand, RuleDescriptor } from "./ty
 
 const DEFAULT_CONFIG_FILE_NAME = ".gruff-ts.yaml";
 
-// Default option values for rules with `optionKeys`. The source of truth is the
-// `optionNumber` or `optionBoolean(config, ruleId, key, default)` call site in the rule implementation;
-// mirroring them here keeps `gruff-ts init` self-contained. `init-config.test.ts` asserts the values
-// here match the implementation defaults so drift fails the test suite, not user projects.
+// Default option values for rules declaring `optionKeys`, mirrored here so `gruff-ts init` stays self-contained.
+// `init-config.test.ts` asserts parity with the live `optionNumber`/`optionBoolean` defaults in rule implementations.
 const RULE_OPTION_DEFAULTS: Readonly<Record<string, Readonly<Record<string, number | boolean>>>> = {
   "design.large-module-concentration": { minFiles: 4, minLines: 80 },
   "docs.missing-param-tag": { everyCallable: true },
   "docs.missing-return-tag": { everyCallable: true },
 };
 
-// Default starter list copied from `defaultConfig()` in config.ts. Generated separately because
-// the YAML form (a block sequence) is more reviewable than the inline `[...]` form a Set would emit.
-// Universal-programming abbreviations that earn their place across nearly any codebase; project-specific
-// vocabulary (domain acronyms) should be appended in the user's config rather than added here.
+// Starter abbreviation allowlist copied from `defaultConfig()` in `config.ts`, emitted as a readable YAML block sequence.
+// Project-specific domain acronyms belong in the repository's `.gruff-ts.yaml` rather than this universal starter list.
 const DEFAULT_ACCEPTED_ABBREVIATIONS: readonly string[] = [
   "age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx", "ui", "url",
 ];
@@ -35,10 +31,9 @@ interface InitResult {
   status: "written" | "overwritten" | "exists";
 }
 
-// Inputs the analyse/summary actions must collect before deciding whether to ask the user about
-// running `init`. Kept as an explicit shape so the predicate is testable without TTY mocking. All
-// three stream TTY states matter: stdin so the answer can be typed, stderr so the prompt is seen,
-// and stdout so a piped consumer (e.g. `... --format=json | jq`) does not block on hidden input.
+// Inputs `analyse` and `summary` pass before deciding whether to prompt the user to run `gruff-ts init`.
+//
+// All three TTY flags matter so piped JSON commands (such as `--format=json | jq`) never block on an invisible interactive prompt.
 interface InitPromptContext {
   projectRoot: string;
   shouldSkipConfig: boolean;

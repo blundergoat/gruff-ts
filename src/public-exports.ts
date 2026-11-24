@@ -1,7 +1,7 @@
-// Syntax-backed public-export inventory for naming diagnostics. It reads the shared parsed
-// script, resolves direct, default, and bottom re-export forms to one declaration list, and never
-// parses a user's file again. The class/file rule reaches this module when deciding whether a
-// mismatched class is the only public declaration a CLI or report user needs to locate.
+// Builds a syntax-backed public-export inventory from the shared script parse for naming checks.
+//
+// Resolves direct, default, and bottom `export { ... }` forms into one declaration list without re-parsing the file.
+// Used by `naming.class-file-mismatch` to check whether a mismatched class is the sole public declaration in a module.
 import { createRequire } from "node:module";
 import type { ParsedScript } from "./parsed-script.ts";
 
@@ -21,11 +21,10 @@ type TsExportAssignment = import("typescript").ExportAssignment;
 export type PublicExportKind = "class" | "interface" | "type" | "enum" | "function" | "default" | "re-export";
 
 /*
- * One deterministic public declaration from the user's module. Resolved local re-exports retain
- * the local kind, name, and declaration line; unresolved external/default values use the export
- * statement line so the inventory remains complete without a semantic program.
- * `exportedName` is present only when an alias renames the declaration on its way out, because the
- * name a consumer imports is the one a naming rule about the public surface has to judge.
+ * One public declaration extracted from a module for class/file naming checks.
+ *
+ * Local re-exports preserve their local kind, name, and line; external or anonymous defaults anchor on the export statement line.
+ * `exportedName` is set only when an `as` alias renames the export so naming checks judge the name callers actually import.
  */
 export interface PublicExportDeclaration {
   kind: PublicExportKind;

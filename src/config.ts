@@ -96,7 +96,7 @@ function loadConfig(projectRoot: string, options: AnalysisOptions): Config {
   if (path) {
     applyConfigValues(config, parsedConfig);
   }
-  applyProfile(config, options, parsedConfig, projectRoot);
+  applyProfile(config, options, parsedConfig, projectRoot, path);
   applyDeepScanBudgetOverride(config, options.deepScanBudget);
   // The execution selectors choose which rules run, so they narrow the catalogue last, after every other source.
   applyExecutionSelectors(config, options.execution);
@@ -110,16 +110,26 @@ function loadConfig(projectRoot: string, options: AnalysisOptions): Config {
  * @param config - effective configuration updated in place with profile rule defaults and ignore paths
  * @param options - CLI options that may supply an overriding profile specification
  * @param parsedConfig - parsed config file mapping that may declare a `profile` entry
- * @param projectRoot - base directory used to resolve the initial relative profile file reference
+ * @param projectRoot - base directory used to resolve a CLI profile path when relative
+ * @param configPath - resolved config path anchoring relative `profile:` entries in that config, or undefined when none loaded
  * @returns Nothing. Mutates `config` in place when a profile is configured, or leaves it unchanged when omitted.
  */
-function applyProfile(config: Config, options: AnalysisOptions, parsedConfig: Record<string, unknown>, projectRoot: string): void {
-  const configuredProfile = options.profile !== undefined ? options.profile : parsedConfig.profile;
+function applyProfile(
+  config: Config,
+  options: AnalysisOptions,
+  parsedConfig: Record<string, unknown>,
+  projectRoot: string,
+  configPath: string | undefined,
+): void {
+  const usesCliProfile = options.profile !== undefined;
+  const configuredProfile = usesCliProfile ? options.profile : parsedConfig.profile;
   // When both sources omit a profile, the current defaults and explicit settings carry forward.
   if (configuredProfile === undefined) {
     return;
   }
-  applyProfileUnderlay(config, resolveProfile(parseProfileSpec(configuredProfile), projectRoot));
+  // A profile named inside a config file resolves relative to that config file's directory so `--config` and hook replay stay portable.
+  const baseDirectory = usesCliProfile || configPath === undefined ? projectRoot : dirname(configPath);
+  applyProfileUnderlay(config, resolveProfile(parseProfileSpec(configuredProfile), baseDirectory));
 }
 
 /**
@@ -364,21 +374,25 @@ function inlineSpecFromObject(block: Record<string, unknown>): InlineProfileSpec
 }
 
 /**
- * Extracts rule settings from the parsed profile `rules` mapping; entries with other shapes contribute no override.
+ * Extracts rule settings from the parsed profile `rules` mapping and rejects non-mapping values so typos never become silent no-ops.
  * Shares field validation with direct config and propagates `ConfigLoadError` for invalid fields; rule IDs are checked during overlay.
  *
  * @param rulesBlock - parsed `rules` mapping from a profile definition
  * @returns Record mapping rule identifiers to validated profile rule settings.
+ * @throws {ConfigLoadError} when a rule entry is not a mapping or fails field validation.
  */
 function profileRulesFromBlock(rulesBlock: Record<string, unknown>): Record<string, ProfileRuleSetting> {
   const rules: Record<string, ProfileRuleSetting> = {};
-  // A non-mapping entry is skipped so that the other rule entries can still be validated.
   for (const [ruleId, value] of Object.entries(rulesBlock)) {
     const rule = objectValue(value);
-    // A rule mapping can still supply valid scalar fields when its options value has the wrong shape.
-    if (rule) {
-      rules[ruleId] = ruleConfigValue(ruleId, rule);
+    // Reject scalar or array rule entries such as `size.function-length: true` instead of silently ignoring the user's policy.
+    if (!rule) {
+      throw new ConfigLoadError(
+        `Invalid config for rule ${JSON.stringify(ruleId)}: expected a mapping with enabled, threshold, severity, or options.`,
+        SUGGEST_EDIT_CONFIG,
+      );
     }
+    rules[ruleId] = ruleConfigValue(ruleId, rule);
   }
   return rules;
 }
@@ -704,12 +718,12 @@ function applyNamingAllowlist(config: Config, allowlists: Record<string, unknown
 
 /**
  * Applies per-rule overrides from the parsed `rules` mapping to the effective config.
- * Non-mapping entries contribute no override, and unset fields in a supplied rule use their defaults.
+ * Rejects unknown rule IDs and non-mapping rule entries loudly so malformed settings never become silent no-ops.
  *
  * @param config - effective configuration whose `rules` map receives validated per-rule overrides
  * @param parsedConfig - parsed configuration mapping that may supply a `rules` section
  * @returns Nothing. Populates `config.rules` in place for each valid rule mapping.
- * @throws {ConfigLoadError} - when a rule mapping names an unknown rule, has an unknown key, or fails field validation.
+ * @throws {ConfigLoadError} when a rule entry is not a mapping, names an unknown rule, has an unknown key, or fails field validation.
  */
 function applyRuleConfig(config: Config, parsedConfig: Record<string, unknown>): void {
   const rules = objectValue(parsedConfig.rules);
@@ -718,16 +732,19 @@ function applyRuleConfig(config: Config, parsedConfig: Record<string, unknown>):
     return;
   }
   for (const [ruleId, value] of Object.entries(rules)) {
-    const rule = objectValue(value);
-    // A non-mapping entry has no supported rule fields and therefore contributes no override.
-    if (!rule) {
-      continue;
-    }
     // A misspelled id would otherwise sit in the map as a silent no-op the user believes is policy.
     if (!isKnownRuleId(ruleId)) {
       throw new ConfigLoadError(
         `Unknown rule id: ${JSON.stringify(ruleId)}.`,
         "Use a rule id from `gruff-ts list-rules`; `rules:` keys must match the catalogue exactly.",
+      );
+    }
+    const rule = objectValue(value);
+    // Reject shorthand scalars such as `size.function-length: false` instead of ignoring the override silently.
+    if (!rule) {
+      throw new ConfigLoadError(
+        `Invalid config for rule ${JSON.stringify(ruleId)}: expected a mapping with enabled, threshold, severity, or options.`,
+        SUGGEST_EDIT_CONFIG,
       );
     }
     config.rules.set(ruleId, ruleConfigValue(ruleId, rule));

@@ -1,21 +1,21 @@
 /*
- * Shared pillar-row construction + grade helper. Lives in its own module so the text/markdown
- * renderers (`report-renderers.ts`), the HTML renderer (`report-html.ts`), and the score builder
- * (`scoring.ts`) can all source the same `buildPillarRows` and `grade` logic without forming a
- * dependency cycle between renderer modules. Every row feeds the cross-port human Pillars table,
- * so findings-descending/pillar-ascending order and a clean A/100 fallback must stay byte-stable.
+ * Shared pillar-row construction and grade helper for CLI text, Markdown, HTML, and dashboard reports.
+ *
+ * Lives in its own module so renderers (`report-renderers.ts`, `report-html.ts`) and scoring (`scoring.ts`) share one implementation without cycles:
+ * - preserves the cross-port human Pillars table sort order (findings descending, then pillar ascending);
+ * - keeps unevaluated pillars (`score: null`) explicitly labeled `n/a` instead of reporting a synthetic `A/100`.
  */
 import { ruleDescriptors } from "./rules.ts";
 import type { AnalysisReport, Finding, Pillar } from "./types.ts";
 
-// Aggregated per-pillar row used by every renderer. `applicable` is derived from the rule
-// catalogue rather than the live findings so the row set stays stable across runs (a pillar with
-// zero findings today is still applicable). `grade` is derived from `score` via the shared
-// `grade()` helper so historical pillar scores keep their existing grade letters.
+// Aggregated per-pillar row shared across text, Markdown, and HTML renderers.
+//
+// `isApplicable` comes from the rule catalogue so a clean pillar with zero findings still appears in the Pillars table.
+// `score` is `null` (with `grade: "n/a"`) when the report explicitly marks the pillar unevaluated, such as a zero-file scan.
 interface PillarRow {
   pillar: Pillar;
   grade: string;
-  score: number;
+  score: number | null;
   penalty: number;
   isApplicable: boolean;
   findings: number;
@@ -24,9 +24,7 @@ interface PillarRow {
   error: number;
 }
 
-// Per-pillar severity tally - one entry per pillar that produced at least one finding. Renderers
-// see these counts indirectly through `buildPillarRows`; the type is exported only so other
-// modules in this package can name it when consuming `countSeverityByPillar`.
+// Per-pillar severity tally for pillars with at least one finding; exported for consumers of `countSeverityByPillar`.
 interface PillarSeverityCounts {
   advisory: number;
   warning: number;
@@ -34,11 +32,11 @@ interface PillarSeverityCounts {
 }
 
 /**
- * Builds the shared pillar summary for text, Markdown and HTML reports.
- * Keeps one row per applicable pillar even when there are no findings, so comparisons cover the same pillars.
+ * Builds the shared pillar summary for text, Markdown, and HTML reports.
+ * Keeps one row per applicable pillar even when there are no findings so consecutive runs compare the same table shape.
  *
- * @param report - supplies pillar scores and findings to tally by severity
- * @returns Deterministic rows in findings DESC, pillar ASC order. Missing scores use A/100 and missing tallies use zero.
+ * @param report - analysis report supplying pillar scores and findings to tally by severity; an empty findings list still emits every pillar
+ * @returns Deterministic rows in findings DESC, pillar ASC order. Unevaluated null scores keep `n/a`; absent entries default to A/100.
  */
 function buildPillarRows(report: AnalysisReport): PillarRow[] {
   const scoreByPillar = new Map(report.score.pillars.map((entry) => [entry.pillar, entry] as const));
@@ -52,11 +50,12 @@ function buildPillarRows(report: AnalysisReport): PillarRow[] {
  * Tallies severity counts by pillar from the report's findings for the stable Pillars table schema.
  * A pillar with no findings has no map entry, so the row builder supplies its zero counts.
  *
- * @param findings - reported findings whose pillar and severity values are tallied
- * @returns map of per-pillar advisory, warning, and error counts for pillars with at least one finding
+ * @param findings - reported findings whose pillar and severity values are tallied; an empty array yields an empty map
+ * @returns Map of per-pillar advisory, warning, and error counts for pillars with at least one finding.
  */
 function countSeverityByPillar(findings: Finding[]): Map<Pillar, PillarSeverityCounts> {
   const severityByPillar = new Map<Pillar, PillarSeverityCounts>();
+  // Accumulate each finding under its primary pillar so summary severities match the report's finding list.
   for (const finding of findings) {
     const counts = severityByPillar.get(finding.pillar) ?? { advisory: 0, warning: 0, error: 0 };
     counts[finding.severity] += 1;
@@ -66,19 +65,21 @@ function countSeverityByPillar(findings: Finding[]): Map<Pillar, PillarSeverityC
 }
 
 /**
- * Build the summary row for an applicable pillar. The row contract derives the total from the same tally as its severity columns.
+ * Builds the summary row for one applicable pillar; stable contract derives the total from the same tally as its severity columns.
+ * Preserves an explicit `null` score as `n/a` when nothing was evaluated; falls back to `A/100` when a partial fixture omits the entry.
  *
- * @param pillar - pillar to label in the summary
- * @param scoreEntry - score and penalty for that pillar, defaulting to 100 and 0 when absent
- * @param severities - reported findings by severity for that pillar, defaulting to zero counts when absent
- * @returns the applicable pillar's row with its grade, score, penalty, and finding counts
+ * @param pillar - pillar to label in the summary table
+ * @param scoreEntry - score and penalty for that pillar; `score: null` renders `n/a`, while `undefined` defaults to 100 and 0
+ * @param severities - reported findings by severity for that pillar; `undefined` means zero findings in every severity bucket
+ * @returns The applicable pillar's row with its grade, score (or `null` when unevaluated), penalty, and finding counts.
  */
 function buildPillarRow(pillar: Pillar, scoreEntry: AnalysisReport["score"]["pillars"][number] | undefined, severities: PillarSeverityCounts | undefined): PillarRow {
-  const score = scoreEntry?.score ?? 100;
+  // Distinguish an explicit unevaluated `null` (0 evaluated files) from an omitted entry in a partial fixture.
+  const score = scoreEntry === undefined ? 100 : scoreEntry.score;
   const counts = severities ?? { advisory: 0, warning: 0, error: 0 };
   return {
     pillar,
-    grade: grade(score),
+    grade: score === null ? "n/a" : grade(score),
     score,
     penalty: scoreEntry?.penalty ?? 0,
     isApplicable: true,

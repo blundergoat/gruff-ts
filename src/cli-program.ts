@@ -9,6 +9,8 @@ import { performance } from "node:perf_hooks";
 import { cwd } from "node:process";
 import { CONFIG_ERROR_DIAGNOSTIC_TYPE, failedRunReport, projectRootFromTargets, TARGET_ERROR_DIAGNOSTIC_TYPE, targetOutsideLaunchDirectory } from "./analyser.ts";
 import { DEFAULT_BASELINE } from "./baseline.ts";
+import { BaselineFileError } from "./baseline-file.ts";
+import { BaselineIdentityError } from "./baseline-identity.ts";
 import { checkIgnore, checkIgnoreExitCode, renderCheckIgnore, type CheckIgnoreFormat } from "./check-ignore.ts";
 import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError } from "./changed-regions.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
@@ -21,7 +23,7 @@ import { migrateConfigText } from "./migrate-config.ts";
 import { renderReport, renderSummary, renderSummaryJson } from "./report-renderers.ts";
 import { completionShell, getRuleDescriptor, renderCompletionScript, renderConsoleList, renderProfileList, renderRuleDetail, renderRuleList, type RuleListFormat } from "./rule-list.ts";
 import { exitFor, summarize } from "./scoring.ts";
-import { applyDisplaySelectors, type DisplaySelectors } from "./selectors.ts";
+import { applyDisplaySelectors, validateDisplaySelectors, type DisplaySelectors } from "./selectors.ts";
 import type { AnalysisOptions, AnalysisReport, Confidence, DeepScanBudgetOverride, ExecutionSelectors, MinimumSeverityCommand, Severity } from "./types.ts";
 
 type HookAnalysisViews = { currentReport: AnalysisReport; scopedReport: AnalysisReport };
@@ -380,6 +382,8 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
         return;
       }
       await runWithConfigErrorHandling(async () => {
+        // Validate display selector names before scanning so a typo exits 2 without writing a baseline or running analysis.
+        validateDisplaySelectors(displaySelectorsFrom(rawOptions));
         const baseOptions = normalizeOptions(paths, rawOptions, { shouldAllowBaselineFlag: true });
         const configured = configuredSeverities(baseOptions, "analyse", command);
         const options = configured.options;
@@ -495,7 +499,7 @@ function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void 
         // A missing review file, for example, is a fatal diagnostic in the hook's standard response.
         if (error instanceof Error) {
           // Render a fatal diagnostic under the gruff.hook.v2 schema so consumers can read the failure when stdout is enabled.
-          writeCommandOutput(program, renderHookFatal(hookFatalType(error, rawOptions), error.message));
+          writeCommandOutput(program, renderHookFatal(hookFatalType(error), error.message));
           process.stderr.write(`gruff-ts: ${error.message}\n`);
           process.exitCode = USAGE_EXIT_CODE;
           return;
@@ -950,14 +954,16 @@ function writeChangedRegionFailure(report: AnalysisReport, format: AnalysisOptio
  * Maps a hook error to its diagnostic type under the hook's stable diagnostic contract without inspecting message wording.
  *
  * @param error - thrown error instance caught by the hook command
- * @param rawOptions - parsed CLI options checked for a string `--baseline` path
- * @returns The changed-region diagnostic type for `ChangedRegionError`, `"baseline"` when a baseline path string is present, or `"run"`.
+ * @returns The changed-region diagnostic type for `ChangedRegionError`, `"baseline"` for baseline errors, or `"run"` for other runtime errors.
  */
-function hookFatalType(error: Error, rawOptions: Record<string, unknown>): string {
+function hookFatalType(error: Error): string {
   if (error instanceof ChangedRegionError) {
     return CHANGED_REGION_DIAGNOSTIC_TYPE;
   }
-  return typeof rawOptions.baseline === "string" ? "baseline" : "run";
+  if (error instanceof BaselineFileError || error instanceof BaselineIdentityError) {
+    return "baseline";
+  }
+  return "run";
 }
 
 /**
@@ -1117,14 +1123,13 @@ function hookCurrentOptions(options: AnalysisOptions): AnalysisOptions {
 
 /**
  * Reports whether any changed-region selector (ranges, diff, since, or stdin patch) is active for the run.
- * `changedRanges` is tested for presence rather than truthiness, matching `changedRegionScope`: an empty value
- * asks to scope the run without naming a range, which the parser refuses instead of widening the scan.
+ * Both `changedRanges` and `diffPatch` test presence rather than truthiness, matching `changedRegionScope`.
  *
  * @param options - normalized analysis options to inspect for region selectors
  * @returns True when any changed-region selector is active; otherwise false.
  */
 function hasHookChangedRegion(options: AnalysisOptions): boolean {
-  return options.changedRanges !== undefined || Boolean(options.diff || options.since || options.diffPatch);
+  return options.changedRanges !== undefined || options.diffPatch !== undefined || Boolean(options.diff || options.since);
 }
 
 /**
@@ -1138,13 +1143,20 @@ function hookBaselinePath(rawOptions: Record<string, unknown>): Partial<{ baseli
 }
 
 /**
- * Selects the hook's new-only comparison ref from `diff`, falling back to `since`.
+ * Selects the hook's new-only comparison ref using the same precedence as `changedRegionScope` (`diffPatch`, then `since`, then `diff`).
  *
  * @param options - normalized hook analysis options
- * @returns `{ diffBase }` from `options.diff` or `options.since`, or an empty object when neither is set.
+ * @returns `{ diffBase }` matching the active diff or `since` selector, or an empty object when no replayable selector is set.
  */
 function hookDiffBase(options: AnalysisOptions): Partial<{ diffBase: string }> {
-  return options.diff ? { diffBase: options.diff } : options.since ? { diffBase: options.since } : {};
+  // An explicit stdin patch has no Git revision to replay even if `--since` was also supplied.
+  if (options.diffPatch !== undefined) {
+    return {};
+  }
+  if (options.since) {
+    return { diffBase: options.since };
+  }
+  return options.diff ? { diffBase: options.diff } : {};
 }
 
 /**

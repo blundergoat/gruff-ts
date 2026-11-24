@@ -440,18 +440,34 @@ function gitDiffScope(mode: string, changedScope: ChangedScopeMode, projectRoot:
   if (mode === "unstaged") {
     return readDiff([]);
   }
-  // A working-tree review also includes new files the user has yet to add.
+  // A working-tree review uses `git diff HEAD` when HEAD exists so staged and unstaged edits share exact working-tree line numbers.
   if (mode === "working-tree") {
+    const trackedScopes = hasGitHead(projectRoot)
+      ? [readDiff(["HEAD", "--"])]
+      : [readDiff(["--cached"]), readDiff([])];
     return mergeScopes(
-      [
-        readDiff(["--cached"]),
-        readDiff([]),
-        untrackedFileScope(changedScope, projectRoot),
-      ],
+      [...trackedScopes, untrackedFileScope(changedScope, projectRoot)],
       changedScope,
     );
   }
-  return readDiff(["--end-of-options", mode]);
+  // Trailing `--` forces Git to interpret `mode` strictly as a revision expression rather than a path when the ref is missing.
+  return readDiff(["--end-of-options", mode, "--"]);
+}
+
+/**
+ * Spawns `git rev-parse` to check whether `HEAD` exists so `working-tree` can diff against `HEAD` instead of merging index coordinates.
+ *
+ * @param projectRoot - Directory passed to Git when verifying `HEAD`.
+ * @returns True when `HEAD` resolves to a commit; false in a freshly initialized repository with an unborn `HEAD` or outside a repo.
+ */
+function hasGitHead(projectRoot: string): boolean {
+  try {
+    execFileSync("git", ["rev-parse", "--verify", "--quiet", "HEAD"], { cwd: projectRoot, stdio: ["ignore", "ignore", "ignore"] });
+    return true;
+  } catch {
+    // For example, a brand-new repository after `git init` has staged files but no initial commit yet, so `HEAD` does not exist.
+    return false;
+  }
 }
 
 /**

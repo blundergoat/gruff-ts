@@ -1,8 +1,8 @@
-// Shared syntax-only parse boundary (ADR-012): each analysed script is parsed exactly once per
-// analysis run, and that one result feeds parse diagnostics, security-flow analysis, and AST
-// function discovery. Separate parse paths would triple parser cost and drift apart; this module
-// owns the parser, the script-kind mapping, and the AST callable enumeration consumed by the
-// block rules (and, downstream, complexity metrics and naming ownership).
+// Shared syntax-only parse boundary (ADR-012): parses each analysed script at most once per run.
+//
+// Feeds parse diagnostics, security-flow analysis, docblock rules, and AST callable discovery from one syntax tree:
+// - prevents triple parser overhead and drift between rule modules;
+// - owns script-kind mapping, decorator masking, and callable enumeration consumed by block, complexity, and naming rules.
 import { createRequire } from "node:module";
 import { commentRecords, isDividerComment, isFileOverviewComment } from "./comment-scanner.ts";
 import type { RunDiagnostic } from "./types.ts";
@@ -197,22 +197,15 @@ function summarizeParseErrors(file: ParsedScriptInput, sourceFile: TsSourceFile,
 }
 
 /*
- * One discovered callable declaration point: the zero-based line index where the legacy regex
- * scanner would have matched, the reported block name, raw parameter text, actual AST parameter
- * count, and the callable node used by later syntax metrics. The block parser turns points into
- * FunctionBlocks with the exact same start/end/body slicing it always used, so the retained
- * fingerprint invariant cannot move.
+ * One discovered callable match point projected from the shared syntax tree for block rules.
+ *
+ * Invariant: preserves the exact line anchor and slicing rules the block parser expects so existing finding fingerprints never move.
  */
 export interface CallableMatchPoint {
   lineIndex: number;
-  // Zero-based first line of the declaration itself, modifiers included but leading documentation
-  // excluded. Equals `lineIndex` for every single-line declaration; it moves earlier only when a
-  // declaration splits its modifiers onto their own line, where the line above the name is
-  // `export async function` rather than the docblock a reader can plainly see.
+  // Zero-based first line of the declaration (modifiers included, docs excluded) so split headers keep doc lookup intact.
   declarationLineIndex: number;
-  // Zero-based line of the callable's final token. The block parser prefers this over its legacy
-  // brace walk: a `{}` inside a multi-line parameter default would otherwise close the walk early
-  // and slice an empty body.
+  // Zero-based line of the callable's final token, preferred over brace walking so `{}` in defaults cannot truncate bodies.
   endLineIndex: number;
   name: string;
   params: string;
@@ -361,10 +354,14 @@ function measuredOnlyPointFor(sourceFile: TsSourceFile, node: TsNode): CallableM
  * @returns Callable match point anchored at the variable identifier, or undefined for other shapes.
  */
 function varFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
-  if (!typescriptSyntax.isVariableDeclaration(node) || !typescriptSyntax.isIdentifier(node.name) || !isFunctionValue(node.initializer) || !isVarList(node.parent)) {
+  if (!typescriptSyntax.isVariableDeclaration(node) || !typescriptSyntax.isIdentifier(node.name) || !isVarList(node.parent)) {
     return undefined;
   }
-  return declarationPoint(sourceFile, node.name.getStart(sourceFile), node.initializer, node.name.text, node.initializer.parameters);
+  const initializer = node.initializer ? withoutParentheses(node.initializer) : undefined;
+  if (!isFunctionValue(initializer)) {
+    return undefined;
+  }
+  return declarationPoint(sourceFile, node.name.getStart(sourceFile), initializer, node.name.text, initializer.parameters);
 }
 
 /**
@@ -376,12 +373,16 @@ function varFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatch
  * @returns Callable match point for the property function, or undefined when `node` does not match.
  */
 function keyFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
-  if (!typescriptSyntax.isPropertyAssignment(node) || !isFunctionValue(node.initializer) || typescriptSyntax.isComputedPropertyName(node.name)) {
+  if (!typescriptSyntax.isPropertyAssignment(node) || typescriptSyntax.isComputedPropertyName(node.name)) {
+    return undefined;
+  }
+  const initializer = withoutParentheses(node.initializer);
+  if (!isFunctionValue(initializer)) {
     return undefined;
   }
   const objectName = objectLiteralName(sourceFile, node.parent);
   const name = objectName ? `${objectName}.${node.name.text}` : node.name.text;
-  return declarationPoint(sourceFile, node.name.getStart(sourceFile), node.initializer, name, node.initializer.parameters);
+  return declarationPoint(sourceFile, node.name.getStart(sourceFile), initializer, name, initializer.parameters);
 }
 
 /**
@@ -392,10 +393,14 @@ function keyFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatch
  * @returns Callable match point named after the target expression, or undefined for other node shapes.
  */
 function memberFunctionPoint(sourceFile: TsSourceFile, node: TsNode): CallableMatchPoint | undefined {
-  if (!typescriptSyntax.isBinaryExpression(node) || node.operatorToken.kind !== typescriptSyntax.SyntaxKind.EqualsToken || !isMember(node.left) || !isFunctionValue(node.right)) {
+  if (!typescriptSyntax.isBinaryExpression(node) || node.operatorToken.kind !== typescriptSyntax.SyntaxKind.EqualsToken || !isMember(node.left)) {
     return undefined;
   }
-  return declarationPoint(sourceFile, node.left.getStart(sourceFile), node.right, compactText(sourceFile, node.left), node.right.parameters);
+  const right = withoutParentheses(node.right);
+  if (!isFunctionValue(right)) {
+    return undefined;
+  }
+  return declarationPoint(sourceFile, node.left.getStart(sourceFile), right, compactText(sourceFile, node.left), right.parameters);
 }
 
 /**
@@ -684,13 +689,12 @@ export interface DestructuredParameterSlot {
 }
 
 /*
- * One documented callable as the docblock rules consume it (exported function declarations by default;
- * exported constants, default and later exports, methods, and private or nested callables only under
- * the tag rules' `everyCallable` switches): the JSDoc text
- * between its markers (empty when `hasJsDoc` is false), whether the leading comment is a
- * `/** ... *\/` JSDoc block, the declared name, identifier parameter names (destructured
- * parameters stay out of `parameterNames` and are recorded separately in `destructuredParameters`),
- * and the comment's one-based start line (the docblock rules' stable finding anchor).
+ * One documented callable projected for docblock tag rules (`docs.missing-param-tag`, `docs.missing-return-tag`, `docs.stale-param-tag`).
+ *
+ * Covers exported declarations plus constants, methods, and private callables when `everyCallable` is enabled:
+ * - `docText` holds JSDoc interior text (empty when `hasJsDoc` is false for `//` or `/* *\/` comments);
+ * - `parameterNames` lists identifier parameters while `destructuredParameters` tracks object/array binding patterns separately;
+ * - `line` anchors findings on the comment's one-based start line for stable fingerprints.
  */
 export interface DocumentedExportFunction {
   docText: string;

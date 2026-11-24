@@ -1,4 +1,7 @@
-// Console command catalogue, shell completion scripts, and rule-list renderers for CLI surfaces.
+// Formats the CLI command catalogue, shell completion scripts (`bash`/`zsh`/`fish`), and `list-rules`/`list-profiles` output.
+//
+// Projects internal rule descriptors into the public cross-port listing shape used by CLI text and JSON consumers.
+// Keeps command discovery, tab completion, and rule documentation backed by one source of truth.
 import { VERSION } from "./constants.ts";
 import { profileSummaries, type ProfileSummary } from "./profiles.ts";
 import { ruleDescriptors } from "./rules.ts";
@@ -38,10 +41,8 @@ const CONSOLE_COMMANDS = [
   },
 ] as const;
 
-// Knob names gruff-go already publishes for a single-threshold rule, keyed by rule id. The family
-// listing shape (M09, ratified 2026-09-09) carries every threshold as a named map; a rule whose id
-// has no knob name anywhere in the family publishes the one-key map `{"threshold": N}` so no new
-// permanent public identifier is invented.
+// Cross-port threshold knob names for single-threshold rules (ratified M09 listing contract).
+// Any rule without a family knob name publishes `{"threshold": N}` so no new permanent identifier is invented.
 const LISTING_THRESHOLD_KNOB_NAMES: Readonly<Record<string, string>> = {
   "complexity.cyclomatic": "maxComplexity",
   "size.file-length": "maxLines",
@@ -49,10 +50,8 @@ const LISTING_THRESHOLD_KNOB_NAMES: Readonly<Record<string, string>> = {
   "size.parameter-count": "maxParameters",
 };
 
-// The record both JSON catalogue surfaces publish: identity under `id`, severity under
-// `defaultSeverity`, and the threshold as a named map under `thresholds`. The internal descriptor
-// keeps its own field names because reports, hooks, and config validation read those; only the two
-// public listing surfaces are projected.
+// Public JSON projection emitted by `list-rules` (`id`, `defaultSeverity`, `defaultEnabled`, and named `thresholds`).
+// Internal descriptors keep their native field names for reports, hooks, and config validation.
 type ListedRule = Omit<RuleDescriptor, "ruleId" | "severity" | "isEnabledByDefault" | "threshold"> & {
   id: string;
   defaultSeverity: Severity;

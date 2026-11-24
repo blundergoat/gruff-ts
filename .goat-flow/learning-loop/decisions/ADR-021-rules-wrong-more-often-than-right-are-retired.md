@@ -37,8 +37,8 @@ the entropy rule was the only one that published named thresholds, so a `thresho
 rule, as it already was on the rest.
 
 A `rules:` block or a `sensitiveExclusions` entry that names a retired rule exits 2, and `list-rules` refuses the id.
-`--include-rule` and `--exclude-rule` accept one silently, so a run narrowed to a retired rule runs no rule and passes,
-and a baseline row for one reports as resolved.
+`--include-rule` and `--exclude-rule` also exit 2 on unknown or retired rule ids (`src/selectors.ts`:`applyExecutionSelectors`),
+while a baseline row for a retired rule reports as resolved.
 
 It also turns two rules off by default, too few findings to delete on: `security.open-redirect-candidate`, right on
 1 of 5, and `sensitive-data.jwt-token`, right on 0 of 1. They stay in the catalogue with `isEnabledByDefault: false`,
@@ -56,7 +56,7 @@ Each detector goes with the code only it used, including the process-call metada
 
 Three retirements touch shared code. The cognitive-complexity metric still decides when `docs.missing-why-for-complex-code` asks for a "why" comment; that gate now uses the retired rule's default limit of 15 as a fixed value, and the rule leaves `gruff.strict`, the hook's threshold metadata and the correlated-complexity cluster (ADR-009). A comment that only restates its signature still keeps the context-documentation rules quiet after `docs.useless-docblock` goes. FAMILY-CONTRACT.md section 13c drops its eslint `no-console`, `eqeqeq` and `no-unused-vars` rows under the operator's approved amendment, so those comments suppress nothing.
 
-A retired id behaves as the first eight do: a `rules:` block that names one exits 2, and `--include-rule` and `--exclude-rule` accept one silently.
+A retired id behaves as the first eight do: a `rules:` block or `--include-rule`/`--exclude-rule` selector that names one exits 2.
 
 ## Failure Mode Comparison
 

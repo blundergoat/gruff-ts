@@ -1,4 +1,7 @@
-// Package and tsconfig health checks that emit deterministic project-config findings from JSON files.
+// Checks `package.json` and `tsconfig.json` files for supply-chain, packaging, and strictness findings.
+//
+// Flags remote curl/wget install scripts, URL or git dependencies, overly broad runtime ranges, broken bin targets,
+// and disabled TypeScript strict flags while honoring `extends` inheritance and JSONC comments.
 import { existsSync, statSync } from "node:fs";
 import { basename, dirname as dirnamePath, isAbsolute, join } from "node:path";
 import { platform } from "node:process";
@@ -519,21 +522,25 @@ function jsonKeyLine(source: string, key: string): number {
 }
 
 /**
- * Finds `packageName` with `versionSpec` in `source` starting from the first `section` key, or from line 1 when `section` is absent.
- * The search can extend beyond `section` and falls back to the first `packageName` key or line 1.
+ * Finds `packageName` with `versionSpec` in `source` starting from the first `section` key, matching across line breaks.
+ * Falls back to the first `packageName` key or line 1 when no section-scoped entry matches.
  *
- * @param source - Raw manifest text to search line by line.
+ * @param source - Raw manifest text to search across lines.
  * @param section - Dependency section key where the search begins if present.
  * @param packageName - Dependency name to match alongside its version specifier.
  * @param versionSpec - Dependency version or URL specifier paired with `packageName`.
  * @returns One-based line number of the matched dependency entry, or the key-only fallback line.
  */
 function dependencyEntryLine(source: string, section: string, packageName: string, versionSpec: string): number {
-  const lines = source.split(/\r?\n/);
-  const sectionStart = Math.max(lines.findIndex((line) => new RegExp(`"${escapeRegex(section)}"\\s*:`).test(line)), 0);
+  const sectionMatch = new RegExp(`"${escapeRegex(section)}"\\s*:`).exec(source);
+  const searchStart = sectionMatch?.index ?? 0;
+  // Match across line breaks so a multiline `"pkg":\n  "https://..."` entry in `dependencies` is not skipped for `devDependencies`.
   const entry = new RegExp(`${escapeRegex(JSON.stringify(packageName))}\\s*:\\s*${escapeRegex(JSON.stringify(versionSpec))}`);
-  const offset = lines.slice(sectionStart).findIndex((line) => entry.test(line));
-  return offset >= 0 ? sectionStart + offset + 1 : jsonKeyLine(source, packageName);
+  const match = entry.exec(source.slice(searchStart));
+  if (!match) {
+    return jsonKeyLine(source, packageName);
+  }
+  return source.slice(0, searchStart + match.index).split(/\r?\n/).length;
 }
 
 /**

@@ -1,7 +1,7 @@
-// Size and complexity findings report in two bands (FAMILY-CONTRACT.md section 12, search `Size and complexity findings
-// in two bands`). A unit over its limit but under one and a half times it gets an advisory notice not to grow; at that
-// ratio or above it keeps its severity and the advice to split or simplify. The message never changes between bands,
-// so a finding keeps its identity when its unit crosses the boundary.
+// Splits size and complexity findings into lower and upper severity bands (FAMILY-CONTRACT.md section 12).
+//
+// A unit over its limit but under 1.5x receives an advisory notice not to grow; at 1.5x or above it keeps full severity and split advice.
+// Finding messages stay identical across bands so baseline identities never churn when a unit crosses the boundary.
 
 import type { Severity } from "./types.ts";
 

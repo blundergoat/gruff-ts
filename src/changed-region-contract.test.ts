@@ -13,6 +13,7 @@ import { chdir, cwd } from "node:process";
 import test from "node:test";
 import { analyse } from "./cli.ts";
 import type { AnalysisReport } from "./cli.ts";
+import { renderReport } from "./report-renderers.ts";
 import { exitFor } from "./scoring.ts";
 import type { AnalysisOptions, ChangedScopeMode } from "./types.ts";
 import { analyseProject, gitAvailable, REPO_ROOT, writeFixtureFiles } from "./test-fixtures.ts";
@@ -366,5 +367,66 @@ test("diff-scoped diagnostics are file-scoped: unchanged broken context never bl
   } finally {
     chdir(previous);
     rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("changed-region SARIF excludes inline-suppressed findings from unchanged files", () => {
+  const files = {
+    "src/unchanged.ts": "// File overview: unchanged file.\nexport function untouched(code: string): void {\n  new Function(code); // eslint-disable-line no-new-func\n}\n",
+    "src/changed.ts": "// File overview: changed file.\nexport function edited(): number {\n  return 1;\n}\n",
+  };
+  const diffPatch = [
+    "diff --git a/src/changed.ts b/src/changed.ts",
+    "--- a/src/changed.ts",
+    "+++ a/src/changed.ts",
+    "@@ -2,1 +2,2 @@",
+    " export function edited(): number {",
+    "+  return 1;",
+    "",
+  ].join("\n");
+  const report = analyseProject(files, { diff: "-", diffPatch });
+  const sarif = JSON.parse(renderReport(report, "sarif")) as { runs: Array<{ results: Array<{ suppressions?: unknown[] }> }> };
+  const suppressedResults = (sarif.runs[0]?.results ?? []).filter((result) => (result.suppressions?.length ?? 0) > 0);
+  assert.equal(suppressedResults.length, 0);
+});
+
+// Fixture purpose: exercises a real git repo with staged and unstaged edits to verify working-tree diff line coordinates stay aligned.
+// Stable contract: writes a temporary Git repository, runs git and analyse(), and removes the directory in finally.
+test("working-tree diff aligns staged and unstaged line coordinates", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ts-wt-coords-"));
+  const { GIT_DIR: _gitDir, GIT_WORK_TREE: _gitWorkTree, GIT_INDEX_FILE: _gitIndexFile, ...env } = process.env;
+  try {
+    const baseLines = ["// File overview: coordinate fixture.", ...Array.from({ length: 10 }, (_, idx) => `export const base${idx} = ${idx};`)];
+    writeFixtureFiles(dir, { "app.ts": `${baseLines.join("\n")}\n` });
+    execFileSync("git", ["init"], { cwd: dir, env, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: dir, env, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Fixture"], { cwd: dir, env, stdio: "ignore" });
+    execFileSync("git", ["add", "app.ts"], { cwd: dir, env, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "base"], { cwd: dir, env, stdio: "ignore" });
+
+    // Stage an eval at line 12, then prepend 3 unstaged lines above it so eval now lives at line 15 in the working tree.
+    const stagedLines = [...baseLines, "export function bad(input: string): void { eval(input); }"];
+    writeFixtureFiles(dir, { "app.ts": `${stagedLines.join("\n")}\n` });
+    execFileSync("git", ["add", "app.ts"], { cwd: dir, env, stdio: "ignore" });
+    const unstagedLines = [baseLines[0] ?? "", "export const shift1 = 1;", "export const shift2 = 2;", "export const shift3 = 3;", ...stagedLines.slice(1)];
+    writeFixtureFiles(dir, { "app.ts": `${unstagedLines.join("\n")}\n` });
+
+    const report = analyse({
+      paths: [join(dir, "app.ts")],
+      shouldSkipConfig: true,
+      shouldSkipBaseline: true,
+      format: "json",
+      failOn: "none",
+      shouldIncludeIgnored: false,
+      changedScope: "hunk",
+      diff: "working-tree",
+    });
+    const evalFinding = report.findings.find((finding) => finding.ruleId === "security.eval-call");
+    assert.equal(evalFinding?.line, 15);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

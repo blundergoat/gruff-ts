@@ -1,30 +1,31 @@
-// Filesystem discovery, ignore-policy matching, and display-path normalization for deterministic scans.
+// Discovers scannable TypeScript, JavaScript, and config files under a project root for every CLI command.
+//
+// Owns the single allowlist of scannable extensions (`pushSourceFile`), applies ignore rules in precedence order
+// (`paths.ignore`, VCS directories, `.gitignore`, third-party/minified defaults, and fallback directories), and normalizes display paths.
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
 import type { AnalysisOptions, Config, IgnoreSource, ScanSurfaceNote, SkippedPath } from "./types.ts";
 
-// `absolutePath` is what `node:fs` operates on; `displayPath` is project-relative inside the run
-// root and absolute outside it. They must stay aligned - diverging them breaks fingerprint stability.
+// `absolutePath` is what `node:fs` operates on; `displayPath` is project-relative inside the run root and absolute outside it.
+// Both paths must stay aligned because finding fingerprints hash `displayPath`.
 export interface SourceFile {
   absolutePath: string;
   displayPath: string;
   isScript: boolean;
 }
 
-// Mutable accumulator used during the walk. `ignoredPaths` is a Set because the walker may visit
-// the same parent path through multiple roots; finalised into a sorted array on return.
+// Mutable accumulator used during the directory walk; `skipped` is keyed by display path so repeated roots deduplicate before sorting.
 interface SourceDiscovery {
   files: SourceFile[];
   missingPaths: string[];
   skipped: Map<string, SkippedPath>;
 }
 
-// Public discovery result. `files` are sorted by display path and deduped; `ignoredPaths` (the
-// back-compatible string[] of excluded paths) and `skipped` (the same paths enriched with ignore
-// source + matched pattern) are sorted so reports stay deterministic even when the underlying
-// filesystem returns directory entries in arbitrary order. `notes` carries one entry per requested
-// input that exists but contributed zero analysable files, so an all-skipped scan is never a
-// silent zero-finding success.
+// Deterministic discovery output returned to the analyser and `check-ignore`:
+//
+// - `files` are sorted and deduplicated by `displayPath` so reports never depend on filesystem readdir order;
+// - `ignoredPaths` and `skipped` record excluded paths with their ignore source and matched pattern;
+// - `notes` lists existing targets that produced zero analysable files so an all-skipped run never looks silently clean.
 export interface SourceDiscoveryResult {
   files: SourceFile[];
   missingPaths: string[];
@@ -33,8 +34,7 @@ export interface SourceDiscoveryResult {
   notes: ScanSurfaceNote[];
 }
 
-// A single line from a `.gitignore`. The combination of `isAnchored`, `isDirectoryOnly`, and `hasSlash`
-// reproduces git's documented matching semantics; missing any one of them yields wrong matches.
+// One parsed `.gitignore` line whose flags (`isAnchored`, `isDirectoryOnly`, `hasSlash`, `isNegated`) preserve git's matching semantics.
 interface GitIgnoreRule {
   basePath: string;
   pattern: string;
@@ -170,8 +170,8 @@ function walk(
         isExplicitFile: false,
       });
       if (match) {
-        // If the minified-file pattern matched, record a skip only for paths whose file type gruff-ts would otherwise scan.
-        if (match.pattern !== MINIFIED_FILE_PATTERN || isScannableSourceFile(absolute)) {
+        // Default minified-file exclusions record skips only for scannable file types; explicit config or .gitignore rules always record skips.
+        if (match.source !== "default" || match.pattern !== MINIFIED_FILE_PATTERN || isScannableSourceFile(absolute)) {
           skipped.set(display, { path: display, source: match.source, pattern: match.pattern });
         }
         continue;
@@ -233,10 +233,8 @@ function isScriptFile(absolutePath: string): boolean {
 const VCS_DIRECTORIES = [".git", ".hg", ".svn"] as const;
 const FALLBACK_DIRECTORIES = [".fleet", ".idea", ".vscode", "build", "coverage", "node_modules"] as const;
 
-// Directories holding third-party copies, and `dist`, the one build-output name section 7 adds; `build` and `coverage`
-// stay fallback-only. Like the fallback directories they match at any depth, but they are skipped even under a
-// governing .gitignore and compared over ASCII case, because a committed copy is still someone else's code
-// (FAMILY-CONTRACT.md section 7, amended by precision-floor M04).
+// Third-party copy directories plus `dist`, skipped at any depth under ASCII case folding even when a `.gitignore` governs the directory.
+// `build` and `coverage` stay fallback-only (FAMILY-CONTRACT.md section 7, amended by precision-floor M04).
 const THIRD_PARTY_DIRECTORIES: readonly string[] = ["bower_components", "dist", "third-party", "third_party", "vendor", "vendors"];
 
 /** Pattern recorded for a minified file such as `jquery.min.js`, which section 7 skips as generated. */
@@ -359,9 +357,10 @@ export function classifyPathIgnore(projectRoot: string, input: string, options: 
   const exists = existsSync(absolute);
   const isDirectory = exists && statSync(absolute).isDirectory();
   const isExplicitFile = exists && statSync(absolute).isFile();
+  const gitIgnoreLookupDirectory = isInsideProject(projectRoot, dirname(absolute)) ? dirname(absolute) : projectRoot;
   const gitIgnoreRules = options.shouldIncludeIgnored || isExplicitFile
     ? []
-    : gitIgnoreRulesForDirectory(projectRoot, dirname(absolute));
+    : gitIgnoreRulesForDirectory(projectRoot, gitIgnoreLookupDirectory);
   const match = classifyIgnore({
     projectRoot,
     absolute,
@@ -398,7 +397,10 @@ function fallbackAppliesAt(projectRoot: string, absolute: string): boolean {
   if (!isInsideProject(projectRoot, absolute)) {
     return true;
   }
-  const relativeParent = relative(projectRoot, dirname(absolute)).replaceAll("\\", "/");
+  const parentDirectory = dirname(absolute);
+  const relativeParent = isInsideProject(projectRoot, parentDirectory)
+    ? relative(projectRoot, parentDirectory).replaceAll("\\", "/")
+    : "";
   const segments = relativeParent === "" ? [] : relativeParent.split("/");
   let current = projectRoot;
   if (isGitIgnoreFile(join(current, ".gitignore"))) {

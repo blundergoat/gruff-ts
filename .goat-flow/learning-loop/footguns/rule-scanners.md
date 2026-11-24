@@ -1,6 +1,6 @@
 ---
 category: rule-scanners
-last_reviewed: 2026-10-18
+last_reviewed: 2026-11-25
 ---
 
 # Rule scanner footguns
@@ -167,6 +167,21 @@ blanked every nested function in the classified expression, and its second blank
 `function textOutsideRequestHandlers`) now blanks only a handler's reads of its own declared names, and
 `src/security-flow-rules.test.ts` (search: `nested function reads the enclosing request`) pins the shapes. Residuals:
 `requests.map((req) => req.query.id)` is still set aside, and a destructured `({ req })` handler still reports.
+
+## Footgun: regex word boundaries (`\b`) silently fail on `$`-bearing JavaScript identifiers
+
+**Status:** active | **Created:** 2026-11-25 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Match JavaScript and TypeScript identifiers with explicit `[A-Za-z0-9_$]` lookarounds (and guard `${` when a name ends with `$`) instead of `\b`.
+**Trigger phase:** ACT
+**Caught at:** VERIFY
+
+**Prevention:** Never wrap an arbitrary JavaScript or TypeScript identifier in `\b...\b` in a regex scanner. Use `(?<![A-Za-z0-9_$])` and `(?![A-Za-z0-9_$])`, and for names ending in `$`, add `|\{` to the trailing negative lookahead so template-literal `${...}` interpolations cannot count as uses of `$`.
+
+**Symptoms:** Identifiers starting or ending with `$` - such as Bun's `import { $ } from "bun"`, Svelte's `$state`, or RxJS `events$` - fail to match their call sites, causing false-positive `waste.unused-import` findings (48 false positives eliminated on `opencode`, measured 2026-11-24).
+
+**Why it happens:** Regex `\w` covers `[A-Za-z0-9_]` and excludes `$`, so `\b` before or after `$` matches only when an adjacent character is `\w` - the exact opposite of a JavaScript identifier boundary.
+
+**Evidence:** `src/dead-code-rules.ts` (search: `function isUnusedImportBinding`) and `src/finding-actionability.test.ts` (search: `waste.unused-import recognises $-bearing bindings`).
 
 ## Resolved Entries
 

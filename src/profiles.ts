@@ -1,14 +1,12 @@
-// Built-in gruff profile presets: the named rule selections that `profile:` / `--profile` resolve.
-// Each preset is a compact, fully readable definition - a reviewer scans all three in one pass.
-// Profiles select rules by PILLAR (gruff's taxonomy is pillar-based) and layer explicit per-rule
-// threshold tightenings on top; `src/config.ts`:`resolveProfile` expands these against
-// `RULE_DESCRIPTORS` at config-load time and validates every rule-id reference. This module owns the
-// canonical rule list (via `ruleDescriptors`) so `config.ts` need not import `rules.ts` directly.
+// Built-in gruff profile presets resolved by `profile:` in config and `--profile` on the CLI.
+//
+// Each preset is pillar-keyed with optional per-rule threshold or severity tightenings so a maintainer can read all three in one pass:
+// - `resolveProfile` in `src/config.ts` expands presets against `RULE_DESCRIPTORS` and validates every rule-id reference;
+// - this module owns the canonical rule catalogue view so `config.ts` stays decoupled from `rules.ts`.
 import { ruleDescriptors } from "./rules.ts";
 import type { Pillar, ProfileDefinition, ProfileRuleSetting, Severity } from "./types.ts";
 
-// The eleven pillars listed explicitly so `recommended`/`strict` enable every pillar without
-// referencing an implicit "all rules" default - the selection is greppable here, not derived elsewhere.
+// Eleven pillars listed explicitly so `recommended` and `strict` stay greppable here instead of deriving an implicit "all rules" default.
 const ALL_PILLARS: readonly Pillar[] = [
   "complexity",
   "dead-code",
@@ -23,17 +21,15 @@ const ALL_PILLARS: readonly Pillar[] = [
   "test-quality",
 ] as const;
 
-// The name applied when neither the CLI flag nor the config file names a profile, and the implicit
-// base for an inline `profile:` block that omits `extends:`. `recommended` flattens to an empty delta,
-// so "no profile" and "profile: recommended" are behaviourally identical (the parity contract).
+// Default preset applied when neither the CLI nor config names a profile, and the implicit base when an inline `profile:` omits `extends:`.
+// `gruff.recommended` flattens to an empty delta so zero-config scans and `profile: recommended` behave identically.
 const DEFAULT_PROFILE_NAME = "gruff.recommended";
 
 /**
- * A built-in profile preset in its compact, readable source form. `enabledPillars` selects which
- * pillars' rules fire; every rule outside that set is disabled. `thresholds` and `severities` are
- * explicit per-rule tightenings layered on the enabled set. Keeping presets pillar-keyed (plus a
- * short override list) means a reviewer reads the intent in one pass, and the rule-id references in
- * `thresholds`/`severities` are validated against `RULE_DESCRIPTORS` when this module loads.
+ * Compact source form of a built-in profile preset before expansion against the rule catalogue.
+ *
+ * `enabledPillars` selects which pillars fire (disabling all others); `thresholds` and `severities` layer explicit tightenings on top.
+ * Every rule ID in `thresholds` or `severities` is validated against `RULE_DESCRIPTORS` when this module loads.
  */
 export interface BuiltInProfile {
   name: string;
@@ -43,8 +39,7 @@ export interface BuiltInProfile {
   severities: Readonly<Record<string, Severity>>;
 }
 
-// One-line digest of a built-in profile for the `list-profiles` command. Carries the enabled/total
-// rule counts and the pillar selection so operators can compare presets without resolving each one.
+// One-line digest of a built-in profile shown by `gruff-ts list-profiles` so operators can compare presets without expanding them.
 export interface ProfileSummary {
   name: string;
   description: string;
@@ -55,11 +50,12 @@ export interface ProfileSummary {
 }
 
 /*
- * The three built-in presets in source form. This array IS the readable preset catalogue the kill
- * criteria require: minimal (sanity/security only), recommended (current default behaviour, a no-op
- * delta), strict (every pillar enabled with tightened size/complexity/design thresholds). Strict only
- * tightens thresholds - it enables no new rule, because recommended already enables every rule that
- * is on by default - so a strict scan reports at least as many findings as recommended, never fewer.
+ * The three built-in presets shipped with gruff-ts, validated against the live rule catalogue on import.
+ *
+ * Strict only tightens thresholds and enables no extra off-by-default rules, so it never reports fewer findings than recommended:
+ * - `gruff.minimal`: security and sensitive-data pillars only;
+ * - `gruff.recommended`: zero-config parity across every pillar;
+ * - `gruff.strict`: every pillar with tightened size and design thresholds.
  */
 const BUILT_IN_PROFILE_SPECS: readonly BuiltInProfile[] = [
   {
@@ -78,7 +74,7 @@ const BUILT_IN_PROFILE_SPECS: readonly BuiltInProfile[] = [
   },
   {
     name: "gruff.strict",
-    description: "Every pillar enabled with tightened size, complexity, and design thresholds for high-bar repositories.",
+    description: "Every pillar enabled with tightened size and design thresholds for high-bar repositories.",
     enabledPillars: ALL_PILLARS,
     thresholds: {
       "design.large-module-concentration": 40,
@@ -90,16 +86,13 @@ const BUILT_IN_PROFILE_SPECS: readonly BuiltInProfile[] = [
   },
 ] as const;
 
-// Canonical rule catalogue, captured once at module load. Sorted for determinism so flattened
-// profiles and `list-profiles` output never churn between runs.
+// Canonical rule catalogue captured once at module load in deterministic order so flattened profiles and `list-profiles` never churn.
 const DESCRIPTORS = ruleDescriptors();
 
-// Every rule id gruff recognises. Exported so `config.ts` can reject a user profile that references a
-// rule outside the catalogue at load time (a preset typo would otherwise silently no-op at scan time).
+// Every rule ID gruff recognises; used by `config.ts` and `selectors.ts` to reject typos before scanning.
 const KNOWN_RULE_IDS: ReadonlySet<string> = new Set(DESCRIPTORS.map((descriptor) => descriptor.ruleId));
 
-// Map from rule id to its pillar, used when validating that a preset's threshold/severity override
-// targets a rule inside one of the preset's enabled pillars (a dead override otherwise).
+// Rule-to-pillar lookup used to reject dead preset overrides targeting a rule whose pillar the preset left disabled.
 const RULE_PILLARS: ReadonlyMap<string, Pillar> = new Map(DESCRIPTORS.map((descriptor) => [descriptor.ruleId, descriptor.pillar]));
 
 /**
@@ -167,20 +160,19 @@ function assertOverrideKeys(spec: BuiltInProfile): void {
 }
 
 /**
- * The bundled profile catalogue, keyed by name. Values are the flattened ProfileDefinitions that
- * `resolveProfile` clones and overlays. Built once at module load, which is where preset rule-id
- * references are validated - so an authoring mistake fails fast on import, never silently at scan time.
+ * Bundled profile catalogue built once at module load so invalid preset rule IDs fail fast on import instead of silently no-opping at scan time.
+ * `resolveProfile` clones and overlays entries from this map.
  */
 export const BUILT_IN_PROFILES: ReadonlyMap<string, ProfileDefinition> = new Map(
   BUILT_IN_PROFILE_SPECS.map((spec) => [spec.name, profileDefinitionFromSpec(spec)]),
 );
 
 /**
- * Reports whether a rule id is part of gruff's catalogue. Used by the profile resolver to reject a
- * user profile that names a rule outside RULE_DESCRIPTORS before any scan runs.
+ * Reports whether a rule ID exists in gruff's live rule catalogue.
+ * Used by config loading and CLI selectors to reject typos and retired IDs before scanning.
  *
- * @param ruleId - candidate rule id from a user profile's rules block
- * @returns - true when the id is a known rule, false otherwise
+ * @param ruleId - candidate rule ID from a config, profile, or CLI selector
+ * @returns True when `ruleId` is in the active catalogue; false otherwise.
  */
 export function isKnownRuleId(ruleId: string): boolean {
   return KNOWN_RULE_IDS.has(ruleId);

@@ -11,6 +11,7 @@ import test from "node:test";
 import { loadConfig, optionBoolean } from "./config.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
 import { writeDefaultConfig } from "./init-config.ts";
+import { applyDisplaySelectors } from "./selectors.ts";
 import { analyseProject, REPO_ROOT } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
 
@@ -268,4 +269,22 @@ test("non-empty legacy secret preview config exits 2 without echoing its value",
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
   }
+});
+
+test("applyDisplaySelectors rejects unknown rule IDs and pillar names", () => {
+  assert.throws(
+    () => applyDisplaySelectors([], { showRules: ["not.a-rule"], hideRules: [], showPillars: [], hidePillars: [] }, undefined),
+    ConfigLoadError,
+  );
+  assert.throws(
+    () => applyDisplaySelectors([], { showRules: [], hideRules: [], showPillars: ["not-a-pillar"], hidePillars: [] }, undefined),
+    ConfigLoadError,
+  );
+});
+
+test("config rejects non-mapping rule entries with ConfigLoadError", () => {
+  assert.throws(
+    () => analyseProject({ "src/ok.ts": "// File overview: fixture.\nexport const ok = 1;\n" }, { config: { rules: { "size.file-length": true as never } } }),
+    ConfigLoadError,
+  );
 });

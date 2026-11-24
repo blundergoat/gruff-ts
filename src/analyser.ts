@@ -33,6 +33,7 @@ import { analyseTestBlock } from "./test-block-rules.ts";
 import { analyseDuplicateTestGroups } from "./duplicate-test-group-rules.ts";
 import { analyseGithubActionsRules } from "./github-actions-rules.ts";
 import { analyseProjectConfigRules } from "./project-config-rules.ts";
+import { BUILT_IN_PROFILES } from "./profiles.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { scoreReport, summarize } from "./scoring.ts";
 import { isExecutionRequested } from "./selectors.ts";
@@ -76,6 +77,7 @@ export function analyse(requestedOptions: AnalysisOptions): AnalysisReport {
 
   // Generation uses the full scan, so errors anywhere in that scan must stay visible.
   const diagnostics = options.generateBaseline ? run.diagnostics : filterScopedDiagnostics(run.diagnostics, changedScope);
+  const suppressedFindings = filterChangedSuppressedFindings(run.suppressedFindings, changedScope, run.scanned.sources);
   const baseline = run.baselineResult.baseline;
   // When a baseline was applied, `--fail-on-new` counts only unreviewed findings that remain in the requested scope.
   const scopedBaseline = {
@@ -85,12 +87,33 @@ export function analyse(requestedOptions: AnalysisOptions): AnalysisReport {
       ? { baseline: { ...baseline, newFindings: changedResult.findings.length } }
       : {}),
   };
-  const report = reportFromRun({ ...run, diagnostics }, options, scopedBaseline, changedResult.suppressedCount);
+  const report = reportFromRun({ ...run, diagnostics, suppressedFindings }, options, scopedBaseline, changedResult.suppressedCount);
   // An invalid baseline or a changed-region scan cannot add a point to the user's full-scan trend history.
   if (options.historyFile && changedScope === undefined && !diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false)) {
     recordHistory(run.projectRoot, options.historyFile, report.score, report.findings.length, diagnostics);
   }
   return report;
+}
+
+/**
+ * Filters inline-suppressed SARIF records to the active changed-region scope while keeping whole-scan suppression audit rows untouched.
+ * Invariant: preserves the input order and returns the original list unchanged when unscoped or empty.
+ *
+ * @param suppressedFindings - full-scan inline/duplicate suppressed findings retained for SARIF output
+ * @param scope - active changed-region scope, or undefined for a full scan
+ * @param sources - retained source/AST snapshots used to evaluate symbol-level changed-region membership
+ * @returns Suppressed findings inside `scope`, or the original list unchanged when unscoped or empty.
+ */
+function filterChangedSuppressedFindings(
+  suppressedFindings: SuppressedFinding[],
+  scope: ChangedRegionScope | undefined,
+  sources: Map<string, { file: SourceFile; source: string; parsed?: ParsedScript }>,
+): SuppressedFinding[] {
+  if (scope === undefined || suppressedFindings.length === 0) {
+    return suppressedFindings;
+  }
+  const kept = new Set(filterChangedFindings(suppressedFindings.map((entry) => entry.finding), scope, sources).findings);
+  return suppressedFindings.filter((entry) => kept.has(entry.finding));
 }
 
 /**
@@ -114,8 +137,14 @@ export function analyseHookReports(currentOptions: AnalysisOptions, scopedOption
     return { currentReport, scopedReport: currentReport };
   }
   const scopedChangedResult = filterChangedFindings(run.baselineResult.findings, scopedChangedScope, run.scanned.sources);
+  const scopedSuppressedFindings = filterChangedSuppressedFindings(run.suppressedFindings, scopedChangedScope, run.scanned.sources);
   // Same file-scoped diagnostics policy as diff-scoped analyse, so both surfaces agree.
-  const scopedReport = reportFromRun({ ...run, diagnostics: filterScopedDiagnostics(run.diagnostics, scopedChangedScope) }, scopedOptions, { ...run.baselineResult, findings: scopedChangedResult.findings }, scopedChangedResult.suppressedCount);
+  const scopedReport = reportFromRun(
+    { ...run, diagnostics: filterScopedDiagnostics(run.diagnostics, scopedChangedScope), suppressedFindings: scopedSuppressedFindings },
+    scopedOptions,
+    { ...run.baselineResult, findings: scopedChangedResult.findings },
+    scopedChangedResult.suppressedCount,
+  );
   return { currentReport, scopedReport };
 }
 
@@ -197,9 +226,14 @@ function targetsFromLaunchDirectory(options: AnalysisOptions): AnalysisOptions {
    * @returns Path unchanged when absolute, or relative to projectRoot when resolved from launchDirectory.
    */
   const fromRoot = (path: string): string => (isAbsolute(path) ? path : relative(projectRoot, resolve(launchDirectory, path)));
+  // Keep a relative CLI `--profile` file path anchored to the launch directory, while leaving built-in profile names untouched.
+  const anchoredProfile = options.profile !== undefined && !BUILT_IN_PROFILES.has(options.profile) && !BUILT_IN_PROFILES.has(`gruff.${options.profile}`)
+    ? fromRoot(options.profile)
+    : options.profile;
   return {
     ...options,
     paths: options.paths.map((path) => resolve(launchDirectory, path)),
+    ...(anchoredProfile !== undefined ? { profile: anchoredProfile } : {}),
     ...(options.baseline ? { baseline: fromRoot(options.baseline) } : {}),
     ...(options.generateBaseline ? { generateBaseline: fromRoot(options.generateBaseline) } : {}),
     ...(options.migrateBaseline ? { migrateBaseline: fromRoot(options.migrateBaseline) } : {}),

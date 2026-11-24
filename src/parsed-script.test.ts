@@ -165,3 +165,16 @@ test("the security-flow fallback parse is counted by the shared boundary", () =>
   analyseSecurityFlow(fileStub, source, [], shared?.sourceFile);
   assert.equal(parsedScriptParseCount() - beforeShared, 0, "a threaded shared parse must not reparse");
 });
+
+test("parenthesized var function expressions are discovered and measured", () => {
+  const parenthesizedVar = [
+    "// File overview: parenthesized var function fixture.",
+    "var run = (function (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) {",
+    "  return a + b + c + d + e + f + g + h;",
+    "});",
+    "export { run };",
+    "",
+  ].join("\n");
+  const report = analyseProject({ "src/paren.ts": parenthesizedVar });
+  assert.equal(report.findings.some((finding) => finding.ruleId === "size.parameter-count" && finding.symbol === "run"), true);
+});

@@ -288,7 +288,7 @@ function largeModuleConcentrationFinding(candidate: LargeModuleCandidate, severi
 }
 
 /**
- * Extracts relative import edges from pre-extracted import statements for deterministic traversal, keeping unresolved edges so parent-hop checks can use them.
+ * Extracts relative import edges in deterministic order from pre-extracted imports, keeping unresolved edges for parent-hop checks.
  *
  * @param source - project source snapshot providing display path and pre-extracted import statements
  * @param sourcePaths - set of discovered script display paths used to resolve relative targets

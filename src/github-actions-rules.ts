@@ -1,4 +1,7 @@
-// GitHub Actions workflow security heuristics, path-gated to committed workflow files.
+// Audits committed GitHub Actions workflow YAML files for supply-chain and pull-request security risks.
+//
+// Path-gated to `.github/workflows/*.yml` and `.yaml` so regular YAML config files never emit CI findings.
+// Checks unpinned third-party actions, remote-shell pipes, unsafe `pull_request_target` checkouts, and secret exposure on PR triggers.
 import type { SourceFile } from "./discovery.ts";
 import { unreachableWorkflowSecretLines } from "./github-actions-event-guards.ts";
 import { makeFinding } from "./findings.ts";
@@ -460,42 +463,89 @@ function analyseSecretsInPullRequest(file: SourceFile, lines: readonly WorkflowL
 }
 
 /**
- * Reads recognized event names from the top-level `on` key, covering scalar, flow, and indented block sequences or mappings.
- * Event names elsewhere do not count as triggers.
+ * Reads recognized event names from the top-level `on` key so `pull_request_target` secret checks only fire on workflows that declare that trigger.
+ * Supports scalar, inline/multiline flow, and indented/indentless block sequences because YAML allows all four forms for `on:`.
  *
  * @param lines - Normalized workflow lines to scan for top-level `on` declarations.
- * @returns Set of recognized trigger event names, or an empty set so the `pull_request_target` secret check is skipped.
+ * @returns Set of recognized trigger event names, or an empty set when none are declared so the `pull_request_target` secret check is skipped.
  */
 function declaredWorkflowEvents(lines: readonly WorkflowLine[]): Set<string> {
   const events = new Set<string>();
-  let eventIndent: number | undefined;
-  let inOnBlock = false;
+  const state: OnBlockState = { inOnBlock: false, eventIndent: undefined, flowDepth: 0 };
   for (const line of lines) {
-    if (isCommentOrBlank(line)) {
-      continue;
-    }
-    if (line.indent === 0) {
-      const onKey = line.trimmed.match(/^["']?on["']?\s*:\s*(.*)$/);
-      inOnBlock = onKey !== null && stripInlineComment(onKey[1] ?? "").trim() === "";
-      eventIndent = undefined;
-      if (onKey && !inOnBlock) {
-        addFlowEvents(events, stripInlineComment(onKey[1] ?? "").trim());
-      }
-      continue;
-    }
-    if (!inOnBlock) {
-      continue;
-    }
-    // The first nested line fixes the event level; deeper lines configure one event, such as its branches.
-    eventIndent ??= line.indent;
-    if (line.indent === eventIndent) {
-      const event = line.trimmed.match(/^(?:-\s*)?["']?([A-Za-z_]+)["']?\s*(?::|$)/)?.[1];
-      if (event) {
-        events.add(event);
-      }
+    if (!isCommentOrBlank(line)) {
+      consumeWorkflowEventLine(line, events, state);
     }
   }
   return events;
+}
+
+// Mutable parser state tracked while walking lines under a workflow's top-level `on:` trigger declaration.
+interface OnBlockState {
+  inOnBlock: boolean;
+  eventIndent: number | undefined;
+  flowDepth: number;
+}
+
+/**
+ * Updates trigger-event state from one non-blank workflow line because YAML allows multiline flow arrays and indentless sequence items under `on:`.
+ *
+ * @param line - Normalized non-comment workflow line being scanned.
+ * @param events - Mutable trigger-event set updated in place.
+ * @param state - Mutable `on:` block tracking state updated in place.
+ * @returns Nothing. Adds any recognized event names from `line` into `events`.
+ */
+function consumeWorkflowEventLine(line: WorkflowLine, events: Set<string>, state: OnBlockState): void {
+  // Multiline flow declarations like `on: [\n  pull_request_target,\n  issues\n]` keep collecting until outer flow depth returns to zero.
+  if (state.flowDepth > 0) {
+    const cleaned = stripInlineComment(line.trimmed).trim();
+    addFlowEvents(events, cleaned);
+    state.flowDepth = Math.max(0, state.flowDepth + flowDelimiterDelta(cleaned));
+    return;
+  }
+  // Indentless block sequence items (`on:\n- pull_request_target`) sit at indent 0 and belong to the active `on:` block.
+  if (line.indent === 0 && !(state.inOnBlock && line.trimmed.startsWith("-"))) {
+    const onKey = line.trimmed.match(/^["']?on["']?\s*:\s*(.*)$/);
+    const inlineValue = onKey ? stripInlineComment(onKey[1] ?? "").trim() : "";
+    state.inOnBlock = onKey !== null && inlineValue === "";
+    state.eventIndent = undefined;
+    if (onKey && !state.inOnBlock) {
+      addFlowEvents(events, inlineValue);
+      state.flowDepth = inlineValue.startsWith("[") || inlineValue.startsWith("{")
+        ? Math.max(0, flowDelimiterDelta(inlineValue))
+        : 0;
+    }
+    return;
+  }
+  if (!state.inOnBlock) {
+    return;
+  }
+  // The first nested line fixes the event level; deeper lines configure one event, such as its branches.
+  state.eventIndent ??= line.indent;
+  if (line.indent === state.eventIndent) {
+    const event = line.trimmed.match(/^(?:-\s*)?["']?([A-Za-z_]+)["']?\s*(?::|$)/)?.[1];
+    if (event) {
+      events.add(event);
+    }
+  }
+}
+
+/**
+ * Counts net flow-collection bracket nesting (`[`/`{` minus `]`/`}`) on one YAML line so nested flow maps do not close `on:` early.
+ *
+ * @param text - Trimmed YAML flow text with inline comments already stripped.
+ * @returns Positive count for unclosed openers, zero for balanced delimiters, or negative when closers exceed openers.
+ */
+function flowDelimiterDelta(text: string): number {
+  let delta = 0;
+  for (const character of text) {
+    if (character === "[" || character === "{") {
+      delta += 1;
+    } else if (character === "]" || character === "}") {
+      delta -= 1;
+    }
+  }
+  return delta;
 }
 
 /**

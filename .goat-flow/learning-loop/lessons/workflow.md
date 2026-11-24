@@ -1,6 +1,6 @@
 ---
 category: workflow
-last_reviewed: 2026-11-23
+last_reviewed: 2026-11-25
 ---
 
 # Workflow lessons
@@ -147,3 +147,32 @@ Standing rule: every commit-message-or-diff-description response begins with rea
 **Evidence:** the four files M31 missed were not marginal. `src/analyser.ts` owns the rule-group pass gates, and it had since drawn both a P1 and a P2 automated-review comment. The next file below the 100-line cut was `src/hook-contract.ts` at 99, so the boundary was clean rather than arbitrary. Of the three defects this milestone confirmed and fixed, two lived in files the original six-file table did not cover.
 
 **Prevention:** run every invalidation test a plan writes for itself as the first act of execution, before reading any source, and rescope in the plan file rather than in your head. A plan built from a point-in-time snapshot decays against a branch that is still moving, and the decay is silent: the milestone text reads equally plausible whether or not its numbers still hold. Treat "planned at SHA X, executing at SHA Y" as a prompt to re-derive every count, file set, and external-state claim.
+
+## Lesson: append-only Unreleased changelogs accumulate contradictions and notes for retired rules past green docs-drift checks
+
+**Created:** 2026-11-25
+**Decision changed:** Before cutting a release from an `Unreleased` changelog, diff `v<prev>:src/rules.ts` against live `src/rules.ts` and audit behavioural claims across `CHANGELOG.md`, `UPGRADING.md`, `README.md`, and `docs/*.md` instead of treating a green `docs_drift_check` as proof that prose matches the shipped binary.
+**Trigger phase:** VERIFY
+
+**Prevention:** Before release sign-off, consolidate `Unreleased` bullets by net shipped state (removing intermediate fixes for rules retired before release) and verify every flag exit code, severity default, skip rule, and example rule name directly against live source (`src/rules.ts`, `src/selectors.ts`, `src/sensitive-exclusions.ts`).
+
+**What happened:** Multi-milestone `0.6.0` work appended bullets to `CHANGELOG.md` and `UPGRADING.md` over several passes. `scripts/preflight-checks.sh` (`docs_drift_check_root`) stayed green (81 rules, 11 pillars, 12/12 drift fixtures rejected) while user-facing docs carried multiple direct contradictions against the live code: `CHANGELOG.md` claimed `--include-rule` silently accepted retired or off rules (live `src/selectors.ts` exits `2`), claimed empty `--changed-ranges=` meant no filter in one bullet and exit `2` in another, reported stale pre-retirement `falsePositiveShapes` totals (`63`/`49` instead of `50`/`31`), and kept prerelease fixes for rules deleted in `0.6.0`; `docs/rules.md` still described retired `conditional-logic`/`sleep-in-test` rules and claimed test paths never suppress secrets; `README.md` and `docs/philosophy.md` still used retired `mock-only`, `snapshot-only`, and `assertion-free` examples; and `docs/agent-hook.md` still listed committed secrets under `--fail-on=error` after all `sensitive-data.*` rules moved to `warning`.
+
+**Evidence:** `scripts/preflight-checks.sh` (search: `docs_drift_check_root`) validates rule counts, backticked rule IDs, pillar rows, ADRs, and README links, not behavioural prose; live code in `src/selectors.ts` (search: `export function applyExecutionSelectors`), `src/rules.ts` (search: `const RULE_DESCRIPTORS`), and `src/sensitive-exclusions.ts` (search: `export function applyBuiltInTestPathSkip`) exposed every discrepancy when audited directly.
+
+## Lesson: name new source and test files by domain responsibility, never by PR, ticket, or milestone batch
+
+**Created:** 2026-11-25
+**Decision changed:** Before creating any new source, test, script, or fixture file, check the existing domain-owned files and place the change in the owning subsystem file; when a new file is genuinely warranted, name it after the module or behaviour it owns rather than a PR number, ticket ID, milestone label, or review batch.
+**Trigger phase:** SCOPE
+**Caught at:** VERIFY
+
+**Prevention:**
+- Inspect the existing file layout (for tests, `ls src/*.test.ts`) during SCOPE and add regression tests to the existing domain test file for the subsystem under test (such as `src/hook-contract.test.ts`, `src/changed-region-contract.test.ts`, `src/docs-comment-rules.test.ts`, or `src/config-load-error.test.ts`).
+- Create a new file only when no existing module owns that responsibility or when appending would push an existing file over `size.file-length` (`src/analyser.ts`, search: `size.file-length`).
+- Name every new file so a maintainer can tell what subsystem it owns from the filename alone (`<domain>-<concern>.ts` or `<domain>-<concern>.test.ts`). Never name committed files after ephemeral workflow artifacts such as PR numbers (`pr10-review-fixes.test.ts`), issue or ticket IDs, milestone numbers, or dump names (`review-fixes.ts`, `misc-tests.ts`).
+- When a PR review or audit fixes defects across multiple subsystems, split bundled assertions into single-concern tests inside each owning domain test file instead of creating one cross-cutting batch file.
+
+**What happened:** During the `0.6.0` PR #10 review-fix pass, 16 regression tests spanning 15 subsystems (config migration, selector validation, JSDoc parsing, GitHub Actions event parsing, inline suppressions, changed-region SARIF, working-tree line coordinates, hook base replay, and baseline identity) were bundled into a new `pr10-review-fixes.test.ts` file under `src/`. `npm run check` and the self-scan both passed with zero findings because no automated check flags an opaque PR-numbered filename. The operator caught the non-self-documenting filename before commit, requiring the 16 bundled tests to be split into 22 single-concern tests across the 15 owning domain test files and the temporary file removed.
+
+**Evidence:** Relocated tests in their owning domain files: `src/config-preservation.test.ts` (search: `migrateConfigText leaves unquoted current schemaVersion unchanged`), `src/config-load-error.test.ts` (search: `applyDisplaySelectors rejects unknown rule IDs and pillar names`), `src/changed-region-contract.test.ts` (search: `working-tree diff aligns staged and unstaged line coordinates`), and `src/hook-contract.test.ts` (search: `hook base replay resolves a relative profile path declared inside .gruff-ts.yaml`).

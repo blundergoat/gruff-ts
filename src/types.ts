@@ -283,12 +283,9 @@ export interface ScanSurfaceNote {
 }
 
 /**
- * Defines the native analysis state consumed by renderers and integrations.
+ * Native analysis state consumed by CLI renderers, HTML/dashboard views, and the coding-agent hook.
  *
- * JSON renderers project this state into `gruff.analysis.v3`; optional machine-run inputs retain
- * the user's original scan request without changing finding, baseline, or hook identities.
- * Invariant: native identities and score values remain stable; only machine renderers reshape this
- * state into the `gruff.analysis.v3` family envelope.
+ * Invariant: native identities and score values remain stable while JSON renderers project this state into `gruff.analysis.v3`.
  */
 export interface AnalysisReport {
   schemaVersion: "gruff.analysis.v3";
@@ -348,17 +345,10 @@ export interface AnalysisReport {
 }
 
 /**
- * Describes one rule in the catalogue shown by `list-rules` and used during configuration validation.
+ * One reviewed code shape that trips a rule without representing the defect it targets, shown in `list-rules --rule <id>`.
  *
- * Missing thresholds, options, allowlists, or fixture exemptions mean the rule does not expose that user-facing control.
- */
-/**
- * One reviewed class of code that trips a rule without being the defect it looks for.
- *
- * `shape` names the pattern a reader would recognise in their own source; `mitigation` says what to
- * do about it, naming a real config key or code change. Guidance is reviewed evidence rather than
- * apology: a rule with no entry has had none recorded, which is why the field is omitted rather
- * than published as an empty array.
+ * `shape` names the pattern a developer recognises in source; `mitigation` names a concrete config key or code adjustment.
+ * Omitted when no reviewed false-positive shapes exist rather than emitted as an empty array.
  */
 export interface FalsePositiveShape {
   shape: string;

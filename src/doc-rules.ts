@@ -699,17 +699,33 @@ function hasTagDescription(lines: string[], index: number, tail: string): boolea
 }
 
 /**
- * Strips a leading brace-delimited JSDoc type annotation from a tag tail.
+ * Strips a leading brace-delimited JSDoc type annotation from a tag tail, balancing nested object-type braces such as `{{ host: string }}`.
  *
  * @param rest - Trimmed text immediately after a `@param` or `@returns` marker.
- * @returns Trimmed suffix after the first closing brace, `rest` unchanged if no brace begins it, or an empty string if unclosed.
+ * @returns Trimmed suffix after the matching closing brace, `rest` unchanged if no brace begins it, or an empty string if unclosed.
  */
 function stripDocParamType(rest: string): string {
-  if (!rest.startsWith(String.fromCharCode(123))) {
+  const openBrace = String.fromCharCode(123);
+  const closeBrace = String.fromCharCode(125);
+  // Without a leading `{`, the tag carries no JSDoc type block to strip.
+  if (!rest.startsWith(openBrace)) {
     return rest;
   }
-  const end = rest.indexOf(String.fromCharCode(125));
-  return end === -1 ? "" : rest.slice(end + 1).trim();
+  let depth = 0;
+  // Walk nested braces so inline object types like `@param {{ host: string }} opts` stop at the outer closing brace.
+  for (let index = 0; index < rest.length; index += 1) {
+    const character = rest[index];
+    if (character === openBrace) {
+      depth += 1;
+    } else if (character === closeBrace) {
+      depth -= 1;
+      // Reaching depth zero closes the outer JSDoc type block, leaving the parameter name and description after it.
+      if (depth === 0) {
+        return rest.slice(index + 1).trim();
+      }
+    }
+  }
+  return "";
 }
 
 /**

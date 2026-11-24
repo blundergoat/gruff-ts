@@ -1,6 +1,6 @@
 ---
 category: parser
-last_reviewed: 2026-11-23
+last_reviewed: 2026-11-25
 hallucination-risk: high
 ---
 
@@ -51,3 +51,18 @@ The rule is intentionally `confidence: "low"` and `severity: "advisory"` for tha
 **Status:** active | **Created:** 2026-05-10 | **Evidence:** OBSERVED
 
 `analyseUnreachable` only marks the previous line as terminating when `isTerminatingStatement` (`src/dead-code-rules.ts`, search: `function isTerminatingStatement`) sees its trimmed form start with `return`, `throw`, or `process.exit` AND end with `;`. ASI-style code (no trailing semicolon) silently bypasses the check. If you adjust this rule, consider that the project's own style writes most returns with `;`, so a fix that emits more findings will mostly trip the project itself.
+
+## Footgun: retaining parsed ASTs or full line arrays across all scanned files causes 4 GB OOM on large monorepos
+
+**Status:** active | **Created:** 2026-11-25 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Compute lightweight per-file projections inside `scanDiscoveredSources` and drop `ParsedScript` and raw `source` immediately unless the file is a changed-region target or emitted an inline-suppression-relevant rule.
+**Trigger phase:** ACT
+**Caught at:** VERIFY
+
+**Prevention:** Never store full `ParsedScript` ASTs, raw source strings, or split line arrays per file across a whole-repository scan. Extract only compact outputs per file inside the scan loop (`fileDeclarationSpans` for baseline ordinals, pre-extracted `importStatements` and `codeLineCount` for `ProjectSource`) and gate raw-source retention on `shouldRetainParsedForChangedScope` or `isInlineSuppressionRelevantRule`.
+
+**Symptoms:** Unit tests and sub-1,000-file repositories pass quickly, while full scans of 10,000+ file TypeScript monorepos (`openclaw` at 17,296 files and `vscode` at 12,867 files, measured 2026-11-24) abort with V8's default 4 GB JavaScript heap limit (`EXIT 134`).
+
+**Why it happens:** Holding every file's TypeScript `SourceFile` AST until post-loop baseline resolution, alongside per-file `lines` and `templateMaskedLines` arrays in `ProjectSource`, scales peak heap linearly with repository size rather than single-file size.
+
+**Evidence:** `src/analyser.ts` (search: `function scanDiscoveredSources`), `src/analyser.ts` (search: `function fileDeclarationSpans`), `src/analyser.ts` (search: `function shouldRetainParsedForChangedScope`), `src/inline-suppressions.ts` (search: `export function isInlineSuppressionRelevantRule`), and `src/project-rules.ts` (search: `export function extractImportStatements`). After streaming spans and import statements, both 10,000+ file repositories completed with exit 0 under Node's default heap.

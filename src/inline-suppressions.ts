@@ -193,7 +193,9 @@ function isCoveredByComment(comments: ReadonlyMap<number, InlineComment[]>, find
  * @returns True if an ESLint, Biome, or zizmor directive in the comment suppresses the given rule.
  */
 function hasCoveringComment(line: string, ruleId: string, isPreviousLine: boolean): boolean {
-  return isDisabledByEslint(line, ruleId, isPreviousLine) || isIgnoredByBiome(line, ruleId) || isIgnoredByZizmor(line, ruleId);
+  return isDisabledByEslint(line, ruleId, isPreviousLine)
+    || isIgnoredByBiome(line, ruleId, isPreviousLine)
+    || isIgnoredByZizmor(line, ruleId);
 }
 
 /**
@@ -217,13 +219,18 @@ function isDisabledByEslint(line: string, ruleId: string, isPreviousLine: boolea
 }
 
 /**
- * Applies a developer's Biome ignore to the matching Gruff rule when the comment names that rule or its group.
+ * Applies a developer's Biome ignore to the matching Gruff rule when the comment sits alone on the preceding line and names that rule or group.
+ * Biome directives apply only to the following node/line, so same-line trailing Biome ignore comments do not suppress findings.
  *
  * @param line - Comment text tested for a Biome ignore directive and rule category.
  * @param ruleId - Gruff rule identifier to match against mapped Biome rules.
- * @returns True if the Biome ignore category matches the mapped rule or a parent group prefix.
+ * @param isPreviousLine - True only when evaluating a standalone comment on the line directly above the finding.
+ * @returns True if the Biome ignore stands on the preceding line and matches the mapped rule or a parent group prefix.
  */
-function isIgnoredByBiome(line: string, ruleId: string): boolean {
+function isIgnoredByBiome(line: string, ruleId: string, isPreviousLine: boolean): boolean {
+  if (!isPreviousLine) {
+    return false;
+  }
   const category = BIOME_DIRECTIVE.exec(line)?.[1];
   // Compare supported rule pairs so a group directive covers only the findings linked to that group.
   for (const [biomeRule, gruffRule] of BIOME_RULES) {
@@ -276,8 +283,11 @@ function mergeRepeatedClaims(
   const removed: SuppressedFinding[] = [];
   for (const finding of findings) {
     const key = `${finding.filePath}\u0000${finding.line}`;
-    const isRepeat = finding.ruleId === "security.unsafe-deserialization" && (evalCalls.get(key) ?? 0) > 0
-      && EVAL_CALL.test(lines(finding.filePath)[(finding.line ?? 0) - 1] ?? "");
+    // When the flow scanner records `sinkForm`, only merge `eval()` deserialization hits so a co-located `vm.runInNewContext()` survives.
+    const isEvalDeserialization = finding.metadata.sinkForm !== undefined
+      ? finding.metadata.sinkForm === "eval"
+      : EVAL_CALL.test(lines(finding.filePath)[(finding.line ?? 0) - 1] ?? "");
+    const isRepeat = finding.ruleId === "security.unsafe-deserialization" && (evalCalls.get(key) ?? 0) > 0 && isEvalDeserialization;
     if (isRepeat) {
       evalCalls.set(key, (evalCalls.get(key) ?? 0) - 1);
       removed.push({ finding, justification: DUPLICATE_SUPPRESSION_REASON });

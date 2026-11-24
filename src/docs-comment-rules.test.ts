@@ -1153,3 +1153,46 @@ test("everyCallable on docs.missing-param-tag makes docs.stale-param-tag name ev
     ["trimOneStale", "Docblock for `trimOneStale` has stale @param tag `raw`.", "raw"],
   ]);
 });
+
+test("JSDoc type stripper balances nested object braces for param and returns tags", () => {
+  const source = [
+    "// File overview: nested JSDoc type fixture.",
+    "/**",
+    " * Connects using structured options.",
+    " *",
+    " * @param {{ host: string }} opts - connection target",
+    " * @returns {{ ok: boolean }}",
+    " */",
+    "export function connect(opts: { host: string }): { ok: boolean } {",
+    "  return { ok: opts.host.length > 0 };",
+    "}",
+    "",
+  ].join("\n");
+  const report = analyseProject({ "src/connect.ts": source });
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-param-tag"), false);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-return-tag"), true);
+});
+
+test("comment scanner distinguishes multiline // @fileoverview headers from inline-commented code", () => {
+  const multiSlashHeader = [
+    "// @fileoverview Module summary.",
+    "// Second line of file header.",
+    "export function compute(value: number): number {",
+    "  return value + 1;",
+    "}",
+    "",
+  ].join("\n");
+  const inlineCodeBeforeDoc = [
+    "/* policy */ export const seed = 1;",
+    "",
+    "// Explains compute.",
+    "export function compute(value: number): number {",
+    "  return value + seed;",
+    "}",
+    "",
+  ].join("\n");
+  const headerReport = analyseProject({ "src/a.ts": multiSlashHeader });
+  const inlineReport = analyseProject({ "src/b.ts": inlineCodeBeforeDoc });
+  assert.equal(headerReport.findings.some((finding) => finding.ruleId === "docs.missing-exported-function-doc"), true);
+  assert.equal(inlineReport.findings.some((finding) => finding.ruleId === "docs.missing-exported-function-doc"), false);
+});

@@ -12,6 +12,7 @@ import { applyBaseline, BASELINE_SCHEMA_VERSION } from "./baseline-file.ts";
 import { defaultConfigPath } from "./config.ts";
 import { absolutize, displayPath } from "./discovery.ts";
 import { VERSION } from "./constants.ts";
+import { BUILT_IN_PROFILES } from "./profiles.ts";
 import { ruleDescriptors } from "./rules.ts";
 import type { AnalysisOptions, AnalysisReport, Confidence, Finding, RunDiagnostic, Severity, SkippedPath, SuppressionSummary } from "./types.ts";
 
@@ -354,20 +355,24 @@ function hookRun(report: AnalysisReport, input: HookReportInput): HookRun {
 
 /**
  * Names which region selector chose the work so a consumer can tell a targeted run from a whole-tree one.
+ * Follows the exact precedence of `changedRegionScope` (`changedRanges`, `diffPatch`, `since`, `diff`) so mode never disagrees with scope.
  *
  * @param input - Hook request whose scoped options determine the active selection mode.
  * @returns `"changed-ranges"`, `"diff"`, `"since"`, or `"full"` in selector precedence order.
  */
 function hookRunMode(input: HookReportInput): HookRun["mode"] {
-  // Explicit ranges are the narrowest selector and win when more than one is given, and an empty value is
-  // still a request to scope: presence decides, not truthiness.
+  // Explicit ranges are the narrowest selector and win when more than one is given; presence decides, not truthiness.
   if (input.scopedOptions.changedRanges !== undefined) {
     return "changed-ranges";
   }
-  if (input.scopedOptions.diff || input.scopedOptions.diffPatch) {
+  // An explicit patch on stdin (even an empty one) takes precedence over Git refs, matching `changedRegionScope`.
+  if (input.scopedOptions.diffPatch !== undefined) {
     return "diff";
   }
-  return input.scopedOptions.since ? "since" : "full";
+  if (input.scopedOptions.since) {
+    return "since";
+  }
+  return input.scopedOptions.diff ? "diff" : "full";
 }
 
 /**
@@ -520,12 +525,12 @@ function newFileAndProjectFindings(currentReport: AnalysisReport, scopedFindings
 }
 
 /**
- * Tallies how many current findings are covered by the diff base per fingerprint.
- * For each stable hook match key, spends at most its base count in line and column order to avoid covering extra matches.
+ * Tallies how many current findings are covered by the diff base per occurrence key (fingerprint plus column).
+ * For each stable hook match key, spends at most its base count in line and column order so same-line findings keep separate credits.
  *
  * @param currentReport - Full-scan report whose findings are matched against the base counts.
  * @param baseCounts - Occurrence counts from the diff base keyed by stable hook match key, or undefined when unavailable.
- * @returns Counts of covered current findings keyed by fingerprint, or an empty map when base counts are missing.
+ * @returns Counts of covered current findings keyed by occurrence key, or an empty map when base counts are missing.
  */
 function baseCoveredOccurrences(currentReport: AnalysisReport, baseCounts: Map<string, number> | undefined): Map<string, number> {
   const covered = new Map<string, number>();
@@ -542,47 +547,52 @@ function baseCoveredOccurrences(currentReport: AnalysisReport, baseCounts: Map<s
       continue;
     }
     remaining.set(key, count - 1);
-    covered.set(finding.fingerprint, (covered.get(finding.fingerprint) ?? 0) + 1);
+    const occurrenceKey = hookOccurrenceKey(finding);
+    covered.set(occurrenceKey, (covered.get(occurrenceKey) ?? 0) + 1);
   }
   return covered;
 }
 
 /**
- * Consumes one covered occurrence for a finding's fingerprint, mutating the caller's coverage map when nonzero.
+ * Consumes one covered occurrence for a finding's occurrence key, mutating the caller's coverage map when nonzero.
  * The stable contract lets each covered occurrence hide one finding across file/project re-admission and the new-only filter.
  *
- * @param covered - Remaining base-covered occurrence counts keyed by fingerprint; decremented on match.
- * @param finding - Finding whose fingerprint is checked against the remaining covered count.
+ * @param covered - Remaining base-covered occurrence counts keyed by occurrence key; decremented on match.
+ * @param finding - Finding whose occurrence key is checked against the remaining covered count.
  * @returns True after spending one occurrence when the count is nonzero; false if missing or exhausted.
  */
 function spendCoveredOccurrence(covered: Map<string, number>, finding: Finding): boolean {
-  const count = covered.get(finding.fingerprint) ?? 0;
+  const occurrenceKey = hookOccurrenceKey(finding);
+  const count = covered.get(occurrenceKey) ?? 0;
   if (count === 0) {
     return false;
   }
-  covered.set(finding.fingerprint, count - 1);
+  covered.set(occurrenceKey, count - 1);
   return true;
 }
 
 /**
  * Computes the stable `suppressed.count` total for changed-region runs by combining scoped suppressions with unemitted file/project findings.
- * Uses `emittedFindings` fingerprints to avoid counting published findings as suppressed.
+ * Excludes findings re-admitted from outside the scoped view so a newly published file or project finding is never also counted as suppressed.
  *
  * @param scopedReport - Scoped analysis report supplying `suppressedCount` and candidate anchor findings.
  * @param emittedFindings - Findings actually published in the hook response.
  * @param hasChangedRegion - Whether the hook run narrowed analysis to a changed region.
- * @returns Sum of `scopedReport.suppressedCount` (defaulting to zero) and residual file/project findings, or zero for a full scan.
+ * @returns Net count of suppressed findings for the changed-region view, or zero for a full scan.
  */
 function hookSuppressedCount(scopedReport: AnalysisReport, emittedFindings: Finding[], hasChangedRegion: boolean): number {
   if (!hasChangedRegion) {
     return 0;
   }
-  const emittedFingerprints = new Set(emittedFindings.map((finding) => finding.fingerprint));
+  const scopedKeys = new Set(scopedReport.findings.map(hookOccurrenceKey));
+  const emittedKeys = new Set(emittedFindings.map(hookOccurrenceKey));
+  // Findings absent from `scopedReport.findings` were counted in `scopedReport.suppressedCount`; subtract any that replay or baseline re-admitted.
+  const reAdmittedFromSuppressed = emittedFindings.filter((finding) => !scopedKeys.has(hookOccurrenceKey(finding))).length;
   const fileOrProjectAnchorResiduals = scopedReport.findings.filter((finding) => {
     const scope = scopeForFinding(finding);
-    return (scope === "file" || scope === "project") && !emittedFingerprints.has(finding.fingerprint);
+    return (scope === "file" || scope === "project") && !emittedKeys.has(hookOccurrenceKey(finding));
   }).length;
-  return (scopedReport.suppressedCount ?? 0) + fileOrProjectAnchorResiduals;
+  return Math.max(0, (scopedReport.suppressedCount ?? 0) - reAdmittedFromSuppressed + fileOrProjectAnchorResiduals);
 }
 
 /**
@@ -779,18 +789,18 @@ function hookDiffBaseIdentities(runAnalyse: HookAnalysisRunner, input: HookRepor
  * @param options - current scan settings from which to build the replay options
  * @param diffBase - diff selector that identifies the revision or index to replay
  * @param currentReport - current findings that identify which file paths to replay
- * @returns counts by hook match key, empty if there is no replayable base, no eligible path or base file, or no base finding
+ * @returns Counts by hook match key, an empty map when no base files or findings exist, or undefined when the selector has no replayable Git base.
  */
 function keysFromDiffBase(
   runAnalyse: HookAnalysisRunner,
   options: AnalysisOptions,
   diffBase: string,
   currentReport: AnalysisReport,
-): Map<string, number> {
+): Map<string, number> | undefined {
   const ref = diffBaseRef(diffBase);
-  // A patch read from stdin has no revision to replay.
+  // A patch read from stdin has no Git revision to replay, so return undefined to avoid falsely enabling file-wide re-admission.
   if (ref === undefined) {
-    return new Map();
+    return undefined;
   }
   const files = [...new Set(currentReport.findings.flatMap(findingBasePaths))];
   // With no current finding paths, the agent has nothing to compare with the base.
@@ -883,20 +893,24 @@ function materializeBaseFiles(ref: string, files: string[], root: string, projec
 
 /**
  * Derives base-scan options from `options`, targeting `paths` while disabling baseline and changed-region selection.
- * Uses an explicit config resolved from the launch directory or the selected project's supported default config.
+ * Resolves explicit config and non-built-in profile paths before `chdir(tempRoot)` so replay loads the same rules.
  *
  * @param options - Original full-scan analysis options.
  * @param paths - Materialized base file paths to analyse.
- * @param originalRoot - Original project root used to locate a default config file when none is explicit.
+ * @param originalRoot - Original project root used to locate a default config file or resolve a relative profile path.
  * @returns Analysis options configured for a deterministic full scan of the materialized base files.
  */
 function baseAnalysisOptions(options: AnalysisOptions, paths: string[], originalRoot: string): AnalysisOptions {
-  // Resolve settings before entering the temporary directory. With no selected config, the base run uses defaults.
+  // Resolve settings from the launch directory before entering the temporary directory. With no selected config, use defaults.
   const config = options.config ? absolutize(cwd(), options.config) : options.shouldSkipConfig ? undefined : defaultConfigPath(originalRoot);
+  const profile = options.profile !== undefined && !BUILT_IN_PROFILES.has(options.profile) && !BUILT_IN_PROFILES.has(`gruff.${options.profile}`)
+    ? absolutize(cwd(), options.profile)
+    : options.profile;
   return {
     ...withoutChangedRegion(options),
     paths,
     ...(config === undefined ? {} : { config }),
+    ...(profile === undefined ? {} : { profile }),
   };
 }
 

@@ -1,10 +1,10 @@
 /*
  * Updates a 0.5 project config for 0.6 when the user runs `migrate-config`.
  *
- * Moves per-command exit gates to `failOn`, drops obsolete secret previews, prunes retired 0.5
- * rules, allowlist keys, and sensitive exclusions, pins `schemaVersion`, and validates the result
- * through the 0.6 loader before returning. YAML keeps surrounding comments and settings; JSON is
- * rewritten as a document when a change is needed.
+ * YAML edits keep surrounding comments and settings; JSON rewrites the document when a change is needed:
+ * - moves per-command exit gates to `failOn` and drops obsolete secret previews;
+ * - prunes retired 0.5 rules, allowlist keys, and sensitive exclusions;
+ * - pins `schemaVersion` and validates the migrated config through the 0.6 loader before returning.
  */
 import { validateParsedConfig } from "./config.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
@@ -547,13 +547,30 @@ function leadingSpaces(line: string): number {
 }
 
 /**
+ * Reads the unquoted scalar value from a root-level `schemaVersion:` YAML line so valid unquoted configs stay untouched.
+ *
+ * @param line - single root-level YAML line starting with `schemaVersion:`
+ * @returns Trimmed scalar value with optional inline comment and matching outer quotes removed.
+ */
+function yamlSchemaVersionValue(line: string): string {
+  const raw = line.replace(/^\s*(?:schemaVersion|"schemaVersion"|'schemaVersion')\s*:\s*/u, "").trim();
+  // Match a quoted scalar first so an inline `#` comment after the closing quote is ignored without altering quoted text.
+  const quoted = /^"([^"]*)"(?:\s+#.*)?$|^'([^']*)'(?:\s+#.*)?$/u.exec(raw);
+  if (quoted) {
+    return quoted[1] ?? quoted[2] ?? "";
+  }
+  return raw.replace(/\s+#.*$/u, "").trim();
+}
+
+/**
  * Pin the schema version, inserting it at the top when the 0.5 file never named one.
+ * Leaves already-current unquoted or quoted `schemaVersion: gruff-ts.config.v0.1` lines unchanged so `migrate-config --dry-run` is idempotent.
  *
  * @param lines - migrated lines, mutated in place to insert or replace schemaVersion
- * @param changes - the rewrite log, appended to when schemaVersion is inserted or its existing line needs repinning
+ * @param changes - the rewrite log, appended to when schemaVersion is inserted or its existing value differs from 0.6
  * @param original - the file as written, returned unchanged when nothing needed rewriting
  * @param rootIndent - column where root mapping keys begin
- * @returns - text and the same changes array; text is original when no rewrites were recorded
+ * @returns text and the same changes array; text is original when no rewrites were recorded
  */
 function withSchemaVersion(lines: string[], changes: ConfigMigrationChange[], original: string, rootIndent: number): ConfigMigration {
   const existing = lines.findIndex((line) => leadingSpaces(line) === rootIndent && /^\s*(?:schemaVersion|"schemaVersion"|'schemaVersion')\s*:/u.test(line));
@@ -563,8 +580,8 @@ function withSchemaVersion(lines: string[], changes: ConfigMigrationChange[], or
   if (existing < 0) {
     changes.push({ line: 1, description: `schemaVersion added as ${SCHEMA_VERSION}; every 0.6 loader requires it` });
     lines.unshift(pinned);
-  // Bring an existing schema line into the format emitted for the current loader.
-  } else if (lines[existing] !== pinned) {
+  // Only rewrite an existing schema line when its value differs from the current 0.6 schema version.
+  } else if (yamlSchemaVersionValue(lines[existing] ?? "") !== SCHEMA_VERSION) {
     changes.push({ line: existing + 1, description: `schemaVersion pinned to ${SCHEMA_VERSION}` });
     lines[existing] = pinned;
   }

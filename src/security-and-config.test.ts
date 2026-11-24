@@ -809,3 +809,42 @@ test("eval-call retains text fallback for non-LF line separators", () => {
   });
   assert.deepEqual(lines, [[1], [1], [1]]);
 });
+
+test("safety rules reject lowercase todo catch comments and adjacent lint-directive comments", () => {
+  const source = [
+    "// File overview: safety rules fixture.",
+    "export function run(input: unknown): void {",
+    "  try {",
+    "    JSON.parse(String(input));",
+    "  } catch {",
+    "    // todo: handle malformed input later",
+    "  }",
+    "  // eslint-disable-next-line no-console",
+    `  // ${"@ts-expect"}-error`,
+    "  void (input as string).trim();",
+    "}",
+    "",
+  ].join("\n");
+  const report = analyseProject({ "src/safety.ts": source }, SWALLOWED_CATCH_ON);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.swallowed-catch"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "modernisation.ts-comment-without-rationale"), true);
+});
+
+test("line rules still flag NODE_TLS_REJECT_UNAUTHORIZED inside assertions and Allman catch returns stay quiet", () => {
+  const source = [
+    "// File overview: TLS and catch fixture.",
+    "export function check(assert: { deepStrictEqual: (left: unknown, right: unknown) => void }, run: () => void): void {",
+    '  assert.deepStrictEqual(process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0", "0");',
+    "  try {",
+    "    run();",
+    "  } catch (error)",
+    "  {",
+    "    return;",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+  const report = analyseProject({ "src/tls.ts": source }, { config: { rules: { "waste.useless-return": { enabled: true } } } });
+  assert.equal(report.findings.some((finding) => finding.ruleId === "security.disabled-tls-verification"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.useless-return"), false);
+});

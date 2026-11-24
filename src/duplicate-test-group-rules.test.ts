@@ -245,3 +245,15 @@ test("malformed syntax and ordinary production functions provide no group eviden
   const source = MATCHING_BODIES.map((body, index) => `function calculate${index}() { ${body} }`).join("\n");
   assert.equal(groups(source).length, 0);
 });
+
+test("duplicate tests in sibling lexical blocks do not merge into one group", () => {
+  const duplicateSource = [
+    "// File overview: lexical block fixture.",
+    '{ const fixture = 1; test("a", () => { const left = fixture; const right = left + 1; assert.equal(right, 2); }); }',
+    '{ const fixture = 2; test("b", () => { const left = fixture; const right = left + 1; assert.equal(right, 3); }); }',
+    '{ const fixture = 3; test("c", () => { const left = fixture; const right = left + 1; assert.equal(right, 4); }); }',
+    "",
+  ].join("\n");
+  const report = analyseFixture(duplicateSource, { fileName: "src/blocks.test.ts" });
+  assert.equal(report.findings.some((finding) => finding.ruleId === RULE_ID), false);
+});

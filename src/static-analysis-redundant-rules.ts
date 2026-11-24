@@ -1,5 +1,7 @@
-// Static-analysis-redundant assertion scanner for test blocks. It reports tests that only prove
-// TypeScript-visible code shape, keeping the main per-test-block pass focused on orchestration.
+// Detects tests whose assertions only re-verify facts TypeScript's type checker already proves at compile time.
+//
+// Keeps the main per-test-block pass in `test-block-rules.ts` focused on structural orchestration.
+// Distinguishes runtime payload checks from redundant shape or importability sentinels before emitting advisories.
 import { type FunctionBlock } from "./blocks.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";

@@ -77,7 +77,7 @@ How to move a project between `gruff-ts` releases, what each upgrade changes, an
    ```
 
    This writes a separate file and leaves your `0.5` baseline untouched.
-5. Run `npx gruff-ts summary .` and compare finding counts against your previous run.
+5. Run `npx gruff-ts summary . --baseline gruff-baseline.060.json` and compare finding counts against your previous run (passing `--baseline` avoids auto-loading the incompatible `0.5` `gruff-baseline.json`). Once satisfied, back up the `0.5` file if you need a rollback path and move `gruff-baseline.060.json` into `gruff-baseline.json`.
 
 ## Limitations
 

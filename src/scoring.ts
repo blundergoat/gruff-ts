@@ -11,11 +11,9 @@ import type { AnalysisReport, Confidence, FailThreshold, Finding, Pillar, Severi
 // last finding was fixed - lowering the headline score for finishing a pillar.
 const SCOREABLE_PILLARS: readonly Pillar[] = [...new Set(ruleDescriptors().map((descriptor) => descriptor.pillar))];
 
-// Ratified family scoring parameters. The shape `bounded-normalized-density-floored` was ratified
-// 2026-09-01 and these values 2026-09-03; all five ports carry the same numbers, so changing either
-// is a family decision rather than a gruff-ts one. SCORE_FLOOR bounds how far one saturated pillar
-// can drag the composite; DENSITY_SCALE is the per-file finding density at which a pillar sits half
-// way between the floor and 100.
+// Ratified cross-port scoring constants (`bounded-normalized-density-floored`, shared by all five gruff ports).
+//
+// `SCORE_FLOOR` caps how far one saturated pillar drags the composite; `DENSITY_SCALE` is the per-file density halfway between the floor and 100.
 const SCORE_FLOOR = 50;
 const DENSITY_SCALE = 0.1;
 

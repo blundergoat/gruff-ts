@@ -1,5 +1,7 @@
-// Class rules: exported-declaration docs, class/file-name mismatch and readonly candidates.
-// Pulls the declaration walkers out of cli.ts so the orchestrator just calls the entry point.
+// Evaluates class-level documentation, class/file naming alignment, and `readonly` property candidates.
+//
+// Walks the shared syntax tree (ADR-012) to verify whether private instance fields are written outside the constructor.
+// Invoked by `analyser.ts` per script when any class-level rule is enabled.
 import { exportedDeclarations, pushMissingPublicDocFinding } from "./doc-rules.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";

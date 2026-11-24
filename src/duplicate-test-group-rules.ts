@@ -1,5 +1,7 @@
-// Finds complete, file-local duplicate test groups without changing legacy callable discovery.
-// Matching follows FAMILY-CONTRACT section 16; candidates stay advisory and default-on.
+// Finds file-local groups of three or more structurally identical tests that can be consolidated into a table-driven test.
+//
+// Follows FAMILY-CONTRACT section 16 using the shared syntax tree so existing callable discovery stays unchanged.
+// Emits advisory, low-confidence consolidation candidates anchored at the first test while listing every group member in order.
 import { createRequire } from "node:module";
 import type { Node, Expression, CallExpression, ArrowFunction, FunctionExpression, SourceFile as SyntaxFile } from "typescript";
 import type { SourceFile } from "./discovery.ts";
@@ -113,9 +115,15 @@ function collectTestMember(call: CallExpression, sourceFile: SyntaxFile, groups:
     return;
   }
   const options = call.arguments.slice(1).filter((argument) => argument !== callback);
-  const attributes = [target.modifiers, options.map((option) => syntaxIdentity(option, false)), callback.kind,
+  const attributes = [
+    target.modifiers,
+    options.map((option) => syntaxIdentity(option, false)),
+    callback.kind,
+    syntax.isFunctionExpression(callback) ? (callback.name?.text ?? null) : null,
     syntax.isFunctionExpression(callback) && callback.asteriskToken !== undefined,
-    callback.modifiers?.map((modifier) => modifier.kind) ?? [], callback.parameters.map((parameter) => syntaxIdentity(parameter, false))];
+    callback.modifiers?.map((modifier) => modifier.kind) ?? [],
+    callback.parameters.map((parameter) => syntaxIdentity(parameter, false)),
+  ];
   const key = JSON.stringify([container.positions, attributes, syntaxIdentity(callback.body, true)]);
   const start = sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile));
   const member: TestMember = {
@@ -175,24 +183,51 @@ function enclosingContainer(call: CallExpression, sourceFile: SyntaxFile): { pos
   const positions: number[] = [];
   const names: string[] = [];
   for (let node = call.parent; node && !syntax.isSourceFile(node); node = node.parent) {
-    if (syntax.isIterationStatement(node, false)) {
+    if (syntax.isIterationStatement(node, false) || isTableIterationCall(node)) {
       return undefined;
     }
-    if (syntax.isCallExpression(node)) {
-      const target = callTarget(node.expression);
-      if (target?.isTable || (syntax.isPropertyAccessExpression(node.expression) && TABLE_ITERATORS.has(node.expression.name.text))) {
-        return undefined;
-      }
+    if (syntax.isBlock(node) && !syntax.isFunctionLike(node.parent)) {
+      // Keep sibling `{ const fixture = ...; test(...); }` lexical blocks separate without polluting qualified display names.
+      positions.unshift(node.getStart(sourceFile));
+      continue;
     }
     if (syntax.isFunctionLike(node) || syntax.isClassLike(node) || syntax.isModuleDeclaration(node)) {
       positions.unshift(node.getStart(sourceFile));
-      const parentCall = isTestCallback(node) && syntax.isCallExpression(node.parent) ? node.parent : undefined;
-      const title = parentCall?.arguments[0];
-      const name = title && syntax.isStringLiteralLike(title) ? title.text : node.name?.getText(sourceFile);
-      names.unshift(name ?? `<anonymous@${sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1}>`);
+      names.unshift(enclosingDeclarationLabel(node, sourceFile));
     }
   }
   return { positions, names };
+}
+
+/**
+ * Checks whether an enclosing AST node is already a table-driven test call (`test.each`, `forEach`, `map`, or `flatMap`).
+ *
+ * @param node - ancestor syntax node walked upward from a candidate test registration
+ * @returns True when `node` is a table-modifier test call or collection iterator call; otherwise false.
+ */
+function isTableIterationCall(node: Node): boolean {
+  if (!syntax.isCallExpression(node)) {
+    return false;
+  }
+  const target = callTarget(node.expression);
+  return target?.isTable === true || (syntax.isPropertyAccessExpression(node.expression) && TABLE_ITERATORS.has(node.expression.name.text));
+}
+
+/**
+ * Derives the display label for an enclosing suite, function, class, or namespace declaration.
+ *
+ * @param node - enclosing declaration or callback node
+ * @param sourceFile - shared syntax tree supplying line numbers and identifier text
+ * @returns Suite title, declaration name, or `<anonymous@line>` fallback label.
+ */
+function enclosingDeclarationLabel(node: Node, sourceFile: SyntaxFile): string {
+  const parentCall = isTestCallback(node) && syntax.isCallExpression(node.parent) ? node.parent : undefined;
+  const title = parentCall?.arguments[0];
+  if (title && syntax.isStringLiteralLike(title)) {
+    return title.text;
+  }
+  const declarationName = (node as { name?: Node }).name?.getText(sourceFile);
+  return declarationName ?? `<anonymous@${sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1}>`;
 }
 
 /**

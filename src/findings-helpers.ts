@@ -176,10 +176,9 @@ export function applyConfiguredSeverity(config: Config, finding: Finding): Findi
   return severity === finding.severity ? finding : { ...finding, severity };
 }
 
-// Input bundle for `finding()` - the lowest-cost finding factory. Captures everything the caller
-// must supply for a line-anchored Finding; shared defaults (confidence "high", empty metadata)
-// are added inside the builder so callers don't repeat them at every rule site. Analysis then replaces the
-// confidence with the rule's catalogue confidence.
+// Input bundle for `finding()`, defining the stable contract for line-anchored findings.
+//
+// Defaults (`confidence: "high"`, empty `metadata`) are filled inside `finding()`, and analysis then stamps each rule's catalogue confidence.
 export interface LineFindingArgs {
   ruleId: string;
   message: string;

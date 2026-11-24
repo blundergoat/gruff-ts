@@ -1,7 +1,7 @@
-// Finds function and test blocks that developers see in Gruff's source findings.
-
-// Block rules cover size, documentation, parameters, returns and assertion presence.
-// Finding helpers keep each warning anchored to the declaration the developer can edit.
+// Discovers callable and test blocks and evaluates size, complexity, documentation, and useless-return rules.
+//
+// Reuses the shared syntax tree from `parsed-script.ts` when available and falls back to masked text spans otherwise.
+// Keeps every warning anchored to the declaration line the developer edits in CLI, HTML, and hook reports.
 import { optionBoolean, ruleSeverity, threshold } from "./config.ts";
 import { hasFunctionLeadingCommentBeforeLines } from "./comment-scanner.ts";
 import { baseComplexityMetrics, complexityMetrics as measureComplexity, type ComplexityMetrics } from "./complexity-metrics.ts";
@@ -418,17 +418,26 @@ function terminalBareReturnLines(source: string): number[] {
 
 /**
  * Guards against waste.useless-return suggesting a removal that would leave a catch empty and eligible for waste.swallowed-catch.
+ * Recognizes both same-line (`catch (err) {`) and Allman-style (`catch (err)\n{`) catch headers directly before the bare return.
  *
  * @param lines - Comment-masked lines of the callable body.
  * @param returnIndex - Zero-based line index of the candidate bare return statement.
- * @returns True if the first nonblank line before returnIndex opens a catch block; otherwise false.
+ * @returns True if the first nonblank header before returnIndex opens a catch block; otherwise false.
  */
 function isOnlyStatementOfCatch(lines: string[], returnIndex: number): boolean {
+  let sawStandaloneBrace = false;
   for (let current = returnIndex - 1; current >= 0; current -= 1) {
     const trimmed = lines[current]?.trim() ?? "";
-    if (trimmed !== "") {
-      return /\bcatch\b[^{]*\{$/.test(trimmed);
+    if (trimmed === "") {
+      continue;
     }
+    if (!sawStandaloneBrace && trimmed === "{") {
+      sawStandaloneBrace = true;
+      continue;
+    }
+    return sawStandaloneBrace
+      ? /\bcatch\b(?:\s*\([^)]*\))?$/.test(trimmed)
+      : /\bcatch\b[^{]*\{$/.test(trimmed);
   }
   return false;
 }
@@ -686,7 +695,10 @@ function functionPatternMatch(pattern: RegExp, patternIndex: number, line: strin
  */
 function functionBlockFromPoint(scan: FunctionBlockScan, point: BlockMatchPoint, ownedCallableNodes: ReadonlySet<import("typescript").Node>): FunctionBlock {
   const index = point.lineIndex;
+  // Keep `startLine` anchored at the name line (plus attached JSDoc/decorators) for fingerprint stability,
+  // while counting split modifier lines (`export\nasync function`) in `codeLineCount`.
   const start = functionStartIndex(scan.lines, index);
+  const codeStart = Math.min(start, point.declarationLineIndex ?? start);
   const end = point.endLineIndex ?? functionEndIndex(scan, index);
   const body = scan.lines.slice(start, end + 1).join("\n");
   const codeBody = scan.codeLines.slice(start, end + 1).join("\n");
@@ -703,7 +715,7 @@ function functionBlockFromPoint(scan: FunctionBlockScan, point: BlockMatchPoint,
     ...(sharedComplexityMetrics === undefined ? {} : { complexityMetrics: sharedComplexityMetrics }),
     startLine: start + 1,
     lineCount: end - start + 1,
-    codeLineCount: scan.isCodeLine.slice(start, end + 1).filter(Boolean).length,
+    codeLineCount: scan.isCodeLine.slice(codeStart, end + 1).filter(Boolean).length,
     body,
     codeBody,
     isPublic: point.isExplicitlyPublic ?? /\bexport\b|\bpublic\b/.test(scan.codeLines.slice(start, index + 1).join("\n")),
@@ -891,8 +903,8 @@ export function hasAssertion(maskedTestBody: string): boolean {
   if (/\bassert(?:\.[A-Za-z]+|[A-Z][A-Za-z0-9_$]*)?\s*\(/.test(maskedTestBody)) {
     return true;
   }
-  // A typed expect call can verify a result even when its type arguments precede the call.
-  if (/\bexpect(?:\.(?:assertions|hasAssertions)|[A-Z][A-Za-z0-9_$]*)?\s*(?:<[^;]*?>\s*)?\(/.test(maskedTestBody)) {
+  // A typed expect call can verify a result even with generic arguments, while comparisons like `expect < high && high > (low)` stay excluded.
+  if (/\bexpect(?:\.(?:assertions|hasAssertions)|[A-Z][A-Za-z0-9_$]*)?\s*(?:<(?!\s)(?:(?!&&|\|\|)[^;\r\n])+>\s*)?\(/.test(maskedTestBody)) {
     return true;
   }
   // A project Check helper can be the test's assertion even without an assert import.

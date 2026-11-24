@@ -259,3 +259,22 @@ rules:
   assert.equal(noBuildFindings.length, 1);
   assert.equal(noBuildFindings[0]?.severity, "warning");
 });
+
+test("multiline package dependency specs anchor to their own dependency section line", () => {
+  const manifest = [
+    "{",
+    '  "name": "demo",',
+    '  "dependencies": {',
+    '    "lib":',
+    '      "https://example.com/lib.tgz"',
+    "  },",
+    '  "devDependencies": {',
+    '    "lib": "https://example.com/lib.tgz"',
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+  const report = analyseProject({ "package.json": manifest });
+  const urlFindings = report.findings.filter((finding) => finding.ruleId === "security.url-dependency");
+  assert.equal(urlFindings.some((finding) => finding.metadata.section === "dependencies" && finding.line === 4), true);
+});

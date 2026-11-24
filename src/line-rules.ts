@@ -1,9 +1,8 @@
-// Per-line and per-source line rules: security/modernisation regex passes, type-safety
-// (ts-comment, non-null, double-cast, exported-any), reliability (async-forEach,
-// non-Error throw, useless/swallowed catches), and the naming-pusher fanout used by both line
-// detection and the block-rule parameter pass. Dead-code rules (unused imports, unreachable) are
-// invoked by the cli orchestrator before/after this module so the stable per-line emission order
-// stays a single contract.
+// Runs per-line and multi-line catch checks over each TypeScript or JavaScript source file during analysis.
+//
+// Evaluates enabled line-level rule families in a fixed order so finding lists stay deterministic across runs:
+// - security and modernisation regex passes, type-safety checks, reliability checks, and variable naming;
+// - dead-code passes (`analyseUnusedImports`, `analyseUnreachable`) are scheduled separately by `analyser.ts`.
 import { createRequire } from "node:module";
 import { ruleEnabled, ruleSeverity } from "./config.ts";
 import { type SourceFile } from "./discovery.ts";
@@ -283,8 +282,10 @@ function pushPatternCheckFindings(context: LineRuleContext): void {
  * @returns Predicate testing whether a match at a column index is exempt, or undefined when the rule has no exemption.
  */
 function literalCheckExemption(ruleId: string, context: LineRuleContext): ((index: number) => boolean) | undefined {
+  // Only inert `rejectUnauthorized: false` config literals inside deep-equality assertions are exempt; live env assignments stay flagged.
   if (ruleId === "security.disabled-tls-verification") {
-    return (index: number) => isInsideDeepEqualityAssertion(context.codeLines, context.lineNumber - 1, index);
+    return (index: number) => /^rejectUnauthorized\s*:\s*false\b/i.test(context.line.slice(index))
+      && isInsideDeepEqualityAssertion(context.codeLines, context.lineNumber - 1, index);
   }
   if (ruleId === "security.javascript-url") {
     return (index: number) => isComparisonOperandLiteral(context.line, index);
@@ -373,7 +374,8 @@ function isFixedInnerHtmlLine(context: LineRuleContext): boolean {
  */
 function fixedInnerHtmlAssignmentLines(sourceLines: readonly string[], syntax: TsSourceFile | undefined): Set<number> {
   const fixed = new Set<number>();
-  if (syntax === undefined) {
+  // Keep text fallback when no clean parse exists or parser line boundaries differ from LF-split finding locations.
+  if (syntax === undefined || /\r(?!\n)|[\u2028\u2029]/.test(syntax.text)) {
     sourceLines.forEach((line, index) => {
       if (/^[^]*?\.innerHTML\s*=\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\$]|\\.|\$(?!\{))*`)\s*;?\s*(?:\/\/.*)?$/.test(line)
         && line.split(".innerHTML").length === 2) {

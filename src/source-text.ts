@@ -32,11 +32,10 @@ interface DelimiterCounts {
   brackets: number;
 }
 
-// Lexer state for the delimiter scanner. `previousCode` is the last non-whitespace executable
-// character - required because `/` may start a regex or a division depending on what came before.
-// `templateInterpolationStack` records the brace count at each `${` so a matching `}` can re-enter
-// template literal mode; without it, nested-template-literal files like `\`\${x.map(n => \`\${n}\`)}\``
-// flip out of quote mode early and start counting code-level braces inside the string body.
+// Lexer state for the delimiter and masking scanner across quotes, comments, regex literals, and nested templates.
+//
+// - `previousCode` tracks the last non-whitespace code character so `/` disambiguates regex literals from division;
+// - `templateInterpolationStack` records the brace depth at each `${` so matching `}` re-enters template text cleanly.
 interface DelimiterScanState {
   quote: string | undefined;
   isEscaped: boolean;

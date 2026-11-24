@@ -228,3 +228,13 @@ export function helper(value: any): string {
   const report = analyseFixture(handwrittenSource, { fileName: "handwritten.ts" });
   assert.equal(report.findings.some((finding) => finding.ruleId === "docs.suppression-without-rationale"), true);
 });
+
+test("zero-evaluated-file reports render n/a instead of A 100.00 in pillar tables", () => {
+  const report = analyseProject({ "src/notes.json": "{}\n" });
+  const summary = renderSummary(report);
+  const markdown = renderReport(report, "markdown");
+  const html = renderReport(report, "html");
+  assert.match(summary, /security\s+n\/a\s+n\/a/);
+  assert.match(markdown, /\| security \| n\/a \| n\/a \|/);
+  assert.match(html, />security<\/td><td class="num"><span class="grade-pill [^"]*">n\/a<\/span><\/td><td class="num">n\/a<\/td>/);
+});

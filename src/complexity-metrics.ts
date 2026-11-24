@@ -1,7 +1,7 @@
-// Syntax-aware complexity measurement for each callable discovered by the shared script parse.
-// It turns real decision nodes into the values shown in CLI and JSON findings while leaving
-// defaulting, optional access, presentation objects, and ordinary blocks out of the score.
-// Nested callable ownership follows the same M07 block inventory, so every body counts once.
+// Measures syntax-aware cyclomatic and cognitive complexity for each callable in the shared script parse.
+//
+// Feeds `complexity.cyclomatic` findings and the `docs.missing-why-for-complex-code` threshold without re-parsing files.
+// Leaves defaulting (`??`), optional access (`?.`), object literals, and owned nested callables out of the enclosing score.
 import { createRequire } from "node:module";
 
 // TypeScript is CommonJS at runtime; this module only walks nodes from the existing shared parse.
@@ -14,10 +14,11 @@ const typescriptSyntax = require("typescript") as typeof import("typescript");
 type TypeScriptNode = import("typescript").Node;
 
 /**
- * Stable per-kind decision counts attached to complexity findings for report consumers.
- * Every key is always present, including zero values, so JSON comparisons stay deterministic.
- * `case` counts one decision per switch with a non-default case, however many cases it has.
- * `maxNesting` describes control-flow nesting only, never object or callback braces.
+ * Stable per-kind decision counts attached to complexity findings for CLI and JSON report consumers.
+ *
+ * Every key is always emitted (including zeros) so JSON snapshots stay deterministic:
+ * - `case` counts one decision per switch with a non-default case, regardless of case count;
+ * - `maxNesting` measures control-flow nesting only, never object or callback braces.
  */
 export interface ComplexityBreakdown {
   if: number;

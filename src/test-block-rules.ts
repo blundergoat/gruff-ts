@@ -1,7 +1,7 @@
-// Reports test-quality findings developers can act on in each parsed test block.
-
-// Assertion and mock checks run before global-state and structural checks.
-// The block orchestrator calls this file when it finds a test body.
+// Evaluates test-quality rules on each parsed `test(...)` or `it(...)` block in a project scan.
+//
+// Checks for unlabeled loops inside tests and overly broad test structure patterns while exempting clear table-driven tests.
+// Called by the block orchestrator whenever a discovered callable is flagged as a test registration.
 import { blockFinding, blockFindingWithMetadata, type FunctionBlock, hasAssertion } from "./blocks.ts";
 import { type SourceFile } from "./discovery.ts";
 import { escapeRegex } from "./findings-helpers.ts";
@@ -169,6 +169,10 @@ function isLabeledCaseLoop(segment: string): boolean {
   if (boundNames.length === 0) {
     return false;
   }
+  // Reject the exemption when the loop mixes in assertion forms (`should.be`, `.resolves`/`.rejects`) that have no verified per-case label.
+  if (/\.\s*should\s*\.\s*be\s*\./.test(parts.body) || /\.\s*(?:rejects|resolves)\b/.test(parts.body)) {
+    return false;
+  }
   const assertionCalls = assertionCallChains(parts.body);
   if (assertionCalls.length === 0) {
     return false;
@@ -178,23 +182,23 @@ function isLabeledCaseLoop(segment: string): boolean {
 }
 
 // Only call forms with supported per-case label arguments can clear a loop warning; `.should.be` matchers have no proved label form.
-const ASSERTION_CALL_OPENER = /\b(?:assert(?:\.[A-Za-z]+|[A-Z][A-Za-z0-9_$]*)?|expect(?:\.(?:assertions|hasAssertions)|[A-Z][A-Za-z0-9_$]*)?|[A-Za-z_$][A-Za-z0-9_$]*Check)\s*(?:<[^;]*?>\s*)?\(/g;
+const ASSERTION_CALL_OPENER = /\b(?:assert(?:\.[A-Za-z]+|[A-Z][A-Za-z0-9_$]*)?|expect(?:\.(?:assertions|hasAssertions)|[A-Z][A-Za-z0-9_$]*)?|[A-Za-z_$][A-Za-z0-9_$]*Check)\s*(?:<(?!\s)(?:(?!&&|\|\|)[^;\r\n])+>\s*)?\(/g;
 // One chained call such as `.toBe(` after a closed call.
 const CHAINED_CALL_LINK = /^\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*\s*(?:<[^;]*?>\s*)?\(/;
 
 /**
- * Return recognized assertion-chain slices from the masked loop body, including nested calls inside their outer assertion slice.
- * Skip an unmatched opening call; if a later chained call is unclosed, retain the complete prefix already measured.
+ * Return recognized assertion-chain slices from the masked loop body, including nested assertion calls inside outer assertion arguments.
+ * Skip an unmatched opening call or member-chained property call; if a later chained call is unclosed, retain the complete prefix already measured.
  *
  * @param body - masked loop body scanned for assertion openers and chained calls
  * @returns Matched assertion-chain slices in source order, or an empty list when no opener can be matched.
  */
 function assertionCallChains(body: string): string[] {
   const calls: string[] = [];
-  let measuredUntil = 0;
   for (const match of body.matchAll(ASSERTION_CALL_OPENER)) {
     const start = match.index ?? 0;
-    if (start < measuredUntil) {
+    // Skip member calls chained onto an earlier expression (such as `foo.expectCheck(`), while keeping nested standalone assertions checked.
+    if (start > 0 && body[start - 1] === ".") {
       continue;
     }
     let close = matchingCloseParen(body, start + match[0].length - 1);
@@ -209,7 +213,6 @@ function assertionCallChains(body: string): string[] {
       close = linkClose;
     }
     calls.push(body.slice(start, close + 1));
-    measuredUntil = close + 1;
   }
   return calls;
 }

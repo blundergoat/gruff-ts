@@ -1,8 +1,8 @@
-// `check-ignore` command core: classify each path through the shared discovery ignore engine and
-// render the verdict. No analysis is performed - this is an O(1)-per-path config/gitignore/default
-// lookup that mirrors `git check-ignore` exit semantics, so a coding-agent hook can ask "will gruff
-// skip this changed file?" before running a scan. Single source of truth: `classifyPathIgnore` is the
-// exact engine `analyse` discovery uses; this module only loads config and formats the output.
+// Powers `gruff-ts check-ignore`, answering whether gruff would skip each path without running analysis.
+//
+// Reuses `classifyPathIgnore` from `discovery.ts` so `check-ignore` and `analyse` never disagree:
+// - mirrors `git check-ignore` exit codes (0 = at least one ignored, 1 = none ignored, 2 = config error);
+// - lets coding-agent hooks and CI scripts check ignore policy in O(1) per path before scanning.
 import { cwd } from "node:process";
 import { loadConfig } from "./config.ts";
 import { classifyPathIgnore, type PathIgnoreClassification } from "./discovery.ts";

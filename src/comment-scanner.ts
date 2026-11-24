@@ -494,16 +494,24 @@ export function hasFunctionLeadingCommentBeforeLines(lines: string[], line: numb
 }
 
 /**
- * Finds the opener line of the comment ending on `endIndex` (the same line for `//` and single-line blocks, else the nearest `/*` above).
+ * Finds the opener line of the comment ending on `endIndex` (the first contiguous `//` line for line comments, else the nearest `/*` above).
  *
  * @param lines - source file split into zero-based lines
  * @param endIndex - zero-based line index where the comment ends
  * @returns zero-based line index of the comment opener, or `endIndex` if no opener line is found above
  */
 function commentStartIndex(lines: string[], endIndex: number): number {
+  // Walk upward across contiguous `//` lines so tags like `@fileoverview` on line 1 of a multi-line header stay included.
+  if ((lines[endIndex] ?? "").trim().startsWith("//")) {
+    let start = endIndex;
+    while (start > 0 && (lines[start - 1] ?? "").trim().startsWith("//")) {
+      start -= 1;
+    }
+    return start;
+  }
   for (let index = endIndex; index >= 0; index -= 1) {
     const trimmedLine = (lines[index] ?? "").trim();
-    if (trimmedLine.startsWith("//") || trimmedLine.startsWith("/*")) {
+    if (trimmedLine.startsWith("/*")) {
       return index;
     }
   }
@@ -550,25 +558,45 @@ export function isFileOverviewComment(commentText: string, gapLines: string[]): 
 }
 
 /**
- * Checks whether a comment at `startIndex` opens the file, stopping as soon as any preceding code line appears.
+ * Checks whether a comment at `startIndex` opens the file, stopping as soon as any preceding code token appears.
+ * Handles inline block comments followed by code on the same line (such as `/* policy *\/ export const seed = 1;`).
  *
  * @param lines - source file split into zero-based lines
  * @param startIndex - zero-based start line index of the comment being tested
- * @returns true when only a shebang, blank lines, and earlier comments precede `startIndex`; false if code appears first
+ * @returns True when only a shebang, blank lines, and earlier comments precede `startIndex`; false if code appears first.
  */
 function isFileOpeningLine(lines: string[], startIndex: number): boolean {
   let isInBlockComment = false;
   for (let index = 0; index < startIndex; index += 1) {
-    const trimmedLine = (lines[index] ?? "").trim();
-    if (isInBlockComment || trimmedLine.startsWith("/*")) {
-      isInBlockComment = !trimmedLine.endsWith("*/");
+    let rest = (lines[index] ?? "").trim();
+    if (index === 0 && !isInBlockComment && rest.startsWith("#!")) {
       continue;
     }
-    if (trimmedLine !== "" && !trimmedLine.startsWith("//") && !(index === 0 && trimmedLine.startsWith("#!"))) {
+    // Consume any sequence of block comments and trailing line comments on this line; any leftover token is code.
+    while (rest !== "") {
+      if (isInBlockComment) {
+        const closeIndex = rest.indexOf("*/");
+        if (closeIndex === -1) {
+          rest = "";
+          break;
+        }
+        isInBlockComment = false;
+        rest = rest.slice(closeIndex + 2).trim();
+        continue;
+      }
+      if (rest.startsWith("//")) {
+        rest = "";
+        break;
+      }
+      if (rest.startsWith("/*")) {
+        isInBlockComment = true;
+        rest = rest.slice(2);
+        continue;
+      }
       return false;
     }
   }
-  return true;
+  return !isInBlockComment;
 }
 
 /**

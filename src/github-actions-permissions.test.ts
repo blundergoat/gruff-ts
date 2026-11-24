@@ -81,3 +81,49 @@ test("secrets-in-pr reads the on: key and reports only pull_request_target, neve
     ],
   );
 });
+
+test("GitHub Actions workflow event parser handles indentless block sequences, multiline flow arrays, and nested flow maps", () => {
+  const indentless = [
+    "name: ci",
+    "on:",
+    "- pull_request_target",
+    "jobs:",
+    "  build:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: echo ${{ secrets.DEPLOY_TOKEN }}",
+    "",
+  ].join("\n");
+  const multilineFlow = [
+    "name: ci",
+    "on: [",
+    "  pull_request_target,",
+    "  issues",
+    "]",
+    "jobs:",
+    "  build:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: echo ${{ secrets.DEPLOY_TOKEN }}",
+    "",
+  ].join("\n");
+  const nestedFlowMap = [
+    "name: ci",
+    "on: {",
+    "  push: { branches: [main] },",
+    "  pull_request_target: {}",
+    "}",
+    "jobs:",
+    "  build:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: echo ${{ secrets.DEPLOY_TOKEN }}",
+    "",
+  ].join("\n");
+  const indentlessReport = analyseProject({ ".github/workflows/a.yml": indentless }, { shouldIncludeIgnored: true });
+  const flowReport = analyseProject({ ".github/workflows/b.yml": multilineFlow }, { shouldIncludeIgnored: true });
+  const nestedMapReport = analyseProject({ ".github/workflows/c.yml": nestedFlowMap }, { shouldIncludeIgnored: true });
+  assert.equal(indentlessReport.findings.some((finding) => finding.ruleId === "security.github-actions-secrets-in-pr"), true);
+  assert.equal(flowReport.findings.some((finding) => finding.ruleId === "security.github-actions-secrets-in-pr"), true);
+  assert.equal(nestedMapReport.findings.some((finding) => finding.ruleId === "security.github-actions-secrets-in-pr"), true);
+});

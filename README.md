@@ -199,7 +199,7 @@ A `profile:` selects a named bundle of rules instead of enumerating every rule b
 | --- | --- |
 | `gruff.minimal` | Security and sensitive-data rules only - the smallest sanity gate for incremental adoption. |
 | `gruff.recommended` | Every pillar at its default threshold and severity - identical to gruff's zero-config behaviour. |
-| `gruff.strict` | Every pillar enabled with tightened size, complexity, and design thresholds for high-bar repositories. |
+| `gruff.strict` | Every pillar enabled with tightened size and design thresholds for high-bar repositories. |
 
 `gruff-ts list-profiles` prints them with their enabled-rule counts. Select one in config or on the CLI:
 
