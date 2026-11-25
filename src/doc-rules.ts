@@ -1,6 +1,7 @@
-// JSDoc and exported-declaration documentation rules. Covers `docs.missing-public-doc`,
-// `docs.missing-file-overview`, `docs.missing-interface-doc`, and the docblock rule pack
-// (stale/missing @param, missing @returns). Stable, deterministic emission order.
+// Checks TypeScript and JavaScript documentation during `analyse` so public APIs and JSDoc tags stay accurate for reviewers.
+//
+// Covers `docs.missing-public-doc`, `docs.missing-file-overview`, `docs.missing-interface-doc`, and the `@param`/`@returns` tag rules.
+// Emits findings in stable source order so terminal output, JSON reports, and baselines stay reproducible across runs.
 import { commentTextAtLine, hasLeadingCommentBeforeLine } from "./comment-scanner.ts";
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
@@ -597,18 +598,19 @@ function docParsedParamTags(doc: string): ParsedDocParamTag[] {
 }
 
 /**
- * Reads one docblock line after its first `@param` marker, skipping an optional brace-delimited type and optional `[...]` brackets.
- * Supports dotted JSDoc property paths such as `options.timeout` so destructured object tags validate cleanly.
+ * Reads a line-leading `@param` tag from one docblock line, skipping an optional brace-delimited type and optional `[...]` brackets.
+ * Rejects prose mentions of `@param` and look-alike tags such as `@parameter`, and supports dotted property paths such as `options.timeout`.
  *
  * @param line - single line from a JSDoc comment body
  * @returns Parsed root name, full path, optional first property key, and description tail, or undefined when unusable.
  */
 function docParamTagParts(line: string): ParsedDocParamTag | undefined {
-  const marker = line.indexOf("@param");
-  if (marker === -1) {
+  const marker = /^\s*(?:\/\*\*|\*)?\s*@param(?=\s|\{|$)/u.exec(line);
+  // A line that mentions @param in prose, or uses a look-alike tag such as @parameter, documents no parameter.
+  if (!marker) {
     return undefined;
   }
-  const rest = stripDocParamType(line.slice(marker + "@param".length).trim());
+  const rest = stripDocParamType(line.slice(marker[0].length).trim());
   const bracketed = rest.startsWith("[");
   const nameSource = bracketed ? rest.slice(1).trimStart() : rest;
   const pathMatch = nameSource.match(/^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)/);

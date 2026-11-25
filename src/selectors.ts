@@ -63,12 +63,12 @@ export function applyExecutionSelectors(config: Config, selectors: ExecutionSele
   const unknownRule = [...selectors.includeRules, ...selectors.excludeRules].find((ruleId) => !isKnownRuleId(ruleId));
   // A mistyped rule ID can lead the user to expect coverage that never ran.
   if (unknownRule !== undefined) {
-    throw new ConfigLoadError(`Unknown execution selector rule: ${JSON.stringify(unknownRule)}.`, "Use a rule ID from gruff-ts list-rules.");
+    throw new ConfigLoadError(`Unknown execution selector rule: ${JSON.stringify(unknownRule)}.`, "Use a rule ID from gruff-ts list-rules.", false);
   }
   const unknownPillar = [...selectors.includePillars, ...selectors.excludePillars].find((pillar) => !isPillarName(pillar));
   // A misspelled pillar gets feedback before the CLI can show a misleading empty report.
   if (unknownPillar !== undefined) {
-    throw new ConfigLoadError(`Unknown execution selector pillar: ${JSON.stringify(unknownPillar)}.`, "Use a pillar name from gruff-ts list-rules.");
+    throw new ConfigLoadError(`Unknown execution selector pillar: ${JSON.stringify(unknownPillar)}.`, "Use a pillar name from gruff-ts list-rules.", false);
   }
   const descriptors = ruleDescriptors();
   // Evaluate the user's include and exclude flags against every rule in the catalogue.
@@ -81,7 +81,7 @@ export function applyExecutionSelectors(config: Config, selectors: ExecutionSele
   }
   // If these flags and project settings leave no active rule, the scan cannot produce a meaningful score.
   if (!descriptors.some((descriptor) => config.rules.get(descriptor.ruleId)?.enabled ?? descriptor.isEnabledByDefault !== false)) {
-    throw new ConfigLoadError("Execution selectors leave no rules enabled.", "Select an enabled rule or enable a rule in your configuration.");
+    throw new ConfigLoadError("Execution selectors leave no rules enabled.", "Select an enabled rule or enable a rule in your configuration.", false);
   }
 }
 

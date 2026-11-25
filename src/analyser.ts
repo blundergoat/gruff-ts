@@ -88,8 +88,13 @@ export function analyse(requestedOptions: AnalysisOptions): AnalysisReport {
       : {}),
   };
   const report = reportFromRun({ ...run, diagnostics, suppressedFindings }, options, scopedBaseline, changedResult.suppressedCount);
-  // An invalid baseline or a changed-region scan cannot add a point to the user's full-scan trend history.
-  if (options.historyFile && changedScope === undefined && !diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false)) {
+  // An invalid baseline, a changed-region scan, or a partial-catalogue scan cannot add a point to the user's full-scan trend history.
+  if (
+    options.historyFile
+    && changedScope === undefined
+    && !(options.execution && isExecutionRequested(options.execution))
+    && !diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false)
+  ) {
     recordHistory(run.projectRoot, options.historyFile, report.score, report.findings.length, diagnostics);
   }
   return report;
@@ -607,11 +612,77 @@ function fileDeclarationSpans(source: string, parsed: ParsedScript): Declaration
   const blocks = functionBlocks(source, source, parsed);
   // Keep positions for measured inline functions too, so two functions named `<iife>` can have separate baseline entries.
   const measuredOnly = measuredOnlyFunctionBlocks(source, maskNonCode(source), parsed);
-  return [...blocks, ...measuredOnly].map((block) => ({
-    name: block.name,
-    startLine: block.startLine,
-    endLine: block.startLine + block.lineCount - 1,
-  }));
+  return keepColumnsOnSharedLines([...blocks, ...measuredOnly].map((block) => blockDeclarationSpan(block, parsed)));
+}
+
+/**
+ * Drops column bounds from every span that shares no line with a same-named span, so ordinary declarations keep line-only baseline positions.
+ * Only two functions with one name on one line, such as `[{ run: () => 1 }, { run: () => 2 }]`, need columns to keep separate entries.
+ *
+ * @param spans - every declaration span found in one file, possibly carrying start and end columns
+ * @returns The same spans in order; columns survive only where a same-named span starts or ends on a shared line
+ */
+function keepColumnsOnSharedLines(spans: DeclarationSpan[]): DeclarationSpan[] {
+  const spansByName = new Map<string, DeclarationSpan[]>();
+  for (const span of spans) {
+    spansByName.set(span.name, [...(spansByName.get(span.name) ?? []), span]);
+  }
+  return spans.map((span) => {
+    const spanLines = [span.startLine, span.endLine];
+    const sharesLine = (spansByName.get(span.name) ?? []).some((other) => other !== span
+      && (spanLines.includes(other.startLine) || spanLines.includes(other.endLine)));
+    // Two same-named declarations sharing a line keep their columns so each gets its own baseline entry.
+    if (sharesLine) {
+      return span;
+    }
+    // A declaration alone on its lines is told apart by line alone, so dropping columns keeps existing baseline entries stable.
+    const { startColumn: _startColumn, endColumn: _endColumn, ...lineOnly } = span;
+    return lineOnly;
+  });
+}
+
+/**
+ * Builds the baseline span for one function, adding 1-based start and end columns when the syntax tree has them.
+ * Columns keep two same-named functions on one line apart, so each keeps its own baseline entry.
+ *
+ * @param block - discovered function or callable block; when `callableNode` is absent, only line bounds are returned
+ * @param parsed - shared parsed syntax tree owning the block's AST offsets
+ * @returns Declaration span with line bounds, plus 1-based start/end columns when `callableNode` is present.
+ */
+function blockDeclarationSpan(block: FunctionBlock, parsed: ParsedScript): DeclarationSpan {
+  const endLine = block.startLine + block.lineCount - 1;
+  const span: DeclarationSpan = { name: block.name, startLine: block.startLine, endLine };
+  // A block found without a syntax node keeps line-only bounds, so its baseline entry is ranked by line alone.
+  if (block.callableNode === undefined) {
+    return span;
+  }
+  const anchorNode = declarationAnchorNode(block.callableNode);
+  const startPos = parsed.sourceFile.getLineAndCharacterOfPosition(anchorNode.getStart(parsed.sourceFile));
+  const endPos = parsed.sourceFile.getLineAndCharacterOfPosition(block.callableNode.getEnd());
+  // Preserve column precision when the declaration starts on the span's own opening line; leading JSDoc/decorators begin at column 1.
+  span.startColumn = startPos.line + 1 === block.startLine ? startPos.character + 1 : 1;
+  // Record the end column only when the syntax node ends on the block's last line, so a mismatch never narrows the span.
+  if (endPos.line + 1 === endLine) {
+    // The syntax node's end is just past its last character, so that offset is already the last character's 1-based column.
+    span.endColumn = endPos.character;
+  }
+  return span;
+}
+
+/**
+ * Widens an arrow or function expression to the variable or property it is assigned to.
+ * Findings reported on that name then still fall inside the function's span.
+ *
+ * @param callableNode - parsed AST node for the callable body
+ * @returns The owning variable/property declaration node when it directly wraps `callableNode`, otherwise `callableNode`.
+ */
+function declarationAnchorNode(callableNode: import("typescript").Node): import("typescript").Node {
+  const parent = callableNode.parent;
+  // A function assigned to a variable or property starts at its name, which is where findings about it are reported.
+  if (parent !== undefined && "initializer" in parent && parent.initializer === callableNode) {
+    return parent;
+  }
+  return callableNode;
 }
 
 /**

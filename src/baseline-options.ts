@@ -52,9 +52,10 @@ export function applyBaselineOptions(projectRoot: string, options: AnalysisOptio
     try {
       return generateBaselineResult(projectRoot, options, findings, declarationPosition);
     } catch (error) {
-      // A baseline file error in diagnose mode keeps all findings visible and invalidates the run with a diagnostic.
+      // For example, running `--generate-baseline` over an existing 0.5 default baseline without `--force`, or passing a bad `--migrate-baseline`.
+      // In diagnose mode, keep all findings visible and invalidate the run with a path-safe diagnostic.
       if (unusableBaseline === "diagnose" && error instanceof BaselineFileError) {
-        return { findings, diagnostics: [{ diagnosticType: "baseline-error", message: error.message }] };
+        return { findings, diagnostics: [{ diagnosticType: "baseline-error", message: sanitizeGenerationErrorMessage(projectRoot, options, error.message) }] };
       }
       throw error;
     }
@@ -72,7 +73,8 @@ export function applyBaselineOptions(projectRoot: string, options: AnalysisOptio
   try {
     return applySelectedBaseline(projectRoot, selected, findings, declarationPosition);
   } catch (error) {
-    // In diagnose mode, a baseline file error keeps all findings visible and reports the selection label in the fatal diagnostic.
+    // For example, passing `--baseline missing.json` or pointing at a corrupt or wrong-schema baseline file.
+    // In diagnose mode, keep all findings visible and report the caller's path label in the fatal diagnostic.
     if (unusableBaseline === "diagnose" && error instanceof BaselineFileError) {
       return { findings, diagnostics: [{ diagnosticType: "baseline-error", message: error.message.replaceAll(selected.path, selected.label) }] };
     }
@@ -171,4 +173,23 @@ function selectedBaseline(projectRoot: string, options: AnalysisOptions): Baseli
   }
   const defaultBaseline = join(projectRoot, DEFAULT_BASELINE);
   return existsSync(defaultBaseline) ? { path: defaultBaseline, source: "default", label: DEFAULT_BASELINE } : undefined;
+}
+
+/**
+ * Replaces resolved absolute baseline and migration paths inside a generation diagnostic with the caller's path labels.
+ * Keeps host filesystem locations out of machine JSON and SARIF error messages.
+ *
+ * @param projectRoot - Base directory used to resolve the caller's generate and migrate path arguments.
+ * @param options - Analysis options with path labels; omitted `generateBaseline` uses `DEFAULT_BASELINE`, omitted `migrateBaseline` skips it.
+ * @param message - Raw baseline file error message produced during generation or migration.
+ * @returns Sanitized diagnostic message with resolved paths replaced by their caller-supplied labels.
+ */
+function sanitizeGenerationErrorMessage(projectRoot: string, options: AnalysisOptions, message: string): string {
+  const generateLabel = options.generateBaseline ?? DEFAULT_BASELINE;
+  let sanitized = message.replaceAll(absolutize(projectRoot, generateLabel), generateLabel);
+  // With --migrate-baseline, the old baseline's path is also shown the way the user typed it.
+  if (options.migrateBaseline !== undefined) {
+    sanitized = sanitized.replaceAll(absolutize(projectRoot, options.migrateBaseline), options.migrateBaseline);
+  }
+  return sanitized;
 }

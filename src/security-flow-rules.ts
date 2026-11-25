@@ -385,22 +385,80 @@ function isImportedFileRead(node: TsNode, parsedSource: TsSourceFile, bindings: 
  * Build reader exemptions from imports in parsedSource and drop exemptions for unshadowed assignments to tracked reader members
  * so that replacement methods remain eligible for content taint.
  *
+ * A module too large to walk drops every exemption, so file reads stay reported.
+ * A function or static block too large to walk loses the exemptions inside it; a reader assigned there loses its exemption everywhere.
+ *
  * @param parsedSource - parsed syntax tree providing imports and assignment target text
  * @param scopes - function, module, and static-block scope roots scanned for hoisted shadowing and member writes
- * @returns Map of reader names to shadowing scopes, or an empty map when no readers exist or any scope exceeds the node budget.
+ * @returns Map of reader names to shadowing scopes, or an empty map when no readers exist or the module root exceeds the node budget.
  */
 function fileReadBindingsForScopes(parsedSource: TsSourceFile, scopes: readonly TsNode[]): FileReadBindings {
   const bindings = new Map([...importedFileReadCallees(parsedSource)].map((callee) => [callee, new Set<TsNode>()]));
   if (bindings.size === 0) return bindings;
   const writes: TsNode[] = [];
+  const exhaustedScopes: TsNode[] = [];
   for (const scope of scopes) {
-    if (!indexFileReadScope(scope, bindings, writes)) return new Map();
+    // A scope too large to walk fully cannot prove that a file reader was left untouched.
+    if (!indexFileReadScope(scope, bindings, writes)) {
+      // Module-level exhaustion can hide top-level hoisting or reassignment that affects every scope, so fail closed globally.
+      if (scope === parsedSource) {
+        return new Map();
+      }
+      exhaustedScopes.push(scope);
+    }
   }
   for (const write of writes) {
     const callee = writtenFileReadCallee(write, parsedSource);
     if (callee && bindings.has(callee) && !isFileReadBindingShadowed(write, callee, bindings)) bindings.delete(callee);
   }
+  // Scope-local exhaustion fails closed for that scope and drops any member reader whose text matches an assignment in the exhausted body.
+  for (const exhaustedScope of exhaustedScopes) {
+    dropExhaustedScopeWrittenCallees(exhaustedScope.getText(parsedSource), bindings);
+    // Treat the oversized scope as shadowing every reader, so reads inside it lose the exemption and can still be reported.
+    for (const shadowedScopes of bindings.values()) {
+      shadowedScopes.add(exhaustedScope);
+    }
+  }
   return bindings;
+}
+
+/**
+ * Drops tracked member-reader bindings globally when an exhausted scope's source text appears to assign to that member.
+ * Mutates `bindings` in place so an unwalked tail beyond `MAX_SCOPE_NODES` cannot monkey-patch a reader while leaving sibling exemptions active.
+ *
+ * @param scopeText - source text of a function or static-block scope that exceeded `MAX_SCOPE_NODES`
+ * @param bindings - mutable reader-binding map whose member entries are removed on assignment matches
+ * @returns Nothing. Deletes matching member callees from `bindings` in place.
+ */
+function dropExhaustedScopeWrittenCallees(scopeText: string, bindings: Map<string, Set<TsNode>>): void {
+  // Check each tracked reader, such as `fs.readFileSync`, for an assignment in the oversized scope.
+  for (const callee of [...bindings.keys()]) {
+    const dotIndex = callee.indexOf(".");
+    // A bare imported name cannot be replaced through a member write, so only `module.method` readers are checked.
+    if (dotIndex === -1) {
+      continue;
+    }
+    const rootPattern = escapeRegExpLiteral(callee.slice(0, dotIndex));
+    const methodPattern = escapeRegExpLiteral(callee.slice(dotIndex + 1));
+    const memberWritePattern = new RegExp(
+      `(?<![\\w$])${rootPattern}\\s*(?:\\.\\s*${methodPattern}(?![\\w$])|\\[\\s*["']${methodPattern}["']\\s*\\])\\s*(?:\\?\\?|&&|\\|\\||\\*\\*|<<|>>>?|[+\\-*/%&|^])?=(?!=)`,
+    );
+    // Text such as `fs.readFileSync = fake` in the unwalked scope may replace the reader, so its exemption is dropped everywhere.
+    if (memberWritePattern.test(scopeText)) {
+      bindings.delete(callee);
+    }
+  }
+}
+
+/**
+ * Escapes regular-expression metacharacters in an identifier segment before interpolating it into a pattern.
+ * Identifiers may start with `$`, so callers bound matches with `(?<![\w$])` rather than `\b`.
+ *
+ * @param literalText - raw identifier text such as `fs` or `$fs`
+ * @returns Escaped string safe for literal matching inside `RegExp`.
+ */
+function escapeRegExpLiteral(literalText: string): string {
+  return literalText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**

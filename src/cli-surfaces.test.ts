@@ -1234,9 +1234,11 @@ test("every registered command appears in the catalogue and in every completion 
   for (const shell of ["bash", "zsh", "fish"]) {
     const completion = execFileSync("./bin/gruff-ts", ["completion", shell], { encoding: "utf8", cwd: REPO_ROOT });
 
-    // `help` is deliberately absent from completions; every other registered command must be offered.
+    // `help` is deliberately absent from completions; every other registered command must appear as an exact token.
     for (const command of registered.filter((name) => name !== "help")) {
-      assert.equal(completion.includes(command), true, `${shell} completion omits ${command}`);
+      const escapedCommand = command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const tokenPattern = new RegExp(`(?:^|[\\s'"(])${escapedCommand}(?:$|[\\s'":)])`, "m");
+      assert.match(completion, tokenPattern, `${shell} completion omits exact token ${command}`);
     }
   }
 });

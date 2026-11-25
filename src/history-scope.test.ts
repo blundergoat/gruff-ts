@@ -16,6 +16,10 @@ const FILTERED_HISTORY_CASES = [
   { fileName: "analyse-diff.json", args: ["analyse", "clean.ts", "--diff=working-tree"] },
   { fileName: "analyse-since.json", args: ["analyse", "clean.ts", "--since=HEAD"] },
   { fileName: "analyse-ranges.json", args: ["analyse", "clean.ts", "--changed-ranges=1-1"] },
+  { fileName: "analyse-include-rule.json", args: ["analyse", "clean.ts", "--include-rule=security.eval-call"] },
+  { fileName: "analyse-exclude-rule.json", args: ["analyse", "clean.ts", "--exclude-rule=security.eval-call"] },
+  { fileName: "analyse-include-pillar.json", args: ["analyse", "clean.ts", "--include-pillar=security"] },
+  { fileName: "analyse-exclude-pillar.json", args: ["analyse", "clean.ts", "--exclude-pillar=security"] },
   { fileName: "summary-diff.json", args: ["summary", "clean.ts", "--diff=working-tree"] },
 ] as const;
 

@@ -32,9 +32,9 @@ const KNOWN_ROOT_KEYS: ReadonlySet<string> = new Set([
 const KNOWN_PATHS_KEYS: ReadonlySet<string> = new Set(["ignore"]);
 const KNOWN_ALLOWLISTS_KEYS: ReadonlySet<string> = new Set([
   "acceptedAbbreviations", "acceptedClassFilePairs", "placeholderNames", "trackingTokens",
-  // Recognised only so the loader can refuse it by name with section 5's explanation, rather than as an unknown key.
-  "secretPreviews",
 ]);
+// Recognised separately so the loader can refuse it by name with section 5's explanation without advertising it as a valid key.
+const REFUSED_ALLOWLISTS_KEYS: ReadonlySet<string> = new Set(["secretPreviews"]);
 const LEGACY_SECRET_PREVIEWS_ERROR = 'Config key "allowlists.secretPreviews" is removed in 0.6.0: FAMILY-CONTRACT.md section 5 makes category markers unconditional, so the key authorises nothing; delete it from the configuration.';
 const LEGACY_MINIMUM_SEVERITY_ERROR = 'Config key "minimumSeverity" is the display floor in 0.6.0 and takes one severity, not a per-command map; move the per-command exit gate to "failOn", which is the key that gates the exit code.';
 // Pinned-corpus size and scan-cost measurements set these paired defaults because either line count
@@ -421,7 +421,7 @@ function applyConfigValues(config: Config, parsedConfig: Record<string, unknown>
   applySchemaVersionConfig(parsedConfig);
   assertKnownKeys(parsedConfig, KNOWN_ROOT_KEYS, "");
   assertKnownKeys(objectValue(parsedConfig.paths), KNOWN_PATHS_KEYS, "paths.");
-  assertKnownKeys(objectValue(parsedConfig.allowlists), KNOWN_ALLOWLISTS_KEYS, "allowlists.");
+  assertKnownKeys(objectValue(parsedConfig.allowlists), KNOWN_ALLOWLISTS_KEYS, "allowlists.", REFUSED_ALLOWLISTS_KEYS);
   applyDeepScanBudgetConfig(config, parsedConfig);
   applyDisplayFloorConfig(config, parsedConfig);
   applyFailOnConfig(config, parsedConfig);
@@ -433,20 +433,26 @@ function applyConfigValues(config: Config, parsedConfig: Record<string, unknown>
 
 /**
  * Validates config key names before analysis because an ignored typo would leave a setting out of force.
- * The error names the first rejected key and gives a stable, sorted list of accepted keys.
+ * The error names the first rejected key and gives a stable, sorted list of accepted keys, excluding separately refused legacy keys.
  *
  * @param block - config mapping to validate. An omitted block is allowed.
  * @param known - permitted unprefixed key names for the block
  * @param prefix - config path prefix shown before key names in the diagnostic
+ * @param separatelyRefused - optional legacy keys deferred to a dedicated migration error; an empty set rejects every unknown key here
  * @returns nothing. Validation continues for an omitted block or one whose keys are all recognised.
  * @throws {ConfigLoadError} - the block contains a key outside the known set
  */
-function assertKnownKeys(block: Record<string, unknown> | undefined, known: ReadonlySet<string>, prefix: string): void {
+function assertKnownKeys(
+  block: Record<string, unknown> | undefined,
+  known: ReadonlySet<string>,
+  prefix: string,
+  separatelyRefused: ReadonlySet<string> = new Set(),
+): void {
   // A missing or non-mapping section supplies no keys here, so the caller can continue its other config checks.
   if (!block) {
     return;
   }
-  const unknownKey = Object.keys(block).find((key) => !known.has(key));
+  const unknownKey = Object.keys(block).find((key) => !known.has(key) && !separatelyRefused.has(key));
   if (unknownKey === undefined) {
     return;
   }
@@ -1007,15 +1013,59 @@ function isSeverity(configValue: unknown): configValue is Severity {
 }
 
 /**
- * Validates an already-parsed configuration mapping against the 0.6.0 config loader without reading from disk.
+ * Validates an already-parsed configuration mapping against the 0.6.0 config loader, including inline and built-in `profile:` blocks.
+ *
  * Used by `migrate-config` so migrated output is guaranteed loadable before it is written.
+ * When `baseDirectory` is supplied, relative file-backed profile references are resolved on disk too.
  *
  * @param parsedConfig - parsed YAML or JSON config object to validate
- * @returns Nothing. Completes when every key, rule override, allowlist, and sensitive exclusion passes 0.6.0 validation.
- * @throws {ConfigLoadError} - when any key, rule id, option, allowlist, or sensitive exclusion would be rejected by `loadConfig`.
+ * @param baseDirectory - optional folder for resolving file-backed profiles; when omitted, only built-in names and file-shaped paths are checked
+ * @returns Nothing. Completes when every key, profile, rule override, allowlist, and sensitive exclusion passes 0.6.0 validation.
+ * @throws {ConfigLoadError} - when any key, profile, rule id, option, allowlist, or sensitive exclusion would be rejected by `loadConfig`.
  */
-function validateParsedConfig(parsedConfig: Record<string, unknown>): void {
+function validateParsedConfig(parsedConfig: Record<string, unknown>, baseDirectory?: string): void {
   applyConfigValues(defaultConfig(), parsedConfig);
+  // A migrated `profile:` must still name a real profile, or the migrated file would fail when the user next runs a scan.
+  if (parsedConfig.profile !== undefined) {
+    validateProfileValue(parseProfileSpec(parsedConfig.profile), baseDirectory);
+  }
+}
+
+/**
+ * Validates a parsed `profile:` specification against built-in presets, rule IDs, and optionally on-disk file references.
+ *
+ * @param spec - parsed string or inline profile specification from configuration
+ * @param baseDirectory - optional folder for resolving file-backed profiles; when omitted, on-disk profile files cannot be opened
+ * @returns Nothing. Throws when the profile references an unknown preset/rule or fails resolution.
+ * @throws {ConfigLoadError} - when a rule ID, built-in profile name, or referenced profile file is invalid.
+ */
+function validateProfileValue(spec: ProfileSpec, baseDirectory: string | undefined): void {
+  // When the config's folder is known, resolve the profile exactly as a scan would, including profile files on disk.
+  if (baseDirectory !== undefined) {
+    resolveProfile(spec, baseDirectory);
+    return;
+  }
+  // An inline profile can override rules; each one must be a rule ID this version knows.
+  if (typeof spec === "object") {
+    // The first unknown rule ID stops the migration with a config error.
+    for (const ruleId of Object.keys(spec.rules ?? {})) {
+      assertKnownProfileRule(ruleId);
+    }
+  }
+  const ref = typeof spec === "string" ? spec : spec.extends;
+  // An inline profile without `extends:` has no base profile to check.
+  if (ref === undefined) {
+    return;
+  }
+  const isBuiltIn = BUILT_IN_PROFILES.has(ref) || BUILT_IN_PROFILES.has(`gruff.${ref}`);
+  const looksLikeFilePath = /[\\/]|(?:\.ya?ml|\.json)$/iu.test(ref);
+  // Without a folder to resolve files against, accept only a built-in name or a value shaped like a profile file path.
+  if (!isBuiltIn && !looksLikeFilePath) {
+    throw new ConfigLoadError(
+      `Unknown profile: ${JSON.stringify(ref)}.`,
+      `Use a built-in profile name (${builtInProfileNames().join(", ")}) or point at an existing .yaml/.yml/.json profile file.`,
+    );
+  }
 }
 
 export { defaultConfigPath, loadConfig, minimumSeverityFor, optionBoolean, optionNumber, resolveProfile, ruleEnabled, ruleSeverity, threshold, validateParsedConfig };

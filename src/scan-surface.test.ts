@@ -234,7 +234,14 @@ test("zero-evaluated-file reports render n/a instead of A 100.00 in pillar table
   const summary = renderSummary(report);
   const markdown = renderReport(report, "markdown");
   const html = renderReport(report, "html");
+  const jsonPayload = JSON.parse(renderReport(report, "json")) as {
+    score: { composite: { score: number | null; grade: string | null }; evaluatedFiles: number; pillars: Array<{ pillar: string; score: number | null; grade: string | null }> };
+  };
   assert.match(summary, /security\s+n\/a\s+n\/a/);
   assert.match(markdown, /\| security \| n\/a \| n\/a \|/);
   assert.match(html, />security<\/td><td class="num"><span class="grade-pill [^"]*">n\/a<\/span><\/td><td class="num">n\/a<\/td>/);
+  assert.equal(jsonPayload.score.evaluatedFiles, 0);
+  assert.equal(jsonPayload.score.composite.score, null);
+  assert.equal(jsonPayload.score.composite.grade, null);
+  assert.equal(jsonPayload.score.pillars.every((row) => row.score === null && row.grade === null), true);
 });

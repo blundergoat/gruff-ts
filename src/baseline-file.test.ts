@@ -11,6 +11,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { applyBaseline, migrateBaseline, requireOverwritableDefaultPath, writeBaseline } from "./baseline-file.ts";
 import { baselineSubject, computeIdentityFor, declarationPositionFromSpans, findingIdentities, normaliseMeasuredValues } from "./baseline-identity.ts";
+import { analyseProject } from "./test-fixtures.ts";
 import type { Finding } from "./types.ts";
 
 // The digests the family case file pins for other ports; reproducing them is the only proof the rule is one rule.
@@ -344,6 +345,81 @@ test("declarationPositionFromSpans selects the innermost enclosing span for nest
   );
 });
 
+test("same-line same-named declarations receive distinct baseline ordinals", () => {
+  const resolver = declarationPositionFromSpans(new Map([
+    ["src/app.ts", [
+      { name: "helper", startLine: 1, endLine: 1, startColumn: 1, endColumn: 30 },
+      { name: "helper", startLine: 1, endLine: 1, startColumn: 35, endColumn: 65 },
+    ]],
+  ]));
+  const first = finding({ symbol: "helper", line: 1, column: 10 });
+  const second = finding({ symbol: "helper", line: 1, column: 45 });
+  const identities = findingIdentities([first, second], resolver);
+
+  assert.deepEqual(identities.map((entry) => entry?.subject), ["helper#1", "helper#2"]);
+  assert.notEqual(identities[0]?.identity, identities[1]?.identity);
+  assert.notEqual(identities[0]?.declarationKey, identities[1]?.declarationKey);
+
+  const endToEnd = analyseProject({
+    "src/same-line.ts": "// File overview: same-line declarations.\nexport const pair = [{ helper: () => 1 }, { helper: (one: number, two: number, three: number, four: number, five: number, six: number, seven: number, eight: number) => {\n  return one + two + three + four + five + six + seven + eight;\n} }];\n",
+  });
+  const paramFindings = endToEnd.findings.filter((entry) => entry.symbol === "helper" && entry.ruleId === "size.parameter-count");
+  assert.deepEqual(paramFindings.map((entry) => entry.baselineSubject), ["helper#2"]);
+});
+
+// Fixture purpose: column precision applies only between same-named declarations on one line.
+// Stable contract: a lone declaration, or a finding outside every span, keeps a line-only ordinal no matter which column a rule reports.
+test("columns never split ordinals for findings outside spans or for a lone declaration", () => {
+  const resolver = declarationPositionFromSpans(new Map([["src/app.ts", [{ name: "solo", startLine: 5, endLine: 9 }]]]));
+  const outsideFirst = finding({ ruleId: "naming.short", symbol: "Widget", line: 3, column: 1 });
+  const outsideSecond = finding({ ruleId: "docs.missing-jsdoc", symbol: "Widget", line: 3, column: 14 });
+  const insideFirst = finding({ ruleId: "naming.short", symbol: "solo", line: 5, column: 1 });
+  const insideSecond = finding({ ruleId: "size.parameter-count", symbol: "solo", line: 5, column: 14 });
+  const identities = findingIdentities([outsideFirst, outsideSecond, insideFirst, insideSecond], resolver);
+
+  assert.deepEqual(identities.map((entry) => entry?.subject), ["Widget#1", "Widget#1", "solo#1", "solo#1"]);
+});
+
+// Fixture purpose: verifies deterministic legacy baseline migration with exact-line tiebreaking and non-starving bipartite matching.
+// Side effects: writes and removes temporary baseline JSON files inside withProject.
+test("legacy migration prefers exact legacy line matches and solves complementary partial rows without starvation", () => {
+  withProject((dir) => {
+    const exactLineLegacy = join(dir, "exact-line.json");
+    const exactLineOutput = join(dir, "exact-line-v3.json");
+    writeFileSync(
+      exactLineLegacy,
+      JSON.stringify({
+        schemaVersion: "gruff.baseline.v1",
+        entries: [{ ruleId: "naming.short", filePath: "src/app.ts", line: 50, symbol: "process", message: "naming.short message" }],
+      }),
+    );
+    const earlier = finding({ symbol: "process", line: 10 });
+    const exactMatch = finding({ symbol: "process", line: 50 });
+    const spans = new Map([["src/app.ts", [{ name: "process", startLine: 10, endLine: 12 }, { name: "process", startLine: 50, endLine: 52 }]]]);
+    const exactMigration = migrateBaseline(exactLineLegacy, exactLineOutput, [earlier, exactMatch], declarationPositionFromSpans(spans));
+    assert.equal(exactMigration.accepted, 1);
+    const exactDoc = JSON.parse(readFileSync(exactLineOutput, "utf8")) as { occurrences: Array<{ subject: string }> };
+    assert.deepEqual(exactDoc.occurrences.map((entry) => entry.subject), ["process#2"]);
+
+    const bipartiteLegacy = join(dir, "bipartite.json");
+    const bipartiteOutput = join(dir, "bipartite-v3.json");
+    writeFileSync(
+      bipartiteLegacy,
+      JSON.stringify({
+        schemaVersion: "gruff.baseline.v1",
+        entries: [
+          { ruleId: "naming.short", filePath: "src/app.ts", message: "first message" },
+          { ruleId: "naming.short", filePath: "src/app.ts", symbol: "process" },
+        ],
+      }),
+    );
+    const firstFinding = finding({ symbol: "process", message: "first message", line: 10 });
+    const secondFinding = finding({ symbol: "process", message: "second message", line: 20 });
+    const bipartiteMigration = migrateBaseline(bipartiteLegacy, bipartiteOutput, [firstFinding, secondFinding]);
+    assert.equal(bipartiteMigration.accepted, 2);
+  });
+});
+
 // Returns the test secret as raw text, its first eight characters, SHA-256 hex, and Base64 for the baseline leak assertions.
 function sentinelForms(sentinel: string): Record<string, string> {
   return {
@@ -362,6 +438,7 @@ interface FindingOverrides {
   pillar?: Finding["pillar"];
   symbol?: string;
   line?: number;
+  column?: number;
 }
 
 // Returns a baseline test finding with fixture defaults for fields the supplied overrides leave unset.
@@ -373,6 +450,7 @@ function finding(overrides: FindingOverrides = {}): Finding {
     message: overrides.message ?? "naming.short message",
     filePath: "src/app.ts",
     line: overrides.line ?? 12,
+    ...(overrides.column === undefined ? {} : { column: overrides.column }),
     severity: "advisory",
     pillar: overrides.pillar ?? "naming",
     secondaryPillars: [],

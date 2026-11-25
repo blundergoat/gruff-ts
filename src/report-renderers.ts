@@ -304,7 +304,9 @@ function machineFinding(finding: Finding, projectRoot: string): MachineFinding {
 
 /**
  * Formats a diagnostic for CI readers. A scan-budget notice can leave the run valid even though some checks were skipped.
+ *
  * Invariant: defaults to invalidating the run. Missing or external file paths and missing line numbers have no location field.
+ * An absolute in-project path inside the message is rewritten project-relative, so host folders never reach CI logs.
  *
  * @param diagnostic - Native scan diagnostic supplying type, message, validity flag, and optional source location.
  * @param projectRoot - Root directory used to resolve an in-project diagnostic file path.
@@ -315,11 +317,15 @@ function machineDiagnostic(
   projectRoot: string,
 ): MachineDiagnostic {
   const line = positiveInteger(diagnostic.line);
+  const fileEntry = diagnostic.filePath === undefined ? {} : optionalMachinePath("file", diagnostic.filePath, projectRoot);
+  const message = diagnostic.filePath !== undefined && fileEntry.file !== undefined && diagnostic.filePath !== fileEntry.file
+    ? diagnostic.message.replaceAll(diagnostic.filePath, fileEntry.file)
+    : diagnostic.message;
   return {
     type: diagnostic.diagnosticType,
-    message: diagnostic.message,
+    message,
     invalidatesRun: diagnostic.invalidatesRun !== false,
-    ...(diagnostic.filePath === undefined ? {} : optionalMachinePath("file", diagnostic.filePath, projectRoot)),
+    ...fileEntry,
     ...(line === undefined ? {} : { line }),
   };
 }
@@ -530,7 +536,7 @@ function renderSarif(report: AnalysisReport): string {
         invocations: [
           {
             executionSuccessful: !report.diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false),
-            toolExecutionNotifications: report.diagnostics.map(sarifDiagnostic),
+            toolExecutionNotifications: report.diagnostics.map((diagnostic) => sarifDiagnostic(diagnostic, report.run.projectRoot)),
           },
         ],
         results: [
@@ -556,22 +562,33 @@ function renderSarif(report: AnalysisReport): string {
 
 /**
  * Return a SARIF invocation notification from the analysis diagnostic with a file anchor when a path is available.
+ *
  * The severity contract treats an explicit non-invalidating flag as a note. An absent or true flag marks the run invalid and emits an error.
- * A path without a line gives a file-level location.
+ * A path without a line gives a file-level location, and in-project absolute paths are made relative to `projectRoot`.
  *
  * @param diagnostic - Analysis diagnostic supplying type, message, validity flag, and optional location.
+ * @param projectRoot - Project root used to normalize in-project file paths in both the artifact URI and message text.
  * @returns SARIF toolExecutionNotification entry with level, message, properties, and optional location.
  */
-function sarifDiagnostic(diagnostic: AnalysisReport["diagnostics"][number]): Record<string, unknown> {
+function sarifDiagnostic(
+  diagnostic: AnalysisReport["diagnostics"][number],
+  projectRoot: string,
+): Record<string, unknown> {
+  const fileEntry = diagnostic.filePath === undefined ? {} : optionalMachinePath("file", diagnostic.filePath, projectRoot);
+  // A path outside the project is left out, as in JSON, so the user's host folders never reach a SARIF upload.
+  const normalizedPath = fileEntry.file;
+  const message = diagnostic.filePath !== undefined && fileEntry.file !== undefined && diagnostic.filePath !== fileEntry.file
+    ? diagnostic.message.replaceAll(diagnostic.filePath, fileEntry.file)
+    : diagnostic.message;
   return {
     descriptor: { id: diagnostic.diagnosticType },
     level: diagnostic.invalidatesRun === false ? "note" : "error",
-    message: { text: diagnostic.message },
-    ...(diagnostic.filePath
+    message: { text: message },
+    ...(normalizedPath
       ? {
           locations: [{
             physicalLocation: {
-              artifactLocation: { uri: sarifUri(diagnostic.filePath) },
+              artifactLocation: { uri: sarifUri(normalizedPath) },
               ...(diagnostic.line === undefined ? {} : { region: { startLine: diagnostic.line } }),
             },
           }],

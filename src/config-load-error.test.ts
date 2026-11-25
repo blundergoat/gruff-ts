@@ -4,7 +4,7 @@
 // Retired secret-preview values must always stop safely without echoing user-provided content.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -287,4 +287,118 @@ test("config rejects non-mapping rule entries with ConfigLoadError", () => {
     () => analyseProject({ "src/ok.ts": "// File overview: fixture.\nexport const ok = 1;\n" }, { config: { rules: { "size.file-length": true as never } } }),
     ConfigLoadError,
   );
+});
+
+test("unknown allowlists keys never suggest retired allowlists.secretPreviews", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-allowlist-unknown-"));
+  try {
+    writeFileSync(
+      join(projectRoot, ".gruff-ts.yaml"),
+      "schemaVersion: gruff-ts.config.v0.1\nallowlists:\n  bogusKey:\n    - one\n",
+    );
+    assert.throws(
+      () => loadConfig(projectRoot, CONFIG_LOAD_OPTIONS),
+      (error: unknown) => {
+        assert.equal(error instanceof ConfigLoadError, true);
+        const message = (error as ConfigLoadError).message;
+        assert.equal(message.includes("allowlists.bogusKey"), true);
+        assert.equal(message.includes("secretPreviews"), false);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+// Fixture purpose: verifies the summary v3 schema contract on config and multi-target failures.
+// Side effects: writes temporary directories and spawns the CLI binary, then cleans up the filesystem.
+test("summary --format=json failed runs emit gruff.summary.v3 without findings", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-summary-failed-envelope-"));
+  const bin = join(REPO_ROOT, "bin/gruff-ts");
+  try {
+    const configDir = join(root, "bad-config");
+    const launchDir = join(root, "launch");
+    const targetOne = join(root, "one");
+    const targetTwo = join(root, "two");
+    for (const dir of [configDir, launchDir, targetOne, targetTwo]) {
+      mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(join(configDir, ".gruff-ts.yaml"), "schemaVersion: gruff-ts.config.v0.1\nunknownRootKey: true\n");
+    writeFileSync(join(configDir, "ok.ts"), "// File overview: fixture.\nexport const fine = 1;\n");
+    writeFileSync(join(targetOne, "one.ts"), "// File overview: fixture.\nexport const one = 1;\n");
+    writeFileSync(join(targetTwo, "two.ts"), "// File overview: fixture.\nexport const two = 2;\n");
+
+    const configFailure = spawnSync("bash", [bin, "summary", ".", "--format=json"], { cwd: configDir, encoding: "utf8" });
+    assert.equal(configFailure.status, 2);
+    const configPayload = JSON.parse(configFailure.stdout) as { schemaVersion: string; diagnostics: Array<{ type: string }> };
+    assert.equal(configPayload.schemaVersion, "gruff.summary.v3");
+    assert.equal("findings" in configPayload, false);
+    assert.deepEqual(configPayload.diagnostics.map((entry) => entry.type), ["config-error"]);
+
+    const targetFailure = spawnSync("bash", [bin, "summary", "../one", "../two", "--no-config", "--no-baseline", "--format=json"], { cwd: launchDir, encoding: "utf8" });
+    assert.equal(targetFailure.status, 2);
+    const targetPayload = JSON.parse(targetFailure.stdout) as { schemaVersion: string; diagnostics: Array<{ type: string }> };
+    assert.equal(targetPayload.schemaVersion, "gruff.summary.v3");
+    assert.equal("findings" in targetPayload, false);
+    assert.deepEqual(targetPayload.diagnostics.map((entry) => entry.type), ["target-error"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI execution selector errors with --no-config exit 2 without emitting a config-error JSON envelope", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-selector-cli-"));
+  try {
+    writeFileSync(join(root, "ok.ts"), "// File overview: selector fixture.\nexport const fine = 1;\n");
+    const run = spawnSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "analyse", ".", "--no-config", "--no-baseline", "--include-rule", "not.a-real-rule", "--format=json"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(run.status, 2);
+    assert.equal(run.stdout, "");
+    assert.match(run.stderr, /not\.a-real-rule/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Fixture purpose: verifies the portable-path contract so JSON and SARIF error diagnostics hide host absolute paths.
+// Side effects: writes temporary fixture files and spawns the CLI binary, then removes the temporary directory.
+test("JSON and SARIF error diagnostics keep host absolute paths out of messages", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-diag-paths-"));
+  const bin = join(REPO_ROOT, "bin/gruff-ts");
+  try {
+    writeFileSync(join(projectRoot, "ok.ts"), "// File overview: diagnostic fixture.\nexport const fine = 1;\n");
+    writeFileSync(join(projectRoot, "legacy.json"), `${JSON.stringify({ schemaVersion: "gruff.baseline.v1", entries: [] })}\n`);
+
+    const missingJson = spawnSync("bash", [bin, "analyse", "missing.ts", "--no-config", "--no-baseline", "--format=json"], { cwd: projectRoot, encoding: "utf8" });
+    assert.equal(missingJson.status, 2);
+    const missingPayload = JSON.parse(missingJson.stdout) as { diagnostics: Array<{ type: string; file?: string; message: string }> };
+    assert.equal(missingPayload.diagnostics[0]?.type, "missing-path");
+    assert.equal(missingPayload.diagnostics[0]?.file, "missing.ts");
+    assert.equal(missingPayload.diagnostics[0]?.message.includes(projectRoot), false);
+
+    const missingSarif = spawnSync("bash", [bin, "analyse", "missing.ts", "--no-config", "--no-baseline", "--format=sarif"], { cwd: projectRoot, encoding: "utf8" });
+    assert.equal(missingSarif.status, 2);
+    const sarifPayload = JSON.parse(missingSarif.stdout) as {
+      runs: Array<{ invocations: Array<{ toolExecutionNotifications: Array<{ message: { text: string }; locations?: Array<{ physicalLocation: { artifactLocation: { uri: string } } }> }> }> }>;
+    };
+    const notification = sarifPayload.runs[0]?.invocations[0]?.toolExecutionNotifications[0];
+    assert.ok(notification);
+    assert.equal(notification.message.text.includes(projectRoot), false);
+    assert.equal(notification.locations?.[0]?.physicalLocation.artifactLocation.uri, "missing.ts");
+
+    const baselineFail = spawnSync("bash", [bin, "analyse", ".", "--no-config", "--format=json", "--migrate-baseline", "legacy.json", "--generate-baseline", "legacy.json"], {
+      cwd: projectRoot,
+      encoding: "utf8",
+    });
+    assert.equal(baselineFail.status, 2);
+    const baselinePayload = JSON.parse(baselineFail.stdout) as { diagnostics: Array<{ type: string; message: string }> };
+    assert.equal(baselinePayload.diagnostics[0]?.type, "baseline-error");
+    assert.equal(baselinePayload.diagnostics[0]?.message.includes("legacy.json"), true);
+    assert.equal(baselinePayload.diagnostics[0]?.message.includes(projectRoot), false);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
 });

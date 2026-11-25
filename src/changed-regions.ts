@@ -83,17 +83,17 @@ export function changedRegionScope(options: AnalysisOptions, projectRoot = cwd()
   if (options.diffPatch !== undefined) {
     return parseUnifiedDiff(options.diffPatch, options.changedScope);
   }
-  // A commit range lets a user see findings introduced since a known revision.
+  // A commit range lets a user see findings introduced since a known revision; `--since` always names a Git ref, never a diff mode keyword.
   if (options.since) {
-    return gitDiffScope(options.since, options.changedScope, projectRoot);
+    return gitDiffScope(options.since, options.changedScope, projectRoot, false);
   }
-  // A named diff compares the requested part of the checkout.
+  // A named diff compares the requested part of the checkout, unless `--diff-base` explicitly named a Git ref.
   if (options.diff) {
     // A lone dash expects patch text from stdin, supplied by the CLI before the scan.
     if (options.diff === "-") {
       throw new ChangedRegionError("--diff - requires diffPatch input; the CLI reads stdin before analysis.");
     }
-    return gitDiffScope(options.diff, options.changedScope, projectRoot);
+    return gitDiffScope(options.diff, options.changedScope, projectRoot, options.isDiffExplicitRef !== true);
   }
   return undefined;
 }
@@ -416,12 +416,13 @@ function parseChangedRange(rawRange: string): ChangedRange {
  * Builds a changed-region scope from Git diff output, reading paths relative to the scan directory so nested scans match findings.
  * Working-tree mode combines staged, unstaged, and non-ignored untracked changes for a review of all local edits.
  *
- * @param mode - Diff selector: `staged`, `unstaged`, `working-tree`, or a Git revision expression.
+ * @param mode - Diff selector: `staged`, `unstaged`, `working-tree` (when `allowDiffModes` is true), or a Git revision expression.
  * @param changedScope - Attribution mode carried onto the resulting scope for downstream filtering.
  * @param projectRoot - Directory passed to Git so reported paths remain relative to the scan root.
+ * @param allowDiffModes - true lets `staged`, `unstaged` and `working-tree` pick a mode; false (`--since`, `--diff-base`) reads them as Git refs
  * @returns Scope populated with changed files, whole files, and per-file hunk ranges.
  */
-function gitDiffScope(mode: string, changedScope: ChangedScopeMode, projectRoot: string): ChangedRegionScope {
+function gitDiffScope(mode: string, changedScope: ChangedScopeMode, projectRoot: string, allowDiffModes = true): ChangedRegionScope {
   /**
    * Runs `git diff` with paths relative to the selected project so a scan launched from a parent directory sees the right edits.
    *
@@ -432,23 +433,26 @@ function gitDiffScope(mode: string, changedScope: ChangedScopeMode, projectRoot:
     gitOutput(["-c", "core.quotepath=false", "diff", "--unified=0", "--no-color", "--no-ext-diff", "--relative", ...extra], projectRoot),
     changedScope,
   );
-  // Staged mode reviews the contents selected for the next commit.
-  if (mode === "staged") {
-    return readDiff(["--cached"]);
-  }
-  // Unstaged mode reviews changes made since the last staging operation.
-  if (mode === "unstaged") {
-    return readDiff([]);
-  }
-  // A working-tree review uses `git diff HEAD` when HEAD exists so staged and unstaged edits share exact working-tree line numbers.
-  if (mode === "working-tree") {
-    const trackedScopes = hasGitHead(projectRoot)
-      ? [readDiff(["HEAD", "--"])]
-      : [readDiff(["--cached"]), readDiff([])];
-    return mergeScopes(
-      [...trackedScopes, untrackedFileScope(changedScope, projectRoot)],
-      changedScope,
-    );
+  // Mode keywords apply only to --diff; --since and --diff-base treat the value as a Git ref, even a branch named staged.
+  if (allowDiffModes) {
+    // Staged mode reviews the contents selected for the next commit.
+    if (mode === "staged") {
+      return readDiff(["--cached"]);
+    }
+    // Unstaged mode reviews changes made since the last staging operation.
+    if (mode === "unstaged") {
+      return readDiff([]);
+    }
+    // A working-tree review uses `git diff HEAD` when HEAD exists so staged and unstaged edits share exact working-tree line numbers.
+    if (mode === "working-tree") {
+      const trackedScopes = hasGitHead(projectRoot)
+        ? [readDiff(["HEAD", "--"])]
+        : [readDiff(["--cached"]), readDiff([])];
+      return mergeScopes(
+        [...trackedScopes, untrackedFileScope(changedScope, projectRoot)],
+        changedScope,
+      );
+    }
   }
   // Trailing `--` forces Git to interpret `mode` strictly as a revision expression rather than a path when the ref is missing.
   return readDiff(["--end-of-options", mode, "--"]);

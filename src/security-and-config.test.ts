@@ -848,3 +848,18 @@ test("line rules still flag NODE_TLS_REJECT_UNAUTHORIZED inside assertions and A
   assert.equal(report.findings.some((finding) => finding.ruleId === "security.disabled-tls-verification"), true);
   assert.equal(report.findings.some((finding) => finding.ruleId === "waste.useless-return"), false);
 });
+
+test("waste.broad-runtime-version reports the runtime entry line when devDependencies lists the same package earlier", () => {
+  const report = analyseProject({
+    "package.json": `{
+  "name": "fixture",
+  "devDependencies": { "left-pad": "1.3.0" },
+  "dependencies": {
+    "left-pad": "*"
+  }
+}
+`,
+  });
+  const lines = report.findings.filter((finding) => finding.ruleId === "waste.broad-runtime-version").map((finding) => finding.line);
+  assert.deepEqual(lines, [5]);
+});

@@ -311,3 +311,71 @@ test("migrateConfigText leaves unquoted current schemaVersion unchanged", () => 
   assert.deepEqual(result.changes, []);
   assert.equal(result.text, current);
 });
+
+// Fixture purpose: verifies the 0.6 migration contract so YAML and JSON config migration prune retired 0.5 rules
+// inside inline profile.rules and reject unknown profile names or rules before writing output.
+// Side effects: writes and removes temporary migrated config files on the filesystem to verify loadConfig round-trips.
+test("migrateConfigText prunes retired 0.5 rules inside inline profile.rules and validates profile specs", () => {
+  const inlineYaml = [
+    "schemaVersion: gruff-ts.config.v0.1",
+    "profile:",
+    "  extends: gruff.recommended",
+    "  rules:",
+    "    docs.stale-comment:",
+    "      enabled: false",
+    "    docs.missing-param-tag:",
+    "      enabled: true",
+    "",
+  ].join("\n");
+  const migratedYaml = migrateConfigText(inlineYaml, "yaml");
+  assert.equal(migratedYaml.changes.some((change) => change.description.includes("docs.stale-comment")), true);
+  assert.equal(migratedYaml.text.includes("docs.stale-comment"), false);
+  assert.equal(migratedYaml.text.includes("docs.missing-param-tag"), true);
+
+  const emptiedProfileRulesYaml = [
+    "schemaVersion: gruff-ts.config.v0.1",
+    "profile:",
+    "  extends: gruff.recommended",
+    "  rules:",
+    "    docs.stale-comment:",
+    "      enabled: false",
+    "",
+  ].join("\n");
+  const emptiedMigration = migrateConfigText(emptiedProfileRulesYaml, "yaml");
+  assert.match(emptiedMigration.text, /^  rules: \{\}$/m);
+
+  const inlineJson = JSON.stringify({
+    schemaVersion: "gruff-ts.config.v0.1",
+    profile: {
+      extends: "gruff.recommended",
+      rules: {
+        "docs.useless-docblock": { enabled: false },
+        "docs.missing-param-tag": { enabled: true },
+      },
+    },
+  });
+  const migratedJson = migrateConfigText(inlineJson, "json");
+  assert.equal(migratedJson.changes.some((change) => change.description.includes("docs.useless-docblock")), true);
+  assert.equal(migratedJson.text.includes("docs.useless-docblock"), false);
+
+  withTempProjectRoot((projectRoot) => {
+    const yamlPath = join(projectRoot, ".gruff-ts.yaml");
+    writeFileSync(yamlPath, migratedYaml.text);
+    const loadedYaml = loadMigratedConfig(projectRoot, yamlPath);
+    assert.equal(loadedYaml.schemaVersion, "gruff-ts.config.v0.1");
+
+    const jsonPath = join(projectRoot, ".gruff-ts.json");
+    writeFileSync(jsonPath, migratedJson.text);
+    const loadedJson = loadMigratedConfig(projectRoot, jsonPath);
+    assert.equal(loadedJson.schemaVersion, "gruff-ts.config.v0.1");
+  });
+
+  assert.throws(
+    () => migrateConfigText("schemaVersion: gruff-ts.config.v0.1\nprofile: does-not-exist\n", "yaml"),
+    ConfigLoadError,
+  );
+  assert.throws(
+    () => migrateConfigText("schemaVersion: gruff-ts.config.v0.1\nprofile:\n  rules:\n    docs.not-a-real-rule:\n      enabled: false\n", "yaml"),
+    ConfigLoadError,
+  );
+});

@@ -39,12 +39,18 @@ export interface FindingIdentity {
   declarationKey: string;
 }
 
-// One parsed declaration and the lines it covers, used to rank same-named declarations in one file.
+// One parsed declaration and the lines (plus optional 1-based columns) it covers, used to rank same-named declarations in one file.
 export interface DeclarationSpan {
   name: string;
   startLine: number;
   endLine: number;
+  startColumn?: number;
+  endColumn?: number;
 }
+
+// Columns are stored as the fraction after the line number, capped so a long line never reaches the next line's position.
+const COLUMN_POSITION_SCALE = 1_000_000;
+const MAX_COLUMN_OFFSET = 999_999;
 
 /*
  * Maps a finding to the line its declaration starts on and, when the parse is available, lists the start line of
@@ -233,16 +239,17 @@ const DOCBLOCK_COMMENT_ANCHORED_RULES = new Set([
 
 /**
  * Build a stable position resolver so moving a finding within a matched declaration preserves its position for ranking.
+ * When spans carry column bounds, same-line same-named declarations receive distinct monotonic positions so each gets its own ordinal.
  *
- * @param spansByFile - parsed spans grouped by path for matching declarations and collecting same-name positions
- * @returns Resolver with same-name positions. Uses the matching span's start line or the finding's line, defaulting to 1 if unlocated.
+ * @param spansByFile - parsed spans grouped by path for matching declarations and collecting same-name positions; empty map ranks by line alone
+ * @returns Resolver with same-name positions. Uses the matching span's position or the finding's line, defaulting to 1 when unlocated.
  */
 export function declarationPositionFromSpans(spansByFile: Map<string, DeclarationSpan[]>): DeclarationPositionResolver {
   /**
    * Resolve a stable declaration position for identity ranking, using the parsed span when it matches the finding.
    *
-   * @param finding - occurrence whose path, line and final symbol segment locate its declaration
-   * @returns The matching declaration's start line, or the finding's line when none matches. A missing finding line is treated as 1.
+   * @param finding - occurrence whose path, line, optional column, and final symbol segment locate its declaration
+   * @returns The matching declaration's position, or the finding's line when no span encloses it. A missing finding line is treated as 1.
    */
   const resolver: DeclarationPositionResolver = (finding: Finding) => {
     const line = finding.line ?? 1;
@@ -253,16 +260,17 @@ export function declarationPositionFromSpans(spansByFile: Map<string, Declaratio
     }
     const wanted = symbol.split(".").at(-1) ?? symbol;
     const fileSpans = spansByFile.get(finding.filePath) ?? [];
-    // Docblock findings anchor on the leading comment above the declaration, so map them to the nearest same-named span at or after that line.
+    // Docblock findings anchor on the leading comment above the declaration, so map them to the nearest same-named span at or after that location.
     if (DOCBLOCK_COMMENT_ANCHORED_RULES.has(finding.ruleId)) {
-      const following = nearestSpanAtOrAfterLine(fileSpans, wanted, line);
+      const following = nearestSpanAtOrAfter(fileSpans, wanted, line, finding.column);
       if (following !== undefined) {
-        return following.startLine;
+        return spanPosition(following);
       }
     }
-    // Choose the innermost enclosing span so a nested same-named declaration gets its own start line rather than the outer function's.
-    const enclosing = innermostEnclosingSpan(fileSpans, wanted, line);
-    return enclosing?.startLine ?? line;
+    // Choose the innermost enclosing span so nested or same-line same-named declarations each keep their own position.
+    const enclosing = innermostEnclosingSpan(fileSpans, wanted, line, finding.endLine, finding.column);
+    // A finding outside every span ranks by line alone, so two rules reporting one symbol on one line share an ordinal.
+    return enclosing !== undefined ? spanPosition(enclosing) : line;
   };
   resolver.sameNamedPositions = (finding: Finding) => {
     const symbol = namedSymbol(finding);
@@ -271,51 +279,174 @@ export function declarationPositionFromSpans(spansByFile: Map<string, Declaratio
     if (symbol === undefined || symbol.includes(".")) {
       return [];
     }
-    return (spansByFile.get(finding.filePath) ?? []).filter((span) => span.name === symbol).map((span) => span.startLine);
+    return (spansByFile.get(finding.filePath) ?? []).filter((span) => span.name === symbol).map(spanPosition);
   };
   return resolver;
 }
 
 /**
- * Selects the tightest enclosing declaration span covering `line` so nested same-named functions keep distinct declaration anchors.
+ * Encodes a 1-based line and optional 1-based column into one monotonic numeric position for declaration ranking.
+ * Column 1 and absent columns produce the exact integer line number so single-column callers keep integer positions.
+ *
+ * @param line - one-based source line number
+ * @param column - optional one-based source column number; omitted or 1 keeps the exact integer line number
+ * @returns Monotonic numeric coordinate strictly less than `line + 1`.
+ */
+function positionForLineColumn(line: number, column?: number): number {
+  return column !== undefined && column > 1
+    ? line + Math.min(column - 1, MAX_COLUMN_OFFSET) / COLUMN_POSITION_SCALE
+    : line;
+}
+
+/**
+ * Returns the monotonic ranking position of a parsed declaration span from its start line and optional start column.
+ *
+ * @param span - parsed declaration span to position
+ * @returns Monotonic numeric position preserving source order across lines and same-line columns.
+ */
+function spanPosition(span: DeclarationSpan): number {
+  return positionForLineColumn(span.startLine, span.startColumn);
+}
+
+/**
+ * Checks whether `span` encloses a finding's `(line, endLine, column)`, applying end-line and column bounds when available.
+ *
+ * @param span - candidate declaration span to test
+ * @param line - one-based finding start line
+ * @param endLine - optional one-based finding end line that must not extend past `span.endLine`
+ * @param column - optional one-based finding column
+ * @returns True when the finding location falls within `span`; otherwise false.
+ */
+function spanEnclosesLocation(span: DeclarationSpan, line: number, endLine: number | undefined, column: number | undefined): boolean {
+  // A finding outside the declaration's lines belongs to some other declaration.
+  if (span.startLine > line || line > span.endLine) {
+    return false;
+  }
+  // A finding that runs past the declaration's last line is not inside it.
+  if (endLine !== undefined && endLine > span.endLine) {
+    return false;
+  }
+  // Without a finding column, the line bounds alone decide.
+  if (column === undefined) {
+    return true;
+  }
+  // On the declaration's first line, a finding left of its start column belongs to an earlier declaration on that line.
+  if (span.startLine === line && span.startColumn !== undefined && column < span.startColumn) {
+    return false;
+  }
+  // On the declaration's last line, a finding right of its end column belongs to a later declaration on that line.
+  if (span.endLine === line && span.endColumn !== undefined && column > span.endColumn) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Picks the tightest same-named declaration that contains the finding's line, end line and column.
+ * Nested functions and same-line functions with one name then keep separate baseline positions.
  *
  * @param spans - parsed declaration spans for the finding's file
  * @param wantedName - unqualified declaration symbol name being matched
  * @param line - one-based finding line that must lie within `[startLine, endLine]`
- * @returns The matching enclosing span with the smallest line span (tie-broken by latest `startLine`), or undefined if none encloses `line`.
+ * @param endLine - optional one-based finding end line used to distinguish same-start-line declarations of different lengths
+ * @param column - optional one-based finding column used to disambiguate same-line declarations
+ * @returns The matching enclosing span with the smallest span (tie-broken by latest start position), or undefined if none encloses the location.
  */
-function innermostEnclosingSpan(spans: readonly DeclarationSpan[], wantedName: string, line: number): DeclarationSpan | undefined {
+function innermostEnclosingSpan(spans: readonly DeclarationSpan[], wantedName: string, line: number, endLine?: number, column?: number): DeclarationSpan | undefined {
   let best: DeclarationSpan | undefined;
-  let bestLength = Number.POSITIVE_INFINITY;
+  const hasColumn = column !== undefined;
   for (const span of spans) {
-    if (span.name !== wantedName || span.startLine > line || line > span.endLine) {
+    // Skip declarations with another name and those that do not contain the finding.
+    if (span.name !== wantedName || !spanEnclosesLocation(span, line, endLine, column)) {
       continue;
     }
-    const spanLength = span.endLine - span.startLine;
-    if (best === undefined || spanLength < bestLength || (spanLength === bestLength && span.startLine > best.startLine)) {
+    // Keep the tightest match, so a nested same-named function wins over the one around it.
+    if (best === undefined || isTighterEnclosingSpan(span, best, hasColumn)) {
       best = span;
-      bestLength = spanLength;
     }
   }
   return best;
 }
 
 /**
- * Finds the nearest same-named declaration span starting at or after a leading-comment finding line.
+ * Compares two enclosing spans by line length, optional same-line column width, and latest start position.
+ *
+ * @param candidate - newly considered enclosing span
+ * @param currentBest - tightest enclosing span selected so far
+ * @param hasColumn - true when the finding supplied a column so same-line width can disambiguate nested spans
+ * @returns True when `candidate` is strictly tighter than `currentBest` (or tied in size with a later start position).
+ */
+function isTighterEnclosingSpan(candidate: DeclarationSpan, currentBest: DeclarationSpan, hasColumn: boolean): boolean {
+  const candidateLines = candidate.endLine - candidate.startLine;
+  const bestLines = currentBest.endLine - currentBest.startLine;
+  // Fewer lines means the more deeply nested declaration.
+  if (candidateLines !== bestLines) {
+    return candidateLines < bestLines;
+  }
+  const candidateWidth = singleLineSpanWidth(candidate, hasColumn);
+  const bestWidth = singleLineSpanWidth(currentBest, hasColumn);
+  // With equal line counts on one line, the narrower span is the inner declaration.
+  if (candidateWidth !== bestWidth) {
+    return candidateWidth < bestWidth;
+  }
+  return spanPosition(candidate) > spanPosition(currentBest);
+}
+
+/**
+ * Computes the column width of a single-line span when column disambiguation is active, or `Infinity` otherwise.
+ *
+ * @param span - declaration span to measure
+ * @param hasColumn - true when the finding carries a column coordinate
+ * @returns Column width for a column-bounded single-line span, or `Infinity` when width comparison does not apply.
+ */
+function singleLineSpanWidth(span: DeclarationSpan, hasColumn: boolean): number {
+  // Width breaks ties only for one-line spans with both columns known; every other span compares as equal.
+  if (!hasColumn || span.startLine !== span.endLine || span.startColumn === undefined || span.endColumn === undefined) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return span.endColumn - span.startColumn;
+}
+
+/**
+ * Checks whether a span starts before a doc comment's location; on a shared line only a real start column can put it earlier.
+ * A span whose leading JSDoc starts its first line has no column, so an indented `/**` on that line still belongs to it.
+ *
+ * @param span - candidate declaration span
+ * @param line - one-based line of the doc comment the finding points at
+ * @param column - optional one-based column of that doc comment; absent means only lines are compared
+ * @returns True when the span starts on an earlier line, or earlier on the same line by a known column
+ */
+function startsBeforeLocation(span: DeclarationSpan, line: number, column: number | undefined): boolean {
+  // Different lines settle order immediately without needing column coordinates.
+  if (span.startLine !== line) {
+    return span.startLine < line;
+  }
+  // Columns compare only when both are known, which is the case for two same-named declarations on one line.
+  return column !== undefined && span.startColumn !== undefined && span.startColumn < column;
+}
+
+/**
+ * Finds the nearest same-named declaration span starting at or after a leading-comment finding location.
  *
  * @param spans - parsed declaration spans for the finding's file
  * @param wantedName - unqualified declaration symbol name being matched
  * @param line - one-based comment or tag line where the docblock finding is anchored
- * @returns The matching span with the smallest `startLine >= line`, or undefined when none follows.
+ * @param column - optional one-based finding column used to disambiguate same-line declarations
+ * @returns The matching span with the smallest start position at or after `(line, column)`, or undefined when none follows.
  */
-function nearestSpanAtOrAfterLine(spans: readonly DeclarationSpan[], wantedName: string, line: number): DeclarationSpan | undefined {
+function nearestSpanAtOrAfter(spans: readonly DeclarationSpan[], wantedName: string, line: number, column?: number): DeclarationSpan | undefined {
   let nearest: DeclarationSpan | undefined;
+  let nearestPosition = Number.POSITIVE_INFINITY;
   for (const span of spans) {
-    if (span.name !== wantedName || span.startLine < line) {
+    const candidatePosition = spanPosition(span);
+    // Skip other names and declarations that start before the doc comment the finding points at.
+    if (span.name !== wantedName || startsBeforeLocation(span, line, column)) {
       continue;
     }
-    if (nearest === undefined || span.startLine < nearest.startLine) {
+    // Keep the closest following declaration, which is the one the doc comment sits above.
+    if (nearest === undefined || candidatePosition < nearestPosition) {
       nearest = span;
+      nearestPosition = candidatePosition;
     }
   }
   return nearest;

@@ -92,9 +92,9 @@ const RETIRED_0_5_RULE_IDS: ReadonlySet<string> = new Set([
   "waste.unused-parameter",
 ]);
 
-/** Active top-level YAML block tracked while scanning lines so pruning only touches matching child sections. */
+/** Active YAML block tracked while scanning lines so pruning only touches matching child sections. */
 interface ActiveYamlSection {
-  name: "allowlists" | "rules" | "sensitiveExclusions";
+  name: "allowlists" | "rules" | "profileRules" | "sensitiveExclusions";
   childIndent: number;
   headerMigratedIndex: number;
   keptEntryCount: number;
@@ -107,39 +107,50 @@ interface ActiveYamlSection {
  *
  * @param original - the whole config file. Empty YAML has no settings yet, while empty JSON is invalid.
  * @param format - syntax selected by the config file's extension. An omitted format uses YAML.
+ * @param baseDirectory - optional directory used to resolve relative `profile:` references during validation.
  * @returns the destination text and one entry per rewrite. An empty change list means the settings were current.
  * @throws {ConfigLoadError} when the input cannot be parsed, contains conflicting migration keys, or fails 0.6 validation after migration.
  */
-export function migrateConfigText(original: string, format: "yaml" | "json" = "yaml"): ConfigMigration {
+export function migrateConfigText(original: string, format: "yaml" | "json" = "yaml", baseDirectory?: string): ConfigMigration {
   // An editor may add a byte-order mark. Strip it before parsing the selected file format.
   const source = original.replace(/^\uFEFF/u, "");
-  return format === "json" ? migrateJsonConfig(source) : migrateYamlConfig(source, original);
+  return format === "json" ? migrateJsonConfig(source, baseDirectory) : migrateYamlConfig(source, original, baseDirectory);
 }
 
 /**
- * Rewrites legacy YAML lines in place while preserving user comments and unaffected settings, then validates through the 0.6 loader.
+ * Rewrites legacy YAML lines in place because re-serializing through a YAML emitter would strip user comments and formatting,
+ * then validates the rewritten document through the 0.6 loader.
  *
  * @param source - BOM-stripped YAML config text
  * @param original - untouched original text returned verbatim when zero rewrites apply
+ * @param baseDirectory - optional directory used to resolve relative `profile:` references during validation
  * @returns Migrated YAML text and ordered change descriptions.
  * @throws {ConfigLoadError} when the input has conflicting keys, flow-style legacy keys survive, or 0.6 validation rejects the result.
  */
-function migrateYamlConfig(source: string, original: string): ConfigMigration {
+function migrateYamlConfig(source: string, original: string, baseDirectory?: string): ConfigMigration {
   const shouldRenameGate = hasLegacyCommandGate(parseYamlConfig(source));
   const lines = source.split(/\r?\n/u);
   const rootIndent = leadingSpaces(lines[nextContentLine(lines, 0)] ?? "");
   const changes: ConfigMigrationChange[] = [];
   const migrated: string[] = [];
   let activeSection: ActiveYamlSection | undefined;
+  let profileChildIndent: number | undefined;
   let index = 0;
 
   while (index < lines.length) {
     const line = lines[index] ?? "";
     const indent = leadingSpaces(line);
-    const isRootKey = indent === rootIndent && line.trim().length > 0 && !line.trimStart().startsWith("#");
+    const trimmed = line.trim();
+    const isContentLine = trimmed.length > 0 && !trimmed.startsWith("#");
+    const isRootKey = indent === rootIndent && isContentLine;
     if (isRootKey) {
       finalizeEmptiedYamlSection(activeSection, migrated);
       activeSection = enterYamlSection(lines, index, migrated.length);
+      profileChildIndent = enterYamlProfileBlock(lines, index);
+    } else if (profileChildIndent !== undefined && isContentLine && indent === profileChildIndent) {
+      // Inline `profile:` can carry its own nested `rules:` block whose retired 0.5 IDs must be pruned too.
+      finalizeEmptiedYamlSection(activeSection, migrated);
+      activeSection = enterYamlProfileRulesSection(lines, index, migrated.length);
     }
 
     const skipped = activeSection ? tryPruneYamlSectionEntry(activeSection, lines, index, changes) : 0;
@@ -170,7 +181,7 @@ function migrateYamlConfig(source: string, original: string): ConfigMigration {
   if (objectValue(updated.minimumSeverity) !== undefined || Object.hasOwn(objectValue(updated.allowlists) ?? {}, REMOVED_ALLOWLIST_KEY)) {
     throw new ConfigLoadError("The legacy gate or allowlist could not be migrated safely.", SUGGEST_EDIT_CONFIG);
   }
-  validateParsedConfig(updated);
+  validateParsedConfig(updated, baseDirectory);
   return result;
 }
 
@@ -218,7 +229,48 @@ function enterYamlSection(lines: string[], index: number, headerMigratedIndex: n
 }
 
 /**
- * Attempts to prune one retired entry at `index` inside the active YAML section (`allowlists`, `rules`, or `sensitiveExclusions`).
+ * Checks whether a root YAML key opens an inline `profile:` mapping and returns its direct-child indentation.
+ *
+ * @param lines - split YAML source lines
+ * @param index - current root key line index
+ * @returns Child indentation when `profile:` has indented mapping keys, or undefined otherwise.
+ */
+function enterYamlProfileBlock(lines: string[], index: number): number | undefined {
+  const header = lines[index] ?? "";
+  // Only a bare `profile:` header opens an inline profile; `profile: strict` names a built-in profile and has no rules to prune.
+  if (!/^\s*(?:profile|"profile"|'profile')\s*:\s*(?:#.*)?$/u.test(header)) {
+    return undefined;
+  }
+  const childLineIndex = nextContentLine(lines, index + 1);
+  const childIndent = leadingSpaces(lines[childLineIndex] ?? "");
+  return childIndent > leadingSpaces(header) ? childIndent : undefined;
+}
+
+/**
+ * Identifies whether a direct child key under an inline YAML `profile:` block opens a `rules:` mapping.
+ *
+ * @param lines - split YAML source lines
+ * @param index - current profile-child line index
+ * @param headerMigratedIndex - index where this header line will be written in `migrated`
+ * @returns Active `profileRules` section tracker when `rules:` has indented children, or undefined otherwise.
+ */
+function enterYamlProfileRulesSection(lines: string[], index: number, headerMigratedIndex: number): ActiveYamlSection | undefined {
+  const header = lines[index] ?? "";
+  // Only a `rules:` header inside the inline profile can hold rule entries to prune.
+  if (!/^\s*(?:rules|"rules"|'rules')\s*:\s*(?:#.*)?$/u.test(header)) {
+    return undefined;
+  }
+  const childLineIndex = nextContentLine(lines, index + 1);
+  const childIndent = leadingSpaces(lines[childLineIndex] ?? "");
+  // A `rules:` key with nothing indented under it has no entries to prune.
+  if (childIndent <= leadingSpaces(header)) {
+    return undefined;
+  }
+  return { name: "profileRules", childIndent, headerMigratedIndex, keptEntryCount: 0, removedEntryCount: 0 };
+}
+
+/**
+ * Attempts to prune one retired entry at `index` inside the active YAML section (`allowlists`, `rules`, `profileRules`, or `sensitiveExclusions`).
  * Tracks kept vs removed entries so an emptied section header can be rewritten to `[]` or `{}`.
  *
  * @param section - active YAML section metadata, mutated with kept/removed counts
@@ -236,7 +288,8 @@ function tryPruneYamlSectionEntry(section: ActiveYamlSection, lines: string[], i
   if (section.name === "allowlists") {
     return pruneYamlAllowlistEntry(section, lines, index, changes);
   }
-  if (section.name === "rules") {
+  // Top-level rules and an inline profile's rules are pruned the same way.
+  if (section.name === "rules" || section.name === "profileRules") {
     return pruneYamlRuleEntry(section, lines, index, changes);
   }
   return pruneYamlSensitiveExclusionEntry(section, lines, index, changes);
@@ -289,7 +342,8 @@ function pruneYamlRuleEntry(section: ActiveYamlSection, lines: string[], index: 
     return 0;
   }
   section.removedEntryCount += 1;
-  changes.push({ line: index + 1, description: `rules.${ruleId} removed; rule retired in 0.6.0` });
+  const prefix = section.name === "profileRules" ? "profile.rules" : "rules";
+  changes.push({ line: index + 1, description: `${prefix}.${ruleId} removed; rule retired in 0.6.0` });
   return indentedBlockLength(lines, index);
 }
 
@@ -359,13 +413,15 @@ function isRetiredRuleId(ruleId: string): boolean {
 }
 
 /**
- * Migrates JSON config as a mapping, pruning retired allowlists, rules, and sensitive exclusions, then validates the stable schema contract.
+ * Migrates a JSON config: prunes retired allowlists, rules, inline profile rules and sensitive exclusions.
+ * Stable contract: the result must pass 0.6 validation before it is returned, so the user never writes a config that will not load.
  *
  * @param source - BOM-stripped JSON config text
+ * @param baseDirectory - optional directory used to resolve relative `profile:` references during validation
  * @returns Migrated JSON text and change descriptions (using line 1 for whole-document rewrites).
  * @throws {ConfigLoadError} when the input is malformed, keys conflict, or 0.6 validation rejects the result.
  */
-function migrateJsonConfig(source: string): ConfigMigration {
+function migrateJsonConfig(source: string, baseDirectory?: string): ConfigMigration {
   let parsed: Record<string, unknown> | undefined;
   try {
     parsed = objectValue(JSON.parse(source));
@@ -383,12 +439,13 @@ function migrateJsonConfig(source: string): ConfigMigration {
   }
   pruneJsonAllowlists(parsed, changes);
   pruneJsonRules(parsed, changes);
+  pruneJsonProfileRules(parsed, changes);
   pruneJsonSensitiveExclusions(parsed, changes);
   if (parsed.schemaVersion !== SCHEMA_VERSION) {
     parsed.schemaVersion = SCHEMA_VERSION;
     changes.push({ line: 1, description: `Set schemaVersion to ${SCHEMA_VERSION}` });
   }
-  validateParsedConfig(parsed);
+  validateParsedConfig(parsed, baseDirectory);
   return { changes, text: changes.length > 0 ? `${JSON.stringify(parsed, null, 2)}\n` : source };
 }
 
@@ -432,6 +489,29 @@ function pruneJsonRules(parsed: Record<string, unknown>, changes: ConfigMigratio
     if (isRetiredRuleId(ruleId)) {
       delete rules[ruleId];
       changes.push({ line: 1, description: `Removed rules.${ruleId}; rule retired in 0.6.0` });
+    }
+  }
+}
+
+/**
+ * Removes retired 0.5 rule entries from an inline JSON `profile.rules` mapping in place.
+ *
+ * @param parsed - mutable JSON config mapping
+ * @param changes - change log appended with one entry per removed profile rule id
+ * @returns Nothing. Mutates `parsed.profile.rules` and `changes` in place.
+ */
+function pruneJsonProfileRules(parsed: Record<string, unknown>, changes: ConfigMigrationChange[]): void {
+  const profileRules = objectValue(objectValue(parsed.profile)?.rules);
+  // A config without an inline `profile.rules` mapping has nothing to prune here.
+  if (!profileRules) {
+    return;
+  }
+  // Check each rule the inline profile configures.
+  for (const ruleId of Object.keys(profileRules)) {
+    // A rule retired in 0.6.0 is removed and reported, so the migrated file loads cleanly.
+    if (isRetiredRuleId(ruleId)) {
+      delete profileRules[ruleId];
+      changes.push({ line: 1, description: `Removed profile.rules.${ruleId}; rule retired in 0.6.0` });
     }
   }
 }

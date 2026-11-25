@@ -520,13 +520,36 @@ function consumeWorkflowEventLine(line: WorkflowLine, events: Set<string>, state
   if (!state.inOnBlock) {
     return;
   }
+  consumeNestedOnEventLine(line, events, state);
+}
+
+/**
+ * Extracts trigger events from a line indented under top-level `on:`, supporting both block entries and nested flow collections.
+ *
+ * @param line - Normalized non-comment workflow line nested under `on:`.
+ * @param events - Mutable trigger-event set updated in place.
+ * @param state - Mutable `on:` block tracking state updated in place.
+ * @returns Nothing. Adds recognized event names from `line` into `events` and updates flow state when nested flow syntax starts.
+ */
+function consumeNestedOnEventLine(line: WorkflowLine, events: Set<string>, state: OnBlockState): void {
   // The first nested line fixes the event level; deeper lines configure one event, such as its branches.
   state.eventIndent ??= line.indent;
-  if (line.indent === state.eventIndent) {
-    const event = line.trimmed.match(/^(?:-\s*)?["']?([A-Za-z_]+)["']?\s*(?::|$)/)?.[1];
-    if (event) {
-      events.add(event);
-    }
+  // Deeper lines configure one event, such as its branch filter, and never name a new event.
+  if (line.indent !== state.eventIndent) {
+    return;
+  }
+  const cleaned = stripInlineComment(line.trimmed).trim();
+  // Flow sequences or mappings nested under `on:` (e.g. `on:\n  [push, pull_request_target]`) declare events directly.
+  if (cleaned.startsWith("[") || cleaned.startsWith("{")) {
+    addFlowEvents(events, cleaned);
+    state.flowDepth = Math.max(0, flowDelimiterDelta(cleaned));
+    state.inOnBlock = false;
+    return;
+  }
+  const event = cleaned.match(/^(?:-\s*)?["']?([A-Za-z_]+)["']?\s*(?::|$)/)?.[1];
+  // A line naming an event, such as `push:` or `- pull_request`, adds it to the workflow's triggers.
+  if (event) {
+    events.add(event);
   }
 }
 

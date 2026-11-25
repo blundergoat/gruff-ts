@@ -474,3 +474,32 @@ test("reassigned fs.readFileSync with whitespace around the dot still propagates
   const findings = analyseSecurityFixture(readerWrite);
   assert.equal(findings.some((finding) => finding.ruleId === "security.unsafe-deserialization"), true);
 });
+
+// Fixture purpose: verifies the scope-local fail-closed contract so one oversized sibling function hitting MAX_SCOPE_NODES
+// preserves fs.readFileSync exemptions in smaller sibling functions unless the oversized scope assigns to that reader.
+test("an unrelated over-budget sibling function preserves fs.readFileSync exemptions in smaller functions", () => {
+  const fillerLines = Array.from({ length: 1200 }, (_, index) => `  const step${index} = ${index} + 1;`).join("\n");
+  const baseLines = [
+    'import fs from "node:fs";',
+    "export function loadConfig(req: { query: { path: string } }): unknown {",
+    '  const raw = fs.readFileSync(req.query.path, "utf8");',
+    "  return yaml.load(raw);",
+    "}",
+    "export function hugeUnrelated(): number {",
+    fillerLines,
+    "  return 1;",
+    "}",
+    "",
+  ].join("\n");
+  const findings = analyseSecurityFixture(baseLines);
+  assert.equal(findings.some((finding) => finding.ruleId === "security.unsafe-deserialization"), false);
+
+  const tamperedLines = baseLines.replace("  return 1;", "  fs.readFileSync = (value: string) => value;\n  return 1;");
+  const tamperedFindings = analyseSecurityFixture(tamperedLines);
+  assert.equal(tamperedFindings.some((finding) => finding.ruleId === "security.unsafe-deserialization"), true);
+
+  // A reader bound to a `$`-prefixed name is matched too, because `\b` cannot sit before `$`.
+  const dollarLines = tamperedLines.replaceAll("import fs from", "import $fs from").replaceAll("fs.readFileSync", "$fs.readFileSync");
+  const dollarFindings = analyseSecurityFixture(dollarLines);
+  assert.equal(dollarFindings.some((finding) => finding.ruleId === "security.unsafe-deserialization"), true);
+});

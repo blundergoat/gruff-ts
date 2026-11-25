@@ -124,15 +124,20 @@ function validatedExclusionRule(configuredRule: unknown, index: number): string 
 }
 
 /**
- * Validates one exact project-relative file path, rejecting absolute paths, `..` traversal, and globs so reviewers can open the named file.
+ * Validates one exact project-relative file path, so a reviewer can open the one file the exclusion covers.
+ * Rejects the project root, absolute paths, `..` traversal and globs.
  *
  * @param configuredPath - raw config path field to normalise and validate as a project-relative file path
  * @param index - entry position used to name `sensitiveExclusions[<index>].path` in config errors
- * @returns normalised project-relative file path with forward slashes and no leading `./`
- * @throws {ConfigLoadError} - when the path is missing, non-string, blank, absolute, uses `..`, or has a glob character
+ * @returns normalised project-relative file path with forward slashes and no leading `./` segments
+ * @throws {ConfigLoadError} - when the path is missing, non-string, blank, root-only, absolute, uses `..`, or has a glob character
  */
 function validatedExclusionPath(configuredPath: unknown, index: number): string {
   const path = normalisedExclusionPath(requiredExclusionString(configuredPath, index, "path"));
+  // A bare `.` or `./` resolves to the project root rather than one reviewed file.
+  if (path.length === 0 || path === ".") {
+    throw new ConfigLoadError(`Config key \`sensitiveExclusions[${index}].path\` must name a specific project-relative file, not the project root.`, SUGGEST_EXACT_SCOPE);
+  }
   // An absolute path leaks the author's machine layout and escapes the analysed project.
   if (path.startsWith("/") || /^[A-Za-z]:\//.test(path)) {
     throw new ConfigLoadError(`Config key \`sensitiveExclusions[${index}].path\` must be project-relative; ${JSON.stringify(path)} is absolute.`, SUGGEST_EXACT_SCOPE);
@@ -202,13 +207,13 @@ function requiredExclusionString(configuredValue: unknown, index: number, key: s
 }
 
 /**
- * Normalises a configured exclusion path for exact matching; a path consisting only of a leading `./` prefix becomes empty and matches no file.
+ * Normalises a configured exclusion path for exact matching by converting separators and stripping any repeated leading `./` prefixes.
  *
  * @param path - configured exclusion path before slash and prefix normalisation
- * @returns path with backslashes replaced by forward slashes and one leading `./` prefix removed
+ * @returns path with backslashes replaced by forward slashes and all leading `./` prefixes removed
  */
 function normalisedExclusionPath(path: string): string {
-  return path.replaceAll("\\", "/").replace(/^\.\//, "");
+  return path.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "");
 }
 
 /**

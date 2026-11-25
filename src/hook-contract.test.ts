@@ -950,3 +950,73 @@ function longSource(lines: number, evalLine: number): string {
     return `const filler${line} = ${line};`;
   }).join("\n");
 }
+
+// Fixture purpose: proves the hook precedence contract where --changed-ranges wins over --since and --diff without Git replay or stdin override.
+// Side effects: writes a temporary Git repository and spawns git and the CLI binary, then cleans up the filesystem.
+test("hook --changed-ranges takes precedence over --since and --diff - without Git replay or stdin override", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  const root = mkdtempSync(join(tmpdir(), "gruff-hook-ranges-precedence-"));
+  try {
+    writeFileSync(join(root, "app.ts"), "// File overview: precedence fixture.\nexport function run(input: string): unknown {\n  return eval(input);\n}\n");
+    initGitCommit(root);
+
+    const sinceResult = spawnSync("bash", [BIN, "hook", "app.ts", "--no-config", "--changed-ranges", "3-3", "--since", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(sinceResult.status, 0, sinceResult.stderr);
+    const sincePayload = JSON.parse(sinceResult.stdout) as HookPayload;
+    assert.equal(sincePayload.run?.mode, "changed-ranges");
+    assert.equal(sincePayload.findings.some((entry) => entry.ruleId === "security.eval-call"), true);
+
+    const unrelatedPatch = [
+      "diff --git a/other.ts b/other.ts",
+      "--- a/other.ts",
+      "+++ b/other.ts",
+      "@@ -1,0 +1,1 @@",
+      "+export const unrelated = 1;",
+      "",
+    ].join("\n");
+    const stdinResult = spawnSync("bash", [BIN, "hook", "app.ts", "--no-config", "--changed-ranges", "3-3", "--diff", "-"], {
+      cwd: root,
+      input: unrelatedPatch,
+      encoding: "utf8",
+    });
+    assert.equal(stdinResult.status, 0, stdinResult.stderr);
+    const stdinPayload = JSON.parse(stdinResult.stdout) as HookPayload;
+    assert.equal(stdinPayload.run?.mode, "changed-ranges");
+    assert.equal(stdinPayload.findings.some((entry) => entry.ruleId === "security.eval-call"), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Fixture purpose: verifies the hook ref contract so --since staged diffs and replays a branch named staged rather than staged diff mode.
+// Side effects: writes a temporary Git repository and spawns git and the CLI binary, then removes the directory.
+test("hook --since staged diffs and replays a branch named staged instead of staged diff mode", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  const root = mkdtempSync(join(tmpdir(), "gruff-hook-since-staged-branch-"));
+  try {
+    writeFileSync(join(root, "app.ts"), "// File overview: branch fixture.\nexport function run(input: string): string {\n  return input;\n}\n");
+    initGitCommit(root);
+    execFileSync("git", ["branch", "staged"], { cwd: root, stdio: "ignore" });
+    writeFileSync(join(root, "app.ts"), "// File overview: branch fixture.\nexport function run(input: string): unknown {\n  return eval(input);\n}\n");
+    execFileSync("git", ["add", "app.ts"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "add eval"], { cwd: root, stdio: "ignore" });
+
+    const sinceStaged = spawnSync("bash", [BIN, "hook", "app.ts", "--no-config", "--since", "staged"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(sinceStaged.status, 0, sinceStaged.stderr);
+    const payload = JSON.parse(sinceStaged.stdout) as HookPayload;
+    assert.equal(payload.run?.mode, "since");
+    assert.equal(payload.findings.some((entry) => entry.ruleId === "security.eval-call"), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

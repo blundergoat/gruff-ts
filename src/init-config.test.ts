@@ -237,6 +237,7 @@ test("shouldPromptForInit suppresses on every individual opt-out gate", () => {
     assert.equal(shouldPromptForInit({ ...promptContext(projectRoot), isStdinTty: false }), false);
     assert.equal(shouldPromptForInit({ ...promptContext(projectRoot), isStdoutTty: false }), false);
     assert.equal(shouldPromptForInit({ ...promptContext(projectRoot), isStderrTty: false }), false);
+    assert.equal(shouldPromptForInit({ ...promptContext(projectRoot), isMachineFormat: true }), false);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
   }

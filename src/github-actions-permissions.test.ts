@@ -127,3 +127,50 @@ test("GitHub Actions workflow event parser handles indentless block sequences, m
   assert.equal(flowReport.findings.some((finding) => finding.ruleId === "security.github-actions-secrets-in-pr"), true);
   assert.equal(nestedMapReport.findings.some((finding) => finding.ruleId === "security.github-actions-secrets-in-pr"), true);
 });
+
+test("GitHub Actions workflow event parser handles flow sequences and mappings nested on the line below on:", () => {
+  const nestedFlowSeq = [
+    "name: ci",
+    "on:",
+    "  [push, pull_request_target]",
+    "jobs:",
+    "  build:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: echo ${{ secrets.DEPLOY_TOKEN }}",
+    "",
+  ].join("\n");
+  const nestedMultilineFlowSeq = [
+    "name: ci",
+    "on:",
+    "  [",
+    "    push,",
+    "    pull_request_target",
+    "  ]",
+    "jobs:",
+    "  build:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: echo ${{ secrets.DEPLOY_TOKEN }}",
+    "",
+  ].join("\n");
+  const nestedFlowMap = [
+    "name: ci",
+    "on:",
+    "  { push: {}, pull_request_target: {} }",
+    "jobs:",
+    "  build:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: echo ${{ secrets.DEPLOY_TOKEN }}",
+    "",
+  ].join("\n");
+  for (const [label, workflow] of [
+    ["nested-flow-seq", nestedFlowSeq],
+    ["nested-multiline-flow-seq", nestedMultilineFlowSeq],
+    ["nested-flow-map", nestedFlowMap],
+  ] as const) {
+    const report = analyseProject({ ".github/workflows/nested.yml": workflow }, { shouldIncludeIgnored: true });
+    assert.equal(report.findings.some((finding) => finding.ruleId === "security.github-actions-secrets-in-pr"), true, label);
+  }
+});

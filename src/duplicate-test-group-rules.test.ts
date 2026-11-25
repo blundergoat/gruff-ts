@@ -256,4 +256,16 @@ test("duplicate tests in sibling lexical blocks do not merge into one group", ()
   ].join("\n");
   const report = analyseFixture(duplicateSource, { fileName: "src/blocks.test.ts" });
   assert.equal(report.findings.some((finding) => finding.ruleId === RULE_ID), false);
+
+  // Positive control: the exact same three tests in one shared block must still group into a single finding.
+  const sharedBlockSource = [
+    "// File overview: shared block control.",
+    "const fixture = 1;",
+    'test("a", () => { const left = fixture; const right = left + 1; assert.equal(right, 2); });',
+    'test("b", () => { const left = fixture; const right = left + 1; assert.equal(right, 3); });',
+    'test("c", () => { const left = fixture; const right = left + 1; assert.equal(right, 4); });',
+    "",
+  ].join("\n");
+  const controlReport = analyseFixture(sharedBlockSource, { fileName: "src/blocks.test.ts" });
+  assert.equal(controlReport.findings.filter((finding) => finding.ruleId === RULE_ID).length, 1);
 });

@@ -15,8 +15,9 @@ failOn:
   report: none
 
 paths:
-  # Recursive scans already respect .gitignore plus built-in default directories
-  # such as .git, node_modules, build, dist, coverage, and vendor.
+  # Recursive scans always skip built-in directories such as .git, dist, and vendor,
+  # respect .gitignore when present, and fall back to skipping node_modules, build,
+  # and coverage when no .gitignore exists.
   # Add project-specific generated or local outputs here when Git does not ignore them.
   # Examples:
   #   - "out/**"
@@ -29,8 +30,8 @@ paths:
     - ".github/**"
     - ".goat-flow/**"
     - "fixtures/**"
-    # Lockfiles need no entry: the analyser skips package-lock.json, npm-shrinkwrap.json,
-    # yarn.lock, pnpm-lock.yaml and bun.lockb as generated files.
+    # Lockfiles (package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lockb) are scanned for
+    # sensitive data and excluded from size.file-length; add them here only to skip them completely.
 
 allowlists:
   acceptedAbbreviations:
@@ -118,7 +119,7 @@ rules:
   # documentation/advisory: Flags commented declarations that own schema, fingerprint, baseline, or determinism contracts without saying so.
   docs.missing-invariant-doc:
     enabled: true
-  # documentation/advisory: Flags documented exports with parameters missing @param tags; with `everyCallable`, also JSDoc-documented private and nested functions, class and object methods, default exports and single `const` function values, and a @param tag with no description.
+  # documentation/advisory: Flags non-test documented exports with parameters missing @param tags; with `everyCallable`, requires `/** ... */` JSDoc with described @param tags across all non-test callables including slash- and block-commented helpers, while skipping test files.
   docs.missing-param-tag:
     enabled: true
     options:
@@ -126,7 +127,7 @@ rules:
   # documentation/advisory: Flags exported class, type, and enum APIs without a nearby doc comment.
   docs.missing-public-doc:
     enabled: true
-  # documentation/advisory: Flags documented non-void exports without @returns; with `everyCallable`, also JSDoc-documented private and nested functions, class and object methods, default exports and single `const` function values, an unannotated body that returns a value, and a @returns tag with no description.
+  # documentation/advisory: Flags non-test documented callables without a described @returns tag, including void callables; with `everyCallable`, requires `/** ... */` JSDoc across all non-test callables including slash- and block-commented helpers, while skipping test files.
   docs.missing-return-tag:
     enabled: true
     options:

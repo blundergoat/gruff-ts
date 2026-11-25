@@ -214,8 +214,8 @@ function pushUrlDependencyFinding(
  * Under the stable `waste.broad-runtime-version` contract, flags broad specs such as `*`, `x`, or `latest` for runtime entries.
  *
  * @param file - Package manifest file whose display path is reported on the finding.
- * @param source - Manifest text used to locate the dependency key line.
- * @param section - Dependency section name recorded in finding metadata.
+ * @param source - Manifest text searched by section, name, and version, with a name-only fallback.
+ * @param section - Dependency section name recorded in finding metadata and used for line lookup.
  * @param packageName - Declared dependency name used as the finding symbol and in metadata.
  * @param versionSpec - Declared specifier tested for overly broad version ranges and recorded in metadata.
  * @param isRuntimeDependency - Whether the dependency belongs to a runtime section; non-runtime entries are skipped.
@@ -239,7 +239,7 @@ function pushBroadRuntimeDependencyFinding(
       ruleId: "waste.broad-runtime-version",
       message: `Runtime dependency \`${packageName}\` uses overly broad version spec \`${versionSpec}\`.`,
       filePath: file.displayPath,
-      line: jsonKeyLine(source, packageName),
+      line: dependencyEntryLine(source, section, packageName, versionSpec),
       severity: "advisory",
       pillar: "maintainability",
       confidence: "medium",

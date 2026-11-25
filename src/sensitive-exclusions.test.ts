@@ -332,3 +332,19 @@ test("a second entry claiming one scope is rejected so the audit count cannot sp
   assert.match(error.message, /sensitiveExclusions\[1\]/);
   assert.match(error.message, /duplicate/);
 });
+
+test("root-only exclusion paths are rejected and repeated leading ./ prefixes still match", () => {
+  for (const rootPath of ["./", ".", "././"]) {
+    const error = exclusionConfigError([`  - rule: ${AWS_RULE_ID}`, `    path: ${JSON.stringify(rootPath)}`, "    reason: Synthetic fixture."]);
+    assert.match(error.message, /sensitiveExclusions\[0\]\.path/, rootPath);
+    assert.match(error.message, /project root/, rootPath);
+  }
+
+  const report = analyseWithExclusions([
+    `  - rule: ${AWS_RULE_ID}`,
+    `    path: "././${AWS_FIXTURE_PATH}"`,
+    "    reason: Repeated relative prefix normalises to the exact reviewed path.",
+  ]);
+  assert.equal(findingCount(report, AWS_RULE_ID, AWS_FIXTURE_PATH), 0);
+  assert.equal(report.suppressions[0]?.paths[0], AWS_FIXTURE_PATH);
+});

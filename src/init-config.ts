@@ -1,6 +1,7 @@
-// Renders the default .gruff-ts.yaml file from the rule descriptor registry.
-// `gruff-ts init` uses it to give a new project the analyser's effective defaults.
-// Users reach this file through the generated config they review before their first scan.
+// Renders the starter `.gruff-ts.yaml` file from the rule descriptor registry when the user runs `gruff-ts init`.
+//
+// Gives a new project the analyser's effective defaults and preserves existing ignore paths, gates, and exclusions on `--force`.
+// Also drives the interactive first-run init prompt before a terminal scan when no config file exists yet.
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -40,6 +41,7 @@ interface InitPromptContext {
   hasExplicitConfig: boolean;
   isInteractionAllowed: boolean;
   isOutputSuppressed: boolean;
+  isMachineFormat?: boolean;
   isStdinTty: boolean;
   isStdoutTty: boolean;
   isStderrTty: boolean;
@@ -240,6 +242,7 @@ function renderPathsSection(ignoredPaths: readonly string[]): string {
     "paths:",
     "  # Recursive scans already respect .gitignore plus built-in default directories",
     "  # such as .git, node_modules, build, dist, coverage, and vendor.",
+    "  # (.git, dist, and vendor are always skipped; node_modules, build, and coverage apply as fallback when no .gitignore governs.)",
     "  # Add project-specific generated or local outputs here when Git does not ignore them.",
     "  # Examples:",
     "  #   - \"out/**\"",
@@ -329,7 +332,8 @@ function shouldPromptForInit(context: InitPromptContext): boolean {
   if (!context.isInteractionAllowed) {
     return false;
   }
-  if (context.isOutputSuppressed) {
+  // Quiet runs and JSON, SARIF, GitHub or hotspot output never stop to ask, so automation reading stdout is not blocked.
+  if (context.isOutputSuppressed || context.isMachineFormat === true) {
     return false;
   }
   if (context.shouldSkipConfig || context.hasExplicitConfig) {

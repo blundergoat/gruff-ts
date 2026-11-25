@@ -1196,3 +1196,9 @@ test("comment scanner distinguishes multiline // @fileoverview headers from inli
   assert.equal(headerReport.findings.some((finding) => finding.ruleId === "docs.missing-exported-function-doc"), true);
   assert.equal(inlineReport.findings.some((finding) => finding.ruleId === "docs.missing-exported-function-doc"), false);
 });
+
+test("docs.stale-param-tag ignores @parameter tags and prose mentioning @param", () => {
+  const source = "// File overview: param-tag boundary fixture.\n/**\n * Parses @parameter syntax and explains why @param ghost in prose is not a tag.\n * @parameter legacyCustomTag - custom tag prefix\n * @param label - actual parameter\n * @returns trimmed label\n */\nexport function normalizeLabel(label: string): string { return label.trim(); }\n";
+  const report = analyseProject({ "src/tags.ts": source });
+  assert.deepEqual(report.findings.filter((finding) => finding.ruleId === "docs.stale-param-tag"), []);
+});

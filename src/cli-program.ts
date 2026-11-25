@@ -4,7 +4,7 @@
 // Machine-readable output carries the same run status that automation receives from the process.
 import { Command, Help, InvalidArgumentError } from "commander";
 import { readFileSync, writeFileSync } from "node:fs";
-import { extname, resolve } from "node:path";
+import { dirname, extname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { cwd } from "node:process";
 import { CONFIG_ERROR_DIAGNOSTIC_TYPE, failedRunReport, projectRootFromTargets, TARGET_ERROR_DIAGNOSTIC_TYPE, targetOutsideLaunchDirectory } from "./analyser.ts";
@@ -23,7 +23,7 @@ import { migrateConfigText } from "./migrate-config.ts";
 import { renderReport, renderSummary, renderSummaryJson } from "./report-renderers.ts";
 import { completionShell, getRuleDescriptor, renderCompletionScript, renderConsoleList, renderProfileList, renderRuleDetail, renderRuleList, type RuleListFormat } from "./rule-list.ts";
 import { exitFor, summarize } from "./scoring.ts";
-import { applyDisplaySelectors, validateDisplaySelectors, type DisplaySelectors } from "./selectors.ts";
+import { applyDisplaySelectors, isExecutionRequested, validateDisplaySelectors, type DisplaySelectors } from "./selectors.ts";
 import type { AnalysisOptions, AnalysisReport, Confidence, DeepScanBudgetOverride, ExecutionSelectors, MinimumSeverityCommand, Severity } from "./types.ts";
 
 type HookAnalysisViews = { currentReport: AnalysisReport; scopedReport: AnalysisReport };
@@ -77,11 +77,12 @@ function outputSuppressed(program: Command): boolean {
 }
 
 // Per-command config-loading state passed into maybePromptInitConfig. analyse/summary/report
-// take both flags from normalizeOptions; dashboard has no equivalent flags so it passes
+// take these flags from normalizeOptions; dashboard has no equivalent flags so it passes
 // `{ shouldSkipConfig: false, hasExplicitConfig: false }`.
 interface InitPromptOptions {
   shouldSkipConfig: boolean;
   hasExplicitConfig: boolean;
+  isMachineFormat?: boolean;
 }
 
 /**
@@ -100,6 +101,7 @@ async function maybePromptInitConfig(program: Command, projectRoot: string, opti
     projectRoot,
     shouldSkipConfig: options.shouldSkipConfig,
     hasExplicitConfig: options.hasExplicitConfig,
+    ...(options.isMachineFormat === undefined ? {} : { isMachineFormat: options.isMachineFormat }),
     isInteractionAllowed: programOptions.interaction !== false,
     isOutputSuppressed: outputSuppressed(program),
     isStdinTty: process.stdin.isTTY === true,
@@ -120,13 +122,14 @@ async function maybePromptInitConfig(program: Command, projectRoot: string, opti
 }
 
 /**
- * Derives init-prompt settings from analysis options, preserving config opt-out and marking a string config path as explicit.
+ * Works out whether a scan may offer to create a missing config: never with --no-config, --config, or machine-readable output.
  *
- * @param options - normalized analysis options carrying config opt-out and path selection
- * @returns Prompt settings indicating whether config loading is skipped and whether a config path was explicitly supplied.
+ * @param options - normalized analysis options carrying config opt-out, path selection, and output format
+ * @returns Prompt settings: config skipped, config path given explicitly, and machine-readable output (JSON, SARIF, GitHub or hotspot).
  */
 function promptOptionsFromAnalysis(options: AnalysisOptions): InitPromptOptions {
-  return { shouldSkipConfig: options.shouldSkipConfig, hasExplicitConfig: typeof options.config === "string" };
+  const isMachineFormat = options.format === "json" || options.format === "sarif" || options.format === "github" || options.format === "hotspot";
+  return { shouldSkipConfig: options.shouldSkipConfig, hasExplicitConfig: typeof options.config === "string", isMachineFormat };
 }
 
 /**
@@ -275,7 +278,7 @@ function runMigrateConfig(program: Command, rawOptions: Record<string, unknown>)
     // A user may pass `--config old.yaml` from a directory that has no such file.
     throw new ConfigLoadError(`Cannot read migration input ${inputPath}: ${(error as NodeJS.ErrnoException).code ?? "read failed"}.`, "Pass a readable config file to --config.");
   }
-  const migration = migrateConfigText(source, inputFormat);
+  const migration = migrateConfigText(source, inputFormat, dirname(inputPath));
   // An empty change list tells the user their configuration settings are already current.
   const summary = migration.changes.length === 0
     ? `${inputPath} is already current; no changes.`
@@ -367,7 +370,7 @@ function registerAnalyseCommand(program: Command, runAnalyse: AnalyseRunner): vo
     .option("--diff [mode]", "Filter findings to changed regions. Use working-tree, staged, unstaged, a base ref, or - for unified diff on stdin.")
     .option("--diff-base <ref>", "The ref a diff is taken against. Equivalent to passing the ref to --diff, and it wins when both are given.")
     .option("--changed-scope <scope>", "Changed-region scope: hunk, symbol, or file.", parseChangedScope, "symbol")
-    .option("--history-file <path>", "Append score trend history to this JSON file (full scans only; incompatible with --diff, --since, and --changed-ranges).")
+    .option("--history-file <path>", "Append score trend history to this JSON file (full scans only; incompatible with --diff, --since, and --changed-ranges, or rule/pillar execution selectors).")
     .option("--baseline [path]", "Suppress findings that match a gruff baseline JSON file.")
     .option("--generate-baseline [path]", "Write current findings to a gruff baseline JSON file.")
     .option("--migrate-baseline <path>", "Carry a 0.5 baseline's reviews into --generate-baseline; the original file is left untouched.")
@@ -759,7 +762,7 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
       const outsideTarget = targetOutsideLaunchDirectory(paths);
       // Use one launch directory to keep paths and totals comparable within the digest.
       if (outsideTarget !== null) {
-        refuseTargetsOutsideLaunchDirectory(program, rawOptions.format, outsideTarget);
+        refuseTargetsOutsideLaunchDirectory(program, rawOptions.format, outsideTarget, true);
         return;
       }
       await runWithConfigErrorHandling(async () => {
@@ -780,7 +783,7 @@ function registerSummaryCommand(program: Command, runAnalyse: AnalyseRunner): vo
           : renderSummary(report, elapsedMs, pathLabel, top);
         writeCommandOutput(program, rendered);
         process.exitCode = status;
-      }, (error) => writeFailedRunEnvelope(program, rawOptions.format, error));
+      }, (error) => writeFailedRunEnvelope(program, rawOptions.format, error, true));
     });
 }
 
@@ -881,15 +884,21 @@ function displaySelectorsFrom(rawOptions: Record<string, unknown>): DisplaySelec
 }
 
 /**
- * Filters displayed findings and updates summary counts while keeping the already computed exit status and score stable.
+ * Filters displayed findings and SARIF suppressed findings, updating summary counts while keeping the already computed exit status and score stable.
  *
- * @param report - analysis report whose `findings` and `summary` are mutated for display
+ * @param report - analysis report whose `findings`, `suppressedFindings`, and `summary` are mutated for display
  * @param rawOptions - parsed CLI options supplying show/hide rules, pillars, and `--min-severity`
  * @param displayFloor - optional severity floor from configuration applied alongside CLI selectors
- * @returns Nothing. Mutates `report.findings` and `report.summary` in place.
+ * @returns Nothing. Mutates `report.findings`, optional `report.suppressedFindings`, and `report.summary` in place.
  */
 function filterReportForDisplay(report: AnalysisReport, rawOptions: Record<string, unknown>, displayFloor: Severity | undefined): void {
-  report.findings = applyDisplaySelectors(report.findings, displaySelectorsFrom(rawOptions), displayFloor);
+  const selectors = displaySelectorsFrom(rawOptions);
+  report.findings = applyDisplaySelectors(report.findings, selectors, displayFloor);
+  // Keep SARIF suppressed results aligned with display selectors so hidden rules or pillars do not reappear in SARIF output.
+  if (report.suppressedFindings !== undefined && report.suppressedFindings.length > 0) {
+    const keptSuppressed = new Set(applyDisplaySelectors(report.suppressedFindings.map((entry) => entry.finding), selectors, displayFloor));
+    report.suppressedFindings = report.suppressedFindings.filter((entry) => keptSuppressed.has(entry.finding));
+  }
   report.summary = summarize(report.findings);
 }
 
@@ -1070,24 +1079,36 @@ function normalizeOptions(paths: string[], rawOptions: Record<string, unknown>, 
 }
 
 /**
- * Rejects a history write for a filtered scan so the user's score trend compares full scans.
+ * Rejects a history write for a filtered or partial-catalogue scan so the user's score trend compares full scans.
  * The command reports the conflicting flags and exits 2 before rendering or writing history.
  *
- * @param rawOptions - parsed CLI options checked for a history path and changed-region flags
+ * @param rawOptions - parsed CLI options checked for a history path, changed-region flags, and execution selectors
  * @returns Nothing. Lets the command proceed when the supplied options are compatible.
- * @throws {ConfigLoadError} when --history-file is combined with --diff, --diff-base, --since, or --changed-ranges.
+ * @throws {ConfigLoadError} when --history-file is combined with changed-region options or rule/pillar execution selectors.
  */
 function assertFullScanHistoryOptions(rawOptions: Record<string, unknown>): void {
+  // Without --history-file there is no trend file to protect, so any scan shape is allowed.
+  if (typeof rawOptions.historyFile !== "string") {
+    return;
+  }
   const hasChangedRegionSelector = rawOptions.diff === true
     || typeof rawOptions.diff === "string"
     || typeof rawOptions.diffBase === "string"
     || typeof rawOptions.since === "string"
     || typeof rawOptions.changedRanges === "string";
   // A filtered request would mix partial scores into the full-project trend users review.
-  if (typeof rawOptions.historyFile === "string" && hasChangedRegionSelector) {
+  if (hasChangedRegionSelector) {
     throw new ConfigLoadError(
       "`--history-file` requires a full scan and cannot be combined with `--diff`, `--diff-base`, `--since`, or `--changed-ranges`.",
       "Remove the changed-region option, or omit `--history-file` for this filtered scan.",
+      false,
+    );
+  }
+  // Execution selectors score only a subset of the rule catalogue and cannot append to full-scan trend history.
+  if (isExecutionRequested(executionSelectorsFrom(rawOptions))) {
+    throw new ConfigLoadError(
+      "`--history-file` requires a full scan and cannot be combined with `--include-rule`, `--exclude-rule`, `--include-pillar`, or `--exclude-pillar`.",
+      "Remove the execution selector option, or omit `--history-file` for this partial-catalogue scan.",
       false,
     );
   }
@@ -1117,7 +1138,7 @@ function hookScopedOptions(paths: string[], rawOptions: Record<string, unknown>)
  * @returns Copy of `options` with changed-region fields omitted and `shouldSkipBaseline` set to true.
  */
 function hookCurrentOptions(options: AnalysisOptions): AnalysisOptions {
-  const { changedRanges: _changedRanges, diff: _diff, diffPatch: _diffPatch, since: _since, ...rest } = options;
+  const { changedRanges: _changedRanges, diff: _diff, diffPatch: _diffPatch, isDiffExplicitRef: _isDiffExplicitRef, since: _since, ...rest } = options;
   return { ...rest, shouldSkipBaseline: true };
 }
 
@@ -1143,20 +1164,26 @@ function hookBaselinePath(rawOptions: Record<string, unknown>): Partial<{ baseli
 }
 
 /**
- * Selects the hook's new-only comparison ref using the same precedence as `changedRegionScope` (`diffPatch`, then `since`, then `diff`).
+ * Picks the Git base the hook replays to tell new findings from inherited ones.
+ * Uses the same order as `changedRegionScope`: `changedRanges`, `diffPatch`, `since`, then `diff`.
  *
  * @param options - normalized hook analysis options
- * @returns `{ diffBase }` matching the active diff or `since` selector, or an empty object when no replayable selector is set.
+ * @returns `{ diffBase }`, plus `isDiffExplicitRef` for a named Git ref; empty when line ranges or a stdin patch leave no Git base to replay.
  */
-function hookDiffBase(options: AnalysisOptions): Partial<{ diffBase: string }> {
-  // An explicit stdin patch has no Git revision to replay even if `--since` was also supplied.
-  if (options.diffPatch !== undefined) {
+function hookDiffBase(options: AnalysisOptions): Partial<{ diffBase: string; isDiffExplicitRef: boolean }> {
+  // Explicit line ranges and stdin patches take precedence over Git selectors and have no Git revision to replay.
+  if (options.changedRanges !== undefined || options.diffPatch !== undefined) {
     return {};
   }
+  // `--since <ref>` always replays that Git ref directly, even for a branch literally named `staged` or `unstaged`.
   if (options.since) {
-    return { diffBase: options.since };
+    return { diffBase: options.since, isDiffExplicitRef: true };
   }
-  return options.diff ? { diffBase: options.diff } : {};
+  // A --diff or --diff-base value replays its Git base; only --diff-base marks the value as an explicit ref.
+  if (options.diff) {
+    return { diffBase: options.diff, ...(options.isDiffExplicitRef === true ? { isDiffExplicitRef: true } : {}) };
+  }
+  return {};
 }
 
 /**
@@ -1232,28 +1259,38 @@ function newDebtExitCode(report: AnalysisReport, rawOptions: Record<string, unkn
 }
 
 /**
- * Resolves `--diff` and `--diff-base` settings, reading stdin into `diffPatch` when `-` is given.
- * A nonempty `diffBase` overrides `diff`, bare `--diff` means `working-tree`, and a leading `-` in `paths` with bare `--diff` is consumed.
+ * Resolves `--diff` and `--diff-base`, reading the patch from stdin for `-` unless `--changed-ranges` already supplied the lines.
+ *
+ * A nonempty `--diff-base` wins over `--diff`, and any value other than `-` is marked as an explicit Git ref.
+ * Bare `--diff` means `working-tree`, and a leading `-` path after bare `--diff` is taken as the stdin marker.
  *
  * @param paths - positional scan targets, which may begin with `-` for a stdin patch
- * @param rawOptions - parsed CLI flags providing `diff` and `diffBase`
+ * @param rawOptions - parsed CLI flags providing `diff`, `diffBase`, and optional `changedRanges`
  * @returns Updated `paths` and partial diff options, or unchanged `paths` with empty options when no selector applies.
  */
-function diffOption(paths: string[], rawOptions: Record<string, unknown>): { paths: string[]; options: Partial<Pick<AnalysisOptions, "diff" | "diffPatch">> } {
+function diffOption(paths: string[], rawOptions: Record<string, unknown>): { paths: string[]; options: Partial<Pick<AnalysisOptions, "diff" | "diffPatch" | "isDiffExplicitRef">> } {
   const diffBase = rawOptions.diffBase;
+  const shouldReadStdin = typeof rawOptions.changedRanges !== "string";
 
   // The canonical spelling names the ref outright, so it wins over whatever mode --diff carried.
   if (typeof diffBase === "string" && diffBase.length > 0) {
-    return { paths, options: { diff: diffBase } };
+    // `--diff-base -` reads the patch from stdin unless --changed-ranges already supplied the changed lines.
+    if (diffBase === "-") {
+      return { paths, options: shouldReadStdin ? { diff: "-", diffPatch: readFileSync(0, "utf8") } : { diff: "-" } };
+    }
+    return { paths, options: { diff: diffBase, isDiffExplicitRef: true } };
   }
+  // A string value came from forms such as `analyse --diff staged`, `analyse --diff main`, or `analyse --diff -`.
   if (typeof rawOptions.diff === "string") {
     return rawOptions.diff === "-"
-      ? { paths, options: { diff: "-", diffPatch: readFileSync(0, "utf8") } }
+      ? { paths, options: shouldReadStdin ? { diff: "-", diffPatch: readFileSync(0, "utf8") } : { diff: "-" } }
       : { paths, options: { diff: rawOptions.diff } };
   }
+  // In `analyse --diff - src/app.ts`, Commander parses `--diff` as bare `true` and leaves `-` as the first positional path.
   if (rawOptions.diff === true && paths[0] === "-") {
-    return { paths: paths.slice(1), options: { diff: "-", diffPatch: readFileSync(0, "utf8") } };
+    return { paths: paths.slice(1), options: shouldReadStdin ? { diff: "-", diffPatch: readFileSync(0, "utf8") } : { diff: "-" } };
   }
+  // Bare `analyse --diff` with no mode compares uncommitted working-tree changes; omitting `--diff` runs a full scan.
   return rawOptions.diff === true ? { paths, options: { diff: "working-tree" } } : { paths, options: {} };
 }
 
@@ -1372,18 +1409,24 @@ function configuredSeverities(options: AnalysisOptions, command: MinimumSeverity
 }
 
 /**
- * Writes a machine-readable failure envelope for a configuration load failure.
+ * Writes a machine-readable failure envelope for a configuration load failure, preserving the summary schema when called from `summary`.
  *
  * @param program - command whose output flags govern stdout
  * @param requestedFormat - JSON or SARIF encoding. Other formats produce no envelope.
  * @param error - refusal to report when it represents a configuration load failure
+ * @param isSummary - true when invoked from `summary` so JSON emits `gruff.summary.v3` instead of `gruff.analysis.v3`
  * @returns nothing. It publishes the envelope when the failure, format, and output flags allow it.
  */
-function writeFailedRunEnvelope(program: Command, requestedFormat: unknown, error: ConfigLoadError): void {
+function writeFailedRunEnvelope(program: Command, requestedFormat: unknown, error: ConfigLoadError, isSummary = false): void {
+  // CLI flag errors (such as a mistyped `--include-rule`) and text/html output report on stderr only, without emitting a JSON/SARIF envelope.
   if (!error.isConfigLoadFailure || (requestedFormat !== "json" && requestedFormat !== "sarif")) {
     return;
   }
-  writeCommandOutput(program, renderReport(failedRunReport(cwd(), requestedFormat, CONFIG_ERROR_DIAGNOSTIC_TYPE, error.message), requestedFormat));
+  const report = failedRunReport(cwd(), requestedFormat, CONFIG_ERROR_DIAGNOSTIC_TYPE, error.message);
+  const rendered = isSummary && requestedFormat === "json"
+    ? renderSummaryJson(report, USAGE_EXIT_CODE)
+    : renderReport(report, requestedFormat, USAGE_EXIT_CODE);
+  writeCommandOutput(program, rendered);
 }
 
 /**
@@ -1392,14 +1435,19 @@ function writeFailedRunEnvelope(program: Command, requestedFormat: unknown, erro
  * @param program - command whose output flags govern the stdout envelope
  * @param requestedFormat - JSON or SARIF selects a failure envelope. Other formats skip it.
  * @param target - path outside the launch directory to identify in the refusal
+ * @param isSummary - true when invoked from `summary` so JSON emits `gruff.summary.v3` instead of `gruff.analysis.v3`
  * @returns nothing. It writes the reason to stderr and sets process.exitCode to 2.
  */
-function refuseTargetsOutsideLaunchDirectory(program: Command, requestedFormat: unknown, target: string): void {
+function refuseTargetsOutsideLaunchDirectory(program: Command, requestedFormat: unknown, target: string, isSummary = false): void {
   const message = outsideTargetMessage(target);
   process.stderr.write(`gruff-ts: ${message}\n`);
   // Automation reading JSON or SARIF receives the same refusal in its chosen format.
   if (requestedFormat === "json" || requestedFormat === "sarif") {
-    writeCommandOutput(program, renderReport(failedRunReport(cwd(), requestedFormat, TARGET_ERROR_DIAGNOSTIC_TYPE, message), requestedFormat));
+    const report = failedRunReport(cwd(), requestedFormat, TARGET_ERROR_DIAGNOSTIC_TYPE, message);
+    const rendered = isSummary && requestedFormat === "json"
+      ? renderSummaryJson(report, USAGE_EXIT_CODE)
+      : renderReport(report, requestedFormat, USAGE_EXIT_CODE);
+    writeCommandOutput(program, rendered);
   }
   process.exitCode = 2;
 }

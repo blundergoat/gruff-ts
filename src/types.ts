@@ -1,6 +1,7 @@
 // Shared analyzer types define the settings, findings, diagnostics, and reports exposed across the TypeScript port.
 //
-// CLI commands and rules use these shapes so users and integrations receive one stable interpretation of missing and present values.
+// CLI commands, rules, and renderers share these shapes so users and CI get one consistent view of every run.
+// Optional flags and source coordinates stay omitted when absent rather than turning into `null`.
 
 /** Finding impact level used for scoring, output, and fail-on thresholds. */
 export type Severity = "advisory" | "warning" | "error";
@@ -62,6 +63,8 @@ export interface AnalysisOptions {
   failOn: FailThreshold;
   shouldIncludeIgnored: boolean;
   diff?: string;
+  /** True when `diff` came from `--diff-base` and names an explicit Git revision rather than a `--diff` mode keyword. */
+  isDiffExplicitRef?: boolean;
   since?: string;
   changedRanges?: string;
   changedScope: ChangedScopeMode;

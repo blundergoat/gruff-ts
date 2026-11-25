@@ -641,45 +641,143 @@ function legacyRows(path: string, contents: Buffer): Array<Record<string, unknow
   });
 }
 
-/**
- * Carry reviews forward from a 0.5 baseline. Match by rule and path, using symbol and message when the old row stored them.
- *
- * @param rows - legacy occurrence rows that supply one unit of acceptance each
- * @param findings - current findings eligible to consume that acceptance
- * @returns Current findings covered by the legacy counts in stable spend order, or an empty list when none match.
- */
-function acceptedByLegacy(rows: Array<Record<string, unknown>>, findings: Finding[]): Finding[] {
-  const budget = new Map<string, number>();
-  for (const row of rows) {
-    const key = acceptanceKey(rowText(row, "ruleId"), rowText(row, "filePath") || rowText(row, "file"), rowText(row, "symbol"), rowText(row, "message"));
-    budget.set(key, (budget.get(key) ?? 0) + 1);
-  }
-  // Spend limited counts by line then column so a partially covered set resolves to the same occurrences for the same inputs.
-  return spendOrder(findings)
-    .map((index) => findings[index])
-    .filter((finding): finding is Finding => finding !== undefined && canSpendLegacyBudget(budget, finding));
+// The fields of one 0.5 baseline row that decide which current finding inherits its review.
+interface LegacyRowCriteria {
+  ruleId: string;
+  path: string;
+  symbol: string;
+  message: string;
+  line?: number;
 }
 
 /**
- * Reports whether one 0.5 row still covers this finding, decrementing the remaining budget in place when it does.
- * Stable contract: the most specific stored shape is spent first, so a sparser 0.5 row never steals a narrower row's budget.
+ * Carries reviews forward from a 0.5 baseline: each old row can cover one current finding with the same rule and file.
  *
- * @param budget - remaining acceptance counts keyed by legacy match key, mutated when spent
- * @param finding - current finding attempting to consume a legacy review
- * @returns True if a matching legacy budget entry had remaining count and was spent, otherwise false.
+ * A row must also agree on any symbol and message it stored, and a row on the finding's own line is preferred.
+ * Matching runs per file so the most findings keep a review, even when one row stored only a symbol and another only a message.
+ *
+ * @param rows - legacy occurrence rows that supply one unit of acceptance each
+ * @param findings - current findings eligible to consume that acceptance
+ * @returns Current findings covered by the legacy rows in stable spend order, or an empty list when none match.
  */
-function canSpendLegacyBudget(budget: Map<string, number>, finding: Finding): boolean {
-  const symbol = finding.symbol ?? "";
-  // If both single-field shapes can cover this finding, spend the symbol match and leave the message match available.
-  for (const candidate of [
-    acceptanceKey(finding.ruleId, finding.filePath, symbol, finding.message),
-    acceptanceKey(finding.ruleId, finding.filePath, symbol, ""),
-    acceptanceKey(finding.ruleId, finding.filePath, "", finding.message),
-    acceptanceKey(finding.ruleId, finding.filePath, "", ""),
-  ]) {
-    const remaining = budget.get(candidate) ?? 0;
-    if (remaining > 0) {
-      budget.set(candidate, remaining - 1);
+function acceptedByLegacy(rows: Array<Record<string, unknown>>, findings: Finding[]): Finding[] {
+  const rowsByGroup = new Map<string, LegacyRowCriteria[]>();
+  for (const row of rows) {
+    const criteria = legacyRowCriteria(row);
+    const groupKey = `${criteria.ruleId}\0${criteria.path}`;
+    const group = rowsByGroup.get(groupKey) ?? [];
+    group.push(criteria);
+    rowsByGroup.set(groupKey, group);
+  }
+  const orderedIndices = spendOrder(findings);
+  const findingsByGroup = new Map<string, number[]>();
+  // Group current findings by rule and file in spend order, so each group is matched only against old rows for that same file.
+  for (const findingIndex of orderedIndices) {
+    const finding = findings[findingIndex];
+    // spendOrder only returns positions inside the list; this guard satisfies the type checker.
+    if (finding === undefined) {
+      continue;
+    }
+    const groupKey = `${finding.ruleId}\0${finding.filePath}`;
+    // A finding with no 0.5 row for its rule and file has no old review to inherit, so it stays new.
+    if (!rowsByGroup.has(groupKey)) {
+      continue;
+    }
+    const group = findingsByGroup.get(groupKey) ?? [];
+    group.push(findingIndex);
+    findingsByGroup.set(groupKey, group);
+  }
+  const matchedIndices = new Set<number>();
+  // Match each rule-and-file group on its own, so one file's old reviews never cover another file's findings.
+  for (const [groupKey, groupFindingIndices] of findingsByGroup) {
+    const groupRows = rowsByGroup.get(groupKey) ?? [];
+    // Collect every finding in this group that inherited a 0.5 review.
+    for (const matched of matchLegacyGroup(groupFindingIndices, groupRows, findings)) {
+      matchedIndices.add(matched);
+    }
+  }
+  // Return matched findings in stable line/column spend order.
+  return orderedIndices
+    .filter((index) => matchedIndices.has(index))
+    .map((index) => findings[index])
+    .filter((finding): finding is Finding => finding !== undefined);
+}
+
+/**
+ * Pairs findings with old 0.5 rows for one rule and file, giving each row to at most one finding, the same way on every run.
+ *
+ * First, findings still on their old row's line claim those rows.
+ * Then the rest take any compatible row, moving earlier picks when that lets more findings keep a review without dropping any.
+ *
+ * @param findingIndices - finding indexes in stable spend order sharing one `(ruleId, path)` group
+ * @param groupRows - legacy 0.5 rows sharing the same `(ruleId, path)` group
+ * @param findings - full findings array indexed by `findingIndices`
+ * @returns Finding indexes matched to distinct legacy rows in this group.
+ */
+function matchLegacyGroup(findingIndices: readonly number[], groupRows: readonly LegacyRowCriteria[], findings: readonly Finding[]): number[] {
+  const exactLineRowsByFinding = findingIndices.map((findingIndex) => compatibleLegacyRows(findings[findingIndex], groupRows, true));
+  const compatibleRowsByFinding = findingIndices.map((findingIndex) => compatibleLegacyRows(findings[findingIndex], groupRows, false));
+  const rowOwner = new Array<number>(groupRows.length).fill(-1);
+  const matchedFindingSlots = new Set<number>();
+
+  // Pass 1: claim exact-line matches first so unchanged occurrences keep their own reviewed rows.
+  for (let slot = 0; slot < findingIndices.length && matchedFindingSlots.size < groupRows.length; slot += 1) {
+    // A finding still on its old row's line claims that row before any looser match can take it.
+    if ((exactLineRowsByFinding[slot]?.length ?? 0) > 0
+      && tryAugmentLegacyMatch(slot, exactLineRowsByFinding, rowOwner, new Uint8Array(groupRows.length))) {
+      matchedFindingSlots.add(slot);
+    }
+  }
+  // Pass 2: match remaining findings (rearranging earlier picks when needed) so the most findings keep a review.
+  // Both passes stop once every old row has an owner, so surplus findings in a large file never start a search that cannot succeed.
+  for (let slot = 0; slot < findingIndices.length && matchedFindingSlots.size < groupRows.length; slot += 1) {
+    // A finding without an exact-line row takes any compatible row; earlier picks may move to other rows so more findings fit.
+    if (!matchedFindingSlots.has(slot) && tryAugmentLegacyMatch(slot, compatibleRowsByFinding, rowOwner, new Uint8Array(groupRows.length))) {
+      matchedFindingSlots.add(slot);
+    }
+  }
+  return [...matchedFindingSlots].flatMap((slot) => {
+    const findingIndex = findingIndices[slot];
+    return findingIndex === undefined ? [] : [findingIndex];
+  });
+}
+
+/**
+ * Tries to give one finding an old row, moving other findings to their own spare rows when that frees one up.
+ * Updates `rowOwner` and `visitedRows` in place.
+ *
+ * @param slot - finding slot index in the current `(ruleId, path)` group
+ * @param compatibleRowsBySlot - ordered compatible legacy-row indexes for each finding slot; an empty list leaves the finding unmatched
+ * @param rowOwner - mutable mapping from legacy-row index to owning finding slot (or `-1` if free)
+ * @param visitedRows - per-attempt visited flags preventing cycles in the augmenting search
+ * @returns True if a compatible row was assigned (directly or by moving earlier picks); otherwise false.
+ */
+function tryAugmentLegacyMatch(
+  slot: number,
+  compatibleRowsBySlot: ReadonlyArray<readonly number[]>,
+  rowOwner: number[],
+  visitedRows: Uint8Array,
+): boolean {
+  // A free compatible row is taken straight away, so a large group of interchangeable rows never needs a deep search.
+  for (const rowIndex of compatibleRowsBySlot[slot] ?? []) {
+    // Claim the first unvisited compatible row that no other finding owns yet.
+    if (visitedRows[rowIndex] !== 1 && (rowOwner[rowIndex] ?? -1) === -1) {
+      visitedRows[rowIndex] = 1;
+      rowOwner[rowIndex] = slot;
+      return true;
+    }
+  }
+  // Try the finding's compatible old rows, most specific first.
+  for (const rowIndex of compatibleRowsBySlot[slot] ?? []) {
+    // Each row is tried once per search, which stops two findings from swapping the same row forever.
+    if (visitedRows[rowIndex] === 1) {
+      continue;
+    }
+    visitedRows[rowIndex] = 1;
+    const owner = rowOwner[rowIndex] ?? -1;
+    // Take a free row, or move the row's current finding to another row it fits, so both findings keep a review.
+    if (owner === -1 || tryAugmentLegacyMatch(owner, compatibleRowsBySlot, rowOwner, visitedRows)) {
+      rowOwner[rowIndex] = slot;
       return true;
     }
   }
@@ -687,16 +785,73 @@ function canSpendLegacyBudget(budget: Map<string, number>, finding: Finding): bo
 }
 
 /**
- * Builds a legacy match key from rule, path, symbol, and message, where empty symbol or message leaves that dimension unrestricted.
+ * Lists legacy row indexes compatible with `finding` in stable deterministic order (descending specificity score, then declaration order).
  *
- * @param ruleId - diagnostic rule identifier
- * @param path - normalized file path of the finding or legacy row
- * @param symbol - symbol name, or empty string when omitted
- * @param message - diagnostic message text, or empty string when omitted
- * @returns Null-delimited composite key for legacy budget lookup.
+ * @param finding - current finding to compare against group legacy rows; `undefined` matches no rows
+ * @param groupRows - legacy rows in the same `(ruleId, path)` group; an empty list returns no matches
+ * @param requireExactLine - when true, keeps only rows whose stored numeric `line` equals `finding.line`
+ * @returns Compatible row indexes sorted by descending specificity score, tie-broken by declaration order, or an empty list when none match.
  */
-function acceptanceKey(ruleId: string, path: string, symbol: string, message: string): string {
-  return [ruleId, path, symbol, message].join("\0");
+function compatibleLegacyRows(finding: Finding | undefined, groupRows: readonly LegacyRowCriteria[], requireExactLine: boolean): number[] {
+  // A position without a finding matches no rows.
+  if (finding === undefined) {
+    return [];
+  }
+  const scored: Array<{ rowIndex: number; score: number }> = [];
+  // Score every old row for this rule and file against the finding.
+  for (const [rowIndex, row] of groupRows.entries()) {
+    const score = legacyMatchScore(row, finding, requireExactLine);
+    // Keep only rows whose stored symbol, message and line agree with this finding.
+    if (score !== undefined) {
+      scored.push({ rowIndex, score });
+    }
+  }
+  return scored.sort((left, right) => right.score - left.score || left.rowIndex - right.rowIndex).map((entry) => entry.rowIndex);
+}
+
+/**
+ * Computes a deterministic compatibility score for one legacy row against a finding, or undefined when incompatible.
+ * Stable ordering: `symbol+message` (6) > `symbol` (4) > `message` (2) > `rule+path` (0), with `+1` for an exact line match.
+ *
+ * @param row - parsed 0.5 legacy row criteria
+ * @param finding - current finding being tested for compatibility
+ * @param requireExactLine - when true, rejects rows without an exact line match to `finding.line`
+ * @returns Non-negative specificity score when compatible, or undefined when symbol, message, or required line differs.
+ */
+function legacyMatchScore(row: LegacyRowCriteria, finding: Finding, requireExactLine: boolean): number | undefined {
+  const symbol = finding.symbol ?? "";
+  // An old row that stored a symbol only covers findings in that same symbol.
+  if (row.symbol.length > 0 && row.symbol !== symbol) {
+    return undefined;
+  }
+  // An old row that stored a message only covers findings with exactly that message.
+  if (row.message.length > 0 && row.message !== finding.message) {
+    return undefined;
+  }
+  const isExactLine = row.line !== undefined && finding.line === row.line;
+  // In the exact-line pass, a row stored for another line is left for the second pass.
+  if (requireExactLine && !isExactLine) {
+    return undefined;
+  }
+  const baseScore = (row.symbol.length > 0 ? 4 : 0) + (row.message.length > 0 ? 2 : 0);
+  return baseScore + (isExactLine ? 1 : 0);
+}
+
+/**
+ * Extracts normalized matching criteria from one validated 0.5 legacy row, retaining positive integer `line` when present.
+ *
+ * @param row - validated raw 0.5 row object
+ * @returns Normalized criteria carrying ruleId, path, symbol, message, and optional positive integer line.
+ */
+function legacyRowCriteria(row: Record<string, unknown>): LegacyRowCriteria {
+  const rawLine = row.line;
+  return {
+    ruleId: rowText(row, "ruleId"),
+    path: rowText(row, "filePath") || rowText(row, "file"),
+    symbol: rowText(row, "symbol"),
+    message: rowText(row, "message"),
+    ...(typeof rawLine === "number" && Number.isInteger(rawLine) && rawLine > 0 ? { line: rawLine } : {}),
+  };
 }
 
 /**

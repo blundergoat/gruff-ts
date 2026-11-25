@@ -1041,3 +1041,45 @@ export function run(input: LocalMarker): string {
     ["UnusedAlias", "UnusedContract", "unusedHelper"],
   );
 });
+
+test("T-10 computed const string keys on sibling instances disqualify readonly without suppressing unrelated map writes", () => {
+  const candidates = readonlyCandidates(`export class Box {
+  private label: string;
+  private kept: string;
+
+  constructor(label: string, kept: string) {
+    this.label = label;
+    this.kept = kept;
+  }
+
+  rename(other: Box, counts: Record<string, number>, dynamicKey: string): void {
+    const key = "label" as const;
+    other[key] = this.kept;
+    counts[dynamicKey] = 1;
+  }
+}
+`);
+  assert.deepEqual(candidates, ["kept"]);
+
+  // A loop variable or destructured local named like the outer constant hides it, so neither write names a known property.
+  const shadowed = readonlyCandidates(`const key = "label";
+export class Box {
+  private label: string;
+  private kept: string;
+
+  constructor(label: string, kept: string) {
+    this.label = label;
+    this.kept = kept;
+  }
+
+  copy(other: Box, keys: Array<"label" | "kept">, options: { key: "label" | "kept" }): void {
+    for (const key of keys) {
+      other[key] = this.kept;
+    }
+    const { key } = options;
+    other[key] = this.kept;
+  }
+}
+`);
+  assert.deepEqual(shadowed, ["kept", "label"]);
+});

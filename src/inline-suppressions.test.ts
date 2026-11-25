@@ -1,10 +1,14 @@
 // FAMILY-CONTRACT.md section 13c as a user meets it: another tool's suppression comment, and one eval call under two rules.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { DUPLICATE_SUPPRESSION_REASON, INLINE_SUPPRESSION_REASON } from "./inline-suppressions.ts";
 import { renderReport } from "./report-renderers.ts";
-import { analyseProject } from "./test-fixtures.ts";
+import { analyseProject, REPO_ROOT } from "./test-fixtures.ts";
 import type { AnalysisReport } from "./types.ts";
 
 // Each line exercises one comment form or control; the assertions name the lines that must still report.
@@ -103,4 +107,24 @@ test("inline suppressions require preceding-line biome-ignore and keep co-locate
   assert.equal(evalFindings.length, 2);
   assert.equal(vmFindings.length, 1);
   assert.equal(vmFindings[0]?.line, 4);
+});
+
+test("SARIF display selectors filter section 13c suppressed results alongside active findings", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-sarif-display-suppressed-"));
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "run.ts"), RUN_SOURCE);
+    const run = spawnSync(
+      "bash",
+      [join(REPO_ROOT, "bin/gruff-ts"), "analyse", "src/run.ts", "--no-config", "--no-baseline", "--fail-on=none", "--format=sarif", "--hide-rule=security.new-function"],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(run.status, 0, run.stderr);
+    const sarif = JSON.parse(run.stdout) as { runs: Array<{ results: Array<{ ruleId: string; suppressions?: unknown[] }> }> };
+    const results = sarif.runs[0]?.results ?? [];
+    assert.equal(results.some((entry) => entry.ruleId === "security.new-function"), false);
+    assert.equal(results.some((entry) => entry.ruleId === "security.eval-call" && Array.isArray(entry.suppressions)), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

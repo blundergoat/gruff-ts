@@ -243,10 +243,19 @@ function writtenMemberNames(classNode: TsClassLike): Set<string> | undefined {
         written.add(inner.name.text);
       }
     } else if (typescriptSyntax.isElementAccessExpression(inner)) {
+      const keyExpression = withoutWrappers(inner.argumentExpression);
       if (isThisKeyword(inner.expression)) {
         writesDynamically = true;
-      } else if (typescriptSyntax.isStringLiteralLike(inner.argumentExpression)) {
-        written.add(inner.argumentExpression.text);
+      } else if (typescriptSyntax.isStringLiteralLike(keyExpression)) {
+        // A quoted key such as `other["label"] = value` writes that named property.
+        written.add(keyExpression.text);
+      } else if (typescriptSyntax.isIdentifier(keyExpression)) {
+        // A key held in a local constant, such as `other[key] = value`, writes the property that constant names.
+        const resolvedKey = resolvedConstStringLiteral(keyExpression);
+        // A key that is not a known string constant could be anything, so no property is recorded as written.
+        if (resolvedKey !== undefined) {
+          written.add(resolvedKey);
+        }
       }
     } else if (typescriptSyntax.isObjectLiteralExpression(inner) || typescriptSyntax.isArrayLiteralExpression(inner)) {
       for (const element of destructuringTargets(inner)) {
@@ -364,6 +373,145 @@ function isThisKeyword(expression: TsExpression): boolean {
  */
 function isAssignmentOperator(kind: import("typescript").SyntaxKind): boolean {
   return kind >= typescriptSyntax.SyntaxKind.FirstAssignment && kind <= typescriptSyntax.SyntaxKind.LastAssignment;
+}
+
+/**
+ * Resolves a lexically visible `const` string-literal binding for an identifier key (such as `const key = "label" as const; other[key] = ...`)
+ * so computed bracket writes on sibling instances mark that property written without treating arbitrary dynamic map writes as uncertain.
+ *
+ * @param identifier - identifier node used as a bracket access key
+ * @returns The bound string literal text when the nearest lexical declaration is a `const` initialized to a string literal; otherwise undefined.
+ */
+function resolvedConstStringLiteral(identifier: import("typescript").Identifier): string | undefined {
+  const targetName = identifier.text;
+  // Walk outward from the key to the nearest declaration of its name.
+  for (let current = identifier.parent; current !== undefined; current = current.parent) {
+    // A parameter with the same name hides any outer constant, so the key's value is unknown.
+    if (typescriptSyntax.isFunctionLike(current) && hasNamedParameter(current, targetName)) {
+      return undefined;
+    }
+    // A loop or catch variable with the same name, as in `for (const key of keys)`, hides an outer constant the same way.
+    if (declaresHeaderBinding(current, targetName)) {
+      return undefined;
+    }
+    const statements = scopedStatements(current);
+    // Only blocks, files and switch cases hold declarations; other ancestors are passed through.
+    if (statements === undefined) {
+      continue;
+    }
+    const lookup = constStringInStatements(statements, targetName);
+    // The nearest declaration decides: a string constant gives the key, anything else gives no key.
+    if (lookup.found) {
+      return lookup.value;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Checks whether a function-like node declares a parameter with `targetName`, shadowing any outer `const` string binding.
+ *
+ * @param callable - enclosing function, method, constructor, or accessor node
+ * @param targetName - identifier name to match against parameter bindings
+ * @returns True when any parameter binds `targetName`, including inside a destructured parameter such as `{ key }`; otherwise false.
+ */
+function hasNamedParameter(callable: import("typescript").SignatureDeclarationBase, targetName: string): boolean {
+  return callable.parameters.some((parameter) => bindingNameIncludes(parameter.name, targetName));
+}
+
+/**
+ * Checks whether a `for`, `for...of`, `for...in` or `catch` header declares `targetName`, shadowing any outer `const` key.
+ *
+ * @param node - ancestor node of the bracket key being resolved
+ * @param targetName - identifier name to match against the header's bindings
+ * @returns True when the node is a loop or catch clause whose header binds `targetName`; false for every other node.
+ */
+function declaresHeaderBinding(node: TsNode, targetName: string): boolean {
+  // A catch clause binds its error variable, which may be destructured as in `catch ({ key })`.
+  if (typescriptSyntax.isCatchClause(node)) {
+    return node.variableDeclaration !== undefined && bindingNameIncludes(node.variableDeclaration.name, targetName);
+  }
+  const isLoop = typescriptSyntax.isForStatement(node) || typescriptSyntax.isForOfStatement(node) || typescriptSyntax.isForInStatement(node);
+  const initializer = isLoop ? node.initializer : undefined;
+  // Only a loop header that declares variables, as in `for (const key of keys)`, can hide the outer name.
+  if (initializer === undefined || !typescriptSyntax.isVariableDeclarationList(initializer)) {
+    return false;
+  }
+  return initializer.declarations.some((declaration) => bindingNameIncludes(declaration.name, targetName));
+}
+
+/**
+ * Checks whether a binding name, or any name inside a destructuring pattern, is `targetName`.
+ *
+ * @param name - identifier or object/array binding pattern from a parameter, variable or catch clause
+ * @param targetName - identifier name being looked for
+ * @returns True when the binding introduces `targetName` anywhere in the pattern; otherwise false.
+ */
+function bindingNameIncludes(name: import("typescript").BindingName, targetName: string): boolean {
+  // A plain name, as in `(key) => ...`, matches by its text.
+  if (typescriptSyntax.isIdentifier(name)) {
+    return name.text === targetName;
+  }
+  // Destructured names, as in `({ key }) => ...` or `([key]) => ...`, are checked element by element; array holes bind nothing.
+  return name.elements.some((element) => typescriptSyntax.isBindingElement(element) && bindingNameIncludes(element.name, targetName));
+}
+
+/**
+ * Extracts direct statement lists from block, source-file, or switch-clause lexical containers.
+ *
+ * @param node - candidate ancestor AST node
+ * @returns The node's direct `statements` list when it introduces a statement list, or undefined otherwise.
+ */
+function scopedStatements(node: TsNode): import("typescript").NodeArray<import("typescript").Statement> | undefined {
+  // These nodes own the statement lists where a constant key can be declared.
+  if (typescriptSyntax.isBlock(node) || typescriptSyntax.isSourceFile(node)
+    || typescriptSyntax.isCaseClause(node) || typescriptSyntax.isDefaultClause(node)) {
+    return node.statements;
+  }
+  return undefined;
+}
+
+/**
+ * Searches direct variable statements in one lexical block for `targetName` so computed bracket keys resolve to the nearest declaration.
+ * Destructured declarations such as `const { key } = opts` still shadow outer constants and stop the outward search with no known value.
+ *
+ * @param statements - statements belonging to one lexical scope; an empty list reports `{ found: false }`
+ * @param targetName - variable identifier being resolved
+ * @returns `{ found: true, value }` for a `const` string literal, `{ found: true }` for any other shadowing declaration, or `{ found: false }`.
+ */
+function constStringInStatements(
+  statements: import("typescript").NodeArray<import("typescript").Statement>,
+  targetName: string,
+): { found: boolean; value?: string } {
+  // Look through this scope's statements for a declaration of the key's name.
+  for (const statement of statements) {
+    // Only variable statements can declare the key's name.
+    if (!typescriptSyntax.isVariableStatement(statement)) {
+      continue;
+    }
+    const isConst = (statement.declarationList.flags & typescriptSyntax.NodeFlags.Const) !== 0;
+    // One statement can declare several names, as in `const first = "a", second = "b"`.
+    for (const declaration of statement.declarationList.declarations) {
+      // A destructured binding such as `const { key } = opts` shadows an outer constant with an unknown runtime value.
+      if (!typescriptSyntax.isIdentifier(declaration.name)) {
+        if (bindingNameIncludes(declaration.name, targetName)) {
+          return { found: true };
+        }
+        continue;
+      }
+      // Skip declarations that bind a different variable name.
+      if (declaration.name.text !== targetName) {
+        continue;
+      }
+      const unwrapped = declaration.initializer === undefined ? undefined : withoutWrappers(declaration.initializer);
+      // Only a `const` set to a string literal keeps the same value until the write.
+      if (isConst && unwrapped !== undefined && typescriptSyntax.isStringLiteralLike(unwrapped)) {
+        return { found: true, value: unwrapped.text };
+      }
+      return { found: true };
+    }
+  }
+  return { found: false };
 }
 
 /**

@@ -30,6 +30,7 @@ interface HookReportInput {
   scopedOptions: AnalysisOptions;
   baselinePath?: string;
   diffBase?: string;
+  isDiffExplicitRef?: boolean;
   hasChangedRegion: boolean;
 }
 
@@ -778,7 +779,7 @@ function hookDiffBaseIdentities(runAnalyse: HookAnalysisRunner, input: HookRepor
   if (input.diffBase === undefined) {
     return undefined;
   }
-  return keysFromDiffBase(runAnalyse, input.currentOptions, input.diffBase, currentReport);
+  return keysFromDiffBase(runAnalyse, input.currentOptions, input.diffBase, currentReport, input.isDiffExplicitRef === true);
 }
 
 /**
@@ -789,6 +790,7 @@ function hookDiffBaseIdentities(runAnalyse: HookAnalysisRunner, input: HookRepor
  * @param options - current scan settings from which to build the replay options
  * @param diffBase - diff selector that identifies the revision or index to replay
  * @param currentReport - current findings that identify which file paths to replay
+ * @param isExplicitRef - true when `diffBase` came from `--since` or `--diff-base` and names a Git revision directly
  * @returns Counts by hook match key, an empty map when no base files or findings exist, or undefined when the selector has no replayable Git base.
  */
 function keysFromDiffBase(
@@ -796,8 +798,9 @@ function keysFromDiffBase(
   options: AnalysisOptions,
   diffBase: string,
   currentReport: AnalysisReport,
+  isExplicitRef = false,
 ): Map<string, number> | undefined {
-  const ref = diffBaseRef(diffBase);
+  const ref = diffBaseRef(diffBase, isExplicitRef);
   // A patch read from stdin has no Git revision to replay, so return undefined to avoid falsely enabling file-wide re-admission.
   if (ref === undefined) {
     return undefined;
@@ -847,15 +850,22 @@ function findingBasePaths(finding: Finding): string[] {
 
 /**
  * Maps a diff-base selector to the Git revision to replay for new-only filtering.
- * Working-tree and staged selectors use `HEAD`, unstaged uses the index (`""`), explicit refs pass through, and stdin (`"-"`) has no replayable base.
+ *
+ * An explicit ref passes through as given, and a stdin patch (`"-"`) has no base to replay.
+ * Otherwise working-tree and staged use `HEAD`, unstaged uses the index (`""`), and any other value passes through.
  *
  * @param diffBase - Diff selector supplied to the hook request.
+ * @param isExplicitRef - true when `diffBase` came from `--since` or `--diff-base`, so even `staged` names a Git ref, not a mode
  * @returns Git revision string for `git show`, empty string for the index, or undefined for a stdin patch.
  */
-function diffBaseRef(diffBase: string): string | undefined {
+function diffBaseRef(diffBase: string, isExplicitRef = false): string | undefined {
   // A pasted patch supplies changed lines but no Git snapshot for inherited findings.
   if (diffBase === "-") {
     return undefined;
+  }
+  // A ref from --since or --diff-base is replayed as given, even a branch named staged or unstaged.
+  if (isExplicitRef) {
+    return diffBase;
   }
   // For unstaged edits, the user's staged file contents are the comparison point.
   if (diffBase === "unstaged") {
@@ -922,7 +932,7 @@ function baseAnalysisOptions(options: AnalysisOptions, paths: string[], original
  * @returns Cloned options object configured to run a full scan without baseline lookup.
  */
 function withoutChangedRegion(options: AnalysisOptions): AnalysisOptions {
-  const { baseline: _baseline, changedRanges: _changedRanges, diff: _diff, diffPatch: _diffPatch, generateBaseline: _generateBaseline, since: _since, ...rest } = options;
+  const { baseline: _baseline, changedRanges: _changedRanges, diff: _diff, diffPatch: _diffPatch, generateBaseline: _generateBaseline, isDiffExplicitRef: _isDiffExplicitRef, since: _since, ...rest } = options;
   return { ...rest, shouldSkipBaseline: true };
 }
 

@@ -38,8 +38,9 @@ changes:
 
 Optional `column`, `endLine`, and `symbol` fields are omitted when unavailable
 rather than set to `null`. Finding metadata sets `locationPrecision` to
-`scanner-pinpointed` or `line-only`. Fingerprints and `stableIdentity` values do
-not change.
+`scanner-pinpointed` or `line-only`. Baseline identities follow the line-free v3
+contract introduced in `0.6.0` (see [Upgrading](../UPGRADING.md)) and stay
+stable across output formats and ordinary edits.
 
 ### Suppressions audit
 
