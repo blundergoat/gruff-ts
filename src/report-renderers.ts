@@ -20,7 +20,8 @@ import { totalSuppressedFindings } from "./sensitive-exclusions.ts";
  * @param report - Native analysis report supplying the data for the selected format.
  * @param format - Selects the human-readable renderer or machine output projection.
  * @param exitCode - decided status for JSON. Omit it when rendering directly to use the run's severity threshold.
- * @returns Rendered report text. Hotspot JSON uses the stable gruff.hotspot.v1 schema and includes up to ten top offenders.
+ * @returns Rendered report text.
+ * Hotspot JSON uses the stable gruff.hotspot.v1 schema, with up to ten top offenders and every scan diagnostic, such as a deep-scan budget notice.
  */
 function renderReport(report: AnalysisReport, format: OutputFormat, exitCode?: number): string {
   switch (format) {
@@ -33,7 +34,17 @@ function renderReport(report: AnalysisReport, format: OutputFormat, exitCode?: n
     case "github":
       return renderGithub(report);
     case "hotspot":
-      return JSON.stringify({ schemaVersion: "gruff.hotspot.v1", tool: report.tool, score: report.score.composite, files: report.score.topOffenders.slice(0, 10) }, null, 2);
+      return JSON.stringify(
+        {
+          schemaVersion: "gruff.hotspot.v1",
+          tool: report.tool,
+          score: report.score.composite,
+          files: report.score.topOffenders.slice(0, 10),
+          diagnostics: report.diagnostics.map((diagnostic) => machineDiagnostic(diagnostic, report.run.projectRoot)),
+        },
+        null,
+        2,
+      );
     case "sarif":
       return renderSarif(report);
     case "text":

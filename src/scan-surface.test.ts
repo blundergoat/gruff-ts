@@ -191,13 +191,12 @@ test("bounded deep-scan diagnostics are visible in diagnostic report formats", (
     { "small.ts": "export const value = 1;\n" },
     { config: { deepScanBudget: { enabled: true, maxLines: 1, maxBytes: 1 } } },
   );
-  // A reader must see the scan-budget notice in each format that publishes diagnostics.
-  for (const format of ["text", "json", "html", "markdown", "github", "sarif"] as const) {
+  // The family contract keeps the scan-budget notice visible in every output format, hotspot included.
+  for (const format of ["text", "json", "html", "markdown", "github", "sarif", "hotspot"] as const) {
     assert.match(renderReport(report, format), /bounded-deep-scan/, format);
   }
   assert.match(renderSummary(report), /bounded-deep-scan/);
   assert.match(renderSummaryJson(report), /bounded-deep-scan/);
-  assert.deepEqual(Object.keys(JSON.parse(renderReport(report, "hotspot"))).sort(), ["files", "schemaVersion", "score", "tool"]);
 });
 
 test("generated files skip docs/naming findings but keep sensitive-data findings", () => {

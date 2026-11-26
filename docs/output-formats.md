@@ -97,8 +97,9 @@ Use `github` inside GitHub Actions to emit workflow annotations.
 
 ## Hotspot
 
-Use `hotspot` for the compact score and file-offender list. Use `json` or
-`sarif` when an integration also needs scan diagnostics.
+Use `hotspot` for the compact score and file-offender list. Its `diagnostics`
+array carries the same scan diagnostics as `json`, such as a
+`bounded-deep-scan` notice.
 
 ## SARIF
 

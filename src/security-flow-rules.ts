@@ -123,8 +123,10 @@ const SECURITY_FLOW_RULES: readonly SecurityFlowRule[] = [
 ];
 
 /**
- * Scan one source line for same-line external-input-to-sink matches. Same-line matching is intentional: reports stable candidate findings without
- * implying full taint analysis, and resets shared sink matchers only when a recognized source token is found.
+ * Scan one source line for same-line external-input-to-sink matches.
+ *
+ * Same-line matching is intentional: reports stable candidate findings without implying full taint analysis.
+ * Shared sink matchers reset only when a recognized source token is found.
  *
  * @param file - discovered file whose display path anchors emitted findings
  * @param codeLine - single source line checked for the first catalogue source pattern and matching sink calls
