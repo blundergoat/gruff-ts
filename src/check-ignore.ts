@@ -1,8 +1,8 @@
-// `check-ignore` command core: classify each path through the shared discovery ignore engine and
-// render the verdict. No analysis is performed - this is an O(1)-per-path config/gitignore/default
-// lookup that mirrors `git check-ignore` exit semantics, so a coding-agent hook can ask "will gruff
-// skip this changed file?" before running a scan. Single source of truth: `classifyPathIgnore` is the
-// exact engine `analyse` discovery uses; this module only loads config and formats the output.
+// Powers `gruff-ts check-ignore`, answering whether gruff would skip each path without running analysis.
+//
+// Reuses `classifyPathIgnore` from `discovery.ts` so `check-ignore` and `analyse` never disagree:
+// - mirrors `git check-ignore` exit codes (0 = at least one ignored, 1 = none ignored, 2 = config error);
+// - lets coding-agent hooks and CI scripts check ignore policy in O(1) per path before scanning.
 import { cwd } from "node:process";
 import { loadConfig } from "./config.ts";
 import { classifyPathIgnore, type PathIgnoreClassification } from "./discovery.ts";
@@ -11,24 +11,39 @@ import type { AnalysisOptions } from "./types.ts";
 /** Output encodings supported by the `check-ignore` command. */
 export type CheckIgnoreFormat = "text" | "json";
 
-// Resolves config exactly as `analyse` does (`--config` / `--no-config`), then classifies each input
-// path. Config `paths.ignore` is authoritative; default and gitignore matches are reported with their
-// source too so the caller sees why a path would be skipped.
+/**
+ * Reads config using the current working directory and classifies each path through discovery ignore rules.
+ * Config paths.ignore takes precedence over other ignore sources.
+ *
+ * @param inputs - File or directory paths to classify against the ignore rules.
+ * @param options - Analysis options that select config and control whether ordinary ignore rules are bypassed.
+ * @returns One classification per input path in input order, reporting the matching source and pattern when ignored.
+ */
 export function checkIgnore(inputs: string[], options: AnalysisOptions): PathIgnoreClassification[] {
   const projectRoot = cwd();
   const config = loadConfig(projectRoot, options);
   return inputs.map((input) => classifyPathIgnore(projectRoot, input, options, config));
 }
 
-// Mirrors `git check-ignore`: exit 0 when at least one path is ignored, 1 when none are. Exit 2 is
-// reserved for config/usage errors and is set by the CLI layer via `runWithConfigErrorHandling`.
+/**
+ * Converts path classifications to the `git check-ignore` exit status.
+ * The CLI's `runWithConfigErrorHandling` assigns exit 2 for configuration failures.
+ *
+ * @param results - Path ignore classifications produced by `checkIgnore`.
+ * @returns `0` if any path in `results` is ignored, and `1` otherwise, including for an empty list.
+ */
 export function checkIgnoreExitCode(results: PathIgnoreClassification[]): number {
   return results.some((result) => result.isIgnored) ? 0 : 1;
 }
 
-// JSON is the agent-facing contract: every input path as `{ path, ignored, source, pattern }`, with
-// `source`/`pattern` null when the path is not ignored. Text lists only the ignored paths as
-// `<path>\t<source>:<pattern>`, matching `git check-ignore`'s "print the matches" behaviour.
+/**
+ * Formats path classifications as JSON or tab-delimited text.
+ * JSON includes every path with `null` for missing match details; text lists ignored paths with a tab before `source:pattern`.
+ *
+ * @param results - Path ignore classifications to format.
+ * @param format - Output format (`"json"` for all paths, `"text"` for ignored paths only).
+ * @returns Formatted classification output, or an empty string in `"text"` format when no path is ignored.
+ */
 export function renderCheckIgnore(results: PathIgnoreClassification[], format: CheckIgnoreFormat): string {
   if (format === "json") {
     return JSON.stringify(

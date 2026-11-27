@@ -1,11 +1,12 @@
-// Shared release constants that keep CLI, reports, and rule catalogue output in sync.
-const VERSION = "0.5.0";
+// Shared release constants that keep CLI version output, JSON envelopes, and text report hints aligned.
+//
+// `VERSION` must match `package.json`; `OUTPUT_VOLUME_HINT_THRESHOLD` controls when `analyse` suggests `gruff-ts summary`.
+const VERSION = "0.6.0";
 
 /*
- * Threshold at which the `analyse` text renderer appends a one-line pointer to `gruff-ts summary`.
- * Below 50 a flat list is still browsable; above 50 the operator hits scroll fatigue and needs the
- * per-rule digest. Calibrated against the gruff-ts self-scan (~8 findings) and the goat-flow scan
- * in 2026-05-25 feedback (1643 findings) - the threshold earns its keep at the cross-over.
+ * Finding count at which `analyse --format text` appends a one-line pointer to `gruff-ts summary`.
+ *
+ * Below 50 findings a flat terminal list stays easy to scan; above 50 the per-rule digest avoids scroll fatigue.
  */
 const OUTPUT_VOLUME_HINT_THRESHOLD = 50;
 

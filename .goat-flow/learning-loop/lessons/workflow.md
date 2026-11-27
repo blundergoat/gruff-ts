@@ -1,6 +1,6 @@
 ---
 category: workflow
-last_reviewed: 2026-08-12
+last_reviewed: 2026-11-25
 ---
 
 # Workflow lessons
@@ -13,7 +13,9 @@ last_reviewed: 2026-08-12
 
 **What happened:** During the goat-flow 1.14.0 upgrade preflight, I tried to combine `--dry-run` and `--force` to preview the force result. The CLI rejected the combination because force is the post-review write decision, not a second preview mode.
 
-**Prevention:** Use `goat-flow install . --agent <agent> --dry-run` to resolve exact targets and content conflicts. If the preview is blocked only by reviewed content conflicts and the upgrade authorizes replacement, run `goat-flow install . --agent <agent> --force` as a separate command; never claim the force path was previewed.
+**Re-checked 2026-11-23 (goat-flow 1.19.0):** the combination is now accepted. The package's install command resolves both the preview rows and the admission gate against the same force authority (search: `readManagedSetupAuthority`), so `--dry-run --force` previews the forced result. With no conflicts pending, `install . --agent claude --dry-run --force` exited 0, left `git status` unchanged, and printed a preview byte-identical to the plain dry run.
+
+**Prevention:** Use `goat-flow install . --agent <agent> --dry-run` without any force option first, so the conflicts are visible before any authority is applied. If the preview is blocked only by reviewed content conflicts and the upgrade authorizes replacement, preview the forced result with `--dry-run --force` (or `--force-path <path>` for one file) on goat-flow 1.19.0 or later, then run `goat-flow install . --agent <agent> --force` as a separate command. On a version that rejects the combination, never claim the force path was previewed.
 
 ## Lesson: run strict plan validation before presenting the human gate
 
@@ -27,7 +29,7 @@ last_reviewed: 2026-08-12
 
 **M26 execution recurrence, 2026-08-09:** Strict validation was deferred until proof closeout and found legacy M25 still `in-progress` while M26 was in its testing gate. M26's implementation evidence remained green, but its lifecycle paused until the operator classified M25 as blocked and operator-owned.
 
-**Evidence:** `.agents/skills/goat-plan/SKILL.md` (search: `Always include outcome, Status, agent-time estimate`) requires the estimate on every milestone; `.agents/skills/goat-plan/references/milestone-examples.md` (search: `must exactly reproduce each category`) requires task, proof, mid-proof, and admin arithmetic to match the headline.
+**Evidence:** `.agents/skills/goat-plan/SKILL.md` (search: `Include outcome, Status, agent-time estimate`) requires the estimate on every milestone; `.agents/skills/goat-plan/references/milestone-examples.md` (search: `must reproduce product/proof/other categories and headline`) requires task, proof, mid-proof, and admin arithmetic to match the headline.
 
 **Prevention:** Before changing a milestone to `in-progress` or `testing-gate`, run strict validation and inspect every active-status error across the whole active plan, including legacy `Status:` fields. For plan writes, also use derived current-format estimates and honest Actual provenance; if legacy siblings keep the directory red, prove the named milestone has zero format errors and report the remaining scope.
 
@@ -49,7 +51,7 @@ last_reviewed: 2026-08-12
 
 **Evidence:** the 0.1.3 task file M01-config-schema-and-cli-wiring.md line 3 said `Status: complete (2026-05-27)` while lines 116-249 (Tasks section) and 280-307 (Testing Gate) still had every checkbox empty. Same shape for M02, M03, and the parent ISSUE.md's `How` list. The code/test/doc work had actually landed - `npm run check` was green, preflight was clean - but the tracking artifacts inside the task folder claimed nothing was done.
 
-**Prevention:** Before flipping a milestone file's top-line `Status:` to `complete`, open the file and walk every `- [ ]` line. For each one the implementation actually delivered, flip to `- [x]`. For items deferred during execution, leave unticked and add a deferral note nearby (see the 0.1.2 task file M03-test-quality-rule-precision.md for the existing pattern). Apply the same to ISSUE.md `How` checklists. Top-line status without per-task ticks reads as fraud even when the underlying work landed. Standing rule from the operator: "TICK OFF FUCKING CHECKBOX TASKS AS YOU FUCKING COMPLETE THEM."
+**Prevention:** Before flipping a milestone file's top-line `Status:` to `complete`, open the file and walk every `- [ ]` line. For each one the implementation actually delivered, flip to `- [x]`. For items deferred during execution, leave unticked and add a deferral note nearby (the M03-test-quality-rule-precision.md milestone, now archived in the local plans _done/0.2.0 folder, shows the pattern). Apply the same to ISSUE.md `How` checklists. Top-line status without per-task ticks reads as fraud even when the underlying work landed. Standing rule from the operator: "TICK OFF FUCKING CHECKBOX TASKS AS YOU FUCKING COMPLETE THEM."
 
 ## Lesson: moving milestone files across folders requires a cross-reference sweep, not just `git mv`
 
@@ -70,13 +72,13 @@ last_reviewed: 2026-08-12
 
 **Prevention:** When moving milestone files across version folders or renaming them within a folder, run this checklist BEFORE declaring the move done:
 
-1. `grep -rn "<old-path>"` across `CHANGELOG.md`, `docs/`, `README.md`, `.goat-flow/learning-loop/decisions/`, `src/`, and other task folders. Every hit needs updating.
+1. `command grep -rn "<old-path>"` across `CHANGELOG.md`, `docs/`, `README.md`, `.goat-flow/learning-loop/decisions/`, `src/`, and other task folders. Every hit needs updating.
 2. `grep -n "M0[123]\|M0[456]"` (or whatever the renumbered range is) inside each moved file. Update the prose references that name same-track milestones; leave cross-repo references alone (look for paths like `gruff-go/`, `gruff-rs/`, etc.).
 3. `grep -n "old-version\b"` (e.g. `0\.1\.3`) inside the moved files. Replace where it refers to the milestone's own version, leave where it refers to a historical "pre-X" baseline.
 4. Update markdown-link targets (`[M01 - ...](M01-...md)` becomes `[M10 - ...](M10-...md)`).
 5. Update the file header (`# M01 -` -> `# M10 -`).
 6. If a milestone was deleted (not just renumbered), grep for its name in CHANGELOG / docs / parent ISSUE and remove or rephrase those mentions.
-7. After all edits, re-run `grep -rn "<old-path>\|<old-milestone-id>"` to confirm zero stray references.
+7. After all edits, re-run `command grep -rn "<old-path>\|<old-milestone-id>"` to confirm zero stray references. Plan folders are gitignored, so an ignore-aware recursive `grep` skips them and reports a false zero; on 2026-11-23 a recursive sweep of `.goat-flow/plans/` matched 1 file through the session wrapper against 131 with `command grep`.
 
 A `git mv` alone is not a move - it's the start of one. The cross-reference sweep is what makes the move correct.
 
@@ -132,7 +134,7 @@ Standing rule: every commit-message-or-diff-description response begins with rea
 
 **What happened:** Operator asked "is this project ready to ship 0.1 version now?" The agent checked `package.json` version, ran `npm run check` (127/127 pass), self-scanned with `./bin/gruff-ts analyse .` (score 100.0, 0 findings), inspected the tarball via `npm pack --dry-run`, verified rule count (111 across 11 pillars) and README/CHANGELOG/LICENSE presence, then answered "yes, ready to ship" with only a list of nice-to-haves. The operator then asked separately "are there any tasks left in the 0.1 task folder?" - that folder contained `M38-css-metrics-and-todo-density-calibration.md` with `Status: proposed` (substantive new scope: CSS scanning + `docs.todo-density` decision) and `ISSUE-related-project-study.md` with `Status: human-verification-pending`. Neither blocker showed up in the green checks. The agent gave a ship-ready verdict without ever opening the project's own task ledger.
 
-**Evidence:** the 0.1 task files M38-css-metrics-and-todo-density-calibration.md line 3 (`Status: proposed`) and ISSUE-related-project-study.md line 3 (`Status: human-verification-pending` at the time), both since archived under `.goat-flow/plans/_archive/0.1/`. CLAUDE.md's Router Table explicitly lists `.goat-flow/plans/` under workspace notes, and the SCOPE rule "MUST read relevant files before changes" - release-readiness is a project-state question, so the project's own task folder is relevant by definition.
+**Evidence:** the 0.1 task files M38-css-metrics-and-todo-density-calibration.md line 3 (`Status: proposed`) and ISSUE-related-project-study.md line 3 (`Status: human-verification-pending` at the time), both since archived under `.goat-flow/plans/_done/0.1/`. CLAUDE.md's Router Table explicitly lists `.goat-flow/plans/` under workspace notes, and the READ rule "MUST read relevant files before changes" - release-readiness is a project-state question, so the project's own task folder is relevant by definition.
 
 **Prevention:** For any "is X ready / are we done / can we ship" question, before invoking build/test/lint/self-scan signals, list and grep status lines in `.goat-flow/plans/<active-milestone>/`. Concretely: `grep -m1 -iE "^(status|state):" .goat-flow/plans/<version>/*.md` and surface anything that is not `complete`, `superseded`, `shipped`, or explicitly deferred. Green CI is a necessary signal, not a sufficient one - the task ledger encodes intent that CI cannot see (proposed scope, human-pending signoffs, deliberately deferred work). Treat unaudited task folders as a red-flag the same way you'd treat untested code paths.
 
@@ -145,3 +147,32 @@ Standing rule: every commit-message-or-diff-description response begins with rea
 **Evidence:** the four files M31 missed were not marginal. `src/analyser.ts` owns the rule-group pass gates, and it had since drawn both a P1 and a P2 automated-review comment. The next file below the 100-line cut was `src/hook-contract.ts` at 99, so the boundary was clean rather than arbitrary. Of the three defects this milestone confirmed and fixed, two lived in files the original six-file table did not cover.
 
 **Prevention:** run every invalidation test a plan writes for itself as the first act of execution, before reading any source, and rescope in the plan file rather than in your head. A plan built from a point-in-time snapshot decays against a branch that is still moving, and the decay is silent: the milestone text reads equally plausible whether or not its numbers still hold. Treat "planned at SHA X, executing at SHA Y" as a prompt to re-derive every count, file set, and external-state claim.
+
+## Lesson: append-only Unreleased changelogs accumulate contradictions and notes for retired rules past green docs-drift checks
+
+**Created:** 2026-11-25
+**Decision changed:** Before cutting a release from an `Unreleased` changelog, diff `v<prev>:src/rules.ts` against live `src/rules.ts` and audit behavioural claims across `CHANGELOG.md`, `UPGRADING.md`, `README.md`, and `docs/*.md` instead of treating a green `docs_drift_check` as proof that prose matches the shipped binary.
+**Trigger phase:** VERIFY
+
+**Prevention:** Before release sign-off, consolidate `Unreleased` bullets by net shipped state (removing intermediate fixes for rules retired before release) and verify every flag exit code, severity default, skip rule, and example rule name directly against live source (`src/rules.ts`, `src/selectors.ts`, `src/sensitive-exclusions.ts`).
+
+**What happened:** Multi-milestone `0.6.0` work appended bullets to `CHANGELOG.md` and `UPGRADING.md` over several passes. `scripts/preflight-checks.sh` (`docs_drift_check_root`) stayed green (81 rules, 11 pillars, 12/12 drift fixtures rejected) while user-facing docs carried multiple direct contradictions against the live code: `CHANGELOG.md` claimed `--include-rule` silently accepted retired or off rules (live `src/selectors.ts` exits `2`), claimed empty `--changed-ranges=` meant no filter in one bullet and exit `2` in another, reported stale pre-retirement `falsePositiveShapes` totals (`63`/`49` instead of `50`/`31`), and kept prerelease fixes for rules deleted in `0.6.0`; `docs/rules.md` still described retired `conditional-logic`/`sleep-in-test` rules and claimed test paths never suppress secrets; `README.md` and `docs/philosophy.md` still used retired `mock-only`, `snapshot-only`, and `assertion-free` examples; and `docs/agent-hook.md` still listed committed secrets under `--fail-on=error` after all `sensitive-data.*` rules moved to `warning`.
+
+**Evidence:** `scripts/preflight-checks.sh` (search: `docs_drift_check_root`) validates rule counts, backticked rule IDs, pillar rows, ADRs, and README links, not behavioural prose; live code in `src/selectors.ts` (search: `export function applyExecutionSelectors`), `src/rules.ts` (search: `const RULE_DESCRIPTORS`), and `src/sensitive-exclusions.ts` (search: `export function applyBuiltInTestPathSkip`) exposed every discrepancy when audited directly.
+
+## Lesson: name new source and test files by domain responsibility, never by PR, ticket, or milestone batch
+
+**Created:** 2026-11-25
+**Decision changed:** Before creating any new source, test, script, or fixture file, check the existing domain-owned files and place the change in the owning subsystem file; when a new file is genuinely warranted, name it after the module or behaviour it owns rather than a PR number, ticket ID, milestone label, or review batch.
+**Trigger phase:** SCOPE
+**Caught at:** VERIFY
+
+**Prevention:**
+- Inspect the existing file layout (for tests, `ls src/*.test.ts`) during SCOPE and add regression tests to the existing domain test file for the subsystem under test (such as `src/hook-contract.test.ts`, `src/changed-region-contract.test.ts`, `src/docs-comment-rules.test.ts`, or `src/config-load-error.test.ts`).
+- Create a new file only when no existing module owns that responsibility or when appending would push an existing file over `size.file-length` (`src/analyser.ts`, search: `size.file-length`).
+- Name every new file so a maintainer can tell what subsystem it owns from the filename alone (`<domain>-<concern>.ts` or `<domain>-<concern>.test.ts`). Never name committed files after ephemeral workflow artifacts such as PR numbers (`pr10-review-fixes.test.ts`), issue or ticket IDs, milestone numbers, or dump names (`review-fixes.ts`, `misc-tests.ts`).
+- When a PR review or audit fixes defects across multiple subsystems, split bundled assertions into single-concern tests inside each owning domain test file instead of creating one cross-cutting batch file.
+
+**What happened:** During the `0.6.0` PR #10 review-fix pass, 16 regression tests spanning 15 subsystems (config migration, selector validation, JSDoc parsing, GitHub Actions event parsing, inline suppressions, changed-region SARIF, working-tree line coordinates, hook base replay, and baseline identity) were bundled into a new `pr10-review-fixes.test.ts` file under `src/`. `npm run check` and the self-scan both passed with zero findings because no automated check flags an opaque PR-numbered filename. The operator caught the non-self-documenting filename before commit, requiring the 16 bundled tests to be split into 22 single-concern tests across the 15 owning domain test files and the temporary file removed.
+
+**Evidence:** Relocated tests in their owning domain files: `src/config-preservation.test.ts` (search: `migrateConfigText leaves unquoted current schemaVersion unchanged`), `src/config-load-error.test.ts` (search: `applyDisplaySelectors rejects unknown rule IDs and pillar names`), `src/changed-region-contract.test.ts` (search: `every diff mode reports staged and unstaged edits at working-tree line numbers`), and `src/hook-contract.test.ts` (search: `hook base replay resolves a relative profile path declared inside .gruff-ts.yaml`).

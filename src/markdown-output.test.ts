@@ -7,12 +7,13 @@ import { renderReport } from "./cli.ts";
 import type { AnalysisReport } from "./cli.ts";
 
 const MARKDOWN_SAFETY_REPORT: AnalysisReport = {
-  schemaVersion: "gruff.analysis.v2",
+  schemaVersion: "gruff.analysis.v3",
   tool: { name: "gruff-ts", version: "0.5.0-test" },
   run: { projectRoot: "/tmp/markdown-project", format: "markdown", failOn: "none", generatedAt: "2026-07-12T00:00:00.000Z" },
   summary: { advisory: 1, warning: 2, error: 0, total: 3 },
   paths: { analysedFiles: 2, ignoredPaths: [], skipped: [], missingPaths: [] },
   diagnostics: [],
+  suppressions: [],
   findings: [
     {
       ruleId: "docs.rule`label",
@@ -29,19 +30,19 @@ const MARKDOWN_SAFETY_REPORT: AnalysisReport = {
       stableIdentity: "markdown-finding-stable",
     },
     {
-      ruleId: "complexity.cognitive",
-      message: "Function has cognitive complexity 18.",
+      ruleId: "size.function-length",
+      message: "Function has 240 lines, above the threshold of 200.",
       filePath: "src/cluster`path.ts",
       line: 11,
       severity: "warning",
-      pillar: "complexity",
+      pillar: "size",
       secondaryPillars: [],
       tier: "v0.1",
       confidence: "high",
       symbol: "run``unsafe|<node>[x]",
       metadata: {},
-      fingerprint: "markdown-cognitive",
-      stableIdentity: "markdown-cognitive-stable",
+      fingerprint: "markdown-function-length",
+      stableIdentity: "markdown-function-length-stable",
     },
     {
       ruleId: "complexity.cyclomatic",
@@ -62,11 +63,15 @@ const MARKDOWN_SAFETY_REPORT: AnalysisReport = {
   score: {
     composite: 82,
     grade: "B",
+    evaluatedFiles: 10,
+    clusters: [],
+    ruleAttribution: [],
+    scoredPillars: ["complexity", "documentation"],
     pillars: [
-      { pillar: "complexity", score: 70, penalty: 30, findings: 2 },
-      { pillar: "documentation", score: 94, penalty: 6, findings: 1 },
+      { pillar: "complexity", applicable: true, score: 70, grade: "C", penalty: 30, findings: 2 },
+      { pillar: "documentation", applicable: true, score: 94, grade: "A", penalty: 6, findings: 1 },
     ],
-    topOffenders: [{ filePath: "src/cluster`path.ts", score: 70, findings: 2 }],
+    topOffenders: [{ filePath: "src/cluster`path.ts", score: 70, penalty: 30, findings: 2 }],
   },
 };
 
@@ -88,7 +93,7 @@ test("markdown finding rows escape repository-controlled structure", () => {
 // A complexity label with longer backtick runs must remain one readable inline-code span.
 test("markdown complexity clusters choose a safe inline-code fence", () => {
   const markdownReport = renderReport(MARKDOWN_SAFETY_REPORT, "markdown");
-  const expectedClusterRow = "- ```src/cluster`path.ts#run``unsafe|<node>[x]```: 2 linked findings (`complexity.cognitive`, `complexity.cyclomatic`)";
+  const expectedClusterRow = "- ```src/cluster`path.ts#run``unsafe|<node>[x]```: 2 linked findings (`complexity.cyclomatic`, `size.function-length`)";
 
   assert.equal(markdownReport.includes(expectedClusterRow), true);
 });

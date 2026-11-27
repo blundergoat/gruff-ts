@@ -10,7 +10,7 @@ import { analyseSecurityFlow } from "./security-flow-rules.ts";
 import { maskNonCode } from "./source-text.ts";
 import { analyseFixture, analyseProject } from "./test-fixtures.ts";
 
-// Parses one fixture through the shared boundary and returns its discovered blocks.
+// Parses source using fileName as the script path and returns discovered function blocks for the fixture assertions.
 function discoveredBlocks(fileName: string, source: string) {
   const parsed = parseScript({ displayPath: fileName, isScript: true }, source);
   return functionBlocks(source, maskNonCode(source), parsed);
@@ -96,21 +96,6 @@ export function manyParams(a: string, b: string, c: string, d: string, e: string
   assert.equal(finding?.metadata.parameters, DECLARED_PLAIN_PARAMETERS);
 });
 
-test("parameter text keeps names that follow end-of-line comments", () => {
-  const report = analyseFixture(`function inspect(
-  first: string, // Retained parameter.
-  second: string,
-): string {
-  return first;
-}
-`);
-  const unusedParameters = report.findings
-    .filter((finding) => finding.ruleId === "waste.unused-parameter")
-    .map((finding) => finding.metadata.parameter);
-
-  assert.deepEqual(unusedParameters, ["second"]);
-});
-
 test("AST export classification handles split declarations and same-name class methods", () => {
   const splitExportBlocks = discoveredBlocks("split-export.ts", `export async function
 publicApi(): Promise<void> {
@@ -179,4 +164,17 @@ test("the security-flow fallback parse is counted by the shared boundary", () =>
   const beforeShared = parsedScriptParseCount();
   analyseSecurityFlow(fileStub, source, [], shared?.sourceFile);
   assert.equal(parsedScriptParseCount() - beforeShared, 0, "a threaded shared parse must not reparse");
+});
+
+test("parenthesized var function expressions are discovered and measured", () => {
+  const parenthesizedVar = [
+    "// File overview: parenthesized var function fixture.",
+    "var run = (function (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) {",
+    "  return a + b + c + d + e + f + g + h;",
+    "});",
+    "export { run };",
+    "",
+  ].join("\n");
+  const report = analyseProject({ "src/paren.ts": parenthesizedVar });
+  assert.equal(report.findings.some((finding) => finding.ruleId === "size.parameter-count" && finding.symbol === "run"), true);
 });

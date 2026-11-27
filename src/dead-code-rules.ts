@@ -4,17 +4,19 @@
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { escapeRegex, finding } from "./findings-helpers.ts";
+import { namedImportBindings, type ParsedScript } from "./parsed-script.ts";
 import { byteLine, countMatches } from "./text-scans.ts";
 import type { Finding } from "./types.ts";
 
-/*
- * Single-file, low-confidence dead-code pass. Contract invariant: removal candidates stay advisory
- * because tests, decorators, framework hooks, or reflection may still reach a private method. It
- * reports findings only and never throws for malformed snippets. Why two evidence counts:
- * declarations contribute to `name(` matches, while bare method references such as `items.map(this.double)`
- * appear only as `this.name` / `this?.name`, and either shape is enough usage evidence to suppress
- * the finding. The reference count requires a `this` receiver so unrelated properties that share
- * the name (for example `settings.refresh`) cannot mask a genuinely unused private method.
+/**
+ * Scans for likely unused private methods. The declaration counts as one call-shaped match.
+ * Another call-shaped match or a matching this.name or this?.name reference suppresses the finding because even a bare reference may be used.
+ * The advisory contract allows for real uses that the scan can miss.
+ *
+ * @param file - supplies the display path for each finding
+ * @param source - masked source used to count call-shaped matches and references
+ * @param findings - accumulator that receives the low-confidence advisories
+ * @returns Nothing. Appends an advisory finding for each private method that appears unused.
  */
 export function analyseDeadCode(file: SourceFile, source: string, findings: Finding[]): void {
   for (const match of source.matchAll(/\bprivate\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g)) {
@@ -38,12 +40,15 @@ export function analyseDeadCode(file: SourceFile, source: string, findings: Find
   }
 }
 
-/*
- * Line-by-line walker that resets the terminator flag at every `case:` / `default:` because
- * dead-code detection must respect control-flow boundaries. Each line is walked once in source
- * order; the per-line state-machine update is extracted into `advanceUnreachableState` to keep
- * this loop's branching low. Reports `waste.unreachable-code` with stable, deterministic
- * fingerprint anchors so baselines and report snapshots round-trip without churn.
+/**
+ * Scans masked source line by line for statements after terminating statements and appends unreachable-code findings.
+ * Case and default labels reset prior termination so a previous branch's terminator cannot make the new branch appear unreachable.
+ * Uses stable finding anchors so baselines and report snapshots can match results across runs.
+ *
+ * @param file - provides the file path metadata for emitted findings
+ * @param source - comment- and literal-masked script text scanned line by line
+ * @param findings - accumulator that receives emitted unreachable-code findings
+ * @returns Nothing. Appends `waste.unreachable-code` findings to `findings`.
  */
 export function analyseUnreachable(file: SourceFile, source: string, findings: Finding[]): void {
   let state: UnreachableScanState = { didPreviousTerminate: false, conditionalParenDepth: 0, isConsequentPending: false };
@@ -67,12 +72,13 @@ interface UnreachableScanState {
   isConsequentPending: boolean;
 }
 
-/*
- * Computes the next walker state from the current line. The conditional-context check (inside the
- * predicate parens, or on the consequent line) drives whether a terminator on this line counts as
- * unconditional. Branching is intentional here because the multi-line predicate has three discrete
- * cases: opener line, inside-predicate continuation, and "no longer in a predicate." Splitting
- * them inline would invariably reintroduce the npath the wrapper was trying to avoid.
+/**
+ * Computes the next unreachable-code walker state after processing one trimmed masked line.
+ * Carries predicate depth and a pending-consequent flag so terminators inside those conditional contexts are not treated as unconditional.
+ *
+ * @param trimmed - current trimmed masked source line being evaluated
+ * @param state - prior walker state carrying termination and conditional-branch context
+ * @returns Updated walker state for the subsequent line.
  */
 function advanceUnreachableState(trimmed: string, state: UnreachableScanState): UnreachableScanState {
   const isInConditionalBranch = state.conditionalParenDepth > 0 || state.isConsequentPending;
@@ -89,14 +95,25 @@ function advanceUnreachableState(trimmed: string, state: UnreachableScanState): 
   return { didPreviousTerminate, conditionalParenDepth: 0, isConsequentPending: false };
 }
 
-// Net paren balance for one line of masked code (opens minus closes). String-literal parens are
-// already blanked upstream by the masker, so the count is reliable for predicate-depth tracking.
+/**
+ * Computes the net parenthesis balance (opens minus closes) for one line of masked code.
+ * String-literal parens are already blanked upstream by the masker, so the count is reliable for predicate-depth tracking.
+ *
+ * @param text - masked code fragment whose parentheses are counted
+ * @returns Net count of opening minus closing parentheses in `text`.
+ */
 function parenBalance(text: string): number {
   return countChar(text, "(") - countChar(text, ")");
 }
 
-// Counts a single character's occurrences without allocating a match array. Used to balance parens
-// across the lines of a multi-line conditional predicate in `analyseUnreachable`.
+/**
+ * Counts occurrences of a single character without allocating a match array.
+ * Used to balance parens across the lines of a multi-line conditional predicate in `analyseUnreachable`.
+ *
+ * @param text - input text scanned character by character
+ * @param character - target character to count within `text`
+ * @returns Total number of positions where `text` matches `character`.
+ */
 function countChar(text: string, character: string): number {
   let count = 0;
   for (const char of text) {
@@ -107,8 +124,13 @@ function countChar(text: string, character: string): number {
   return count;
 }
 
-// Detects single-line conditional/loop openers that begin a one-statement body (no `{`). The next
-// line is the conditional body, so any terminator there is conditional rather than unconditional.
+/**
+ * Detects single-line conditional or loop openers that begin a one-statement body without a brace.
+ * The next line is the conditional body, so any terminator there is conditional rather than unconditional.
+ *
+ * @param trimmed - trimmed masked source line to inspect
+ * @returns True when `trimmed` opens a braceless conditional or loop header; false otherwise.
+ */
 function isBracelessConditionalOpener(trimmed: string): boolean {
   if (trimmed.endsWith("{") || trimmed.endsWith("}")) {
     return false;
@@ -116,41 +138,67 @@ function isBracelessConditionalOpener(trimmed: string): boolean {
   return /^(?:if|else\s+if|for|while)\s*\(/.test(trimmed) || /^else\b/.test(trimmed) || /^do\b/.test(trimmed);
 }
 
-// `case X:` / `default:` open a new control path, so the unreachable walker must reset its
-// terminator flag here - otherwise the first statement in a fallthrough case looks dead.
+/**
+ * Checks whether a trimmed line is a `case` or `default` label followed only by an optional opening brace.
+ * The walker resets its terminator flag there because a switch can enter that case directly.
+ *
+ * @param trimmedLine - trimmed masked source line under inspection
+ * @returns True when `trimmedLine` matches a switch `case` or `default` branch label; false otherwise.
+ */
 function isBranchLabel(trimmedLine: string): boolean {
-  return /^(?:case\b.*:|default\s*:)$/.test(trimmedLine);
+  return /^(?:case\b.*|default\s*):\s*\{?$/.test(trimmedLine);
 }
 
-// Three conditions must hold to flag a line: the prior statement terminated, this line has real
-// content, and it's not a `}` closer or a branch label. The `}` exclusion matters because the
-// closing brace of the terminating block looks like a statement to a naive walker.
+/**
+ * Determines whether a line should be flagged as unreachable after a terminating statement.
+ * Three conditions must hold: prior termination, non-whitespace content, and not a `}` closer or branch label,
+ * because a closing brace looks like a statement to a naive walker.
+ *
+ * @param trimmedLine - trimmed masked source line being evaluated
+ * @param didPreviousTerminate - whether the preceding control path ended unconditionally
+ * @param isBranchLabel - whether the current line starts a switch `case` or `default` branch
+ * @returns True when all three unreachability conditions hold; false otherwise.
+ */
 function isUnreachableStatement(trimmedLine: string, didPreviousTerminate: boolean, isBranchLabel: boolean): boolean {
   return didPreviousTerminate && /\S/.test(trimmedLine) && !trimmedLine.startsWith(String.fromCharCode(125)) && !isBranchLabel;
 }
 
-// `return`, `throw`, and `process.exit(...)` exit the current control path. The trailing `;`
-// requirement filters out expressions like `return foo()` split across lines - without it the
-// walker would falsely flag the continuation as unreachable.
+/**
+ * Checks whether a trimmed line is a complete `return`, `throw`, or `process.exit(...)` terminator ending in `;`.
+ * The trailing `;` requirement filters out multi-line expressions like `return foo()` so continuations are not falsely flagged.
+ *
+ * @param trimmedLine - trimmed masked source line to check
+ * @returns True when `trimmedLine` begins with a terminator keyword and ends with `;`; false otherwise.
+ */
 function isTerminatingStatement(trimmedLine: string): boolean {
   return /^(?:return|throw|process\.exit)\b/.test(trimmedLine) && trimmedLine.endsWith(";");
 }
 
-/*
- * Reports `waste.unused-import` for every named specifier whose local name appears nowhere else
- * in the file. Default imports and namespace imports are out of scope because the regex anchors
- * on `{ … }`; walking lines in source order keeps the reports stable and deterministic. Receives
- * both the masked code and the raw source so identifiers referenced inside template-literal
- * `${...}` interpolations (which the mask would otherwise blank out) still count as used. Never
- * throws - every regex is anchored and the input shape is validated upstream by the analyser; the
- * helper writes to `findings` and returns void. Part of the public per-file rule contract that
- * baselines depend on, so finding ordering and message shape are intentionally stable across releases.
+/**
+ * Reports `waste.unused-import` for named specifiers unused elsewhere, preferring the shared AST (`parsed`) over masked text scanning.
+ * Checks both masked code and raw template-literal `${...}` interpolations so interpolated identifiers still count as used.
+ * Never throws; writes to `findings` under the public per-file rule contract so finding order and message shape remain stable.
+ *
+ * @param file - provides the file path metadata for emitted findings
+ * @param source - masked code used for fallback import scanning and identifier reference counts
+ * @param rawSource - unmasked source inspected for template-literal `${...}` interpolations
+ * @param findings - accumulator that receives `waste.unused-import` findings
+ * @param parsed - optional shared TypeScript AST that resolves inline `type` modifiers, aliases, and multiline lists
+ * @returns Nothing. Writes `waste.unused-import` findings to `findings` in stable order.
  */
-export function analyseUnusedImports(file: SourceFile, source: string, rawSource: string, findings: Finding[]): void {
+export function analyseUnusedImports(file: SourceFile, source: string, rawSource: string, findings: Finding[], parsed?: ParsedScript): void {
+  if (parsed) {
+    for (const binding of namedImportBindings(parsed)) {
+      if (isUnusedImportBinding(source, rawSource, binding.name)) {
+        findings.push(unusedImportFinding(file, binding.name, binding.line));
+      }
+    }
+    return;
+  }
   for (const statement of namedImportStatements(source)) {
     for (const specifier of namedImportSpecifiers(statement.source)) {
-      const name = unusedImportName(source, rawSource, specifier);
-      if (!name) {
+      const name = localImportName(specifier);
+      if (!name || !isUnusedImportBinding(source, rawSource, name)) {
         continue;
       }
       findings.push(unusedImportFinding(file, name, statement.line));
@@ -165,15 +213,24 @@ interface NamedImportStatement {
   line: number;
 }
 
-// Finds only named import declarations and spans across newlines until the matching `from` source.
-// The non-greedy body keeps adjacent imports from merging into one statement.
+/**
+ * Extracts named-import declarations and their starting line numbers from masked source text.
+ * Matches `import { ... } from "..."` and `import type { ... } from "..."` statements, including multiline lists.
+ *
+ * @param source - comment- and literal-masked script text to scan for named imports
+ * @returns Matched statement fragments with 1-based starting line numbers, or an empty array if none match.
+ */
 function namedImportStatements(source: string): NamedImportStatement[] {
   return [...source.matchAll(/\bimport\s+(?:type\s+)?\{[\s\S]*?\}\s+from\s*["'][^"']+["']/g)].map((match) => ({ source: match[0] ?? "", line: byteLine(source, match.index ?? 0) }));
 }
 
-// Slices the `{ a, b as c }` body out of a named-import statement and splits on commas. No AST: a
-// regex-light approach is sufficient because `analyseUnusedImports` runs after the comment mask,
-// so commas inside string defaults never reach this function.
+/**
+ * Splits the brace-enclosed list of a masked named-import statement into comma-separated specifier fragments.
+ * Braces with no specifiers yield one fragment, preserving whitespace; masking keeps string commas from splitting specifiers.
+ *
+ * @param source - masked import statement text containing the named specifier list
+ * @returns Raw comma-separated specifier fragments, or an empty array when no complete brace pair is found.
+ */
 function namedImportSpecifiers(source: string): string[] {
   const trimmed = source.trim();
   const openBrace = trimmed.indexOf(String.fromCharCode(123));
@@ -184,33 +241,49 @@ function namedImportSpecifiers(source: string): string[] {
   return trimmed.slice(openBrace + 1, closeBrace).split(",");
 }
 
-// Both braces present and well-ordered. Indexes come from raw `indexOf` calls, so this guards
-// against the malformed slice that would otherwise feed an empty or reversed specifier list.
+/**
+ * Validates `indexOf` brace positions before slicing a named-import specifier list.
+ *
+ * @param openBrace - zero-based index of `{`, or `-1` when absent
+ * @param closeBrace - zero-based index of `}` after `openBrace`, or `-1` when absent
+ * @returns True when both braces exist and `closeBrace` follows `openBrace`; false otherwise.
+ */
 function hasNamedImportBraces(openBrace: number, closeBrace: number): boolean {
   return openBrace !== -1 && closeBrace !== -1 && closeBrace > openBrace;
 }
 
-// The local binding (after `as`, if present) must appear in the source exactly once - the
-// declaration itself. More than one match in the masked code, OR a `${...name...}` template-literal
-// interpolation in the raw source, counts as a real reference. Returning undefined suppresses the finding.
-function unusedImportName(source: string, rawSource: string, specifier: string): string | undefined {
-  const name = localImportName(specifier);
-  if (!name) {
-    return undefined;
+/**
+ * Checks whether a local import binding appears only at its declaration site across masked code and raw template interpolations.
+ * Uses JavaScript identifier boundaries (`[A-Za-z0-9_$]`) rather than `\b` so `$`-bearing bindings such as Bun's `$`, `$state`,
+ * and RxJS `events$` are recognised without letting `${...}` template interpolations count as uses of `$`.
+ *
+ * @param source - comment- and literal-masked script source for identifier reference counts
+ * @param rawSource - unmasked script source inspected for `${...}` template interpolations
+ * @param bindingName - local identifier bound by one named import specifier
+ * @returns True when no usage outside the import declaration is found; false when at least one reference exists.
+ */
+function isUnusedImportBinding(source: string, rawSource: string, bindingName: string): boolean {
+  const escaped = escapeRegex(bindingName);
+  const trailingGuard = bindingName.endsWith("$") ? "(?![A-Za-z0-9_$]|\\{)" : "(?![A-Za-z0-9_$])";
+  const boundaryPattern = `(?<![A-Za-z0-9_$])${escaped}${trailingGuard}`;
+  if (countMatches(source, new RegExp(boundaryPattern, "g")) > 1) {
+    return false;
   }
-  const escaped = escapeRegex(name);
-  if (countMatches(source, new RegExp(`\\b${escaped}\\b`, "g")) > 1) {
-    return undefined;
+  if (new RegExp(`\\$\\{[^}]*${boundaryPattern}[^}]*\\}`).test(rawSource)) {
+    return false;
   }
-  if (new RegExp(`\\$\\{[^}]*\\b${escaped}\\b[^}]*\\}`).test(rawSource)) {
-    return undefined;
-  }
-  return name;
+  return true;
 }
 
-// Single makeFinding factory for `waste.unused-import`. The local binding name lands in both the
-// message and `metadata.importName` so downstream tooling can group by symbol while the stable
-// fingerprint identity remains (ruleId, filePath, line).
+/**
+ * Builds a `waste.unused-import` advisory finding for an unused local import binding.
+ * Places `name` in the message, `symbol`, and `metadata.importName` for grouping; its fingerprint uses rule ID, file path, line, and symbol.
+ *
+ * @param file - source file providing `displayPath` for the finding location and fingerprint
+ * @param name - unused local identifier bound by the import specifier
+ * @param line - 1-based line number of the import declaration or binding
+ * @returns Structured `Finding` object with rule ID `waste.unused-import`.
+ */
 function unusedImportFinding(file: SourceFile, name: string, line: number): Finding {
   return makeFinding({
     ruleId: "waste.unused-import",
@@ -226,10 +299,16 @@ function unusedImportFinding(file: SourceFile, name: string, line: number): Find
   });
 }
 
-// Returns the right-hand side of `as` when present, otherwise the specifier itself. The trailing
-// identifier regex protects against type-only specifiers that include extra tokens.
+/**
+ * Resolves the local identifier bound by one named-import specifier fragment.
+ * Returns the right-hand side of `as` when aliased, or the specifier without any leading inline `type` modifier; used only by the fallback path.
+ *
+ * @param specifier - raw specifier fragment extracted from inside import braces
+ * @returns Local identifier string, or `undefined` when no valid identifier is present.
+ */
 function localImportName(specifier: string): string | undefined {
-  const parts = specifier.trim().split(/\s+as\s+/);
+  const stripped = specifier.trim().replace(/^type\s+/, "");
+  const parts = stripped.split(/\s+as\s+/);
   const candidate = parts[1] ?? parts[0] ?? "";
   const match = candidate.trim().match(/^[A-Za-z_$][A-Za-z0-9_$]*/);
   return match?.[0];

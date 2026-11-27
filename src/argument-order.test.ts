@@ -1,0 +1,91 @@
+/*
+ * Checks how the CLI handles flags placed before or after a file or directory.
+ *
+ * For example, `analyse . --fail-on=error` must honor the selected threshold even when the path comes first.
+ * Use these cases when changing command registration or adding a command that takes a path.
+ */
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { REPO_ROOT } from "./test-fixtures.ts";
+
+const BIN = join(REPO_ROOT, "bin/gruff-ts");
+
+// The one field two runs of the same command are allowed to differ on.
+const TIMESTAMP = /\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})?/gu;
+
+// Every operand-accepting command, with the flags whose placement is under test.
+const ORDER_CASES = [
+  { command: "analyse", flags: ["--no-config", "--fail-on", "none", "--format", "json"] },
+  { command: "summary", flags: ["--no-config", "--fail-on", "none", "--format", "json"] },
+  { command: "report", flags: ["--no-config", "--fail-on", "none", "--format", "json"] },
+  { command: "hook", flags: ["--no-config", "--format", "json"] },
+  { command: "check-ignore", flags: ["--no-config", "--format", "json"] },
+] as const;
+
+// Writes a probe script and README to a temporary project and passes that directory to the argument-order callback.
+// Returns nothing. Attempts to remove the fixture even if setup or the callback throws.
+function withProbeProject(run: (dir: string) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ts-argument-order-"));
+  try {
+    writeFileSync(join(dir, "probe.ts"), "/** A probe module. */\nexport function probe(rx: number): number {\n  return rx + rx;\n}\n");
+    writeFileSync(join(dir, "README.md"), "Argument-order fixture.\n");
+    run(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// Spawns gruff-ts with interaction disabled in the supplied project directory, passing args as the command arguments.
+// Returns the exit status, or null if no numeric exit status is available, and joins stdout and stderr with missing streams treated as empty.
+// Masks timestamps so the argument-order comparison can use the combined output.
+function runInProject(dir: string, args: string[]): { status: number | null; output: string } {
+  const result = spawnSync("bash", [BIN, "--no-interaction", ...args], { cwd: dir, encoding: "utf8" });
+
+  return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.replaceAll(TIMESTAMP, "<timestamp>") };
+}
+
+test("every operand-accepting command accepts its flags after the path", () => {
+  withProbeProject((dir) => {
+    // Compare both orders for each command so a user can expect the same output and exit status either way.
+    for (const { command, flags } of ORDER_CASES) {
+      const before = runInProject(dir, [command, ...flags, "probe.ts"]);
+      const after = runInProject(dir, [command, "probe.ts", ...flags]);
+
+      assert.equal(before.status, command === "check-ignore" ? 1 : 0, `${command} failed in the reference flag order`);
+      assert.equal(after.status, before.status, `${command} exits differently when its flags follow the path`);
+      assert.equal(after.output, before.output, `${command} prints differently when its flags follow the path`);
+    }
+  });
+});
+
+test("a double dash ends flag parsing so a leading-dash operand stays a path", () => {
+  withProbeProject((dir) => {
+    writeFileSync(join(dir, "-dashed.ts"), "/** A dashed module. */\nexport function dashed(rx: number): number {\n  return rx + rx;\n}\n");
+    const result = runInProject(dir, ["analyse", "--no-config", "--fail-on", "none", "--format", "json", "--", "-dashed.ts"]);
+
+    assert.equal(result.status, 0, result.output);
+    assert.equal(result.output.includes("-dashed.ts"), true, "the terminated operand was not scanned as a path");
+  });
+});
+
+test("a flag-shaped token that is not registered is an error wherever it appears", () => {
+  withProbeProject((dir) => {
+    const afterPath = runInProject(dir, ["analyse", "probe.ts", "--not-a-registered-flag"]);
+
+    // Exit 2 is the family's usage exit; assert Commander rejected the unknown option rather than treating it as a missing file.
+    assert.equal(afterPath.status, 2, afterPath.output);
+    assert.match(afterPath.output, /unknown option/i, afterPath.output);
+  });
+});
+
+test("a command taking no operands rejects a stray one", () => {
+  withProbeProject((dir) => {
+    const result = runInProject(dir, ["init", "stray-operand"]);
+
+    assert.equal(result.status, 2, result.output);
+  });
+});

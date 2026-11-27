@@ -1,0 +1,56 @@
+// Splits size and complexity findings into lower and upper severity bands (FAMILY-CONTRACT.md section 12).
+//
+// A unit over its limit but under 1.5x receives an advisory notice not to grow; at 1.5x or above it keeps full severity and split advice.
+// Finding messages stay identical across bands so baseline identities never churn when a unit crosses the boundary.
+
+import type { Severity } from "./types.ts";
+
+// The fixed ratio at which a finding moves into the upper band; no option changes it.
+const UPPER_BAND_RATIO = 1.5;
+
+export const LOWER_BAND_FUNCTION = "Do not add to this function; put new code in a new function.";
+export const LOWER_BAND_FILE = "Do not add to this file; put new code in a new file.";
+export const LOWER_BAND_PARAMETER = "Do not add another parameter to this function.";
+export const SPLIT_FILE = "Split this file by responsibility, one responsibility per file.";
+export const SPLIT_FUNCTION = "Split this function at its steps, one step per function.";
+export const GROUP_PARAMETERS = "Group the parameters that travel together into one object, or split the function by caller.";
+export const SIMPLIFY_PATH = "Simplify the execution path: return early, merge branches that lead to the same result, and drop flags that steer later branches. Moving branches into helpers leaves the path as hard to follow.";
+
+/** The value of a banded finding's `limitBand` metadata key. */
+export type LimitBand = "lower" | "upper";
+
+// The severity, advice and band key one banded finding carries.
+export interface BandedFields {
+  severity: Severity;
+  remediation: string;
+  limitBand: LimitBand;
+}
+
+/**
+ * Names the band a measured value falls in against the limit in force, compared without rounding.
+ *
+ * @param measured - Observed size or complexity value for the unit under analysis.
+ * @param limit - Threshold in force against which `measured` is compared at `UPPER_BAND_RATIO`.
+ * @returns `"upper"` when `measured` is at least `UPPER_BAND_RATIO * limit`, otherwise `"lower"`.
+ */
+export function limitBand(measured: number, limit: number): LimitBand {
+  return measured >= UPPER_BAND_RATIO * limit ? "upper" : "lower";
+}
+
+/**
+ * Returns severity, remediation and band fields by comparing `measured` with `limit` for a size or complexity finding.
+ * The lower band uses `"advisory"` and `lowerAdvice`; the upper band uses `configuredSeverity` and `upperAdvice`.
+ *
+ * @param measured - Observed size or complexity value for the unit under analysis.
+ * @param limit - Threshold in force passed to `limitBand` to select `"lower"` or `"upper"`.
+ * @param configuredSeverity - Severity applied when the finding lands in the upper band.
+ * @param lowerAdvice - Remediation message used when the finding lands in the lower band.
+ * @param upperAdvice - Remediation message used when the finding lands in the upper band.
+ * @returns Banded fields containing the selected severity, remediation text, and `limitBand`.
+ */
+export function bandedFields(measured: number, limit: number, configuredSeverity: Severity, lowerAdvice: string, upperAdvice: string): BandedFields {
+  const band = limitBand(measured, limit);
+  return band === "lower"
+    ? { severity: "advisory", remediation: lowerAdvice, limitBand: band }
+    : { severity: configuredSeverity, remediation: upperAdvice, limitBand: band };
+}

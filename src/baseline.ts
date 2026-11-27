@@ -1,83 +1,69 @@
-// Baseline persistence helpers for stable suppression files and score history side effects.
+// File overview: Saves score history and keeps findings in a predictable order.
+//
+// A user who passes `--history-file` gets one score entry for a valid full scan, which the dashboard can plot.
+// The ordering and duplicate checks also keep the reports and baseline comparisons stable between scans.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
-import { scoreReport } from "./scoring.ts";
-import type { Finding, RunDiagnostic } from "./types.ts";
+import type { AnalysisReport, Finding, RunDiagnostic } from "./types.ts";
 
 const DEFAULT_BASELINE = "gruff-baseline.json";
 
-// Treats already-absolute paths as-is; otherwise anchors at the project root the CLI was launched against.
+/**
+ * Resolves a path against the project root unless it is already absolute.
+ *
+ * @param projectRoot - base project directory the CLI was launched against
+ * @param path - candidate path that may be relative or already absolute
+ * @returns The unchanged absolute path, or `path` joined onto `projectRoot`.
+ */
 function absolutize(projectRoot: string, path: string): string {
   return isAbsolute(path) ? path : join(projectRoot, path);
 }
 
-// Project-relative form with forward slashes - the report contract uses POSIX-style display paths on
-// every platform. "" collapses to "." so the project root has a stable label in history entries.
+/**
+ * Formats a path in project-relative POSIX form with forward slashes.
+ * The report contract uses POSIX-style display paths on every platform; "" collapses to "." for a stable history label.
+ *
+ * @param projectRoot - base directory used to compute the relative path
+ * @param path - target file or directory path to format
+ * @returns The forward-slash relative path, or "." when `path` matches `projectRoot`.
+ */
 function displayPath(projectRoot: string, path: string): string {
   const relativePath = relative(projectRoot, path).replaceAll("\\", "/");
   return relativePath === "" ? "." : relativePath;
 }
 
-// `gruff.baseline.v1`: writes the fingerprint plus the identity tuple used by `applyBaseline`.
-// `message` is persisted for human review; `applyBaseline` ignores it so cosmetic message changes
-// do not invalidate baselines. Bump schema before adding required fields; persists to disk via writeFileSync.
-function writeBaseline(path: string, findings: Finding[]): void {
-  writeFileSync(
-    path,
-    JSON.stringify(
-      {
-        schemaVersion: "gruff.baseline.v1",
-        generatedAt: new Date().toISOString(),
-        entries: findings.map((finding) => ({
-          fingerprint: finding.fingerprint,
-          ruleId: finding.ruleId,
-          filePath: finding.filePath,
-          line: finding.line,
-          symbol: finding.symbol,
-          message: finding.message,
-        })),
-      },
-      null,
-      2,
-    ),
-  );
-}
-
-// Suppresses any finding whose (fingerprint, ruleId, filePath) tuple appears in the baseline.
-// Drift between versions would let stale suppressions leak in, so the operator must regenerate
-// against the current CLI; reads the baseline file and throws on an unknown schema version.
-function applyBaseline(path: string, findings: Finding[]): Finding[] {
-  const baselineFile = JSON.parse(readFileSync(path, "utf8")) as { schemaVersion?: string; entries?: Array<{ fingerprint: string; ruleId: string; filePath: string }> };
-  if (baselineFile.schemaVersion !== "gruff.baseline.v1") {
-    throw new Error(`unsupported baseline schema in ${path}`);
-  }
-  const keys = new Set((baselineFile.entries ?? []).map((entry) => [entry.fingerprint, entry.ruleId, entry.filePath].join("\0")));
-  return findings.filter((finding) => !keys.has([finding.fingerprint, finding.ruleId, finding.filePath].join("\0")));
-}
-
-/*
- * Appends one row to the score-history JSON file and trims to the most recent 100 entries so the
- * dashboard sparkline never grows unbounded. The stable contract: writes via writeFileSync, and on
- * persistence failure it reports a `history-error` diagnostic and recovers - a flaky history file
- * must not fail the analysis run.
+/**
+ * Append the result of a valid full scan for the dashboard's score trend.
+ * Invariant: keep the latest 100 entries. A missing history file starts a new trend.
+ *
+ * @param projectRoot - base directory for resolving the history path and displaying it in a diagnostic
+ * @param historyFile - destination from `--history-file`. A missing file starts with no earlier score entries.
+ * @param score - score for the same run. A null composite means no files could be scored.
+ * @param findings - count of findings in that run
+ * @param diagnostics - run diagnostics array that receives a history-error if recording fails
+ * @returns Nothing. It writes the updated history or appends a failure diagnostic.
  */
-function recordHistory(projectRoot: string, historyFile: string, findings: Finding[], diagnostics: RunDiagnostic[]): void {
+function recordHistory(projectRoot: string, historyFile: string, score: AnalysisReport["score"], findings: number, diagnostics: RunDiagnostic[]): void {
   const path = absolutize(projectRoot, historyFile);
   try {
+    // A first run has no history file to read, so the dashboard gets one point after this write.
     const entries = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as unknown[]) : [];
-    entries.push({ recordedAt: new Date().toISOString(), findings: findings.length, score: scoreReport(findings).composite });
+    entries.push({ recordedAt: new Date().toISOString(), findings, score: score.composite });
     writeFileSync(path, JSON.stringify(entries.slice(-100), null, 2));
   } catch (error) {
+    // A read-only directory or a malformed existing history file adds a diagnostic to the scan report.
     diagnostics.push({ diagnosticType: "history-error", message: `Unable to write history file: ${String(error)}`, filePath: displayPath(projectRoot, path) });
   }
 }
 
-// `docs.missing-public-doc` is keyed by (ruleId, filePath, symbol) instead of fingerprint because one
-// file can legitimately surface multiple undocumented public symbols and they must each survive dedupe.
-// All other rules collapse on their fingerprint, extended by the match column when one is present
-// (ADR-017): two distinct secrets on one line share a line-keyed fingerprint, and without the column
-// discriminator the second occurrence would be silently dropped from every report and the hook.
-// The extended key is in-memory only - fingerprint values and `gruff.baseline.v1` matching are unchanged.
+/**
+ * Keeps the first finding per dedupe key in input order while preserving original fingerprints.
+ * Only docs.missing-public-doc findings with a symbol key on rule, path, and symbol; others use fingerprint and column.
+ * Columns preserve separate same-line matches, while gruff.baseline.v3 uses line-free matching per ADR-017.
+ *
+ * @param findings - candidate findings to deduplicate in their current order
+ * @returns A filtered array containing the first occurrence of each dedupe key.
+ */
 function dedupeFindings(findings: Finding[]): Finding[] {
   const seen = new Set<string>();
   return findings.filter((finding) => {
@@ -90,18 +76,18 @@ function dedupeFindings(findings: Finding[]): Finding[] {
   });
 }
 
-// Derives the in-memory dedupe key for one finding, so same-line occurrences with distinct
-// columns survive dedupe as separate findings (ADR-017). Invariant: the key is never serialized
-// and never feeds `applyBaseline` - fingerprint values and baseline matching stay byte-identical.
+/**
+ * Builds a stable in-memory dedupe key for a finding, keeping distinct columns separate on the same line.
+ * Outside docs.missing-public-doc with a symbol, findings without a column group by fingerprint alone.
+ * The key stays in memory per ADR-017 so applyBaseline receives deduplicated findings with original fingerprints.
+ *
+ * @param finding - finding whose rule, path, symbol, fingerprint, and column determine the key
+ * @returns The NUL-delimited in-memory dedupe key, or the bare fingerprint when no column or per-symbol key applies.
+ */
 function dedupeKey(finding: Finding): string {
   // One file legitimately surfaces many undocumented public symbols; keep each per-symbol entry.
   if (finding.ruleId === "docs.missing-public-doc" && finding.symbol) {
     return [finding.ruleId, finding.filePath, finding.symbol].join("\0");
-  }
-  // Casing drift is scoped to a lexical owner. Preserve owner-distinct diagnostics in memory
-  // without changing their public line-keyed fingerprints or baseline matching contract.
-  if (finding.ruleId === "naming.inconsistent-casing" && typeof finding.metadata.ownerId === "string") {
-    return [finding.fingerprint, finding.metadata.ownerId].join("\0");
   }
   // A column means the scanner pinpointed the occurrence; same-line occurrences stay distinct.
   if (finding.column !== undefined) {
@@ -110,17 +96,25 @@ function dedupeKey(finding: Finding): string {
   return finding.fingerprint;
 }
 
-// Canonical finding ordering: (filePath, line, ruleId, message). The same tuple is part of the
-// stable baseline matching contract, so changing the comparator would churn every existing baseline.
+/**
+ * Sorts and mutates the caller's findings in place by path, line, rule, and message for a stable report order; ties put a non-eval sink first.
+ * Missing lines sort as zero, then duplicates are removed while preserving the sorted order.
+ *
+ * @param findings - caller array sorted in place before deduplication
+ * @returns A new array containing the first occurrence of each dedupe key in sorted order.
+ */
 function sortedUniqueFindings(findings: Finding[]): Finding[] {
   findings.sort(
     (left, right) =>
       left.filePath.localeCompare(right.filePath) ||
       (left.line ?? 0) - (right.line ?? 0) ||
       left.ruleId.localeCompare(right.ruleId) ||
-      left.message.localeCompare(right.message),
+      left.message.localeCompare(right.message) ||
+      // Same-line deserialization sinks collapse to the first one kept, so a non-eval sink goes first: security.eval-call already reports
+      // the eval, and keeping the eval form would let duplicate-claim merging drop a tainted `vm.runInNewContext(x)` beside it.
+      Number(left.metadata.sinkForm === "eval") - Number(right.metadata.sinkForm === "eval"),
   );
   return dedupeFindings(findings);
 }
 
-export { DEFAULT_BASELINE, writeBaseline, applyBaseline, recordHistory, dedupeFindings, sortedUniqueFindings };
+export { DEFAULT_BASELINE, recordHistory, dedupeFindings, sortedUniqueFindings };

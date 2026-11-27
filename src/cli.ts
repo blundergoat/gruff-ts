@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// CLI shell: thin entrypoint that wires the analyser into the commander-based CLI program. The
-// analyse pipeline itself lives in `./analyser.ts`; this file is just bootstrap plus re-exports.
+// Thin CLI entrypoint invoked by `bin/gruff-ts` and programmatic imports of the analyzer surface.
+//
+// Wires `analyse` and `analyseHookReports` into the Commander CLI program defined in `cli-program.ts`.
+// Re-exports core types and functions so library consumers and tests can invoke scans without spawning a process.
 import { argv } from "node:process";
 import { pathToFileURL } from "node:url";
 import { analyse, analyseHookReports } from "./analyser.ts";
@@ -11,7 +13,11 @@ import { ruleDescriptors } from "./rules.ts";
 export type { AnalysisReport, Finding, OutputFormat, Pillar, RuleDescriptor, Severity } from "./types.ts";
 
 const analyseRunner = Object.assign(analyse, { hookViews: analyseHookReports });
-// Builds the commander program with the optimized hook-view runner already attached.
+/**
+ * Builds the commander program with the optimized hook-view runner already attached.
+ *
+ * @returns Configured commander program wired with `analyseRunner`.
+ */
 const buildProgram = (): ReturnType<typeof buildCliProgram> => buildCliProgram(analyseRunner);
 
 if (import.meta.url === pathToFileURL(argv[1] ?? "").href) {

@@ -1,6 +1,6 @@
 ---
 category: typescript-verification
-last_reviewed: 2026-08-07
+last_reviewed: 2026-10-18
 ---
 
 # TypeScript verification lessons
@@ -8,10 +8,12 @@ last_reviewed: 2026-08-07
 ## Lesson: project shared structural fields instead of spreading broader objects
 
 **Created:** 2026-07-12
+**Status:** historical
+**Reason:** Precision-floor M02 retired `naming.inconsistent-casing` and `naming.acronym-case` (ADR-021), which removed the declaration-ownership inventory this lesson cites; the projection principle still applies to any structurally broader object.
 
 **What happened:** Declaration ownership reused `CallableMatchPoint` as an `IdentifierOwner` because it structurally contains `ownerId`, `ownerKind`, and `ownerName`. The first implementation spread that whole callable object into a parameter inventory row. Its unrelated `name` field then overwrote the parameter name, so the focused owner test reported `# pass 45` / `# fail 1` even though both rows carried the correct function id.
 
-**Evidence:** `src/class-rules.ts` (search: `ownerId: owner.ownerId`) now projects only the three owner fields; the parameter/local probe shows `note_id` and `noteId` under the same `function:0:94` owner, and the focused suite reports `# tests 46` / `# pass 46` / `# fail 0`.
+**Evidence:** The declaration-ownership inventory in `src/class-rules.ts` projected only the three owner fields until M02 removed it; the parameter/local probe shows `note_id` and `noteId` under the same `function:0:94` owner, and the focused suite reports `# tests 46` / `# pass 46` / `# fail 0`.
 
 **Prevention:** When a narrower TypeScript interface accepts a structurally broader runtime object, do not assume object spread narrows it. Explicitly project the allowed fields before merging with another domain row, especially when both shapes use common keys such as `name`, `line`, or `kind`.
 

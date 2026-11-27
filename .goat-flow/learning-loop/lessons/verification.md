@@ -1,9 +1,11 @@
 ---
 category: verification
-last_reviewed: 2026-08-13
+last_reviewed: 2026-11-23
 ---
 
 # Verification lessons
+
+**Scope:** general check, guard, and proof discipline; self-scan lessons live in `self-scan.md`, fixture lessons in `fixtures.md`, and smoke runs in `smoke-verification.md`.
 
 ## Lesson: the always-permitted equivalent must match the guard's threat model, not the easiest producer
 
@@ -23,21 +25,11 @@ last_reviewed: 2026-08-13
 
 **Created:** 2026-08-13
 
-**What happened:** Reviewing the 0.5.0 hook changes, I reported that the new local-producer exemption in `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` (search: `interpreter_treats_stdin_as_data`) allowed arbitrary destructive inline interpreter code, and I graded it a blocking security regression. The evidence looked decisive: `printf x | node -e 'require("fs").rmSync("dist",{recursive:true})'` was BLOCKED at the base commit and ALLOWED at head, reproduced at runtime on both. An automated reviewer had independently flagged the same exemption, which reinforced the reading.
+**What happened:** Reviewing the 0.5.0 hook changes, I reported that the new local-producer exemption in the deny hook's stdin classifier (`interpreterTreatsStdinAsData` in `.goat-flow/hooks/deny-dangerous/patterns-shell.mjs` since goat-flow 1.19.0) allowed arbitrary destructive inline interpreter code, and I graded it a blocking security regression. The evidence looked decisive: `printf x | node -e 'require("fs").rmSync("dist",{recursive:true})'` was BLOCKED at the base commit and ALLOWED at head, reproduced at runtime on both. An automated reviewer had independently flagged the same exemption, which reinforced the reading.
 
-**Evidence:** the base-versus-head comparison was real but incomplete. Running the same body without the pipe showed `node -e 'require("fs").rmSync("dist",{recursive:true})'` ALLOWED at base as well as head. The base only blocked the piped spelling through a blanket pipe-to-interpreter rule; it never inspected the body. Since anything reachable via `printf x | node -e 'BODY'` was already reachable via `node -e 'BODY'`, the change granted no new capability. The residual exposure is the project's documented accepted scope limit, stated in the suite itself (search: `ACCEPTED scope: python3 shell escape in body is not inspected`).
+**Evidence:** the base-versus-head comparison was real but incomplete. Running the same body without the pipe showed `node -e 'require("fs").rmSync("dist",{recursive:true})'` ALLOWED at base as well as head. The base only blocked the piped spelling through a blanket pipe-to-interpreter rule; it never inspected the body. Since anything reachable via `printf x | node -e 'BODY'` was already reachable via `node -e 'BODY'`, the change granted no new capability. The residual exposure is the project's documented accepted scope limit, stated in the self-test corpus `.goat-flow/hooks/deny-dangerous/corpus.json` (search: `ACCEPTED scope: python3 shell escape in body is not inspected`).
 
 **Rule going forward:** a base-to-head behaviour delta is necessary but not sufficient for a regression claim. Before grading one, run the nearest always-permitted equivalent of the same capability. If that equivalent was already allowed, the guard being removed was incidental rather than load-bearing, and the finding is an accepted-scope pointer, not a blocker. Applies equally to bot findings: the same check refuted the automated report. The sibling finding in that review survived this test precisely because `cat .env` is blocked, so `find .env -exec cat {} \;` had no permitted equivalent.
-
-## Lesson: converting the dogfood config to a profile breaks rule-enumeration contract tests
-
-**Created:** 2026-05-31
-
-**What happened:** After replacing the repo `.gruff-ts.yaml`'s flat 120-rule block with `profile: recommended` (the named-profiles dogfood step), `npm run check` went from 274/274 to 3 failures. Three contract tests grepped the yaml TEXT for a per-rule entry: `naming-rules.test.ts` (search: `naming rule pack catalogue coverage`), and `rule-catalogue.test.ts` (search: `documentation catalogue covers comment rule pack` and `thresholds and options match implementation`). They encoded the exact manual enumeration that profiles are designed to eliminate.
-
-**Evidence:** the failing assertions were `missing yaml entry for naming.class-file-mismatch`, `missing config entry for docs.fixture-purpose-missing`, and a `Map(0)` vs `Map(10)` threshold mismatch from `yamlThresholdDefaults`. The fix retargeted all three to load the effective config (`loadConfig(cwd(), ...)` then `ruleEnabled`/`threshold`/`ruleSeverity`) instead of grepping yaml text, which is robust whether the config enumerates rules or names a profile, and deleted the now-dead `yamlThresholdDefaults`/`yamlSeverityDefaults`/`yamlOptionDefaults` helpers.
-
-**Prevention:** Before converting a project's shipped config to a profile, grep the test suite for tests that read `.gruff-ts.yaml` as TEXT (`readFileSync(".gruff-ts.yaml"`, `configSource.includes`, yaml-threshold parsers). Retarget them to assert against the loaded `Config` (style-agnostic) in the same change. The sibling gruff ports (go/rs/py/php) will hit the identical break when they add profiles.
 
 ## Lesson: a near-budget file plus "add subsystem X here" forces an extraction
 
@@ -45,7 +37,7 @@ last_reviewed: 2026-08-13
 
 **What happened:** The milestone said to add `resolveProfile` and the profile machinery to `src/config.ts`. `config.ts` was 749 lines - one under the `size.file-length` 750 default - so the ~180-line resolver pushed it to ~960 and `analyse src --no-config` flagged `size.file-length` on `config.ts` itself (the self-scan is normally 0). Moving the resolver out would have created a `config.ts` <-> resolver cycle because the resolver needs `parseConfigFile`.
 
-**Evidence:** the clean baseline was `./bin/gruff-ts analyse src --no-config` = 0 findings against pristine HEAD; after the additions it reported `config.ts:1 size.file-length`. The fix extracted the zero-dependency YAML parser + `parseConfigFile` + narrowing helpers to a new `src/config-parse.ts` (search: `Config parsing layer`) that imports nothing from `config.ts`, breaking the cycle and dropping `config.ts` to ~505 lines; `resolveProfile` stayed in `config.ts` per the plan.
+**Evidence:** the clean baseline was `./bin/gruff-ts analyse src --no-config` = 0 findings against pristine HEAD; after the additions it reported `config.ts:1 size.file-length`. The fix extracted the zero-dependency YAML parser + `parseConfigFile` + narrowing helpers to a new `src/config-parse.ts` (search: `function parseYamlConfig`) that imports nothing from `config.ts`, breaking the cycle and dropping `config.ts` to ~505 lines; `resolveProfile` stayed in `config.ts` per the plan.
 
 **Prevention:** When a task says "put new code in file Y", check Y's line count against the `size.file-length` threshold first (`wc -l`). If adding the feature crosses it, plan the supporting extraction up front and pick a split that does not import back into Y. Establish the pristine self-scan baseline (scan HEAD in a throwaway worktree, or before editing) so you can tell which findings you introduced.
 
@@ -59,16 +51,6 @@ last_reviewed: 2026-08-13
 
 **Prevention:** Before recommending `git add`, `git commit`, `git push`, PR creation, or saying "nothing left but commit", run `git status --short --untracked-files=all` in the target repo in the same turn. Base the next step on that output, not on remembered dirty state from earlier work.
 
-## Lesson: self-scan freshly added regression tests before closing
-
-**Created:** 2026-05-31
-
-**What happened:** The normal `npm run check` gate passed after the rubric-calibration tests were added, but the follow-up gruff self-scan found a `test-quality.magic-number-assertion` in the new regression test itself. The test was behaviorally correct, but still taught future agents a noisy pattern until the expected score was named as a contract constant.
-
-**Evidence:** `src/m06-rubric-refinements.test.ts` + `(search: "EXPECTED_CLUSTER_COMPOSITE_SCORE")`; the fresh scan command `./bin/gruff-ts analyse . --format=json --fail-on=none` later reported `total=0` from `/tmp/gruff_ts_double_check_1304802.json`.
-
-**Prevention:** After adding or moving regression tests for analyzer rules, run the analyzer over the repo as well as `npm run check`. Treat findings in new test files as part of the change, not as harmless test-only noise; use named constants or fixture comments when the numeric or structural value is the documented contract.
-
 ## Lesson: re-read changed files and contract wording after checks in an active workspace
 
 **Created:** 2026-05-31
@@ -78,24 +60,6 @@ last_reviewed: 2026-08-13
 **Evidence:** `src/scoring.ts` + `(search: "function scoringPenaltyMap")` and `(search: "correlated complexity clustering must not add")`; `src/m06-rubric-refinements.test.ts` + `(search: "clusters correlated complexity penalties by symbol")`; `.goat-flow/learning-loop/decisions/ADR-009-cluster-correlated-complexity-score-penalties.md` + `(search: "score field names and detailed finding array stay unchanged")`; `scripts/preflight-checks.sh` + `(search: "Gruff full-project scan")`.
 
 **Prevention:** In a dirty or multi-agent workspace, finish verification by re-reading the specific edited files and grepping for old contract phrases after the final test run. Pair the normal check command with a final `git status --short` / `git diff -- <files>` review so overwritten code, stale comments, changelog drift, or interleaved changes are caught before close-out.
-
-## Lesson: self-scan comment fixes need context-marker words
-
-**Created:** 2026-05-31
-
-**What happened:** A first self-scan cleanup added leading comments and removed most findings, but the follow-up scan still reported context-doc gaps because the comments did not include the rule's expected contract, throws, or side-effect vocabulary.
-
-**Recurrence, 2026-07-12:** New quoted-hash scanner tests used useful fixture-purpose comments but omitted `stable` or `contract` from the final line. The focused suite and full check passed, then the self-scan reported both test callbacks under `docs.missing-invariant-doc` until the final comment lines named the stable contract. A later redirect fixture made the inverse mistake: `Fixture purpose` appeared on the first line and `Stable contract` on the final line, so `docs.fixture-purpose-missing` fired. The final line must carry every applicable vocabulary, such as `Stable fixture contract`.
-
-**Redaction-policy recurrence, 2026-07-12:** The focused suites and full 389-test gate passed, but self-scan found four comment-contract gaps: a rewritten baseline helper omitted its temp-file write, the complex preview test's final comment line omitted why the boundary exists, and two named display limits lacked nearby threshold rationale. The first fix reduced the scan to one finding because the baseline helper still omitted invariant vocabulary; the final line now combines `Stable contract` with the fixture-directory write. The other fixes put `because` on the fixture contract's final line and explain both limits beside their declarations.
-
-**History-scope recurrence, 2026-07-12:** The focused suites and full 392-test gate passed, but self-scan reported all three new CLI test callbacks for missing side-effect documentation. Their final fixture comments named the stable user contract but not the subprocess action; adding `spawns` to each final line made the real CLI execution explicit.
-
-**Complexity-metric recurrence, 2026-07-12:** The focused suites and full 404-test gate passed, then self-scan reported 16 comment-context findings. Large test callbacks needed `Stable fixture contract` on their final leading line, while the fixed metadata key `catch` made the new metric helpers look error-bearing until their comments said they report deterministically or never throw. The same scan caught `src/blocks.ts` six lines over budget; concise comments brought it to 749 without moving behavior.
-
-**Evidence:** `src/changed-regions.ts` + `(search: "function parseChangedRanges")` and `(search: "function gitOutput")`; `src/test-fixtures.ts` + `(search: "function analyseProject")`; `src/baseline-and-project.test.ts` + `(search: "function assertBaselineRoundTrip")`; `src/sensitive-data-rules.test.ts` + `(search: "short masks stay opaque because")`; `src/sensitive-data-rules.ts` + `(search: "24-character threshold")`; `src/security-flow-rules.test.ts` + `(search: "Stable fixture contract")`; `src/history-scope.test.ts` + `(search: "spawns filtered commands")`; `src/complexity-metrics.test.ts` + `(search: "Stable fixture contract")`; `src/complexity-metrics.ts` + `(search: "It reports one deterministic breakdown")`.
-
-**Prevention:** When adding comments to clear self-scan documentation findings, include the relevant marker word in the declaration's leading comment (`contract`/`stable`, `throws`, `spawns`, `filesystem`, etc.). For stacked `//` comments, put every applicable vocabulary on the final line, then rerun the full self-scan before close-out.
 
 ## Lesson: broadening scope can invalidate old suppression-count assertions
 
@@ -136,23 +100,6 @@ last_reviewed: 2026-08-13
 
 **Prevention:** For Codex permission profiles, use `:workspace_roots`, keep wildcard/subtree denies for absent secret families, and add exact `none` or `read` entries only when the path exists in the checkout. Rerun `goat-flow audit . --harness --agent codex` after both the secret-deny patch and the exact-path cleanup.
 
-## Lesson: targeted self-scan fixes still need comment-quality review
-
-**Created:** 2026-05-19
-
-**What happened:** A self-scan cleanup first cleared `docs.missing-function-doc` and `docs.missing-interface-doc` by adding repetitive `Maintainer note:` comments. The requested rule count reached zero, but the comments were low-value boilerplate and needed a second pass to become declaration-specific.
-
-**Evidence:** `src/cli.ts` + `(search: "function pushMissingFunctionDocFinding")`; corrected comments now describe the declaration role directly, and `rg -n 'Maintainer note|helper intent|analysis output relies|stable contract' src` returns no matches.
-
-**Prevention:** When fixing documentation findings in bulk, verify both rule counts and comment quality. Grep for repeated scaffolding phrases before presenting the change, and sample the largest edited file for comments that merely satisfy the predicate.
-
-**Follow-up:** A later cleanup made comments more readable but removed words such as `stable`, `deterministic`, `fingerprint`, `throws`, and `reports` that encode the analyzer's own context-doc contracts. Before closing a comment rewrite, rerun the self-scan and compare context-doc rules as well as the originally targeted missing-doc rules.
-
-**Parse-summary recurrence, 2026-08-11:** Renaming the per-file parser diagnostic helper to
-`summarizeParseErrors` made its purpose clearer, but its first comment revision described only the
-returned report entry. “Reported” and “do not throw” still missed the rule's canonical vocabulary;
-the self-scan cleared when the return contract used `reports`: “reports parser errors without throwing.”
-
 ## Lesson: verify extracted modules for circular self-scan edges
 
 **Created:** 2026-05-19
@@ -162,26 +109,6 @@ the self-scan cleared when the return contract used `reports`: “reports parser
 **Evidence:** `src/cli.ts` + `(search: "const buildProgram =")`; `src/cli-program.ts` + `(search: "type AnalyseRunner")`. The corrected extraction passes the analyser callback from `cli.ts` into `cli-program.ts` instead of importing back into `cli.ts`.
 
 **Prevention:** After extracting code from `src/cli.ts`, run a self-scan and inspect `design.circular-import` before accepting the split. If the extracted module needs a runtime callback from `cli.ts`, pass it as a parameter and keep the public wrapper in `cli.ts`.
-
-## Lesson: self-scan calibration should inspect the candidate class, not only targeted fixtures
-
-**Created:** 2026-05-18
-
-**What happened:** During fixture-purpose rule work, the focused tests passed after implementation, but the self-scan showed broad `test-setup` findings because `analyseProject(...)` alone was treated as a fixture setup signal. Tightening the signal to explicit fixture identifiers or source-generation helpers reduced the self-scan from generic project-helper setup to scanner-relevant fixtures.
-
-**Evidence:** `src/cli.ts` + `(search: "function hasFixtureSetupSignal")`; `src/cli.test.ts` + `(search: "fixture purpose flags large fixture-heavy test setup without flagging documented setup")`.
-
-**Prevention:** For new source-scanner classes, run a self-scan before close-out and inspect representative findings by candidate kind. If a helper name is too broad, require a domain-specific token or metadata signal before emitting.
-
-## Lesson: self-scan refactors must account for rules that apply to new helpers
-
-**Created:** 2026-05-18
-
-**What happened:** During self-scan cleanup, the first `src/cli.ts` helper split removed unused-parameter and complexity findings but introduced new self-scan noise from undocumented helper functions, generic local names, and a six-parameter helper.
-
-**Evidence:** `src/cli.ts` + `(search: "function analyseCommentQualityRules")`; the corrected implementation adds focused helper comments, domain-specific `thresholdValue` names, and `FunctionContextCommentQualityInput` for the helper argument bundle.
-
-**Prevention:** After refactoring code that is scanned by gruff itself, rerun `./bin/gruff-ts analyse . --format=json --fail-on=none --no-baseline` before declaring improvement. Compare targeted rule counts and inspect new findings around the edited region, not only the total count.
 
 ## Lesson: exact optional properties must be omitted instead of set to undefined
 
@@ -236,6 +163,8 @@ the self-scan cleared when the return contract used `reports`: “reports parser
 ## Lesson: keep verification wrappers visible to the deny hook
 
 **Created:** 2026-05-16
+**Decision changed:** Run verification targets as visible top-level commands. Keep a deny-hook self-test separate from quoted policy-trigger probes so the active admission hook can judge each intended action.
+**Trigger phase:** VERIFY
 
 The local deny-dangerous hook blocks verification wrappers that obscure nested execution. During discovery-scope verification, one `node` heredoc was blocked because JavaScript template-literal backticks looked like hidden command substitution, and a later `node -e` wrapper around `spawnSync("./bin/gruff-ts", ...)` was blocked because the shell-executing primitive hid the real command from hook review.
 
@@ -267,6 +196,10 @@ M04 before-snapshot generation failed once because the command's `workdir` was s
 worktree path before `git worktree add` had created it. Create or attach temp worktrees from the
 repo root first, then `cd` into the worktree inside the command after the path exists.
 
+**Updated:** 2026-08-21
+
+During the goat-flow 1.16.0 upgrade, I combined the deny-hook self-test, two `--check` probes whose quoted payload used the word `secrets`, and `shellcheck` in one tool call. The active pre-tool policy classified the whole wrapper as `bash` and blocked it before any check ran. Running the self-test and shell analysis as separate top-level commands produced usable evidence. Treat an admission block as “not run,” not a failed target test, and split verification at command boundaries instead of rewriting a fixture to evade the hook.
+
 ## Lesson: zero-change refactor goldens come before edits
 
 **Created:** 2026-06-10
@@ -291,14 +224,14 @@ when the old behavior is still present in code.
 ## Lesson: classify interpreter pipelines by whether stdin is data or code
 
 **Created:** 2026-05-10
-**Updated:** 2026-08-09
+**Updated:** 2026-11-23
 **Decision changed:** Check the current hook's stdin classification before rewriting a local-data pipeline; downloader and executable-stdin paths remain blocked, while reviewed local data consumers may be allowed.
 
 The pre-1.14 policy blocked every pipe into `python3 -c` or `node -e`, so local-data processing had to switch to a file intermediate. Goat-flow 1.14 now distinguishes reviewed local producers feeding an inline snippet or checked-in script (stdin remains data) from raw interpreter stdin, stdin-path/module spellings, and downloader pipelines (stdin may execute code).
 
 **Recurrence, 2026-08-09:** M28 put literal backticks inside a double-quoted `rg` pattern; the deny hook blocked it before execution.
 
-**Evidence:** `.goat-flow/hooks/deny-dangerous/patterns-shell.sh` (search: `interpreter_treats_stdin_as_data`) owns the current classification; `.goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh` (search: `Local data may be piped into explicit inline interpreter snippets`) pins allowed local-data cases and blocked executable-input cases.
+**Evidence:** `.goat-flow/hooks/deny-dangerous/patterns-shell.mjs` (search: `export function interpreterTreatsStdinAsData`) owns the current classification. `.goat-flow/hooks/deny-dangerous/corpus.json` (search: `local data pipe to inline python snippet`) pins an allowed local-data case, and the same file (search: `local data pipe to shell stays blocked`) pins a blocked executable-input case.
 
 **Prevention:** If the hook blocks a pipeline, do not retry an equivalent spelling. Inspect whether stdin is code or data; keep downloader and raw-stdin execution blocked, and use an explicit file input when the command falls outside the reviewed local-data cases. Use single-quoted search patterns when repository text contains backticks.
 
@@ -350,6 +283,8 @@ The pre-1.14 policy blocked every pipe into `python3 -c` or `node -e`, so local-
 
 **Recurrence, 2026-08-05 (vocabulary plurals):** context-doc vocabulary is matched with word boundaries, so plural forms fail: a comment saying "keeps fingerprints unique" does not satisfy `\bfingerprint\b` and `docs.missing-invariant-doc` fired on the new scoring test helper until the comment said "each fingerprint". When writing marker vocabulary, use the singular form the regex lists.
 
+**Recurrence 2026-11-28:** While triaging the PR #10 bot comments, scans that produced no finding were first read as "not reproduced" for flow and sensitive-data claims. But `security.path-traversal-candidate`, `security.unsafe-deserialization`, and `sensitive-data.database-url-password` are off by default (`src/rules.ts`, search: `isEnabledByDefault: false`), so those rules never ran. Re-running with the rules enabled changed three verdicts: the callback taint misses were already fixed, while the same-line `eval` plus `vm.runInNewContext` merge and the `${string}` URL exemption both reproduced. A no-finding repro counts only when a positive control in the same run shows the rule firing on a sibling input.
+
 ## Lesson: prove a gate fails in every direction it claims to cover
 
 **Created:** 2026-08-16
@@ -359,3 +294,19 @@ The pre-1.14 policy blocked every pipe into `python3 -c` or `node -e`, so local-
 **Evidence:** Pre-fix tree with `"properties"` added - `# pass 3 # fail 0`. Post-fix same edit - `not ok 2 - discovery allowlist matches the documented scan surface`.
 
 **Prevention:** When a gate claims to cover N directions, run N experiments, one per direction, and pick each probe so it is NOT already named in the fixture data - a probe drawn from the fixture set proves only that the fixture set is wired up. More generally, a behavioural assertion over an enumerated fixture set gates the fixtures, not the enumeration: to gate a list, assert the list.
+
+**Recurrence 2026-11-22:** Restoring the hotspot renderer's previous field set tripped the diagnostic-format test, which expected diagnostics in every format. Check the prior renderer before changing a versioned format. `src/scan-surface.test.ts` now checks the hotspot key set and diagnostic output in the formats that carry it.
+
+## Lesson: check a semantic anchor with `grep -F`, not a regex grep
+
+**Created:** 2026-11-23
+
+**Decision changed:** Before reporting that a `(search: ...)` needle is missing from its cited file, re-run the count with `grep -F` (or `rg -F`); treat a zero from a regex grep as unproven.
+
+**Trigger phase:** VERIFY
+
+**What happened:** While repointing hook anchors after the goat-flow 1.19.0 upgrade, I grepped the extracted 1.18.0 hooks for the old needles `prepare_segment_context "$cmd" "$depth" || return $?` and `check_command_segments "$exec_cmd"` without `-F`, got a count of 0 for both, and told the user those anchors had already been stale before the upgrade. They had not.
+
+**Evidence:** The same files with `grep -c -F` returned 1 for each needle. In this shell `grep` is ugrep in basic-regex mode (`-G`), and the `$` inside both needles acted as an end-of-line anchor, so a needle that quotes shell code could not match its own text.
+
+**Prevention:** Verify every needle with a fixed-string search, and run the check on the claim before stating it to the user.

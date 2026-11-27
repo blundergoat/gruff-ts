@@ -1,37 +1,46 @@
-// Analyser pipeline: walks discovered sources, runs every rule pass (complexity, dead-code, design,
-// documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality),
-// aggregates findings into the `gruff.analysis.v2` schema, and exposes `analyse` to the CLI shell.
+// File overview: Builds the analysis report used by the CLI, dashboard, and coding-agent hook.
+//
+// A command such as `gruff-ts analyse src --diff staged` still reads project context before selecting findings from staged changes.
+// This module also applies reviewed findings from a baseline and records history after a valid full scan.
 import { Buffer, isUtf8 } from "node:buffer";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { cwd } from "node:process";
-import { basename, extname } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { recordHistory, sortedUniqueFindings } from "./baseline.ts";
+import { declarationPositionFromSpans, findingIdentities, type DeclarationSpan } from "./baseline-identity.ts";
 import { applyBaselineOptions, type BaselineApplication } from "./baseline-options.ts";
-import { changedRegionScope, filterChangedFindings, filterScopedDiagnostics } from "./changed-regions.ts";
-import { loadConfig, optionNumber, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
+import { CHANGED_REGION_DIAGNOSTIC_TYPE, ChangedRegionError, changedRegionScope, filterChangedFindings, filterScopedDiagnostics, type ChangedRegionScope } from "./changed-regions.ts";
+import { loadConfig, optionBoolean, ruleEnabled, ruleSeverity, threshold } from "./config.ts";
+import { applyInlineSuppressions, isInlineSuppressionRelevantRule } from "./inline-suppressions.ts";
+import { applyBuiltInTestPathSkip, partitionSensitiveExclusions } from "./sensitive-exclusions.ts";
 import { VERSION } from "./constants.ts";
 import { absolutize, discoverSources, displayPath, type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
 import { applyConfiguredSeverity, finding, parameterNames } from "./findings-helpers.ts";
 import { commentRecords, type CommentRecord } from "./comment-scanner.ts";
-import { analyseArchitectureRules, analyseCircularImportRule, buildProjectIndex, CIRCULAR_IMPORT_RULE_ID, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
-import { analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks } from "./blocks.ts";
-import { analyseClassRules, analyseAcronymCase, analyseInconsistentCasing, analyseInterfaceFields, collectDeclaredIdentifiers } from "./class-rules.ts";
+import { catalogueConfidence } from "./rules.ts";
+import { analyseArchitectureRules, analyseCircularImportRule, buildProjectIndex, CIRCULAR_IMPORT_RULE_ID, extractImportStatements, isProductionSourcePath, isTestPath, type ProjectSource } from "./project-rules.ts";
+import { analyseBlockMeasures, analyseBlockRules, type BlockRuleContext, blockRuleContext, type FunctionBlock, functionBlocks, measuredOnlyFunctionBlocks } from "./blocks.ts";
+import { bandedFields, LOWER_BAND_FILE, SPLIT_FILE } from "./limit-band.ts";
+import { analyseClassRules } from "./class-rules.ts";
 import { analyseDeadCode, analyseUnreachable, analyseUnusedImports } from "./dead-code-rules.ts";
 import { analyseCommentQualityRules } from "./comment-rules.ts";
 import { analyseDocRules, analyseFileOverviewDoc, analyseInterfaceDocs } from "./doc-rules.ts";
 import { analyseLineRules } from "./line-rules.ts";
 import { analyseSecurityFlow } from "./security-flow-rules.ts";
-import { pushBooleanPrefixAt, pushIdentifierQualityAt, pushNegativeBooleanAt, pushShortVariableAt } from "./naming-pushers.ts";
+import { pushIdentifierQualityAt, pushShortVariableAt } from "./naming-pushers.ts";
 import { analyseTestBlock } from "./test-block-rules.ts";
+import { analyseDuplicateTestGroups } from "./duplicate-test-group-rules.ts";
 import { analyseGithubActionsRules } from "./github-actions-rules.ts";
 import { analyseProjectConfigRules } from "./project-config-rules.ts";
+import { BUILT_IN_PROFILES } from "./profiles.ts";
 import { ruleDescriptors } from "./rules.ts";
 import { scoreReport, summarize } from "./scoring.ts";
+import { isExecutionRequested } from "./selectors.ts";
 import { analyseSensitiveData } from "./sensitive-data-rules.ts";
-import { parseScript, type ParsedScript } from "./parsed-script.ts";
+import { codeLineFlags, maskDecorators, parseScript, type ParsedScript } from "./parsed-script.ts";
 import { maskNonCode, maskTemplateLiteralBodies } from "./source-text.ts";
-import type { AnalysisOptions, AnalysisReport, Config, Finding, Pillar, RunDiagnostic, ScanSurfaceNote, SkippedPath } from "./types.ts";
+import type { AnalysisOptions, AnalysisReport, Config, Finding, OutputFormat, Pillar, RunDiagnostic, ScanSurfaceNote, SkippedPath, SuppressedFinding, SuppressionSummary } from "./types.ts";
 
 /*
  * Internal hook view contract: both reports come from one current-tree scan so full-file and
@@ -43,102 +52,377 @@ export interface HookAnalysisReports {
 }
 
 /**
- * Analyse the configured paths and return the stable gruff.analysis.v2 report contract.
+ * Build a report for an `analyse`, `summary`, or `report` request.
+ * Invariant: an invalid scan or any changed-region scan is excluded from the user's full-scan score history.
  *
- * @param options Normalised analysis options from the CLI or direct callers.
- * @returns Versioned report with fingerprinted findings, diagnostics, paths, and score data.
+ * @param requestedOptions - paths, rules, and scan scope. An empty path list scans the launch directory. Omit history to skip writing it.
+ * @returns A report ready for the caller's formatter. An unreadable changed scope returns a diagnostic and an empty findings list.
+ * @throws ConfigLoadError for invalid configuration. Unexpected scope errors propagate to the caller.
  */
-export function analyse(options: AnalysisOptions): AnalysisReport {
+export function analyse(requestedOptions: AnalysisOptions): AnalysisReport {
+  const options = targetsFromLaunchDirectory(requestedOptions);
   const preparation = prepareAnalysis(options);
-  const changedScope = changedRegionScope(options);
-  const run = completeAnalysis(preparation, options);
+  let changedScope: ChangedRegionScope | undefined;
+  try {
+    changedScope = changedRegionScope(options, preparation.projectRoot);
+  } catch (error) {
+    // A typo in `--changed-ranges` or a missing Git ref can be reported as an invalid scan before writing a baseline.
+    if (!(error instanceof ChangedRegionError)) {
+      throw error;
+    }
+    return failedRunReport(preparation.projectRoot, options.format, CHANGED_REGION_DIAGNOSTIC_TYPE, error.message);
+  }
+  const run = completeAnalysis(preparation, options, "diagnose", changedScope);
   const changedResult = filterChangedFindings(run.baselineResult.findings, changedScope, run.scanned.sources);
 
-  if (options.historyFile) {
-    recordHistory(run.projectRoot, options.historyFile, changedResult.findings, run.diagnostics);
+  // Generation uses the full scan, so errors anywhere in that scan must stay visible.
+  const diagnostics = options.generateBaseline ? run.diagnostics : filterScopedDiagnostics(run.diagnostics, changedScope);
+  const suppressedFindings = filterChangedSuppressedFindings(run.suppressedFindings, changedScope, run.scanned.sources);
+  const baseline = run.baselineResult.baseline;
+  // When a baseline was applied, `--fail-on-new` counts only unreviewed findings that remain in the requested scope.
+  const scopedBaseline = {
+    ...run.baselineResult,
+    findings: changedResult.findings,
+    ...(changedScope !== undefined && baseline && !baseline.generated
+      ? { baseline: { ...baseline, newFindings: changedResult.findings.length } }
+      : {}),
+  };
+  const report = reportFromRun({ ...run, diagnostics, suppressedFindings }, options, scopedBaseline, changedResult.suppressedCount);
+  // An invalid baseline, a changed-region scan, or a partial-catalogue scan cannot add a point to the user's full-scan trend history.
+  if (
+    options.historyFile
+    && changedScope === undefined
+    && !(options.execution && isExecutionRequested(options.execution))
+    && !diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false)
+  ) {
+    recordHistory(run.projectRoot, options.historyFile, report.score, report.findings.length, diagnostics);
   }
-
-  // File-scoped policy: diff runs report and fail on diagnostics from changed target files only.
-  return reportFromRun({ ...run, diagnostics: filterScopedDiagnostics(run.diagnostics, changedScope) }, options, { ...run.baselineResult, findings: changedResult.findings }, changedResult.suppressedCount);
+  return report;
 }
 
-// Builds the hook's full and changed-region reports from one scan. The diff-base replay still uses
-// the ordinary runner because it analyses different file contents.
+/**
+ * Filters inline-suppressed SARIF records to the active changed-region scope while keeping whole-scan suppression audit rows untouched.
+ * Invariant: preserves the input order and returns the original list unchanged when unscoped or empty.
+ *
+ * @param suppressedFindings - full-scan inline/duplicate suppressed findings retained for SARIF output
+ * @param scope - active changed-region scope, or undefined for a full scan
+ * @param sources - retained source/AST snapshots used to evaluate symbol-level changed-region membership
+ * @returns Suppressed findings inside `scope`, or the original list unchanged when unscoped or empty.
+ */
+function filterChangedSuppressedFindings(
+  suppressedFindings: SuppressedFinding[],
+  scope: ChangedRegionScope | undefined,
+  sources: Map<string, { file: SourceFile; source: string; parsed?: ParsedScript }>,
+): SuppressedFinding[] {
+  if (scope === undefined || suppressedFindings.length === 0) {
+    return suppressedFindings;
+  }
+  const kept = new Set(filterChangedFindings(suppressedFindings.map((entry) => entry.finding), scope, sources).findings);
+  return suppressedFindings.filter((entry) => kept.has(entry.finding));
+}
+
+/**
+ * Build the full and changed-region views the hook needs to distinguish a new finding from one already covered by a baseline.
+ * Both views use one read of the user's files. With no change selector, both fields point to that full scan.
+ *
+ * @param currentOptions - full-scan options resolved from the launch directory
+ * @param scopedOptions - change-scoped options providing the diff or range selector and formatting choices
+ * @param hasChangedRegion - true when scopedOptions selects a changed region; false skips scope resolution
+ * @returns Both reports sharing one file scan; when hasChangedRegion is false, scopedReport aliases currentReport.
+ */
 export function analyseHookReports(currentOptions: AnalysisOptions, scopedOptions: AnalysisOptions, hasChangedRegion: boolean): HookAnalysisReports {
-  const run = completeAnalysis(prepareAnalysis(currentOptions), currentOptions);
+  currentOptions = targetsFromLaunchDirectory(currentOptions);
+  scopedOptions = targetsFromLaunchDirectory(scopedOptions);
+  // A hook without `--diff`, `--since`, or `--changed-ranges` has no narrower view to resolve.
+  const scopedChangedScope = hasChangedRegion ? changedRegionScope(scopedOptions, projectRootFromTargets(scopedOptions.paths)) : undefined;
+  const run = completeAnalysis(prepareAnalysis(currentOptions), currentOptions, "throw", scopedChangedScope);
   const currentReport = reportFromRun(run, currentOptions, run.baselineResult);
+  // An unscoped hook presents the same findings it uses for baseline comparison.
   if (!hasChangedRegion) {
     return { currentReport, scopedReport: currentReport };
   }
-  const scopedChangedScope = changedRegionScope(scopedOptions);
   const scopedChangedResult = filterChangedFindings(run.baselineResult.findings, scopedChangedScope, run.scanned.sources);
+  const scopedSuppressedFindings = filterChangedSuppressedFindings(run.suppressedFindings, scopedChangedScope, run.scanned.sources);
   // Same file-scoped diagnostics policy as diff-scoped analyse, so both surfaces agree.
-  const scopedReport = reportFromRun({ ...run, diagnostics: filterScopedDiagnostics(run.diagnostics, scopedChangedScope) }, scopedOptions, { ...run.baselineResult, findings: scopedChangedResult.findings }, scopedChangedResult.suppressedCount);
+  const scopedReport = reportFromRun(
+    { ...run, diagnostics: filterScopedDiagnostics(run.diagnostics, scopedChangedScope), suppressedFindings: scopedSuppressedFindings },
+    scopedOptions,
+    { ...run.baselineResult, findings: scopedChangedResult.findings },
+    scopedChangedResult.suppressedCount,
+  );
   return { currentReport, scopedReport };
 }
 
-// Loads config and discovers inputs once so direct analysis and hook reuse share the same setup.
+/**
+ * Choose the directory that owns the user's scan configuration, Git diff, and report paths.
+ * Use the launch directory for local targets and the common parent for targets outside it.
+ *
+ * @param paths - Scan targets resolved from the launch directory; an empty list selects the launch directory.
+ * @returns The launch directory or a common ancestor. A lone missing external target uses its parent so JSON can name the missing file.
+ * @throws When targets cannot share a filesystem root.
+ */
+export function projectRootFromTargets(paths: string[]): string {
+  const launchDirectory = cwd();
+
+  // No target was named, so the directory the command ran from is the project.
+  if (paths.length === 0) {
+    return launchDirectory;
+  }
+
+  let common: string | null = null;
+  // A later usable target can widen the common directory because the root must contain every usable target.
+  for (const path of paths) {
+    const absolute = resolve(launchDirectory, path);
+    let directory = absolute;
+    try {
+      // A file contributes its containing directory because reported paths need a directory anchor.
+      if (!statSync(absolute).isDirectory()) {
+        directory = dirname(absolute);
+      }
+    } catch {
+      // A typo such as `analyse ../app/mising.ts` keeps a project-relative diagnostic. A missing file in a list cannot move its root.
+      if (paths.length !== 1) {
+        continue;
+      }
+      directory = dirname(absolute);
+    }
+
+    // The first target sets the starting answer; later ones can only widen it.
+    if (common === null) {
+      common = directory;
+      continue;
+    }
+    // Expand the root until all usable targets can share one project-relative report.
+    while (!isSameOrDescendant(directory, common)) {
+      const parent = dirname(common);
+      // Reaching a filesystem root without containing this target means no single root can anchor both paths.
+      if (parent === common) {
+        throw new Error("scan targets do not share a filesystem root");
+      }
+      common = parent;
+    }
+  }
+
+  // Keep the launch directory when no target was usable or their shared root is inside it, preserving config and baseline anchoring.
+  if (common === null || isSameOrDescendant(common, launchDirectory)) {
+    return launchDirectory;
+  }
+  return common;
+}
+
+/**
+ * Invariant: explicit paths keep their launch-directory meaning when a target selects a different project root.
+ * For example, `analyse ../app --baseline reviewed.json` still reads `reviewed.json` from the launch directory.
+ *
+ * @param options - Scan options with paths from the command line. Omitted baseline and history options stay omitted.
+ * @returns The original options for a local scan, or a copy with absolute targets and baseline and history paths pointing to the same files.
+ */
+function targetsFromLaunchDirectory(options: AnalysisOptions): AnalysisOptions {
+  const launchDirectory = cwd();
+  const projectRoot = projectRootFromTargets(options.paths);
+  // Inside the launch directory the root and the operands already agree, so they are passed on exactly as typed.
+  if (projectRoot === launchDirectory) {
+    return options;
+  }
+  /**
+   * Re-anchor a launch-directory path option against projectRoot while keeping absolute paths untouched.
+   *
+   * @param path - file path supplied relative to launchDirectory or as an absolute path
+   * @returns Path unchanged when absolute, or relative to projectRoot when resolved from launchDirectory.
+   */
+  const fromRoot = (path: string): string => (isAbsolute(path) ? path : relative(projectRoot, resolve(launchDirectory, path)));
+  // Keep a relative CLI `--profile` file path anchored to the launch directory, while leaving built-in profile names untouched.
+  const anchoredProfile = options.profile !== undefined && !BUILT_IN_PROFILES.has(options.profile) && !BUILT_IN_PROFILES.has(`gruff.${options.profile}`)
+    ? fromRoot(options.profile)
+    : options.profile;
+  return {
+    ...options,
+    paths: options.paths.map((path) => resolve(launchDirectory, path)),
+    ...(anchoredProfile !== undefined ? { profile: anchoredProfile } : {}),
+    ...(options.baseline ? { baseline: fromRoot(options.baseline) } : {}),
+    ...(options.generateBaseline ? { generateBaseline: fromRoot(options.generateBaseline) } : {}),
+    ...(options.migrateBaseline ? { migrateBaseline: fromRoot(options.migrateBaseline) } : {}),
+    ...(options.historyFile ? { historyFile: fromRoot(options.historyFile) } : {}),
+  };
+}
+
+/**
+ * Check whether a target is inside a launch or scan directory using native path separators.
+ * Use this before accepting multiple targets so `/work/apidocs` is treated as a sibling of `/work/api`.
+ *
+ * @param candidate - Directory being tested.
+ * @param ancestor - Directory that may contain it.
+ * @returns True when candidate is the ancestor or sits inside it.
+ */
+function isSameOrDescendant(candidate: string, ancestor: string): boolean {
+  const fromAncestor = relative(ancestor, candidate);
+  return !isAbsolute(fromAncestor) && fromAncestor !== ".." && !fromAncestor.startsWith(`..${sep}`);
+}
+
+/**
+ * Resolve project inputs and configuration needed before scanning files.
+ *
+ * @param options - scan options specifying target paths, config overrides, and discovery settings
+ * @returns The project root, loaded config, discovered inputs, and an empty diagnostic array selected by options for a scan.
+ */
 function prepareAnalysis(options: AnalysisOptions): AnalysisPreparation {
-  const projectRoot = cwd();
+  const projectRoot = projectRootFromTargets(options.paths);
   const config = loadConfig(projectRoot, options);
   const diagnostics: RunDiagnostic[] = [];
   const discovery = discoverSources(projectRoot, options, config);
   return { projectRoot, config, diagnostics, discovery };
 }
 
-// Runs per-file and project-level rules before applying baseline suppression; finding order remains stable.
-function completeAnalysis(preparation: AnalysisPreparation, options: AnalysisOptions): AnalysisRun {
+/**
+ * Give a finding its rule's catalogue confidence, so list-rules, the hook gate and the score read one value. A rule helper's
+ * default must not override the catalogue. The fingerprint and stable identity do not include confidence, so both stay unchanged.
+ *
+ * @param finding - scanner result for a rule the catalogue normally lists
+ * @returns the same finding when its confidence already matches, a copy carrying the catalogue confidence otherwise, or the
+ *   finding unchanged for a rule id the catalogue does not list
+ */
+function withCatalogueConfidence(finding: Finding): Finding {
+  const confidence = catalogueConfidence(finding.ruleId);
+  return confidence === undefined || confidence === finding.confidence ? finding : { ...finding, confidence };
+}
+
+/**
+ * Run the checks for the user's resolved project and apply its exclusions and baseline.
+ * Invariant: assign baseline identities before filtering so the hook and SARIF can refer to the same finding.
+ *
+ * @param preparation - project scope, discovery and config, with the caller's diagnostic array to append to
+ * @param options - scope and baseline choices. An unset baseline path lets the scan use the project's default when enabled.
+ * @param unusableBaseline - `throw` lets the hook report a refusal. `diagnose` keeps findings and adds a fatal baseline diagnostic.
+ * @param changedScope - optional changed-region scope indicating which files need retained source and AST snapshots for symbol expansion
+ * @returns Findings, diagnostics, and suppression counts for rendering. An empty findings list can still have diagnostics.
+ * @throws {BaselineFileError} - a baseline file failure in throw mode.
+ */
+function completeAnalysis(
+  preparation: AnalysisPreparation,
+  options: AnalysisOptions,
+  unusableBaseline: "throw" | "diagnose" = "throw",
+  changedScope?: ChangedRegionScope,
+): AnalysisRun {
   const { projectRoot, config, diagnostics, discovery } = preparation;
   pushMissingPathDiagnostics(discovery.missingPaths, diagnostics);
 
-  const scanned = scanDiscoveredSources(discovery.files, config, diagnostics);
+  const scanned = scanDiscoveredSources(discovery.files, config, diagnostics, changedScope);
   const allFindings = sortedUniqueFindings([
     ...scanned.findings,
     ...analyseProjectIndex(projectRoot, options, discovery.files, scanned.projectSources, config).filter((finding) => ruleEnabled(config, finding.ruleId)),
-  ].map((finding) => applyConfiguredSeverity(config, finding)));
-  const baselineResult = applyBaselineOptions(projectRoot, options, allFindings);
+  ].map((finding) => applyConfiguredSeverity(config, withCatalogueConfidence(finding))));
+  // An approved sensitive exclusion removes the finding from the report and gate, but its audit count still covers the full scan.
+  const excluded = partitionSensitiveExclusions(allFindings, config.sensitiveExclusions);
+  // A configured entry claims its findings first, so its count stays what the user wrote it for.
+  const testPathSkipped = applyBuiltInTestPathSkip(excluded.findings, excluded.suppressions);
+  // Assign baseline identities before filtering so hiding one declaration cannot renumber another in SARIF or the hook.
+  const spans = scanned.declarationSpans;
+  const namedFindings = withBaselineIdentities(testPathSkipped.findings, spans);
+  // Apply inline suppressions to findings with identities so SARIF can still identify a suppressed result.
+  const inline = applyInlineSuppressions(namedFindings, testPathSkipped.suppressions, scanned.sources);
+  // A missing file or parse error makes `--generate-baseline` unsafe because it would save a partial review.
+  const baselineResult = options.generateBaseline && diagnostics.some((diagnostic) => diagnostic.invalidatesRun !== false)
+    ? { findings: inline.findings, diagnostics: [] }
+    : applyBaselineOptions(projectRoot, options, inline.findings, spans, unusableBaseline);
+  // A baseline collision records a non-fatal diagnostic and leaves every finding with that identity visible.
+  diagnostics.push(...baselineResult.diagnostics);
   const notes = [...discovery.notes, ...scanned.notes];
-  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes };
+  // A selective scan scores only pillars backed by enabled rules. Omitting selectors keeps the normal score denominator.
+  const evaluatedPillars = options.execution && isExecutionRequested(options.execution)
+    ? ruleDescriptors().filter((rule) => ruleEnabled(config, rule.ruleId)).map((rule) => rule.pillar)
+    : undefined;
+  return { projectRoot, discovery, diagnostics, scanned, baselineResult, notes, evaluatedPillars, suppressions: inline.suppressions, suppressedFindings: inline.suppressed };
 }
 
-// Converts a completed run into a stable report contract or changed-region projection.
+/**
+ * Builds the analysis report from the findings selected for this command.
+ * Invariant: suppression audit counts cover the full scan, even when the report shows only the requested changes.
+ *
+ * @param run - completed scan supplying discovery totals, diagnostics, notes and suppression records
+ * @param options - request inputs and threshold. No explicit inputs are shown as "." for a project scan.
+ * @param baselineResult - the selected findings and any baseline details. No baseline leaves out the review section.
+ * @param suppressedCount - number of findings omitted by changed-region filtering. Omit it to leave the field out of the report.
+ * @returns Native report state with the supplied findings, scan totals, and any baseline or changed-region count supplied.
+ */
 function reportFromRun(run: AnalysisRun, options: AnalysisOptions, baselineResult: BaselineApplication, suppressedCount?: number): AnalysisReport {
-  return buildAnalysisReport(run.projectRoot, options, run.discovery, run.diagnostics, baselineResult, run.notes, suppressedCount);
-}
-
-// Assembles the run's payload; the field shape is the stable gruff.analysis.v2 schema contract.
-function buildAnalysisReport(
-  projectRoot: string,
-  options: AnalysisOptions,
-  discovery: DiscoverySummary,
-  diagnostics: RunDiagnostic[],
-  baselineResult: BaselineApplication,
-  notes: ScanSurfaceNote[],
-  suppressedCount?: number,
-): AnalysisReport {
   const findings = baselineResult.findings;
   return {
-    schemaVersion: "gruff.analysis.v2",
+    schemaVersion: "gruff.analysis.v3",
     tool: { name: "gruff-ts", version: VERSION },
     run: {
-      projectRoot,
+      projectRoot: run.projectRoot,
       format: options.format,
       failOn: options.failOn,
       generatedAt: new Date().toISOString(),
+      // Record explicit inputs as absolute paths so they keep their launch-directory meaning if the project root differs.
+      // With no explicit input, a single dot denotes the default project scan.
+      inputs: options.paths.length === 0 ? ["."] : options.paths.map((path) => resolve(cwd(), path)),
+      ...(options.config === undefined ? {} : { config: resolve(cwd(), options.config) }),
+      ...(options.shouldIncludeIgnored ? { includeIgnored: true as const } : {}),
     },
     summary: summarize(findings),
     paths: {
-      analysedFiles: discovery.files.length,
-      ignoredPaths: discovery.ignoredPaths,
-      skipped: discovery.skipped,
-      missingPaths: discovery.missingPaths,
+      analysedFiles: run.discovery.files.length,
+      ignoredPaths: run.discovery.ignoredPaths,
+      skipped: run.discovery.skipped,
+      missingPaths: run.discovery.missingPaths,
     },
-    diagnostics,
-    ...(notes.length === 0 ? {} : { notes }),
+    diagnostics: run.diagnostics,
+    ...(run.notes.length === 0 ? {} : { notes: run.notes }),
+    suppressions: run.suppressions,
+    suppressedFindings: run.suppressedFindings,
     findings,
     ...(suppressedCount === undefined ? {} : { suppressedCount }),
-    score: scoreReport(findings),
+    // Score uses evaluated script files. The analysed file count also includes text assets that received raw-text checks.
+    score: scoreReport(findings, run.scanned.evaluatedFiles, run.evaluatedPillars),
     ...(baselineResult.baseline ? { baseline: baselineResult.baseline } : {}),
+  };
+}
+
+// The type every port publishes when it cannot load the configuration it was given.
+export const CONFIG_ERROR_DIAGNOSTIC_TYPE = "config-error";
+
+// The type every port publishes when it refuses the targets it was given, such as several outside the launch directory.
+export const TARGET_ERROR_DIAGNOSTIC_TYPE = "target-error";
+
+/**
+ * Identify a multi-target request that violates the launch-directory boundary so the caller can refuse it before reporting.
+ * A single external target is allowed; every target in a multi-target request must stay inside the launch directory.
+ *
+ * @param paths - Scan targets resolved from the launch directory for this boundary check.
+ * @returns The first outside target in a multi-target request, or null when no request boundary is violated.
+ */
+export function targetOutsideLaunchDirectory(paths: string[]): string | null {
+  // A single target, or none, always has a root the run can report against.
+  if (paths.length < 2) {
+    return null;
+  }
+  const launchDirectory = cwd();
+  // Multi-target requests are refused as soon as any operand lies outside the launch directory.
+  return paths.find((path) => !isSameOrDescendant(resolve(launchDirectory, path), launchDirectory)) ?? null;
+}
+
+/**
+ * Build a stable gruff.analysis.v3 report for a run refused before discovery so machine consumers can read the failure.
+ *
+ * @param projectRoot - project path to record for the refused run
+ * @param format - requested output format to record in run metadata
+ * @param diagnosticType - category that identifies why the run was refused
+ * @param message - explanation to include in the diagnostic
+ * @returns A report with one run diagnostic, zero analysed files and no findings.
+ */
+export function failedRunReport(projectRoot: string, format: OutputFormat, diagnosticType: string, message: string): AnalysisReport {
+  return {
+    schemaVersion: "gruff.analysis.v3",
+    tool: { name: "gruff-ts", version: VERSION },
+    // Use the analyse default threshold because the caller handles the refusal status separately.
+    run: { projectRoot, format, failOn: "advisory", generatedAt: new Date().toISOString() },
+    summary: summarize([]),
+    paths: { analysedFiles: 0, ignoredPaths: [], skipped: [], missingPaths: [] },
+    diagnostics: [{ diagnosticType, message }],
+    suppressions: [],
+    findings: [],
+    score: scoreReport([], 0),
   };
 }
 
@@ -154,11 +438,13 @@ interface DiscoverySummary {
 
 // Output of the per-file scan pass - both the findings produced and the cached source bodies that
 // later project-level rules need to operate against the deterministic stable shape used by baselines.
-// Contract invariant: `notes` records bounded deep scans without changing finding order.
+// Contract invariant: `notes` records non-text scan-surface changes without changing finding order.
 interface SourceScanResult {
   findings: Finding[];
+  evaluatedFiles: number;
   projectSources: ProjectSource[];
   sources: Map<string, { file: SourceFile; source: string; parsed?: ParsedScript }>;
+  declarationSpans: Map<string, DeclarationSpan[]>;
   notes: ScanSurfaceNote[];
 }
 
@@ -171,19 +457,31 @@ interface AnalysisPreparation {
   discovery: DiscoverySummary;
 }
 
-// Completed scan state before final report rendering. The baseline result is carried separately so
-// changed-region filtering can project findings without losing baseline metadata.
+// Completed scan state before final report rendering. Stable contract: the baseline result is
+// carried separately so changed-region filtering can project findings without losing baseline
+// metadata, and the suppression rows stay whole-scan counts rather than a projection of them.
 interface AnalysisRun {
   projectRoot: string;
   discovery: DiscoverySummary;
   diagnostics: RunDiagnostic[];
   scanned: SourceScanResult;
+  evaluatedPillars: Pillar[] | undefined;
   baselineResult: BaselineApplication;
   notes: ScanSurfaceNote[];
+  // Configured sensitive-exclusion rows, then built-in test-path and section 13c rows, counted over the full scan
+  // so a changed-region projection cannot understate what a suppression actually hid.
+  suppressions: SuppressionSummary[];
+  // Findings section 13c removed, kept so SARIF can show each as suppressed.
+  suppressedFindings: SuppressedFinding[];
 }
 
-// Emits a `missing-path` diagnostic per path that the user requested but discovery could not
-// resolve. Diagnostics force a non-zero exit (see `exitFor`); never throws - partial scans should still report.
+/**
+ * Record a run-invalidating diagnostic for every unresolved target path so callers report missing inputs.
+ *
+ * @param missingPaths - requested target paths that discovery could not resolve
+ * @param diagnostics - caller's diagnostic array mutated by appending one missing-path entry per item
+ * @returns Nothing. Appends one diagnostic per missing path to diagnostics, forcing exit 2; an empty list adds nothing.
+ */
 function pushMissingPathDiagnostics(missingPaths: string[], diagnostics: RunDiagnostic[]): void {
   for (const missingPath of missingPaths) {
     diagnostics.push({
@@ -194,16 +492,30 @@ function pushMissingPathDiagnostics(missingPaths: string[], diagnostics: RunDiag
   }
 }
 
-/*
- * Per-file read + scan loop. Reports read failures as diagnostics because CLI users need partial
- * results from the rest of the tree, but the stable discovered-file order still feeds project-index
- * snapshots before the final canonical sort. Changing that contract can churn graph-rule anchors.
+/**
+ * Read and scan inputs in stable discovery order so that project-index snapshots keep their graph anchors.
+ * Record failures caught during a file's read or scan as read-error diagnostics so the remaining files can still be checked.
+ * Computes declaration spans per file so parsed syntax trees can be garbage-collected immediately on large repositories.
+ *
+ * @param files - discovered inputs in a stable order. An empty list leaves the scan with no files to score.
+ * @param config - scan budget, rule settings and project-source selection settings
+ * @param diagnostics - caller's array for budget, parser and caught file-scan diagnostics
+ * @param changedScope - optional changed-region scope naming files that must retain source and parsed ASTs after per-file analysis
+ * @returns Findings, retained project snapshots, minimal retained sources, per-file declaration spans, and notes for skipped non-text inputs.
  */
-function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics: RunDiagnostic[]): SourceScanResult {
+function scanDiscoveredSources(
+  files: SourceFile[],
+  config: Config,
+  diagnostics: RunDiagnostic[],
+  changedScope?: ChangedRegionScope,
+): SourceScanResult {
   const findings: Finding[] = [];
+  let evaluatedFiles = 0;
   const projectSources: ProjectSource[] = [];
   const sources = new Map<string, { file: SourceFile; source: string; parsed?: ParsedScript }>();
+  const spansByFile = new Map<string, DeclarationSpan[]>();
   const notes: ScanSurfaceNote[] = [];
+  // Check each supported input so one unreadable file can be diagnosed without discarding the other files' findings.
   for (const file of files) {
     try {
       const fileBytes = readFileSync(file.absolutePath);
@@ -217,20 +529,36 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
         continue;
       }
       const source = fileBytes.toString("utf8");
-      const budgetNote = deepScanBudgetNote(file, source);
-      // One parse per script per run: every deep consumer shares this result; over-budget files skip it.
-      const parsed = budgetNote ? undefined : parseScript(file, source);
-      sources.set(file.displayPath, { file, source, ...(parsed ? { parsed } : {}) });
-      if (budgetNote) {
-        notes.push(budgetNote);
+      const budgetDiagnostic = deepScanBudgetDiagnostic(file, source, config);
+      // Over-budget scripts skip parsing and project snapshots but still get enabled text checks. Other scripts share one parse.
+      const parsed = budgetDiagnostic ? undefined : parseScript(file, source);
+      // The user can still see text findings from a script that exceeds the deep-scan budget.
+      if (budgetDiagnostic) {
+        diagnostics.push(budgetDiagnostic);
       } else {
+        // Retain files that can contribute to cross-file findings such as import cycles.
         if (shouldRetainProjectSource(file, source)) {
-          projectSources.push(projectSource(file, source));
+          projectSources.push(projectSource(file, source, parsed));
+        }
+        if (parsed) {
+          spansByFile.set(file.displayPath, fileDeclarationSpans(source, parsed));
         }
         diagnostics.push(...(parsed?.diagnostics ?? []));
       }
-      findings.push(...analyseSource(file, source, config, budgetNote === undefined, parsed));
+      const fileFindings = analyseSource(file, source, config, budgetDiagnostic === undefined, parsed);
+      findings.push(...fileFindings);
+      // Retain full AST snapshots only for files needed by changed-region symbol expansion, and raw text only when inline suppression applies.
+      if (shouldRetainParsedForChangedScope(file.displayPath, changedScope)) {
+        sources.set(file.displayPath, { file, source, ...(parsed ? { parsed } : {}) });
+      } else if (fileFindings.some((entry) => isInlineSuppressionRelevantRule(entry.ruleId))) {
+        sources.set(file.displayPath, { file, source });
+      }
+      // Text assets can produce findings, but only evaluated scripts contribute to the file count used for scoring.
+      if (file.isScript) {
+        evaluatedFiles += 1;
+      }
     } catch (error) {
+      // A file deleted during the scan produces a diagnostic. Findings from other files remain available.
       diagnostics.push({
         diagnosticType: "read-error",
         message: `Unable to read file: ${String(error)}`,
@@ -239,63 +567,203 @@ function scanDiscoveredSources(files: SourceFile[], config: Config, diagnostics:
       });
     }
   }
-  return { findings, projectSources, sources, notes };
+  return { findings, evaluatedFiles, projectSources, sources, declarationSpans: spansByFile, notes };
 }
 
-// Scan budget for deep (masking, block-parsing, AST-walking) script analysis. Copied perf-test
-// fixtures of 100k+ lines time out whole scans, so files above either bound keep text-level rules.
-const DEEP_SCAN_MAX_LINES = 20_000; // Budget limit: bounds copied perf fixtures before deep passes.
-const DEEP_SCAN_MAX_BYTES = 2_000_000; // Budget limit: catches minified/long-line scripts too.
+/**
+ * Reports whether a file's source and parsed syntax tree must stay cached after per-file analysis for changed-region symbol expansion.
+ *
+ * @param filePath - project-relative display path of the scanned file
+ * @param changedScope - optional changed-region scope active for this run
+ * @returns True when `changedScope` uses explicit ranges or lists `filePath` as a changed file; false for full scans and untouched files.
+ */
+function shouldRetainParsedForChangedScope(filePath: string, changedScope: ChangedRegionScope | undefined): boolean {
+  if (changedScope === undefined) {
+    return false;
+  }
+  return changedScope.explicitRanges !== undefined || changedScope.changedFiles.has(filePath);
+}
 
-// Returns the bounded-deep-scan note when a script file exceeds the budget, undefined otherwise.
-// The file still counts as analysed - silence is the failure mode this guard exists to remove.
-function deepScanBudgetNote(file: SourceFile, source: string): ScanSurfaceNote | undefined {
-  if (!file.isScript) {
+/**
+ * Attach baseline identities and subjects before filtering so that SARIF and baseline matching share the same stable fingerprint identity.
+ *
+ * @param findings - findings to name together before any reporting view narrows the list
+ * @param spansByFile - parsed declaration spans used to assign positions and ordinals
+ * @returns A new array in input order. Findings with identities gain native identity and subject fields, and unnamed findings stay unchanged.
+ */
+function withBaselineIdentities(findings: Finding[], spansByFile: Map<string, DeclarationSpan[]>): Finding[] {
+  const identities = findingIdentities(findings, declarationPositionFromSpans(spansByFile));
+  return findings.map((finding, index) => {
+    const named = identities[index];
+    // Publishing the subject beside the identity is what lets the hook state the ordinal instead of re-deriving it.
+    return named === undefined ? finding : { ...finding, baselineIdentity: named.identity, baselineSubject: named.subject };
+  });
+}
+
+/**
+ * Collects declaration spans for one parsed script so a baseline can distinguish same-named functions in one file
+ * without keeping the full TypeScript AST alive across the entire repository scan.
+ *
+ * @param source - raw UTF-8 source text of the script
+ * @param parsed - shared parsed syntax tree for the script
+ * @returns Declaration spans covering named functions, methods, callable bindings, and measured-only inline callables.
+ */
+function fileDeclarationSpans(source: string, parsed: ParsedScript): DeclarationSpan[] {
+  const blocks = functionBlocks(source, source, parsed);
+  // Keep positions for measured inline functions too, so two functions named `<iife>` can have separate baseline entries.
+  const measuredOnly = measuredOnlyFunctionBlocks(source, maskNonCode(source), parsed);
+  return keepColumnsOnSharedLines([...blocks, ...measuredOnly].map((block) => blockDeclarationSpan(block, parsed)));
+}
+
+/**
+ * Drops column bounds from every span that shares no line with a same-named span, so ordinary declarations keep line-only baseline positions.
+ * Only two functions with one name on one line, such as `[{ run: () => 1 }, { run: () => 2 }]`, need columns to keep separate entries.
+ *
+ * @param spans - every declaration span found in one file, possibly carrying start and end columns
+ * @returns The same spans in order; columns survive only where a same-named span starts or ends on a shared line
+ */
+function keepColumnsOnSharedLines(spans: DeclarationSpan[]): DeclarationSpan[] {
+  const spansByName = new Map<string, DeclarationSpan[]>();
+  for (const span of spans) {
+    spansByName.set(span.name, [...(spansByName.get(span.name) ?? []), span]);
+  }
+  return spans.map((span) => {
+    const spanLines = [span.startLine, span.endLine];
+    const sharesLine = (spansByName.get(span.name) ?? []).some((other) => other !== span
+      && (spanLines.includes(other.startLine) || spanLines.includes(other.endLine)));
+    // Two same-named declarations sharing a line keep their columns so each gets its own baseline entry.
+    if (sharesLine) {
+      return span;
+    }
+    // A declaration alone on its lines is told apart by line alone, so dropping columns keeps existing baseline entries stable.
+    const { startColumn: _startColumn, endColumn: _endColumn, ...lineOnly } = span;
+    return lineOnly;
+  });
+}
+
+/**
+ * Builds the baseline span for one function, adding 1-based start and end columns when the syntax tree has them.
+ * Columns keep two same-named functions on one line apart, so each keeps its own baseline entry.
+ *
+ * @param block - discovered function or callable block; when `callableNode` is absent, only line bounds are returned
+ * @param parsed - shared parsed syntax tree owning the block's AST offsets
+ * @returns Declaration span with line bounds, plus 1-based start/end columns when `callableNode` is present.
+ */
+function blockDeclarationSpan(block: FunctionBlock, parsed: ParsedScript): DeclarationSpan {
+  const endLine = block.startLine + block.lineCount - 1;
+  const span: DeclarationSpan = { name: block.name, startLine: block.startLine, endLine };
+  // A block found without a syntax node keeps line-only bounds, so its baseline entry is ranked by line alone.
+  if (block.callableNode === undefined) {
+    return span;
+  }
+  const anchorNode = declarationAnchorNode(block.callableNode);
+  const startPos = parsed.sourceFile.getLineAndCharacterOfPosition(anchorNode.getStart(parsed.sourceFile));
+  const endPos = parsed.sourceFile.getLineAndCharacterOfPosition(block.callableNode.getEnd());
+  // Preserve column precision when the declaration starts on the span's own opening line; leading JSDoc/decorators begin at column 1.
+  span.startColumn = startPos.line + 1 === block.startLine ? startPos.character + 1 : 1;
+  // Record the end column only when the syntax node ends on the block's last line, so a mismatch never narrows the span.
+  if (endPos.line + 1 === endLine) {
+    // The syntax node's end is just past its last character, so that offset is already the last character's 1-based column.
+    span.endColumn = endPos.character;
+  }
+  return span;
+}
+
+/**
+ * Widens an arrow or function expression to the variable or property it is assigned to.
+ * Findings reported on that name then still fall inside the function's span.
+ *
+ * @param callableNode - parsed AST node for the callable body
+ * @returns The owning variable/property declaration node when it directly wraps `callableNode`, otherwise `callableNode`.
+ */
+function declarationAnchorNode(callableNode: import("typescript").Node): import("typescript").Node {
+  const parent = callableNode.parent;
+  // A function assigned to a variable or property starts at its name, which is where findings about it are reported.
+  if (parent !== undefined && "initializer" in parent && parent.initializer === callableNode) {
+    return parent;
+  }
+  return callableNode;
+}
+
+/**
+ * Check whether a script exceeds the configured line or byte limits for deep syntax analysis.
+ *
+ * @param file - candidate input whose script classification and display path guide budget enforcement
+ * @param source - UTF-8 source text measured for line count and byte length
+ * @param config - scan configuration supplying deepScanBudget thresholds and enabled state
+ * @returns A non-fatal diagnostic requesting skipped deep checks, or undefined for non-scripts,
+ *   a disabled budget, or sources within both limits.
+ */
+function deepScanBudgetDiagnostic(file: SourceFile, source: string, config: Config): RunDiagnostic | undefined {
+  const budget = config.deepScanBudget;
+  if (!file.isScript || !budget.enabled) {
     return undefined;
   }
   const lines = lineCount(source);
   const bytes = Buffer.byteLength(source, "utf8");
-  if (lines <= DEEP_SCAN_MAX_LINES && bytes <= DEEP_SCAN_MAX_BYTES) {
+  if (lines <= budget.maxLines && bytes <= budget.maxBytes) {
     return undefined;
   }
   return {
-    noteType: "bounded-deep-scan",
-    path: file.displayPath,
-    message: `File exceeds the deep-scan budget (${lines} lines, ${bytes} bytes; limits ${DEEP_SCAN_MAX_LINES} lines / ${DEEP_SCAN_MAX_BYTES} bytes). Text-level rules (size, sensitive-data, config) still ran; deep script analysis was skipped.`,
+    diagnosticType: "bounded-deep-scan",
+    filePath: file.displayPath,
+    line: 1,
+    invalidatesRun: false,
+    message: `path=${file.displayPath}; lines=${lines}; bytes=${bytes}; maxLines=${budget.maxLines}; maxBytes=${budget.maxBytes}; override=${budget.override}. Text-level rules (size, sensitive-data, config) still ran; masking, block parsing, AST walking, and other deep script analysis were skipped.`,
   };
 }
 
-// Retains production files for exported-surface checks, tests for central-suite import coverage,
-// and import/export candidates for graph edges. Dropping any class here makes a project rule blind.
+/**
+ * Decide whether a scanned file belongs in the project index for exported-surface, test-coverage, and graph rules.
+ *
+ * @param file - discovered file providing script classification and display path
+ * @param source - file text inspected for potential import or export syntax candidates
+ * @returns True for script files that are production code, tests, or import/export candidates; false for non-scripts or unrelated scripts.
+ */
 function shouldRetainProjectSource(file: SourceFile, source: string): boolean {
   return file.isScript && (isProductionSourcePath(file.displayPath) || isTestPath(file.displayPath) || hasImportSyntaxCandidate(source));
 }
 
-// Stores the raw line view and, only when needed, a template-masked line view. The conditional mask
-// avoids paying lexer cost for files that cannot affect import edges while keeping fixtures invisible.
-function projectSource(file: SourceFile, source: string): ProjectSource {
-  const lines = source.split(/\r?\n/);
-  const templateMaskedLines = hasImportSyntaxCandidate(source) ? maskTemplateLiteralBodies(source).split(/\r?\n/) : lines;
-  return { file, lines, templateMaskedLines };
+/**
+ * Build compact project-index data for a retained script, pre-extracting import statements from template-masked lines
+ * so template fixture text cannot become graph edges and large scans do not retain full file line arrays.
+ *
+ * @param file - retained source file metadata
+ * @param source - raw UTF-8 source text scanned for import statements and code lines
+ * @param parsed - optional script parse used to exclude decorator text from the code-line count; without it, decorator-only lines count
+ * @returns Compact ProjectSource carrying pre-extracted import statements and substantive code-line count.
+ */
+function projectSource(file: SourceFile, source: string, parsed?: ParsedScript): ProjectSource {
+  const statements = hasImportSyntaxCandidate(source) ? extractImportStatements(maskTemplateLiteralBodies(source).split(/\r?\n/)) : [];
+  return { file, importStatements: statements, codeLineCount: codeLineFlags(source, parsed).filter(Boolean).length };
 }
 
-// Cheap prefilter for files that might contain real import/export edges or fixture strings that
-// mention them. False positives are acceptable; false negatives would drop graph edges.
+/**
+ * Cheap prefilter for files that might contain real import/export edges or fixture strings that mention them.
+ * False positives are acceptable; false negatives would drop graph edges.
+ *
+ * @param source - raw source text checked for import or from substrings
+ * @returns True when source contains `import` or `from`; false otherwise.
+ */
 function hasImportSyntaxCandidate(source: string): boolean {
   return source.includes("import") || source.includes("from");
 }
 
-// Per-file rule pipeline. Text rules run on every file (including config/yaml); TypeScript rules
-// run only on scripts within the deep-scan budget. Fixed order is part of the stable fingerprint
-// contract. Generated/copied files keep every security and sensitive-data finding but drop
-// documentation and naming findings - generated code is not maintainer-authored source, so pushing
-// doc/naming work at a human reviewer is unactionable noise.
-// Contract invariant: doc/naming skips must not suppress safety pillars or change rule order.
+/**
+ * Run the text pass first and preserve stable rule order. Generated sources skip documentation and naming findings to avoid noise.
+ *
+ * @param file - input path and script classification used by the rule passes
+ * @param source - original file text to check and inspect for generated markers
+ * @param config - selects rules and supplies their settings
+ * @param isWithinDeepScanBudget - allows deeper rules for scripts small enough to scan
+ * @param parsed - shared script parse when available for syntax-backed checks
+ * @returns Enabled findings in emission order. Generated input retains eligible safety findings under the same filtering contract.
+ */
 function analyseSource(file: SourceFile, source: string, config: Config, isWithinDeepScanBudget: boolean, parsed?: ParsedScript): Finding[] {
   const findings: Finding[] = [];
   // Size and documentation rules share one comment scan so code-only line counts do not add a second pass.
-  const comments = (ruleEnabled(config, "size.file-length") && usesCStyleComments(file)) || (file.isScript && isAnyRuleEnabled(config, COMMENT_QUALITY_RULE_IDS)) ? commentRecords(source) : [];
-  analyseTextRules(file, source, comments, config, findings);
+  const comments = file.isScript && (ruleEnabled(config, "size.file-length") || isAnyRuleEnabled(config, COMMENT_QUALITY_RULE_IDS)) ? commentRecords(source) : [];
+  analyseTextRules(file, source, comments, config, findings, parsed);
   if (file.isScript && isWithinDeepScanBudget) {
     analyseTypeScriptRules(file, source, comments, config, findings, parsed);
   }
@@ -308,18 +776,28 @@ function analyseSource(file: SourceFile, source: string, config: Config, isWithi
 // test-quality...) still applies - a generated file can leak a real credential.
 const GENERATED_SKIPPED_PILLARS = new Set<Pillar>(["documentation", "naming"]);
 
-// Marker-based generated/copied classification over the file's opening lines. Deliberately
-// requires an explicit marker rather than path hints - a `fixtures/` path alone must never change
-// rule behaviour, and `isDefaultIgnoredDir` stays the only directory-level exclusion surface.
+/**
+ * Marker-based generated or copied classification over the file's opening lines. Deliberately requires an
+ * explicit marker rather than path hints so a `fixtures/` path alone must never change rule behaviour,
+ * and `classifyIgnore` in discovery.ts stays the only directory-level exclusion surface.
+ *
+ * @param source - file text whose first 10 lines are tested for generated or copied markers
+ * @returns True when any opening line matches a generated or copied header marker; false otherwise.
+ */
 function isGeneratedSource(source: string): boolean {
   return source.split(/\r?\n/, 10).some((line) => /AUTO-?GENERATED|@generated\b|GENERATED FILE|Code generated|Generated by|DO NOT EDIT|Copied from/i.test(line));
 }
 
-/*
- * Cross-file rule pipeline. Contract invariant: scoped runs keep `paths.analysedFiles` scoped while
- * circular-import may build root graph context so cycles through requested files stay visible. It
- * swallows hidden root-context read failures in `graphProjectSources` so unrelated unreadable files
- * do not break a narrow scan.
+/**
+ * Run cross-file checks after per-file analysis. Root graph context keeps cycles through requested files visible while preserving report scope.
+ * Unreadable files encountered while gathering root graph context are skipped so a scoped scan can continue.
+ *
+ * @param projectRoot - root for deciding and discovering circular-import context
+ * @param options - requested scope and discovery settings for root context
+ * @param scopedFiles - discovered files whose paths define which root cycles to keep
+ * @param projectSources - scanned source snapshots for the scoped project index
+ * @param config - enables cross-file rules and supplies their settings
+ * @returns Cross-file findings under the scoped reporting contract, or an empty list if no pass runs or produces a finding.
  */
 function analyseProjectIndex(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[], projectSources: ProjectSource[], config: Config): Finding[] {
   const shouldUseRootCircularContext = ruleEnabled(config, CIRCULAR_IMPORT_RULE_ID) && shouldBuildRootCircularContext(projectRoot, options, scopedFiles);
@@ -339,16 +817,21 @@ function analyseProjectIndex(projectRoot: string, options: AnalysisOptions, scop
 }
 
 const PROJECT_INDEX_RULE_IDS = [
-  "design.deep-relative-import",
   CIRCULAR_IMPORT_RULE_ID,
   "design.large-module-concentration",
 ] as const;
 const SCOPED_PROJECT_INDEX_RULE_IDS = [
-  "design.deep-relative-import",
   "design.large-module-concentration",
 ] as const;
 
-// Root graph context is needed only for narrow path operands; full-root scans already have context.
+/**
+ * Determine whether a scoped scan needs extra graph context rooted at projectRoot to find cycles through scopedFiles.
+ *
+ * @param projectRoot - project root directory used to resolve requested target paths
+ * @param options - scan options whose explicit path operands determine if the scan is already root-wide
+ * @param scopedFiles - files discovered for the requested targets
+ * @returns True when scopedFiles and explicit paths are non-empty and none resolve to projectRoot; false otherwise.
+ */
 function shouldBuildRootCircularContext(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[]): boolean {
   if (scopedFiles.length === 0 || options.paths.length === 0) {
     return false;
@@ -356,33 +839,55 @@ function shouldBuildRootCircularContext(projectRoot: string, options: AnalysisOp
   return options.paths.every((input) => displayPath(projectRoot, absolutize(projectRoot, input)) !== ".");
 }
 
-// Builds stable circular-import findings from the repository root, then filters back to requested files.
+/**
+ * Read root graph context so that a scoped scan can detect a cycle passing through files outside the request.
+ *
+ * @param projectRoot - root directory for graph discovery
+ * @param options - discovery settings to keep while clearing the requested path operands
+ * @param scopedFiles - requested files whose display paths qualify a cycle for the report
+ * @param config - discovery and project-source settings for the root scan
+ * @returns Stable circular-import findings touching a requested file, or an empty list if no cycle qualifies.
+ */
 function rootCircularImportFindings(projectRoot: string, options: AnalysisOptions, scopedFiles: SourceFile[], config: Config): Finding[] {
   const requestedFiles = new Set(scopedFiles.map((file) => file.displayPath));
   const rootDiscovery = discoverSources(projectRoot, { ...options, paths: [] }, config);
-  const rootProjectSources = graphProjectSources(rootDiscovery.files);
+  const rootProjectSources = graphProjectSources(rootDiscovery.files, config);
   const findings: Finding[] = [];
   analyseCircularImportRule(buildProjectIndex(rootProjectSources), findings);
   return findings.filter((finding) => circularImportFindingTouchesRequestedFile(finding, requestedFiles));
 }
 
-// Reads just the root files needed for import graph context and swallows unrelated read failures.
-function graphProjectSources(files: SourceFile[]): ProjectSource[] {
+/**
+ * Read root-context candidates from files and collect retained script snapshots that satisfy the deep-scan budget.
+ * Unreadable or unprocessable candidates are skipped; the primary scoped scan owns requested-file diagnostics.
+ *
+ * @param files - discovered root-level source candidates to read from disk
+ * @param config - scan configuration supplying deep-scan budget limits
+ * @returns Retained project-index snapshots for readable, within-budget scripts.
+ */
+function graphProjectSources(files: SourceFile[], config: Config): ProjectSource[] {
   const projectSources: ProjectSource[] = [];
   for (const file of files) {
     try {
       const source = readFileSync(file.absolutePath, "utf8");
-      if (!deepScanBudgetNote(file, source) && shouldRetainProjectSource(file, source)) {
+      if (!deepScanBudgetDiagnostic(file, source, config) && shouldRetainProjectSource(file, source)) {
         projectSources.push(projectSource(file, source));
       }
     } catch {
-      // ignore hidden root-context read failures; scoped scans still report requested-file errors.
+      // Root context is supplemental; the primary scan reports requested-file failures, so this pass adds no duplicate diagnostic.
     }
   }
   return projectSources;
 }
 
-// Contract filter: root-context circular findings survive only when the SCC contains a requested file.
+/**
+ * Check whether a circular-import finding lists a requested display path among its cycle members.
+ * The scope contract falls back to the finding's path for a missing or non-array list; empty arrays and non-string members never match.
+ *
+ * @param finding - circular-import finding whose `metadata.files` or `filePath` is inspected
+ * @param requestedFiles - set of display paths belonging to the scoped request
+ * @returns True when at least one cycle member path is in requestedFiles; false otherwise.
+ */
 function circularImportFindingTouchesRequestedFile(finding: Finding, requestedFiles: Set<string>): boolean {
   const files = Array.isArray(finding.metadata.files) ? finding.metadata.files : [finding.filePath];
   return files.some((file) => typeof file === "string" && requestedFiles.has(file));
@@ -400,19 +905,7 @@ const SENSITIVE_DATA_RULE_IDS = ruleIdsForPillar("sensitive-data");
 const SIZE_RULE_IDS = ruleIdsForPillar("size");
 const TEST_QUALITY_RULE_IDS = ruleIdsForPillar("test-quality");
 
-/*
- * Sensitive-data rules that infer a secret from shape rather than value, so generated
- * dependency metadata defeats them: every integrity digest looks high-entropy, and a package
- * named `gtoken` turns `gtoken: 8.0.0(supports-color@11.0.0)` into a credential assignment.
- * Suppressed for lockfiles only. Every value-shaped detector still runs there.
- */
-const LOCKFILE_SUPPRESSED_SENSITIVE_RULE_IDS = new Set([
-  "sensitive-data.high-entropy-string",
-  "sensitive-data.hardcoded-env-value",
-]);
-
 const GITHUB_ACTIONS_RULE_IDS = [
-  "security.github-actions-broad-permissions",
   "security.github-actions-pull-request-target",
   "security.github-actions-remote-shell",
   "security.github-actions-secrets-in-pr",
@@ -421,32 +914,28 @@ const GITHUB_ACTIONS_RULE_IDS = [
 
 const PROJECT_CONFIG_RULE_IDS = [
   "security.remote-install-script",
-  "security.risky-lifecycle-script",
   "security.url-dependency",
   "waste.broad-runtime-version",
   "design.package-bin-missing",
   "design.package-bin-not-executable",
 ] as const;
 
-const BLOCK_RULE_IDS = [
+// The size and complexity block rules, the only rules that also run on the measure-only callable forms.
+const BLOCK_MEASURE_RULE_IDS = [
   "size.function-length",
   "size.parameter-count",
   "complexity.cyclomatic",
-  "complexity.cognitive",
-  "naming.generic-function",
+] as const;
+
+const BLOCK_RULE_IDS = [
+  ...BLOCK_MEASURE_RULE_IDS,
   "docs.missing-exported-function-doc",
   "docs.missing-internal-function-doc",
-  "waste.empty-function",
-  "waste.unused-parameter",
-  "waste.redundant-variable",
   "waste.useless-return",
 ] as const;
 
 const PARAMETER_NAMING_RULE_IDS = [
-  "naming.boolean-prefix",
-  "naming.generic-parameter",
   "naming.identifier-quality",
-  "naming.negative-boolean",
   "naming.short-variable",
 ] as const;
 
@@ -454,39 +943,24 @@ const DOCBLOCK_RULE_IDS = [
   "docs.missing-param-tag",
   "docs.missing-return-tag",
   "docs.stale-param-tag",
-  "docs.useless-docblock",
-] as const;
-
-const INTERFACE_FIELD_RULE_IDS = [
-  "naming.boolean-prefix",
-  "naming.negative-boolean",
 ] as const;
 
 // Every rule id `analyseCommentQualityRules` can emit - including `docs.fixture-purpose-missing`
 // via `pushFixturePurposeFindings` - so the group gate never silences an enabled rule.
 const COMMENT_QUALITY_RULE_IDS = [
   "docs.fixture-purpose-missing",
-  "docs.magic-threshold-without-rationale",
   "docs.missing-error-behavior-doc",
   "docs.missing-invariant-doc",
   "docs.missing-side-effect-doc",
   "docs.missing-why-for-complex-code",
-  "docs.stale-comment",
   "docs.suppression-without-rationale",
   "docs.todo-without-tracking",
-  "docs.useless-docblock",
 ] as const;
 
 const CLASS_RULE_IDS = [
   "docs.missing-public-doc",
   "naming.class-file-mismatch",
-  "modernisation.public-property",
   "modernisation.readonly-property-candidate",
-] as const;
-
-const IDENTIFIER_INVENTORY_RULE_IDS = [
-  "naming.acronym-case",
-  "naming.inconsistent-casing",
 ] as const;
 
 const SECURITY_FLOW_RULE_IDS = [
@@ -510,7 +984,6 @@ const BLOCK_DEPENDENT_RULE_IDS = [
   ...PARAMETER_NAMING_RULE_IDS,
   ...TEST_QUALITY_RULE_IDS,
   ...COMMENT_QUALITY_RULE_IDS,
-  ...IDENTIFIER_INVENTORY_RULE_IDS,
 ];
 
 const TYPESCRIPT_RULE_IDS = [
@@ -525,7 +998,11 @@ const TYPESCRIPT_RULE_IDS = [
   ...TEST_QUALITY_RULE_IDS,
 ];
 
-// Groups rule ids from the public catalogue once so broad pass gates stay aligned with profiles.
+/**
+ * Group rule ids from the public catalogue once so broad pass gates stay aligned with profiles.
+ *
+ * @returns Read-only map from each pillar to its catalogue rule ids.
+ */
 function ruleIdsByPillar(): ReadonlyMap<Pillar, readonly string[]> {
   const byPillar = new Map<Pillar, string[]>();
   for (const descriptor of ruleDescriptors()) {
@@ -536,55 +1013,64 @@ function ruleIdsByPillar(): ReadonlyMap<Pillar, readonly string[]> {
   return byPillar;
 }
 
-// Looks up a precomputed pillar group; missing groups are empty so callers can stay branch-free.
+/**
+ * Look up a precomputed pillar group from the catalogue index; missing groups are empty so callers stay branch-free.
+ *
+ * @param pillar - quality pillar whose registered rule ids are requested
+ * @returns Array of rule ids for pillar, or an empty array when the pillar has none.
+ */
 function ruleIdsForPillar(pillar: Pillar): readonly string[] {
   return RULE_IDS_BY_PILLAR.get(pillar) ?? [];
 }
 
-// Checks a rule-id group through the resolved config map so profiles and explicit overrides share one gate.
+/**
+ * Check whether at least one rule in a group is active under the resolved configuration.
+ *
+ * @param config - scan configuration including profile defaults and explicit rule overrides
+ * @param ruleIds - candidate rule identifiers to test
+ * @returns True when any id in ruleIds is enabled by config; false when none are enabled or ruleIds is empty.
+ */
 function isAnyRuleEnabled(config: Config, ruleIds: readonly string[]): boolean {
   return ruleIds.some((ruleId) => ruleEnabled(config, ruleId));
 }
 
-/*
- * Per-file text-pillar rules run before script-only rules because config, workflow, and
- * secret surfaces are not TypeScript. The order is a stable baseline contract: reshuffling these
- * checks changes same-line finding order for machine reports.
+/**
+ * Check source text before deeper script passes so that text inputs are covered too. Keep the rule order stable for tied findings.
+ *
+ * @param file - input path for findings and script classification for the size check
+ * @param source - raw text to measure or check for sensitive data, workflow and configuration issues
+ * @param comments - comment records used to count substantive script lines
+ * @param config - enables checks and supplies the size threshold and severity
+ * @param findings - caller's array to append results to
+ * @param parsed - shared script parse used to exclude decorator text. Without it, decorator-only lines count.
+ * @returns Nothing. Appends size findings when enabled and text findings from each group with at least one enabled rule.
  */
-function analyseTextRules(file: SourceFile, source: string, comments: CommentRecord[], config: Config, findings: Finding[]): void {
-  if (ruleEnabled(config, "size.file-length") && !isGeneratedLockfile(file.displayPath)) {
-    const lines = substantiveLineCount(file, source, comments);
+function analyseTextRules(file: SourceFile, source: string, comments: CommentRecord[], config: Config, findings: Finding[], parsed?: ParsedScript): void {
+  // The file-length threshold applies to scripts because it measures code size. Other inputs still receive enabled text checks.
+  // The size bands follow FAMILY-CONTRACT.md section 12 under Size and complexity findings in two bands.
+  if (file.isScript && ruleEnabled(config, "size.file-length")) {
+    const lines = substantiveLineCount(source, comments, parsed);
     const fileLengthThreshold = threshold(config, "size.file-length", 1000);
     if (lines > fileLengthThreshold) {
+      const band = bandedFields(lines, fileLengthThreshold, ruleSeverity(config, "size.file-length", "error"), LOWER_BAND_FILE, SPLIT_FILE);
       findings.push(
         makeFinding({
           ruleId: "size.file-length",
           message: `File has ${lines} substantive lines, above the threshold of ${fileLengthThreshold}.`,
           filePath: file.displayPath,
           line: 1,
-          severity: ruleSeverity(config, "size.file-length", "error"),
+          severity: band.severity,
           pillar: "size",
           confidence: "high",
-          remediation: "Split unrelated responsibilities into smaller files. Or raise rules.size.file-length.threshold in .gruff-ts.yaml if the bound is wrong for this project.",
-          metadata: { lines, threshold: fileLengthThreshold },
+          remediation: band.remediation,
+          metadata: { lines, threshold: fileLengthThreshold, limitBand: band.limitBand },
         }),
       );
     }
   }
 
   if (isAnyRuleEnabled(config, SENSITIVE_DATA_RULE_IDS)) {
-    const sensitiveFindings: Finding[] = [];
-    analyseSensitiveData(file, source, config, sensitiveFindings);
-    // Generated dependency metadata defeats the two shape-based detectors: integrity digests
-    // look high-entropy, and a package whose name contains `token`/`key`/`secret` makes its
-    // version spec look like a credential assignment. The value-shaped detectors still run,
-    // because a credential in a `resolved` URL is the real leak vector for this file family.
-    const isLockfile = isGeneratedLockfile(file.displayPath);
-    for (const sensitiveFinding of sensitiveFindings) {
-      if (!isLockfile || !LOCKFILE_SUPPRESSED_SENSITIVE_RULE_IDS.has(sensitiveFinding.ruleId)) {
-        findings.push(sensitiveFinding);
-      }
-    }
+    analyseSensitiveData(file, source, findings);
   }
   if (isAnyRuleEnabled(config, GITHUB_ACTIONS_RULE_IDS)) {
     analyseGithubActionsRules(file, source, findings);
@@ -594,25 +1080,33 @@ function analyseTextRules(file: SourceFile, source: string, comments: CommentRec
   }
 }
 
-// Counts nonblank lines after removing C-style and XML comments, then applies config-format
-// full-line markers. Strings remain intact, so a line containing only a string literal still counts.
-function substantiveLineCount(file: SourceFile, source: string, comments: CommentRecord[]): number {
-  const withoutCStyleComments = maskRecordedComments(source, comments);
-  const withoutComments = extname(file.displayPath).toLowerCase() === ".xml" ? maskXmlComments(withoutCStyleComments) : withoutCStyleComments;
-  return withoutComments
+/**
+ * Count nonblank lines after masking recorded comments and, when available, decorators, while skipping `#!` lines.
+ * String text otherwise counts.
+ *
+ * @param source - raw script text to measure
+ * @param comments - recorded comment spans replaced with spaces before counting
+ * @param parsed - optional script parse enabling decorator masking; without it, decorator-only lines count
+ * @returns Count of substantive lines, or 0 for empty source.
+ */
+function substantiveLineCount(source: string, comments: CommentRecord[], parsed?: ParsedScript): number {
+  const withoutComments = maskRecordedComments(source, comments);
+  // Mask only the decorator spans so code sharing a line with a decorator still counts.
+  // See FAMILY-CONTRACT.md section 12 under Code lines in every line count.
+  const withoutDecorators = parsed ? maskDecorators(withoutComments, parsed) : withoutComments;
+  return withoutDecorators
     .split(/\r?\n/)
-    .filter((line) => isSubstantiveLine(file, line))
+    .filter((line) => isSubstantiveLine(line))
     .length;
 }
 
-// C-style comments are valid on script/CSS surfaces and common in JSON-with-comments configs.
-// Other supported text formats use their own full-line markers and must keep literal slash pairs.
-function usesCStyleComments(file: SourceFile): boolean {
-  const extension = extname(file.displayPath).toLowerCase();
-  return file.isScript || extension === ".css" || extension === ".json";
-}
-
-// Replaces comment text with spaces while retaining newlines and UTF-16 offsets from CommentRecord.
+/**
+ * Replace comment text with spaces while retaining newlines and UTF-16 offsets from CommentRecord.
+ *
+ * @param source - original script text
+ * @param comments - ordered comment spans whose non-newline characters are masked
+ * @returns Source text with recorded comments blanked out and line structure preserved.
+ */
 function maskRecordedComments(source: string, comments: CommentRecord[]): string {
   let cursor = 0;
   let masked = "";
@@ -625,29 +1119,24 @@ function maskRecordedComments(source: string, comments: CommentRecord[]): string
   return masked + source.slice(cursor);
 }
 
-// XML comments are outside the JavaScript lexer; preserving their newlines keeps line accounting stable.
-function maskXmlComments(source: string): string {
-  return source.replace(/<!--[\s\S]*?(?:-->|$)/g, (comment) => comment.replace(/[^\r\n]/g, " "));
-}
-
-// Hash and semicolon markers are restricted to formats where they are comments, so TypeScript
-// private fields and ordinary semicolon statements remain substantive.
-function isSubstantiveLine(file: SourceFile, line: string): boolean {
+/**
+ * Test whether a line contributes to substantive code length.
+ * A blank line and a `#!` interpreter line are free; a TypeScript private field such as `#count = 0;` still counts.
+ *
+ * @param line - single comment-masked and decorator-masked source line
+ * @returns True when the trimmed line is non-empty and does not start with `#!`; false otherwise.
+ */
+function isSubstantiveLine(line: string): boolean {
   const trimmed = line.trim();
-  if (!trimmed) {
-    return false;
-  }
-  const name = basename(file.displayPath).toLowerCase();
-  const extension = extname(name);
-  const usesHashComments = [".yaml", ".yml", ".toml"].includes(extension) || name === ".npmrc" || name.startsWith(".env");
-  if ((usesHashComments || (file.isScript && trimmed.startsWith("#!"))) && trimmed.startsWith("#")) {
-    return false;
-  }
-  const usesSemicolonComments = extension === ".ini" || name === ".npmrc";
-  return !(usesSemicolonComments && trimmed.startsWith(";"));
+  return trimmed !== "" && !trimmed.startsWith("#!");
 }
 
-// Counts the same logical lines as `source.split(/\r?\n/)` without allocating the full line array.
+/**
+ * Count logical lines in source without allocating a split array.
+ *
+ * @param source - text whose newline characters are counted
+ * @returns Logical line count, where empty source is 1 and each trailing newline adds 1.
+ */
 function lineCount(source: string): number {
   let count = 1;
   for (let index = 0; index < source.length; index += 1) {
@@ -658,17 +1147,16 @@ function lineCount(source: string): number {
   return count;
 }
 
-// Package-manager lockfiles contain generated dependency metadata, including public integrity digests.
-// Discovery retains them; `size.file-length` skips them outright and the sensitive-data pass uses this
-// predicate to drop only `sensitive-data.high-entropy-string`, so lockfile credentials still report.
-function isGeneratedLockfile(filePath: string): boolean {
-  const fileName = basename(filePath);
-  return fileName === "package-lock.json" || fileName === "npm-shrinkwrap.json" || fileName === "yarn.lock" || fileName === "pnpm-lock.yaml" || fileName === "bun.lockb";
-}
-
-/*
- * TypeScript-only rule pipeline. Masks comments and literals once, parses callable blocks once,
- * then walks every rule pack in a stable, deterministic order so reports and baselines remain reproducible.
+/**
+ * Run enabled script checks in a stable order so that reports remain reproducible. Skip passes that require a parse when it is unavailable.
+ *
+ * @param file - script being checked and the path used in its findings
+ * @param source - original script text used by lexical and text checks
+ * @param comments - comment locations and text available to comment quality checks
+ * @param config - selects rule passes and their settings
+ * @param findings - caller's array to append script findings to
+ * @param parsed - shared script parse when available for syntax-backed checks
+ * @returns Nothing. Appends findings from enabled passes to the caller's array.
  */
 function analyseTypeScriptRules(file: SourceFile, source: string, comments: CommentRecord[], config: Config, findings: Finding[], parsed?: ParsedScript): void {
   if (!isAnyRuleEnabled(config, TYPESCRIPT_RULE_IDS)) {
@@ -678,51 +1166,77 @@ function analyseTypeScriptRules(file: SourceFile, source: string, comments: Comm
   const blocks = isAnyRuleEnabled(config, BLOCK_DEPENDENT_RULE_IDS) ? functionBlocks(source, codeSource, parsed) : [];
   runRulePass(config, "docs.missing-file-overview", () => analyseFileOverviewDoc(file, source, findings));
   analyseBlocks(file, source, codeSource, blocks, config, findings);
-  runRulePass(config, "waste.unused-import", () => analyseUnusedImports(file, codeSource, source, findings));
-  runRuleGroupPass(config, LINE_RULE_IDS, () => analyseLineRules(file, source, codeSource, config, findings));
+  runRulePass(config, "test-quality.duplicate-test-body", () => {
+    if (parsed) {
+      analyseDuplicateTestGroups(file, parsed, findings);
+    }
+  });
+  // Callables only the size and complexity rules measure; the documentation and naming rules never see them.
+  runRuleGroupPass(config, BLOCK_MEASURE_RULE_IDS, () => {
+    if (parsed) {
+      for (const block of measuredOnlyFunctionBlocks(source, codeSource, parsed)) {
+        analyseBlockMeasures(blockRuleContext(file, block, config, findings));
+      }
+    }
+  });
+  runRulePass(config, "waste.unused-import", () => analyseUnusedImports(file, codeSource, source, findings, parsed));
+  runRuleGroupPass(config, LINE_RULE_IDS, () => analyseLineRules(file, source, codeSource, config, findings, parsed));
   runRuleGroupPass(config, SECURITY_FLOW_RULE_IDS, () => analyseSecurityFlow(file, source, findings, parsed?.sourceFile));
   runRulePass(config, "waste.unreachable-code", () => analyseUnreachable(file, codeSource, findings));
-  // Docblock rules read real AST signatures; a bounded-deep-scan file without a parse skips them
-  // like the other syntax-backed passes instead of falling back to a lossy regex walk.
+  // Without a parse, skip docblock checks because they need reliable callable signatures.
   runRuleGroupPass(config, DOCBLOCK_RULE_IDS, () => {
     if (parsed) {
-      analyseDocRules(file, findings, parsed);
+      analyseDocRules(file, findings, parsed, {
+        isParamTagEveryCallable: optionBoolean(config, "docs.missing-param-tag", "everyCallable", true),
+        isReturnTagEveryCallable: optionBoolean(config, "docs.missing-return-tag", "everyCallable", true),
+      });
     }
   });
   runRulePass(config, "docs.missing-interface-doc", () => analyseInterfaceDocs(file, source, codeSource, findings));
-  runRuleGroupPass(config, INTERFACE_FIELD_RULE_IDS, () => analyseInterfaceFields(file, source, codeSource, config, findings));
   runRuleGroupPass(config, COMMENT_QUALITY_RULE_IDS, () => analyseCommentQualityRules({ file, source, codeSource, blocks, comments, config, findings }));
   runRuleGroupPass(config, CLASS_RULE_IDS, () => analyseClassRules(file, source, codeSource, config, findings, parsed));
   runRulePass(config, "dead-code.unused-private-method", () => analyseDeadCode(file, codeSource, findings));
-  runRuleGroupPass(config, IDENTIFIER_INVENTORY_RULE_IDS, () => {
-    // A normal deep script scan always supplies the shared parse; a missing result must not reparse.
-    if (!parsed) {
-      return;
-    }
-    const inventory = collectDeclaredIdentifiers(source, codeSource, parsed);
-    runRulePass(config, "naming.inconsistent-casing", () => analyseInconsistentCasing(file, inventory, config, findings));
-    runRulePass(config, "naming.acronym-case", () => analyseAcronymCase(file, inventory, config, findings));
-  });
 }
 
-// Runs a single-rule pass only when that exact resolved rule id is enabled.
+/**
+ * Gate a single-rule pass on its enablement in config so disabled rules incur no execution cost.
+ *
+ * @param config - resolved scan configuration tested for rule enablement
+ * @param ruleId - identifier of the rule guarded by this pass
+ * @param action - callback executed only when config enables ruleId
+ * @returns Nothing. Invokes action when ruleId is enabled; otherwise does nothing.
+ */
 function runRulePass(config: Config, ruleId: string, action: () => void): void {
   if (ruleEnabled(config, ruleId)) {
     action();
   }
 }
 
-// Runs a shared pass only when at least one rule it can emit is enabled.
+/**
+ * Gate a multi-rule pass so it runs only when at least one rule in the group is enabled.
+ *
+ * @param config - resolved scan configuration tested against the rule group
+ * @param ruleIds - rule identifiers belonging to the pass
+ * @param action - callback executed only when at least one id in ruleIds is enabled
+ * @returns Nothing. Invokes action if any rule in ruleIds is enabled; otherwise does nothing.
+ */
 function runRuleGroupPass(config: Config, ruleIds: readonly string[], action: () => void): void {
   if (isAnyRuleEnabled(config, ruleIds)) {
     action();
   }
 }
 
-// One pass over the file's parsed callables. The naming and test-block fanouts are dispatched
-// separately so blocks.ts can stay independent of the naming-pusher and test-block-rule modules;
-// the per-rule emission order from `analyseBlockRules` is the stable fingerprint contract every
-// Finding depends on for deterministic baseline matching.
+/**
+ * Dispatch enabled rules for each parsed callable. Keep emission order stable because the report sort can preserve it for tied findings.
+ *
+ * @param file - source file whose path identifies the findings
+ * @param source - original source text for test checks
+ * @param codeSource - source with comments and literals masked for test checks
+ * @param blocks - parsed callables to check
+ * @param config - selects enabled rule groups and their settings
+ * @param findings - caller's array to append rule results to
+ * @returns Nothing. Appends enabled block, parameter naming and test findings to the caller's array.
+ */
 function analyseBlocks(file: SourceFile, source: string, codeSource: string, blocks: FunctionBlock[], config: Config, findings: Finding[]): void {
   const shouldAnalyseBlockRules = isAnyRuleEnabled(config, BLOCK_RULE_IDS);
   const shouldAnalyseParameterNaming = isAnyRuleEnabled(config, PARAMETER_NAMING_RULE_IDS);
@@ -743,32 +1257,48 @@ function analyseBlocks(file: SourceFile, source: string, codeSource: string, blo
   }
 }
 
-/*
- * Per-parameter naming-rule fanout. Each parameter is checked for short-name / placeholder forms;
- * typed booleans get the extra prefix and negative-name checks. Reports findings to the shared sink.
+/**
+ * The naming contract exempts local bindings, tests, recognized comparator pairs, and `TestContext` `t` parameters from short-name checks.
+ * Placeholder checks still cover every parameter.
+ *
+ * @param context - callable and location to check, configured rules, and destination findings array
+ * @returns Nothing. Appends applicable parameter-name findings to the caller's array.
  */
 function pushParameterNamingFindings(context: BlockRuleContext): void {
   const line = context.block.declarationLine;
   const params = parameterNames(context.block.params);
   const hasLocallyBoundParameters = isLocallyBoundParameterOwner(context.block);
+  const isTestSourceFile = isTestPath(context.file.displayPath);
   for (const parameter of params) {
-    if (!hasLocallyBoundParameters && !isComparatorShortParameter(context, params, parameter.name)) {
+    if (!hasLocallyBoundParameters && !isComparatorShortParameter(context, params, parameter.name) && !isTestContextShortParameter(parameter, isTestSourceFile)) {
       pushShortVariableAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
     }
     pushIdentifierQualityAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
-    if (isBooleanParameter(parameter.raw)) {
-      pushBooleanPrefixAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
-      pushNegativeBooleanAt(context.file, line, parameter.name, context.config, context.findings, "parameter");
-    }
-    if (isGenericParameterCandidate(context, params.length, parameter.name)) {
-      pushGenericParameterAt(context.file, line, parameter.name, context.findings);
-    }
   }
 }
 
-// Variable-bound callables and test callbacks keep their parameters beside the implementation,
-// so short closure names do not create the cross-file review cost this rule is meant to surface.
-// Declared functions and methods remain covered. Other parameter naming rules still run here.
+/**
+ * Recognizes the standard `node:test` context parameter `t` so test helpers are not flagged as too short.
+ * Matches when the parameter is named `t` and either lives in a test file or carries a `TestContext` type annotation.
+ *
+ * @param parameter - parsed parameter name and raw declaration text from the callable signature
+ * @param isTestSourceFile - true when the enclosing file matches `isTestPath`
+ * @returns True when parameter `t` qualifies for the test-context exemption; false for every other parameter.
+ */
+function isTestContextShortParameter(parameter: { name: string; raw: string }, isTestSourceFile: boolean): boolean {
+  if (parameter.name !== "t") {
+    return false;
+  }
+  return isTestSourceFile || /:\s*(?:import\([^)]+\)\.)?(?:[A-Za-z_$][A-Za-z0-9_$]*\.)?TestContext\b/.test(parameter.raw);
+}
+
+/**
+ * Determine whether a callable's parameters are exempt from short-name checks as a test callback or local binding.
+ * Exported bindings, declarations, methods, and unrecognized binding syntax remain covered.
+ *
+ * @param block - parsed function or callback block inspected for test status, export flag, and const/let binding
+ * @returns True when block is a test callback or non-exported const/let-bound callable; false otherwise.
+ */
 function isLocallyBoundParameterOwner(block: FunctionBlock): boolean {
   if (block.isTest) {
     return true;
@@ -784,8 +1314,15 @@ function isLocallyBoundParameterOwner(block: FunctionBlock): boolean {
   return bindingName === block.name;
 }
 
-// `(a, b)` is a conventional comparator pair when the callable is explicitly shaped like sorting.
-// Keep the exemption narrow so arbitrary two-parameter helpers still need domain names.
+/**
+ * Check whether a parameter name qualifies for the conventional comparator exemption for the callable in context.
+ * params must contain exactly `a` then `b`, and the callable's name or body must match comparator heuristics.
+ *
+ * @param context - callable block rule context supplying the enclosing callable's name and body
+ * @param params - ordered parameter descriptors parsed from the callable signature
+ * @param name - parameter name being evaluated for exemption
+ * @returns True when name is `a` or `b` in an `(a, b)` comparator callable; false otherwise.
+ */
 function isComparatorShortParameter(context: BlockRuleContext, params: Array<{ name: string; raw: string }>, name: string): boolean {
   const names = params.map((parameter) => parameter.name);
   if (names.length !== 2 || names[0] !== "a" || names[1] !== "b" || (name !== "a" && name !== "b")) {
@@ -794,8 +1331,14 @@ function isComparatorShortParameter(context: BlockRuleContext, params: Array<{ n
   return isComparatorCallable(context.block.name, context.block.codeBody);
 }
 
-// Comparator-shaped callables are either named for ordering (`compare*`, `*Comparator`, `byName`) or
-// their body performs the standard locale/numeric ordering expression over both parameters.
+/**
+ * Test whether a callable's name or body matches comparator heuristics permitting conventional `(a, b)` parameters.
+ * A dotted localeCompare matches with or without whitespace before the opening parenthesis, regardless of receiver or arguments.
+ *
+ * @param name - callable identifier tested against compare/Comparator/by naming prefixes
+ * @param codeBody - comment-masked callable body tested for localeCompare or subtraction/comparison returns
+ * @returns True when name or codeBody matches comparator heuristics; false otherwise.
+ */
 function isComparatorCallable(name: string, codeBody: string): boolean {
   return (
     /^(?:compare[A-Z0-9_]?|.*Comparator$|by[A-Z])/.test(name) ||
@@ -803,53 +1346,4 @@ function isComparatorCallable(name: string, codeBody: string): boolean {
     /\breturn\s+a\b[\s\S]*?(?:-\s*b\b|[<>]=?\s*b\b)/.test(codeBody) ||
     /\breturn\s+b\b[\s\S]*?(?:-\s*a\b|[<>]=?\s*a\b)/.test(codeBody)
   );
-}
-
-// Generic-parameter rule is context-gated: only fires when the surrounding function is itself
-// large enough to deserve attention (long, complex, or many parameters). Keeps noise down on
-// trivial helpers that legitimately accept a `value` argument.
-function isGenericParameterCandidate(context: BlockRuleContext, paramCount: number, name: string): boolean {
-  if (!context.config.placeholderNames.has(name.toLowerCase())) {
-    return false;
-  }
-  const minParameters = optionNumber(context.config, "naming.generic-parameter", "minParameters", 3);
-  const minLineCount = optionNumber(context.config, "naming.generic-parameter", "minLineCount", 30);
-  const minCyclomatic = optionNumber(context.config, "naming.generic-parameter", "minCyclomatic", 8);
-  return (
-    paramCount >= minParameters ||
-    context.block.lineCount >= minLineCount ||
-    context.cyclomatic >= minCyclomatic
-  );
-}
-
-// Only called after `isGenericParameterCandidate` has gated the placeholder check on the function's
-// complexity and length - reaching this helper means the rule decided the finding is wanted.
-// Reports the stable `naming.generic-parameter` finding.
-function pushGenericParameterAt(file: SourceFile, line: number, name: string, findings: Finding[]): void {
-  findings.push(
-    makeFinding({
-      ruleId: "naming.generic-parameter",
-      message: `Parameter \`${name}\` uses a placeholder name in a function that meets context-gating thresholds.`,
-      filePath: file.displayPath,
-      line,
-      severity: "advisory",
-      pillar: "naming",
-      confidence: "medium",
-      symbol: name,
-      remediation: "Use a name that describes the parameter's role.",
-      metadata: { identifierName: name, surface: "parameter" },
-    }),
-  );
-}
-
-// Two positive cases: explicit `: boolean` annotation, or a default value of `true`/`false`.
-// Explicit `as` casts are rejected so generic-call sites don't trip the boolean-name checks.
-function isBooleanParameter(raw: string): boolean {
-  if (/:\s*boolean\b/.test(raw)) {
-    return true;
-  }
-  if (/\bas\b/.test(raw)) {
-    return false;
-  }
-  return /=\s*(?:true|false)\s*$/.test(raw);
 }

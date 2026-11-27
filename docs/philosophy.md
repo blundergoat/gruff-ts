@@ -12,10 +12,10 @@ Used as a hook on an agent's output, gruff-ts is a forcing function, not advice.
 
 - **Verifiable.** The change can be checked by reading, not by re-deriving what the agent was thinking. The complexity, size, naming, and documentation pillars push toward code whose intent is visible on its face.
 - **Secure where the eye slips.** Human review reliably misses a known set of unsafe patterns - disabled TLS verification, `eval` and dynamic `Function` construction, injection-shaped string building, committed secrets. The security and sensitive-data pillars catch those mechanically so the reviewer does not have to.
-- **Honestly tested.** A test suite should raise confidence, not just coverage. The test-quality pillar flags low-signal ceremony - mock-only, snapshot-only, assertion-free, and tautological tests - so an agent cannot satisfy a "write tests" instruction with padding.
+- **Honestly tested.** A test suite should raise confidence, not just coverage. The test-quality pillar flags tautological assertions, shape-only checks that duplicate TypeScript, unused mocks, unlabelled assertion loops, global state mutation, and copy-pasted test bodies so an agent cannot satisfy a "write tests" instruction with padding.
 
 ## Why documentation is mandatory, even on a private one-liner
 
 Coding agents routinely produce code that superficially works while misunderstanding the requirement. The implementation can be plausible and still solve the wrong problem, and that failure is invisible to a reviewer reading only the code.
 
-Forcing the agent to state intent, usage, contract, and failure behaviour in prose gives the reviewer something to check the implementation against. The doc comment is a second, independent statement of what the code is meant to do, and a mismatch between that prose and the code is itself a signal that the change needs a deeper look. That is worth the friction even on a one-line private helper, because the cost of a confidently-wrong agent change is paid by the human who trusted it.
+Forcing the agent to state intent, usage, contract, and failure behaviour in prose gives the reviewer something to check the implementation against. The doc comment is a second, independent statement of what the code is meant to do, and a mismatch between that prose and the code is itself a signal that the change needs a deeper look. That is worth the friction even on a one-line private helper, because the cost of a confidently wrong agent change is paid by the human who trusted it.

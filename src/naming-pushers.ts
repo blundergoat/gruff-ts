@@ -1,112 +1,28 @@
 // Shared "push a naming finding at this line" helpers. Used both by the per-line walker in
-// line-rules.ts and by the parameter / interface-field walkers in cli.ts and class-rules.ts. Stable
-// metadata.surface distinguishes call sites while every finding uses the same fingerprint identity.
+// line-rules.ts and by the parameter walker in analyser.ts. Stable metadata.surface distinguishes
+// call sites while every finding uses the same fingerprint identity.
 import { type SourceFile } from "./discovery.ts";
 import { makeFinding } from "./findings.ts";
-import { escapeRegex } from "./findings-helpers.ts";
 import type { Config, Finding } from "./types.ts";
 
 /**
  * Stable label for the call-site that emitted a naming finding. Surfaces in `metadata.surface`
  * so downstream tooling can split per-pillar reports by origin without re-running the analyser.
  */
-export type NamingSurface = "declaration" | "parameter" | "destructure" | "interface-field";
+export type NamingSurface = "declaration" | "parameter" | "destructure";
 
 /**
- * Selects the report guidance for a boolean's source surface. Contract fields point users to the
- * complete replacement allowlist or a serialization map; local code receives a safe rename action.
- * @param surface Naming origin shown in finding metadata; interface-field means a contract surface.
- * @returns Remediation text and action metadata for the finding emitter.
- */
-export function booleanPrefixGuidance(surface: NamingSurface): { remediation: string; remediationAction: "APPLY" | "CONFIGURE"; configurationKey?: "allowlists.acceptedBooleanNames" } {
-  // Interface and named type-literal fields may be external keys that a rename would break.
-  if (surface === "interface-field") {
-    return {
-      remediation: "If this is an external contract key, include it in the complete replacement list at `allowlists.acceptedBooleanNames` or map it at the serialization boundary; otherwise rename the field with an intent-revealing prefix.",
-      remediationAction: "CONFIGURE",
-      configurationKey: "allowlists.acceptedBooleanNames",
-    };
-  }
-  return {
-    remediation: "Rename this boolean with an intent-revealing prefix such as is, has, can, should, or will.",
-    remediationAction: "APPLY",
-  };
-}
-
-/*
- * Negative-framed booleans (disableX, noX, preventX, …) read as double negations at call sites.
- * `negativeBooleanAllowed` is the user-curated exemption list. Reports the stable
- * `naming.negative-boolean` finding.
- */
-export function pushNegativeBooleanAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
-  if (!/^(?:disable|no|not|prevent|skip|disallow)[A-Z]/.test(name)) {
-    return;
-  }
-  if (config.negativeBooleanAllowed.has(name.toLowerCase())) {
-    return;
-  }
-  findings.push(
-    makeFinding({
-      ruleId: "naming.negative-boolean",
-      message: `Boolean identifier \`${name}\` is framed as a negation.`,
-      filePath: file.displayPath,
-      line,
-      severity: "advisory",
-      pillar: "naming",
-      confidence: "medium",
-      symbol: name,
-      remediation: "Invert the framing so callers do not read a double negation.",
-      metadata: { identifierName: name, surface },
-    }),
-  );
-}
-
-/*
- * Reports typed booleans without an accepted prefix or exact contract name. The finding keeps its
- * stable identity while its surface selects safe local-rename or contract configuration guidance.
- */
-export function pushBooleanPrefixAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
-  if (hasBooleanPrefix(name, config.booleanPrefixes) || isAcceptedBooleanStateName(name) || isAcceptedContractBooleanName(name, config, surface)) {
-    return;
-  }
-  const { remediation, ...remediationMetadata } = booleanPrefixGuidance(surface);
-  findings.push(
-    makeFinding({
-      ruleId: "naming.boolean-prefix",
-      message: `Boolean identifier \`${name}\` should use an intent-revealing prefix.`,
-      filePath: file.displayPath,
-      line,
-      severity: "advisory",
-      pillar: "naming",
-      confidence: "medium",
-      symbol: name,
-      remediation,
-      metadata: { identifierName: name, surface, ...remediationMetadata },
-    }),
-  );
-}
-
-const ACCEPTED_BOOLEAN_STATE_NAMES = new Set(["acknowledged", "exists", "validated", "detected", "resolved", "selected", "installed"]);
-const ACCEPTED_BOOLEAN_STATE_SUFFIXES = ["Available", "Required", "Validated", "Detected", "Resolved", "Selected", "Installed"];
-// Some booleans are state adjectives rather than predicate phrases. Keep this list deliberately
-// narrow so vague local names such as `ready` or `enabled` still get the maintainability prompt.
-function isAcceptedBooleanStateName(name: string): boolean {
-  return ACCEPTED_BOOLEAN_STATE_NAMES.has(name.toLowerCase()) || ACCEPTED_BOOLEAN_STATE_SUFFIXES.some((suffix) => name.endsWith(suffix));
-}
-
-// CLI option bags, DTOs, and schema fields often must expose exact external key names such as
-// `verbose` or `ok`. Limit the exact-name exemption to contract fields so ordinary locals still
-// need predicate-style names.
-function isAcceptedContractBooleanName(name: string, config: Config, surface: NamingSurface): boolean {
-  return surface === "interface-field" && config.acceptedBooleanNames.has(name.toLowerCase());
-}
-
-/*
- * Allows the standard `i`, `j`, `k` loop counters and anything on `acceptedAbbreviations`. Reports
- * `naming.short-variable` for any other one or two character name as a stable advisory finding.
- * `loopBodyLineCount` is the for-of caller's signal: when the binding came from a `for (const X of
- * Y) { … }` head and the body spans ≤ 10 lines, the rule suppresses the finding because the name's
- * lifetime is locally obvious. Other call sites (declaration, parameter, destructure) pass undefined.
+ * Checks whether a short name qualifies for a naming.short-variable advisory.
+ * Names longer than two characters and i, j and k are exempt.
+ *
+ * @param file - supplies the display path for the advisory
+ * @param line - source line to report with the advisory
+ * @param name - identifier to check for sufficient length or an exemption
+ * @param config - supplies accepted abbreviations, checked against the lowercased name
+ * @param findings - receives the stable advisory when the name fails the check
+ * @param surface - records whether the name came from a declaration, parameter or destructure
+ * @param loopBodyLineCount - for-of body code-line count. At most 10 exempts the name. Undefined gives no loop exemption.
+ * @returns - returns nothing. Appends an advisory to findings when the name is too short and has no exemption.
  */
 export function pushShortVariableAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface, loopBodyLineCount?: number): void {
   if (loopBodyLineCount !== undefined && loopBodyLineCount <= 10) {
@@ -131,10 +47,16 @@ export function pushShortVariableAt(file: SourceFile, line: number, name: string
   );
 }
 
-/*
- * Reports `naming.identifier-quality` when a name resolves to a generic variant via
- * `identifierQualityVariant` (placeholder names from config, or built-in low-info forms like `data`).
- * The stable `variant` metadata lets downstream tools group by category.
+/**
+ * Checks for generic or numbered placeholder names, including built-in numbered stems.
+ *
+ * @param file - supplies the display path for the advisory
+ * @param line - source line to report with the advisory
+ * @param name - identifier to check against the placeholder rules
+ * @param config - supplies configured placeholders for full-name and numbered-stem checks
+ * @param findings - receives the advisory with stable variant metadata when a placeholder matches
+ * @param surface - records whether the name came from a declaration, parameter or destructure
+ * @returns - returns nothing. Appends one advisory for a matched placeholder and leaves findings unchanged otherwise.
  */
 export function pushIdentifierQualityAt(file: SourceFile, line: number, name: string, config: Config, findings: Finding[], surface: NamingSurface): void {
   const variant = identifierQualityVariant(name, config.placeholderNames);
@@ -157,9 +79,14 @@ export function pushIdentifierQualityAt(file: SourceFile, line: number, name: st
   );
 }
 
-// Returns `"generic"` for low-information names from the configured set, `"numbered"` for
-// numbered placeholder stems such as `foo1` / `mock2`, or undefined when the name is acceptable.
-// Domain tokens with meaningful digits (`adr020`, `step0`, `V110`) are not placeholder names.
+/**
+ * Classifies an identifier as a generic or numbered placeholder; returns undefined when no identifier-quality advisory applies.
+ * A numbered name ends in digits after a stem made of ASCII letters, underscores or dollar signs.
+ *
+ * @param name - identifier checked lowercased against placeholderNames or split into a stem and trailing digits
+ * @param placeholderNames - configured placeholder names checked for full-name and lowercased stem matches
+ * @returns "generic" if lowercased name is in placeholderNames, "numbered" if its lowercased stem is in either placeholder set, or undefined.
+ */
 function identifierQualityVariant(name: string, placeholderNames: Set<string>): string | undefined {
   if (placeholderNames.has(name.toLowerCase())) {
     return "generic";
@@ -192,25 +119,3 @@ const NUMBERED_PLACEHOLDER_STEMS = new Set([
   "value",
   "var",
 ]);
-
-const BOOLEAN_PREFIX_REGEX_CACHE = new WeakMap<Set<string>, RegExp | null>();
-
-// Tests the cached prefix regex from `booleanPrefixRegex`. A null regex (empty prefix set) is
-// treated as "no rule configured" so the boolean-prefix check fires only when configured.
-function hasBooleanPrefix(name: string, prefixes: Set<string>): boolean {
-  const regex = booleanPrefixRegex(prefixes);
-  return regex !== null && regex.test(name);
-}
-
-// Cached per prefix Set via a WeakMap so each rule pass reuses the compiled regex instead of
-// rebuilding it for every identifier. The trailing `[A-Z_]` requirement keeps single-letter
-// names like `is` from falsely matching the prefix-followed-by-name pattern.
-function booleanPrefixRegex(prefixes: Set<string>): RegExp | null {
-  if (BOOLEAN_PREFIX_REGEX_CACHE.has(prefixes)) {
-    return BOOLEAN_PREFIX_REGEX_CACHE.get(prefixes) ?? null;
-  }
-  const escaped = [...prefixes].map(escapeRegex);
-  const regex = prefixes.size === 0 ? null : new RegExp(`^(?:${escaped.join("|")})[A-Z_]`);
-  BOOLEAN_PREFIX_REGEX_CACHE.set(prefixes, regex);
-  return regex;
-}

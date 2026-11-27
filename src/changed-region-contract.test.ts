@@ -1,10 +1,9 @@
-// Hook-contract regression for the native changed-region trio (`--changed-ranges`, `--changed-scope`,
-// `--no-baseline`). Guards the exact JSON surface the downstream agent hook reads when it delegates
-// scoping to gruff-ts: in-region findings only, the canonical `file` alias on every finding, the
-// `advisory|warning|error` severity vocabulary, and the top-level `suppressedCount` whose arithmetic
-// invariant (kept + suppressedCount == full-scan total) lets the hook report the backlog it did not
-// show. The hook trusts this scoping and does not re-filter by line. See docs/agent-hook.md and
-// ADR-008 ("the changed-code gate is the agent gate").
+// Changed-region regression for the native filter and v3 machine adapter. Native analysis retains
+// `suppressedCount` for internal consumers; JSON publishes the same partition as
+// `diff.filteredFindings` and `summary.suppressedFindings`. The cases also guard in-region findings,
+// canonical `file` paths, and the `advisory|warning|error` vocabulary. The separate
+// `gruff.hook.v1` adapter remains unchanged. See docs/agent-hook.md and ADR-008 ("the changed-code
+// gate is the agent gate").
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,6 +13,7 @@ import { chdir, cwd } from "node:process";
 import test from "node:test";
 import { analyse } from "./cli.ts";
 import type { AnalysisReport } from "./cli.ts";
+import { renderReport } from "./report-renderers.ts";
 import { exitFor } from "./scoring.ts";
 import type { AnalysisOptions, ChangedScopeMode } from "./types.ts";
 import { analyseProject, gitAvailable, REPO_ROOT, writeFixtureFiles } from "./test-fixtures.ts";
@@ -87,17 +87,20 @@ const CHANGED_EVAL_LINE = 6;
 
 // The hook's read surface over the rendered JSON: the canonical `file` alias (not the deprecated
 // `filePath`), the severity vocabulary, and the line used to confirm scoping.
-interface HookFinding {
+interface MachineFinding {
   ruleId: string;
   file: string;
   line?: number;
   severity: string;
 }
 
-// Top-level shape the hook parses: the findings array plus the `suppressedCount` it reads first.
-interface HookReport {
-  findings: HookFinding[];
-  suppressedCount?: number;
+// Machine v3 read surface for changed-region CLI assertions.
+// Invariant: `diff.filteredFindings` and `summary.suppressedFindings` describe the same partition.
+interface MachineAnalysisReport {
+  schemaVersion: "gruff.analysis.v3";
+  findings: MachineFinding[];
+  summary: { suppressedFindings?: number };
+  diff?: { enabled: true; filteredFindings: number; mode: "changed-regions" };
 }
 
 // Full-project scan of the region fixture with no changed-region scope, used as the invariant baseline.
@@ -111,9 +114,8 @@ function scopeRegion(range: string, scope: ChangedScopeMode): AnalysisReport {
   return analyseProject({ "region.ts": REGION_FIXTURE }, { paths: ["region.ts"], changedRanges: range, changedScope: scope });
 }
 
-// Asserts the changed-region partition the hook depends on: kept findings plus suppressedCount equal
-// the full-scan total, so the reported backlog never drops or double-counts a finding, and proves the
-// selection suppressed something. This is the stable invariant the changed-region contract must keep.
+// Checks the hook's count invariant by comparing the kept and suppressed totals in scoped with the total in the full scan report.
+// Returns nothing. It checks count equality before requiring positive suppression. A missing suppressedCount is treated as zero.
 function assertExhaustivePartition(scoped: AnalysisReport, full: AnalysisReport): void {
   const suppressed = scoped.suppressedCount ?? 0;
   assert.equal(scoped.findings.length + suppressed, full.findings.length);
@@ -121,7 +123,7 @@ function assertExhaustivePartition(scoped: AnalysisReport, full: AnalysisReport)
 }
 
 // Base analyse options for the dual-eval baseline fixture: JSON, no config, symbol scope, baseline
-// skipped by default so each test layers only the baseline fields it is exercising.
+// skipped by default. Tests override the target paths, changed-region selection or baseline settings as needed.
 function regionScanOptions(): AnalysisOptions {
   return {
     paths: ["dual.ts"],
@@ -149,8 +151,8 @@ test("symbol scope widens an interior function-body edit to its signature findin
   const full = fullRegion();
   const scoped = scopeRegion("7-7", "symbol");
 
-  // Editing the body (line 7) keeps the unused-parameter finding anchored on chargeCard's signature.
-  assert.equal(scoped.findings.some((finding) => finding.ruleId === "waste.unused-parameter" && finding.symbol === "chargeCard"), true);
+  // Editing the body (line 7) keeps the missing-doc finding anchored on chargeCard's signature.
+  assert.equal(scoped.findings.some((finding) => finding.ruleId === "docs.missing-internal-function-doc" && finding.symbol === "chargeCard"), true);
   // Other symbols' findings stay suppressed.
   assert.equal(scoped.findings.some((finding) => finding.ruleId === "docs.missing-interface-doc"), false);
   assert.equal(scoped.findings.some((finding) => finding.ruleId === "security.eval-call"), false);
@@ -216,7 +218,7 @@ test("--no-baseline re-surfaces a baselined finding inside the changed region", 
   }
 });
 
-test("delegated CLI invocation emits the file alias, severity vocabulary, and top-level suppressedCount", () => {
+test("delegated CLI invocation emits canonical v3 changed-region fields and finding vocabulary", () => {
   const projectDir = mkdtempSync(join(tmpdir(), "gruff-ts-hook-"));
   try {
     writeFixtureFiles(projectDir, { "dual.ts": DUAL_EVAL_FIXTURE });
@@ -228,11 +230,13 @@ test("delegated CLI invocation emits the file alias, severity vocabulary, and to
       [join(REPO_ROOT, "bin/gruff-ts"), "analyse", "--format", "json", "--fail-on", "none", "--no-baseline", "--changed-ranges", "6-6", "--changed-scope", "symbol", "dual.ts"],
       { cwd: projectDir, encoding: "utf8" },
     );
-    const payload = JSON.parse(output) as HookReport;
+    const payload = JSON.parse(output) as MachineAnalysisReport;
 
-    // Top-level suppressedCount is the field the hook reads first; it must be a present, positive number.
-    assert.equal(typeof payload.suppressedCount, "number");
-    assert.equal((payload.suppressedCount ?? 0) > 0, true);
+    // Both changed-region counters are present, positive, and equal.
+    assert.equal(payload.schemaVersion, "gruff.analysis.v3");
+    assert.equal(typeof payload.diff?.filteredFindings, "number");
+    assert.equal((payload.diff?.filteredFindings ?? 0) > 0, true);
+    assert.equal(payload.summary.suppressedFindings, payload.diff?.filteredFindings);
 
     // Only the in-region eval (changed, line 6) survives; the out-of-region eval (stale) is excluded.
     const evalLines = payload.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.line);
@@ -257,7 +261,7 @@ test("delegated CLI symbol scope keeps eval findings in plain and generic callab
         [join(REPO_ROOT, "bin/gruff-ts"), "analyse", "--format", "json", "--fail-on", "none", "--no-baseline", "--changed-ranges", `${fixture.changedLine}-${fixture.changedLine}`, "--changed-scope", "symbol", fixture.file],
         { cwd: projectDir, encoding: "utf8" },
       );
-      const payload = JSON.parse(output) as HookReport;
+      const payload = JSON.parse(output) as MachineAnalysisReport;
       const evalLines = payload.findings.filter((finding) => finding.ruleId === "security.eval-call").map((finding) => finding.line);
       assert.deepEqual(evalLines, [fixture.findingLine]);
     }
@@ -281,7 +285,7 @@ export function risky(input: string): unknown {
 
 // Builds a git repo with two packages, commits the clean state, then leaves both packages with the
 // same unstaged eval-introducing edit so diff scoping has real hunks on both subtrees.
-// Writes fixture files to the temp filesystem and spawns git subprocesses against that repo.
+// Returns nothing. It writes fixture files to the scratch directory repoDir and spawns git subprocesses there.
 function initParityRepo(repoDir: string): void {
   execFileSync("git", ["init", "-q"], { cwd: repoDir });
   execFileSync("git", ["config", "user.email", "gruff-test@example.com"], { cwd: repoDir });
@@ -363,5 +367,69 @@ test("diff-scoped diagnostics are file-scoped: unchanged broken context never bl
   } finally {
     chdir(previous);
     rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("changed-region SARIF excludes inline-suppressed findings from unchanged files", () => {
+  const files = {
+    "src/unchanged.ts": "// File overview: unchanged file.\nexport function untouched(code: string): void {\n  new Function(code); // eslint-disable-line no-new-func\n}\n",
+    "src/changed.ts": "// File overview: changed file.\nexport function edited(): number {\n  return 1;\n}\n",
+  };
+  const diffPatch = [
+    "diff --git a/src/changed.ts b/src/changed.ts",
+    "--- a/src/changed.ts",
+    "+++ a/src/changed.ts",
+    "@@ -2,1 +2,2 @@",
+    " export function edited(): number {",
+    "+  return 1;",
+    "",
+  ].join("\n");
+  const report = analyseProject(files, { diff: "-", diffPatch });
+  const sarif = JSON.parse(renderReport(report, "sarif")) as { runs: Array<{ results: Array<{ suppressions?: unknown[] }> }> };
+  const suppressedResults = (sarif.runs[0]?.results ?? []).filter((result) => (result.suppressions?.length ?? 0) > 0);
+  assert.equal(suppressedResults.length, 0);
+});
+
+// Fixture purpose: exercises a real git repo with staged and unstaged edits to verify each diff mode reports working-tree line coordinates.
+// Stable contract: writes a temporary Git repository, runs git and analyse(), and removes the directory in finally.
+test("every diff mode reports staged and unstaged edits at working-tree line numbers", () => {
+  if (!gitAvailable()) {
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ts-wt-coords-"));
+  const { GIT_DIR: _gitDir, GIT_WORK_TREE: _gitWorkTree, GIT_INDEX_FILE: _gitIndexFile, ...env } = process.env;
+  try {
+    const baseLines = ["// File overview: coordinate fixture.", ...Array.from({ length: 10 }, (_, idx) => `export const base${idx} = ${idx};`)];
+    writeFixtureFiles(dir, { "app.ts": `${baseLines.join("\n")}\n` });
+    execFileSync("git", ["init"], { cwd: dir, env, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: dir, env, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Fixture"], { cwd: dir, env, stdio: "ignore" });
+    execFileSync("git", ["add", "app.ts"], { cwd: dir, env, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "base"], { cwd: dir, env, stdio: "ignore" });
+
+    // Stage an eval at line 12, then prepend 3 unstaged lines above it so eval now lives at line 15 in the working tree.
+    const stagedLines = [...baseLines, "export function bad(input: string): void { eval(input); }"];
+    writeFixtureFiles(dir, { "app.ts": `${stagedLines.join("\n")}\n` });
+    execFileSync("git", ["add", "app.ts"], { cwd: dir, env, stdio: "ignore" });
+    const unstagedLines = [baseLines[0] ?? "", "export const shift1 = 1;", "export const shift2 = 2;", "export const shift3 = 3;", ...stagedLines.slice(1)];
+    writeFixtureFiles(dir, { "app.ts": `${unstagedLines.join("\n")}\n` });
+
+    // The staged eval belongs to working-tree and staged reviews; the unstaged edit added only the shift lines.
+    for (const [diff, expectedLine] of [["working-tree", 15], ["staged", 15], ["unstaged", undefined]] as const) {
+      const report = analyse({
+        paths: [join(dir, "app.ts")],
+        shouldSkipConfig: true,
+        shouldSkipBaseline: true,
+        format: "json",
+        failOn: "none",
+        shouldIncludeIgnored: false,
+        changedScope: "hunk",
+        diff,
+      });
+      const evalFinding = report.findings.find((finding) => finding.ruleId === "security.eval-call");
+      assert.equal(evalFinding?.line, expectedLine, diff);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

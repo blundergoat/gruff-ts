@@ -1,6 +1,6 @@
 // Regression tests for baseline identity, history output, and discovery behavior.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,11 +11,13 @@ import type { AnalysisReport } from "./cli.ts";
 import {
   analyseFixture,
   analyseProject,
+  AWS_ACCESS_KEY_FIXTURE_VALUE,
   evalFindingFiles,
   gitAvailable,
-  HIGH_ENTROPY_FIXTURE_VALUE,
+  M02_DEFAULT_OFF_RULES_ON_YAML,
   REPO_ROOT,
   TS_IGNORE_DIRECTIVE,
+  withDefaultOffRulesOn,
   writeFixtureFiles,
 } from "./test-fixtures.ts";
 
@@ -30,16 +32,59 @@ test("expanded scanner keeps pre-expansion fingerprints stable", () => {
     console.log(b, d, e, f, g, h);
   }
 }
-
-test("sleeps without assertion", async () => {
-  await new Promise((resolve) => setTimeout(resolve, 1));
-});
 `);
   const fingerprints = new Map(report.findings.map((finding) => [finding.ruleId, finding.fingerprint]));
   assert.equal(fingerprints.get("security.eval-call"), "9597745a32e48f52");
   assert.equal(fingerprints.get("size.parameter-count"), "d616356804967e11");
-  assert.equal(fingerprints.get("test-quality.no-assertions"), "abc482609c475b4f");
-  assert.equal(fingerprints.get("modernisation.public-property"), "c80058bf4fd46024");
+});
+
+// The real analyser and baseline together: the review stored on the second of two same-named functions stays on it
+// after the first loses its comment, so the newly warning first function is the one reported.
+// Stable contract: the baseline written by one run keeps each review on its own declaration in the next.
+// Side effects: writes a temporary project and baseline to the filesystem and changes the working directory, both restored.
+test("an earlier same-named function that starts warning is reported instead of inheriting the review", () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "gruff-ts-ordinal-"));
+  const baselineDir = mkdtempSync(join(tmpdir(), "gruff-ts-ordinal-baseline-"));
+  const previous = cwd();
+  try {
+    writeFileSync(join(projectDir, "pair.js"), "// Explains the first helper's role for the maintainer.\nfunction process(a) { return a; }\nfunction process(b) { return b; }\n");
+    chdir(projectDir);
+    const baselinePath = join(baselineDir, "baseline.json");
+    analyse({ ...baselineRoundTripOptions(), generateBaseline: baselinePath });
+    writeFileSync(join(projectDir, "pair.js"), "function process(a) { return a; }\nfunction process(b) { return b; }\n");
+    const report = analyse({ ...baselineRoundTripOptions(), shouldSkipBaseline: false, baseline: baselinePath });
+    const visible = report.findings.filter((finding) => finding.ruleId === "docs.missing-internal-function-doc").map((finding) => finding.line);
+    assert.deepEqual(visible, [1]);
+  } finally {
+    chdir(previous);
+    rmSync(projectDir, { recursive: true, force: true });
+    rmSync(baselineDir, { recursive: true, force: true });
+  }
+});
+
+// Two IIFEs are both named `<iife>`, and only the size and complexity rules measure them. Their spans take ordinal
+// slots too, so the second IIFE's stored review stays on it when the first one starts exceeding the parameter limit.
+// Stable contract: a measured-only callable's ordinal counts every same-named callable, whichever ones warned.
+// Side effects: writes a temporary project and baseline to the filesystem and changes the working directory, both restored.
+test("an earlier IIFE that starts warning is reported instead of inheriting the later IIFE's review", () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "gruff-ts-iife-"));
+  const baselineDir = mkdtempSync(join(tmpdir(), "gruff-ts-iife-baseline-"));
+  const previous = cwd();
+  const wide = "(function (a, b, c, d, e, f, g, h, i) { return a + b + c + d + e + f + g + h + i; })(1, 2, 3, 4, 5, 6, 7, 8, 9);\n";
+  try {
+    writeFileSync(join(projectDir, "pair.js"), `(function (a, b) { return a + b; })(1, 2);\n${wide}`);
+    chdir(projectDir);
+    const baselinePath = join(baselineDir, "baseline.json");
+    analyse({ ...baselineRoundTripOptions(), generateBaseline: baselinePath });
+    writeFileSync(join(projectDir, "pair.js"), `${wide}${wide}`);
+    const report = analyse({ ...baselineRoundTripOptions(), shouldSkipBaseline: false, baseline: baselinePath });
+    const visible = report.findings.filter((finding) => finding.ruleId === "size.parameter-count").map((finding) => finding.line);
+    assert.deepEqual(visible, [1]);
+  } finally {
+    chdir(previous);
+    rmSync(projectDir, { recursive: true, force: true });
+    rmSync(baselineDir, { recursive: true, force: true });
+  }
 });
 
 test("baseline round trip suppresses old and new findings by identity tuple", () => {
@@ -109,14 +154,14 @@ function changed(unusedValue: string): void {
     { paths: ["src/example.ts"], changedRanges: "6-6" },
   );
 
-  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unused-parameter" && finding.symbol === "changed"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-internal-function-doc" && finding.symbol === "changed"), true);
   assert.equal(report.findings.some((finding) => finding.ruleId === "security.eval-call" && finding.line === 2), false);
 });
 
 test("hunk changed scope excludes unchanged signature findings", () => {
   const report = analyseProject(
     {
-      "src/example.ts": `function changed(unusedValue: string): void {
+      "src/example.ts": `function changed(unusedValue: any): void {
   return;
 }
 `,
@@ -124,7 +169,8 @@ test("hunk changed scope excludes unchanged signature findings", () => {
     { paths: ["src/example.ts"], changedRanges: "2-2", changedScope: "hunk" },
   );
 
-  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.unused-parameter"), false);
+  // The default symbol scope keeps this signature-line finding; the hunk scope drops it because line 1 is unchanged.
+  assert.equal(report.findings.some((finding) => finding.ruleId === "waste.any-type"), false);
   assert.equal(report.suppressedCount !== undefined && report.suppressedCount > 0, true);
 });
 
@@ -164,7 +210,7 @@ test("changed-region symbol scope includes export default class bodies", () => {
     { paths: ["src/service.ts"], changedRanges: "3-3" },
   );
 
-  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-internal-function-doc" && finding.symbol === "run"), true);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "docs.missing-exported-function-doc" && finding.symbol === "run"), true);
 });
 
 test("working-tree diff treats untracked files as whole-file changed", () => {
@@ -255,7 +301,8 @@ const CENTRAL_TEST_PROJECT = {
 };
 const CENTRAL_TEST_DIFF_PATCH = 'diff --git a/src/cli/audit/check-agent-setup.ts b/src/cli/audit/check-agent-setup.ts\n--- a/src/cli/audit/check-agent-setup.ts\n+++ b/src/cli/audit/check-agent-setup.ts\n@@ -1,3 +1,3 @@\n export function checkAgentSetup(): string {\n-  return "old";\n+  return "ok";\n }\n';
 
-// Stable contract: extracts line anchors for eval findings so hunk-filtering tests stay deterministic.
+// Returns eval finding lines from the analysis report in ascending order so hunk-filtering comparisons stay stable.
+// Uses zero for an eval finding without a line and returns an empty list when the report contains no eval findings.
 function evalFindingLines(report: AnalysisReport): number[] {
   return report.findings
     .filter((finding) => finding.ruleId === "security.eval-call")
@@ -263,8 +310,9 @@ function evalFindingLines(report: AnalysisReport): number[] {
     .sort((left, right) => left - right);
 }
 
-// Writes a temporary git repository, commits the initial files, and restores cwd afterwards.
-// Spawns only fixed `git` argv calls so the diff-mode regression can observe real index state.
+// Creates a temporary Git repository whose name starts with prefix and commits the supplied fixture files.
+// Spawns fixed Git commands so diff tests can observe real index state, then passes the repository path to run while it is the current directory.
+// Returns nothing. Once cwd is captured, cleanup attempts to restore it before removing the fixture, even if setup or the callback fails.
 function withCommittedGitFixture(prefix: string, files: Record<string, string>, run: (projectDir: string) => void): void {
   const projectDir = mkdtempSync(join(tmpdir(), prefix));
   const previous = cwd();
@@ -283,11 +331,18 @@ function withCommittedGitFixture(prefix: string, files: Record<string, string>, 
   }
 }
 
-/** Writes a temporary project that exercises baseline identity across current rule families. */
+/**
+ * Writes a temporary project that exercises baseline identity across current rule families.
+ *
+ * @param projectDir - empty temporary directory that receives the fixture project, whose config turns on the default-off rules it needs
+ * @returns Nothing. Populates the directory for the baseline schema and suppression checks.
+ */
 function writeBaselineRoundTripFixture(projectDir: string): void {
+  // Enable the default-off AWS key rule to supply a sensitive finding for the count comparison after baseline application.
+  writeFileSync(join(projectDir, ".gruff-ts.yaml"), M02_DEFAULT_OFF_RULES_ON_YAML);
   writeFileSync(
     join(projectDir, "bad.ts"),
-    `const embeddedToken = "${HIGH_ENTROPY_FIXTURE_VALUE}";
+    `const embeddedKey = "${AWS_ACCESS_KEY_FIXTURE_VALUE}";
 
 export function unsafePublicApi(input: any): any {
   // ${TS_IGNORE_DIRECTIVE}
@@ -350,38 +405,40 @@ export function fromB(): string {
 }
 
 /**
- * Verifies generated, suppressed, and mismatched baselines as a CLI user would encounter them.
+ * Check generated baseline metadata, suppression counts and positive unmatched debt after baseline-row mutations.
  * Stable contract: writes stay inside caller-owned fixture directories that the test removes.
+ *
+ * @param baselineDir - temporary directory for the generated baseline and two mutated copies; the current directory must be the fixture project
+ * @returns the number of findings in the scan without a baseline, which the caller requires to be above zero
  */
 function assertBaselineRoundTrip(baselineDir: string): number {
-  const baseOptions = baselineRoundTripOptions();
+  const baseOptions = { ...baselineRoundTripOptions(), shouldSkipConfig: false };
   const report = analyse(baseOptions);
   assertBaselineRoundTripRuleIds(report);
 
   const baselinePath = join(baselineDir, "baseline.json");
   analyse({ ...baseOptions, generateBaseline: baselinePath });
   const baseline = readBaselineRoundTripFile(baselinePath);
-  const entries = baseline.entries ?? [];
-  const [target] = entries;
-  assertBaselineEntryMetadata(baseline.schemaVersion, target);
+  const occurrences = baseline.occurrences ?? [];
+  const [target] = occurrences;
+  assertBaselineEntryMetadata(baseline, target);
 
+  // Require the remaining finding count to equal the sensitive-data count and the suppressed count to cover the remainder.
+  const sensitiveFindings = report.findings.filter((finding) => finding.pillar === "sensitive-data");
   const suppressed = analyse({ ...baseOptions, shouldSkipBaseline: false, baseline: baselinePath });
-  assert.equal(suppressed.baseline?.suppressed, report.findings.length);
-  assert.equal(suppressed.findings.length, 0);
-  // A user may retain an old secret preview in v1; message-only churn must not unsuppress it.
-  const changedPreviewPath = join(baselineDir, "changed-secret-preview.json");
-  const changedPreviewEntries = entries.map((entry) => entry.ruleId === "sensitive-data.high-entropy-string"
-    ? { ...entry, message: "Legacy redaction preview retained for review." }
-    : entry);
-  writeFileSync(changedPreviewPath, JSON.stringify({ ...baseline, entries: changedPreviewEntries }));
-  const previewChanged = analyse({ ...baseOptions, shouldSkipBaseline: false, baseline: changedPreviewPath });
-  assert.equal(previewChanged.findings.length, 0);
-  assertMismatchedBaselineEntryReportsFinding(baselineDir, "wrong-rule.json", baseline, target, (entry) => ({ ...entry, ruleId: "security.wrong-rule" }));
-  assertMismatchedBaselineEntryReportsFinding(baselineDir, "wrong-file.json", baseline, target, (entry) => ({ ...entry, filePath: "other.ts" }));
+  assert.equal(suppressed.baseline?.suppressed, report.findings.length - sensitiveFindings.length);
+  assert.equal(suppressed.findings.length, sensitiveFindings.length);
+  // Change the first identity and then its count; require visible findings for the first mutation and resolved debt for the second.
+  assertMutatedBaselineReportsFinding(baselineDir, "wrong-identity.json", baseline, (entry) => ({ ...entry, identity: "0".repeat(16) }));
+  assertMutatedBaselineReportsFinding(baselineDir, "spent-count.json", baseline, (entry) => ({ ...entry, count: entry.count + 1 }), target.count + 1);
   return report.findings.length;
 }
 
-/** Returns stable analysis options for baseline identity assertions. */
+/**
+ * Returns stable analysis options for baseline identity assertions.
+ *
+ * @returns Current-directory JSON options that skip config and baseline, omit ignored paths, use symbol diff scope, and set fail threshold to none.
+ */
 function baselineRoundTripOptions() {
   return {
     paths: ["."],
@@ -394,16 +451,20 @@ function baselineRoundTripOptions() {
   };
 }
 
-/** Proves the baseline fixture still covers each representative rule family in the stable contract. */
+/**
+ * Proves the baseline fixture still covers each representative rule family in the stable contract.
+ *
+ * @param report - analysis of the round-trip fixture; the test fails unless its findings include all eight listed rule ids
+ * @returns Nothing. Asserts that each required rule ID is present in the report.
+ */
 function assertBaselineRoundTripRuleIds(report: AnalysisReport): void {
   const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
   for (const ruleId of [
     "security.eval-call",
     "security.new-function",
-    "sensitive-data.high-entropy-string",
+    "sensitive-data.aws-access-key",
     "modernisation.double-cast",
     "security.async-foreach",
-    "waste.swallowed-catch",
     "security.remote-install-script",
     "modernisation.tsconfig-strict-disabled",
     "design.circular-import",
@@ -413,50 +474,68 @@ function assertBaselineRoundTripRuleIds(report: AnalysisReport): void {
 }
 
 type BaselineRoundTripEntry = {
-  fingerprint: string;
-  ruleId: string;
-  filePath: string;
-  line?: number;
-  symbol?: string;
-  message?: string;
+  identity: string;
+  count: number;
+  ruleId?: string;
+  path?: string;
+  subject?: string;
 };
 
 type BaselineRoundTripFile = {
   schemaVersion?: string;
-  entries?: BaselineRoundTripEntry[];
+  toolLanguage?: string;
+  occurrences?: BaselineRoundTripEntry[];
 };
 
-/** Reads baseline JSON through the fixture-specific shape used by these assertions. */
+/**
+ * Reads baseline JSON through the fixture-specific shape used by these assertions.
+ *
+ * @param path - baseline file written by a `generateBaseline` scan
+ * @returns the parsed JSON cast to the fixture's baseline shape without validation; malformed JSON throws from `JSON.parse`
+ */
 function readBaselineRoundTripFile(path: string): BaselineRoundTripFile {
   return JSON.parse(readFileSync(path, "utf8")) as BaselineRoundTripFile;
 }
 
-/** Narrows the first baseline entry after checking stable identity fields. */
-function assertBaselineEntryMetadata(schemaVersion: string | undefined, target: BaselineRoundTripEntry | undefined): asserts target is BaselineRoundTripEntry {
-  assert.equal(schemaVersion, "gruff.baseline.v1");
+/**
+ * Assert baseline schema and language plus target's identity format, numeric count and string subject; then narrow target.
+ *
+ * @param baseline - parsed baseline file, which must name schema `gruff.baseline.v3` and tool language `ts`
+ * @param target - first occurrence row, which must exist with a 16-hex-digit identity, a numeric count and a string subject
+ * @returns nothing; once the checks pass, TypeScript treats `target` as a defined row for the caller
+ */
+function assertBaselineEntryMetadata(baseline: BaselineRoundTripFile, target: BaselineRoundTripEntry | undefined): asserts target is BaselineRoundTripEntry {
+  assert.equal(baseline.schemaVersion, "gruff.baseline.v3");
+  assert.equal(baseline.toolLanguage, "ts");
   assert.ok(target);
-  assert.equal(typeof target.fingerprint, "string");
-  assert.equal(typeof target.ruleId, "string");
-  assert.equal(typeof target.filePath, "string");
-  assert.equal(typeof target.message, "string");
+  assert.match(target.identity, /^[0-9a-f]{16}$/u);
+  assert.equal(typeof target.count, "number");
+  assert.equal(typeof target.subject, "string");
 }
 
 /**
- * Confirms a changed identity tuple no longer suppresses the original finding. Writes the mutated
- * baseline file to disk first; the tuple must mismatch for the finding to resurface as new.
+ * Exercise the line-free baseline identity contract by rescanning with a modified baseline and checking for unmatched reviewed debt.
+ *
+ * @param baselineDir - temporary directory that receives the modified baseline file
+ * @param fileName - name of the baseline copy to write and rescan against
+ * @param baseline - generated baseline to copy, with absent occurrences treated as an empty list
+ * @param mutateFirstRow - supplies a replacement for the first occurrence row when there is one
+ * @param expectedResolved - a positive value selects the resolved count check. Zero or less selects the visible finding count.
+ * @returns Nothing. Writes the baseline copy and asserts that the selected count is positive, treating an absent resolved count as zero.
  */
-function assertMismatchedBaselineEntryReportsFinding(
+function assertMutatedBaselineReportsFinding(
   baselineDir: string,
   fileName: string,
   baseline: BaselineRoundTripFile,
-  target: BaselineRoundTripEntry,
-  mutateFirstEntry: (entry: BaselineRoundTripEntry) => BaselineRoundTripEntry,
+  mutateFirstRow: (entry: BaselineRoundTripEntry) => BaselineRoundTripEntry,
+  expectedResolved = 0,
 ): void {
   const path = join(baselineDir, fileName);
-  const entries = (baseline.entries ?? []).map((entry, index) => (index === 0 ? mutateFirstEntry(entry) : entry));
-  writeFileSync(path, JSON.stringify({ ...baseline, entries }));
-  const report = analyse({ ...baselineRoundTripOptions(), shouldSkipBaseline: false, baseline: path });
-  assert.equal(report.findings.some((finding) => finding.fingerprint === target.fingerprint && finding.ruleId === target.ruleId && finding.filePath === target.filePath), true);
+  const occurrences = (baseline.occurrences ?? []).map((entry, index) => (index === 0 ? mutateFirstRow(entry) : entry));
+  writeFileSync(path, JSON.stringify({ ...baseline, occurrences }));
+  const report = analyse({ ...baselineRoundTripOptions(), shouldSkipConfig: false, shouldSkipBaseline: false, baseline: path });
+  const unmatched = expectedResolved > 0 ? report.baseline?.resolvedFindings ?? 0 : report.findings.length;
+  assert.ok(unmatched > 0, `mutating ${fileName} must leave reviewed debt unmatched`);
 }
 
 test("score report is deterministic for repeated expanded scans", () => {
@@ -487,54 +566,6 @@ function unsafe(value: string): void {
     first.findings.map((finding) => [finding.filePath, finding.line, finding.ruleId, finding.fingerprint]),
     second.findings.map((finding) => [finding.filePath, finding.line, finding.ruleId, finding.fingerprint]),
   );
-});
-
-// Fixture for the test-adequacy rule sweep: covers missing-nearby-test, snapshot-only,
-// no-throw-only, plus exemption paths for `.d.ts`, fixtures/, and generated/.
-const TEST_ADEQUACY_FIXTURE = {
-  "src/payments.ts": `export function chargeCard(): string {
-  return "charged";
-}
-`,
-  "src/users.ts": `export function renderUser(): string {
-  return "user";
-}
-`,
-  "src/users.test.ts": `import assert from "node:assert/strict";
-import { renderUser } from "./users";
-
-test("renders user", () => {
-  assert.equal(renderUser(), "user");
-});
-
-test("snapshot only", () => {
-  expect(renderUser()).toMatchSnapshot();
-});
-
-test("no throw only", () => {
-  assert.doesNotThrow(() => renderUser());
-});
-`,
-  "src/types.d.ts": `export interface GeneratedContract {
-  id: string;
-}
-`,
-  "fixtures/sample.ts": `export function fixtureOnly(): string {
-  return "fixture";
-}
-`,
-  "src/generated/client.ts": `export function generatedClient(): string {
-  return "generated";
-}
-`,
-};
-
-test("project test adequacy checks nearby coverage and shallow tests", () => {
-  const report = analyseProject(TEST_ADEQUACY_FIXTURE);
-  const ruleIds = new Set(report.findings.map((finding) => finding.ruleId));
-  assert.equal(ruleIds.has("test-quality.snapshot-only-test"), true);
-  assert.equal(ruleIds.has("test-quality.no-throw-only-test"), true);
-  assert.equal(ruleIds.has("test-quality.no-assertions"), false);
 });
 
 test("project test adequacy accepts central tests that import the source", () => {
@@ -607,7 +638,7 @@ foo/**.js
 };
 
 test("expanded scanner config disables and overrides new rules", () => {
-  const source = `API_TOKEN="qR8vT3mK6pL9xS2nD4eG"
+  const source = `const accessKey = "${AWS_ACCESS_KEY_FIXTURE_VALUE}";
 
 function branchLightly(input: string): string {
   if (input === "a") return "a";
@@ -615,15 +646,65 @@ function branchLightly(input: string): string {
   return "c";
 }
 `;
+  // aws-access-key ships off by default since precision-floor M02, so the baseline switches it on before the config turns it off.
+  assert.equal(analyseFixture(source, withDefaultOffRulesOn({ fileName: ".env.ts" })).findings.some((finding) => finding.ruleId === "sensitive-data.aws-access-key"), true);
   const report = analyseFixture(source, {
     fileName: ".env.ts",
     config: {
       rules: {
-        "sensitive-data.hardcoded-env-value": { enabled: false },
-        "complexity.cyclomatic": { threshold: 2, severity: "warning" },
+        "sensitive-data.aws-access-key": { enabled: false },
+        "complexity.cyclomatic": { enabled: true, threshold: 2, severity: "warning" },
       },
     },
   });
-  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.hardcoded-env-value"), false);
+  assert.equal(report.findings.some((finding) => finding.ruleId === "sensitive-data.aws-access-key"), false);
   assert.equal(report.findings.some((finding) => finding.ruleId === "complexity.cyclomatic"), true);
+});
+
+// Discrepancy ts-baseline-failures-crash-with-an-uncaught-stack-trace-and-exit-1: the README's exit contract reserves 2
+// for a baseline failure and 1 for findings that met --fail-on. A 0.5 baseline and a missing baseline path each used to
+// print a raw Node stack trace and exit 1; each now exits 2 with a baseline-error diagnostic inside the JSON report.
+// So does a file that parses but has the wrong shape, a bad row, or a file that is not JSON, whose reason never quotes
+// the file's own bytes.
+// The test writes a throwaway project to the filesystem and removes it afterwards.
+test("analyse reports an unusable baseline as an exit-2 diagnostic in the report, not a stack trace", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-baseline-failure-"));
+  try {
+    writeFileSync(join(projectRoot, "ok.ts"), "// File overview: baseline failure fixture.\nexport const fine = 1;\n");
+    writeFileSync(join(projectRoot, "legacy.json"), `${JSON.stringify({ schemaVersion: "gruff.baseline.v1", entries: [] })}\n`);
+    const header = { schemaVersion: "gruff.baseline.v3", toolLanguage: "ts" };
+    writeFileSync(join(projectRoot, "null.json"), "null\n");
+    writeFileSync(join(projectRoot, "listless.json"), `${JSON.stringify({ ...header, occurrences: {} })}\n`);
+    writeFileSync(join(projectRoot, "null-row.json"), `${JSON.stringify({ ...header, occurrences: [null] })}\n`);
+    writeFileSync(join(projectRoot, "bad-row.json"), `${JSON.stringify({ ...header, occurrences: [{ identity: "XYZ", count: 1 }] })}\n`);
+    writeFileSync(join(projectRoot, "not-json.txt"), "UNQUOTED opening bytes\n");
+    writeFileSync(join(projectRoot, "foreign.json"), `${JSON.stringify({ ...header, toolLanguage: "UNQUOTED", occurrences: [] })}\n`);
+    for (const [baselinePath, reason] of [
+      ["legacy.json", /is a 0\.5 baseline/],
+      ["missing-baseline.json", /cannot be read: the file does not exist/],
+      ["null.json", /must be a JSON object/],
+      ["listless.json", /occurrences must be a list/],
+      ["null-row.json", /occurrences\[0\] must be an object/],
+      ["bad-row.json", /occurrences\[0\]\.identity must be 16 lowercase hex characters/],
+      ["not-json.txt", /cannot be read: the file is not valid JSON/],
+      ["foreign.json", /was written by an unrecognised port and this run is ts/],
+    ] as const) {
+      const result = spawnSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "analyse", ".", "--baseline", baselinePath, "--format", "json", "--fail-on", "none", "--no-config"], {
+        cwd: projectRoot,
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 2, baselinePath);
+      assert.equal(/\n\s+at /.test(`${result.stdout}\n${result.stderr}`), false, baselinePath);
+      const report = JSON.parse(result.stdout) as { diagnostics: Array<{ type: string; message: string; invalidatesRun: boolean }> };
+      const diagnostic = report.diagnostics.find((entry) => entry.type === "baseline-error");
+      assert.equal(diagnostic?.invalidatesRun, true, baselinePath);
+      assert.match(diagnostic?.message ?? "", reason);
+      // The message names the path the user wrote, never this machine's absolute path.
+      assert.equal(diagnostic?.message.includes(projectRoot), false, baselinePath);
+      assert.equal(diagnostic?.message.includes(baselinePath), true, baselinePath);
+      assert.equal(diagnostic?.message.includes("UNQUOTED"), false, baselinePath);
+    }
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
 });

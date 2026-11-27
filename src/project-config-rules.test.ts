@@ -119,7 +119,26 @@ test("config schemaVersion is required and must match the supported value", () =
   );
 });
 
-test("minimumSeverity rejects dashboard, unknown commands, and unknown values including never", () => {
+test("deepScanBudget rejects malformed mappings, unknown keys, and non-positive limits", () => {
+  const invalidConfigs = [
+    "deepScanBudget: true\n",
+    "deepScanBudget:\n  maximum: 10\n",
+    "deepScanBudget:\n  enabled: yes\n",
+    "deepScanBudget:\n  maxLines: 0\n",
+    "deepScanBudget:\n  maxBytes: 1.5\n",
+  ];
+  for (const invalidConfig of invalidConfigs) {
+    // Runs analysis with the current invalidConfig fixture and its schema header so the assertion can check deepScanBudget validation.
+    // Expected validation errors propagate to assert.throws; returns an analysis report if the fixture is unexpectedly accepted.
+    const analyseInvalidConfig = () => analyseProject({
+      "bad.ts": "export const value = 1;\n",
+      ".gruff-ts.yaml": `schemaVersion: gruff-ts.config.v0.1\n${invalidConfig}`,
+    }, { shouldSkipConfig: false });
+    assert.throws(analyseInvalidConfig, /deepScanBudget/, `invalid config was accepted: ${invalidConfig}`);
+  }
+});
+
+test("failOn rejects dashboard, unknown commands, and unknown values including never", () => {
   // Fixture covers the validator's rejection paths: dashboard is a reserved key (no --fail-on flag
   // exists for it); unknown commands raise an error with the canonical-keys hint; unknown values
   // raise an error citing the four canonical values; `never` is explicitly rejected because it was
@@ -127,7 +146,7 @@ test("minimumSeverity rejects dashboard, unknown commands, and unknown values in
   assert.throws(
     () => analyseProject({
       "bad.ts": "export const value = 1;\n",
-      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity:\n  dashboard: advisory\n",
+      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nfailOn:\n  dashboard: advisory\n",
     }, { shouldSkipConfig: false }),
     /dashboard subcommand does not currently expose a --fail-on flag/,
   );
@@ -135,15 +154,15 @@ test("minimumSeverity rejects dashboard, unknown commands, and unknown values in
   assert.throws(
     () => analyseProject({
       "bad.ts": "export const value = 1;\n",
-      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity:\n  unknown: advisory\n",
+      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nfailOn:\n  unknown: advisory\n",
     }, { shouldSkipConfig: false }),
-    /Unknown command in minimumSeverity/,
+    /Unknown command in failOn/,
   );
 
   assert.throws(
     () => analyseProject({
       "bad.ts": "export const value = 1;\n",
-      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity:\n  analyse: never\n",
+      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nfailOn:\n  analyse: never\n",
     }, { shouldSkipConfig: false }),
     /FailThreshold must be one of/,
   );
@@ -151,20 +170,111 @@ test("minimumSeverity rejects dashboard, unknown commands, and unknown values in
   assert.throws(
     () => analyseProject({
       "bad.ts": "export const value = 1;\n",
-      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity:\n  analyse: critical\n",
+      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nfailOn:\n  analyse: critical\n",
     }, { shouldSkipConfig: false }),
     /FailThreshold must be one of/,
   );
 });
 
-test("minimumSeverity accepts the four canonical values per command", () => {
+test("minimumSeverity is the display floor and refuses the per-command map that used to gate", () => {
+  // The map form is valid YAML that used to gate a build, so reading it as a display floor would change what a
+  // committed file does without changing what it says. It is refused and told where the gate moved to.
+  assert.throws(
+    () => analyseProject({
+      "bad.ts": "export const value = 1;\n",
+      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity:\n  analyse: error\n",
+    }, { shouldSkipConfig: false }),
+    /move the per-command exit gate to "failOn"/,
+  );
+
+  assert.throws(
+    () => analyseProject({
+      "bad.ts": "export const value = 1;\n",
+      ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity: critical\n",
+    }, { shouldSkipConfig: false }),
+    /must be one of: advisory, warning, error/,
+  );
+
+  const report = analyseProject({
+    "bad.ts": "export const value = 1;\n",
+    ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity: warning\n",
+  }, { shouldSkipConfig: false });
+  // The floor hides findings from the report at render time; the run itself still produces every one of them.
+  assert.equal(report.schemaVersion, "gruff.analysis.v3");
+});
+
+test("failOn accepts the four canonical values per command", () => {
   // Fixture covers the happy path: each canonical value parses for each supported command, and
   // the config-load completes without throwing. The actual precedence behaviour is exercised in
   // cli-surfaces.test.ts where Commander's option-source signal is available. Asserting on the
   // report shape (and not on specific finding counts) keeps this test focused on the parser.
   const report = analyseProject({
     "bad.ts": "export const value = 1;\n",
-    ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nminimumSeverity:\n  analyse: error\n  summary: warning\n  report: none\n",
+    ".gruff-ts.yaml": "schemaVersion: gruff-ts.config.v0.1\nfailOn:\n  analyse: error\n  summary: warning\n  report: none\n",
   }, { shouldSkipConfig: false });
-  assert.equal(report.schemaVersion, "gruff.analysis.v2");
+  assert.equal(report.schemaVersion, "gruff.analysis.v3");
+});
+
+test("design.package-bin-missing downgrades unbuilt dist/build/lib bin targets to advisory even under an init warning config", () => {
+  // Starter config explicitly sets severity: warning for design.package-bin-missing, matching `gruff-ts init`.
+  const initStyleConfig = `schemaVersion: gruff-ts.config.v0.1
+rules:
+  design.package-bin-missing:
+    enabled: true
+    severity: warning
+`;
+  const unbuiltDistReport = analyseProject({
+    ".gruff-ts.yaml": initStyleConfig,
+    "package.json": JSON.stringify({
+      name: "compiled-cli",
+      bin: { "compiled-cli": "./dist/cli/cli.js" },
+      scripts: { build: "tsc" },
+    }, null, 2),
+  }, { shouldSkipConfig: false });
+  const distFindings = unbuiltDistReport.findings.filter((entry) => entry.ruleId === "design.package-bin-missing");
+  assert.equal(distFindings.length, 1);
+  assert.equal(distFindings[0]?.severity, "advisory");
+  assert.match(distFindings[0]?.message ?? "", /unbuilt/i);
+
+  // Non-build bin targets and packages without a build script stay warning.
+  const brokenBinReport = analyseProject({
+    ".gruff-ts.yaml": initStyleConfig,
+    "package.json": JSON.stringify({
+      name: "broken-cli",
+      bin: { "broken-cli": "bin/missing.mjs" },
+      scripts: { build: "tsc" },
+    }, null, 2),
+  }, { shouldSkipConfig: false });
+  const brokenFindings = brokenBinReport.findings.filter((entry) => entry.ruleId === "design.package-bin-missing");
+  assert.equal(brokenFindings.length, 1);
+  assert.equal(brokenFindings[0]?.severity, "warning");
+
+  const noBuildScriptReport = analyseProject({
+    "package.json": JSON.stringify({
+      name: "unscripted-cli",
+      bin: { "unscripted-cli": "dist/cli.js" },
+    }, null, 2),
+  });
+  const noBuildFindings = noBuildScriptReport.findings.filter((entry) => entry.ruleId === "design.package-bin-missing");
+  assert.equal(noBuildFindings.length, 1);
+  assert.equal(noBuildFindings[0]?.severity, "warning");
+});
+
+test("multiline package dependency specs anchor to their own dependency section line", () => {
+  const manifest = [
+    "{",
+    '  "name": "demo",',
+    '  "dependencies": {',
+    '    "lib":',
+    '      "https://example.com/lib.tgz"',
+    "  },",
+    '  "devDependencies": {',
+    '    "lib": "https://example.com/lib.tgz"',
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+  const report = analyseProject({ "package.json": manifest });
+  const urlFindings = report.findings.filter((finding) => finding.ruleId === "security.url-dependency");
+  assert.equal(urlFindings.some((finding) => finding.metadata.section === "dependencies" && finding.line === 4), true);
 });

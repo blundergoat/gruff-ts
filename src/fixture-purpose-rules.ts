@@ -36,8 +36,13 @@ export interface FixturePurposeInput {
   findings: Finding[];
 }
 
-// Test/fixture paths only - gated up front so production source never reports fixture-purpose
-// findings. Reports the stable `docs.fixture-purpose-missing` finding for each candidate.
+/**
+ * Appends `docs.fixture-purpose-missing` findings to `input.findings` for undocumented candidates in the parsed file context.
+ * Files whose paths are neither tests nor fixture-like are ignored.
+ *
+ * @param input - File metadata, raw and code-only source text, lines, comments, function blocks, and target findings array.
+ * @returns Nothing. Mutates `input.findings` by pushing any missing-purpose findings.
+ */
 export function pushFixturePurposeFindings(input: FixturePurposeInput): void {
   const { file, source, codeSource, lines, comments, blocks, findings } = input;
   if (!isTestPath(file.displayPath) && !isFixtureLikePath(file.displayPath)) {
@@ -67,8 +72,13 @@ export function pushFixturePurposeFindings(input: FixturePurposeInput): void {
   }
 }
 
-// The finding is anchored where the accepted comment position is, so the message must name the
-// construct at that anchor: the test declaration for setup candidates, the fixture otherwise.
+/**
+ * Builds the `docs.fixture-purpose-missing` diagnostic message for a candidate.
+ * The message must name the test for `test-setup` candidates or locate other fixtures by the nearby call or declaration name.
+ *
+ * @param candidate - Fixture-purpose candidate providing `targetKind` and `symbol`.
+ * @returns Formatted finding message describing the missing purpose comment.
+ */
 function fixturePurposeMessage(candidate: FixturePurposeCandidate): string {
   if (candidate.targetKind === "test-setup") {
     return `Test \`${candidate.symbol}\` builds a large fixture setup without a purpose comment above the test.`;
@@ -76,8 +86,13 @@ function fixturePurposeMessage(candidate: FixturePurposeCandidate): string {
   return `Large fixture source near \`${candidate.symbol}\` is missing a purpose comment.`;
 }
 
-// The stated fix must be the fix that clears the finding: both texts name the accepted comment
-// positions that `hasFixturePurposeComment` checks.
+/**
+ * Builds the remediation guidance for a candidate's `targetKind`.
+ * The recommended placement must be accepted by `hasFixturePurposeComment` so the fix can clear the finding.
+ *
+ * @param candidate - Fixture-purpose candidate whose `targetKind` selects test-setup or fixture placement guidance.
+ * @returns Actionable remediation instruction explaining where to place the purpose comment.
+ */
 function fixturePurposeRemediation(candidate: FixturePurposeCandidate): string {
   if (candidate.targetKind === "test-setup") {
     return "Add a comment directly above the test declaration explaining what scanner path, regression, or fixture behavior this setup covers.";
@@ -85,8 +100,15 @@ function fixturePurposeRemediation(candidate: FixturePurposeCandidate): string {
   return "Add a comment on or directly above the fixture explaining what scanner path, regression, or fixture behavior this source covers.";
 }
 
-// Three candidate kinds collected in one pass: template-literal fixtures, generated array fixtures,
-// and test setup blocks. `occupiedLines` tracks the first two so the third doesn't double-report.
+/**
+ * Finds unique fixture-purpose candidates within `source`'s line range across templates, generated arrays, and test setups.
+ * Template and generated-array locations suppress overlapping test blocks.
+ *
+ * @param source - Full file text used to extract template literal contents and line bounds.
+ * @param codeSource - Comment-stripped source text scanned for line-level fixture triggers.
+ * @param blocks - Parsed function blocks evaluated for large test-setup blocks.
+ * @returns Deduplicated candidates within `source` line bounds, or an empty array when none qualify.
+ */
 function fixturePurposeCandidates(source: string, codeSource: string, blocks: FunctionBlock[]): FixturePurposeCandidate[] {
   if (!hasFixturePurposeCandidateSignal(codeSource, blocks)) {
     return [];
@@ -119,13 +141,27 @@ function fixturePurposeCandidates(source: string, codeSource: string, blocks: Fu
   return candidates.filter((candidate) => candidate.line <= lines.length);
 }
 
-// Whole-file preflight for the only shapes that can become fixture-purpose findings.
+/**
+ * Checks whether a file has a recognized fixture trigger or any test block so candidate extraction can proceed.
+ * Returning `false` skips fixture-purpose candidate extraction for the whole file.
+ *
+ * @param codeSource - Comment-stripped source text checked for fixture helper calls or fixture variable declarations.
+ * @param blocks - Parsed function blocks checked for at least one test block.
+ * @returns `true` if the file contains a test block or fixture trigger signal, otherwise `false`.
+ */
 function hasFixturePurposeCandidateSignal(codeSource: string, blocks: FunctionBlock[]): boolean {
   return blocks.some((block) => block.isTest) || /\b(?:analyseFixture|analyseProject|writeFileSync|Array\.from)\s*\(/.test(codeSource) || /\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*(?:Fixture|FIXTURE)[A-Za-z0-9_$]*\b[^=\n]*=/.test(codeSource);
 }
 
-// Composite key prevents two fixture candidates landing at the same line/symbol/kind tuple - a
-// real case when one declaration triggers both a template-literal match and a generated-array match.
+/**
+ * Adds `candidate` to `candidates` only if its line, symbol, and `targetKind` tuple is absent from `seen`.
+ * Mutates `seen` and `candidates` together so existing tuples leave both unchanged while different kinds remain distinct.
+ *
+ * @param candidates - Target candidate list appended to when the tuple key is new.
+ * @param seen - Deduplication key set tracking `line`, `symbol`, and `targetKind` entries already added.
+ * @param candidate - Candidate entry to record if not yet seen.
+ * @returns Nothing. Mutates `seen` and `candidates` when `candidate` is unique.
+ */
 function pushUniqueFixturePurposeCandidate(candidates: FixturePurposeCandidate[], seen: Set<string>, candidate: FixturePurposeCandidate): void {
   const key = `${candidate.line}\0${candidate.symbol}\0${candidate.targetKind}`;
   if (seen.has(key)) {
@@ -135,8 +171,16 @@ function pushUniqueFixturePurposeCandidate(candidates: FixturePurposeCandidate[]
   candidates.push(candidate);
 }
 
-// Two-stage gate: detect the call-site trigger (`analyseFixture`, `analyseProject`, etc.), then
-// extract the adjacent template literal and confirm it is large enough to need documentation.
+/**
+ * Builds a template-fixture candidate when `codeLine` has a recognized trigger and large template text.
+ * Reads the template literal from `source` at one-based `lineNumber` and rejects missing, empty, or small templates.
+ *
+ * @param source - Full file text containing the template literal body.
+ * @param lineOffsets - Precomputed UTF-16 starting offsets for each line in `source`.
+ * @param codeLine - Comment-stripped text of the current line checked for a fixture trigger.
+ * @param lineNumber - One-based line number of `codeLine`.
+ * @returns A `FixturePurposeCandidate` when triggered and over `FIXTURE_PURPOSE_MIN_LINES`, or `undefined`.
+ */
 function fixtureTemplateCandidate(source: string, lineOffsets: number[], codeLine: string, lineNumber: number): FixturePurposeCandidate | undefined {
   const trigger = fixtureTemplateTrigger(codeLine);
   if (!trigger) {
@@ -154,8 +198,13 @@ function fixtureTemplateCandidate(source: string, lineOffsets: number[], codeLin
   };
 }
 
-// Four trigger forms in priority order: `analyseFixture(`, `analyseProject(`, `writeFileSync(`,
-// or a `*Fixture` / `*FIXTURE` constant declaration. The `targetKind` differentiates them in metadata.
+/**
+ * Identifies the fixture-trigger symbol and `targetKind` on `codeLine` for candidate metadata.
+ * Checks `analyseFixture`, `analyseProject`, and `writeFileSync` in that order, then falls back to `fixtureConstantName`.
+ *
+ * @param codeLine - Comment-stripped source line inspected for fixture calls or declarations.
+ * @returns Trigger `{ symbol, targetKind }` metadata, or `undefined` when no trigger matches.
+ */
 function fixtureTemplateTrigger(codeLine: string): { symbol: string; targetKind: string } | undefined {
   if (/\banalyseFixture\s*\(/.test(codeLine)) {
     return { symbol: "analyseFixture", targetKind: "inline-source" };
@@ -170,14 +219,26 @@ function fixtureTemplateTrigger(codeLine: string): { symbol: string; targetKind:
   return fixtureName ? { symbol: fixtureName, targetKind: "fixture-constant" } : undefined;
 }
 
-// Identifier names matching `*Fixture` or `*FIXTURE` are treated as opt-in markers - projects
-// signal "this is fixture data" with that suffix, so it's the natural trigger for the rule.
+/**
+ * Extracts a variable declaration name matching `*Fixture` or `*FIXTURE` from `codeLine`.
+ * Projects signal fixture data with those opt-in markers, so matching declarations act as a natural trigger for the rule.
+ *
+ * @param codeLine - Comment-stripped source line checked for a `const`, `let`, or `var` fixture declaration.
+ * @returns Declared identifier name if it matches the fixture marker pattern, otherwise `undefined`.
+ */
 function fixtureConstantName(codeLine: string): string | undefined {
   return codeLine.match(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*(?:Fixture|FIXTURE)[A-Za-z0-9_$]*)\b[^=\n]*=/)?.[1];
 }
 
-// `Array.from({ length: N })` style generated fixtures. Requires both a `*Fixture` constant name
-// and N > FIXTURE_PURPOSE_MIN_LINES so trivial test arrays don't trip the rule.
+/**
+ * Builds a `generated-fixture` candidate when a marked declaration and qualifying `Array.from` length digits share a line.
+ * Reads length digits from `codeLine` or `rawLine`, using `rawLine` for the name only when `codeLine` has a declaration keyword.
+ *
+ * @param rawLine - Original source line used as fallback for fixture name and length extraction.
+ * @param codeLine - Comment-stripped line checked first for the declaration and `Array.from` length.
+ * @param lineNumber - One-based line number recorded as the candidate's anchor line.
+ * @returns A `FixturePurposeCandidate` when both name and length exceeding `FIXTURE_PURPOSE_MIN_LINES` match, else `undefined`.
+ */
 function generatedFixtureCandidate(rawLine: string, codeLine: string, lineNumber: number): FixturePurposeCandidate | undefined {
   const fixtureName = fixtureConstantName(codeLine) ?? (/\b(?:const|let|var)\b/.test(codeLine) ? fixtureConstantName(rawLine) : undefined);
   const generatedLength = Number((codeLine.match(/\bArray\.from\s*\(\s*\{\s*length\s*:\s*(\d+)/) ?? rawLine.match(/\bArray\.from\s*\(\s*\{\s*length\s*:\s*(\d+)/))?.[1] ?? 0);
@@ -192,8 +253,14 @@ function generatedFixtureCandidate(rawLine: string, codeLine: string, lineNumber
   };
 }
 
-// Test blocks with high setup-line counts AND a fixture-shape signal. Excludes blocks whose setup
-// already produced a template-literal or generated-array candidate at the same line.
+/**
+ * Collects `test-setup` candidates for test blocks whose setup exceeds `FIXTURE_PURPOSE_MIN_LINES` with a fixture-shape signal.
+ * Any prior template or generated-array candidate line inside a block suppresses that block to avoid duplicate reporting.
+ *
+ * @param blocks - Parsed function blocks to inspect for qualifying test blocks.
+ * @param occupiedLines - Line numbers already claimed by template or generated-array fixture candidates.
+ * @returns List of `test-setup` candidates for unsuppressed qualifying test blocks.
+ */
 function fixtureTestBlockCandidates(blocks: FunctionBlock[], occupiedLines: Set<number>): FixturePurposeCandidate[] {
   const candidates: FixturePurposeCandidate[] = [];
   for (const block of blocks) {
@@ -214,8 +281,14 @@ function fixtureTestBlockCandidates(blocks: FunctionBlock[], occupiedLines: Set<
   return candidates;
 }
 
-// Returns true if any occupied line falls inside the block's line range. Prevents test blocks
-// from double-reporting on a fixture that was already detected as a template literal.
+/**
+ * Checks whether any anchor line in `occupiedLines` falls within `block`'s line range.
+ * The setup scan skips matching blocks to avoid reporting the same fixture twice.
+ *
+ * @param block - Function block providing `startLine` and `lineCount` bounds.
+ * @param occupiedLines - Set of one-based candidate anchor line numbers.
+ * @returns `true` if any occupied line falls between `block.startLine` and its inclusive end line, otherwise `false`.
+ */
 function fixtureLineInsideBlock(block: FunctionBlock, occupiedLines: Set<number>): boolean {
   const endLine = block.startLine + block.lineCount - 1;
   for (const line of occupiedLines) {
@@ -226,15 +299,24 @@ function fixtureLineInsideBlock(block: FunctionBlock, occupiedLines: Set<number>
   return false;
 }
 
-// Either the canonical fixture-generation calls (analyseFixture / writeFileSync / mkdtempSync /
-// Array.from) or an identifier containing "fixture". The narrow allowlist is deliberate - broader
-// matchers would catch ordinary production code that happens to construct test data.
+/**
+ * Checks whether a test body calls `analyseFixture`, `writeFileSync`, `mkdtempSync`, or `Array.from`, or uses a fixture identifier.
+ * Keeps the match narrow to avoid flagging ordinary test setup.
+ *
+ * @param source - Comment-stripped body text of a test block.
+ * @returns `true` when a fixture-related call or case-insensitive fixture identifier is present, otherwise `false`.
+ */
 function hasFixtureSetupSignal(source: string): boolean {
   return /\b(?:analyseFixture|writeFileSync|mkdtempSync|Array\.from)\s*\(/.test(source) || hasFixtureIdentifier(source);
 }
 
-// Substring (not word boundary) match because fixture identifiers in real projects include forms
-// like `userFixtureA`, `manyFixtureRows`, etc. Lowercased so casing variants all match.
+/**
+ * Checks whether `source` contains an identifier-shaped token with `fixture` anywhere in its name, ignoring case.
+ * Substring matching is intentional because fixture identifiers include names such as `userFixtureA` and `manyFixtureRows`.
+ *
+ * @param source - Source text scanned for identifier tokens.
+ * @returns `true` if any identifier token contains `fixture` case-insensitively, otherwise `false`.
+ */
 function hasFixtureIdentifier(source: string): boolean {
   for (const match of source.matchAll(/\b[A-Za-z_$][A-Za-z0-9_$]*\b/g)) {
     if ((match[0] ?? "").toLowerCase().includes("fixture")) {
@@ -244,20 +326,35 @@ function hasFixtureIdentifier(source: string): boolean {
   return false;
 }
 
-// Two conjoint conditions: enough lines AND at least one declarative keyword. Short strings or
-// pure prose templates don't need a purpose comment; only code-shaped fixtures do.
+/**
+ * Checks whether template literal `text` exceeds `FIXTURE_PURPOSE_MIN_LINES` and contains a declarative code keyword.
+ * Short strings or pure prose templates are skipped because only code-shaped fixtures require a purpose comment.
+ *
+ * @param text - Template literal contents extracted from a fixture candidate line.
+ * @returns `true` when both the line-count threshold and code-keyword check pass, otherwise `false`.
+ */
 function isLargeSourceFixtureText(text: string): boolean {
   return fixtureLineCount(text) > FIXTURE_PURPOSE_MIN_LINES && /\b(?:function|class|interface|type|enum|const|let|var|import|export|test|it)\b/.test(text);
 }
 
-// Newline-count, not "nonblank-line count" - the rule cares about apparent fixture size as the
-// maintainer sees it, including blank padding.
+/**
+ * Counts the LF or CRLF lines in `text`, including blank padding for the size threshold.
+ * Empty text counts as one line, and a trailing newline adds an empty final line.
+ *
+ * @param text - Fixture text whose line count is measured.
+ * @returns Total number of lines produced by splitting on LF or CRLF newlines.
+ */
 function fixtureLineCount(text: string): number {
   return text.split(/\r?\n/).length;
 }
 
-// Index → line lookup support. Used by the fixture-template detector to map a byte offset to a
-// (line, column) coordinate without splitting the whole source on every query.
+/**
+ * Computes each line's starting UTF-16 offset in `source` for locating fixture templates by line number.
+ * Index 0 always holds 0 for the first line, including empty strings, and each LF character adds the next offset.
+ *
+ * @param source - Full source text to index by line start.
+ * @returns Array of zero-based UTF-16 character offsets indexed by zero-based line number.
+ */
 function sourceLineStartOffsets(source: string): number[] {
   const offsets = [0];
   for (let index = 0; index < source.length; index += 1) {
@@ -268,8 +365,14 @@ function sourceLineStartOffsets(source: string): number[] {
   return offsets;
 }
 
-// Walks forward from the line's start offset to find the opening backtick on that line, then
-// searches for its match. Returns undefined when no template starts on the line.
+/**
+ * Locates the first backtick on one-based `lineNumber` and extracts the template literal text up to its closing backtick.
+ *
+ * @param source - Full file text containing the template literal.
+ * @param lineOffsets - Precomputed UTF-16 line-start offsets for `source`.
+ * @param lineNumber - One-based line number where the opening backtick is expected.
+ * @returns Enclosed template text, or `undefined` if the line, opening backtick, or unescaped closing backtick is missing.
+ */
 function templateLiteralAtLine(source: string, lineOffsets: number[], lineNumber: number): string | undefined {
   const start = lineOffsets[lineNumber - 1];
   if (start === undefined) {
@@ -284,8 +387,14 @@ function templateLiteralAtLine(source: string, lineOffsets: number[], lineNumber
   return end === undefined ? undefined : source.slice(firstBacktick + 1, end);
 }
 
-// Linear walk respecting `\`` escapes. Does NOT handle `${…}` interpolation specially - fixture
-// templates rarely contain nested backticks, and a stricter parse would not help the rule's signal.
+/**
+ * Searches `source` from `startIndex` (immediately after the opening backtick) for the next unescaped backtick.
+ * Backslash escapes are skipped and `${...}` interpolations are not parsed.
+ *
+ * @param source - Full source string being scanned.
+ * @param startIndex - Zero-based character index immediately following the opening backtick.
+ * @returns Index of the closing backtick in `source`, or `undefined` if none is found before end-of-file.
+ */
 function closingTemplateLiteralIndex(source: string, startIndex: number): number | undefined {
   let isEscaped = false;
   for (let index = startIndex; index < source.length; index += 1) {
@@ -305,9 +414,16 @@ function closingTemplateLiteralIndex(source: string, startIndex: number): number
   return undefined;
 }
 
-// Two acceptable positions: a comment on the candidate line itself, or one directly above with
-// nothing but blank lines in between. Anything farther away cannot be claimed as documentation.
-// A stacked `//` header counts as one comment, so a purpose statement on an earlier line clears.
+/**
+ * Checks whether the candidate at one-based `line` has a qualifying purpose comment in `comments`.
+ * Evaluates a spanning same-line comment alone first, then checks the nearest preceding comment across a blank-only gap,
+ * combining adjacent line comments only for that preceding header.
+ *
+ * @param lines - File lines used to verify only blank lines intervene between a preceding comment and `line`.
+ * @param comments - Parsed comment records for the file in source order.
+ * @param line - One-based candidate anchor line number.
+ * @returns `true` if a same-line comment or contiguous preceding comment header qualifies, otherwise `false`.
+ */
 function hasFixturePurposeComment(lines: string[], comments: CommentRecord[], line: number): boolean {
   const sameLine = comments.find((comment) => comment.line <= line && comment.endLine >= line);
   if (sameLine && isFixturePurposeComment(sameLine.text)) {
@@ -322,18 +438,35 @@ function hasFixturePurposeComment(lines: string[], comments: CommentRecord[], li
 // genuine explanation missed the exact words. Shorter comments still need a vocabulary word.
 const FIXTURE_PURPOSE_MIN_WORDS = 8;
 
-// Either acceptance path used by `hasFixturePurposeComment`: vocabulary or substantive prose.
+/**
+ * Checks whether comment `text` qualifies as a fixture explanation via purpose vocabulary or minimum word count.
+ *
+ * @param text - Normalized comment body text to evaluate.
+ * @returns `true` if `text` contains a purpose marker or at least `FIXTURE_PURPOSE_MIN_WORDS` words, else `false`.
+ */
 function isFixturePurposeComment(text: string): boolean {
   return hasFixturePurposeMarker(text) || fixtureCommentWordCount(text) >= FIXTURE_PURPOSE_MIN_WORDS;
 }
 
-// Counts word-like tokens; punctuation-only fragments do not make a comment substantive.
+/**
+ * Counts alphanumeric word-like tokens in comment text so punctuation-only fragments do not count as substantive prose.
+ *
+ * @param text - Comment body text split on whitespace.
+ * @returns Number of whitespace-delimited tokens containing at least one ASCII letter or digit.
+ */
 function fixtureCommentWordCount(text: string): number {
   return text.split(/\s+/).filter((token) => /[A-Za-z0-9]/.test(token)).length;
 }
 
-// Like `leadingCommentForLine` but with the fixture-specific blank-gap predicate that allows for
-// slightly more spacing than the documentation-rule version.
+/**
+ * Finds the nearest comment in `comments` immediately above `line` separated by only blank lines.
+ * Fixture-purpose counterpart to `leadingCommentForLine`.
+ *
+ * @param lines - File lines inspected to confirm no non-blank code lies between the comment and `line`.
+ * @param comments - Parsed comment records for the file in source order.
+ * @param line - One-based anchor line of the fixture or test declaration.
+ * @returns Nearest preceding `CommentRecord` across a blank-only gap, or `undefined` if none qualifies.
+ */
 function leadingFixturePurposeComment(lines: string[], comments: CommentRecord[], line: number): CommentRecord | undefined {
   for (let index = comments.length - 1; index >= 0; index -= 1) {
     const comment = comments[index];
@@ -348,8 +481,15 @@ function leadingFixturePurposeComment(lines: string[], comments: CommentRecord[]
   return undefined;
 }
 
-// Identical to `hasOnlyBlankLines` but with an inclusive upper bound - fixtures may have one
-// extra blank line of breathing room above them that ordinary declaration comments do not.
+/**
+ * Checks whether `lines` contains only blank text from one-based `startLine` through `endLine`, inclusive.
+ * Missing line entries count as blank and an empty range returns `true`.
+ *
+ * @param lines - Zero-indexed array of file lines.
+ * @param startLine - Inclusive one-based first line number of the gap to inspect.
+ * @param endLine - Inclusive one-based last line number of the gap to inspect.
+ * @returns `true` if every line in the range is blank or missing, otherwise `false`.
+ */
 function hasOnlyBlankFixturePurposeGap(lines: string[], startLine: number, endLine: number): boolean {
   for (let line = startLine; line <= endLine; line += 1) {
     if ((lines[line - 1] ?? "").trim() !== "") {
@@ -359,8 +499,12 @@ function hasOnlyBlankFixturePurposeGap(lines: string[], startLine: number, endLi
   return true;
 }
 
-// Vocabulary list of words a meaningful fixture-purpose comment is expected to use (fixture,
-// covers, regression, baseline, fingerprint, …). Project task references count as well.
+/**
+ * Checks whether comment `text` contains a recognized fixture-purpose term such as `fingerprint`, ignoring case.
+ *
+ * @param text - Comment body text checked for purpose vocabulary markers.
+ * @returns `true` if a purpose marker word or phrase matches case-insensitively, otherwise `false`.
+ */
 function hasFixturePurposeMarker(text: string): boolean {
-  return /\b(?:fixture|covers|reproduces|regression|scanner|parse|baseline|fingerprint|noise|valid case|invalid case|because|M\d{1,3})\b/i.test(text) || /\.goat-flow\/tasks\//.test(text);
+  return /\b(?:fixture|covers|reproduces|regression|scanner|parse|baseline|fingerprint|noise|valid case|invalid case|because)\b/i.test(text);
 }

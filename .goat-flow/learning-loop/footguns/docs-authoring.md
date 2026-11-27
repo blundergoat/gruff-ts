@@ -1,6 +1,6 @@
 ---
 category: docs-authoring
-last_reviewed: 2026-08-08
+last_reviewed: 2026-11-23
 ---
 
 # Docs-authoring footguns
@@ -25,18 +25,18 @@ Defences:
 2. For a lone literal backtick in prose, write the word "backtick" instead of trying to typeset one.
 3. Verify by rendering the line (markdown-it `renderInline`), not by eyeballing the source - the corruption is invisible in a plain editor.
 
-Instance: `.goat-flow/learning-loop/footguns/rule-scanners.md` (search: `docs.fixture-purpose-missing`) carried three such spans on one line until 2026-06-04; a markdown-it render of that line emitted 24 inline code spans, five of them prose fragments (for example "on the" and "is not a candidate -") rather than code. Fixed by switching to double-backtick delimiters and rewording the lone backtick.
+Instance: the fixture-purpose entry, now in `.goat-flow/learning-loop/footguns/comment-rules.md` (search: `docs.fixture-purpose-missing`), carried three such spans on one line until 2026-06-04; a markdown-it render of that line emitted 24 inline code spans, five of them prose fragments (for example "on the" and "is not a candidate -") rather than code. Fixed by switching to double-backtick delimiters and rewording the lone backtick.
 
 ## Footgun: moving a `.goat-flow/` doc strands source comments that cite its old path
 
-**Status:** active | **Created:** 2026-06-09 | **Evidence:** OBSERVED
+**Status:** active | **Created:** 2026-06-09 | **Updated:** 2026-11-23 | **Evidence:** OBSERVED
 **Evidence context:** preflight gruff scan flagged two `docs.stale-comment` findings.
 
-Source comments cite learning-loop docs by relative path. A reorg that relocates a doc does not update those comments, so they go stale, and gruff's `docs.stale-comment` rule resolves the cited path and fails the run. Only the full-project scan in `scripts/preflight-checks.sh` covers a commenting file the agent did not just edit, so the straggler surfaces at preflight, not at edit time - the PostToolUse changed-lines hook only scans the edited file, never the one whose comment went stale.
+Source comments cite learning-loop docs by relative path. A reorg that relocates a doc does not update those comments, so they go stale. When this entry was written, gruff's `docs.stale-comment` rule resolved the cited path and failed the full-project scan in `scripts/preflight-checks.sh`, so the straggler at least surfaced at preflight. ADR-021 retired that rule in commit `d8842f3` (`CHANGELOG.md`, search: `docs.stale-comment`), and `src/rules.ts` (search: `ruleDescriptors`) no longer lists it. A stale path citation in a source comment now passes `npm run check`, the self-scan, and preflight without a finding.
 
 Defence: when moving any doc under `.goat-flow/`, grep all source for the old relative path before committing the move (for example `grep -rn "goat-flow/lessons/" --include='*.ts' src`) and update every hit in the same change.
 
-Instance: the learning-loop reorg in commit `cddf7f9` left `src/cli-program.ts` (search: `buildProgram`) and `src/dashboard.ts` (search: `startDashboard`) citing `.goat-flow/lessons/verification.md` after it moved under `.goat-flow/learning-loop/lessons/`; both tripped `docs.stale-comment` until repointed.
+Instance: the learning-loop reorg in commit `cddf7f9` left `src/cli-program.ts` (search: `buildProgram`) and `src/dashboard.ts` (search: `startDashboard`) citing `.goat-flow/lessons/verification.md` after it moved under `.goat-flow/learning-loop/lessons/`; both tripped `docs.stale-comment` until repointed. The same mistake today would produce no finding, so the grep above is the only defence.
 
 ## Footgun: generic Codex skill validation rejects required goat-flow version metadata
 
@@ -54,8 +54,8 @@ Smoke evidence: `.goat-flow/logs/sessions/2026-07-16-goat-{critique,plan,qa,secu
 **Status:** active | **Created:** 2026-08-07 | **Evidence:** ACTUAL_MEASURED
 **Decision changed:** After a goat-flow upgrade, run stats and all three audit modes, then budget time to reconcile project-owned metadata, anchors, and inventories that the installer deliberately preserves.
 **Trigger phase:** VERIFY
-**Incident count:** 2
-**Latest occurrence:** 2026-08-07
+**Incident count:** 3
+**Latest occurrence:** 2026-10-03
 
 The 1.14.0 setup audit passed while `audit . --agent codex --harness` failed because existing entries used older evidence labels such as `MEASURED`, appended evidence context inside the label field, encoded resolution dates inside `Status`, and cited a gitignored milestone as durable evidence. The install correctly refreshed system-owned README contracts but did not rewrite project-owned learning entries, so a structurally current install can still fail its feedback-loop gate.
 
@@ -65,6 +65,8 @@ Evidence: `.goat-flow/learning-loop/footguns/README.md` (search: `Evidence label
 
 Prevention: immediately run `stats . --check`, the base audit, the harness audit, and the content audit after installation. Normalize only reported project-owned entries, replace gitignored task paths with committed semantic anchors, reconcile architecture and code-map inventories against live files, regenerate indexes, and rerun each original failing command.
 
+**Recurrence 2026-10-03:** The 1.17.0 install retired `writing-style.md` but kept the file, which the drift check then reported as an orphan, while `CLAUDE.md`, `AGENTS.md`, `.goat-flow/architecture.md`, `.goat-flow/code-map.md`, and the decisions README still cited it. The same release began requiring `.goat-flow/security-policy.md` in every Router Table, and its stricter `stats --check` exposed 12 stale and 13 missing footgun anchors left behind by earlier source refactors. Every base audit failed until those project-owned files were reconciled.
+
 ## Footgun: `audit --agent <one>` never inspects the sibling agents' instruction files
 
 **Status:** active | **Created:** 2026-08-08 | **Evidence:** ACTUAL_MEASURED
@@ -73,15 +75,17 @@ Prevention: immediately run `stats . --check`, the base audit, the harness audit
 **Incident count:** 1
 **Latest occurrence:** 2026-08-08
 
-This workspace keeps four near-identical agent instruction files (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, plus the `.agents/` surface). `audit . --agent claude` reads only the Claude surface, and its path-resolution finding ("All 64 referenced paths resolve across router tables, architecture.md, and core docs") covers router tables and core docs - not inline prose in the body. Two blind spots stack: a stale path in a Commit Messages sentence is invisible even in the audited file, and a stale path in a *sibling* file's router table is invisible because that file was never opened. gruff's own `docs.stale-comment` rule does not close the gap either - it resolves paths cited in source comments, not in markdown prose.
+This workspace keeps four near-identical agent instruction files (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, plus the `.agents/` surface). `audit . --agent claude` reads only the Claude surface, and its path-resolution finding ("All 64 referenced paths resolve across router tables, architecture.md, and core docs") covers router tables and core docs - not inline prose in the body. Two blind spots stack: a stale path in a Commit Messages sentence is invisible even in the audited file, and a stale path in a *sibling* file's router table is invisible because that file was never opened. gruff's former `docs.stale-comment` rule never closed the gap either: it resolved paths cited in source comments, not in markdown prose, and ADR-021 has since retired it.
 
 Defence: after renaming a doc, run one repo-wide grep for the old basename across all extensions (`grep -rn "old-name\.md" . | grep -v node_modules`) and fix every agent surface in the same change. A green `--agent claude` audit is not evidence that the other three surfaces are consistent.
 
-Instance: `docs/coding-standards/git-commit.md` was renamed to `git-commit-message.md`, but six references survived - inline prose in all three of `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, the router-table `Commit policy` row in the latter two, and the Copilot Workspace Boundary owned-surfaces list. Both `audit . --agent claude --harness` and `--check-content` reported pass (all five concerns at 100, drift 0/53 findings, 177 files scanned) while every one of those pointers was broken. The audit's own verification concern named the real file (`Commit guidance found at docs/coding-standards/git-commit-message.md`), so the mismatch was only visible by reading that finding against the instruction file.
+Instance: `docs/coding-standards/git-commit.md` was renamed to `git-commit-message.md`, but six references survived - inline prose in all three of `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, the router-table `Commit policy` row in the latter two (`AGENTS.md`, search: `Commit policy`), and the Copilot Workspace Boundary owned-surfaces list. Both `audit . --agent claude --harness` and `--check-content` reported pass (all five concerns at 100, drift 0/53 findings, 177 files scanned) while every one of those pointers was broken. The audit's own verification concern named the real file (`Commit guidance found at docs/coding-standards/git-commit-message.md`), so the mismatch was only visible by reading that finding against the instruction file.
+
+## Resolved Entries
 
 ## Footgun: gitignore-aware search finds nothing when recursion starts at `.goat-flow/`
 
-**Status:** active | **Created:** 2026-08-08 | **Evidence:** ACTUAL_MEASURED
+**Status:** resolved | **Created:** 2026-08-08 | **Evidence:** ACTUAL_MEASURED
 **Decision changed:** Scope learning-loop greps at the bucket directory or deeper, and treat a zero-hit result rooted at `.goat-flow/` as a tooling artifact rather than a genuine retrieval miss.
 **Trigger phase:** READ
 **hallucination-risk:** high
@@ -93,3 +97,5 @@ Measured on 2026-08-08: `grep -rl Footgun .goat-flow/` returned 0 files while `c
 This matters because the instruction file's READ step mandates grep-first retrieval over the learning loop and `.goat-flow/skill-docs/skill-preamble.md` (search: `Relevant prior learnings`) requires every functional skill to report the outcome. An agent that scopes one directory too high records a fabricated `none found` as evidence, which is the exact failure the evidence standard exists to prevent. It is also self-concealing: a footgun about retrieval failure cannot be retrieved by the failing search.
 
 Defence: root learning-loop searches at `.goat-flow/learning-loop/<bucket>/` or deeper, which works, or repo root, which also works. When a search must span `.goat-flow/`, use `command grep` to bypass the wrapper. The `.gitignore` is byte-identical to the shipped template at `workflow/setup/reference/goat-flow-gitignore`, so this is framework-owned; editing it locally would trade this trap for permanent audit drift.
+
+Resolved 2026-08-23 by commit `057f10a`, which rewrote the re-includes in the `**/name/**` form (for example `!**/learning-loop/**`) and documented why in the file's opening comment (`.goat-flow/.gitignore`, search: `Re-includes below are spelled`). The current file is byte-identical to the goat-flow 1.19.0 template. Measured on 2026-11-23: through the session wrapper, `grep -rl Footgun .goat-flow/` returned 15 files against 37 for `command grep`, and all 13 learning-loop matches appeared in both. The 22 files that only `command grep` found were gitignored `logs/`, `plans/`, and `scratchpad/` content plus `audit-cache.json`. A learning-loop search rooted at `.goat-flow/` is now reliable. Gitignored plans and logs stay invisible to the wrapper by design, so use `command grep` when a sweep must reach them. The old root-at-the-bucket rule had also been copied into `CLAUDE.md`, `AGENTS.md`, and `.github/copilot-instructions.md`, where it outlived the fix until 2026-11-23; after resolving a footgun, grep the instruction files for its rule.

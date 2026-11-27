@@ -40,6 +40,10 @@ jobs:
       - name: Type check and unit tests
         run: npm run check
 
+      - name: Version consistency
+        # Fails when package.json, package-lock.json, src/constants.ts and CHANGELOG.md disagree on the version.
+        run: bash scripts/bump-version.sh --check
+
       - name: gruff-ts analyse
         run: ./bin/gruff-ts analyse . --fail-on=advisory
 
@@ -59,11 +63,11 @@ jobs:
         with:
           node-version: 22
 
-      - name: Lint hook scripts
-        run: shellcheck .goat-flow/hooks/*.sh .goat-flow/hooks/deny-dangerous/*.sh
-
       - name: Deny-dangerous policy self-test
-        run: bash .goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh
+        run: node .goat-flow/hooks/deny-dangerous.mjs --self-test=full
+
+      - name: Deny-git-mutations policy self-test
+        run: node .goat-flow/hooks/deny-git-mutations.mjs --self-test=full
 
       - name: Post-turn safety self-test
-        run: bash .goat-flow/hooks/post-turn-safety.sh --self-test
+        run: node .goat-flow/hooks/post-turn-safety.mjs --self-test

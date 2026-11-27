@@ -1,7 +1,8 @@
 # ADR-020: Defer corpus score recalibration to the coordinated family break
 
-**Status:** Accepted
+**Status:** Implemented
 **Date:** 2026-08-11
+**Updated:** 2026-09-13
 **Author(s):** Codex, user
 **Ticket/Context:** 2026-08-11 gruff-ts 0.5.x corpus remediation, Task 2.
 
@@ -29,6 +30,8 @@ The current implementation in `src/scoring.ts` (search: `function scoreReport`) 
 Keep `scoreReport` unchanged in this remediation. Carry the measured ordering above into the family scoring and severity parity work; migrate the penalty table, confidence multiplier, pillar and per-file formulas, correlated-rule set, and cluster key together at the coordinated JSON break.
 
 The lockfile scan-surface correction lands independently because it removes findings for public package digests without redefining score semantics.
+
+**Update 2026-09-13.** The coordinated family break this decision waited for has landed. gruff-ts 0.6.0 replaces the penalty table, pillar and per-file formulas behind `scoreReport` with the ratified normalized scorer and weights findings by analyzer confidence for the first time (see `CHANGELOG.md`, "every score changes"). The corpus half was measured in the family's M06 before-and-after corpus receipts: `nodejs-goof` falls from first to fourth of the TypeScript targets, and `express` rises from third to second. The inversion recorded above was resolved by the family migration, not by a TypeScript-only retune, which is the path this decision chose.
 
 ## Failure Mode Comparison
 

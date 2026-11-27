@@ -1,17 +1,21 @@
-// Finding factory helpers that centralize fingerprint generation and optional-field omission.
+// Finding construction keeps report fields, baseline fingerprints, and cross-edit identities consistent.
+//
+// Rules provide user-facing evidence through one shared input shape.
+// This module omits absent fields and adds deterministic identifiers before any renderer or baseline sees the finding.
 import { createHash } from "node:crypto";
 import type { Confidence, Finding, Pillar, Severity } from "./types.ts";
 
-// Caller-supplied fields. makeFinding hashes (ruleId, filePath, line, symbol) into the fingerprint,
-// so any field added here that should affect baseline identity must also be folded into that hash.
+// Describes the evidence one rule supplies before a complete user-facing finding is built.
+//
+// Optional locations and guidance stay absent when the rule cannot provide them.
+// Stable contract: centralized identifiers make every report and baseline interpret the same occurrence consistently.
 interface FindingInput {
   ruleId: string;
   message: string;
   filePath: string;
   line?: number;
   endLine?: number;
-  // One-based match column. Deliberately NOT part of the fingerprint hash (ADR-017): it only
-  // discriminates same-line occurrences in report dedupe and enriches SARIF/JSON locations.
+  // The optional one-based column separates same-line occurrences in reports without changing the baseline fingerprint (ADR-017).
   column?: number;
   severity: Severity;
   pillar: Pillar;
@@ -21,39 +25,55 @@ interface FindingInput {
   metadata?: Record<string, unknown>;
 }
 
-// Builds the canonical Finding shape. The 16-hex fingerprint is the baseline identity used by
-// `gruff.baseline.v1`; changing the hashed fields or their join order is a baseline-breaking
-// schema change. Optional fields are omitted (not set to undefined) so finding equality stays stable.
-function makeFinding(input: FindingInput): Finding {
+/**
+ * Builds a report finding with a stable baseline fingerprint and cross-edit identity, omitting absent optional fields.
+ *
+ * @param findingInput - Rule evidence supplying the rule id, message, file path, severity, pillar, confidence, and optional location or metadata.
+ * @returns The complete finding carrying deterministic `fingerprint` and `stableIdentity` hashes.
+ */
+function makeFinding(findingInput: FindingInput): Finding {
+  // Missing line or symbol values occupy stable empty slots so that the fields keep their positions in the fingerprint input.
   const fingerprint = createHash("sha256")
-    .update([input.ruleId, input.filePath, input.line ?? "", input.symbol ?? ""].join("\0"))
+    .update([findingInput.ruleId, findingInput.filePath, findingInput.line ?? "", findingInput.symbol ?? ""].join("\0"))
     .digest("hex")
     .slice(0, 16);
+  // Omits missing or zero coordinates and empty optional text so consumers can treat them as unavailable. Missing metadata becomes an empty object.
   return {
-    ruleId: input.ruleId,
-    message: input.message,
-    filePath: input.filePath,
-    ...(input.line ? { line: input.line } : {}),
-    ...(input.endLine ? { endLine: input.endLine } : {}),
-    ...(input.column ? { column: input.column } : {}),
-    severity: input.severity,
-    pillar: input.pillar,
+    ruleId: findingInput.ruleId,
+    message: findingInput.message,
+    filePath: findingInput.filePath,
+    ...(findingInput.line ? { line: findingInput.line } : {}),
+    ...(findingInput.endLine ? { endLine: findingInput.endLine } : {}),
+    ...(findingInput.column ? { column: findingInput.column } : {}),
+    severity: findingInput.severity,
+    pillar: findingInput.pillar,
     secondaryPillars: [],
     tier: "v0.1",
-    confidence: input.confidence,
-    ...(input.symbol ? { symbol: input.symbol } : {}),
-    ...(input.remediation ? { remediation: input.remediation } : {}),
-    metadata: input.metadata ?? {},
+    confidence: findingInput.confidence,
+    ...(findingInput.symbol ? { symbol: findingInput.symbol } : {}),
+    ...(findingInput.remediation ? { remediation: findingInput.remediation } : {}),
+    metadata: findingInput.metadata ?? {},
     fingerprint,
-    stableIdentity: stableIdentityFor(input),
+    stableIdentity: stableIdentityFor(findingInput),
   };
 }
 
-// Stable, line-insensitive identity for external diff tooling; fingerprint remains line-sensitive.
-function stableIdentityFor(input: FindingInput): string {
-  const symbolOrMessage = input.symbol && input.symbol.length > 0 ? input.symbol : input.message;
+/**
+ * Builds the line-insensitive identity external diff tools use to track a finding across edits.
+ *
+ * @param findingInput - Rule evidence supplying the rule id, file path, symbol or message, and optional column to separate same-line occurrences.
+ * @returns A deterministic 16-character hex SHA-256 prefix that distinguishes same-line occurrences without storing secret-derived text.
+ */
+function stableIdentityFor(findingInput: FindingInput): string {
+  // Empty or missing symbols cannot identify the user's code, so those findings fall back to their user-facing message.
+  const hasNamedSymbol = typeof findingInput.symbol === "string" && findingInput.symbol.length > 0;
+  const symbolOrMessage = hasNamedSymbol ? findingInput.symbol : findingInput.message;
+  // A named symbol already identifies the user's code; otherwise a known column keeps same-line occurrences separate.
+  const occurrenceIdentity = hasNamedSymbol || findingInput.column === undefined
+    ? symbolOrMessage
+    : `${symbolOrMessage}\0column:${findingInput.column}`;
   return createHash("sha256")
-    .update([input.ruleId, input.filePath, symbolOrMessage].join("\0"))
+    .update([findingInput.ruleId, findingInput.filePath, occurrenceIdentity].join("\0"))
     .digest("hex")
     .slice(0, 16);
 }

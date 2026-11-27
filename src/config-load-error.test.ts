@@ -1,13 +1,40 @@
-// Tests for the ConfigLoadError data wrapper used by the CLI's graceful config-error formatter,
-// plus the loud rule-config validation contract (unknown ids, alias booleans, malformed options).
+// Config-error tests cover the concise failures users receive before analysis can start.
+//
+// Fixtures exercise the error wrapper and strict rule settings through both the loader and CLI.
+// Retired secret-preview values must always stop safely without echoing user-provided content.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { loadConfig, optionBoolean } from "./config.ts";
 import { ConfigLoadError } from "./config-load-error.ts";
+import { writeDefaultConfig } from "./init-config.ts";
+import { applyDisplaySelectors } from "./selectors.ts";
 import { analyseProject, REPO_ROOT } from "./test-fixtures.ts";
+import type { AnalysisOptions } from "./types.ts";
+
+const LEGACY_SECRET_PREVIEWS_ERROR = 'Config key "allowlists.secretPreviews" is removed in 0.6.0: FAMILY-CONTRACT.md section 5 makes category markers unconditional, so the key authorises nothing; delete it from the configuration.';
+const CONFIG_LOAD_OPTIONS = {
+  paths: ["."],
+  shouldSkipConfig: false,
+  format: "json",
+  failOn: "none",
+  shouldIncludeIgnored: false,
+  changedScope: "symbol",
+  shouldSkipBaseline: true,
+} satisfies AnalysisOptions;
+// Every shape the key can take, including the empty list a 0.5 config was told to keep: presence is the rejection.
+const INVALID_LEGACY_SECRET_PREVIEW_CASES = [
+  ["non-empty-list", "[known-fixture-preview]"],
+  ["empty-list", "[]"],
+  ["scalar", "known-fixture-preview"],
+  ["empty-object", "{}"],
+  ["null", "null"],
+  ["blank-entry", '[""]'],
+  ["mixed-list", "[known-fixture-preview, 42]"],
+] as const;
 
 test("ConfigLoadError stores message and suggestion verbatim", () => {
   // Fixture covers the construction contract: message reaches `error.message`; suggestion is
@@ -17,6 +44,21 @@ test("ConfigLoadError stores message and suggestion verbatim", () => {
   assert.equal(error.suggestion, "run init --force");
   assert.equal(error.name, "ConfigLoadError");
   assert.equal(error instanceof Error, true);
+});
+
+// A config error reaches the analysis envelope, which may not publish a host path, so a missing `--config` file is named
+// the way the user typed it rather than by the absolute path the loader resolved. Writes a temporary directory to the
+// filesystem and removes it again whether the assertion threw or not.
+test("a missing --config file is named as typed, never by its host path", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-missing-config-"));
+  try {
+    assert.throws(
+      () => loadConfig(root, { ...CONFIG_LOAD_OPTIONS, config: "missing.yaml" }),
+      (error: unknown) => error instanceof ConfigLoadError && error.message === "Config file not found: missing.yaml." && !error.message.includes(root),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("rule config rejects unknown ids, alias booleans, and malformed options loudly", () => {
@@ -29,12 +71,62 @@ test("rule config rejects unknown ids, alias booleans, and malformed options lou
   assert.throws(() => analyseProject(files, { config: { rules: { "security.eval-call": { enabled: "off" } } } }), /"enabled" must be true or false/);
   assert.throws(() => analyseProject(files, { config: { rules: { "security.eval-call": { enabled: 1 } } } }), /"enabled" must be true or false/);
   // Unknown option keys and non-numeric declared options fail naming the rule's accepted keys.
-  assert.throws(() => analyseProject(files, { config: { rules: { "naming.generic-parameter": { options: { minCyclomatik: 3 } } } } }), /accepts options: minCyclomatic, minLineCount, minParameters/);
-  assert.throws(() => analyseProject(files, { config: { rules: { "naming.generic-parameter": { options: { minCyclomatic: "three" } } } } }), /must be numeric/);
+  assert.throws(() => analyseProject(files, { config: { rules: { "design.large-module-concentration": { options: { minFile: 3 } } } } }), /accepts options: minFiles, minLines/);
+  assert.throws(() => analyseProject(files, { config: { rules: { "design.large-module-concentration": { options: { minFiles: "three" } } } } }), /must be numeric/);
   assert.throws(() => analyseProject(files, { config: { rules: { "security.eval-call": { options: { anything: 1 } } } } }), /accepts no options/);
   // Valid overrides still round-trip: boolean enabled plus a declared numeric option.
-  const valid = analyseProject(files, { config: { rules: { "naming.generic-parameter": { enabled: true, options: { minCyclomatic: 3 } } } } });
-  assert.equal(valid.schemaVersion, "gruff.analysis.v2");
+  const valid = analyseProject(files, { config: { rules: { "design.large-module-concentration": { enabled: true, options: { minFiles: 3 } } } } });
+  assert.equal(valid.schemaVersion, "gruff.analysis.v3");
+});
+
+test("rule config reads a boolean everyCallable switch per tag rule", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-every-callable-"));
+  try {
+    writeFileSync(join(root, ".gruff-ts.yaml"), "schemaVersion: gruff-ts.config.v0.1\nrules:\n  docs.missing-param-tag:\n    options:\n      everyCallable: true\n");
+    const config = loadConfig(root, CONFIG_LOAD_OPTIONS);
+    assert.equal(optionBoolean(config, "docs.missing-param-tag", "everyCallable", false), true);
+    assert.equal(optionBoolean(config, "docs.missing-return-tag", "everyCallable", false), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rule config rejects a non-boolean switch and a boolean numeric option", () => {
+  const files = { "ok.ts": "// File overview: option type fixture.\nexport const fine = 1;\n" };
+  assert.throws(() => analyseProject(files, { config: { rules: { "docs.missing-param-tag": { options: { everyCallable: "yes" } } } } }), /"everyCallable" for docs.missing-param-tag must be true or false; got "yes"/);
+  assert.throws(() => analyseProject(files, { config: { rules: { "design.large-module-concentration": { options: { minFiles: true } } } } }), /"minFiles" for design.large-module-concentration must be numeric; got true/);
+});
+
+test("everyCallable false leaves the tag-rule findings at their defaults", () => {
+  const files = { "lib.ts": "// File overview: tag-rule default control.\n/** Adds two numbers. */\nexport function add(left: number, right: number): number {\n  return left + right;\n}\n" };
+  const defaults = analyseProject(files);
+  const switchedOff = analyseProject(files, { config: { rules: { "docs.missing-param-tag": { options: { everyCallable: false } }, "docs.missing-return-tag": { options: { everyCallable: false } } } } });
+  assert.ok(defaults.findings.some((finding) => finding.ruleId === "docs.missing-param-tag"));
+  assert.deepEqual(switchedOff.findings, defaults.findings);
+});
+
+// An unrecognised key inside a rule block used to load as a silent no-op, so a project writing the sibling php shape
+// believed it had tuned the rule. The contract: each refusal names the key the user wrote and the keys that block accepts.
+test("rule config refuses unknown keys inside a rule block, a sibling port's thresholds map included", () => {
+  const files = { "ok.ts": "// File overview: config validation fixture.\nexport const fine = 1;\n" };
+  assert.throws(
+    () => analyseProject(files, { config: { rules: { "size.file-length": { threshhold: 400 } } } }),
+    /Unknown config key "rules\.size\.file-length\.threshhold"\. Valid keys: rules\.size\.file-length\.enabled, rules\.size\.file-length\.options, rules\.size\.file-length\.severity, rules\.size\.file-length\.threshold\./,
+  );
+  assert.throws(
+    () => analyseProject(files, { config: { rules: { "size.file-length": { thresholds: { maxLines: 400 } } } } }),
+    /Unknown config key "rules\.size\.file-length\.thresholds"/,
+  );
+  // Every key a rule block supports still loads.
+  const valid = analyseProject(files, {
+    config: {
+      rules: {
+        "size.file-length": { enabled: true, threshold: 400, severity: "warning" },
+        "design.large-module-concentration": { threshold: 55, options: { minFiles: 4, minLines: 1 } },
+      },
+    },
+  });
+  assert.equal(valid.schemaVersion, "gruff.analysis.v3");
 });
 
 test("an invalid config rule value exits 2 with a concise error and no stack trace", () => {
@@ -46,6 +138,266 @@ test("an invalid config rule value exits 2 with a concise error and no stack tra
     assert.equal(result.status, 2);
     assert.equal(result.stderr.includes('"enabled" must be true or false'), true);
     assert.equal(/\n\s+at /.test(result.stderr), false);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+/*
+ * Fixture purpose: a refusal after argument parsing still owes a machine caller an envelope, so a JSON consumer
+ * reads the failure from `diagnostics` instead of scraping stderr for it. A human-readable format keeps stdout
+ * empty, because the whole reason is already on stderr.
+ * Stable contract: only a configuration that failed to load publishes; a refusal the caller asked for by combining
+ * flags publishes nothing, whatever format it asked for.
+ */
+test("a config error publishes the v3 envelope under --format json and leaves text stdout empty", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-config-envelope-"));
+  try {
+    writeFileSync(join(projectRoot, "ok.ts"), "// File overview: config error fixture.\nexport const fine = 1;\n");
+    writeFileSync(join(projectRoot, ".gruff-ts.yaml"), "schemaVersion: gruff-ts.config.v0.1\nrules:\n  security.eval-call:\n    enabled: no\n");
+    const binary = join(REPO_ROOT, "bin/gruff-ts");
+    const spawnOptions = { cwd: projectRoot, encoding: "utf8" } as const;
+
+    const machine = spawnSync("bash", [binary, "analyse", ".", "--format", "json"], spawnOptions);
+    assert.equal(machine.status, 2);
+    const envelope = JSON.parse(machine.stdout);
+    assert.equal(envelope.schemaVersion, "gruff.analysis.v3");
+    assert.deepEqual(envelope.findings, []);
+    assert.equal(envelope.diagnostics.length, 1);
+    assert.equal(envelope.diagnostics[0].type, "config-error");
+
+    const human = spawnSync("bash", [binary, "analyse", ".", "--format", "text"], spawnOptions);
+    assert.equal(human.status, 2);
+    assert.equal(human.stdout, "");
+
+    // `--fail-on-new` without a baseline is a refusal the caller asked for, not a configuration that failed to
+    // load, so it publishes nothing: an empty envelope would replace a report this run did produce.
+    const flagConflict = spawnSync("bash", [binary, "analyse", ".", "--format", "json", "--fail-on-new", "--no-config", "--no-baseline"], spawnOptions);
+    assert.equal(flagConflict.status, 2);
+    assert.equal(flagConflict.stdout, "");
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+/*
+ * Fixture purpose: a key gruff-ts does not act on is a setting the user believes is in force and is not, which is
+ * the one configuration failure a reader cannot see by looking at their own file. Every other port already refuses
+ * one; gruff-ts accepted all three of these shapes with exit 0 until 0.6.0.
+ */
+for (const [blockName, configuredBlock, offendingKey] of [
+  ["root", "notAKeyAnyPortKnows: true", "notAKeyAnyPortKnows"],
+  ["allowlists", "allowlists:\n  notAnAllowlist: []", "allowlists.notAnAllowlist"],
+  ["paths", "paths:\n  includeEverything: []", "paths.includeEverything"],
+] as const) {
+  test(`an unrecognised ${blockName} config key is refused by name`, () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-unknown-key-"));
+    try {
+      writeFileSync(join(projectRoot, ".gruff-ts.yaml"), `schemaVersion: gruff-ts.config.v0.1\n${configuredBlock}\n`);
+      assert.throws(
+        () => loadConfig(projectRoot, CONFIG_LOAD_OPTIONS),
+        (error: unknown) => {
+          assert.equal(error instanceof ConfigLoadError, true, blockName);
+          // The message names the key the user wrote, not merely that something was wrong.
+          assert.equal((error as ConfigLoadError).message.includes(offendingKey), true, blockName);
+          return true;
+        },
+      );
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+}
+
+test("every key the generated config writes is a key the loader accepts", () => {
+  // The seed and the loader are two lists of the same names; a key init writes and loadConfig refuses is a config
+  // gruff-ts generates and then refuses to read.
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-seed-roundtrip-"));
+  try {
+    writeDefaultConfig(projectRoot, false);
+    const config = loadConfig(projectRoot, CONFIG_LOAD_OPTIONS);
+    assert.equal(config.schemaVersion, "gruff-ts.config.v0.1");
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+// Each configured shape becomes a separately named test so users can identify the exact failed compatibility case.
+// An empty list is refused with the rest: the key reads as configured redaction whether or not anything is in it.
+for (const [caseName, configuredValue] of INVALID_LEGACY_SECRET_PREVIEW_CASES) {
+  // Fixture purpose: prove this retired value shape fails with the same safe diagnostic and never echoes the configured content.
+  test(`legacy secret previews reject ${caseName} with one safe diagnostic`, () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-secret-preview-config-"));
+    try {
+      writeFileSync(
+        join(projectRoot, ".gruff-ts.yaml"),
+        `schemaVersion: gruff-ts.config.v0.1\nallowlists:\n  secretPreviews: ${configuredValue}\n`,
+      );
+      assert.throws(
+        () => loadConfig(projectRoot, CONFIG_LOAD_OPTIONS),
+        (error: unknown) => {
+          assert.equal(error instanceof ConfigLoadError, true, caseName);
+          assert.equal((error as ConfigLoadError).message, LEGACY_SECRET_PREVIEWS_ERROR, caseName);
+          assert.equal((error as ConfigLoadError).message.includes("known-fixture-preview"), false, caseName);
+          return true;
+        },
+      );
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+}
+
+test("non-empty legacy secret preview config exits 2 without echoing its value", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-secret-preview-cli-"));
+  try {
+    writeFileSync(join(projectRoot, "ok.ts"), "// File overview: retired preview CLI fixture.\nexport const fine = 1;\n");
+    writeFileSync(
+      join(projectRoot, ".gruff-ts.yaml"),
+      "schemaVersion: gruff-ts.config.v0.1\nallowlists:\n  secretPreviews: [known-fixture-preview]\n",
+    );
+    const result = spawnSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "analyse", ".", "--fail-on", "none"], {
+      cwd: projectRoot,
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr.includes(LEGACY_SECRET_PREVIEWS_ERROR), true);
+    assert.equal(result.stderr.includes("known-fixture-preview"), false);
+    assert.equal(/\n\s+at /.test(result.stderr), false);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("applyDisplaySelectors rejects unknown rule IDs and pillar names", () => {
+  assert.throws(
+    () => applyDisplaySelectors([], { showRules: ["not.a-rule"], hideRules: [], showPillars: [], hidePillars: [] }, undefined),
+    ConfigLoadError,
+  );
+  assert.throws(
+    () => applyDisplaySelectors([], { showRules: [], hideRules: [], showPillars: ["not-a-pillar"], hidePillars: [] }, undefined),
+    ConfigLoadError,
+  );
+});
+
+test("config rejects non-mapping rule entries with ConfigLoadError", () => {
+  assert.throws(
+    () => analyseProject({ "src/ok.ts": "// File overview: fixture.\nexport const ok = 1;\n" }, { config: { rules: { "size.file-length": true as never } } }),
+    ConfigLoadError,
+  );
+});
+
+test("unknown allowlists keys never suggest retired allowlists.secretPreviews", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-allowlist-unknown-"));
+  try {
+    writeFileSync(
+      join(projectRoot, ".gruff-ts.yaml"),
+      "schemaVersion: gruff-ts.config.v0.1\nallowlists:\n  bogusKey:\n    - one\n",
+    );
+    assert.throws(
+      () => loadConfig(projectRoot, CONFIG_LOAD_OPTIONS),
+      (error: unknown) => {
+        assert.equal(error instanceof ConfigLoadError, true);
+        const message = (error as ConfigLoadError).message;
+        assert.equal(message.includes("allowlists.bogusKey"), true);
+        assert.equal(message.includes("secretPreviews"), false);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+// Fixture purpose: verifies the summary v3 schema contract on config and multi-target failures.
+// Side effects: writes temporary directories and spawns the CLI binary, then cleans up the filesystem.
+test("summary --format=json failed runs emit gruff.summary.v3 without findings", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-summary-failed-envelope-"));
+  const bin = join(REPO_ROOT, "bin/gruff-ts");
+  try {
+    const configDir = join(root, "bad-config");
+    const launchDir = join(root, "launch");
+    const targetOne = join(root, "one");
+    const targetTwo = join(root, "two");
+    for (const dir of [configDir, launchDir, targetOne, targetTwo]) {
+      mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(join(configDir, ".gruff-ts.yaml"), "schemaVersion: gruff-ts.config.v0.1\nunknownRootKey: true\n");
+    writeFileSync(join(configDir, "ok.ts"), "// File overview: fixture.\nexport const fine = 1;\n");
+    writeFileSync(join(targetOne, "one.ts"), "// File overview: fixture.\nexport const one = 1;\n");
+    writeFileSync(join(targetTwo, "two.ts"), "// File overview: fixture.\nexport const two = 2;\n");
+
+    const configFailure = spawnSync("bash", [bin, "summary", ".", "--format=json"], { cwd: configDir, encoding: "utf8" });
+    assert.equal(configFailure.status, 2);
+    const configPayload = JSON.parse(configFailure.stdout) as { schemaVersion: string; diagnostics: Array<{ type: string }> };
+    assert.equal(configPayload.schemaVersion, "gruff.summary.v3");
+    assert.equal("findings" in configPayload, false);
+    assert.deepEqual(configPayload.diagnostics.map((entry) => entry.type), ["config-error"]);
+
+    const targetFailure = spawnSync("bash", [bin, "summary", "../one", "../two", "--no-config", "--no-baseline", "--format=json"], { cwd: launchDir, encoding: "utf8" });
+    assert.equal(targetFailure.status, 2);
+    const targetPayload = JSON.parse(targetFailure.stdout) as { schemaVersion: string; diagnostics: Array<{ type: string }> };
+    assert.equal(targetPayload.schemaVersion, "gruff.summary.v3");
+    assert.equal("findings" in targetPayload, false);
+    assert.deepEqual(targetPayload.diagnostics.map((entry) => entry.type), ["target-error"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI execution selector errors with --no-config exit 2 without emitting a config-error JSON envelope", () => {
+  const root = mkdtempSync(join(tmpdir(), "gruff-ts-selector-cli-"));
+  try {
+    writeFileSync(join(root, "ok.ts"), "// File overview: selector fixture.\nexport const fine = 1;\n");
+    const run = spawnSync("bash", [join(REPO_ROOT, "bin/gruff-ts"), "analyse", ".", "--no-config", "--no-baseline", "--include-rule", "not.a-real-rule", "--format=json"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(run.status, 2);
+    assert.equal(run.stdout, "");
+    assert.match(run.stderr, /not\.a-real-rule/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Fixture purpose: verifies the portable-path contract so JSON and SARIF error diagnostics hide host absolute paths.
+// Side effects: writes temporary fixture files and spawns the CLI binary, then removes the temporary directory.
+test("JSON and SARIF error diagnostics keep host absolute paths out of messages", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-diag-paths-"));
+  const bin = join(REPO_ROOT, "bin/gruff-ts");
+  try {
+    writeFileSync(join(projectRoot, "ok.ts"), "// File overview: diagnostic fixture.\nexport const fine = 1;\n");
+    writeFileSync(join(projectRoot, "legacy.json"), `${JSON.stringify({ schemaVersion: "gruff.baseline.v1", entries: [] })}\n`);
+
+    const missingJson = spawnSync("bash", [bin, "analyse", "missing.ts", "--no-config", "--no-baseline", "--format=json"], { cwd: projectRoot, encoding: "utf8" });
+    assert.equal(missingJson.status, 2);
+    const missingPayload = JSON.parse(missingJson.stdout) as { diagnostics: Array<{ type: string; file?: string; message: string }> };
+    assert.equal(missingPayload.diagnostics[0]?.type, "missing-path");
+    assert.equal(missingPayload.diagnostics[0]?.file, "missing.ts");
+    assert.equal(missingPayload.diagnostics[0]?.message.includes(projectRoot), false);
+
+    const missingSarif = spawnSync("bash", [bin, "analyse", "missing.ts", "--no-config", "--no-baseline", "--format=sarif"], { cwd: projectRoot, encoding: "utf8" });
+    assert.equal(missingSarif.status, 2);
+    const sarifPayload = JSON.parse(missingSarif.stdout) as {
+      runs: Array<{ invocations: Array<{ toolExecutionNotifications: Array<{ message: { text: string }; locations?: Array<{ physicalLocation: { artifactLocation: { uri: string } } }> }> }> }>;
+    };
+    const notification = sarifPayload.runs[0]?.invocations[0]?.toolExecutionNotifications[0];
+    assert.ok(notification);
+    assert.equal(notification.message.text.includes(projectRoot), false);
+    assert.equal(notification.locations?.[0]?.physicalLocation.artifactLocation.uri, "missing.ts");
+
+    const baselineFail = spawnSync("bash", [bin, "analyse", ".", "--no-config", "--format=json", "--migrate-baseline", "legacy.json", "--generate-baseline", "legacy.json"], {
+      cwd: projectRoot,
+      encoding: "utf8",
+    });
+    assert.equal(baselineFail.status, 2);
+    const baselinePayload = JSON.parse(baselineFail.stdout) as { diagnostics: Array<{ type: string; message: string }> };
+    assert.equal(baselinePayload.diagnostics[0]?.type, "baseline-error");
+    assert.equal(baselinePayload.diagnostics[0]?.message.includes("legacy.json"), true);
+    assert.equal(baselinePayload.diagnostics[0]?.message.includes(projectRoot), false);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
   }

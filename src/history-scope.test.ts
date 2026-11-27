@@ -16,22 +16,40 @@ const FILTERED_HISTORY_CASES = [
   { fileName: "analyse-diff.json", args: ["analyse", "clean.ts", "--diff=working-tree"] },
   { fileName: "analyse-since.json", args: ["analyse", "clean.ts", "--since=HEAD"] },
   { fileName: "analyse-ranges.json", args: ["analyse", "clean.ts", "--changed-ranges=1-1"] },
+  { fileName: "analyse-include-rule.json", args: ["analyse", "clean.ts", "--include-rule=security.eval-call"] },
+  { fileName: "analyse-exclude-rule.json", args: ["analyse", "clean.ts", "--exclude-rule=security.eval-call"] },
+  { fileName: "analyse-include-pillar.json", args: ["analyse", "clean.ts", "--include-pillar=security"] },
+  { fileName: "analyse-exclude-pillar.json", args: ["analyse", "clean.ts", "--exclude-pillar=security"] },
   { fileName: "summary-diff.json", args: ["summary", "clean.ts", "--diff=working-tree"] },
 ] as const;
 
 /**
+ * Builds a child-process environment without inherited Git repository overrides so fixture `git` commands stay inside the temp repo.
+ *
+ * @returns Copy of `process.env` with `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_INDEX_FILE` removed.
+ */
+function isolatedGitEnv(): NodeJS.ProcessEnv {
+  const { GIT_DIR: _gitDir, GIT_WORK_TREE: _gitWorkTree, GIT_INDEX_FILE: _gitIndexFile, ...cleanEnv } = process.env;
+  return cleanEnv;
+}
+
+/**
  * Gives one test a committed temporary project matching a user's normal CLI working directory.
- * Stable contract: filesystem writes and git subprocesses stay inside the root removed afterward.
+ * Stable fixture contract. Writes clean.ts in the temporary root and starts git with that root as its working directory.
+ *
+ * @param run - test body, given the root of a temporary git repository whose one commit holds clean.ts; the root is removed afterwards
+ * @returns Nothing. Runs the test body and attempts to remove the temporary repository on exit, even when setup or the test fails.
  */
 function withHistoryProject(run: (projectRoot: string) => void): void {
   const projectRoot = mkdtempSync(join(tmpdir(), "gruff-ts-history-scope-"));
+  const env = isolatedGitEnv();
   try {
     writeFileSync(join(projectRoot, "clean.ts"), "// File overview: history fixture.\nexport const healthy = 1;\n");
-    execFileSync("git", ["init"], { cwd: projectRoot, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: projectRoot, stdio: "ignore" });
-    execFileSync("git", ["config", "user.name", "Fixture"], { cwd: projectRoot, stdio: "ignore" });
-    execFileSync("git", ["add", "."], { cwd: projectRoot, stdio: "ignore" });
-    execFileSync("git", ["commit", "-m", "history fixture"], { cwd: projectRoot, stdio: "ignore" });
+    execFileSync("git", ["init"], { cwd: projectRoot, env, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: projectRoot, env, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Fixture"], { cwd: projectRoot, env, stdio: "ignore" });
+    execFileSync("git", ["add", "."], { cwd: projectRoot, env, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "history fixture"], { cwd: projectRoot, env, stdio: "ignore" });
     run(projectRoot);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
