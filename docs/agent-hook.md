@@ -29,9 +29,9 @@ Hook mode is advisory by default (`--fail-on none`): it reports findings and exi
 | `1` | A published finding met `--fail-on`, a finding was new against the baseline under `--fail-on-new`, or `--fail-on-diagnostics` saw a relevant diagnostic. |
 | `2` | The run could not complete. A config error also populates `config.error`; an unusable baseline or invalid changed range appears as a fatal entry in `diagnostics`. |
 
-Pair `--fail-on-new` with `--baseline <path>`. A missing baseline or missing input file exits `2` with a fatal diagnostic.
+Pair `--fail-on-new` with `--baseline <path>`. A missing baseline, or an input file that is missing or unreadable, exits `2` with a fatal diagnostic.
 
-Parse and read diagnostics appear in-band in `diagnostics` (`{ type, message, file, line }`). Full scans include diagnostics from every analysed file, `--diff`/`--since` runs include only changed files, and `--changed-ranges` includes every diagnostic for each requested file (a syntax error breaks parsing for the whole file, so line ranges never hide it). By default `hook` still exits `0` when non-fatal diagnostics are present; pass `--fail-on-diagnostics` to exit `1` instead. The capabilities payload advertises this through `supports.diagnostics` and `flags.failOnDiagnostics` (advertisement only - it never changes behavior on its own). Fatal failures always exit `2`.
+Parse diagnostics appear in-band in `diagnostics` (`{ type, message, file, line }`). Full scans include diagnostics from every analysed file, `--diff`/`--since` runs include only changed files, and `--changed-ranges` includes every diagnostic for each requested file (a syntax error breaks parsing for the whole file, so line ranges never hide it). By default `hook` still exits `0` when parse diagnostics are present; pass `--fail-on-diagnostics` to exit `1` instead. The capabilities payload advertises this through `supports.diagnostics` and `flags.failOnDiagnostics` (advertisement only - it never changes behavior on its own). A run that could not happen exits `2`: a missing or unreadable input, an unusable baseline, an invalid changed range, or a config error.
 
 ## Scan the change, not the repo
 

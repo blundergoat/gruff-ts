@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { chdir, cwd } from "node:process";
 import test from "node:test";
 import { analyse, analyseHookReports } from "./analyser.ts";
-import { renderHookReport } from "./hook-contract.ts";
+import { hookExitCode, renderHookReport } from "./hook-contract.ts";
 import { gitAvailable, M02_DEFAULT_OFF_RULES_ON_YAML, REPO_ROOT } from "./test-fixtures.ts";
 import type { AnalysisOptions, AnalysisReport } from "./types.ts";
 
@@ -1019,4 +1019,21 @@ test("hook --since staged diffs and replays a branch named staged instead of sta
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// FAMILY-CONTRACT.md hook.v2 exit semantics: an operand the hook could not read is a run that did not happen (exit 2),
+// while a parse error on a file it did read stays in-band at exit 0 unless the consumer asked for --fail-on-diagnostics.
+test("hook exits 2 for a missing or unreadable target and keeps parse errors in-band", () => {
+  const gate = { failOn: "none", minConfidence: "low", shouldFailOnNew: false, shouldFailOnDiagnostics: false } as const;
+  /**
+   * Builds a hook envelope holding one fatal diagnostic and no findings, so only the diagnostic type decides the exit.
+   *
+   * @param type - diagnostic type to publish
+   * @returns The envelope as the JSON text `hookExitCode` reads.
+   */
+  const envelopeWith = (type: string): string => JSON.stringify({ findings: [], diagnostics: [{ type, severity: "fatal", message: "probe", file: "app.ts" }] });
+  assert.equal(hookExitCode(envelopeWith("missing-path"), gate), 2);
+  assert.equal(hookExitCode(envelopeWith("read-error"), gate), 2);
+  assert.equal(hookExitCode(envelopeWith("parse-error"), gate), 0);
+  assert.equal(hookExitCode(envelopeWith("parse-error"), { ...gate, shouldFailOnDiagnostics: true }), 1);
 });

@@ -1,6 +1,6 @@
 ---
 category: parser
-last_reviewed: 2026-11-25
+last_reviewed: 2026-11-28
 hallucination-risk: high
 ---
 
@@ -66,3 +66,16 @@ The rule is intentionally `confidence: "low"` and `severity: "advisory"` for tha
 **Why it happens:** Holding every file's TypeScript `SourceFile` AST until post-loop baseline resolution, alongside per-file `lines` and `templateMaskedLines` arrays in `ProjectSource`, scales peak heap linearly with repository size rather than single-file size.
 
 **Evidence:** `src/analyser.ts` (search: `function scanDiscoveredSources`), `src/analyser.ts` (search: `function fileDeclarationSpans`), `src/analyser.ts` (search: `function shouldRetainParsedForChangedScope`), `src/inline-suppressions.ts` (search: `export function isInlineSuppressionRelevantRule`), and `src/project-rules.ts` (search: `export function extractImportStatements`). After streaming spans and import statements, both 10,000+ file repositories completed with exit 0 under Node's default heap.
+
+## Footgun: a `typescript` major version is not a drop-in parser upgrade
+
+**Status:** active | **Created:** 2026-11-28 | **Evidence:** OBSERVED
+**Decision changed:** Keep the parser on the `typescript` 6.x line. Treat a 7.x bump as a parser rewrite onto `typescript/unstable/*`, not a dependency update, and keep `"types": ["node"]` in `tsconfig.json`.
+
+`npm outdated` lists `typescript@7.0.2` as the latest version because it carries the `latest` tag, but its main entry exports only `./lib/version.cjs`; the compiler API sits under `./unstable/*`, and the package depends on per-platform native binaries. Seven analysis modules load the 5.x/6.x API with `require("typescript")`, and `src/parsed-script.ts` and `src/security-flow-rules.ts` parse with `createSourceFile`, so installing 7.x breaks parsing instead of upgrading it.
+
+TypeScript 6.0 also changed the `types` default to `[]`. Without `"types": ["node"]`, `tsc --noEmit` stops loading `@types/node` and every `node:` import fails with TS2591.
+
+**Evidence:** `npm view typescript@7.0.2 exports dependencies` lists `./lib/version.cjs`, the `./unstable/*` entries, and `@typescript/typescript-<platform>` packages; `src/parsed-script.ts` (search: `require("typescript")`); `tsconfig.json` (search: `"types": ["node"]`). Moving from 5.9.3 to 6.0.3 produced identical findings and diagnostics on gruff-ts, zod, nest, sequelize, juice-shop, express, and angular (88,738 findings, 518 diagnostics).
+
+**Prevention:** Before bumping `typescript`, confirm the target version still exports the compiler API at its main entry, then diff a corpus scan before and after. Identical finding and diagnostic tuples are the bar; a passing test suite alone is not.

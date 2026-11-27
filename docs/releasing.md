@@ -30,7 +30,7 @@ must already match the requested version.
 - [ ] `npm pack --dry-run` contains only the reviewed package surface.
 - [ ] `bash scripts/pack-smoke.sh` passes. This installed-tarball gate is
       mandatory and deliberately separate from the fast unit-test path.
-- [ ] Repository CI passes on Node.js 22, 24, and 26. Node 22 is the package
+- [ ] Repository CI passes on Node.js 22, 24, and 26. Node 22.12 is the package
       minimum; 24 is Active LTS and 26 is Current in the dated 2026-07-12
       [Node.js release table](https://nodejs.org/en/about/previous-releases).
 

@@ -457,7 +457,7 @@ function registerHookCommand(program: Command, runAnalyse: AnalyseRunner): void 
     .option("--since <ref>", "Filter hook findings to regions changed against a git base ref and compare against that ref.")
     .option("--diff [mode]", "Filter hook findings to changed regions. Use working-tree, staged, unstaged, a base ref, or - for unified diff on stdin.")
     .option("--baseline <path>", "Compare hook findings against a gruff baseline JSON file using stableIdentity.")
-    .option("--fail-on-diagnostics", "Exit 1 when parse/read diagnostics affect the analysed change; the default reports them in-band with exit 0.")
+    .option("--fail-on-diagnostics", "Exit 1 when parse diagnostics affect the analysed change; the default reports them in-band with exit 0. An unreadable input always exits 2.")
     .action((paths: string[], rawOptions: Record<string, unknown>) => {
       // An integration can discover supported options before sending any files to scan.
       if (rawOptions.capabilities === true) {

@@ -141,7 +141,7 @@ The compromise is deliberate: file inputs to `check-ignore` do NOT apply `.gitig
 
 **Status:** active | **Created:** 2026-05-24 | **Evidence:** OBSERVED
 
-If a session starts with `M .gruff-ts.yaml` (or any other user-curated config) already in the working tree, do NOT treat that as "fine, the user is mid-edit." Run `git diff -- .gruff-ts.yaml` against `HEAD` before editing the file - a regenerated config from `gruff-ts init --force` (`src/init-config.ts`, search: `function writeDefaultConfig`) can look like ordinary modifications but actually represent destroyed user customisations (`allowlists.acceptedAbbreviations`, rule tuning, and anything else `extractPreservedConfigFields` does not carry across). If the diff shows entries vanishing from a sequence, surface that to the user before doing anything else; do not let the loss ride into your own commits or into a user commit that bundles it.
+If a session starts with `M .gruff-ts.yaml` (or any other user-curated config) already in the working tree, do NOT treat that as "fine, the user is mid-edit." Run `git diff HEAD -- .gruff-ts.yaml` before editing the file, so a staged regeneration shows too - a regenerated config from `gruff-ts init --force` (`src/init-config.ts`, search: `function writeDefaultConfig`) can look like ordinary modifications but actually represent destroyed user customisations (`allowlists.acceptedAbbreviations`, rule tuning, and anything else `extractPreservedConfigFields` does not carry across). If the diff shows entries vanishing from a sequence, surface that to the user before doing anything else; do not let the loss ride into your own commits or into a user commit that bundles it.
 
 ## Footgun: `cli.ts` must keep using `parseAsync` because action handlers are async
 

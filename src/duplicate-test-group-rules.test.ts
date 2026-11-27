@@ -164,9 +164,11 @@ test("syntax tokens and for-loop clause positions keep different bodies apart", 
 });
 
 test("option arguments retain their unary operators", () => {
-  const source = ["+timeout", "-timeout", "~timeout"].map((timeout, index) =>
-    `test("case ${index}", { timeout: ${timeout} }, () => { const result = convert(1); assert.ok(result); });`).join("\n");
-  assert.equal(groups(source).length, 0);
+  // The prelude lifts each body to the three-statement minimum, so only the option argument decides the grouping.
+  const sourceFor = (timeouts: string[]): string => timeouts.map((timeout, index) =>
+    `test("case ${index}", { timeout: ${timeout} }, () => { ${PRELUDE} const result = convert(1); assert.ok(result); });`).join("\n");
+  assert.equal(groups(sourceFor(["+timeout", "+timeout", "+timeout"])).length, 1);
+  assert.equal(groups(sourceFor(["+timeout", "-timeout", "~timeout"])).length, 0);
 });
 
 test("JSX text remains exact while identical JSX groups still qualify", () => {

@@ -180,9 +180,11 @@ test("config can trigger the byte bound and CLI settings take precedence or disa
 
 test("the deep-scan budget never applies to non-code text", () => {
   const report = analyseProject(
-    { "notes.md": "secret prose\n".repeat(20) },
+    { "notes.yaml": "- secret prose\n".repeat(20) },
     { config: { deepScanBudget: { enabled: true, maxLines: 1, maxBytes: 1 } } },
   );
+  // Counts the fixture and the generated config, so a text file discovery stops scanning cannot pass this as a budget exemption.
+  assert.equal(report.paths.analysedFiles, 2);
   assert.equal(report.diagnostics.some((entry) => entry.diagnosticType === "bounded-deep-scan"), false);
 });
 

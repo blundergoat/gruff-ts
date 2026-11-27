@@ -33,7 +33,7 @@
     "nodejs"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12.0"
   },
   "type": "module",
   "files": [
@@ -62,12 +62,12 @@
     "start-dev": "tsx src/cli.ts dashboard"
   },
   "dependencies": {
-    "commander": "^14.0.2",
-    "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "commander": "^15.1.0",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3"
   },
   "devDependencies": {
     "@blundergoat/goat-flow": "^1.19.0",
-    "@types/node": "^25.0.0"
+    "@types/node": "^22.20.7"
   }
 }

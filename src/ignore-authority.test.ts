@@ -10,7 +10,7 @@ import test from "node:test";
 import { checkIgnore, checkIgnoreExitCode, renderCheckIgnore } from "./check-ignore.ts";
 import { renderReport } from "./cli.ts";
 import { renderDefaultConfig } from "./init-config.ts";
-import { analyseProject, yamlConfigFixture } from "./test-fixtures.ts";
+import { analyseProject, analyseProjectInCurrentDirectory, yamlConfigFixture } from "./test-fixtures.ts";
 import type { AnalysisOptions } from "./types.ts";
 
 // A source that would emit findings (`eval` -> security) if it were ever scanned, so "no findings"
@@ -173,6 +173,27 @@ test("explicit files and include-ignored never cross the VCS boundary", () => {
     assert.deepEqual(results, [
       { path: ".git/config.ts", isIgnored: true, source: "default", pattern: ".git/" },
     ]);
+  } finally {
+    chdir(previous);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The run root follows an outside target, so a target inside `.git` roots the run there and its report path has no `.git` component left to match.
+// Writes and removes a temporary repository and launch directory, and changes the process working directory while it scans.
+test("a target inside a VCS directory stays blocked when addressed from outside the repository", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gruff-ci-vcs-outside-"));
+  const previous = cwd();
+  try {
+    mkdirSync(join(dir, "repo/.git"), { recursive: true });
+    mkdirSync(join(dir, "launch"));
+    writeFileSync(join(dir, "repo/.git/config.ts"), FLAGGABLE_SOURCE);
+    chdir(join(dir, "launch"));
+    for (const target of ["../repo/.git/config.ts", "../repo/.git"]) {
+      const report = analyseProjectInCurrentDirectory({ paths: [target], shouldSkipConfig: true, shouldIncludeIgnored: true });
+      assert.equal(report.paths.analysedFiles, 0, target);
+      assert.deepEqual(report.findings, [], target);
+    }
   } finally {
     chdir(previous);
     rmSync(dir, { recursive: true, force: true });

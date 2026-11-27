@@ -95,6 +95,8 @@ test("inline suppressions require preceding-line biome-ignore and keep co-locate
     "export function run(req: { body: { code: string } }, safe: string): void {",
     "  eval(safe); // biome-ignore lint/security/noGlobalEval: trailing line does not apply in Biome",
     "  eval(safe); vm.runInNewContext(req.body.code);",
+    // Both calls receive request input: the eval deserialization repeats security.eval-call, but the vm sink is a separate claim.
+    "  eval(req.body.code); vm.runInNewContext(req.body.code);",
     "}",
     "",
   ].join("\n");
@@ -104,9 +106,8 @@ test("inline suppressions require preceding-line biome-ignore and keep co-locate
   );
   const evalFindings = report.findings.filter((finding) => finding.ruleId === "security.eval-call");
   const vmFindings = report.findings.filter((finding) => finding.ruleId === "security.unsafe-deserialization");
-  assert.equal(evalFindings.length, 2);
-  assert.equal(vmFindings.length, 1);
-  assert.equal(vmFindings[0]?.line, 4);
+  assert.equal(evalFindings.length, 3);
+  assert.deepEqual(vmFindings.map((finding) => [finding.line, finding.metadata.sinkForm]), [[4, "vm"], [5, "vm"]]);
 });
 
 test("SARIF display selectors filter section 13c suppressed results alongside active findings", () => {

@@ -2,10 +2,11 @@
 
 ## v0.6.0 - 2026-11-27
 
-A coordinated family release on Node 22+ that unifies JSON, SARIF, baseline, hook, and scoring contracts across all five gruff ports, trims the catalogue from 120 to 81 rules across 11 pillars, enforces `/** ... */` JSDoc contracts on non-test callables, and scales to 10,000+ file TypeScript monorepos. Upgrading from `0.5.x` changes every machine-readable contract at once; see [UPGRADING.md](UPGRADING.md) for the step-by-step migration and rollback path.
+A coordinated family release on Node 22.12+ that unifies JSON, SARIF, baseline, hook, and scoring contracts across all five gruff ports, trims the catalogue from 120 to 81 rules across 11 pillars, enforces `/** ... */` JSDoc contracts on non-test callables, and scales to 10,000+ file TypeScript monorepos. Upgrading from `0.5.x` changes every machine-readable contract at once; see [UPGRADING.md](UPGRADING.md) for the step-by-step migration and rollback path.
 
 ### Breaking changes
 
+- **BREAKING: Node.js 22.12 or newer is required** - The CLI's argument parser moves to Commander 15, which supports Node.js 22.12.0 and later, so Node.js 22.0 through 22.11 are no longer supported; update within the 22 line or move to 24 or 26.
 - **BREAKING: JSON envelopes move to family v3 and `hook` moves to `gruff.hook.v2`** - No deprecation window for this pre-1.0 family break.
   - `analyse` and `report --format=json` emit `gruff.analysis.v3`; `summary --format=json` emits `gruff.summary.v3` (the same envelope without top-level `findings`, so `--top` affects text output only).
   - Gate on `schemaVersion`, read `file` instead of `filePath`, read `score.composite.{score,grade}`, read `paths.details` instead of `paths.skipped`, and treat absent optional fields (`column`, `endLine`, `symbol`) as omitted rather than `null`; see the full field table in [Output Formats](docs/output-formats.md).
@@ -83,6 +84,7 @@ A coordinated family release on Node 22+ that unifies JSON, SARIF, baseline, hoo
 - **Baseline ordinals and `#` symbols** - Baseline ordinals count every same-named declaration in the file, disambiguate same-line same-named declarations, and map leading-comment docblock findings (`docs.missing-param-tag`, `docs.missing-return-tag`, `docs.stale-param-tag`) to their following span so comment edits never shift a namesake's review; findings whose symbol contains `#` no longer crash and report without a baseline identity.
 - **Launch-directory paths and failure envelopes** - Relative targets, `--config`, `--profile`, `--baseline`, `--generate-baseline`, `--migrate-baseline`, and `--history-file` resolve from the launch directory rather than the project root; config and baseline errors print paths as typed rather than host-absolute paths; only real config-load errors emit a `config-error` envelope (not flag conflicts); and `summary --format=json` emits `gruff.summary.v3` on config and target refusals.
 - **Explicit diff refs, nested templates, hook duplicates, and installed launcher** - `--diff-base` and `--since` pass explicit Git refs through without matching mode keywords such as `staged`; nested `${...}` template literals no longer desynchronise masking; `hook --diff` keeps newly added duplicate findings visible; and the installed `@blundergoat/gruff-ts` binary locates hoisted `tsx` from any working directory.
+- **Staged diffs, unreadable hook inputs, and VCS directories** - `--diff staged` on `analyse` and `hook` keeps findings on staged lines that an unstaged edit above them has moved; `hook` exits `2` with a fatal `read-error` when it cannot read a named input, instead of exiting `0` for an edit it never scanned; and a target inside `.git`, `.hg`, or `.svn` stays unscanned when named from outside the repository.
 
 ## v0.5.0 - 2026-08-16
 

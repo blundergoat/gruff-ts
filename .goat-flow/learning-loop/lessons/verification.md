@@ -283,6 +283,8 @@ The pre-1.14 policy blocked every pipe into `python3 -c` or `node -e`, so local-
 
 **Recurrence, 2026-08-05 (vocabulary plurals):** context-doc vocabulary is matched with word boundaries, so plural forms fail: a comment saying "keeps fingerprints unique" does not satisfy `\bfingerprint\b` and `docs.missing-invariant-doc` fired on the new scoring test helper until the comment said "each fingerprint". When writing marker vocabulary, use the singular form the regex lists.
 
+**Recurrence 2026-11-28:** While triaging the PR #10 bot comments, scans that produced no finding were first read as "not reproduced" for flow and sensitive-data claims. But `security.path-traversal-candidate`, `security.unsafe-deserialization`, and `sensitive-data.database-url-password` are off by default (`src/rules.ts`, search: `isEnabledByDefault: false`), so those rules never ran. Re-running with the rules enabled changed three verdicts: the callback taint misses were already fixed, while the same-line `eval` plus `vm.runInNewContext` merge and the `${string}` URL exemption both reproduced. A no-finding repro counts only when a positive control in the same run shows the rule firing on a sibling input.
+
 ## Lesson: prove a gate fails in every direction it claims to cover
 
 **Created:** 2026-08-16

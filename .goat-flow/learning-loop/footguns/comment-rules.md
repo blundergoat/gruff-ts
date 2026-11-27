@@ -18,7 +18,7 @@ When M01 added a comment explaining the catch-rationale widening, the comment me
 
 Several gruff rules scan source-wide and don't distinguish "comment explaining what the rule does" from "actual TODO marker." Affected rules include `docs.todo-without-tracking`, `waste.commented-out-code` (matches code-shaped strings in comments), and `docs.stale-comment` (matches `--unknown-flag` mentions).
 
-Resolved for `docs.todo-without-tracking` on 2026-08-04: the marker must now introduce a comment body line with a marker delimiter (`src/comment-rules.ts`, search: `function leadingTodoMarker`), so mid-sentence, quoted, backticked, and fenced-example mentions stay quiet. `waste.commented-out-code` and `docs.stale-comment` still behave as described above.
+Resolved for `docs.todo-without-tracking` on 2026-08-04: the marker must now introduce a comment body line with a marker delimiter (`src/comment-rules.ts`, search: `function leadingTodoMarker`), so mid-sentence, quoted, backticked, and fenced-example mentions stay quiet. `waste.commented-out-code` and `docs.stale-comment` were retired on 2026-10-18 (ADR-021), so neither reports any more.
 
 Same shape for suppression directives in test fixtures: `docs.suppression-without-rationale` scans comments in the test source, so a test comment or template-literal fixture that contains a raw lint-disable directive can flag the test file instead of only exercising the generated fixture. During M07, `src/scan-surface.test.ts` (search: `const eslintDisable`) had to assemble the directive from split strings and rephrase the surrounding comment to avoid a self-scan finding while still writing a bare directive into the generated source under test.
 

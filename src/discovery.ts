@@ -305,7 +305,8 @@ function classifyIgnore(input: IgnoreClassificationInput): IgnoreMatch | undefin
   if (configPattern !== undefined) {
     return { source: "config", pattern: configPattern };
   }
-  const vcsComponent = matchedDirectoryComponent(display, VCS_DIRECTORIES);
+  // Match the absolute path, not the report path: `analyse ../repo/.git/config.ts` roots the run inside `.git`, which drops the component from `display`.
+  const vcsComponent = matchedDirectoryComponent(absolute.replaceAll("\\", "/"), VCS_DIRECTORIES);
   if (vcsComponent !== undefined) {
     return { source: "default", pattern: `${vcsComponent}/` };
   }

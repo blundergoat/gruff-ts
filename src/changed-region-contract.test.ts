@@ -390,9 +390,9 @@ test("changed-region SARIF excludes inline-suppressed findings from unchanged fi
   assert.equal(suppressedResults.length, 0);
 });
 
-// Fixture purpose: exercises a real git repo with staged and unstaged edits to verify working-tree diff line coordinates stay aligned.
+// Fixture purpose: exercises a real git repo with staged and unstaged edits to verify each diff mode reports working-tree line coordinates.
 // Stable contract: writes a temporary Git repository, runs git and analyse(), and removes the directory in finally.
-test("working-tree diff aligns staged and unstaged line coordinates", () => {
+test("every diff mode reports staged and unstaged edits at working-tree line numbers", () => {
   if (!gitAvailable()) {
     return;
   }
@@ -414,18 +414,21 @@ test("working-tree diff aligns staged and unstaged line coordinates", () => {
     const unstagedLines = [baseLines[0] ?? "", "export const shift1 = 1;", "export const shift2 = 2;", "export const shift3 = 3;", ...stagedLines.slice(1)];
     writeFixtureFiles(dir, { "app.ts": `${unstagedLines.join("\n")}\n` });
 
-    const report = analyse({
-      paths: [join(dir, "app.ts")],
-      shouldSkipConfig: true,
-      shouldSkipBaseline: true,
-      format: "json",
-      failOn: "none",
-      shouldIncludeIgnored: false,
-      changedScope: "hunk",
-      diff: "working-tree",
-    });
-    const evalFinding = report.findings.find((finding) => finding.ruleId === "security.eval-call");
-    assert.equal(evalFinding?.line, 15);
+    // The staged eval belongs to working-tree and staged reviews; the unstaged edit added only the shift lines.
+    for (const [diff, expectedLine] of [["working-tree", 15], ["staged", 15], ["unstaged", undefined]] as const) {
+      const report = analyse({
+        paths: [join(dir, "app.ts")],
+        shouldSkipConfig: true,
+        shouldSkipBaseline: true,
+        format: "json",
+        failOn: "none",
+        shouldIncludeIgnored: false,
+        changedScope: "hunk",
+        diff,
+      });
+      const evalFinding = report.findings.find((finding) => finding.ruleId === "security.eval-call");
+      assert.equal(evalFinding?.line, expectedLine, diff);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

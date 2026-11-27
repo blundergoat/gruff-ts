@@ -23,7 +23,7 @@ Run as a hook on agent edits, `gruff-ts` acts as a forcing function rather than 
 | Field | Value |
 | --- | --- |
 | Release line | `0.6.0` |
-| Runtime | Node.js `22+`; release CI covers 22, 24, and 26 |
+| Runtime | Node.js `22.12+`; release CI covers 22, 24, and 26 |
 | Runtime dependencies | `commander`, `tsx`, and `typescript` |
 | Package | `@blundergoat/gruff-ts` |
 | Binary | `gruff-ts` |
@@ -42,7 +42,7 @@ Scanned file types include TypeScript, JavaScript, JSON, YAML, TOML, INI, XML, a
 
 ## Requirements
 
-- Node.js `22+`, matching [`package.json`](package.json).
+- Node.js `22.12+`, matching [`package.json`](package.json).
 - npm for source-checkout development.
 - Git only for diff modes.
 

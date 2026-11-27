@@ -97,7 +97,7 @@ function dedupeKey(finding: Finding): string {
 }
 
 /**
- * Sorts and mutates the caller's findings in place by path, line, rule, and message for a stable report order.
+ * Sorts and mutates the caller's findings in place by path, line, rule, and message for a stable report order; ties put a non-eval sink first.
  * Missing lines sort as zero, then duplicates are removed while preserving the sorted order.
  *
  * @param findings - caller array sorted in place before deduplication
@@ -109,7 +109,10 @@ function sortedUniqueFindings(findings: Finding[]): Finding[] {
       left.filePath.localeCompare(right.filePath) ||
       (left.line ?? 0) - (right.line ?? 0) ||
       left.ruleId.localeCompare(right.ruleId) ||
-      left.message.localeCompare(right.message),
+      left.message.localeCompare(right.message) ||
+      // Same-line deserialization sinks collapse to the first one kept, so a non-eval sink goes first: security.eval-call already reports
+      // the eval, and keeping the eval form would let duplicate-claim merging drop a tainted `vm.runInNewContext(x)` beside it.
+      Number(left.metadata.sinkForm === "eval") - Number(right.metadata.sinkForm === "eval"),
   );
   return dedupeFindings(findings);
 }

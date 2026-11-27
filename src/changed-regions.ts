@@ -435,9 +435,10 @@ function gitDiffScope(mode: string, changedScope: ChangedScopeMode, projectRoot:
   );
   // Mode keywords apply only to --diff; --since and --diff-base treat the value as a Git ref, even a branch named staged.
   if (allowDiffModes) {
-    // Staged mode reviews the contents selected for the next commit.
+    // Staged mode reviews the contents selected for the next commit. Without HEAD every staged file is new, so whole-file coverage needs no renumbering.
     if (mode === "staged") {
-      return readDiff(["--cached"]);
+      const staged = readDiff(["--cached"]);
+      return hasGitHead(projectRoot) ? stagedInWorkingTreeLines(staged, readDiff(["HEAD", "--"]), readDiff([])) : staged;
     }
     // Unstaged mode reviews changes made since the last staging operation.
     if (mode === "unstaged") {
@@ -456,6 +457,58 @@ function gitDiffScope(mode: string, changedScope: ChangedScopeMode, projectRoot:
   }
   // Trailing `--` forces Git to interpret `mode` strictly as a revision expression rather than a path when the ref is missing.
   return readDiff(["--end-of-options", mode, "--"]);
+}
+
+/**
+ * Renumbers staged ranges in working-tree lines, because the scan reads the working tree while `git diff --cached` numbers the index.
+ * For example, two unstaged lines inserted above a staged line 20 move it to line 22, which an index range would miss.
+ * A staged line counts when it is new since HEAD and the unstaged edit did not add it; one an unstaged edit rewrote drops out.
+ *
+ * @param staged - `git diff --cached` scope, which decides the changed files and whole files a staged review covers
+ * @param sinceHead - `git diff HEAD` scope: lines new since HEAD, numbered in the working tree
+ * @param unstaged - `git diff` scope: lines the unstaged edit added, numbered in the working tree
+ * @returns The staged scope with each file's hunk ranges replaced by working-tree ranges; files without surviving lines get no ranges.
+ */
+function stagedInWorkingTreeLines(staged: ChangedRegionScope, sinceHead: ChangedRegionScope, unstaged: ChangedRegionScope): ChangedRegionScope {
+  const rangesByFile = new Map<string, ChangedRange[]>();
+  for (const file of staged.rangesByFile.keys()) {
+    // A staged rename that unstaged edits pushed past Git's rename threshold reads as a new file since HEAD, so every line is new.
+    const newSinceHead = sinceHead.wholeFiles.has(file) ? [{ start: 1, end: Number.MAX_SAFE_INTEGER }] : sinceHead.rangesByFile.get(file) ?? [];
+    const ranges = subtractRanges(newSinceHead, unstaged.rangesByFile.get(file) ?? []);
+    // A staged hunk whose lines an unstaged edit replaced leaves nothing staged in the working tree to review.
+    if (ranges.length > 0) {
+      rangesByFile.set(file, ranges);
+    }
+  }
+  return { ...staged, rangesByFile };
+}
+
+/**
+ * Removes every line covered by `removed` from `ranges`, splitting a range when a removed block falls inside it.
+ *
+ * @param ranges - sorted, merged inclusive ranges to keep lines from
+ * @param removed - sorted, merged inclusive ranges whose lines are taken out
+ * @returns Sorted inclusive ranges holding the lines of `ranges` outside `removed`; empty when every line is removed.
+ */
+function subtractRanges(ranges: ChangedRange[], removed: ChangedRange[]): ChangedRange[] {
+  const kept: ChangedRange[] = [];
+  for (const range of ranges) {
+    let start = range.start;
+    for (const cut of removed) {
+      // A removed block entirely before the remaining span, or after the range, leaves it whole.
+      if (cut.end < start || cut.start > range.end) {
+        continue;
+      }
+      if (cut.start > start) {
+        kept.push({ start, end: cut.start - 1 });
+      }
+      start = cut.end + 1;
+    }
+    if (start <= range.end) {
+      kept.push({ start, end: range.end });
+    }
+  }
+  return kept;
 }
 
 /**

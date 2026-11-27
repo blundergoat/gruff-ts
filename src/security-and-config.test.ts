@@ -717,11 +717,11 @@ test("a bare return that is a catch block's only statement is not a useless retu
 // A catch comment explains by shape; a lone label that names no intent must still report.
 test("swallowed catch reads a two-word reason by shape and still reports a lone label", () => {
   // This fixture covers both shapes: a two-word reason that passes and a lone label that reports.
-  const report = analyseFixture(`export function readHyphenated(): void {
+  const report = analyseFixture(`export function readTwoWordReason(): void {
   try {
     refresh();
   } catch {
-    // Session refresh is best-effort.
+    // Snapshot expired.
   }
 }
 

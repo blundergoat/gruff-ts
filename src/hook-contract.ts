@@ -54,8 +54,8 @@ interface HookReport {
   // Audit data a consumer needs to trust the verdict: what ran, over what, and against which baseline.
   run: HookRun;
   findings: HookFinding[];
-  // File-scoped parse/read diagnostics relevant to the analysed change, reported in-band. The
-  // default hook exit stays 0; only an explicit --fail-on-diagnostics run turns these into exit 1.
+  // File-scoped parse/read diagnostics relevant to the analysed change, reported in-band. A parse diagnostic keeps
+  // the default hook exit at 0 unless --fail-on-diagnostics turns it into 1; a missing or unreadable input exits 2.
   diagnostics: HookDiagnostic[];
   suppressed: { count: number };
   // The section 13a audit: one row per configured sensitive exclusion this run applied.
@@ -420,14 +420,15 @@ function toHookDiagnostic(diagnostic: RunDiagnostic): HookDiagnostic {
  *
  * @param renderedEnvelope - published hook envelope as JSON
  * @param gate - thresholds and options that determine which published entries block the edit
- * @returns 2 for a missing target, 1 when a published entry reaches the gate, or 0 when the edit can proceed
+ * @returns 2 for a missing or unreadable target, 1 when a published entry reaches the gate, or 0 when the edit can proceed
  * @throws SyntaxError - if the envelope is invalid JSON
  */
 export function hookExitCode(renderedEnvelope: string, gate: HookExitGate): number {
   const payload = JSON.parse(renderedEnvelope) as { findings?: HookFinding[]; diagnostics?: HookDiagnostic[] };
   const diagnostics = Array.isArray(payload.diagnostics) ? payload.diagnostics : [];
-  // An editor may request a file that was just deleted. The hook cannot approve an edit it could not scan.
-  if (diagnostics.some((diagnostic) => diagnostic.type === "missing-path")) {
+  // An editor may request a file that was just deleted or that it cannot read. The hook cannot approve an edit it could not scan.
+  // Parse errors stay in-band: the file was read, and FAMILY-CONTRACT.md reserves exit 2 for a run that did not happen.
+  if (diagnostics.some((diagnostic) => diagnostic.type === "missing-path" || diagnostic.type === "read-error")) {
     return 2;
   }
   // When the diagnostic gate is enabled, any published diagnostic blocks the edit regardless of the finding thresholds.
